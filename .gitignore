@@ -1,0 +1,58 @@
+# Dependencias
+node_modules/
+frontend/node_modules/
+
+# Secretos / entorno (NUNCA versionar el .env real).
+# El patron .env* cubre tambien copias tipo .env.local.bak, que de otro modo
+# se colarian en un commit (paso el 01-08-2026).
+.env
+.env*
+!.env.example
+
+# Builds / artefactos
+dist/
+frontend/dist/
+frontend-chakra/dist/
+*.tsbuildinfo
+
+# Indice RAG de Carmen (regenerable con `npm run carmen:index`)
+data/embeddings/index.json
+
+# Almacenamiento en disco (datos de runtime: facturas subidas con datos
+# personales, PDF/ZIP generados...). NUNCA versionar; en producción va a Vercel Blob.
+storage/
+
+# Logs y temporales
+*.log
+npm-debug.log*
+.DS_Store
+
+.vercel
+
+# ---------------------------------------------------------------------------
+# Proyectos vecinos (NO pertenecen a este repositorio).
+#
+# La raiz de este repo comparte carpeta en disco con otros proyectos sin
+# relacion. El 01-08-2026 un `git add .` los arrastro a un commit publico
+# (1.271 ficheros). Se excluyen explicitamente para que no vuelva a pasar.
+# Arreglo de fondo pendiente: mover este backend a su propia carpeta.
+# ---------------------------------------------------------------------------
+conta-api/
+conta-api-web/
+conta-api-proyecto/
+frontend-contable/
+cosas-cucas/
+newzelland-ceramicas/
+vive/
+vive-landing/
+facturascripts/
+facturascripts-api/
+facturascripts-api-node/
+OpenMontage/
+proyectos/
+superpoderes/
+place_scraper/
+obra_scraper/
+node_portable/
+.venv/
+uploads/

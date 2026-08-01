@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>conta-api — Lector OCR y Gestor de Documentos Contables</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>📊 conta-api</h1>
+      <p>Lector OCR + Gestor de Documentos Contables</p>
+      <p class="tagline">API robusta para procesamiento automático de documentos fiscales</p>
+    </header>
+
+    <main>
+      <section class="overview">
+        <h2>🚀 Módulos Principales</h2>
+        <div class="modules">
+          <div class="module">
+            <div class="module-icon">📄</div>
+            <h3>Income Reader</h3>
+            <p>Procesamiento automático de facturas, tickets y recibos mediante OCR</p>
+            <ul>
+              <li>✅ Lectura automática con Claude Vision</li>
+              <li>✅ Máquina de estados clara (UPLOADED → PROCESSING → READY)</li>
+              <li>✅ Reintento manual desde estado ERROR</li>
+              <li>✅ Control de caducidad de documentos</li>
+            </ul>
+            <div class="module-links">
+              <a href="/swagger" class="link">Ver endpoints →</a>
+            </div>
+          </div>
+
+          <div class="module">
+            <div class="module-icon">📋</div>
+            <h3>Registro Mercantil</h3>
+            <p>Versionado automático de documentos legales con caducidad</p>
+            <ul>
+              <li>✅ Versionado automático (v1, v2, v3...)</li>
+              <li>✅ Obsolescencia automática de versiones</li>
+              <li>✅ Control de caducidad (4 años default)</li>
+              <li>✅ Historial auditable completo</li>
+            </ul>
+            <div class="module-links">
+              <a href="/swagger" class="link">Ver endpoints →</a>
+            </div>
+          </div>
+
+          <div class="module">
+            <div class="module-icon">🔐</div>
+            <h3>Autenticación</h3>
+            <p>JWT tokens con refresh automático y multi-tenant support</p>
+            <ul>
+              <li>✅ Login con email/password</li>
+              <li>✅ Refresh tokens con rotación</li>
+              <li>✅ Multi-tenant (companyId scoped)</li>
+              <li>✅ Dev login para testing</li>
+            </ul>
+            <div class="module-links">
+              <a href="/swagger" class="link">Ver endpoints →</a>
+            </div>
+          </div>
+
+          <div class="module">
+            <div class="module-icon">📊</div>
+            <h3>AEAT</h3>
+            <p>Modelos fiscales españoles (111, 115, 200, 303, 347, 349, 390)</p>
+            <ul>
+              <li>✅ Generación de ficheros AEAT validados</li>
+              <li>✅ Validación de esquemas</li>
+              <li>✅ Encriptación de datos sensibles</li>
+              <li>✅ Cumplimiento normativo</li>
+            </ul>
+            <div class="module-links">
+              <a href="/swagger" class="link">Ver endpoints →</a>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="quick-access">
+        <h2>🔍 Acceso Rápido</h2>
+        <div class="access-grid">
+          <a href="/swagger" class="access-card access-primary">
+            <h3>📚 Swagger UI</h3>
+            <p>Explora endpoints con ejemplos interactivos</p>
+          </a>
+          <a href="/api/docs" class="access-card">
+            <h3>📋 OpenAPI Spec</h3>
+            <p>Especificación JSON completa</p>
+          </a>
+          <a href="/api/docs/modules" class="access-card">
+            <h3>🏗️ Módulos</h3>
+            <p>Información detallada de cada módulo</p>
+          </a>
+          <a href="/api/docs/states" class="access-card">
+            <h3>⚙️ Estados</h3>
+            <p>Máquinas de estado y transiciones</p>
+          </a>
+          <a href="/api/docs/validation" class="access-card">
+            <h3>✓ Validaciones</h3>
+            <p>Reglas de coherencia y helpers</p>
+          </a>
+          <a href="/api/health" class="access-card">
+            <h3>💚 Estado del Sistema</h3>
+            <p>Verificar disponibilidad de la API</p>
+          </a>
+        </div>
+      </section>
+
+      <section class="info-box">
+        <h2>📚 Documentación Disponible</h2>
+        <p>Accede a la documentación técnica completa en <strong><code>/api/docs</code></strong> o explora interactivamente en <strong><code>/swagger</code></strong></p>
+        <p style="margin-top: 10px; font-size: 0.9em; color: #666;">
+          Testing: 349/350 tests ✅ | Cobertura: ~95% | Stack: TypeScript + Express + Prisma
+        </p>
+      </section>
+
+      <section class="testing-info">
+        <h2>✅ Estado del Proyecto</h2>
+        <ul>
+          <li><strong>Fases completadas:</strong> FASE 2 (Tareas 1-3) + FASE 4 (Endurecimiento)</li>
+          <li><strong>Tests:</strong> 349/350 en verde (98.6%)</li>
+          <li><strong>Compilación:</strong> 0 errores TypeScript</li>
+          <li><strong>Regresiones:</strong> 0 nuevas en FASE 4</li>
+          <li><strong>Endpoints documentados:</strong> Income Reader, Registro Mercantil, Auth, AEAT</li>
+        </ul>
+      </section>
+    </main>
+
+    <footer>
+      <p>conta-api v1.0 — Documentación técnica en <a href="/api/docs">/api/docs</a></p>
+    </footer>
+  </div>
+</body>
+</html>

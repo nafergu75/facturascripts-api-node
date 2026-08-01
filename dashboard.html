@@ -1,0 +1,709 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>📊 Dashboard - Monitoreo de Endpoints</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        header {
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            margin-bottom: 30px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.1);
+        }
+
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .subtitle {
+            color: #666;
+            font-size: 14px;
+        }
+
+        .controls {
+            display: flex;
+            gap: 10px;
+            margin-top: 20px;
+            flex-wrap: wrap;
+        }
+
+        button {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 600;
+            transition: all 0.3s ease;
+        }
+
+        .btn-primary {
+            background: #667eea;
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: #5568d3;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+        }
+
+        .btn-secondary {
+            background: #f0f0f0;
+            color: #333;
+        }
+
+        .btn-secondary:hover {
+            background: #e0e0e0;
+        }
+
+        input[type="file"] {
+            padding: 8px;
+            border: 2px solid #667eea;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .card {
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.1);
+        }
+
+        .card-title {
+            font-size: 14px;
+            color: #666;
+            font-weight: 600;
+            text-transform: uppercase;
+            margin-bottom: 10px;
+        }
+
+        .card-value {
+            font-size: 32px;
+            font-weight: bold;
+            color: #667eea;
+        }
+
+        .card-subtitle {
+            font-size: 12px;
+            color: #999;
+            margin-top: 5px;
+        }
+
+        .progress-bar {
+            width: 100%;
+            height: 8px;
+            background: #f0f0f0;
+            border-radius: 4px;
+            margin-top: 10px;
+            overflow: hidden;
+        }
+
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #667eea, #764ba2);
+            border-radius: 4px;
+            transition: width 0.3s ease;
+        }
+
+        .chart-container {
+            position: relative;
+            height: 400px;
+            margin-bottom: 30px;
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.1);
+        }
+
+        .search-box {
+            margin-bottom: 20px;
+        }
+
+        input[type="text"] {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #ddd;
+            border-radius: 5px;
+            font-size: 14px;
+        }
+
+        input[type="text"]:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+
+        .table-container {
+            background: white;
+            border-radius: 10px;
+            overflow: hidden;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.1);
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        th {
+            background: #f8f9fa;
+            padding: 15px;
+            text-align: left;
+            font-weight: 600;
+            font-size: 12px;
+            text-transform: uppercase;
+            color: #666;
+            border-bottom: 2px solid #ddd;
+        }
+
+        td {
+            padding: 12px 15px;
+            border-bottom: 1px solid #f0f0f0;
+            font-size: 14px;
+        }
+
+        tr:hover {
+            background: #f8f9fa;
+        }
+
+        .status-vivo {
+            color: #22c55e;
+            font-weight: 600;
+        }
+
+        .status-muerto {
+            color: #ef4444;
+            font-weight: 600;
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+
+        .badge-public {
+            background: #dbeafe;
+            color: #0369a1;
+        }
+
+        .badge-protected {
+            background: #fef08a;
+            color: #854d0e;
+        }
+
+        .badge-scoped {
+            background: #e9d5ff;
+            color: #6b21a8;
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: #999;
+        }
+
+        .empty-state-icon {
+            font-size: 48px;
+            margin-bottom: 20px;
+        }
+
+        .stats-row {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+
+        .stat {
+            background: white;
+            padding: 15px;
+            border-radius: 8px;
+            border-left: 4px solid #667eea;
+        }
+
+        .stat-label {
+            font-size: 12px;
+            color: #666;
+            text-transform: uppercase;
+            font-weight: 600;
+        }
+
+        .stat-value {
+            font-size: 24px;
+            font-weight: bold;
+            color: #333;
+            margin-top: 5px;
+        }
+
+        .module-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+            gap: 15px;
+            margin-top: 20px;
+        }
+
+        .module-card {
+            background: white;
+            padding: 15px;
+            border-radius: 8px;
+            border: 2px solid #f0f0f0;
+        }
+
+        .module-name {
+            font-weight: 600;
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 14px;
+        }
+
+        .module-stats {
+            display: flex;
+            justify-content: space-between;
+            font-size: 12px;
+            color: #666;
+        }
+
+        .footer {
+            text-align: center;
+            color: white;
+            margin-top: 30px;
+            font-size: 12px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>📊 Dashboard de Endpoints</h1>
+            <p class="subtitle">Monitoreo de uso de endpoints en tiempo real</p>
+
+            <div class="controls">
+                <input type="file" id="logsFile" accept=".jsonl,.json" placeholder="Carga logs/requests.jsonl">
+                <button class="btn-primary" onclick="loadExample()">📝 Datos de Ejemplo</button>
+                <button class="btn-secondary" onclick="exportCSV()">📥 Exportar CSV</button>
+                <button class="btn-secondary" onclick="location.reload()">🔄 Recargar</button>
+            </div>
+        </header>
+
+        <div id="content"></div>
+
+        <div class="footer">
+            <p>Dashboard de monitoreo de endpoints · Actualizado en tiempo real</p>
+        </div>
+    </div>
+
+    <script>
+        let endpoints = [];
+        let logs = [];
+        let report = null;
+
+        // Cargar ejemplo
+        function loadExample() {
+            // Datos de ejemplo
+            const exampleLogs = [
+                {timestamp:"2026-06-30T10:00:00.000Z",method:"GET",path:"/health",statusCode:200,duration:5},
+                {timestamp:"2026-06-30T10:00:01.000Z",method:"POST",path:"/auth/login",statusCode:400,duration:10},
+                {timestamp:"2026-06-30T10:00:02.000Z",method:"POST",path:"/auth/dev-login",statusCode:200,duration:8},
+                {timestamp:"2026-06-30T10:00:03.000Z",method:"GET",path:"/plan-contable/base/cuentas",statusCode:200,duration:12},
+                {timestamp:"2026-06-30T10:00:04.000Z",method:"GET",path:"/plan-contable/base/grupos",statusCode:200,duration:10},
+                {timestamp:"2026-06-30T10:00:05.000Z",method:"GET",path:"/companies/",statusCode:401,duration:3},
+                {timestamp:"2026-06-30T10:00:06.000Z",method:"POST",path:"/companies/",statusCode:401,duration:4},
+                {timestamp:"2026-06-30T10:00:07.000Z",method:"GET",path:"/companies/test-1/clientes/",statusCode:401,duration:4},
+                {timestamp:"2026-06-30T10:00:08.000Z",method:"GET",path:"/companies/test-1/accounting/journal-entries",statusCode:401,duration:5},
+            ];
+
+            const exampleEndpoints = [
+                {method:"GET",path:"/health",file:"app.ts",auth:false,scope:"public"},
+                {method:"POST",path:"/auth/login",file:"auth.routes.ts",auth:false,scope:"public"},
+                {method:"POST",path:"/auth/dev-login",file:"auth.routes.ts",auth:false,scope:"public"},
+                {method:"GET",path:"/plan-contable/base/cuentas",file:"planContableBase.routes.ts",auth:false,scope:"public"},
+                {method:"GET",path:"/plan-contable/base/grupos",file:"planContableBase.routes.ts",auth:false,scope:"public"},
+                {method:"GET",path:"/companies/",file:"companies.routes.ts",auth:true,scope:"protected"},
+                {method:"POST",path:"/companies/",file:"companies.routes.ts",auth:true,scope:"protected"},
+                {method:"GET",path:"/companies/:companyId/clientes/",file:"clientes.routes.ts",auth:true,scope:"scoped"},
+                {method:"GET",path:"/companies/:companyId/accounting/journal-entries",file:"accounting-engine.routes.ts",auth:true,scope:"scoped"},
+                {method:"GET",path:"/companies/:companyId/reports/balance",file:"reports.routes.ts",auth:true,scope:"scoped"},
+                {method:"POST",path:"/companies/:companyId/impuestos/modelos/:modeloId/recalcular",file:"impuestosModulo.routes.ts",auth:true,scope:"scoped"},
+            ];
+
+            processData(exampleEndpoints, exampleLogs);
+        }
+
+        // Procesar datos
+        function processData(endpointsData, logsData) {
+            endpoints = endpointsData;
+            logs = logsData;
+
+            // Normalizar rutas para comparación
+            const usedRoutes = new Set();
+            logs.forEach(log => {
+                const normalized = normalizePath(log.path);
+                usedRoutes.add(`${log.method} ${normalized}`);
+            });
+
+            // Clasificar endpoints
+            const alive = [];
+            const dead = [];
+
+            endpoints.forEach(ep => {
+                const normalized = normalizePath(ep.path);
+                const key = `${ep.method} ${normalized}`;
+                if (usedRoutes.has(key)) {
+                    alive.push(ep);
+                } else {
+                    dead.push(ep);
+                }
+            });
+
+            // Generar reporte
+            report = {
+                totalEndpoints: endpoints.length,
+                aliveCount: alive.length,
+                deadCount: dead.length,
+                alive: alive,
+                dead: dead,
+                byModule: groupByModule(endpoints),
+                byModuleUsage: analyzeModuleUsage(alive),
+                activityByHour: analyzeActivity(logs),
+                activityByMethod: analyzeByMethod(logs)
+            };
+
+            renderDashboard();
+        }
+
+        // Normalizar ruta (reemplazar IDs con :id)
+        function normalizePath(path) {
+            return path
+                .replace(/\/[a-f0-9\-]{36}/gi, '/:id')
+                .replace(/\/\d+(?=\/|$)/g, '/:id')
+                .replace(/\/[a-zA-Z0-9_]{20,}(?=\/|$)/g, '/:id');
+        }
+
+        // Agrupar por módulo
+        function groupByModule(endpoints) {
+            const modules = {};
+            endpoints.forEach(ep => {
+                if (!modules[ep.file]) {
+                    modules[ep.file] = [];
+                }
+                modules[ep.file].push(ep);
+            });
+            return modules;
+        }
+
+        // Analizar uso por módulo
+        function analyzeModuleUsage(aliveEndpoints) {
+            const usage = {};
+            aliveEndpoints.forEach(ep => {
+                usage[ep.file] = (usage[ep.file] || 0) + 1;
+            });
+            return usage;
+        }
+
+        // Analizar actividad por hora
+        function analyzeActivity(logs) {
+            const activity = {};
+            logs.forEach(log => {
+                const hour = new Date(log.timestamp).getHours();
+                activity[hour] = (activity[hour] || 0) + 1;
+            });
+            return activity;
+        }
+
+        // Analizar por método HTTP
+        function analyzeByMethod(logs) {
+            const methods = {};
+            logs.forEach(log => {
+                methods[log.method] = (methods[log.method] || 0) + 1;
+            });
+            return methods;
+        }
+
+        // Renderizar dashboard
+        function renderDashboard() {
+            if (!report) return;
+
+            const html = `
+                <div class="stats-row">
+                    <div class="stat">
+                        <div class="stat-label">Total Endpoints</div>
+                        <div class="stat-value">${report.totalEndpoints}</div>
+                    </div>
+                    <div class="stat">
+                        <div class="stat-label">Vivos (Usados)</div>
+                        <div class="stat-value" style="color: #22c55e;">${report.aliveCount}</div>
+                    </div>
+                    <div class="stat">
+                        <div class="stat-label">Muertos (Sin uso)</div>
+                        <div class="stat-value" style="color: #ef4444;">${report.deadCount}</div>
+                    </div>
+                    <div class="stat">
+                        <div class="stat-label">% Usado</div>
+                        <div class="stat-value" style="color: #667eea;">${((report.aliveCount / report.totalEndpoints) * 100).toFixed(1)}%</div>
+                    </div>
+                </div>
+
+                <div class="grid">
+                    <div class="card">
+                        <div class="card-title">Estado General</div>
+                        <div class="card-value" style="color: #22c55e;">${report.aliveCount}</div>
+                        <div class="card-subtitle">endpoints en uso</div>
+                        <div class="progress-bar">
+                            <div class="progress-fill" style="width: ${(report.aliveCount / report.totalEndpoints) * 100}%"></div>
+                        </div>
+                    </div>
+
+                    <div class="card">
+                        <div class="card-title">Módulos Activos</div>
+                        <div class="card-value">${Object.keys(report.byModuleUsage).length}</div>
+                        <div class="card-subtitle">de ${Object.keys(report.byModule).length}</div>
+                    </div>
+
+                    <div class="card">
+                        <div class="card-title">Métodos HTTP</div>
+                        <div class="card-value">${Object.keys(report.activityByMethod).length}</div>
+                        <div class="card-subtitle">GET, POST, etc.</div>
+                    </div>
+                </div>
+
+                <div class="chart-container">
+                    <h3 style="margin-bottom: 20px;">Endpoints por Scope</h3>
+                    <canvas id="scopeChart"></canvas>
+                </div>
+
+                <div class="chart-container">
+                    <h3 style="margin-bottom: 20px;">Actividad por Hora</h3>
+                    <canvas id="activityChart"></canvas>
+                </div>
+
+                <div class="chart-container">
+                    <h3 style="margin-bottom: 20px;">Solicitudes por Método HTTP</h3>
+                    <canvas id="methodChart"></canvas>
+                </div>
+
+                <div style="background: white; padding: 20px; border-radius: 10px; margin-bottom: 30px; box-shadow: 0 4px 20px rgba(0,0,0,0.1);">
+                    <h3 style="margin-bottom: 20px;">Módulos y Uso</h3>
+                    <div class="module-grid">
+                        ${Object.entries(report.byModule).map(([module, eps]) => {
+                            const used = report.byModuleUsage[module] || 0;
+                            const percentage = ((used / eps.length) * 100).toFixed(0);
+                            return `
+                                <div class="module-card">
+                                    <div class="module-name">${module}</div>
+                                    <div class="module-stats">
+                                        <span>Usados: <strong>${used}</strong></span>
+                                        <span>${percentage}%</span>
+                                    </div>
+                                </div>
+                            `;
+                        }).join('')}
+                    </div>
+                </div>
+
+                <div style="background: white; border-radius: 10px; overflow: hidden; box-shadow: 0 4px 20px rgba(0,0,0,0.1); margin-bottom: 30px;">
+                    <div style="padding: 20px; border-bottom: 2px solid #f0f0f0;">
+                        <h3>Endpoints Vivos (${report.aliveCount})</h3>
+                        <input type="text" id="searchAlive" placeholder="Buscar endpoints..." style="margin-top: 10px;">
+                    </div>
+                    <div style="overflow-x: auto;">
+                        <table id="aliveTable">
+                            <thead>
+                                <tr>
+                                    <th>Método</th>
+                                    <th>Ruta</th>
+                                    <th>Módulo</th>
+                                    <th>Scope</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${report.alive.map(ep => `
+                                    <tr>
+                                        <td><strong>${ep.method}</strong></td>
+                                        <td><code style="background: #f0f0f0; padding: 4px 8px; border-radius: 4px;">${ep.path}</code></td>
+                                        <td>${ep.file}</td>
+                                        <td><span class="badge badge-${ep.scope}">${ep.scope}</span></td>
+                                    </tr>
+                                `).join('')}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            `;
+
+            document.getElementById('content').innerHTML = html;
+
+            // Renderizar gráficos
+            renderCharts();
+
+            // Buscar en tabla viva
+            document.getElementById('searchAlive').addEventListener('input', (e) => {
+                filterTable('aliveTable', e.target.value);
+            });
+        }
+
+        // Renderizar gráficos
+        function renderCharts() {
+            // Gráfico de scope
+            const scopes = {};
+            endpoints.forEach(ep => {
+                scopes[ep.scope] = (scopes[ep.scope] || 0) + 1;
+            });
+
+            new Chart(document.getElementById('scopeChart'), {
+                type: 'doughnut',
+                data: {
+                    labels: Object.keys(scopes),
+                    datasets: [{
+                        data: Object.values(scopes),
+                        backgroundColor: ['#3b82f6', '#f59e0b', '#ec4899']
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { position: 'bottom' }
+                    }
+                }
+            });
+
+            // Gráfico de actividad
+            const hours = Array.from({length: 24}, (_, i) => i);
+            const activity = hours.map(h => report.activityByHour[h] || 0);
+
+            new Chart(document.getElementById('activityChart'), {
+                type: 'bar',
+                data: {
+                    labels: hours.map(h => `${h}:00`),
+                    datasets: [{
+                        label: 'Peticiones',
+                        data: activity,
+                        backgroundColor: '#667eea'
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    indexAxis: 'x'
+                }
+            });
+
+            // Gráfico de métodos
+            new Chart(document.getElementById('methodChart'), {
+                type: 'bar',
+                data: {
+                    labels: Object.keys(report.activityByMethod),
+                    datasets: [{
+                        label: 'Solicitudes',
+                        data: Object.values(report.activityByMethod),
+                        backgroundColor: ['#3b82f6', '#10b981', '#f59e0b', '#ef4444']
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false
+                }
+            });
+        }
+
+        // Filtrar tabla
+        function filterTable(tableId, query) {
+            const table = document.getElementById(tableId);
+            const rows = table.getElementsByTagName('tr');
+
+            for (let i = 1; i < rows.length; i++) {
+                const text = rows[i].textContent.toLowerCase();
+                rows[i].style.display = text.includes(query.toLowerCase()) ? '' : 'none';
+            }
+        }
+
+        // Cargar archivo
+        document.getElementById('logsFile').addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = (event) => {
+                try {
+                    const text = event.target.result;
+                    const lines = text.trim().split('\n');
+                    const logsData = lines.map(line => JSON.parse(line));
+
+                    // Cargar endpoints.json si existe
+                    fetch('endpoints.json')
+                        .then(r => r.json())
+                        .then(data => {
+                            processData(data.endpoints || [], logsData);
+                        })
+                        .catch(() => {
+                            alert('Falta endpoints.json en la misma carpeta');
+                        });
+                } catch (err) {
+                    alert('Error al cargar archivo: ' + err.message);
+                }
+            };
+            reader.readAsText(file);
+        });
+
+        // Exportar CSV
+        function exportCSV() {
+            if (!report) return alert('Carga datos primero');
+
+            let csv = 'Método,Ruta,Módulo,Scope,Estado\n';
+            report.alive.forEach(ep => {
+                csv += `${ep.method},"${ep.path}",${ep.file},${ep.scope},VIVO\n`;
+            });
+            report.dead.forEach(ep => {
+                csv += `${ep.method},"${ep.path}",${ep.file},${ep.scope},MUERTO\n`;
+            });
+
+            const blob = new Blob([csv], {type: 'text/csv'});
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `endpoints-${new Date().toISOString().split('T')[0]}.csv`;
+            a.click();
+        }
+
+        // Cargar ejemplo al iniciar
+        loadExample();
+    </script>
+</body>
+</html>

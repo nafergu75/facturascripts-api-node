@@ -1,0 +1,1330 @@
+{
+  "timestamp": "2026-06-30T00:46:50.819Z",
+  "analysis": {
+    "totalDefined": 172,
+    "totalUsed": 20,
+    "alive": 9,
+    "dead": 163,
+    "percentageUsed": "5.2"
+  },
+  "deadEndpoints": [
+    {
+      "method": "POST",
+      "path": "/admin/empresas",
+      "file": "admin.routes.ts",
+      "auth": true,
+      "scope": "protected"
+    },
+    {
+      "method": "POST",
+      "path": "/admin/usuarios",
+      "file": "admin.routes.ts",
+      "auth": true,
+      "scope": "protected"
+    },
+    {
+      "method": "POST",
+      "path": "/admin/usuarios/:userId/empresas/:companyId",
+      "file": "admin.routes.ts",
+      "auth": true,
+      "scope": "protected"
+    },
+    {
+      "method": "GET",
+      "path": "/annual-accounts/:id/download",
+      "file": "registroMercantil.routes.ts",
+      "auth": true,
+      "scope": "protected"
+    },
+    {
+      "method": "POST",
+      "path": "/annual-accounts/:id/filing",
+      "file": "registroMercantil.routes.ts",
+      "auth": true,
+      "scope": "protected"
+    },
+    {
+      "method": "POST",
+      "path": "/annual-accounts/:id/resolution",
+      "file": "registroMercantil.routes.ts",
+      "auth": true,
+      "scope": "protected"
+    },
+    {
+      "method": "GET",
+      "path": "/auth/health",
+      "file": "auth.routes.ts",
+      "auth": false,
+      "scope": "public"
+    },
+    {
+      "method": "POST",
+      "path": "/auth/logout",
+      "file": "auth.routes.ts",
+      "auth": false,
+      "scope": "public"
+    },
+    {
+      "method": "POST",
+      "path": "/auth/refresh",
+      "file": "auth.routes.ts",
+      "auth": false,
+      "scope": "public"
+    },
+    {
+      "method": "GET",
+      "path": "/books/:bookId/download",
+      "file": "registroMercantil.routes.ts",
+      "auth": true,
+      "scope": "protected"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/accounting/chart-of-accounts/",
+      "file": "chart-of-accounts.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "POST",
+      "path": "/companies/:companyId/accounting/chart-of-accounts/",
+      "file": "chart-of-accounts.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/accounting/chart-of-accounts/:codigo",
+      "file": "chart-of-accounts.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "PATCH",
+      "path": "/companies/:companyId/accounting/chart-of-accounts/:id",
+      "file": "chart-of-accounts.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/accounting/chart-of-accounts/arbol",
+      "file": "chart-of-accounts.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "POST",
+      "path": "/companies/:companyId/accounting/chart-of-accounts/init",
+      "file": "chart-of-accounts.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/accounting/closures/",
+      "file": "accounting-closure.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "POST",
+      "path": "/companies/:companyId/accounting/closures/",
+      "file": "accounting-closure.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/accounting/closures/:ejercicio",
+      "file": "accounting-closure.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/accounting/closures/:ejercicio/files",
+      "file": "accounting-closure.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "PATCH",
+      "path": "/companies/:companyId/accounting/closures/:ejercicio/status",
+      "file": "accounting-closure.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "POST",
+      "path": "/companies/:companyId/accounting/closures/:ejercicio/upload",
+      "file": "accounting-closure.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/accounting/closures/comparativas/:ej1/:ej2",
+      "file": "accounting-closure.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/accounting/closures/prior-years",
+      "file": "accounting-closure.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "POST",
+      "path": "/companies/:companyId/accounting/closures/prior-years",
+      "file": "accounting-closure.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/accounting/closures/prior-years/:ejercicio",
+      "file": "accounting-closure.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "POST",
+      "path": "/companies/:companyId/accounting/contabilizar/:invoiceId",
+      "file": "accounting-engine.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/accounting/journal-entries",
+      "file": "accounting-engine.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/accounting/journal-entries/:journalEntryId",
+      "file": "accounting-engine.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "POST",
+      "path": "/companies/:companyId/accounting/journal-entries/:journalEntryId/approve",
+      "file": "accounting-engine.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "PATCH",
+      "path": "/companies/:companyId/accounting/journal-entries/:journalEntryId/lines/:lineId",
+      "file": "accounting-engine.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "POST",
+      "path": "/companies/:companyId/accounting/journal-entries/:journalEntryId/recalculate",
+      "file": "accounting-engine.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/bancos/cuentas",
+      "file": "bancos.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "POST",
+      "path": "/companies/:companyId/bancos/cuentas",
+      "file": "bancos.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "POST",
+      "path": "/companies/:companyId/bancos/cuentas/:cuentaId/importar-csv",
+      "file": "bancos.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/bancos/movimientos",
+      "file": "bancos.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "POST",
+      "path": "/companies/:companyId/bancos/movimientos/:movId/conciliar-cuenta",
+      "file": "bancos.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "POST",
+      "path": "/companies/:companyId/bancos/movimientos/:movId/conciliar-factura",
+      "file": "bancos.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "POST",
+      "path": "/companies/:companyId/chat-assistant/",
+      "file": "chatAssistant.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/chat-assistant/:sessionId/messages",
+      "file": "chatAssistant.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/clientes/",
+      "file": "clientes.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "POST",
+      "path": "/companies/:companyId/clientes/",
+      "file": "clientes.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "DELETE",
+      "path": "/companies/:companyId/clientes/:id",
+      "file": "clientes.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/clientes/:id",
+      "file": "clientes.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "PUT",
+      "path": "/companies/:companyId/clientes/:id",
+      "file": "clientes.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/clientes/buscar",
+      "file": "clientes.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/compliance/alertas",
+      "file": "compliance.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/compliance/alertas/historico",
+      "file": "compliance.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/compras/",
+      "file": "compras.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/compras/:id",
+      "file": "compras.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "POST",
+      "path": "/companies/:companyId/conciliacion/proponer",
+      "file": "conciliacion.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/cuadre-bancos/",
+      "file": "cuadreBancos.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/cuadre-bancos/chequeo-cierre",
+      "file": "cuadreBancos.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/cuadre-bancos/config",
+      "file": "cuadreBancos.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "PUT",
+      "path": "/companies/:companyId/cuadre-bancos/config",
+      "file": "cuadreBancos.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/extractos/cuentas/:cuentaId/extracto",
+      "file": "extractos.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/extractos/cuentas/:cuentaId/extracto.csv",
+      "file": "extractos.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/extractos/cuentas/:cuentaId/revision",
+      "file": "extractos.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/fiscal-years/",
+      "file": "fiscalYears.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "POST",
+      "path": "/companies/:companyId/fiscal-years/",
+      "file": "fiscalYears.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/impuestos/calculate",
+      "file": "impuestosModulo.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "POST",
+      "path": "/companies/:companyId/impuestos/generate-pdf",
+      "file": "impuestosModulo.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/impuestos/ingresos-gastos/excel",
+      "file": "impuestosModulo.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/impuestos/modelos",
+      "file": "impuestosModulo.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/impuestos/modelos/:modeloId",
+      "file": "impuestosModulo.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "PUT",
+      "path": "/companies/:companyId/impuestos/modelos/:modeloId",
+      "file": "impuestosModulo.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "POST",
+      "path": "/companies/:companyId/impuestos/modelos/:modeloId/listo-para-presentar",
+      "file": "impuestosModulo.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "POST",
+      "path": "/companies/:companyId/impuestos/modelos/:modeloId/no-presentado",
+      "file": "impuestosModulo.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "POST",
+      "path": "/companies/:companyId/impuestos/modelos/:modeloId/omitir",
+      "file": "impuestosModulo.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/impuestos/modelos/:modeloId/pdf",
+      "file": "impuestosModulo.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "POST",
+      "path": "/companies/:companyId/impuestos/modelos/:modeloId/recalcular",
+      "file": "impuestosModulo.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "POST",
+      "path": "/companies/:companyId/impuestos/modelos/:modeloId/recuperar",
+      "file": "impuestosModulo.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/impuestos/modelos/:modeloId/txt",
+      "file": "impuestosModulo.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/income-reader/:id",
+      "file": "income-reader.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "PUT",
+      "path": "/companies/:companyId/income-reader/:id",
+      "file": "income-reader.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "POST",
+      "path": "/companies/:companyId/income-reader/:id/reject",
+      "file": "income-reader.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "POST",
+      "path": "/companies/:companyId/income-reader/:id/verify",
+      "file": "income-reader.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/income-reader/config",
+      "file": "income-reader.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "POST",
+      "path": "/companies/:companyId/income-reader/config",
+      "file": "income-reader.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "POST",
+      "path": "/companies/:companyId/income-reader/email-hook",
+      "file": "income-reader.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "POST",
+      "path": "/companies/:companyId/income-reader/mobile-upload",
+      "file": "income-reader.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/income-reader/pending",
+      "file": "income-reader.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "POST",
+      "path": "/companies/:companyId/income-reader/web-upload",
+      "file": "income-reader.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/invoices/",
+      "file": "income-invoices.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "POST",
+      "path": "/companies/:companyId/invoices/",
+      "file": "income-invoices.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/invoices/:id",
+      "file": "income-invoices.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "POST",
+      "path": "/companies/:companyId/invoices/:id/credit-note",
+      "file": "income-invoices.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "POST",
+      "path": "/companies/:companyId/invoices/:id/make-recurring",
+      "file": "income-invoices.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "POST",
+      "path": "/companies/:companyId/invoices/:id/send-email",
+      "file": "income-invoices.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "PATCH",
+      "path": "/companies/:companyId/invoices/:id/status",
+      "file": "income-invoices.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/invoices/resumen/periodo",
+      "file": "income-invoices.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/legal-config/",
+      "file": "legalConfig.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "PUT",
+      "path": "/companies/:companyId/legal-config/",
+      "file": "legalConfig.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/modelo-200/fichero",
+      "file": "impuestoSociedades.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/modelo-200/preview",
+      "file": "impuestoSociedades.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/nominas/resumen",
+      "file": "nominas.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "POST",
+      "path": "/companies/:companyId/nominas/resumen",
+      "file": "nominas.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/periodos/",
+      "file": "periodos.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "PUT",
+      "path": "/companies/:companyId/periodos/:mes/estado",
+      "file": "periodos.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "POST",
+      "path": "/companies/:companyId/periodos/cierre",
+      "file": "periodos.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/plan-contable/subcuentas",
+      "file": "planContable.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "POST",
+      "path": "/companies/:companyId/plan-contable/subcuentas",
+      "file": "planContable.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "DELETE",
+      "path": "/companies/:companyId/plan-contable/subcuentas/:id",
+      "file": "planContable.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "PUT",
+      "path": "/companies/:companyId/plan-contable/subcuentas/:id",
+      "file": "planContable.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "POST",
+      "path": "/companies/:companyId/plan-contable/subcuentas/gasto-rapido",
+      "file": "planContable.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/plantillas/",
+      "file": "plantillasDocumento.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "POST",
+      "path": "/companies/:companyId/plantillas/",
+      "file": "plantillasDocumento.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "DELETE",
+      "path": "/companies/:companyId/plantillas/:plantillaId",
+      "file": "plantillasDocumento.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/plantillas/:plantillaId",
+      "file": "plantillasDocumento.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "PUT",
+      "path": "/companies/:companyId/plantillas/:plantillaId",
+      "file": "plantillasDocumento.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/plantillas/tipo/:tipoDocumento/predeterminada",
+      "file": "plantillasDocumento.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/productos/",
+      "file": "productos.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "POST",
+      "path": "/companies/:companyId/productos/",
+      "file": "productos.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "DELETE",
+      "path": "/companies/:companyId/productos/:id",
+      "file": "productos.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/productos/:id",
+      "file": "productos.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "PUT",
+      "path": "/companies/:companyId/productos/:id",
+      "file": "productos.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/proveedores/",
+      "file": "proveedores.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "POST",
+      "path": "/companies/:companyId/proveedores/",
+      "file": "proveedores.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "DELETE",
+      "path": "/companies/:companyId/proveedores/:id",
+      "file": "proveedores.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/proveedores/:id",
+      "file": "proveedores.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "PUT",
+      "path": "/companies/:companyId/proveedores/:id",
+      "file": "proveedores.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/proveedores/buscar",
+      "file": "proveedores.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/reglas-contables/",
+      "file": "reglasContables.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "PUT",
+      "path": "/companies/:companyId/reglas-contables/",
+      "file": "reglasContables.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/reports/analytics/by-customer",
+      "file": "reports.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/reports/analytics/monthly",
+      "file": "reports.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/reports/balance",
+      "file": "reports.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/reports/expenses",
+      "file": "reports.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/reports/income",
+      "file": "reports.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/reports/ledger",
+      "file": "reports.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/reports/profit-and-loss",
+      "file": "reports.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/reports/result",
+      "file": "reports.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/reports/retentions",
+      "file": "reports.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/reports/treasury",
+      "file": "reports.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/reports/vat",
+      "file": "reports.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/series/",
+      "file": "series.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "POST",
+      "path": "/companies/:companyId/series/",
+      "file": "series.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "PUT",
+      "path": "/companies/:companyId/series/:id",
+      "file": "series.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "POST",
+      "path": "/companies/:companyId/sugerencias/subcuenta-familia",
+      "file": "sugerenciasContables.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "POST",
+      "path": "/companies/:companyId/sugerencias/subcuenta-tercero",
+      "file": "sugerenciasContables.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/tax/export/modelo-303",
+      "file": "tax.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/tax/retentions/summary",
+      "file": "tax.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/tax/vat/books/issued",
+      "file": "tax.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/tax/vat/books/received",
+      "file": "tax.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/tax/vat/summary",
+      "file": "tax.routes.ts",
+      "auth": true,
+      "scope": "scoped"
+    },
+    {
+      "method": "DELETE",
+      "path": "/companies/:id",
+      "file": "companies.routes.ts",
+      "auth": true,
+      "scope": "protected"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:id",
+      "file": "companies.routes.ts",
+      "auth": true,
+      "scope": "protected"
+    },
+    {
+      "method": "PUT",
+      "path": "/companies/:id",
+      "file": "companies.routes.ts",
+      "auth": true,
+      "scope": "protected"
+    },
+    {
+      "method": "GET",
+      "path": "/fiscal-years/:fyId/annual-accounts",
+      "file": "registroMercantil.routes.ts",
+      "auth": true,
+      "scope": "protected"
+    },
+    {
+      "method": "POST",
+      "path": "/fiscal-years/:fyId/annual-accounts/generate",
+      "file": "registroMercantil.routes.ts",
+      "auth": true,
+      "scope": "protected"
+    },
+    {
+      "method": "GET",
+      "path": "/fiscal-years/:fyId/books",
+      "file": "registroMercantil.routes.ts",
+      "auth": true,
+      "scope": "protected"
+    },
+    {
+      "method": "POST",
+      "path": "/fiscal-years/:fyId/books/generate",
+      "file": "registroMercantil.routes.ts",
+      "auth": true,
+      "scope": "protected"
+    },
+    {
+      "method": "POST",
+      "path": "/fiscal-years/:fyId/close",
+      "file": "registroMercantil.routes.ts",
+      "auth": true,
+      "scope": "protected"
+    },
+    {
+      "method": "GET",
+      "path": "/fiscal-years/:fyId/deadlines",
+      "file": "registroMercantil.routes.ts",
+      "auth": true,
+      "scope": "protected"
+    },
+    {
+      "method": "POST",
+      "path": "/fiscal-years/:fyId/legalization-package",
+      "file": "registroMercantil.routes.ts",
+      "auth": true,
+      "scope": "protected"
+    },
+    {
+      "method": "PATCH",
+      "path": "/legalization-packages/:packageId",
+      "file": "registroMercantil.routes.ts",
+      "auth": true,
+      "scope": "protected"
+    },
+    {
+      "method": "POST",
+      "path": "/legalization-packages/:packageId/diligence",
+      "file": "registroMercantil.routes.ts",
+      "auth": true,
+      "scope": "protected"
+    },
+    {
+      "method": "GET",
+      "path": "/legalization-packages/:packageId/download",
+      "file": "registroMercantil.routes.ts",
+      "auth": true,
+      "scope": "protected"
+    },
+    {
+      "method": "GET",
+      "path": "/users/",
+      "file": "users.routes.ts",
+      "auth": true,
+      "scope": "protected"
+    },
+    {
+      "method": "POST",
+      "path": "/users/",
+      "file": "users.routes.ts",
+      "auth": true,
+      "scope": "protected"
+    },
+    {
+      "method": "DELETE",
+      "path": "/users/:id",
+      "file": "users.routes.ts",
+      "auth": true,
+      "scope": "protected"
+    },
+    {
+      "method": "GET",
+      "path": "/users/:id",
+      "file": "users.routes.ts",
+      "auth": true,
+      "scope": "protected"
+    },
+    {
+      "method": "PUT",
+      "path": "/users/:id",
+      "file": "users.routes.ts",
+      "auth": true,
+      "scope": "protected"
+    }
+  ],
+  "byFile": {
+    "admin.routes.ts": {
+      "total": 4,
+      "dead": 3,
+      "alive": 1
+    },
+    "registroMercantil.routes.ts": {
+      "total": 14,
+      "dead": 14,
+      "alive": 0
+    },
+    "auth.routes.ts": {
+      "total": 5,
+      "dead": 3,
+      "alive": 2
+    },
+    "companies.routes.ts": {
+      "total": 5,
+      "dead": 3,
+      "alive": 2
+    },
+    "chart-of-accounts.routes.ts": {
+      "total": 6,
+      "dead": 6,
+      "alive": 0
+    },
+    "accounting-closure.routes.ts": {
+      "total": 10,
+      "dead": 10,
+      "alive": 0
+    },
+    "accounting-engine.routes.ts": {
+      "total": 6,
+      "dead": 6,
+      "alive": 0
+    },
+    "bancos.routes.ts": {
+      "total": 6,
+      "dead": 6,
+      "alive": 0
+    },
+    "chatAssistant.routes.ts": {
+      "total": 2,
+      "dead": 2,
+      "alive": 0
+    },
+    "clientes.routes.ts": {
+      "total": 6,
+      "dead": 6,
+      "alive": 0
+    },
+    "compliance.routes.ts": {
+      "total": 2,
+      "dead": 2,
+      "alive": 0
+    },
+    "compras.routes.ts": {
+      "total": 2,
+      "dead": 2,
+      "alive": 0
+    },
+    "conciliacion.routes.ts": {
+      "total": 1,
+      "dead": 1,
+      "alive": 0
+    },
+    "cuadreBancos.routes.ts": {
+      "total": 4,
+      "dead": 4,
+      "alive": 0
+    },
+    "extractos.routes.ts": {
+      "total": 3,
+      "dead": 3,
+      "alive": 0
+    },
+    "fiscalYears.routes.ts": {
+      "total": 2,
+      "dead": 2,
+      "alive": 0
+    },
+    "impuestosModulo.routes.ts": {
+      "total": 13,
+      "dead": 13,
+      "alive": 0
+    },
+    "income-reader.routes.ts": {
+      "total": 10,
+      "dead": 10,
+      "alive": 0
+    },
+    "income-invoices.routes.ts": {
+      "total": 8,
+      "dead": 8,
+      "alive": 0
+    },
+    "legalConfig.routes.ts": {
+      "total": 2,
+      "dead": 2,
+      "alive": 0
+    },
+    "impuestoSociedades.routes.ts": {
+      "total": 2,
+      "dead": 2,
+      "alive": 0
+    },
+    "nominas.routes.ts": {
+      "total": 2,
+      "dead": 2,
+      "alive": 0
+    },
+    "periodos.routes.ts": {
+      "total": 3,
+      "dead": 3,
+      "alive": 0
+    },
+    "planContable.routes.ts": {
+      "total": 5,
+      "dead": 5,
+      "alive": 0
+    },
+    "plantillasDocumento.routes.ts": {
+      "total": 6,
+      "dead": 6,
+      "alive": 0
+    },
+    "productos.routes.ts": {
+      "total": 5,
+      "dead": 5,
+      "alive": 0
+    },
+    "proveedores.routes.ts": {
+      "total": 6,
+      "dead": 6,
+      "alive": 0
+    },
+    "reglasContables.routes.ts": {
+      "total": 2,
+      "dead": 2,
+      "alive": 0
+    },
+    "reports.routes.ts": {
+      "total": 11,
+      "dead": 11,
+      "alive": 0
+    },
+    "series.routes.ts": {
+      "total": 3,
+      "dead": 3,
+      "alive": 0
+    },
+    "sugerenciasContables.routes.ts": {
+      "total": 2,
+      "dead": 2,
+      "alive": 0
+    },
+    "tax.routes.ts": {
+      "total": 5,
+      "dead": 5,
+      "alive": 0
+    },
+    "app.ts": {
+      "total": 1,
+      "dead": 0,
+      "alive": 1
+    },
+    "planContableBase.routes.ts": {
+      "total": 3,
+      "dead": 0,
+      "alive": 3
+    },
+    "users.routes.ts": {
+      "total": 5,
+      "dead": 5,
+      "alive": 0
+    }
+  }
+}

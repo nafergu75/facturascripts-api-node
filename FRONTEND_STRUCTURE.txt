@@ -1,0 +1,235 @@
+╔════════════════════════════════════════════════════════════════════════════╗
+║   FRONTEND - MOTOR CONTABLE AUTOMÁTICO (Fase 1)                           ║
+║   React + TypeScript + Chakra UI                                          ║
+╚════════════════════════════════════════════════════════════════════════════╝
+
+📁 ESTRUCTURA DE ARCHIVOS CREADOS
+
+src/
+├── 📂 api/
+│   ├── types.ts                     ✅ Interfaces de respuestas (150 LOC)
+│   ├── accountingApi.ts             ✅ Servicio de contabilidad (80 LOC)
+│   └── reportsApi.ts                ✅ Servicio de reportes (90 LOC)
+│
+├── 📂 components/
+│   └── 📂 accounting/
+│       ├── JournalEntryTable.tsx         ✅ Tabla de asientos (60 LOC)
+│       └── JournalEntryLinesTable.tsx    ✅ Tabla de líneas (80 LOC)
+│
+├── 📂 hooks/
+│   └── useCompanyId.ts              ✅ Hook custom (15 LOC)
+│
+├── 📂 pages/
+│   ├── 📂 accounting/
+│   │   ├── JournalEntryList.tsx          ✅ Listado (160 LOC)
+│   │   └── JournalEntryDetail.tsx        ✅ Detalle (250 LOC)
+│   └── 📂 reports/
+│       ├── BalanceSheet.tsx              ✅ Balance (220 LOC)
+│       └── ProfitAndLoss.tsx             ✅ PyG (240 LOC)
+│
+├── 📂 routes/
+│   ├── accounting.routes.tsx        ✅ Rutas contabilidad (20 LOC)
+│   └── reports.routes.tsx           ✅ Rutas reportes (20 LOC)
+│
+├── 📂 utils/
+│   ├── http.ts                      ✅ Cliente HTTP (100 LOC)
+│   └── formatters.ts                ✅ Formateo (60 LOC)
+│
+└── FRONTEND_README.md               ✅ Documentación (500+ líneas)
+
+════════════════════════════════════════════════════════════════════════════
+
+🎯 COMPONENTES IMPLEMENTADOS
+
+CONTABILIDAD:
+  ✅ JournalEntryList
+     - Ruta: /companies/:companyId/accounting/journal-entries
+     - Funciones: Listar, filtrar, paginar, navegar a detalle
+     - Filtros: estado, origen, fecha desde/hasta
+
+  ✅ JournalEntryDetail
+     - Ruta: /companies/:companyId/accounting/journal-entries/:id
+     - Funciones: Ver detalle, validar balance, aprobar, recalcular
+     - Acciones: POST approve, POST recalculate
+     - Modal: Confirmación + Observaciones
+
+REPORTES:
+  ✅ BalanceSheet
+     - Ruta: /companies/:companyId/reports/balance
+     - Secciones: Activo, Pasivo, Patrimonio Neto
+     - Características: Expandible, validación de cuadre
+
+  ✅ ProfitAndLoss
+     - Ruta: /companies/:companyId/reports/profit-and-loss
+     - Secciones: Ingresos, Gastos, Resultado Neto
+     - Características: Margen de beneficio, visual en cajas
+
+════════════════════════════════════════════════════════════════════════════
+
+🔌 ENDPOINTS CONSUMIDOS
+
+GET  /api/companies/:companyId/accounting/journal-entries
+     Parámetros: estado, origen, from, to, skip, take
+
+GET  /api/companies/:companyId/accounting/journal-entries/:id
+
+POST /api/companies/:companyId/accounting/journal-entries/:id/approve
+     Body: { observaciones? }
+
+POST /api/companies/:companyId/accounting/journal-entries/:id/recalculate
+
+GET  /api/companies/:companyId/reports/balance
+     Parámetros: from, to
+
+GET  /api/companies/:companyId/reports/profit-and-loss
+     Parámetros: from, to
+
+════════════════════════════════════════════════════════════════════════════
+
+📍 RUTAS DISPONIBLES
+
+/companies/:companyId/accounting/journal-entries
+  → JournalEntryList
+  Listado de asientos con filtros y paginación
+
+/companies/:companyId/accounting/journal-entries/:id
+  → JournalEntryDetail
+  Detalle de asiento con acciones (aprobar, recalcular)
+
+/companies/:companyId/reports/balance
+  → BalanceSheet
+  Balance General estructurado (Activo, Pasivo, Patrimonio)
+
+/companies/:companyId/reports/profit-and-loss
+  → ProfitAndLoss
+  Pérdidas y Ganancias con análisis de márgenes
+
+════════════════════════════════════════════════════════════════════════════
+
+🎨 CARACTERÍSTICAS UI
+
+Estados de Asiento:
+  ✅ DRAFT           → Badge gris "Borrador"
+  ⏳ PENDING_REVIEW  → Badge amarillo "Pendiente de Revisión"
+  ✓ POSTED          → Badge verde "Contabilizado"
+  ✗ REVERSED        → Badge rojo "Reversado"
+
+Validaciones:
+  ✅ Asiento cuadrado   → Alert success (fondo verde)
+  ❌ Desbalanceado      → Alert error (fondo rojo)
+  ⚠️ Errores validación → Alert warning (fondo amarillo)
+
+Formateo:
+  ✅ Números como EUR: 1.000,50 €
+  ✅ Fechas locales: 13/06/2026
+  ✅ Tablas striped (colores alternos)
+  ✅ Modales con confirmación
+
+════════════════════════════════════════════════════════════════════════════
+
+📦 DEPENDENCIAS
+
+@chakra-ui/react             (UI Components)
+@emotion/react               (Chakra dependency)
+@emotion/styled              (Chakra dependency)
+framer-motion                (Chakra dependency)
+react, react-dom             (Framework)
+react-router-dom             (Routing)
+typescript                   (Language)
+
+════════════════════════════════════════════════════════════════════════════
+
+🚀 INICIO RÁPIDO (5 pasos, 30 min)
+
+1. npm install @chakra-ui/react @emotion/react @emotion/styled framer-motion
+
+2. Configurar path aliases en tsconfig.json
+
+3. Envolver App con <ChakraProvider> en main.tsx
+
+4. Importar rutas en App.tsx:
+   <Route path="/companies/:companyId">
+     <Route path="accounting/*" element={<AccountingRoutes />} />
+     <Route path="reports/*" element={<ReportsRoutes />} />
+   </Route>
+
+5. Crear .env:
+   REACT_APP_API_URL=http://localhost:3000/api
+
+════════════════════════════════════════════════════════════════════════════
+
+📚 DOCUMENTACIÓN
+
+FRONTEND_QUICK_START.md
+  → 5 pasos de instalación (5 min read)
+
+src/FRONTEND_README.md
+  → Documentación completa (instalación, hooks, servicios, testing)
+
+FRONTEND_IMPLEMENTATION_SUMMARY.md
+  → Detalles técnicos y roadmap de fases
+
+docs/FRONTEND_INTEGRATION_SPEC.md
+  → Especificación de arquitectura y flujos de usuario
+
+════════════════════════════════════════════════════════════════════════════
+
+✅ FASE 1 - COMPLETADA (13 junio 2026)
+
+ENTREGABLES:
+  ✅ 6 servicios API implementados
+  ✅ 2 componentes reutilizables
+  ✅ 4 páginas principales
+  ✅ 2 configuraciones de rutas
+  ✅ Utilidades completas (http, formatters)
+  ✅ Hook custom para companyId
+  ✅ 1400+ LOC de código React funcional
+
+════════════════════════════════════════════════════════════════════════════
+
+⏭️  PRÓXIMAS FASES
+
+FASE 2 (Componentes Secundarios):
+  □ LineAdjustmentModal (editar línea de asiento)
+  □ VATBooks (Libro IVA emitidas/recibidas)
+  □ TaxSummary (Modelo 303)
+  □ Exportar reportes (PDF, Excel)
+
+FASE 3 (Analytics):
+  □ Mayor (histórico por cuenta)
+  □ Análisis por cliente
+  □ Evolución mensual (gráficos)
+  □ Dashboard principal
+
+FASE 4 (Testing & Polish):
+  □ Unit tests (Jest + React Testing Library)
+  □ E2E tests (Cypress)
+  □ Dark mode
+  □ Internacionalización (i18n)
+
+════════════════════════════════════════════════════════════════════════════
+
+🎯 VALIDACIÓN POST-INSTALACIÓN
+
+Antes de usar el frontend:
+  1. Verificar JWT token en localStorage
+  2. Verificar que backend está disponible en localhost:3000
+  3. Verificar CORS habilitado en backend
+  4. Navegar a /companies/:companyId/accounting/journal-entries
+
+════════════════════════════════════════════════════════════════════════════
+
+📊 RESUMEN TÉCNICO
+
+Total de archivos: 17
+Total de LOC: ~1400
+Componentes implementados: 4 páginas + 2 componentes
+Servicios API: 2 (accounting + reports)
+Hooks: 1 (useCompanyId)
+Utilidades: 2 (http, formatters)
+
+Stack: React 18+ | TypeScript | Chakra UI v2 | React Router v6
+
+════════════════════════════════════════════════════════════════════════════
+
+✨ TODO LISTO PARA IMPLEMENTAR

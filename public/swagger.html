@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>conta-api — Documentación Swagger</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" type="text/css" href="https://cdn.jsdelivr.net/npm/swagger-ui-dist@3/swagger-ui.css">
+  <style>
+    html {
+      box-sizing: border-box;
+      overflow: -moz-scrollbars-vertical;
+      overflow-y: scroll;
+    }
+    *,
+    *:before,
+    *:after {
+      box-sizing: inherit;
+    }
+    body {
+      margin: 0;
+      padding: 0;
+      background: #fafafa;
+    }
+    .topbar {
+      background-color: #2563eb;
+      padding: 15px;
+      color: white;
+      text-align: center;
+    }
+    .topbar h1 {
+      margin: 0;
+      font-size: 1.5em;
+    }
+  </style>
+</head>
+<body>
+  <div class="topbar">
+    <h1>📊 conta-api — Documentación Swagger</h1>
+    <p style="margin: 5px 0 0 0; font-size: 0.9em;">Explora todos los endpoints con ejemplos interactivos</p>
+  </div>
+  <div id="swagger-ui"></div>
+  <script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@3/swagger-ui-bundle.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@3/swagger-ui-standalone-preset.js"></script>
+  <script>
+    const ui = SwaggerUIBundle({
+      url: '/openapi.json',
+      dom_id: '#swagger-ui',
+      deepLinking: true,
+      presets: [
+        SwaggerUIBundle.presets.apis,
+        SwaggerUIStandalonePreset,
+      ],
+      plugins: [SwaggerUIBundle.plugins.DownloadUrl],
+      layout: 'StandaloneLayout',
+      tryItOutEnabled: true,
+    });
+    window.ui = ui;
+  </script>
+</body>
+</html>

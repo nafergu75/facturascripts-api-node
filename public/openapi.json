@@ -1,0 +1,226 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "conta-api",
+    "description": "Lector OCR + Gestor de Documentos Contables. Backend especializado en procesamiento automático de documentos fiscales con versionado y caducidad.",
+    "version": "1.0.0",
+    "contact": {
+      "name": "Development Team",
+      "url": "https://github.com/nafergu75/conta-api"
+    }
+  },
+  "servers": [
+    {
+      "url": "https://conta-api-alpha.vercel.app",
+      "description": "Production (Vercel)"
+    },
+    {
+      "url": "http://localhost:3000",
+      "description": "Local development"
+    }
+  ],
+  "tags": [
+    {
+      "name": "Auth",
+      "description": "Autenticación y autorización"
+    },
+    {
+      "name": "Income Reader",
+      "description": "Procesamiento de documentos de ingreso (facturas, tickets, recibos)"
+    },
+    {
+      "name": "Registro Mercantil",
+      "description": "Gestión de documentos legales con versionado automático"
+    },
+    {
+      "name": "Health",
+      "description": "Estado y monitoreo de la API"
+    }
+  ],
+  "paths": {
+    "/auth/login": {
+      "post": {
+        "summary": "Iniciar sesión",
+        "tags": ["Auth"],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "email": {
+                    "type": "string",
+                    "format": "email"
+                  },
+                  "password": {
+                    "type": "string"
+                  }
+                },
+                "required": ["email", "password"]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Login exitoso",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "token": {
+                      "type": "string"
+                    },
+                    "refreshToken": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/companies/{companyId}/income-reader": {
+      "post": {
+        "summary": "Subir documento de ingreso",
+        "tags": ["Income Reader"],
+        "parameters": [
+          {
+            "name": "companyId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "file": {
+                    "type": "string",
+                    "format": "binary"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Documento subido"
+          }
+        }
+      }
+    },
+    "/companies/{companyId}/income-reader/{id}": {
+      "get": {
+        "summary": "Obtener detalles del documento",
+        "tags": ["Income Reader"],
+        "parameters": [
+          {
+            "name": "companyId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Detalles del documento"
+          }
+        }
+      }
+    },
+    "/companies/{companyId}/legalizations": {
+      "post": {
+        "summary": "Subir expediente de legalización",
+        "tags": ["Registro Mercantil"],
+        "parameters": [
+          {
+            "name": "companyId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "file": {
+                    "type": "string",
+                    "format": "binary"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Expediente subido"
+          }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "summary": "Estado de la API",
+        "tags": ["Health"],
+        "responses": {
+          "200": {
+            "description": "API operacional",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string"
+                    },
+                    "uptime": {
+                      "type": "number"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "BearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT"
+      }
+    }
+  }
+}
