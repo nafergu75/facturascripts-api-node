@@ -1,0 +1,11 @@
+# NUNCA subir a Vercel (secretos, datos personales, dependencias, otras apps):
+.env
+.env.*
+storage
+node_modules
+dist
+frontend
+frontend-chakra
+data
+*.log
+.git

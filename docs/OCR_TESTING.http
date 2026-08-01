@@ -1,0 +1,222 @@
+### OCR Integration - Testing Endpoints
+### Use con REST Client extension (VS Code) o Postman
+
+@baseUrl = http://localhost:3000
+@token = Bearer <jwt_token>
+@companyId = 1
+
+###
+### 1. Procesar Factura con OCR
+### Requiere archivo PDF real
+###
+POST {{baseUrl}}/companies/{{companyId}}/ocr/invoices
+Authorization: {{token}}
+Content-Type: multipart/form-data; boundary=----FormBoundary
+
+------FormBoundary
+Content-Disposition: form-data; name="file"; filename="factura_ejemplo.pdf"
+Content-Type: application/pdf
+
+< ./test-data/factura.pdf
+------FormBoundary
+Content-Disposition: form-data; name="invoiceType"
+
+expense
+------FormBoundary
+Content-Disposition: form-data; name="language"
+
+es
+------FormBoundary
+Content-Disposition: form-data; name="source"
+
+manual
+------FormBoundary--
+
+###
+### 2. Verificar Estado del Servicio OCR
+###
+GET {{baseUrl}}/companies/{{companyId}}/ocr/status
+Authorization: {{token}}
+
+###
+### 3. Limpiar Archivos Temporales
+### (elimina archivos > 7 días antiguos)
+###
+POST {{baseUrl}}/companies/{{companyId}}/ocr/cleanup
+Authorization: {{token}}
+Content-Type: application/json
+
+{
+  "daysOld": 7
+}
+
+###
+### FLUJO COMPLETO: Procesar Factura y Extraer Datos Contables
+###
+
+### Paso 1: Procesar con OCR
+POST {{baseUrl}}/companies/{{companyId}}/ocr/invoices
+Authorization: {{token}}
+Content-Type: multipart/form-data; boundary=----FormBoundary
+
+------FormBoundary
+Content-Disposition: form-data; name="file"; filename="factura.pdf"
+Content-Type: application/pdf
+
+< ./test-data/factura.pdf
+------FormBoundary
+Content-Disposition: form-data; name="invoiceType"
+
+expense
+------FormBoundary
+Content-Disposition: form-data; name="language"
+
+es
+------FormBoundary--
+
+###
+### Paso 2: Usar ocrText para extracción contable
+### (copiar ocrText de la respuesta anterior)
+POST {{baseUrl}}/companies/{{companyId}}/invoice-extractor/extract
+Authorization: {{token}}
+Content-Type: application/json
+
+{
+  "ocrText": "FACTURA\nEmisor: Acme Corp\nNIF: A12345678\nEmisión: 15/07/2026\nBase: 1000.00 €\nIVA (21%): 210.00 €\nTotal: 1210.00 €",
+  "invoiceType": "expense",
+  "language": "es",
+  "trimestre": "Q3",
+  "year": 2026
+}
+
+###
+### TESTS ADICIONALES
+###
+
+### Test: OCR sin autenticación (debe fallar 401)
+POST {{baseUrl}}/companies/{{companyId}}/ocr/invoices
+Content-Type: multipart/form-data; boundary=----FormBoundary
+
+------FormBoundary
+Content-Disposition: form-data; name="file"; filename="test.pdf"
+
+<test
+------FormBoundary--
+
+### Test: Archivo no PDF (debe fallar 400)
+POST {{baseUrl}}/companies/{{companyId}}/ocr/invoices
+Authorization: {{token}}
+Content-Type: multipart/form-data; boundary=----FormBoundary
+
+------FormBoundary
+Content-Disposition: form-data; name="file"; filename="documento.txt"
+Content-Type: text/plain
+
+Contenido de texto plano
+------FormBoundary
+Content-Disposition: form-data; name="invoiceType"
+
+expense
+------FormBoundary--
+
+### Test: Status del servicio
+GET {{baseUrl}}/companies/{{companyId}}/ocr/status
+Authorization: {{token}}
+
+### Test: Status sin autenticación (debe fallar 401)
+GET {{baseUrl}}/companies/{{companyId}}/ocr/status
+
+### Test: Cleanup sin requerimientos especiales
+POST {{baseUrl}}/companies/{{companyId}}/ocr/cleanup
+Authorization: {{token}}
+Content-Type: application/json
+
+{
+  "daysOld": 30
+}
+
+###
+### EJEMPLO: Procesar factura de gasto
+###
+POST {{baseUrl}}/companies/{{companyId}}/ocr/invoices
+Authorization: {{token}}
+Content-Type: multipart/form-data; boundary=----FormBoundary
+
+------FormBoundary
+Content-Disposition: form-data; name="file"; filename="gasto_gasolina.pdf"
+Content-Type: application/pdf
+
+< ./test-data/invoice_expense.pdf
+------FormBoundary
+Content-Disposition: form-data; name="invoiceType"
+
+expense
+------FormBoundary
+Content-Disposition: form-data; name="source"
+
+email
+------FormBoundary--
+
+###
+### EJEMPLO: Procesar factura de ingreso
+###
+POST {{baseUrl}}/companies/{{companyId}}/ocr/invoices
+Authorization: {{token}}
+Content-Type: multipart/form-data; boundary=----FormBoundary
+
+------FormBoundary
+Content-Disposition: form-data; name="file"; filename="factura_cliente.pdf"
+Content-Type: application/pdf
+
+< ./test-data/invoice_income.pdf
+------FormBoundary
+Content-Disposition: form-data; name="invoiceType"
+
+income
+------FormBoundary
+Content-Disposition: form-data; name="language"
+
+es
+------FormBoundary--
+
+###
+### DEBUGGING: Verificar disco usado
+###
+GET {{baseUrl}}/companies/{{companyId}}/ocr/status
+Authorization: {{token}}
+
+###
+### VARIANTES: Diferentes idiomas
+###
+
+### Factura en Francés
+POST {{baseUrl}}/companies/{{companyId}}/ocr/invoices
+Authorization: {{token}}
+Content-Type: multipart/form-data; boundary=----FormBoundary
+
+------FormBoundary
+Content-Disposition: form-data; name="file"; filename="facture.pdf"
+Content-Type: application/pdf
+
+< ./test-data/facture_fr.pdf
+------FormBoundary
+Content-Disposition: form-data; name="language"
+
+fr
+------FormBoundary--
+
+### Factura en Inglés
+POST {{baseUrl}}/companies/{{companyId}}/ocr/invoices
+Authorization: {{token}}
+Content-Type: multipart/form-data; boundary=----FormBoundary
+
+------FormBoundary
+Content-Disposition: form-data; name="file"; filename="invoice.pdf"
+Content-Type: application/pdf
+
+< ./test-data/invoice_en.pdf
+------FormBoundary
+Content-Disposition: form-data; name="language"
+
+en
+------FormBoundary--

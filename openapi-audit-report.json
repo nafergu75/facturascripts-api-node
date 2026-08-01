@@ -1,0 +1,1146 @@
+{
+  "timestamp": "2026-06-30T00:54:20.605Z",
+  "summary": {
+    "total": 172,
+    "documented": 18,
+    "missing": 154,
+    "coverage": "10.5%"
+  },
+  "byModule": {
+    "admin.routes.ts": {
+      "total": 4,
+      "documented": 0,
+      "missing": [
+        "GET /admin/empresas",
+        "POST /admin/empresas",
+        "POST /admin/usuarios",
+        "POST /admin/usuarios/:userId/empresas/:companyId"
+      ]
+    },
+    "registroMercantil.routes.ts": {
+      "total": 14,
+      "documented": 0,
+      "missing": [
+        "GET /annual-accounts/:id/download",
+        "POST /annual-accounts/:id/filing",
+        "POST /annual-accounts/:id/resolution",
+        "GET /books/:bookId/download",
+        "GET /fiscal-years/:fyId/annual-accounts",
+        "POST /fiscal-years/:fyId/annual-accounts/generate",
+        "GET /fiscal-years/:fyId/books",
+        "POST /fiscal-years/:fyId/books/generate",
+        "POST /fiscal-years/:fyId/close",
+        "GET /fiscal-years/:fyId/deadlines",
+        "POST /fiscal-years/:fyId/legalization-package",
+        "PATCH /legalization-packages/:packageId",
+        "POST /legalization-packages/:packageId/diligence",
+        "GET /legalization-packages/:packageId/download"
+      ]
+    },
+    "auth.routes.ts": {
+      "total": 5,
+      "documented": 4,
+      "missing": [
+        "GET /auth/health"
+      ]
+    },
+    "companies.routes.ts": {
+      "total": 5,
+      "documented": 0,
+      "missing": [
+        "GET /companies/",
+        "POST /companies/",
+        "DELETE /companies/:id",
+        "GET /companies/:id",
+        "PUT /companies/:id"
+      ]
+    },
+    "chart-of-accounts.routes.ts": {
+      "total": 6,
+      "documented": 0,
+      "missing": [
+        "GET /companies/:companyId/accounting/chart-of-accounts/",
+        "POST /companies/:companyId/accounting/chart-of-accounts/",
+        "GET /companies/:companyId/accounting/chart-of-accounts/:codigo",
+        "PATCH /companies/:companyId/accounting/chart-of-accounts/:id",
+        "GET /companies/:companyId/accounting/chart-of-accounts/arbol",
+        "POST /companies/:companyId/accounting/chart-of-accounts/init"
+      ]
+    },
+    "accounting-closure.routes.ts": {
+      "total": 10,
+      "documented": 0,
+      "missing": [
+        "GET /companies/:companyId/accounting/closures/",
+        "POST /companies/:companyId/accounting/closures/",
+        "GET /companies/:companyId/accounting/closures/:ejercicio",
+        "GET /companies/:companyId/accounting/closures/:ejercicio/files",
+        "PATCH /companies/:companyId/accounting/closures/:ejercicio/status",
+        "POST /companies/:companyId/accounting/closures/:ejercicio/upload",
+        "GET /companies/:companyId/accounting/closures/comparativas/:ej1/:ej2",
+        "GET /companies/:companyId/accounting/closures/prior-years",
+        "POST /companies/:companyId/accounting/closures/prior-years",
+        "GET /companies/:companyId/accounting/closures/prior-years/:ejercicio"
+      ]
+    },
+    "accounting-engine.routes.ts": {
+      "total": 6,
+      "documented": 4,
+      "missing": [
+        "PATCH /companies/:companyId/accounting/journal-entries/:journalEntryId/lines/:lineId",
+        "POST /companies/:companyId/accounting/journal-entries/:journalEntryId/recalculate"
+      ]
+    },
+    "bancos.routes.ts": {
+      "total": 6,
+      "documented": 0,
+      "missing": [
+        "GET /companies/:companyId/bancos/cuentas",
+        "POST /companies/:companyId/bancos/cuentas",
+        "POST /companies/:companyId/bancos/cuentas/:cuentaId/importar-csv",
+        "GET /companies/:companyId/bancos/movimientos",
+        "POST /companies/:companyId/bancos/movimientos/:movId/conciliar-cuenta",
+        "POST /companies/:companyId/bancos/movimientos/:movId/conciliar-factura"
+      ]
+    },
+    "chatAssistant.routes.ts": {
+      "total": 2,
+      "documented": 1,
+      "missing": [
+        "POST /companies/:companyId/chat-assistant/"
+      ]
+    },
+    "clientes.routes.ts": {
+      "total": 6,
+      "documented": 0,
+      "missing": [
+        "GET /companies/:companyId/clientes/",
+        "POST /companies/:companyId/clientes/",
+        "DELETE /companies/:companyId/clientes/:id",
+        "GET /companies/:companyId/clientes/:id",
+        "PUT /companies/:companyId/clientes/:id",
+        "GET /companies/:companyId/clientes/buscar"
+      ]
+    },
+    "compliance.routes.ts": {
+      "total": 2,
+      "documented": 0,
+      "missing": [
+        "GET /companies/:companyId/compliance/alertas",
+        "GET /companies/:companyId/compliance/alertas/historico"
+      ]
+    },
+    "compras.routes.ts": {
+      "total": 2,
+      "documented": 0,
+      "missing": [
+        "GET /companies/:companyId/compras/",
+        "GET /companies/:companyId/compras/:id"
+      ]
+    },
+    "conciliacion.routes.ts": {
+      "total": 1,
+      "documented": 0,
+      "missing": [
+        "POST /companies/:companyId/conciliacion/proponer"
+      ]
+    },
+    "cuadreBancos.routes.ts": {
+      "total": 4,
+      "documented": 0,
+      "missing": [
+        "GET /companies/:companyId/cuadre-bancos/",
+        "GET /companies/:companyId/cuadre-bancos/chequeo-cierre",
+        "GET /companies/:companyId/cuadre-bancos/config",
+        "PUT /companies/:companyId/cuadre-bancos/config"
+      ]
+    },
+    "extractos.routes.ts": {
+      "total": 3,
+      "documented": 0,
+      "missing": [
+        "GET /companies/:companyId/extractos/cuentas/:cuentaId/extracto",
+        "GET /companies/:companyId/extractos/cuentas/:cuentaId/extracto.csv",
+        "GET /companies/:companyId/extractos/cuentas/:cuentaId/revision"
+      ]
+    },
+    "fiscalYears.routes.ts": {
+      "total": 2,
+      "documented": 0,
+      "missing": [
+        "GET /companies/:companyId/fiscal-years/",
+        "POST /companies/:companyId/fiscal-years/"
+      ]
+    },
+    "impuestosModulo.routes.ts": {
+      "total": 13,
+      "documented": 2,
+      "missing": [
+        "GET /companies/:companyId/impuestos/calculate",
+        "POST /companies/:companyId/impuestos/generate-pdf",
+        "GET /companies/:companyId/impuestos/ingresos-gastos/excel",
+        "GET /companies/:companyId/impuestos/modelos/:modeloId",
+        "PUT /companies/:companyId/impuestos/modelos/:modeloId",
+        "POST /companies/:companyId/impuestos/modelos/:modeloId/listo-para-presentar",
+        "POST /companies/:companyId/impuestos/modelos/:modeloId/no-presentado",
+        "POST /companies/:companyId/impuestos/modelos/:modeloId/omitir",
+        "GET /companies/:companyId/impuestos/modelos/:modeloId/pdf",
+        "POST /companies/:companyId/impuestos/modelos/:modeloId/recuperar",
+        "GET /companies/:companyId/impuestos/modelos/:modeloId/txt"
+      ]
+    },
+    "income-reader.routes.ts": {
+      "total": 10,
+      "documented": 4,
+      "missing": [
+        "GET /companies/:companyId/income-reader/:id",
+        "PUT /companies/:companyId/income-reader/:id",
+        "POST /companies/:companyId/income-reader/:id/reject",
+        "GET /companies/:companyId/income-reader/config",
+        "POST /companies/:companyId/income-reader/config",
+        "POST /companies/:companyId/income-reader/email-hook"
+      ]
+    },
+    "income-invoices.routes.ts": {
+      "total": 8,
+      "documented": 0,
+      "missing": [
+        "GET /companies/:companyId/invoices/",
+        "POST /companies/:companyId/invoices/",
+        "GET /companies/:companyId/invoices/:id",
+        "POST /companies/:companyId/invoices/:id/credit-note",
+        "POST /companies/:companyId/invoices/:id/make-recurring",
+        "POST /companies/:companyId/invoices/:id/send-email",
+        "PATCH /companies/:companyId/invoices/:id/status",
+        "GET /companies/:companyId/invoices/resumen/periodo"
+      ]
+    },
+    "legalConfig.routes.ts": {
+      "total": 2,
+      "documented": 0,
+      "missing": [
+        "GET /companies/:companyId/legal-config/",
+        "PUT /companies/:companyId/legal-config/"
+      ]
+    },
+    "impuestoSociedades.routes.ts": {
+      "total": 2,
+      "documented": 0,
+      "missing": [
+        "GET /companies/:companyId/modelo-200/fichero",
+        "GET /companies/:companyId/modelo-200/preview"
+      ]
+    },
+    "nominas.routes.ts": {
+      "total": 2,
+      "documented": 0,
+      "missing": [
+        "GET /companies/:companyId/nominas/resumen",
+        "POST /companies/:companyId/nominas/resumen"
+      ]
+    },
+    "periodos.routes.ts": {
+      "total": 3,
+      "documented": 0,
+      "missing": [
+        "GET /companies/:companyId/periodos/",
+        "PUT /companies/:companyId/periodos/:mes/estado",
+        "POST /companies/:companyId/periodos/cierre"
+      ]
+    },
+    "planContable.routes.ts": {
+      "total": 5,
+      "documented": 0,
+      "missing": [
+        "GET /companies/:companyId/plan-contable/subcuentas",
+        "POST /companies/:companyId/plan-contable/subcuentas",
+        "DELETE /companies/:companyId/plan-contable/subcuentas/:id",
+        "PUT /companies/:companyId/plan-contable/subcuentas/:id",
+        "POST /companies/:companyId/plan-contable/subcuentas/gasto-rapido"
+      ]
+    },
+    "plantillasDocumento.routes.ts": {
+      "total": 6,
+      "documented": 0,
+      "missing": [
+        "GET /companies/:companyId/plantillas/",
+        "POST /companies/:companyId/plantillas/",
+        "DELETE /companies/:companyId/plantillas/:plantillaId",
+        "GET /companies/:companyId/plantillas/:plantillaId",
+        "PUT /companies/:companyId/plantillas/:plantillaId",
+        "GET /companies/:companyId/plantillas/tipo/:tipoDocumento/predeterminada"
+      ]
+    },
+    "productos.routes.ts": {
+      "total": 5,
+      "documented": 0,
+      "missing": [
+        "GET /companies/:companyId/productos/",
+        "POST /companies/:companyId/productos/",
+        "DELETE /companies/:companyId/productos/:id",
+        "GET /companies/:companyId/productos/:id",
+        "PUT /companies/:companyId/productos/:id"
+      ]
+    },
+    "proveedores.routes.ts": {
+      "total": 6,
+      "documented": 0,
+      "missing": [
+        "GET /companies/:companyId/proveedores/",
+        "POST /companies/:companyId/proveedores/",
+        "DELETE /companies/:companyId/proveedores/:id",
+        "GET /companies/:companyId/proveedores/:id",
+        "PUT /companies/:companyId/proveedores/:id",
+        "GET /companies/:companyId/proveedores/buscar"
+      ]
+    },
+    "reglasContables.routes.ts": {
+      "total": 2,
+      "documented": 0,
+      "missing": [
+        "GET /companies/:companyId/reglas-contables/",
+        "PUT /companies/:companyId/reglas-contables/"
+      ]
+    },
+    "reports.routes.ts": {
+      "total": 11,
+      "documented": 2,
+      "missing": [
+        "GET /companies/:companyId/reports/analytics/by-customer",
+        "GET /companies/:companyId/reports/analytics/monthly",
+        "GET /companies/:companyId/reports/expenses",
+        "GET /companies/:companyId/reports/income",
+        "GET /companies/:companyId/reports/ledger",
+        "GET /companies/:companyId/reports/result",
+        "GET /companies/:companyId/reports/retentions",
+        "GET /companies/:companyId/reports/treasury",
+        "GET /companies/:companyId/reports/vat"
+      ]
+    },
+    "series.routes.ts": {
+      "total": 3,
+      "documented": 0,
+      "missing": [
+        "GET /companies/:companyId/series/",
+        "POST /companies/:companyId/series/",
+        "PUT /companies/:companyId/series/:id"
+      ]
+    },
+    "sugerenciasContables.routes.ts": {
+      "total": 2,
+      "documented": 0,
+      "missing": [
+        "POST /companies/:companyId/sugerencias/subcuenta-familia",
+        "POST /companies/:companyId/sugerencias/subcuenta-tercero"
+      ]
+    },
+    "tax.routes.ts": {
+      "total": 5,
+      "documented": 0,
+      "missing": [
+        "GET /companies/:companyId/tax/export/modelo-303",
+        "GET /companies/:companyId/tax/retentions/summary",
+        "GET /companies/:companyId/tax/vat/books/issued",
+        "GET /companies/:companyId/tax/vat/books/received",
+        "GET /companies/:companyId/tax/vat/summary"
+      ]
+    },
+    "app.ts": {
+      "total": 1,
+      "documented": 1,
+      "missing": []
+    },
+    "planContableBase.routes.ts": {
+      "total": 3,
+      "documented": 0,
+      "missing": [
+        "GET /plan-contable/base/cuentas",
+        "GET /plan-contable/base/grupos",
+        "GET /plan-contable/base/subgrupos"
+      ]
+    },
+    "users.routes.ts": {
+      "total": 5,
+      "documented": 0,
+      "missing": [
+        "GET /users/",
+        "POST /users/",
+        "DELETE /users/:id",
+        "GET /users/:id",
+        "PUT /users/:id"
+      ]
+    }
+  },
+  "missingEndpoints": [
+    {
+      "method": "GET",
+      "path": "/admin/empresas",
+      "file": "admin.routes.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/admin/empresas",
+      "file": "admin.routes.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/admin/usuarios",
+      "file": "admin.routes.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/admin/usuarios/:userId/empresas/:companyId",
+      "file": "admin.routes.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/annual-accounts/:id/download",
+      "file": "registroMercantil.routes.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/annual-accounts/:id/filing",
+      "file": "registroMercantil.routes.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/annual-accounts/:id/resolution",
+      "file": "registroMercantil.routes.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/auth/health",
+      "file": "auth.routes.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/books/:bookId/download",
+      "file": "registroMercantil.routes.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/",
+      "file": "companies.routes.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/companies/",
+      "file": "companies.routes.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/accounting/chart-of-accounts/",
+      "file": "chart-of-accounts.routes.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/companies/:companyId/accounting/chart-of-accounts/",
+      "file": "chart-of-accounts.routes.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/accounting/chart-of-accounts/:codigo",
+      "file": "chart-of-accounts.routes.ts"
+    },
+    {
+      "method": "PATCH",
+      "path": "/companies/:companyId/accounting/chart-of-accounts/:id",
+      "file": "chart-of-accounts.routes.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/accounting/chart-of-accounts/arbol",
+      "file": "chart-of-accounts.routes.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/companies/:companyId/accounting/chart-of-accounts/init",
+      "file": "chart-of-accounts.routes.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/accounting/closures/",
+      "file": "accounting-closure.routes.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/companies/:companyId/accounting/closures/",
+      "file": "accounting-closure.routes.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/accounting/closures/:ejercicio",
+      "file": "accounting-closure.routes.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/accounting/closures/:ejercicio/files",
+      "file": "accounting-closure.routes.ts"
+    },
+    {
+      "method": "PATCH",
+      "path": "/companies/:companyId/accounting/closures/:ejercicio/status",
+      "file": "accounting-closure.routes.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/companies/:companyId/accounting/closures/:ejercicio/upload",
+      "file": "accounting-closure.routes.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/accounting/closures/comparativas/:ej1/:ej2",
+      "file": "accounting-closure.routes.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/accounting/closures/prior-years",
+      "file": "accounting-closure.routes.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/companies/:companyId/accounting/closures/prior-years",
+      "file": "accounting-closure.routes.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/accounting/closures/prior-years/:ejercicio",
+      "file": "accounting-closure.routes.ts"
+    },
+    {
+      "method": "PATCH",
+      "path": "/companies/:companyId/accounting/journal-entries/:journalEntryId/lines/:lineId",
+      "file": "accounting-engine.routes.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/companies/:companyId/accounting/journal-entries/:journalEntryId/recalculate",
+      "file": "accounting-engine.routes.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/bancos/cuentas",
+      "file": "bancos.routes.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/companies/:companyId/bancos/cuentas",
+      "file": "bancos.routes.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/companies/:companyId/bancos/cuentas/:cuentaId/importar-csv",
+      "file": "bancos.routes.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/bancos/movimientos",
+      "file": "bancos.routes.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/companies/:companyId/bancos/movimientos/:movId/conciliar-cuenta",
+      "file": "bancos.routes.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/companies/:companyId/bancos/movimientos/:movId/conciliar-factura",
+      "file": "bancos.routes.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/companies/:companyId/chat-assistant/",
+      "file": "chatAssistant.routes.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/clientes/",
+      "file": "clientes.routes.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/companies/:companyId/clientes/",
+      "file": "clientes.routes.ts"
+    },
+    {
+      "method": "DELETE",
+      "path": "/companies/:companyId/clientes/:id",
+      "file": "clientes.routes.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/clientes/:id",
+      "file": "clientes.routes.ts"
+    },
+    {
+      "method": "PUT",
+      "path": "/companies/:companyId/clientes/:id",
+      "file": "clientes.routes.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/clientes/buscar",
+      "file": "clientes.routes.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/compliance/alertas",
+      "file": "compliance.routes.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/compliance/alertas/historico",
+      "file": "compliance.routes.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/compras/",
+      "file": "compras.routes.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/compras/:id",
+      "file": "compras.routes.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/companies/:companyId/conciliacion/proponer",
+      "file": "conciliacion.routes.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/cuadre-bancos/",
+      "file": "cuadreBancos.routes.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/cuadre-bancos/chequeo-cierre",
+      "file": "cuadreBancos.routes.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/cuadre-bancos/config",
+      "file": "cuadreBancos.routes.ts"
+    },
+    {
+      "method": "PUT",
+      "path": "/companies/:companyId/cuadre-bancos/config",
+      "file": "cuadreBancos.routes.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/extractos/cuentas/:cuentaId/extracto",
+      "file": "extractos.routes.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/extractos/cuentas/:cuentaId/extracto.csv",
+      "file": "extractos.routes.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/extractos/cuentas/:cuentaId/revision",
+      "file": "extractos.routes.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/fiscal-years/",
+      "file": "fiscalYears.routes.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/companies/:companyId/fiscal-years/",
+      "file": "fiscalYears.routes.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/impuestos/calculate",
+      "file": "impuestosModulo.routes.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/companies/:companyId/impuestos/generate-pdf",
+      "file": "impuestosModulo.routes.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/impuestos/ingresos-gastos/excel",
+      "file": "impuestosModulo.routes.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/impuestos/modelos/:modeloId",
+      "file": "impuestosModulo.routes.ts"
+    },
+    {
+      "method": "PUT",
+      "path": "/companies/:companyId/impuestos/modelos/:modeloId",
+      "file": "impuestosModulo.routes.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/companies/:companyId/impuestos/modelos/:modeloId/listo-para-presentar",
+      "file": "impuestosModulo.routes.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/companies/:companyId/impuestos/modelos/:modeloId/no-presentado",
+      "file": "impuestosModulo.routes.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/companies/:companyId/impuestos/modelos/:modeloId/omitir",
+      "file": "impuestosModulo.routes.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/impuestos/modelos/:modeloId/pdf",
+      "file": "impuestosModulo.routes.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/companies/:companyId/impuestos/modelos/:modeloId/recuperar",
+      "file": "impuestosModulo.routes.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/impuestos/modelos/:modeloId/txt",
+      "file": "impuestosModulo.routes.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/income-reader/:id",
+      "file": "income-reader.routes.ts"
+    },
+    {
+      "method": "PUT",
+      "path": "/companies/:companyId/income-reader/:id",
+      "file": "income-reader.routes.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/companies/:companyId/income-reader/:id/reject",
+      "file": "income-reader.routes.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/income-reader/config",
+      "file": "income-reader.routes.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/companies/:companyId/income-reader/config",
+      "file": "income-reader.routes.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/companies/:companyId/income-reader/email-hook",
+      "file": "income-reader.routes.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/invoices/",
+      "file": "income-invoices.routes.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/companies/:companyId/invoices/",
+      "file": "income-invoices.routes.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/invoices/:id",
+      "file": "income-invoices.routes.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/companies/:companyId/invoices/:id/credit-note",
+      "file": "income-invoices.routes.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/companies/:companyId/invoices/:id/make-recurring",
+      "file": "income-invoices.routes.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/companies/:companyId/invoices/:id/send-email",
+      "file": "income-invoices.routes.ts"
+    },
+    {
+      "method": "PATCH",
+      "path": "/companies/:companyId/invoices/:id/status",
+      "file": "income-invoices.routes.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/invoices/resumen/periodo",
+      "file": "income-invoices.routes.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/legal-config/",
+      "file": "legalConfig.routes.ts"
+    },
+    {
+      "method": "PUT",
+      "path": "/companies/:companyId/legal-config/",
+      "file": "legalConfig.routes.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/modelo-200/fichero",
+      "file": "impuestoSociedades.routes.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/modelo-200/preview",
+      "file": "impuestoSociedades.routes.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/nominas/resumen",
+      "file": "nominas.routes.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/companies/:companyId/nominas/resumen",
+      "file": "nominas.routes.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/periodos/",
+      "file": "periodos.routes.ts"
+    },
+    {
+      "method": "PUT",
+      "path": "/companies/:companyId/periodos/:mes/estado",
+      "file": "periodos.routes.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/companies/:companyId/periodos/cierre",
+      "file": "periodos.routes.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/plan-contable/subcuentas",
+      "file": "planContable.routes.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/companies/:companyId/plan-contable/subcuentas",
+      "file": "planContable.routes.ts"
+    },
+    {
+      "method": "DELETE",
+      "path": "/companies/:companyId/plan-contable/subcuentas/:id",
+      "file": "planContable.routes.ts"
+    },
+    {
+      "method": "PUT",
+      "path": "/companies/:companyId/plan-contable/subcuentas/:id",
+      "file": "planContable.routes.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/companies/:companyId/plan-contable/subcuentas/gasto-rapido",
+      "file": "planContable.routes.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/plantillas/",
+      "file": "plantillasDocumento.routes.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/companies/:companyId/plantillas/",
+      "file": "plantillasDocumento.routes.ts"
+    },
+    {
+      "method": "DELETE",
+      "path": "/companies/:companyId/plantillas/:plantillaId",
+      "file": "plantillasDocumento.routes.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/plantillas/:plantillaId",
+      "file": "plantillasDocumento.routes.ts"
+    },
+    {
+      "method": "PUT",
+      "path": "/companies/:companyId/plantillas/:plantillaId",
+      "file": "plantillasDocumento.routes.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/plantillas/tipo/:tipoDocumento/predeterminada",
+      "file": "plantillasDocumento.routes.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/productos/",
+      "file": "productos.routes.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/companies/:companyId/productos/",
+      "file": "productos.routes.ts"
+    },
+    {
+      "method": "DELETE",
+      "path": "/companies/:companyId/productos/:id",
+      "file": "productos.routes.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/productos/:id",
+      "file": "productos.routes.ts"
+    },
+    {
+      "method": "PUT",
+      "path": "/companies/:companyId/productos/:id",
+      "file": "productos.routes.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/proveedores/",
+      "file": "proveedores.routes.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/companies/:companyId/proveedores/",
+      "file": "proveedores.routes.ts"
+    },
+    {
+      "method": "DELETE",
+      "path": "/companies/:companyId/proveedores/:id",
+      "file": "proveedores.routes.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/proveedores/:id",
+      "file": "proveedores.routes.ts"
+    },
+    {
+      "method": "PUT",
+      "path": "/companies/:companyId/proveedores/:id",
+      "file": "proveedores.routes.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/proveedores/buscar",
+      "file": "proveedores.routes.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/reglas-contables/",
+      "file": "reglasContables.routes.ts"
+    },
+    {
+      "method": "PUT",
+      "path": "/companies/:companyId/reglas-contables/",
+      "file": "reglasContables.routes.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/reports/analytics/by-customer",
+      "file": "reports.routes.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/reports/analytics/monthly",
+      "file": "reports.routes.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/reports/expenses",
+      "file": "reports.routes.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/reports/income",
+      "file": "reports.routes.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/reports/ledger",
+      "file": "reports.routes.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/reports/result",
+      "file": "reports.routes.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/reports/retentions",
+      "file": "reports.routes.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/reports/treasury",
+      "file": "reports.routes.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/reports/vat",
+      "file": "reports.routes.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/series/",
+      "file": "series.routes.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/companies/:companyId/series/",
+      "file": "series.routes.ts"
+    },
+    {
+      "method": "PUT",
+      "path": "/companies/:companyId/series/:id",
+      "file": "series.routes.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/companies/:companyId/sugerencias/subcuenta-familia",
+      "file": "sugerenciasContables.routes.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/companies/:companyId/sugerencias/subcuenta-tercero",
+      "file": "sugerenciasContables.routes.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/tax/export/modelo-303",
+      "file": "tax.routes.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/tax/retentions/summary",
+      "file": "tax.routes.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/tax/vat/books/issued",
+      "file": "tax.routes.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/tax/vat/books/received",
+      "file": "tax.routes.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:companyId/tax/vat/summary",
+      "file": "tax.routes.ts"
+    },
+    {
+      "method": "DELETE",
+      "path": "/companies/:id",
+      "file": "companies.routes.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/companies/:id",
+      "file": "companies.routes.ts"
+    },
+    {
+      "method": "PUT",
+      "path": "/companies/:id",
+      "file": "companies.routes.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/fiscal-years/:fyId/annual-accounts",
+      "file": "registroMercantil.routes.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/fiscal-years/:fyId/annual-accounts/generate",
+      "file": "registroMercantil.routes.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/fiscal-years/:fyId/books",
+      "file": "registroMercantil.routes.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/fiscal-years/:fyId/books/generate",
+      "file": "registroMercantil.routes.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/fiscal-years/:fyId/close",
+      "file": "registroMercantil.routes.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/fiscal-years/:fyId/deadlines",
+      "file": "registroMercantil.routes.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/fiscal-years/:fyId/legalization-package",
+      "file": "registroMercantil.routes.ts"
+    },
+    {
+      "method": "PATCH",
+      "path": "/legalization-packages/:packageId",
+      "file": "registroMercantil.routes.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/legalization-packages/:packageId/diligence",
+      "file": "registroMercantil.routes.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/legalization-packages/:packageId/download",
+      "file": "registroMercantil.routes.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/plan-contable/base/cuentas",
+      "file": "planContableBase.routes.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/plan-contable/base/grupos",
+      "file": "planContableBase.routes.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/plan-contable/base/subgrupos",
+      "file": "planContableBase.routes.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/users/",
+      "file": "users.routes.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/users/",
+      "file": "users.routes.ts"
+    },
+    {
+      "method": "DELETE",
+      "path": "/users/:id",
+      "file": "users.routes.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/users/:id",
+      "file": "users.routes.ts"
+    },
+    {
+      "method": "PUT",
+      "path": "/users/:id",
+      "file": "users.routes.ts"
+    }
+  ]
+}

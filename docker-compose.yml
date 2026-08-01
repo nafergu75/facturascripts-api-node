@@ -1,0 +1,35 @@
+version: "3.9"
+
+services:
+  api:
+    image: node:20-alpine
+    working_dir: /app
+    command: sh -c "npm install && npm run dev"
+    volumes:
+      - ./:/app
+    ports:
+      - "3000:3000"
+    environment:
+      PORT: 3000
+      NODE_ENV: development
+      # host.docker.internal apunta al FacturaScripts que corre en tu maquina (XAMPP)
+      FS_API_URL: http://host.docker.internal:8000/api/3
+      FS_API_KEY: cambia-esto-por-tu-api-key
+      JWT_SECRET: cambia-esto-por-un-secreto-largo-y-aleatorio
+      DB_URL: postgres://postgres:postgres@db:5432/fs_api
+    depends_on:
+      - db
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: fs_api
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+volumes:
+  pgdata:

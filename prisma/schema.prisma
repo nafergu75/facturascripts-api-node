@@ -1,0 +1,1000 @@
+// BD propia de la capa Node (usuarios, empresas/instancias FS, membresias).
+// No contiene datos de negocio: clientes/facturas/etc. viven en cada FacturaScripts.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  admin
+  contable
+  ventas
+  solo_lectura
+}
+
+model User {
+  id            String       @id @default(cuid())
+  email         String       @unique
+  passwordHash  String
+  isActive      Boolean      @default(true)
+  /// Admin GLOBAL de plataforma: puede acceder a TODAS las empresas y administrar.
+  isGlobalAdmin Boolean      @default(false)
+  createdAt     DateTime     @default(now())
+  memberships   Membership[]
+}
+
+/// Cada empresa = una instancia aislada de FacturaScripts.
+model Company {
+  id          String       @id @default(cuid())
+  name        String
+  /// Codigo corto / "codigo de acceso" de la empresa (opcional, unico).
+  codigo      String?      @unique
+  /// URL base de la API de su FacturaScripts (incluye /api/3).
+  fsBaseUrl   String
+  /// API Key de FacturaScripts CIFRADA (AES-256-GCM). Nunca en claro.
+  fsApiKeyEnc String       @db.Text
+  isActive    Boolean      @default(true)
+  createdAt   DateTime     @default(now())
+  memberships Membership[]
+  reglas      ReglasContables?
+  movements   Movement[]      @relation("movements")
+}
+
+/// Reglas contables configurables por empresa (ReglasContablesEmpresa serializada como JSON).
+model ReglasContables {
+  companyId String   @id
+  data      Json
+  updatedAt DateTime @updatedAt
+  company   Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+}
+
+/// Periodo contable (mes) por empresa/ejercicio: abierto|bloqueado|cerrado.
+model Periodo {
+  id            String  @id @default(cuid())
+  companyId     String
+  ejercicio     Int
+  mes           Int
+  estado        String  @default("abierto")
+  fechaApertura String?
+  fechaCierre   String?
+
+  @@unique([companyId, ejercicio, mes])
+}
+
+/// Vencimiento de cobro/pago derivado de una factura.
+model Vencimiento {
+  id               String  @id @default(cuid())
+  companyId        String
+  facturaId        String
+  tipo             String // cobro | pago
+  numero           Int     @default(1)
+  fecha            String
+  importe          Float
+  formaPago        String  @default("")
+  estado           String  @default("pendiente") // pendiente | liquidado
+  fechaLiquidacion String?
+
+  @@index([companyId, facturaId])
+}
+
+/// Cobro imputado a una factura (para estadoCobro).
+model Cobro {
+  id        String @id @default(cuid())
+  companyId String
+  facturaId String
+  importe   Float
+  fecha     String
+
+  @@index([companyId, facturaId])
+}
+
+/// Log de auditoria persistente (acciones criticas y accesos).
+model AuditLog {
+  id           String   @id @default(cuid())
+  timestamp    DateTime @default(now())
+  userId       String
+  companyId    String?
+  action       String
+  resourceType String
+  resourceId   String?
+  meta         Json?
+
+  @@index([companyId, action])
+}
+
+/// Modelo tributario del calendario fiscal (estilo Quipu: vigente/expirado/
+/// omitido/presentado, casillas autorrellenadas o editadas a mano).
+model ModeloImpuesto {
+  id            String   @id @default(cuid())
+  companyId     String
+  codigo        String // '303', '390', '347', '349', '111', '115', '200'
+  ejercicio     Int
+  periodo       String // '1T'..'4T' | '0A'
+  estado        String   @default("vigente") // vigente|expirado|omitido|presentado
+  /// Casillas del modelo (autorrelleno o edicion manual). Json plano.
+  casillas      Json?
+  /// Datos de calculo completos (DatosModeloXXX) para generar el TXT.
+  datos         Json?
+  origen        String? // autorrelleno | manual-mixto
+  actualizadoEn DateTime @updatedAt
+
+  @@unique([companyId, codigo, ejercicio, periodo])
+}
+
+/// Relacion usuario <-> empresa con rol por empresa.
+model Membership {
+  id        String  @id @default(cuid())
+  userId    String
+  companyId String
+  role      Role    @default(solo_lectura)
+  user      User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  company   Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, companyId])
+}
+
+/// Cliente de la empresa (receptor de facturas de ingreso = cliente que nos paga).
+model Customer {
+  id             String          @id @default(cuid())
+  companyId      String
+  nombreFiscal   String
+  nifCif         String
+  direccion      String?
+  pais           String          @default("ES")
+  provincia      String?
+  municipio      String?
+  cp             String?
+  email          String?
+  telefono       String?
+  activo         Boolean         @default(true)
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+  invoices       IncomeInvoice[]
+
+  @@unique([companyId, nifCif])
+  @@index([companyId])
+}
+
+/// Factura de ingreso (dinero que nos deben = venta/servicio realizado).
+model IncomeInvoice {
+  id                  String                @id @default(cuid())
+  companyId           String
+  customerId          String
+  serie               String
+  numero              Int
+  numeroCompleto      String                @unique
+  fechaEmision        String                // YYYY-MM-DD
+  fechaVencimiento    String                // YYYY-MM-DD
+  estado              String                @default("PENDING") // DRAFT, PENDING, PAID, OVERDUE
+  baseTotal           Float                 @default(0)
+  ivaTotal            Float                 @default(0)
+  retencionTotal      Float                 @default(0)
+  totalFactura        Float                 @default(0)
+  plantillaId         String                @default("default")
+  observaciones       String?               @db.Text
+  esRectificativa     Boolean               @default(false)
+  facturaOriginalId   String?               // Si es rectificativa, ref a la original
+  esRecurrente        Boolean               @default(false)
+  recurrenciaConfig   String?               // JSON con patrón: { frecuencia: 'mensual'|'trimestral', proximaFecha: '...' }
+  createdAt           DateTime              @default(now())
+  updatedAt           DateTime              @updatedAt
+  lineas              IncomeInvoiceLine[]
+  customer            Customer              @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  readerDocument      IncomeReaderDocument?
+
+  @@unique([companyId, serie, numero])
+  @@index([companyId, estado])
+  @@index([customerId])
+}
+
+/// Línea de factura de ingreso.
+model IncomeInvoiceLine {
+  id                String        @id @default(cuid())
+  invoiceId         String
+  productoServicioId String?
+  descripcion       String
+  cantidad          Float
+  precioUnitario    Float
+  baseLine          Float         // cantidad * precioUnitario - descuentoImporte
+  descuentoPorcentaje Float       @default(0)
+  descuentoImporte  Float         @default(0)
+  tipoIva           Int           @default(21) // 0, 4, 10, 21
+  ivaImporte        Float         @default(0)
+  tipoRetencion     Int           @default(0) // 0, 7, 15, 19 (IRPF/otros)
+  retencionImporte  Float         @default(0)
+  // NUEVO: Referencia a cuenta contable (grupo 7 para ingresos)
+  accountCode       String?       // Código PGC (ej. "700" para ventas)
+  invoice           IncomeInvoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  @@index([invoiceId])
+  @@index([accountCode])
+}
+
+/// Documento de ingreso procesado por OCR (ticket/factura subido para digitalizar).
+/// Tabla del lector CANÓNICO (income-reader). El lector legacy (lectorFacturas)
+/// no tiene tabla propia: persiste en memoria. No hay modelos duplicados que
+/// deprecar. Ver ADR "Consolidación de lector OCR".
+model IncomeReaderDocument {
+  id                    String        @id @default(cuid())
+  companyId             String
+  userId                String?       // Usuario que subió el documento
+  sourceType            String        // MOBILE_CAMERA, WEB_UPLOAD, EMAIL_FORWARD
+  originalFileName      String
+  mimeType              String
+  fileSize              Int
+  storagePath           String        // Path local o URL a S3/blob
+  status                String        @default("UPLOADED") // UPLOADED | PROCESSING | READY_FOR_VERIFICATION | VERIFIED | REJECTED | ERROR
+  errorMensaje          String?       // Último error de OCR (si status=ERROR)
+  uploadedAt            DateTime      @default(now())
+  processingStartedAt   DateTime?
+  processingCompletedAt DateTime?
+  verifiedAt            DateTime?
+  expiresAt             DateTime?     // Fecha límite de validez del documento (opcional; si ya pasó, está expirado)
+  parsedData            Json?         // { cliente, fecha, numero, base, iva, retencion, lineas: [...] }
+  linkedInvoiceId       String?       @unique // FK a IncomeInvoice creada tras verificación
+  invoice               IncomeInvoice? @relation(fields: [linkedInvoiceId], references: [id], onDelete: SetNull)
+  rejectionReason       String?
+
+  @@index([companyId, status])
+  @@index([companyId, uploadedAt])
+  @@index([companyId, expiresAt])
+}
+
+/// Configuración de email del lector automático (correo donde reenviarse facturas).
+model ReaderEmailConfig {
+  id                   String @id @default(cuid())
+  companyId            String @unique
+  readerEmail          String // empresa+lector@platform.com
+  isReaderEmailActive  Boolean @default(true)
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  @@index([companyId])
+}
+
+/// Versión del Plan General de Contabilidad (PGC). Controla cambios en la estructura base.
+model ChartOfAccountsVersion {
+  id              String @id @default(cuid())
+  version         String @unique // "2021", "2016", "2007"
+  descripcion     String
+  fechaActualizacion DateTime @default(now())
+  isActive        Boolean @default(true)
+  cuentas         ChartOfAccounts[]
+
+  @@index([version])
+}
+
+/// Cuenta contable del Plan General de Contabilidad (PGC).
+model ChartOfAccounts {
+  id                      String                @id @default(cuid())
+  companyId               String?               // null = cuenta base PGC global; no-null = personalización de empresa
+  codigo                  String                // "700", "4300001", "572000", etc.
+  nombre                  String
+  grupo                   Int                   // 1-9
+  nivel                   Int                   // 1=grupo, 2=subgrupo, 3=cuenta, 4+=subcuenta
+  naturaleza              String                // ACTIVO, PASIVO, PATRIMONIO_NETO, GASTO, INGRESO
+  tipoUso                 String                // BALANCE, PYG, AMBOS
+  esBasePGC               Boolean               @default(true) // Pertenece al PGC oficial
+  esPersonalizadaEmpresa  Boolean               @default(false) // Subcuenta propia de empresa
+  activo                  Boolean               @default(true)
+  ordenPresentacion       Int?
+  parentId                String?               // FK a cuenta padre (para jerarquía)
+  parentCodigo            String?               // Código de la cuenta padre (para facilitar búsquedas)
+  versionPGC              String?               // "2021", "2016", etc.
+  notas                   String?               @db.Text
+  createdAt               DateTime              @default(now())
+  updatedAt               DateTime              @updatedAt
+
+  parent                  ChartOfAccounts?      @relation("Jerarquia", fields: [parentId], references: [id], onDelete: SetNull)
+  children                ChartOfAccounts[]     @relation("Jerarquia")
+  pgcVersion              ChartOfAccountsVersion? @relation(fields: [versionPGC], references: [version])
+
+  @@unique([companyId, codigo])
+  @@index([companyId])
+  @@index([grupo])
+  @@index([naturaleza])
+  @@index([activo])
+}
+
+/// Cierre de ejercicio contable (cierre de año fiscal).
+model AccountingClosure {
+  id                    String                @id @default(cuid())
+  companyId             String
+  ejercicio             Int                   // Año fiscal (2024, 2025, etc.)
+  estado                String                @default("ABIERTO") // ABIERTO, EN_CIERRE, CERRADO, REABIERTO
+  fechaApertura         DateTime              @default(now())
+  fechaCierre           DateTime?
+  cierreContable        String?               // JSON con datos del cierre (base, IVA, etc.)
+  balanceGeneral        String?               @db.Text // JSON con balance general
+  cuentaResultados      String?               @db.Text // JSON con P&L
+  observaciones         String?               @db.Text
+  createdAt             DateTime              @default(now())
+  updatedAt             DateTime              @updatedAt
+  archivos              AccountingClosureFile[]
+
+  @@unique([companyId, ejercicio])
+  @@index([companyId])
+  @@index([ejercicio])
+  @@index([estado])
+}
+
+/// Archivo de cierre contable (PDF, Excel, etc.).
+model AccountingClosureFile {
+  id                    String                @id @default(cuid())
+  closureId             String
+  companyId             String
+  nombre                String
+  tipoArchivo           String                // "PDF", "EXCEL", "TXT"
+  mimeType              String
+  fileSize              Int
+  storagePath           String                // Path o URL a almacenamiento
+  ejercicio             Int
+  tipoContenido         String                // "BALANCE_GENERAL", "CUENTA_RESULTADOS", "LIBROS_DIARIOS", "LIBRO_MAYOR"
+  uploadedBy            String?               // UserId de quién subió
+  uploadedAt            DateTime              @default(now())
+  closure               AccountingClosure     @relation(fields: [closureId], references: [id], onDelete: Cascade)
+
+  @@index([companyId])
+  @@index([ejercicio])
+  @@index([tipoContenido])
+}
+
+/// Datos de ejercicios anteriores (para comparativas, auditoría, etc.).
+model PriorYearData {
+  id                    String                @id @default(cuid())
+  companyId             String
+  ejercicio             Int
+  estado                String                // "BORRADOR", "CONFIRMADO", "AUDITADO"
+  baseImponible         Float                 @default(0)
+  ivaDevengado          Float                 @default(0)
+  ivaRepercutido        Float                 @default(0)
+  irpfRetenido          Float                 @default(0)
+  gasto                 Float                 @default(0)
+  ingresos              Float                 @default(0)
+  beneficio             Float                 @default(0)
+  datosJSON             String?               @db.Text // Estructura completa de datos contables
+  observaciones         String?               @db.Text
+  createdAt             DateTime              @default(now())
+  updatedAt             DateTime              @updatedAt
+
+  @@unique([companyId, ejercicio])
+  @@index([companyId])
+  @@index([ejercicio])
+}
+
+/// ============================================================================
+/// MOTOR CONTABLE AUTOMÁTICO (PGC Español)
+/// ============================================================================
+
+/// Asiento contable (entrada en el libro mayor)
+model JournalEntry {
+  id                    String                @id @default(cuid())
+  companyId             String
+  fecha                 DateTime
+  numeroAsiento         String                // FAC-ING-xxx, FAC-GAST-xxx, AJUSTE-xxx
+  descripcion           String
+  origen                String                // FACTURA_INGRESO, FACTURA_GASTO, TESORERIA, AJUSTE_MANUAL
+  estado                String                @default("DRAFT") // DRAFT, PENDING_REVIEW, POSTED, REVERSED
+  invoiceId             String?               // Referencia a factura de ingreso
+  invoiceType           String?               // INGRESO, GASTO
+  lineas                JournalEntryLine[]
+  createdAt             DateTime              @default(now())
+  updatedAt             DateTime              @updatedAt
+
+  @@unique([companyId, numeroAsiento])
+  @@index([companyId])
+  @@index([fecha])
+  @@index([origen])
+}
+
+/// Línea de asiento contable (debe/haber)
+model JournalEntryLine {
+  id                    String                @id @default(cuid())
+  entryId               String
+  accountCode           String                // Código PGC (700, 430, 477, etc.)
+  accountName           String
+  debe                  Float                 @default(0)
+  haber                 Float                 @default(0)
+  referencia            String?               // Número de factura, movimiento, etc.
+  companyId             String
+  createdAt             DateTime              @default(now())
+
+  entry                 JournalEntry         @relation(fields: [entryId], references: [id], onDelete: Cascade)
+
+  @@index([entryId])
+  @@index([accountCode])
+  @@index([companyId])
+}
+
+/// Libro de IVA (facturas emitidas y recibidas)
+model VATBook {
+  id                    String                @id @default(cuid())
+  companyId             String
+  tipoLibro             String                // EMITIDAS, RECIBIDAS
+  numeroFactura         String
+  fechaFactura          DateTime
+  nifTercero            String                // NIF del cliente/proveedor
+  nombreTercero         String
+  baseImponible         Float
+  tipoIva               Int                   // 0, 4, 10, 21
+  cuotaIva              Float
+  asientoId             String?               // Referencia al asiento contable
+  observaciones         String?               @db.Text
+  createdAt             DateTime              @default(now())
+
+  @@unique([companyId, tipoLibro, numeroFactura])
+  @@index([companyId])
+  @@index([fechaFactura])
+  @@index([tipoLibro])
+}
+
+/// ============================================================================
+/// ASISTENTE "CARMEN" (chat contable con RAG)
+/// ============================================================================
+
+/// Sesion de conversacion con Carmen.
+model ChatSession {
+  id        String        @id @default(cuid())
+  companyId String
+  userId    String
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+  messages  ChatMessage[]
+
+  @@index([companyId])
+  @@index([userId])
+}
+
+/// Mensaje (usuario o asistente) dentro de una sesion de Carmen.
+model ChatMessage {
+  id        String      @id @default(cuid())
+  sessionId String
+  companyId String
+  userId    String
+  role      String      // user | assistant
+  content   String      @db.Text
+  sources   Json?       // Fuentes citadas (DocumentChunk[] resumido)
+  createdAt DateTime    @default(now())
+
+  session   ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId])
+  @@index([companyId])
+  @@index([createdAt])
+}
+
+/// Libro de retenciones (IRPF, otros)
+model RetentionBook {
+  id                      String                @id @default(cuid())
+  companyId               String
+  ano                     Int
+  /// Mes del ejercicio (1-12). Nullable: registros creados antes de esta columna
+  /// no lo tienen y los informes caen a la aproximacion por año (ver reports.service).
+  mes                     Int?
+  tipoRetencionNombre     String                // PROFESIONAL, ASALARIADO
+  nifTercero              String
+  nombreTercero           String
+  baseImponible           Float
+  porcentajeRetencion     Int                   // 7, 15, 19%
+  cuotaRetencion          Float
+  asientoId               String?
+  createdAt               DateTime              @default(now())
+
+  @@index([companyId])
+  @@index([ano])
+  @@index([ano, mes])
+  @@index([tipoRetencionNombre])
+}
+
+/// ============================================================================
+/// FACTURAS DE GASTO (COMPRAS / SERVICIOS RECIBIDOS)
+/// ============================================================================
+
+/// Proveedor (acreedor que nos emite facturas de gasto).
+/// Espejo de Customer pero para el lado pasivo (cuentas 400).
+model Supplier {
+  id             String                @id @default(cuid())
+  companyId      String
+  nombreFiscal   String
+  nifCif         String
+  direccion      String?
+  pais           String                @default("ES")
+  provincia      String?
+  municipio      String?
+  cp             String?
+  email          String?
+  telefono       String?
+  activo         Boolean               @default(true)
+  createdAt      DateTime              @default(now())
+  updatedAt      DateTime              @updatedAt
+  invoices       ExpenseInvoice[]
+  contacts       SupplierContact[]
+  bankAccounts   SupplierBankAccount[]
+
+  @@unique([companyId, nifCif])
+  @@index([companyId])
+}
+
+/// Factura de gasto (dinero que debemos pagar = compra/servicio recibido).
+/// Espejo de IncomeInvoice para el ciclo de compras.
+model ExpenseInvoice {
+  id               String               @id @default(cuid())
+  companyId        String
+  supplierId       String
+  serie            String
+  numero           Int
+  numeroCompleto   String               @unique // serie + numero formateado
+  fechaEmision     String               // YYYY-MM-DD
+  fechaVencimiento String               // YYYY-MM-DD
+  /// DRAFT | CONFIRMED | ACCOUNTED
+  estado           String               @default("DRAFT")
+  /// Tipo de gasto PGC: COMPRA | SERVICIO_PROFESIONAL | ALQUILER | SUMINISTROS
+  tipoGasto        String               @default("COMPRA")
+  baseTotal        Float                @default(0)
+  ivaTotal         Float                @default(0)
+  /// Tipo de IVA principal aplicado (0, 4, 10, 21)
+  tipoIva          Int                  @default(21)
+  retencionTotal   Float                @default(0)
+  /// Tipo de retención IRPF (0, 7, 15, 19)
+  tipoRetencion    Int                  @default(0)
+  /// Importe neto a pagar al proveedor = base + IVA - retención
+  totalFactura     Float                @default(0)
+  observaciones    String?              @db.Text
+  createdAt        DateTime             @default(now())
+  updatedAt        DateTime             @updatedAt
+  lineas           ExpenseInvoiceLine[]
+  supplier         Supplier             @relation(fields: [supplierId], references: [id], onDelete: Restrict)
+
+  @@unique([companyId, serie, numero])
+  @@index([companyId, estado])
+  @@index([supplierId])
+}
+
+/// Línea de factura de gasto.
+model ExpenseInvoiceLine {
+  id                  String         @id @default(cuid())
+  invoiceId           String
+  descripcion         String
+  cantidad            Float
+  precioUnitario      Float
+  baseLine            Float
+  descuentoPorcentaje Float          @default(0)
+  descuentoImporte    Float          @default(0)
+  tipoIva             Int            @default(21)
+  ivaImporte          Float          @default(0)
+  tipoRetencion       Int            @default(0)
+  retencionImporte    Float          @default(0)
+  /// Código PGC de gasto (ej. "600", "622", "621")
+  accountCode         String?
+  invoice             ExpenseInvoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  @@index([invoiceId])
+}
+
+/// ============================================================================
+/// PRODUCTOS (catálogo; migrado de FacturaScripts a Prisma, épico FS->Prisma)
+/// ============================================================================
+
+model Product {
+  id          String   @id @default(cuid())
+  companyId   String
+  referencia  String
+  descripcion String?
+  precio      Float    @default(0)
+  stock       Float    @default(0)
+  bloqueado   Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([companyId, referencia])
+  @@index([companyId])
+}
+
+/// ============================================================================
+/// BANCOS (sustituye almacenamiento en memoria de bancos.service.ts)
+/// ============================================================================
+
+/// Cuenta bancaria de la empresa.
+model BankAccount {
+  id              String         @id @default(cuid())
+  companyId       String
+  iban            String
+  bancoNombre     String?
+  /// Referencia a subcuenta 572xxx del plan contable.
+  subcuentaCodigo String
+  activa          Boolean        @default(true)
+  createdAt       DateTime       @default(now())
+  movimientos     BankMovement[]
+
+  @@index([companyId])
+}
+
+/// Movimiento bancario importado (CSV o norma43).
+model BankMovement {
+  id               String      @id @default(cuid())
+  companyId        String
+  cuentaBancariaId String
+  /// YYYY-MM-DD
+  fecha            String
+  importe          Float
+  concepto         String
+  referencia       String?
+  /// 'norma43' | 'csv'
+  origen           String
+  conciliado       Boolean     @default(false)
+  createdAt        DateTime    @default(now())
+  cuentaBancaria   BankAccount @relation(fields: [cuentaBancariaId], references: [id], onDelete: Cascade)
+
+  @@index([companyId])
+  @@index([cuentaBancariaId])
+}
+
+/// ============================================================================
+/// CONFIGURACION DE CIERRE (sustituye almacenamiento en memoria de cierreConfig.service.ts)
+/// ============================================================================
+
+/// Configuracion de cierre contable por empresa (controla el bloqueo por descuadre bancario).
+model CompanyCierreConfig {
+  companyId          String   @id
+  exigirCuadreBancos Boolean  @default(true)
+  /// Tolerancia de descuadre en EUR.
+  toleranciaCuadre   Float    @default(0.01)
+  updatedAt          DateTime @updatedAt
+}
+
+/// ============================================================================
+/// SEGURIDAD: REVOCACION DE REFRESH TOKENS
+/// ============================================================================
+
+/// jti de refresh tokens revocados (logout o reuso detectado tras rotacion).
+/// Permite invalidar un refresh token robado antes de que expire (7 dias).
+/// Las filas con expiresAt en el pasado se limpian de forma oportunista en
+/// cada llamada a /auth/refresh (ver auth.service.ts) — no requiere cron.
+model RevokedToken {
+  jti       String   @id
+  userId    String
+  expiresAt DateTime
+  revokedAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+/// ============================================================================
+/// NOMINAS (sustituye almacenamiento en memoria de nominas.service.ts)
+/// ============================================================================
+
+/// Resumen de nomina mensual importado (sustituye storage en memoria).
+/// PENDIENTE BLOQUEADO: el asiento contable de esta nomina (640/642/476/4751/465)
+/// se calcula en nominas.service.ts:generarAsientoNomina() pero NO se contabiliza
+/// automaticamente — requiere decidir como se integra con asientos.service.ts
+/// (FacturaScripts) antes de activarlo, para no crear asientos incorrectos en una
+/// instancia FS real sin pruebas. Ver comentario en el servicio.
+model NominaResumen {
+  id                              String   @id @default(cuid())
+  companyId                       String
+  mes                             Int
+  ejercicio                       Int
+  totalBruto                      Float
+  totalSeguridadSocialEmpresa     Float    @default(0)
+  totalSeguridadSocialTrabajador  Float    @default(0)
+  totalIRPF                       Float    @default(0)
+  totalLiquido                    Float    @default(0)
+  createdAt                       DateTime @default(now())
+
+  @@index([companyId])
+  @@index([companyId, ejercicio])
+}
+
+/// ============================================================================
+/// REGISTRO MERCANTIL: legalización de libros + depósito de cuentas anuales.
+/// La API NO firma (no gestiona certificados): genera artefactos (PDF/A, ZIP,
+/// hashes) y registra el estado de la presentación telemática. Ver
+/// docs/ADR-003-registro-mercantil.md.
+/// ============================================================================
+
+/// Configuración legal/societaria por empresa (1-1 con Company).
+model LegalConfig {
+  id                          String   @id @default(cuid())
+  companyId                   String   @unique
+  tipoSociedad                String   @default("SL") // SA, SL, SLU (unipersonal), SCP, etc.
+  ejercicioInicio             String   @default("01-01") // MM-DD de inicio del ejercicio
+  ejercicioFin                String   @default("12-31") // MM-DD de cierre del ejercicio
+  obligaLibroSocios           Boolean  @default(true)  // Libro registro de socios/acciones
+  obligaLibroContratos        Boolean  @default(false) // Solo sociedades unipersonales
+  registroMercantilProvincia  String?  // Provincia del Registro Mercantil del domicilio social
+  createdAt                   DateTime @default(now())
+  updatedAt                   DateTime @updatedAt
+}
+
+/// Ejercicio contable de una empresa.
+model FiscalYear {
+  id                       String                @id @default(cuid())
+  companyId                String
+  label                    String                // ej. "2026"
+  fechaInicio              String                // YYYY-MM-DD
+  fechaFin                 String                // YYYY-MM-DD
+  estado                   String                @default("OPEN")  // OPEN | CLOSED
+  closingDate              String?               // YYYY-MM-DD (se fija al cerrar)
+  legalizationDeadline     String?               // cierre + 4 meses
+  accountsDepositDeadline  String?               // cierre + 7 meses
+  asientosBloqueados       Boolean               @default(false)
+  createdAt                DateTime              @default(now())
+  updatedAt                DateTime              @updatedAt
+  books                    LegalBook[]
+  packages                 LegalizationPackage[]
+  annualAccounts           AnnualAccounts[]
+
+  @@unique([companyId, label])
+  @@index([companyId])
+}
+
+/// Libro contable o societario generado (PDF/A) para un ejercicio.
+model LegalBook {
+  id            String     @id @default(cuid())
+  companyId     String
+  fiscalYearId  String
+  type          String     // DIARIO | INVENTARIOS_CUENTAS_ANUALES | ACTAS | SOCIOS | CONTRATOS
+  filePath      String
+  format        String     @default("PDF/A")
+  hash          String     // SHA-256 del PDF
+  status        String     @default("GENERATED") // PENDING | GENERATED | PACKAGE_READY | FILED | ACCEPTED | REJECTED
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+  fiscalYear    FiscalYear @relation(fields: [fiscalYearId], references: [id], onDelete: Cascade)
+
+  @@index([companyId])
+  @@index([fiscalYearId])
+}
+
+/// Expediente de legalización (ZIP de libros) presentado al Registro Mercantil.
+model LegalizationPackage {
+  id                   String     @id @default(cuid())
+  companyId            String
+  fiscalYearId         String
+  zipPath              String
+  hash                 String     // SHA-256 del ZIP
+  size                 Int        @default(0)
+  status               String     @default("CREATED") // CREATED | FILED | ACCEPTED | REJECTED
+  version              Int        @default(1) // Versión del expediente (1, 2, 3, etc.)
+  expiresAt            DateTime?  // Fecha de caducidad de esta versión
+  isLatestVersion      Boolean    @default(true) // ¿Es la versión más reciente?
+  filedAt              String?
+  registryOffice       String?
+  registryEntryNumber  String?
+  csv                  String?    // CSV del justificante de presentación
+  diligencePath        String?    // PDF de la diligencia emitida por el Registro
+  createdAt            DateTime   @default(now())
+  updatedAt            DateTime   @updatedAt
+  fiscalYear           FiscalYear @relation(fields: [fiscalYearId], references: [id], onDelete: Cascade)
+
+  @@index([companyId])
+  @@index([fiscalYearId])
+  @@index([companyId, isLatestVersion])
+  @@index([companyId, expiresAt])
+}
+
+/// Depósito de cuentas anuales (balance, PyG, memoria) en el Registro Mercantil.
+model AnnualAccounts {
+  id                   String     @id @default(cuid())
+  companyId            String
+  fiscalYearId         String
+  modelo               String     @default("PYME") // NORMAL | ABREVIADO | PYME
+  filePath             String     // PDF de la memoria
+  dataJson             Json?      // Balance + PyG + memoria en formato interno
+  format               String     @default("PDF+JSON")
+  hash                 String
+  status               String     @default("DRAFT") // DRAFT | READY | FILED | APROBADO | DEFECTOS | RECHAZADO
+  version              Int        @default(1) // Versión de las cuentas (1, 2, 3, etc.)
+  expiresAt            DateTime?  // Fecha de caducidad de esta versión
+  isLatestVersion      Boolean    @default(true) // ¿Es la versión más reciente?
+  filedAt              String?
+  registryEntryNumber  String?
+  csv                  String?
+  createdAt            DateTime   @default(now())
+  updatedAt            DateTime   @updatedAt
+  fiscalYear           FiscalYear @relation(fields: [fiscalYearId], references: [id], onDelete: Cascade)
+
+  @@index([companyId])
+  @@index([fiscalYearId])
+  @@index([companyId, isLatestVersion])
+  @@index([companyId, expiresAt])
+}
+
+/// Movimientos contables (ingresos/gastos)
+model Movement {
+  id                String   @id @default(cuid())
+  companyId         String
+  type              String   // "income" | "expense"
+  amount            Decimal  @db.Decimal(14, 2)
+  category          String
+  description       String
+  date              DateTime
+  referenceDocument String?
+  fiscalYear        Int
+  status            String   @default("draft") // "draft" | "approved" | "reconciled"
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  company Company @relation("movements", fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@index([companyId])
+  @@index([date])
+  @@index([type])
+}
+
+/// ============================================================================
+/// OCR SESSIONS Y DOCUMENTOS (Lector OCR mejorado)
+/// ============================================================================
+
+/// Sesión de procesamiento OCR (subida de archivo → extracción de datos)
+model OCRSession {
+  id                       String        @id @default(cuid())
+  companyId                String
+  userId                   String?       // Usuario que inició la sesión
+  originalFileName         String
+  originalFilePath         String
+  originalFileSize         Int
+  originalMimeType         String
+  language                 String        @default("es") // Idioma detectado/especificado
+  invoiceType              String        @default("expense") // "income" | "expense"
+  source                   String        @default("manual") // "manual" | "email" | "api"
+  /// Estado: PENDING | PROCESSING | COMPLETED | FAILED
+  status                   String        @default("PENDING")
+  ilovepdfTaskId           String?       // ID de tarea en iLovePDF (si se usa)
+  processingStartedAt      DateTime?
+  processingCompletedAt    DateTime?
+  processingTimeSeconds    Int?
+  /// Ruta al PDF procesado por OCR
+  ocrPdfPath               String?
+  ocrPdfSize               Int?
+  /// Texto completo extraído por OCR
+  ocrTextExtracted         String?       @db.Text
+  /// Número de páginas procesadas
+  ocrPageCount             Int?
+  /// Número de caracteres extraídos
+  ocrCharCount             Int?
+  /// Código de error (si status=FAILED)
+  errorCode                String?
+  /// Mensaje de error (si status=FAILED)
+  errorMessage             String?
+  createdAt                DateTime      @default(now())
+  updatedAt                DateTime      @updatedAt
+  /// Relación con documentos extraídos de esta sesión
+  documents                OCRDocument[]
+
+  @@index([companyId, status])
+  @@index([companyId, createdAt])
+  @@index([userId])
+}
+
+/// Documento OCR extraído de una sesión (datos estructurados: números, importes, etc.)
+model OCRDocument {
+  id                 String        @id @default(cuid())
+  sessionId          String
+  companyId          String
+  /// Datos extraídos (JSON con cliente, fecha, número, base, iva, líneas, etc.)
+  extractedData      Json?
+  /// ID de la factura de ingreso vinculada (tras verificación)
+  linkedInvoiceId    String?
+  /// ID del documento del lector de ingresos vinculado
+  linkedReaderDocument String?
+  /// Confianza de la extracción OCR (0-100)
+  confidenceScore    Float?
+  createdAt          DateTime      @default(now())
+  updatedAt          DateTime      @updatedAt
+
+  session            OCRSession    @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId])
+  @@index([companyId])
+  @@index([linkedInvoiceId])
+}
+
+/// ============================================================================
+/// PROVEEDORES: CONTACTOS, CUENTAS BANCARIAS, AUDITORÍA
+/// ============================================================================
+
+/// Contacto múltiple de un proveedor (personas de contacto)
+model SupplierContact {
+  id                String    @id @default(cuid())
+  supplierId        String
+  nombre            String
+  apellido          String?
+  email             String?
+  telefono          String?
+  rol               String    @default("general") // "general", "facturación", "técnico", etc.
+  esPrincipal       Boolean   @default(false)
+  observaciones     String?   @db.Text
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  supplier          Supplier  @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+
+  @@index([supplierId])
+  @@index([esPrincipal])
+}
+
+/// Cuenta bancaria de un proveedor (IBAN, BIC, datos de pago)
+model SupplierBankAccount {
+  id                      String    @id @default(cuid())
+  supplierId              String
+  iban                    String
+  bic                     String?
+  banco                   String?
+  alias                   String    @default("Cuenta principal")
+  formaPagoPorDefecto     String    @default("transferencia") // "transferencia", "cheque", "efectivo"
+  esPrincipal             Boolean   @default(false)
+  observaciones           String?   @db.Text
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
+
+  supplier                Supplier  @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+
+  @@unique([supplierId, iban])
+  @@index([supplierId])
+  @@index([esPrincipal])
+}
+
+/// Auditoría de cambios en proveedores (log append-only)
+model SupplierAudit {
+  id                String    @id @default(cuid())
+  supplierId        String
+  usuarioEmail      String?
+  tipoAccion        String    // "create" | "update" | "delete"
+  campo             String?   // Campo modificado (si es update)
+  valorAnterior     String?   // Valor anterior (JSON serializado)
+  valorNuevo        String?   // Valor nuevo (JSON serializado)
+  descripcion       String?   @db.Text
+  createdAt         DateTime  @default(now())
+
+  @@index([supplierId])
+  @@index([tipoAccion])
+  @@index([createdAt])
+}
+
+/// Archivo de documento contable (facturas, comprobantes, etc.)
+model DocumentoArchivo {
+  id                  String        @id @default(cuid())
+  companyId           String
+  /// "ingreso" | "gasto"
+  tipo                String
+  numeroFactura       String?
+  emisor              String?
+  receptor            String?
+  nifCif              String?
+  fecha               String        // YYYY-MM-DD
+  mes                 Int
+  trimestre           Int
+  anio                Int
+  base                Decimal?      @db.Decimal(14, 2)
+  iva                 Decimal?      @db.Decimal(14, 2)
+  retencion           Decimal?      @db.Decimal(14, 2)
+  total               Decimal?      @db.Decimal(14, 2)
+  archivoNombre       String
+  archivoTipo         String        // MIME type
+  archivoTamanio      Int
+  archivoPath         String        // Ruta o URL en storage
+  archivoHash         String        // SHA-256
+  readerDocumentId    String?       // FK a IncomeReaderDocument
+  incomeInvoiceId     String?       // FK a IncomeInvoice
+  origen              String?       // "manual" | "email" | "api"
+  /// "activo" | "reemplazado" | "anulado"
+  estado              String        @default("activo")
+  confianza           Float?        // Score de confianza (0-100)
+  observaciones       String?       @db.Text
+  uploadedBy          String?       // UserId
+  uploadedAt          DateTime      @default(now())
+  updatedAt           DateTime      @updatedAt
+
+  @@index([companyId])
+  @@index([companyId, anio, mes])
+  @@index([companyId, estado])
+  @@index([numeroFactura])
+  @@index([fecha])
+}

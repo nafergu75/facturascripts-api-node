@@ -1,0 +1,253 @@
+### Import API - Test Requests
+### Use con REST Client extension (VS Code) o Postman
+### Reemplaza <token> con JWT válido y <companyId> con ID real
+
+@baseUrl = http://localhost:3000
+@token = Bearer <token>
+@companyId = 1
+@sessionId = upload_1721302345678_a1b2c3d4e
+
+###
+### 1. Upload de Archivo
+### Requiere archivo real en la ruta indicada
+###
+POST {{baseUrl}}/companies/{{companyId}}/import/upload
+Authorization: {{token}}
+Content-Type: multipart/form-data; boundary=----WebKitFormBoundary
+
+------WebKitFormBoundary
+Content-Disposition: form-data; name="file"; filename="balance_2025.xlsx"
+Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
+
+< ./test-data/balance_2025.xlsx
+------WebKitFormBoundary
+Content-Disposition: form-data; name="importType"
+
+BALANCE
+------WebKitFormBoundary
+Content-Disposition: form-data; name="ejercicio"
+
+2025
+------WebKitFormBoundary
+Content-Disposition: form-data; name="sheetName"
+
+Balance
+------WebKitFormBoundary--
+
+###
+### 2. Sugerir Mapeos de Columnas
+###
+POST {{baseUrl}}/companies/{{companyId}}/import/{{sessionId}}/suggest-mapping
+Authorization: {{token}}
+Content-Type: application/json
+
+{
+  "columnMappings": {
+    "Código": null,
+    "Nombre": "cuentaNombre",
+    "Debe": "debe",
+    "Haber": "haber"
+  }
+}
+
+###
+### 3. Validar Datos (sin importar)
+###
+POST {{baseUrl}}/companies/{{companyId}}/import/{{sessionId}}/validate
+Authorization: {{token}}
+Content-Type: application/json
+
+{
+  "companyId": "{{companyId}}",
+  "importType": "BALANCE",
+  "ejercicio": 2025,
+  "columnMappings": {
+    "Código": "cuentaCodigo",
+    "Nombre": "cuentaNombre",
+    "Debe": "debe",
+    "Haber": "haber"
+  },
+  "manualAccountMappings": {
+    "1000": "100000",
+    "5000": "500000"
+  },
+  "sheetName": "Balance"
+}
+
+###
+### 4. Confirmar e Importar
+###
+POST {{baseUrl}}/companies/{{companyId}}/import/{{sessionId}}/confirm
+Authorization: {{token}}
+Content-Type: application/json
+
+{
+  "companyId": "{{companyId}}",
+  "importType": "BALANCE",
+  "ejercicio": 2025,
+  "columnMappings": {
+    "Código": "cuentaCodigo",
+    "Nombre": "cuentaNombre",
+    "Debe": "debe",
+    "Haber": "haber"
+  },
+  "manualAccountMappings": {
+    "1000": "100000",
+    "1200": "120000",
+    "1300": "130000",
+    "1400": "140000",
+    "2100": "210000",
+    "2200": "220000",
+    "3000": "300000",
+    "4000": "400000",
+    "5000": "500000"
+  }
+}
+
+###
+### 5. Obtener Estado
+###
+GET {{baseUrl}}/companies/{{companyId}}/import/{{sessionId}}/status
+Authorization: {{token}}
+
+###
+### 6. Obtener Progreso
+###
+GET {{baseUrl}}/companies/{{companyId}}/import/{{sessionId}}/progress
+Authorization: {{token}}
+
+###
+### 7. Obtener Asiento de Apertura (formato JSON)
+###
+GET {{baseUrl}}/companies/{{companyId}}/import/{{sessionId}}/opening-entry
+Authorization: {{token}}
+
+###
+### 8. Obtener Asiento de Apertura (formato CSV)
+###
+GET {{baseUrl}}/companies/{{companyId}}/import/{{sessionId}}/opening-entry?format=csv
+Authorization: {{token}}
+
+###
+### 9. Cancelar Importación
+###
+DELETE {{baseUrl}}/companies/{{companyId}}/import/{{sessionId}}/cancel
+Authorization: {{token}}
+
+###
+### EJEMPLO COMPLETO: Flujo de 4 pasos
+###
+
+### Paso 1: Upload (genera sessionId)
+POST {{baseUrl}}/companies/{{companyId}}/import/upload
+Authorization: {{token}}
+Content-Type: multipart/form-data; boundary=----WebKitFormBoundary
+
+------WebKitFormBoundary
+Content-Disposition: form-data; name="file"; filename="balance.xlsx"
+Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
+
+< ./test-data/balance_2025.xlsx
+------WebKitFormBoundary
+Content-Disposition: form-data; name="importType"
+
+BALANCE
+------WebKitFormBoundary
+Content-Disposition: form-data; name="ejercicio"
+
+2025
+------WebKitFormBoundary--
+
+### Paso 2: Validate (usa sessionId del paso 1)
+# Copiar sessionId de la respuesta anterior y reemplazar en @sessionId
+POST {{baseUrl}}/companies/{{companyId}}/import/{{sessionId}}/validate
+Authorization: {{token}}
+Content-Type: application/json
+
+{
+  "companyId": "{{companyId}}",
+  "importType": "BALANCE",
+  "ejercicio": 2025,
+  "columnMappings": {
+    "Código": "cuentaCodigo",
+    "Nombre": "cuentaNombre",
+    "Debe": "debe",
+    "Haber": "haber"
+  }
+}
+
+### Paso 3: Confirm (una vez validado)
+POST {{baseUrl}}/companies/{{companyId}}/import/{{sessionId}}/confirm
+Authorization: {{token}}
+Content-Type: application/json
+
+{
+  "companyId": "{{companyId}}",
+  "importType": "BALANCE",
+  "ejercicio": 2025,
+  "columnMappings": {
+    "Código": "cuentaCodigo",
+    "Nombre": "cuentaNombre",
+    "Debe": "debe",
+    "Haber": "haber"
+  }
+}
+
+### Paso 4: Obtener resultado
+GET {{baseUrl}}/companies/{{companyId}}/import/{{sessionId}}/status
+Authorization: {{token}}
+
+###
+### TESTS ADICIONALES
+###
+
+### Test: Upload sin autenticación (debe fallar con 401)
+POST {{baseUrl}}/companies/{{companyId}}/import/upload
+Content-Type: multipart/form-data; boundary=----WebKitFormBoundary
+
+------WebKitFormBoundary
+Content-Disposition: form-data; name="file"; filename="test.xlsx"
+
+<test
+------WebKitFormBoundary--
+
+### Test: Sesión no encontrada (404)
+GET {{baseUrl}}/companies/{{companyId}}/import/nonexistent_session_id/status
+Authorization: {{token}}
+
+### Test: Validar sin sesión (404)
+POST {{baseUrl}}/companies/{{companyId}}/import/invalid_session/validate
+Authorization: {{token}}
+Content-Type: application/json
+
+{
+  "companyId": "{{companyId}}",
+  "importType": "BALANCE",
+  "ejercicio": 2025,
+  "columnMappings": {}
+}
+
+### Test: Archivo inválido - formato no soportado
+# Intenta subir un archivo .txt o similar
+POST {{baseUrl}}/companies/{{companyId}}/import/upload
+Authorization: {{token}}
+Content-Type: multipart/form-data; boundary=----WebKitFormBoundary
+
+------WebKitFormBoundary
+Content-Disposition: form-data; name="file"; filename="invalid.txt"
+Content-Type: text/plain
+
+Contenido inválido
+------WebKitFormBoundary
+Content-Disposition: form-data; name="importType"
+
+BALANCE
+------WebKitFormBoundary
+Content-Disposition: form-data; name="ejercicio"
+
+2025
+------WebKitFormBoundary--
+
+### Test: Cancelar importación
+DELETE {{baseUrl}}/companies/{{companyId}}/import/{{sessionId}}/cancel
+Authorization: {{token}}
