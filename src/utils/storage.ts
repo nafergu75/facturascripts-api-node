@@ -10,9 +10,13 @@ import * as path from 'path';
  *    de solo lectura (salvo /tmp, efímero).
  *  - **Disco local** (carpeta `storage/`) en desarrollo. Comportamiento previo.
  *
- * `putObject` devuelve una REFERENCIA opaca: URL pública (Blob) o ruta relativa
- * (local). Guárdala en BD tal cual; `getObject` sabe leer ambas. Las rutas
- * locales antiguas siguen funcionando (compatibilidad hacia atrás).
+ * `putObject` devuelve una REFERENCIA opaca: URL del blob o ruta relativa
+ * (local). Guárdala en BD tal cual; `getObject` sabe leer ambas.
+ *
+ * Los blobs son PRIVADOS: contienen libros oficiales, cuentas anuales y
+ * facturas, y sus rutas son predecibles (registro-mercantil/<empresa>/<ejercicio>/...).
+ * Solo se leen desde el servidor, con el token, y se sirven a traves de la API
+ * tras comprobar el acceso. El store de Vercel Blob debe admitir acceso privado.
  */
 
 const BLOB_TOKEN = process.env.BLOB_READ_WRITE_TOKEN;
@@ -26,12 +30,15 @@ export async function putObject(
   if (usarBlob) {
     const { put } = await import('@vercel/blob');
     const res = await put(key, data, {
-      access: 'public',
+      access: 'private',
       contentType,
       token: BLOB_TOKEN,
       addRandomSuffix: false,
+      // La misma ruta se reescribe a proposito (p. ej. el resumen mensual de
+      // facturas archivadas); sin esto la segunda subida falla.
+      allowOverwrite: true,
     });
-    return res.url; // URL pública del objeto
+    return res.url; // referencia; no es accesible sin el token
   }
 
   const ruta = path.join(process.cwd(), 'storage', key);
@@ -41,7 +48,14 @@ export async function putObject(
 }
 
 export async function getObject(ref: string): Promise<Buffer> {
+  if (usarBlob && /^https:\/\/[^/]+\.blob\.vercel-storage\.com\//i.test(ref)) {
+    const { get } = await import('@vercel/blob');
+    const res = await get(ref, { access: 'private', token: BLOB_TOKEN });
+    if (!res || res.statusCode !== 200 || !res.stream) throw new Error(`El objeto no existe o no se pudo leer: ${ref}`);
+    return Buffer.from(await new Response(res.stream).arrayBuffer());
+  }
   if (/^https?:\/\//i.test(ref)) {
+    // Referencias antiguas a URLs publicas.
     const r = await fetch(ref);
     if (!r.ok) throw new Error(`No se pudo leer el objeto (${r.status}): ${ref}`);
     return Buffer.from(await r.arrayBuffer());
