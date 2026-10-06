@@ -63,14 +63,18 @@ describe('crearDocumentoArchivo', () => {
     await crearDocumentoArchivo('empresa-1', {
       tipo: 'gasto',
       fecha: '2026-03-15',
+      numeroFactura: 'F/2026/../../001',
+      emisor: '..\\..\\Proveedor',
       archivoNombre: '..\\..\\..\\factura proveedor.pdf',
       archivoTipo: 'application/pdf',
       archivoBuffer: Buffer.from('pdf'),
     }).catch(() => undefined); // solo interesa la clave usada al guardar
 
     const [key] = putObject.mock.calls[0];
-    expect(key).toMatch(/^archivos\/empresa-1\/2026\/03\/\d+-factura_proveedor\.pdf$/);
-    expect(key).not.toContain('..');
+    // Va a la carpeta del trimestre de su fecha, con un nombre sin rutas.
+    expect(key).toMatch(/^archivo\/empresa-1\/2026\/1T\/gastos\/2026-03-15_F-2026-\.\.-\.\.-001_\.\.-\.\.-Proveedor\.pdf$/);
+    expect(key.split('/')).toHaveLength(6);
+    expect(key.split('/')).not.toContain('..');
     expect(key).not.toContain('\\');
   });
 });

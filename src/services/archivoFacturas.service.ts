@@ -66,6 +66,8 @@ export interface ElementoTrimestre {
   iva: number;
   total: number;
   documentoId: string | null;
+  /** Nombre del fichero archivado (para descargarlo con su extensión). */
+  archivoNombre: string | null;
   /** Hay una copia guardada en el almacenamiento. */
   tieneArchivo: boolean;
   /** Se puede descargar (las ventas se generan al vuelo aunque no haya copia). */
@@ -144,7 +146,11 @@ export function extensionDe(nombre: string | undefined, mime: string | undefined
 
 /** Nombre del fichero dentro de su carpeta: <fecha>_<numero o id>_<tercero>.<ext> */
 export function nombreArchivoFactura(fecha: string, numeroOId: string, tercero: string | null | undefined, ext: string): string {
-  const base = sinTildes([fecha, numeroOId, tercero || 'sin-tercero'].join('_')).replace(/\s+/g, '-');
+  // Las barras se cambian por guiones ANTES de limpiar: un número como
+  // "F/2026/001" no debe partir el nombre (nombreSeguro se quedaría con "001").
+  const base = sinTildes([fecha, numeroOId, tercero || 'sin-tercero'].join('_'))
+    .replace(/[\\/]+/g, '-')
+    .replace(/\s+/g, '-');
   return `${nombreSeguro(base).slice(0, 110)}.${nombreSeguro(ext).toLowerCase()}`;
 }
 
@@ -521,6 +527,7 @@ export async function listarTrimestre(companyId: string, anio: number, trimestre
       iva: num(v.ivaTotal),
       total: num(v.totalFactura),
       documentoId: d?.id ?? null,
+      archivoNombre: d?.archivoNombre || null,
       tieneArchivo: !!d?.archivoPath,
       descargable: true,
       origen: d?.origen ?? 'emitida',
@@ -538,6 +545,7 @@ export async function listarTrimestre(companyId: string, anio: number, trimestre
       iva: num(g.ivaTotal),
       total: num(g.totalFactura),
       documentoId: d?.id ?? null,
+      archivoNombre: d?.archivoNombre || null,
       tieneArchivo: !!d?.archivoPath,
       descargable: !!d?.archivoPath,
       origen: d?.origen ?? 'registrada',
@@ -556,6 +564,7 @@ export async function listarTrimestre(companyId: string, anio: number, trimestre
       iva: num(d.iva),
       total: num(d.total),
       documentoId: d.id,
+      archivoNombre: d.archivoNombre || null,
       tieneArchivo: !!d.archivoPath,
       descargable: !!d.archivoPath,
       origen: d.origen ?? 'manual',

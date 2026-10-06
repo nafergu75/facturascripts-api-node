@@ -128,6 +128,10 @@ describe('archivo por trimestres: rutas y nombres', () => {
     );
   });
 
+  it('un número con barras no parte el nombre', () => {
+    expect(nombreArchivoFactura('2026-07-01', 'F/2026/001', 'Cliente', 'pdf')).toBe('2026-07-01_F-2026-001_Cliente.pdf');
+  });
+
   it('un nombre malicioso no sale de la carpeta', () => {
     const nombre = nombreArchivoFactura('2026-05-01', '../../etc/passwd', '..\\..\\x', 'pdf');
     expect(nombre).not.toContain('/');
@@ -155,6 +159,7 @@ describe('resumen.csv', () => {
         iva: 210,
         total: 1210,
         documentoId: null,
+        archivoNombre: null,
         tieneArchivo: false,
         descargable: true,
         origen: 'emitida',
@@ -171,6 +176,7 @@ describe('resumen.csv', () => {
         iva: 2.21,
         total: 12.71,
         documentoId: null,
+        archivoNombre: null,
         tieneArchivo: false,
         descargable: false,
         origen: 'registrada',
