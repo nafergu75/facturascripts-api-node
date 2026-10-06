@@ -864,6 +864,18 @@ model LegalConfig {
   actividad                  String?  @db.Text // Actividad principal (nota 1 de la memoria)
   cnae                       String?
   datosRegistrales           String? // Tomo, folio, hoja e inscripcion
+  // Inscripcion en el Registro Mercantil por partes (sale al pie de las facturas).
+  registroTomo               String?
+  registroFolio              String?
+  registroHoja               String?
+  registroInscripcion        String?
+  // Pais de la empresa (ISO 3166-1 alfa-2). Fuera de ES no se aplican las
+  // validaciones ni los requisitos espanoles (NIF, CP, Registro Mercantil).
+  pais                       String   @default("ES")
+  // Contacto de la empresa (sale en las facturas).
+  telefono                   String?
+  email                      String?
+  web                        String?
   fechaConstitucion          String? // YYYY-MM-DD
   // Logo para las facturas (PNG o JPG, maximo 1 MB). En la BD y no en el
   // almacenamiento de ficheros: es pequeno y asi no depende de Vercel Blob.

@@ -18,6 +18,14 @@ export interface LegalConfigInput {
   cnae?: string | null;
   datosRegistrales?: string | null;
   fechaConstitucion?: string | null;
+  registroTomo?: string | null;
+  registroFolio?: string | null;
+  registroHoja?: string | null;
+  registroInscripcion?: string | null;
+  telefono?: string | null;
+  email?: string | null;
+  web?: string | null;
+  pais?: string;
 }
 
 const TEXTOS = [
@@ -32,14 +40,72 @@ const TEXTOS = [
   'cnae',
   'datosRegistrales',
   'fechaConstitucion',
+  'registroTomo',
+  'registroFolio',
+  'registroHoja',
+  'registroInscripcion',
+  'telefono',
+  'email',
+  'web',
 ] as const;
-const TIPOS_SOCIEDAD = ['SA', 'SL', 'SLU', 'SCP', 'OTRA'];
+// AUTONOMO: empresario individual (no se inscribe en el Registro Mercantil).
+const TIPOS_SOCIEDAD = ['SA', 'SL', 'SLU', 'SCP', 'AUTONOMO', 'OTRA'];
+/** Formas que se inscriben en el Registro Mercantil (deben llevar los datos registrales). */
+const INSCRIBIBLES = ['SA', 'SL', 'SLU'];
+
+/** Campos que faltan para que la empresa pueda facturar con todos los datos. */
+export function camposPendientesEmpresa(cfg: Record<string, unknown> | null): string[] {
+  const vacio = (k: string) => !String(cfg?.[k] ?? '').trim();
+  const espana = String(cfg?.pais ?? 'ES').toUpperCase() === 'ES';
+  const faltan: string[] = [];
+  for (const [k, nombre] of [
+    ['denominacion', 'Denominación o nombre'],
+    ['nif', espana ? 'NIF' : 'Identificación fiscal'],
+    ['domicilioSocial', 'Domicilio'],
+    ['codigoPostal', 'Código postal'],
+    ['municipio', 'Municipio'],
+    ...(espana ? ([['provincia', 'Provincia']] as const) : []),
+  ] as const) {
+    if (vacio(k)) faltan.push(nombre);
+  }
+  // El Registro Mercantil espanol solo se exige a sociedades espanolas.
+  if (espana && INSCRIBIBLES.includes(String(cfg?.tipoSociedad ?? 'SL'))) {
+    for (const [k, nombre] of [
+      ['registroMercantilProvincia', 'Registro Mercantil (provincia)'],
+      ['registroTomo', 'Tomo'],
+      ['registroFolio', 'Folio'],
+      ['registroHoja', 'Hoja'],
+      ['registroInscripcion', 'Inscripción'],
+    ] as const) {
+      if (vacio(k)) faltan.push(nombre);
+    }
+  }
+  return faltan;
+}
+
+/** "Inscrita en el Registro Mercantil de X, Tomo T, Folio F, Hoja H, Inscripción I" o null. */
+export function textoInscripcionRegistral(cfg: Record<string, unknown> | null): string | null {
+  if (!cfg) return null;
+  const v = (k: string) => String(cfg[k] ?? '').trim();
+  // Fuera de Espana: el texto libre de datos registrales, tal cual.
+  if (String(cfg.pais ?? 'ES').toUpperCase() !== 'ES') return v('datosRegistrales') || null;
+  if (!INSCRIBIBLES.includes(String(cfg.tipoSociedad ?? ''))) return null;
+  const partes = [
+    v('registroTomo') && `Tomo ${v('registroTomo')}`,
+    v('registroFolio') && `Folio ${v('registroFolio')}`,
+    v('registroHoja') && `Hoja ${v('registroHoja')}`,
+    v('registroInscripcion') && `Inscripción ${v('registroInscripcion')}`,
+  ].filter(Boolean);
+  if (!partes.length) return v('datosRegistrales') ? `Datos registrales: ${v('datosRegistrales')}` : null;
+  const reg = v('registroMercantilProvincia');
+  return `Inscrita en el Registro Mercantil${reg ? ` de ${reg}` : ''}, ${partes.join(', ')}.`;
+}
 
 /**
  * Solo los campos de la configuracion legal. Antes se guardaba el cuerpo tal
  * cual (incluidos id o companyId).
  */
-export function limpiarLegalConfig(datos: Record<string, unknown>): LegalConfigInput {
+export function limpiarLegalConfig(datos: Record<string, unknown>, paisActual = 'ES'): LegalConfigInput {
   const limpio: Record<string, unknown> = {};
   for (const campo of TEXTOS) {
     if (datos[campo] === undefined) continue;
@@ -67,6 +133,18 @@ export function limpiarLegalConfig(datos: Record<string, unknown>): LegalConfigI
     if (!/^\d{2,4}$/.test(cnae)) throw badRequest('El CNAE tiene que ser un código CNAE-2025 de 2 a 4 cifras (por ejemplo 4711).');
     limpio.cnae = cnae;
   }
+  if (typeof limpio.email === 'string' && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(limpio.email as string)) {
+    throw badRequest('El email de la empresa no es válido.');
+  }
+  if (datos.pais !== undefined) {
+    const pais = String(datos.pais).trim().toUpperCase();
+    if (!/^[A-Z]{2}$/.test(pais)) throw badRequest('El país tiene que ser un código de dos letras (ES, MA, US...).');
+    limpio.pais = pais;
+  }
+  const espana = (limpio.pais ?? paisActual) === 'ES';
+  if (espana && typeof limpio.codigoPostal === 'string' && !/^\d{5}$/.test(limpio.codigoPostal as string)) {
+    throw badRequest('El código postal tiene que tener 5 cifras.');
+  }
   if (typeof limpio.nif === 'string') limpio.nif = (limpio.nif as string).toUpperCase().replace(/[\s-]/g, '');
   if (typeof limpio.fechaConstitucion === 'string' && !/^\d{4}-\d{2}-\d{2}$/.test(limpio.fechaConstitucion as string)) {
     throw badRequest('fechaConstitucion tiene que tener el formato AAAA-MM-DD.');
@@ -78,7 +156,9 @@ export function limpiarLegalConfig(datos: Record<string, unknown>): LegalConfigI
 function sinLogo<T extends { logo?: unknown; logoMime?: string | null }>(cfg: T) {
   const { logo, logoMime, ...resto } = cfg;
   void logoMime;
-  return { ...resto, tieneLogo: !!logo };
+  const pendientes = camposPendientesEmpresa(resto as Record<string, unknown>);
+  // `completo`: la app pide estos datos al entrar en la empresa hasta que esten.
+  return { ...resto, tieneLogo: !!logo, completo: pendientes.length === 0, pendientes };
 }
 
 const LOGO_MAX = 1024 * 1024;
@@ -99,7 +179,8 @@ export const legalConfigService = {
   },
 
   async actualizar(companyId: string, datos: Record<string, unknown>) {
-    const limpio = limpiarLegalConfig(datos ?? {});
+    const actual = await prisma.legalConfig.findUnique({ where: { companyId }, select: { pais: true } });
+    const limpio = limpiarLegalConfig(datos ?? {}, actual?.pais ?? 'ES');
     delete (limpio as Record<string, unknown>).logo;
     delete (limpio as Record<string, unknown>).logoMime;
     return sinLogo(

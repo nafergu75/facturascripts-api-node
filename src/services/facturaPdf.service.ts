@@ -2,6 +2,7 @@ import { degrees, rgb, type PDFFont, type PDFPage, type RGB } from 'pdf-lib';
 import { prisma } from '../config/database';
 import { notFound } from '../utils/http-errors';
 import { crearDocumentoPdfA, guardarPdfA } from '../utils/pdf-a';
+import { textoInscripcionRegistral } from './legalConfig.service';
 
 /**
  * PDF de una factura de venta (PDF/A-2b, apto para conservarla).
@@ -68,6 +69,11 @@ export interface DatosFacturaPdf {
     codigoPostal: string | null;
     municipio: string | null;
     provincia: string | null;
+    telefono?: string | null;
+    email?: string | null;
+    web?: string | null;
+    /** "Inscrita en el Registro Mercantil de ..." (sociedades), al pie en letra pequena. */
+    inscripcion?: string | null;
   } | null;
   /** Factura que corrige una rectificativa. */
   original: { numeroCompleto: string | null; fechaEmision: string } | null;
@@ -297,7 +303,11 @@ export async function renderizarFactura(f: DatosFacturaPdf): Promise<Buffer> {
     'Emisor',
     nombreEmpresa,
     nifEmpresa,
-    [e?.domicilioSocial, lineaPoblacion(e?.codigoPostal, e?.municipio, e?.provincia)],
+    [
+      e?.domicilioSocial,
+      lineaPoblacion(e?.codigoPostal, e?.municipio, e?.provincia),
+      [e?.telefono && `Tel. ${e.telefono}`, e?.email, e?.web].filter(Boolean).join(' · ') || null,
+    ],
     !e?.denominacion?.trim(),
   );
   const c = f.cliente;
@@ -504,7 +514,10 @@ export async function renderizarFactura(f: DatosFacturaPdf): Promise<Buffer> {
 
   // ---------- Pie en todas las paginas ----------
   const pie = `${nombreEmpresa} · NIF ${nifEmpresa}${esBorrador ? ' · Borrador sin validez fiscal' : ''}`;
+  // Datos registrales (obligatorios en las sociedades) encima del pie, en letra pequena.
+  const inscripcion = f.emisor?.inscripcion ? partir(f.emisor.inscripcion, normal, 6.5, anchoUtil) : [];
   paginas.forEach((pg, i) => {
+    inscripcion.forEach((l, k) => texto(pg, l, MARGEN, PIE_Y + 11 + (inscripcion.length - 1 - k) * 8, { tam: 6.5, color: GRIS }));
     texto(pg, pie, MARGEN, PIE_Y, { tam: 7.5, color: GRIS });
     texto(pg, `Página ${i + 1} de ${paginas.length}`, derecha, PIE_Y, { tam: 7.5, color: GRIS, alinear: 'der' });
   });
@@ -575,6 +588,10 @@ export async function generarPdfFactura(companyId: string, id: string): Promise<
           codigoPostal: empresa?.codigoPostal ?? null,
           municipio: empresa?.municipio ?? null,
           provincia: empresa?.provincia ?? null,
+          telefono: empresa?.telefono ?? null,
+          email: empresa?.email ?? null,
+          web: empresa?.web ?? null,
+          inscripcion: textoInscripcionRegistral(empresa as unknown as Record<string, unknown> | null),
         }
       : null,
     original: original ? { numeroCompleto: original.numeroCompleto, fechaEmision: original.fechaEmision } : null,
