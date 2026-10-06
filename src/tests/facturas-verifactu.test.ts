@@ -106,7 +106,8 @@ describe('Facturas de venta: borrador y emision', () => {
     const b = await incomeInvoicesService.crearIngreso({ companyId: COMPANY_ID, customer: { id: customerId }, lineas: [linea(10)], borrador: true });
     await expect(incomeInvoicesService.cambiarEstado(COMPANY_ID, b.id, 'PAID')).rejects.toThrow(/borrador/);
     const f = await incomeInvoicesService.finalizar(COMPANY_ID, b.id, { fechaEmision: '2026-04-12' });
-    const cobrada = await incomeInvoicesService.cambiarEstado(COMPANY_ID, f.id, 'PAID');
+    // Marcar cobrada registra un cobro con su asiento: sin cuenta bancaria, en caja.
+    const cobrada = await incomeInvoicesService.cambiarEstado(COMPANY_ID, f.id, 'PAID', { caja: true });
     expect(cobrada.estado).toBe('PAID');
     await expect(incomeInvoicesService.cambiarEstado(COMPANY_ID, f.id, 'DRAFT')).rejects.toThrow(/no válido/);
   });
