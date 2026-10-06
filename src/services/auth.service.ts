@@ -281,4 +281,34 @@ export const authService = {
       empresaSeleccionada,
     };
   },
+
+  /**
+   * Usuario de la sesion con sus permisos ACTUALES (GET /auth/me). El frontend
+   * filtra el menu con los permisos que guardo al iniciar sesion; si cambian
+   * (rol nuevo, arreglo de permisos) los refresca aqui sin volver a entrar.
+   */
+  async me(userId: string): Promise<Omit<LoginResult, 'token' | 'refreshToken'>> {
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      include: { memberships: { include: { company: true } } },
+    });
+    if (!user || !user.isActive) throw unauthorized('Usuario inactivo o inexistente.');
+    const esAdminGlobal = user.isGlobalAdmin;
+    const companies = user.memberships.map((m) => m.companyId);
+    const roles = Array.from(new Set(user.memberships.map((m) => String(m.role))));
+    const empresas: EmpresaLogin[] = user.memberships.map((m) => ({ companyId: m.companyId, codigo: m.company.codigo, nombre: m.company.name }));
+    const rolesPorEmpresa = rolesPorEmpresaDe(user.memberships);
+    return {
+      user: {
+        id: user.id,
+        email: user.email,
+        roles,
+        companies,
+        esAdminGlobal,
+        permisos: permisosEfectivos(rolesPorEmpresa[companies[0]] ?? [], esAdminGlobal),
+        permisosPorEmpresa: permisosPorEmpresaDe(rolesPorEmpresa, esAdminGlobal),
+      },
+      empresas,
+    };
+  },
 };

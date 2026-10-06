@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { authController } from '../controllers/auth.controller';
 import { validate } from '../middleware/validation.middleware';
 import { porEmail, rateLimit } from '../middleware/rate-limit.middleware';
+import { authMiddleware } from '../middleware/auth.middleware';
 
 const router = Router();
 
@@ -36,5 +37,8 @@ router.post('/login', authLimit, validate(loginSchema), loginPorCuenta, authCont
 router.post('/dev-login', authLimit, authController.devLogin);
 router.post('/refresh', authLimit, authController.refresh);
 router.post('/logout', authLimit, authController.logout);
+
+// Con sesion: usuario y permisos actuales (el menu se refresca con esto).
+router.get('/me', authMiddleware, authController.me);
 
 export default router;

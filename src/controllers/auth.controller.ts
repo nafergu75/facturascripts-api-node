@@ -22,6 +22,11 @@ export const authController = {
     sendOk(res, tokens);
   }),
 
+  /** GET /auth/me — usuario y permisos actuales de la sesion. */
+  me: asyncHandler(async (req, res) => {
+    sendOk(res, await authService.me(req.user!.userId));
+  }),
+
   refresh: asyncHandler(async (req, res) => {
     const tokens = await authService.refresh(req.body?.refreshToken);
     sendOk(res, tokens);
