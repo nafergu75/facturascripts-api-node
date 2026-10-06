@@ -74,20 +74,62 @@ export function limpiarLegalConfig(datos: Record<string, unknown>): LegalConfigI
   return limpio as LegalConfigInput;
 }
 
+/** La config sin los bytes del logo (no viajan en el JSON): solo si hay logo. */
+function sinLogo<T extends { logo?: unknown; logoMime?: string | null }>(cfg: T) {
+  const { logo, logoMime, ...resto } = cfg;
+  void logoMime;
+  return { ...resto, tieneLogo: !!logo };
+}
+
+const LOGO_MAX = 1024 * 1024;
+
+/** Tipo real del fichero por su cabecera (no fiarse de la extension ni del navegador). */
+function tipoImagen(buf: Buffer): 'image/png' | 'image/jpeg' | null {
+  if (buf.length > 8 && buf.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return 'image/png';
+  if (buf.length > 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return 'image/jpeg';
+  return null;
+}
+
 export const legalConfigService = {
   /** Devuelve la config legal de la empresa, creándola con valores por defecto si no existe. */
   async obtener(companyId: string) {
     const existente = await prisma.legalConfig.findUnique({ where: { companyId } });
-    if (existente) return existente;
-    return prisma.legalConfig.create({ data: { companyId } });
+    if (existente) return sinLogo(existente);
+    return sinLogo(await prisma.legalConfig.create({ data: { companyId } }));
   },
 
   async actualizar(companyId: string, datos: Record<string, unknown>) {
     const limpio = limpiarLegalConfig(datos ?? {});
-    return prisma.legalConfig.upsert({
+    delete (limpio as Record<string, unknown>).logo;
+    delete (limpio as Record<string, unknown>).logoMime;
+    return sinLogo(
+      await prisma.legalConfig.upsert({
+        where: { companyId },
+        update: limpio,
+        create: { companyId, ...limpio },
+      }),
+    );
+  },
+
+  /** Guarda el logo de la empresa (PNG o JPG, hasta 1 MB). */
+  async guardarLogo(companyId: string, fichero: Buffer | undefined) {
+    if (!fichero?.length) throw badRequest('Elige una imagen PNG o JPG.');
+    if (fichero.length > LOGO_MAX) throw badRequest('El logo no puede pasar de 1 MB.');
+    const mime = tipoImagen(fichero);
+    if (!mime) throw badRequest('El logo tiene que ser una imagen PNG o JPG.');
+    await prisma.legalConfig.upsert({
       where: { companyId },
-      update: limpio,
-      create: { companyId, ...limpio },
+      update: { logo: fichero, logoMime: mime },
+      create: { companyId, logo: fichero, logoMime: mime },
     });
+  },
+
+  async obtenerLogo(companyId: string): Promise<{ bytes: Buffer; mime: string } | null> {
+    const cfg = await prisma.legalConfig.findUnique({ where: { companyId }, select: { logo: true, logoMime: true } });
+    return cfg?.logo && cfg.logoMime ? { bytes: Buffer.from(cfg.logo), mime: cfg.logoMime } : null;
+  },
+
+  async borrarLogo(companyId: string) {
+    await prisma.legalConfig.updateMany({ where: { companyId }, data: { logo: null, logoMime: null } });
   },
 };

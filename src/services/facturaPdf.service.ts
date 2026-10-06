@@ -19,7 +19,7 @@ import { crearDocumentoPdfA, guardarPdfA } from '../utils/pdf-a';
  * `generarPdfFactura` carga los datos de la BD; `renderizarFactura` solo dibuja
  * (funcion pura sobre un objeto plano, se puede probar sin BD).
  * TODO (Verifactu paso 2): el QR y la leyenda "VERI*FACTU" al enviar a la AEAT.
- * TODO: logo de la empresa cuando se pueda subir en la configuracion.
+ * El logo de la empresa (si lo hay) va arriba a la derecha y el numero baja debajo.
  */
 
 // ---------- Datos de entrada ----------
@@ -73,7 +73,13 @@ export interface DatosFacturaPdf {
   original: { numeroCompleto: string | null; fechaEmision: string } | null;
   /** Cuenta donde se cobra (solo se imprime si la forma de pago es transferencia). */
   cuenta: { iban: string; bic: string | null } | null;
+  /** Logo de la empresa (PNG o JPG). */
+  logo?: { bytes: Uint8Array; mime: string } | null;
 }
+
+/** Hueco del logo, arriba a la derecha (puntos). */
+const LOGO_ANCHO = 150;
+const LOGO_ALTO = 56;
 
 // ---------- Paleta y medidas ----------
 
@@ -213,23 +219,40 @@ export async function renderizarFactura(f: DatosFacturaPdf): Promise<Buffer> {
     return false;
   };
 
+  // ---------- Logo (arriba a la derecha) ----------
+  // Se ajusta al hueco sin deformarse; el numero y la fecha bajan debajo.
+  let yNumero = y;
+  if (f.logo?.bytes?.length) {
+    try {
+      const img = f.logo.mime === 'image/png' ? await doc.embedPng(f.logo.bytes) : await doc.embedJpg(f.logo.bytes);
+      const escala = Math.min(LOGO_ANCHO / img.width, LOGO_ALTO / img.height, 1);
+      const w = img.width * escala;
+      const h = img.height * escala;
+      const techo = alto - 36;
+      p.drawImage(img, { x: derecha - w, y: techo - h, width: w, height: h });
+      yNumero = Math.min(y, techo - h - 18);
+    } catch {
+      // Imagen dañada: la factura sale igual, sin logo.
+    }
+  }
+
   // ---------- Cabecera: tipo de documento y numero ----------
   texto(p, esBorrador ? 'Borrador' : tipoDoc, MARGEN, y, { tam: 24, fuente: negrita });
   if (esBorrador) {
-    texto(p, 'Sin número · sin validez fiscal', derecha, y, { tam: 10, fuente: negrita, color: GRIS, alinear: 'der' });
+    texto(p, 'Sin número · sin validez fiscal', derecha, yNumero, { tam: 10, fuente: negrita, color: GRIS, alinear: 'der' });
   } else {
-    texto(p, f.numeroCompleto ?? '', derecha, y, { tam: 13, fuente: monoNegrita, alinear: 'der' });
+    texto(p, f.numeroCompleto ?? '', derecha, yNumero, { tam: 13, fuente: monoNegrita, alinear: 'der' });
     const wNum = monoNegrita.widthOfTextAtSize(f.numeroCompleto ?? '', 13);
-    texto(p, 'Nº', derecha - wNum - 6, y, { tam: 9, color: GRIS, alinear: 'der' });
+    texto(p, 'Nº', derecha - wNum - 6, yNumero, { tam: 9, color: GRIS, alinear: 'der' });
   }
   const fechaTxt = fechaES(f.fechaEmision);
-  texto(p, fechaTxt, derecha, y - 17, { tam: 9, fuente: mono, alinear: 'der' });
-  texto(p, 'Fecha de emisión', derecha - mono.widthOfTextAtSize(fechaTxt, 9) - 6, y - 17, {
+  texto(p, fechaTxt, derecha, yNumero - 17, { tam: 9, fuente: mono, alinear: 'der' });
+  texto(p, 'Fecha de emisión', derecha - mono.widthOfTextAtSize(fechaTxt, 9) - 6, yNumero - 17, {
     tam: 9,
     color: GRIS,
     alinear: 'der',
   });
-  y -= 50;
+  y = Math.min(y, yNumero) - 50;
 
   // ---------- Emisor y cliente ----------
   const anchoA = COL_B - MARGEN - 24;
@@ -553,6 +576,7 @@ export async function generarPdfFactura(companyId: string, id: string): Promise<
       : null,
     original: original ? { numeroCompleto: original.numeroCompleto, fechaEmision: original.fechaEmision } : null,
     cuenta: cuenta?.iban ? { iban: cuenta.iban, bic: cuenta.bic ?? null } : null,
+    logo: empresa?.logo && empresa.logoMime ? { bytes: new Uint8Array(empresa.logo), mime: empresa.logoMime } : null,
   });
 
   const nombre =

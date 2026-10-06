@@ -865,6 +865,10 @@ model LegalConfig {
   cnae                       String?
   datosRegistrales           String? // Tomo, folio, hoja e inscripcion
   fechaConstitucion          String? // YYYY-MM-DD
+  // Logo para las facturas (PNG o JPG, maximo 1 MB). En la BD y no en el
+  // almacenamiento de ficheros: es pequeno y asi no depende de Vercel Blob.
+  logo                       Bytes?   @db.MediumBlob
+  logoMime                   String?
   createdAt                  DateTime @default(now())
   updatedAt                  DateTime @updatedAt
 }
