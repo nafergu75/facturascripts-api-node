@@ -8,7 +8,7 @@ const router = Router({ mergeParams: true });
 router.get('/subcuentas', planContableController.listarSubcuentas);
 router.post('/subcuentas', authorize('contabilidad:write'), planContableController.crearSubcuenta);
 router.post('/subcuentas/gasto-rapido', authorize('contabilidad:write'), planContableController.crearSubcuentaGasto);
-router.put('/subcuentas/:id', planContableController.actualizarSubcuenta);
-router.delete('/subcuentas/:id', planContableController.desactivarSubcuenta);
+router.put('/subcuentas/:id', authorize('contabilidad:write'), planContableController.actualizarSubcuenta);
+router.delete('/subcuentas/:id', authorize('contabilidad:write'), planContableController.desactivarSubcuenta);
 
 export default router;

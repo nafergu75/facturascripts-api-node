@@ -9,8 +9,8 @@ router.get('/', clientesController.list);
 // Buscador (antes de /:id para que 'buscar' no se interprete como id).
 router.get('/buscar', authorize('ventas:read'), clientesController.buscar);
 router.get('/:id', clientesController.getById);
-router.post('/', clientesController.create);
-router.put('/:id', clientesController.update);
-router.delete('/:id', clientesController.remove);
+router.post('/', authorize('ventas:write'), clientesController.create);
+router.put('/:id', authorize('ventas:write'), clientesController.update);
+router.delete('/:id', authorize('ventas:write'), clientesController.remove);
 
 export default router;

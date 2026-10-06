@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import multer from 'multer';
 import { documentoArchivoController } from '../controllers/documentoArchivo.controller';
+import { authorize } from '../middleware/authorize.middleware';
 
 const router = Router({ mergeParams: true });
 
@@ -32,7 +33,7 @@ const upload = multer({
 
 // POST /companies/:companyId/archivo
 // Crear nuevo documento en el archivo
-router.post('/', upload.single('archivo'), documentoArchivoController.crear);
+router.post('/', authorize('contabilidad:write'), upload.single('archivo'), documentoArchivoController.crear);
 
 // GET /companies/:companyId/archivo
 // Listar documentos por período (con filtros)
@@ -58,10 +59,10 @@ router.get('/:id/descargar', documentoArchivoController.descargar);
 
 // PATCH /companies/:companyId/archivo/:id/estado
 // Actualizar estado de un documento
-router.patch('/:id/estado', documentoArchivoController.actualizarEstado);
+router.patch('/:id/estado', authorize('contabilidad:write'), documentoArchivoController.actualizarEstado);
 
 // DELETE /companies/:companyId/archivo/:id
 // Eliminar/anular un documento
-router.delete('/:id', documentoArchivoController.eliminar);
+router.delete('/:id', authorize('contabilidad:write'), documentoArchivoController.eliminar);
 
 export default router;

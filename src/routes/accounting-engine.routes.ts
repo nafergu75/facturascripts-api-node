@@ -36,6 +36,7 @@ export const accountingEngineRoutes = Router({ mergeParams: true });
 accountingEngineRoutes.post(
   '/contabilizar/:invoiceId',
   authMiddleware,
+  authorize('contabilidad:write'),
   validate(contabilizarQuerySchema, 'query'),
   async (req: Request, res: Response) => {
     try {
@@ -81,6 +82,7 @@ accountingEngineRoutes.post(
 accountingEngineRoutes.get(
   '/journal-entries',
   authMiddleware,
+  authorize('contabilidad:read'),
   async (req: Request, res: Response) => {
     try {
       const { companyId } = req.params;
@@ -124,6 +126,7 @@ accountingEngineRoutes.get(
 accountingEngineRoutes.get(
   '/journal-entries/:journalEntryId',
   authMiddleware,
+  authorize('contabilidad:read'),
   async (req: Request, res: Response) => {
     try {
       const { companyId, journalEntryId } = req.params;

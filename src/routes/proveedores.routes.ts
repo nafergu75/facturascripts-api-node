@@ -20,8 +20,8 @@ router.get(
   }),
 );
 router.get('/:id', c.getById);
-router.post('/', c.create);
-router.put('/:id', c.update);
-router.delete('/:id', c.remove);
+router.post('/', authorize('compras:write'), c.create);
+router.put('/:id', authorize('compras:write'), c.update);
+router.delete('/:id', authorize('compras:write'), c.remove);
 
 export default router;

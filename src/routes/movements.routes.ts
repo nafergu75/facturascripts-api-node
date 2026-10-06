@@ -1,10 +1,11 @@
 import { Router } from 'express';
 import { movementsController } from '../controllers/movements.controller';
+import { authorize } from '../middleware/authorize.middleware';
 
 const router = Router({ mergeParams: true });
 
 // POST /companies/:companyId/movements
-router.post('/', movementsController.create);
+router.post('/', authorize('contabilidad:write'), movementsController.create);
 
 // GET /companies/:companyId/movements
 router.get('/', movementsController.list);
@@ -22,9 +23,9 @@ router.get('/stats/by-category', movementsController.getByCategory);
 router.get('/stats/by-month', movementsController.getByMonth);
 
 // PATCH /companies/:companyId/movements/:id
-router.patch('/:id', movementsController.update);
+router.patch('/:id', authorize('contabilidad:write'), movementsController.update);
 
 // DELETE /companies/:companyId/movements/:id
-router.delete('/:id', movementsController.delete);
+router.delete('/:id', authorize('contabilidad:write'), movementsController.delete);
 
 export default router;

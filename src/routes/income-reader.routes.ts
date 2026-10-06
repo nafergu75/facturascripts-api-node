@@ -91,7 +91,7 @@ router.post('/:id/reject', authorize('ventas:write'), incomeReaderController.rec
  * POST /api/companies/:companyId/income-reader/:id/reintent-ocr
  * Solo permitido si status = 'ERROR'
  */
-router.post('/:id/reintent-ocr', authMiddleware, async (req, res) => {
+router.post('/:id/reintent-ocr', authorize('ventas:write'), authMiddleware, async (req, res) => {
   try {
     const companyId = req.companyId as string;
     const { id } = req.params;

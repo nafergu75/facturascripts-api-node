@@ -9,6 +9,7 @@ import path from 'path';
 import fs from 'fs';
 import importController from '../controllers/import.controller';
 import { authMiddleware } from '../middleware/auth.middleware';
+import { authorize } from '../middleware/authorize.middleware';
 
 const router = Router();
 
@@ -56,6 +57,7 @@ const upload = multer({
  */
 router.post(
   '/:companyId/import/upload',
+  authorize('contabilidad:write'),
   authMiddleware,
   upload.single('file'),
   importController.upload.bind(importController)
@@ -69,6 +71,7 @@ router.post(
  */
 router.post(
   '/:companyId/import/:sessionId/suggest-mapping',
+  authorize('contabilidad:write'),
   authMiddleware,
   importController.suggestMapping.bind(importController)
 );
@@ -86,6 +89,7 @@ router.post(
  */
 router.post(
   '/:companyId/import/:sessionId/validate',
+  authorize('contabilidad:write'),
   authMiddleware,
   importController.validate.bind(importController)
 );
@@ -103,6 +107,7 @@ router.post(
  */
 router.post(
   '/:companyId/import/:sessionId/confirm',
+  authorize('contabilidad:write'),
   authMiddleware,
   importController.confirm.bind(importController)
 );
@@ -145,6 +150,7 @@ router.get(
  */
 router.delete(
   '/:companyId/import/:sessionId/cancel',
+  authorize('contabilidad:write'),
   authMiddleware,
   importController.cancel.bind(importController)
 );
