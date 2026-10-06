@@ -79,6 +79,11 @@ describe('permisos que exigen las rutas', () => {
     expect(pasa(['solo-lectura'])).toBe(false);
   });
 
+  it('el rol solo_lectura de la BD tiene los mismos permisos que solo-lectura', () => {
+    expect(permisosDeRoles(['solo_lectura']).sort()).toEqual(permisosDeRoles(['solo-lectura']).sort());
+    expect(permisosDeRoles(['solo_lectura'])).toContain('tesoreria:read');
+  });
+
   it('solo-lectura lee compras pero no escribe', () => {
     const lectura = permisosDeRoles(['solo-lectura']);
     expect(usuarioTienePermiso(lectura, 'compras:read')).toBe(true);

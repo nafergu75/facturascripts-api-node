@@ -34,7 +34,8 @@ const ROL_PERMISOS: Record<NombreRol, string[]> = {
 export function permisosDeRoles(roles: string[]): string[] {
   const set = new Set<string>();
   for (const rol of roles) {
-    const permisos = ROL_PERMISOS[rol as NombreRol];
+    // En la BD el rol es `solo_lectura` (enum de Prisma, sin guiones); aqui, `solo-lectura`.
+    const permisos = ROL_PERMISOS[rol.replace(/_/g, '-') as NombreRol];
     if (permisos) permisos.forEach((p) => set.add(p));
   }
   return [...set];
