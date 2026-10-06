@@ -23,7 +23,7 @@ export function aNumero<T>(valor: T): T extends Prisma.Decimal ? number : T {
 }
 
 /** Nombres de los campos migrados a Decimal (en cualquier modelo). */
-export const CAMPOS_DECIMALES: ReadonlySet<string> = new Set(["baseImponible", "baseLine", "baseTotal", "beneficio", "cuotaIva", "cuotaRetencion", "debe", "descuentoImporte", "gasto", "haber", "importe", "ingresos", "irpfRetenido", "ivaDevengado", "ivaPorcentaje", "ivaImporte", "ivaRepercutido", "ivaTotal", "precio", "precioUnitario", "retencionImporte", "retencionTotal", "saldoInicial", "totalBruto", "totalFactura", "totalIRPF", "totalLiquido", "totalSeguridadSocialEmpresa", "totalSeguridadSocialTrabajador"]);
+export const CAMPOS_DECIMALES: ReadonlySet<string> = new Set(["baseImponible", "baseLine", "baseTotal", "beneficio", "cuotaIva", "cuotaRetencion", "debe", "descuentoImporte", "gasto", "haber", "importe", "ingresos", "irpfRetenido", "ivaDevengado", "ivaPorcentaje", "ivaImporte", "ivaRepercutido", "ivaTotal", "precio", "precioCompra", "precioUnitario", "retencionImporte", "retencionTotal", "saldoInicial", "totalBruto", "totalFactura", "totalIRPF", "totalLiquido", "totalSeguridadSocialEmpresa", "totalSeguridadSocialTrabajador"]);
 
 /**
  * Recorre un resultado de Prisma y convierte a number los Decimal de los campos
@@ -104,6 +104,11 @@ export const importesComoNumero = Prisma.defineExtension({
     },
     product: {
       precio: { needs: { precio: true }, compute: (r) => aNumero(r.precio) },
+      precioCompra: { needs: { precioCompra: true }, compute: (r) => aNumero(r.precioCompra) },
+      ivaPorcentaje: { needs: { ivaPorcentaje: true }, compute: (r) => aNumero(r.ivaPorcentaje) },
+    },
+    productFamily: {
+      ivaPorcentaje: { needs: { ivaPorcentaje: true }, compute: (r) => aNumero(r.ivaPorcentaje) },
     },
     bankAccount: {
       saldoInicial: { needs: { saldoInicial: true }, compute: (r) => aNumero(r.saldoInicial) },

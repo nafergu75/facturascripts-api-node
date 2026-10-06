@@ -587,18 +587,56 @@ model ExpenseInvoiceLine {
 /// PRODUCTOS (catálogo; migrado de FacturaScripts a Prisma, épico FS->Prisma)
 /// ============================================================================
 
+/// Producto o servicio del catalogo, para rellenar las lineas de las facturas.
+/// `referencia` es el codigo del producto (unico en la empresa).
 model Product {
-  id          String   @id @default(cuid())
-  companyId   String
-  referencia  String
-  descripcion String?
-  precio      Decimal  @default(0) @db.Decimal(14, 4)
-  stock       Float    @default(0)
-  bloqueado   Boolean  @default(false)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id            String         @id @default(cuid())
+  companyId     String
+  referencia    String
+  descripcion   String?
+  /// Precio de venta SIN IVA.
+  precio        Decimal        @default(0) @db.Decimal(14, 4)
+  stock         Float          @default(0)
+  /// true = no se ofrece en las facturas (producto dado de baja).
+  bloqueado     Boolean        @default(false)
+  /// PRODUCTO | SERVICIO
+  tipo          String         @default("PRODUCTO")
+  /// Unidad de medida: ud, h, kg, m, m2, l...
+  unidad        String         @default("ud")
+  ivaPorcentaje Decimal        @default(21) @db.Decimal(5, 2)
+  /// Precio de compra sin IVA (para ver el margen), opcional.
+  precioCompra  Decimal?       @db.Decimal(14, 4)
+  /// Cuenta de ventas propia (si no, la de la familia; si no, 700/705).
+  cuentaVentas  String?
+  notas         String?        @db.Text
+  familiaId     String?
+  familia       ProductFamily? @relation(fields: [familiaId], references: [id], onDelete: SetNull)
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
 
   @@unique([companyId, referencia])
+  @@index([companyId])
+  @@index([familiaId])
+}
+
+/// Familia de productos, con codigo propio y una sola capa de subfamilias.
+model ProductFamily {
+  id            String          @id @default(cuid())
+  companyId     String
+  codigo        String
+  nombre        String
+  /// IVA que se propone a los productos nuevos de la familia.
+  ivaPorcentaje Decimal?        @db.Decimal(5, 2)
+  /// Cuenta de ventas de la familia (700, 705, 7000001...).
+  cuentaVentas  String?
+  parentId      String?
+  parent        ProductFamily?  @relation("Subfamilias", fields: [parentId], references: [id], onDelete: Cascade)
+  hijas         ProductFamily[] @relation("Subfamilias")
+  productos     Product[]
+  activa        Boolean         @default(true)
+  createdAt     DateTime        @default(now())
+
+  @@unique([companyId, codigo])
   @@index([companyId])
 }
 

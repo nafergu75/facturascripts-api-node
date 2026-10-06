@@ -28,7 +28,7 @@ export interface ExtractoLeido {
 }
 
 /** Sin tildes, en minusculas, sin puntos ni espacios de mas. */
-function normalizar(s: unknown): string {
+export function normalizar(s: unknown): string {
   return String(s ?? '')
     .normalize('NFD')
     .replace(/[̀-ͯ]/g, '')
@@ -135,6 +135,16 @@ function tipoDeFichero(contenido: Buffer, nombre: string): ExtractoLeido['format
   if (contenido.subarray(0, 4).toString('hex') === 'd0cf11e0') return 'xls';
   if (/\.(xlsx?|xlsm)$/i.test(nombre)) throw badRequest('El fichero dice ser un Excel pero no lo es.');
   return 'csv';
+}
+
+/**
+ * Filas de un Excel (.xlsx/.xls, primera hoja) o CSV como matriz de celdas.
+ * Lo usan tambien otras importaciones (productos).
+ */
+export function leerFilasArchivo(contenido: Buffer, nombreArchivo = ''): { formato: ExtractoLeido['formato']; filas: unknown[][] } {
+  if (!contenido?.length) throw badRequest('El fichero está vacío.');
+  const formato = tipoDeFichero(contenido, nombreArchivo);
+  return { formato, filas: celdas(contenido, formato) };
 }
 
 /** Filas del fichero como matriz de celdas. */
