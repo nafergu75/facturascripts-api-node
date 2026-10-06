@@ -14,6 +14,7 @@ import { registrarAuditoria } from '../services/auditoria.service';
 import { accountingEngineService, desgloseIvaPorTipo } from '../services/accounting-engine.service';
 import { prisma } from '../config/database';
 import { cuadraEnCentimos } from '../utils/money';
+import { asegurarPlanContableEmpresa } from '../services/chart-of-accounts.service';
 
 export class AccountingEngineController {
   /**
@@ -45,15 +46,9 @@ export class AccountingEngineController {
         throw badRequest('Empresa no encontrada.');
       }
 
-      // Validar plan contable inicializado
-      const chartExists = await prisma.chartOfAccounts.findFirst({
-        where: { companyId, esBasePGC: true },
-      });
-      if (!chartExists) {
-        throw badRequest(
-          'El plan contable no ha sido inicializado. Solicita a tu admin que lo haga.'
-        );
-      }
+      // El plan de cuentas se crea (o se completa) solo: antes se exigia que un
+      // admin lo inicializara a mano y, si no, no se podia contabilizar nada.
+      await asegurarPlanContableEmpresa(companyId);
 
       // Obtener factura de ingreso
       const factura = await prisma.incomeInvoice.findUnique({
@@ -156,13 +151,9 @@ export class AccountingEngineController {
       const empresa = await prisma.company.findUnique({ where: { id: companyId } });
       if (!empresa) throw badRequest('Empresa no encontrada.');
 
-      // Validar plan contable inicializado
-      const chartExists = await prisma.chartOfAccounts.findFirst({
-        where: { companyId, esBasePGC: true },
-      });
-      if (!chartExists) {
-        throw badRequest('El plan contable no ha sido inicializado. Solicita a tu admin que lo haga.');
-      }
+      // El plan de cuentas se crea (o se completa) solo: antes se exigia que un
+      // admin lo inicializara a mano y, si no, no se podia contabilizar nada.
+      await asegurarPlanContableEmpresa(companyId);
 
       // Obtener factura de gasto con proveedor
       const factura = await prisma.expenseInvoice.findUnique({

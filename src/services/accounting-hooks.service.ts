@@ -14,6 +14,7 @@ import { registrarAuditoria } from './auditoria.service';
 import { AccountingEngineController } from '../controllers/accounting-engine.controller';
 import { invoiceArchivingService } from './invoice-archiving.service';
 import { prisma } from '../config/database';
+import { asegurarPlanContableEmpresa } from './chart-of-accounts.service';
 
 export class AccountingHooksService {
   private controller = new AccountingEngineController();
@@ -48,14 +49,8 @@ export class AccountingHooksService {
       throw badRequest('Factura sin fecha de emisión. No se puede contabilizar.');
     }
 
-    // Validar que plan contable está inicializado
-    const chartExists = await prisma.chartOfAccounts.findFirst({
-      where: { companyId, esBasePGC: true },
-    });
-
-    if (!chartExists) {
-      throw badRequest('Plan contable no inicializado. Solicita a tu admin que lo haga.');
-    }
+    // El plan de cuentas se crea (o se completa) solo si falta.
+    await asegurarPlanContableEmpresa(companyId);
   }
 
   /**

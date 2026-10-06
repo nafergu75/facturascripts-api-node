@@ -19,7 +19,7 @@ describe('plan contable base', () => {
     const res = await request(app).get('/plan-contable/base/todo');
     expect(res.status).toBe(200);
     const niveles = new Set((res.body.data as Array<{ level: string }>).map((n) => n.level));
-    expect(niveles).toEqual(new Set(['group', 'subgroup', 'account']));
+    expect(niveles).toEqual(new Set(['group', 'subgroup', 'account', 'subaccount']));
     expect(res.body.data).toHaveLength(PGC_BASE.length);
   });
 

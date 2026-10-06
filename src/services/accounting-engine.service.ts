@@ -95,7 +95,8 @@ export const CONTABLE_RULES = {
     irpfAsumido: '4751', // IRPF asumido
   },
   SERVICIO_PROFESIONAL: {
-    gasto: '622', // Gastos de servicios profesionales
+    // 623 = servicios de profesionales independientes (la 622 es reparaciones).
+    gasto: '623',
     proveedorAcreedor: '400',
     ivaSoportado: '472',
     irpfAsumido: '4751', // Generalmente 15%
@@ -107,7 +108,7 @@ export const CONTABLE_RULES = {
     irpfAsumido: '4751',
   },
   SUMINISTROS: {
-    gasto: '623', // Suministros
+    gasto: '628', // Suministros (la 623 es profesionales)
     proveedorAcreedor: '400',
     ivaSoportado: '472',
     irpfAsumido: '4751',

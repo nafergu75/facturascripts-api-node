@@ -315,14 +315,14 @@ describe('contabilizarFacturaGasto', () => {
       asientoId = r.asientoId;
     });
 
-    it('genera exactamente 4 líneas (622 / 472 / 4751 / 400)', async () => {
-      // SERVICIO_PROFESIONAL → cuenta 622, no 600
+    it('genera exactamente 4 líneas (623 / 472 / 4751 / 400)', async () => {
+      // SERVICIO_PROFESIONAL → cuenta 623, no 600
       expect(await getLineas(asientoId)).toHaveLength(4);
     });
 
-    it('622 DEBE 1000 — gasto servicios profesionales (no 600)', async () => {
+    it('623 DEBE 1000 — gasto servicios profesionales (no 600)', async () => {
       const pc = porCuenta(await getLineas(asientoId));
-      expect(pc['622'].debe).toBeCloseTo(1000);
+      expect(pc['623'].debe).toBeCloseTo(1000);
       expect(pc['600']).toBeUndefined(); // no es compra de mercaderías
     });
 
@@ -344,8 +344,8 @@ describe('contabilizarFacturaGasto', () => {
       expect(pc['400'].haber).toBeCloseTo(1060);
     });
 
-    it('DEBE = HABER = 1210 (622+472 = 4751+400)', async () => {
-      // DEBE:  1000 (622) + 210 (472) = 1210
+    it('DEBE = HABER = 1210 (623+472 = 4751+400)', async () => {
+      // DEBE:  1000 (623) + 210 (472) = 1210
       // HABER:  150 (4751) + 1060 (400) = 1210
       const { debe, haber, diferencia } = cuadre(await getLineas(asientoId));
       expect(debe).toBeCloseTo(1210);

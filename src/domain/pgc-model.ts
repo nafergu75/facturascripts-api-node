@@ -919,6 +919,19 @@ const PGC_AMPLIACION: PgcNode[] = [
   cuenta('221', 'Inversiones en construcciones', 'activo'),
   // Grupo 4
   cuenta('473', 'Hacienda Pública, retenciones y pagos a cuenta', 'activo'),
+  // El motor contable lleva aqui el IRPF que retenemos en las compras.
+  {
+    level: 'subaccount',
+    code: '4751',
+    groupCode: '4',
+    subgroupCode: '47',
+    accountCode: '475',
+    name: 'Hacienda Pública, acreedora por retenciones practicadas',
+    type: 'pasivo',
+    isSystem: true,
+    isEditable: false,
+    parentCode: '475',
+  },
   // Grupo 5
   cuenta('555', 'Partidas pendientes de aplicación', 'activo'),
   // Grupo 6

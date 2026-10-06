@@ -1,5 +1,5 @@
 import { asyncHandler } from '../utils/async-handler';
-import { sendOk, sendMessage } from '../utils/response';
+import { sendOk } from '../utils/response';
 import { badRequest } from '../utils/http-errors';
 import {
   chartOfAccountsService,
@@ -13,11 +13,16 @@ export const chartOfAccountsController = {
    * Inicializar plan contable para una empresa (PGC base).
    */
   inicializar: asyncHandler(async (req, res) => {
-    const { companyId, versionPGC, gruposAIncluir } = req.body ?? {};
+    // La empresa sale de la ruta (/companies/:companyId/...), ya comprobada contra
+    // la sesion. Antes se leia del cuerpo: un admin de una empresa podia
+    // inicializar el plan de otra.
+    const companyId = req.companyId!;
+    const { versionPGC, gruposAIncluir } = req.body ?? {};
+    if (gruposAIncluir !== undefined && !Array.isArray(gruposAIncluir)) {
+      throw badRequest('gruposAIncluir tiene que ser una lista de grupos (1-7).');
+    }
 
-    if (!companyId) throw badRequest('companyId requerido.');
-
-    await chartOfAccountsService.inicializarPlanContableEmpresa(
+    const resultado = await chartOfAccountsService.asegurarPlanContableEmpresa(
       companyId,
       versionPGC || '2021',
       gruposAIncluir || [1, 2, 3, 4, 5, 6, 7],
@@ -28,10 +33,10 @@ export const chartOfAccountsController = {
       companyId,
       action: 'INICIALIZAR_PLAN_CONTABLE',
       resourceType: 'CHART_OF_ACCOUNTS',
-      meta: { versionPGC, gruposAIncluir },
+      meta: { versionPGC, gruposAIncluir, ...resultado },
     });
 
-    sendMessage(res, 'Plan contable inicializado correctamente', 201);
+    sendOk(res, resultado, undefined, 201);
   }),
 
   /**
@@ -44,6 +49,8 @@ export const chartOfAccountsController = {
     const naturaleza = req.query.naturaleza as string | undefined;
     const soloActivas = req.query.soloActivas === 'true';
 
+    // La primera consulta crea el plan si la empresa aun no lo tiene.
+    await chartOfAccountsService.asegurarPlanContableEmpresa(req.companyId!);
     const cuentas = await chartOfAccountsService.listarPlanContable(
       req.companyId!,
       {
@@ -64,6 +71,8 @@ export const chartOfAccountsController = {
   obtenerArbol: asyncHandler(async (req, res) => {
     const grupo = req.query.grupo ? Number(req.query.grupo) : undefined;
 
+    // La primera consulta crea el plan si la empresa aun no lo tiene.
+    await chartOfAccountsService.asegurarPlanContableEmpresa(req.companyId!);
     const arbol = await chartOfAccountsService.obtenerArbolPlanContable(
       req.companyId!,
       grupo,
@@ -90,9 +99,10 @@ export const chartOfAccountsController = {
    * Crear subcuenta personalizada.
    */
   crearSubcuenta: asyncHandler(async (req, res) => {
+    // companyId va despues: el cuerpo no puede elegir la empresa.
     const dto: CrearCuentaDTO = {
-      companyId: req.companyId!,
       ...req.body,
+      companyId: req.companyId!,
     };
 
     const nueva = await chartOfAccountsService.crearSubcuentaPersonalizada(dto);

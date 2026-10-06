@@ -1,6 +1,7 @@
 import { PrismaClient } from '@prisma/client';
 import { hashPassword } from '../src/utils/password';
 import { encrypt } from '../src/utils/crypto';
+import { asegurarPlanContableEmpresa } from '../src/services/chart-of-accounts.service';
 
 const prisma = new PrismaClient();
 
@@ -48,8 +49,11 @@ async function main(): Promise<void> {
     create: { userId: user.id, companyId: company.id, role: 'admin' },
   });
 
+  // Plan de cuentas PGC de la empresa (crea lo que falte; se puede repetir).
+  const plan = await asegurarPlanContableEmpresa(company.id);
+
   // eslint-disable-next-line no-console
-  console.log(`Seed OK -> empresa ${company.id}, usuario ${user.email}`);
+  console.log(`Seed OK -> empresa ${company.id}, usuario ${user.email}, plan +${plan.creadas} cuentas`);
 }
 
 main()

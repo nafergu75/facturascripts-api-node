@@ -1,209 +1,7 @@
 import { badRequest, notFound } from '../utils/http-errors';
+import { randomUUID } from 'crypto';
 import { prisma } from '../config/database';
-
-/**
- * Estructura del PGC español (Plan General de Contabilidad).
- * Basada en la versión actualizada (2021).
- */
-const PGC_BASE_STRUCTURE = {
-  grupos: [
-    {
-      codigo: '1',
-      nombre: 'FINANCIACIÓN BÁSICA',
-      nivel: 1,
-      naturaleza: 'PASIVO',
-      tipoUso: 'BALANCE',
-      subgrupos: [
-        {
-          codigo: '10',
-          nombre: 'Capital',
-          nivel: 2,
-          cuentas: [
-            { codigo: '100', nombre: 'Capital social', nivel: 3, naturaleza: 'PATRIMONIO_NETO' },
-            { codigo: '101', nombre: 'Fondo social', nivel: 3, naturaleza: 'PATRIMONIO_NETO' },
-          ],
-        },
-        {
-          codigo: '11',
-          nombre: 'Reservas',
-          nivel: 2,
-          cuentas: [
-            { codigo: '110', nombre: 'Reserva legal', nivel: 3, naturaleza: 'PATRIMONIO_NETO' },
-            { codigo: '113', nombre: 'Reservas voluntarias', nivel: 3, naturaleza: 'PATRIMONIO_NETO' },
-          ],
-        },
-      ],
-    },
-    {
-      codigo: '2',
-      nombre: 'INMOVILIZADO',
-      nivel: 1,
-      naturaleza: 'ACTIVO',
-      tipoUso: 'BALANCE',
-      subgrupos: [
-        {
-          codigo: '20',
-          nombre: 'Inmovilizaciones inmateriales',
-          nivel: 2,
-          cuentas: [
-            { codigo: '200', nombre: 'Investigación', nivel: 3, naturaleza: 'ACTIVO' },
-            { codigo: '202', nombre: 'Concesiones administrativas', nivel: 3, naturaleza: 'ACTIVO' },
-          ],
-        },
-        {
-          codigo: '21',
-          nombre: 'Inmovilizaciones materiales',
-          nivel: 2,
-          cuentas: [
-            { codigo: '210', nombre: 'Terrenos y construcciones', nivel: 3, naturaleza: 'ACTIVO' },
-            { codigo: '211', nombre: 'Instalaciones técnicas', nivel: 3, naturaleza: 'ACTIVO' },
-            { codigo: '216', nombre: 'Mobiliario', nivel: 3, naturaleza: 'ACTIVO' },
-            { codigo: '217', nombre: 'Equipos para proceso de información', nivel: 3, naturaleza: 'ACTIVO' },
-          ],
-        },
-      ],
-    },
-    {
-      codigo: '3',
-      nombre: 'EXISTENCIAS',
-      nivel: 1,
-      naturaleza: 'ACTIVO',
-      tipoUso: 'BALANCE',
-      subgrupos: [
-        {
-          codigo: '30',
-          nombre: 'Mercaderías',
-          nivel: 2,
-          cuentas: [
-            { codigo: '300', nombre: 'Mercaderías A', nivel: 3, naturaleza: 'ACTIVO' },
-            { codigo: '301', nombre: 'Mercaderías B', nivel: 3, naturaleza: 'ACTIVO' },
-          ],
-        },
-        {
-          codigo: '31',
-          nombre: 'Materias primas',
-          nivel: 2,
-          cuentas: [
-            { codigo: '310', nombre: 'Materias primas', nivel: 3, naturaleza: 'ACTIVO' },
-          ],
-        },
-      ],
-    },
-    {
-      codigo: '4',
-      nombre: 'ACREEDORES Y DEUDORES POR OPERACIONES COMERCIALES',
-      nivel: 1,
-      naturaleza: 'ACTIVO',
-      tipoUso: 'BALANCE',
-      subgrupos: [
-        {
-          codigo: '43',
-          nombre: 'Clientes',
-          nivel: 2,
-          cuentas: [
-            { codigo: '430', nombre: 'Clientes', nivel: 3, naturaleza: 'ACTIVO' },
-            { codigo: '4300', nombre: 'Clientes nacionales (4 dígitos)', nivel: 4, naturaleza: 'ACTIVO' },
-          ],
-        },
-        {
-          codigo: '40',
-          nombre: 'Proveedores',
-          nivel: 2,
-          cuentas: [
-            { codigo: '400', nombre: 'Proveedores', nivel: 3, naturaleza: 'PASIVO' },
-            { codigo: '4000', nombre: 'Proveedores nacionales (4 dígitos)', nivel: 4, naturaleza: 'PASIVO' },
-          ],
-        },
-        {
-          codigo: '47',
-          nombre: 'Administración Pública',
-          nivel: 2,
-          cuentas: [
-            { codigo: '472', nombre: 'Hacienda Pública, IVA soportado', nivel: 3, naturaleza: 'ACTIVO' },
-            { codigo: '4751', nombre: 'Hacienda Pública, acreedora por retenciones practicadas', nivel: 3, naturaleza: 'PASIVO' },
-            { codigo: '477', nombre: 'Hacienda Pública, IVA repercutido', nivel: 3, naturaleza: 'PASIVO' },
-          ],
-        },
-      ],
-    },
-    {
-      codigo: '5',
-      nombre: 'CUENTAS FINANCIERAS',
-      nivel: 1,
-      naturaleza: 'ACTIVO',
-      tipoUso: 'BALANCE',
-      subgrupos: [
-        {
-          codigo: '57',
-          nombre: 'Tesorería',
-          nivel: 2,
-          cuentas: [
-            { codigo: '570', nombre: 'Caja', nivel: 3, naturaleza: 'ACTIVO' },
-            { codigo: '572', nombre: 'Bancos e instituciones de crédito', nivel: 3, naturaleza: 'ACTIVO' },
-            { codigo: '5720', nombre: 'Cuentas corrientes', nivel: 4, naturaleza: 'ACTIVO' },
-            { codigo: '5721', nombre: 'Cuentas de ahorro', nivel: 4, naturaleza: 'ACTIVO' },
-          ],
-        },
-      ],
-    },
-    {
-      codigo: '6',
-      nombre: 'COMPRAS Y GASTOS',
-      nivel: 1,
-      naturaleza: 'GASTO',
-      tipoUso: 'PYG',
-      subgrupos: [
-        {
-          codigo: '60',
-          nombre: 'Compras',
-          nivel: 2,
-          cuentas: [
-            { codigo: '600', nombre: 'Compra de mercaderías', nivel: 3, naturaleza: 'GASTO' },
-            { codigo: '601', nombre: 'Compra de materias primas', nivel: 3, naturaleza: 'GASTO' },
-          ],
-        },
-        {
-          codigo: '62',
-          nombre: 'Servicios exteriores',
-          nivel: 2,
-          cuentas: [
-            { codigo: '620', nombre: 'Gastos de transporte', nivel: 3, naturaleza: 'GASTO' },
-            { codigo: '621', nombre: 'Gastos de reparación y conservación', nivel: 3, naturaleza: 'GASTO' },
-            { codigo: '622', nombre: 'Gastos de arrendamiento', nivel: 3, naturaleza: 'GASTO' },
-            { codigo: '623', nombre: 'Reparación y conservación', nivel: 3, naturaleza: 'GASTO' },
-          ],
-        },
-      ],
-    },
-    {
-      codigo: '7',
-      nombre: 'VENTAS E INGRESOS',
-      nivel: 1,
-      naturaleza: 'INGRESO',
-      tipoUso: 'PYG',
-      subgrupos: [
-        {
-          codigo: '70',
-          nombre: 'Ventas de mercaderías',
-          nivel: 2,
-          cuentas: [
-            { codigo: '700', nombre: 'Ventas de mercaderías', nivel: 3, naturaleza: 'INGRESO' },
-            { codigo: '7000', nombre: 'Ventas de mercaderías A', nivel: 4, naturaleza: 'INGRESO' },
-            { codigo: '7001', nombre: 'Ventas de mercaderías B', nivel: 4, naturaleza: 'INGRESO' },
-          ],
-        },
-        {
-          codigo: '75',
-          nombre: 'Otros ingresos de explotación',
-          nivel: 2,
-          cuentas: [
-            { codigo: '750', nombre: 'Ingresos por servicios diversos', nivel: 3, naturaleza: 'INGRESO' },
-          ],
-        },
-      ],
-    },
-  ],
-};
+import { PGC_BASE, PgcNode } from '../domain/pgc-model';
 
 export interface CrearCuentaDTO {
   companyId: string;
@@ -215,93 +13,88 @@ export interface CrearCuentaDTO {
   notas?: string;
 }
 
+// --- Plan de cuentas de cada empresa ---
+//
+// Sale de la misma lista que el plan base (domain/pgc-model.ts, PGC_BASE). Antes
+// este fichero tenia una tercera copia, con nombres cambiados (620 "transporte",
+// 622 "arrendamiento"...) y sin cuentas que usa el motor contable (473, 4751,
+// 628...): contabilizar una factura fallaba con "Cuenta PGC ... no encontrada".
+
+const NIVEL: Record<PgcNode['level'], number> = { group: 1, subgroup: 2, account: 3, subaccount: 4 };
+
+/** Grupos 1-5 van al balance; 6 y 7, a la cuenta de perdidas y ganancias. */
+function tipoUsoDe(grupo: number): string {
+  return grupo >= 6 ? 'PYG' : 'BALANCE';
+}
+
+export interface ResultadoPlanEmpresa {
+  creadas: number;
+  renombradas: number;
+}
+
 /**
- * Inicializar el plan contable para una empresa.
- * Clon el PGC base a la empresa.
+ * Deja el plan de cuentas de la empresa al dia con el plan base: crea las cuentas
+ * que falten y corrige el nombre de las del PGC que lo tengan distinto. No toca
+ * las subcuentas propias de la empresa. Se puede llamar las veces que haga falta.
  */
-export async function inicializarPlanContableEmpresa(
+export async function asegurarPlanContableEmpresa(
   companyId: string,
   versionPGC: string = '2021',
   gruposAIncluir: number[] = [1, 2, 3, 4, 5, 6, 7],
-): Promise<void> {
-  // Verificar que la empresa existe
-  const empresa = await prisma.company.findUnique({
-    where: { id: companyId },
-  });
+): Promise<ResultadoPlanEmpresa> {
+  const empresa = await prisma.company.findUnique({ where: { id: companyId }, select: { id: true } });
   if (!empresa) throw badRequest('Empresa no encontrada.');
 
-  // Verificar si ya hay cuentas para esta empresa
-  const yaTiene = await prisma.chartOfAccounts.findFirst({
-    where: { companyId, esBasePGC: true },
+  // versionPGC es clave ajena a ChartOfAccountsVersion.
+  await prisma.chartOfAccountsVersion.upsert({
+    where: { version: versionPGC },
+    update: {},
+    create: { version: versionPGC, descripcion: `PGC PYMES (RD 1515/2007), revisión ${versionPGC}` },
   });
-  if (yaTiene) throw badRequest('La empresa ya tiene un plan contable inicializado.');
 
-  // Crear cuentas base del PGC para la empresa
-  const cuentasACrear: any[] = [];
+  const nodos = PGC_BASE.filter((n) => gruposAIncluir.includes(Number(n.code[0])));
+  const existentes = await prisma.chartOfAccounts.findMany({
+    where: { companyId, codigo: { in: nodos.map((n) => n.code) } },
+    select: { id: true, codigo: true, nombre: true, esBasePGC: true },
+  });
+  const idPorCodigo = new Map(existentes.map((c) => [c.codigo, c.id]));
 
-  for (const grupo of PGC_BASE_STRUCTURE.grupos) {
-    if (!gruposAIncluir.includes(Number(grupo.codigo))) continue;
-
-    // Crear la cuenta de grupo (nivel 1)
-    const cuentaGrupo = {
+  // PGC_BASE va ordenado por codigo: el padre siempre aparece antes que el hijo.
+  const nuevas = [];
+  for (const n of nodos) {
+    if (idPorCodigo.has(n.code)) continue;
+    const id = randomUUID();
+    idPorCodigo.set(n.code, id);
+    const grupo = Number(n.code[0]);
+    nuevas.push({
+      id,
       companyId,
-      codigo: grupo.codigo,
-      nombre: grupo.nombre,
-      grupo: Number(grupo.codigo),
-      nivel: grupo.nivel,
-      naturaleza: grupo.naturaleza,
-      tipoUso: grupo.tipoUso,
+      codigo: n.code,
+      nombre: n.name,
+      grupo,
+      nivel: NIVEL[n.level],
+      naturaleza: n.type.toUpperCase(),
+      tipoUso: tipoUsoDe(grupo),
       esBasePGC: true,
       esPersonalizadaEmpresa: false,
       versionPGC,
-      parentId: null,
-      parentCodigo: null,
-    };
-    cuentasACrear.push(cuentaGrupo);
+      parentCodigo: n.parentCode ?? null,
+      parentId: n.parentCode ? idPorCodigo.get(n.parentCode) ?? null : null,
+    });
+  }
+  if (nuevas.length) await prisma.chartOfAccounts.createMany({ data: nuevas });
 
-    // Crear subgrupos y cuentas
-    for (const subgrupo of grupo.subgrupos || []) {
-      // Subgrupo (nivel 2)
-      const cuentaSubgrupo = {
-        companyId,
-        codigo: subgrupo.codigo,
-        nombre: subgrupo.nombre,
-        grupo: Number(grupo.codigo),
-        nivel: subgrupo.nivel,
-        naturaleza: grupo.naturaleza,
-        tipoUso: grupo.tipoUso,
-        esBasePGC: true,
-        esPersonalizadaEmpresa: false,
-        versionPGC,
-        parentCodigo: grupo.codigo,
-      };
-      cuentasACrear.push(cuentaSubgrupo);
-
-      // Cuentas (nivel 3+)
-      for (const cuenta of subgrupo.cuentas || []) {
-        const cuentaData = {
-          companyId,
-          codigo: cuenta.codigo,
-          nombre: cuenta.nombre,
-          grupo: Number(grupo.codigo),
-          nivel: cuenta.nivel,
-          naturaleza: cuenta.naturaleza || grupo.naturaleza,
-          tipoUso: grupo.tipoUso,
-          esBasePGC: true,
-          esPersonalizadaEmpresa: false,
-          versionPGC,
-          parentCodigo: subgrupo.codigo,
-        };
-        cuentasACrear.push(cuentaData);
-      }
-    }
+  const nombreOficial = new Map(nodos.map((n) => [n.code, n.name]));
+  const aRenombrar = existentes.filter((c) => c.esBasePGC && c.nombre !== nombreOficial.get(c.codigo));
+  for (const c of aRenombrar) {
+    await prisma.chartOfAccounts.update({ where: { id: c.id }, data: { nombre: nombreOficial.get(c.codigo)! } });
   }
 
-  // Crear todas las cuentas en BD
-  for (const cuenta of cuentasACrear) {
-    await prisma.chartOfAccounts.create({ data: cuenta });
-  }
+  return { creadas: nuevas.length, renombradas: aRenombrar.length };
 }
+
+/** Alias historico (tests y llamadas antiguas). Ya no falla si el plan existe. */
+export const inicializarPlanContableEmpresa = asegurarPlanContableEmpresa;
 
 /**
  * Listar plan contable con filtros.
@@ -351,8 +144,18 @@ export async function obtenerCuentaPorCodigo(
  * Crear subcuenta personalizada.
  */
 export async function crearSubcuentaPersonalizada(
-  dto: CrearCuentaDTO,
+  dtoEntrada: CrearCuentaDTO,
 ) {
+  const codigo = String(dtoEntrada.codigo ?? '').trim();
+  const nombre = String(dtoEntrada.nombre ?? '').trim();
+  const parentCodigo = String(dtoEntrada.parentCodigo ?? '').trim();
+  if (!codigo || !nombre || !parentCodigo) throw badRequest('codigo, nombre y parentCodigo son obligatorios.');
+  // En el PGC una subcuenta amplia el codigo de su cuenta: 6290001 cuelga de 629.
+  if (!/^\d+$/.test(codigo) || !codigo.startsWith(parentCodigo) || codigo.length <= parentCodigo.length) {
+    throw badRequest(`El código ${codigo} tiene que empezar por ${parentCodigo} y ser más largo (solo dígitos).`);
+  }
+  const dto: CrearCuentaDTO = { ...dtoEntrada, codigo, nombre, parentCodigo };
+
   // Validar que el padre existe
   const padre = await prisma.chartOfAccounts.findFirst({
     where: { companyId: dto.companyId, codigo: dto.parentCodigo },
@@ -445,6 +248,7 @@ export async function obtenerArbolPlanContable(
 
 export const chartOfAccountsService = {
   inicializarPlanContableEmpresa,
+  asegurarPlanContableEmpresa,
   listarPlanContable,
   obtenerCuentaPorCodigo,
   crearSubcuentaPersonalizada,

@@ -338,7 +338,7 @@ describe('contabilizarFacturaGasto', () => {
     });
   });
 
-  describe('SERVICIO_PROFESIONAL con retención 15% → 622/472/4751(HABER)/400', () => {
+  describe('SERVICIO_PROFESIONAL con retención 15% → 623/472/4751(HABER)/400', () => {
     let invoiceId: string;
     let journalEntryId: string;
 
@@ -366,9 +366,9 @@ describe('contabilizarFacturaGasto', () => {
       expect(await getLineas(journalEntryId)).toHaveLength(4);
     });
 
-    it('622 DEBE 1000 (no 600)', async () => {
+    it('623 DEBE 1000 (no 600)', async () => {
       const pc = porCuenta(await getLineas(journalEntryId));
-      expect(pc['622'].debe).toBeCloseTo(1000);
+      expect(pc['623'].debe).toBeCloseTo(1000);
       expect(pc['600']).toBeUndefined();
     });
 
