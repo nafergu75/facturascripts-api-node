@@ -59,7 +59,7 @@ export class AccountingEngineController {
         where: { id: invoiceId },
         include: { customer: true, lineas: true },
       });
-      if (!factura) {
+      if (!factura || factura.companyId !== companyId) {
         throw notFound(`Factura de ingreso ${invoiceId} no encontrada.`);
       }
 
@@ -527,6 +527,12 @@ export class AccountingEngineController {
 
       if (!asiento) {
         throw notFound(`Asiento ${journalEntryId} no encontrado.`);
+      }
+
+      // Validar que la línea pertenece a este asiento
+      const lineaExiste = asiento.lineas.some((l) => l.id === lineId);
+      if (!lineaExiste) {
+        throw notFound(`Línea ${lineId} no pertenece a este asiento.`);
       }
 
       // Validar estado

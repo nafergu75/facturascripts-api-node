@@ -56,6 +56,17 @@ router.get('/:ejercicio/files', accountingClosureController.listarArchivos);
 router.post('/prior-years', authorize('contable'), accountingClosureController.guardarDatosAnterior);
 
 /**
+ * Generar asiento de cierre contable.
+ * POST /api/accounting/closures/generar-asiento
+ * Body: { fechaDesde: YYYY-MM-DD, fechaHasta: YYYY-MM-DD }
+ */
+router.post(
+  '/generar-asiento',
+  authorize('contabilidad:write'),
+  accountingClosureController.generarAsientoCierre,
+);
+
+/**
  * Obtener datos de ejercicio anterior.
  * GET /api/accounting/prior-years/2023
  */

@@ -12,6 +12,7 @@
 import { badRequest } from '../utils/http-errors';
 import { registrarAuditoria } from './auditoria.service';
 import { AccountingEngineController } from '../controllers/accounting-engine.controller';
+import { invoiceArchivingService } from './invoice-archiving.service';
 import { prisma } from '../config/database';
 
 export class AccountingHooksService {
@@ -71,6 +72,15 @@ export class AccountingHooksService {
    */
   async onIncomeInvoiceConfirmed(companyId: string, invoiceId: string): Promise<void> {
     try {
+      // Obtener datos de la factura para archivado
+      const factura = await prisma.incomeInvoice.findUnique({
+        where: { id: invoiceId },
+      });
+
+      if (!factura) {
+        throw badRequest('Factura no encontrada');
+      }
+
       // Validación previa
       await this.validateInvoiceForAccounting(companyId, invoiceId);
 
@@ -79,6 +89,13 @@ export class AccountingHooksService {
         companyId,
         invoiceId,
         'AUTO'
+      );
+
+      // 📁 Archivar factura automáticamente (no-crítico)
+      await invoiceArchivingService.archivarFacturaIngreso(
+        companyId,
+        invoiceId,
+        factura.numeroCompleto
       );
 
       // Auditoría de éxito
@@ -92,6 +109,7 @@ export class AccountingHooksService {
           journalEntryId: resultado.journalEntryId,
           estado: resultado.estado,
           advertencias: resultado.advertencias,
+          archivado: true,
         },
       });
 
@@ -138,11 +156,27 @@ export class AccountingHooksService {
    */
   async onExpenseInvoiceConfirmed(companyId: string, invoiceId: string): Promise<void> {
     try {
+      // Obtener datos de la factura para archivado
+      const factura = await prisma.expenseInvoice.findUnique({
+        where: { id: invoiceId },
+      });
+
+      if (!factura) {
+        throw badRequest('Factura de gasto no encontrada');
+      }
+
       // Contabilizar
       const resultado = await this.controller.contabilizarFacturaGasto(
         companyId,
         invoiceId,
         'AUTO'
+      );
+
+      // 📁 Archivar factura automáticamente (no-crítico)
+      await invoiceArchivingService.archivarFacturaGasto(
+        companyId,
+        invoiceId,
+        factura.numeroCompleto
       );
 
       await registrarAuditoria({
@@ -154,6 +188,7 @@ export class AccountingHooksService {
         meta: {
           journalEntryId: resultado.journalEntryId,
           estado: resultado.estado,
+          archivado: true,
         },
       });
     } catch (err) {

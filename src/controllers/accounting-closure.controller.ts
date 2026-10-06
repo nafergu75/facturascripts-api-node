@@ -224,4 +224,33 @@ export const accountingClosureController = {
 
     sendOk(res, { comparativa });
   }),
+
+  /**
+   * POST /api/accounting/closures/generar-asiento
+   * Generar asiento de cierre contable automático.
+   * Body: { fechaDesde: YYYY-MM-DD, fechaHasta: YYYY-MM-DD }
+   */
+  generarAsientoCierre: asyncHandler(async (req, res) => {
+    const { fechaDesde, fechaHasta } = req.body ?? {};
+    if (!fechaDesde || !fechaHasta) {
+      throw badRequest('fechaDesde y fechaHasta son requeridos (formato: YYYY-MM-DD).');
+    }
+
+    const asiento = await accountingClosureService.generarAsientoDeCierre(
+      req.companyId!,
+      new Date(fechaDesde),
+      new Date(fechaHasta),
+    );
+
+    await registrarAuditoria({
+      userId: req.user?.userId || 'unknown',
+      companyId: req.companyId,
+      action: 'GENERAR_ASIENTO_CIERRE',
+      resourceType: 'JOURNAL_ENTRY',
+      resourceId: asiento.asientoId,
+      meta: { fechaDesde, fechaHasta, resultado: asiento.resultado },
+    });
+
+    sendOk(res, { asiento }, undefined, 201);
+  }),
 };

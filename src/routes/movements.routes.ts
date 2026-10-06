@@ -9,16 +9,16 @@ router.post('/', movementsController.create);
 // GET /companies/:companyId/movements
 router.get('/', movementsController.list);
 
-// GET /companies/:companyId/movements/:id (si es necesario)
-// router.get('/:id', movementsController.getById);
+// ⚠️ IMPORTANT: Specific routes MUST come BEFORE dynamic routes like /:id
+// Otherwise Express will treat /stats/summary as /:id where id='stats/summary'
 
-// GET /companies/:companyId/stats/summary
+// GET /companies/:companyId/movements/stats/summary
 router.get('/stats/summary', movementsController.getSummary);
 
-// GET /companies/:companyId/stats/by-category
+// GET /companies/:companyId/movements/stats/by-category
 router.get('/stats/by-category', movementsController.getByCategory);
 
-// GET /companies/:companyId/stats/by-month
+// GET /companies/:companyId/movements/stats/by-month
 router.get('/stats/by-month', movementsController.getByMonth);
 
 // PATCH /companies/:companyId/movements/:id

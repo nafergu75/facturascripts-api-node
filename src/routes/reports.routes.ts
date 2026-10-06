@@ -37,35 +37,7 @@ export const reportsRoutes = Router({ mergeParams: true });
  */
 reportsRoutes.get(
   '/balance',
-  authMiddleware,
-  async (req: Request, res: Response) => {
-    try {
-      const { companyId } = req.params;
-      const { from, to } = req.query;
-
-      if (!from || !to) {
-        return res
-          .status(400)
-          .json({
-            error:
-              'Parameters "from" and "to" required (format: YYYY-MM-DD)',
-          });
-      }
-
-      const balance = await reportsService.obtenerBalance(
-        companyId,
-        from as string,
-        to as string
-      );
-
-      res.json(balance);
-    } catch (err) {
-      const statusCode =
-        err instanceof HttpError ? err.statusCode : 400;
-      const message = err instanceof Error ? err.message : String(err);
-      res.status(statusCode).json({ error: message });
-    }
-  }
+  reportsController.balance
 );
 
 /**
@@ -82,32 +54,7 @@ reportsRoutes.get(
  */
 reportsRoutes.get(
   '/profit-and-loss',
-  authMiddleware,
-  async (req: Request, res: Response) => {
-    try {
-      const { companyId } = req.params;
-      const { from, to } = req.query;
-
-      if (!from || !to) {
-        return res
-          .status(400)
-          .json({ error: 'Parameters "from" and "to" required' });
-      }
-
-      const pyg = await reportsService.obtenerPyG(
-        companyId,
-        from as string,
-        to as string
-      );
-
-      res.json(pyg);
-    } catch (err) {
-      const statusCode =
-        err instanceof HttpError ? err.statusCode : 400;
-      const message = err instanceof Error ? err.message : String(err);
-      res.status(statusCode).json({ error: message });
-    }
-  }
+  reportsController.profitAndLoss
 );
 
 /**

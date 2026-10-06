@@ -1,7 +1,7 @@
 import { asyncHandler } from '../utils/async-handler';
 import { sendOk } from '../utils/response';
 import { badRequest } from '../utils/http-errors';
-import { financialReportsService } from '../services/reports.service';
+import { financialReportsService, reportsService } from '../services/reports.service';
 
 /**
  * Parsea los query params de periodo en { fromDate, toDate }.
@@ -56,6 +56,38 @@ function parsePeriod(query: Record<string, unknown>): { fromDate: Date; toDate: 
 }
 
 export const reportsController = {
+  /**
+   * GET /companies/:companyId/reports/balance
+   * Balance General (Activo/Pasivo/Patrimonio Neto)
+   */
+  balance: asyncHandler(async (req, res) => {
+    const { from, to } = req.query;
+    if (!from || !to) throw badRequest('Parámetros "from" y "to" son requeridos (formato: YYYY-MM-DD).');
+
+    const balance = await reportsService.obtenerBalance(
+      req.companyId!,
+      from as string,
+      to as string,
+    );
+    sendOk(res, balance);
+  }),
+
+  /**
+   * GET /companies/:companyId/reports/profit-and-loss
+   * Cuenta de Pérdidas y Ganancias (Ingresos - Gastos)
+   */
+  profitAndLoss: asyncHandler(async (req, res) => {
+    const { from, to } = req.query;
+    if (!from || !to) throw badRequest('Parámetros "from" y "to" son requeridos (formato: YYYY-MM-DD).');
+
+    const pyg = await reportsService.obtenerPyG(
+      req.companyId!,
+      from as string,
+      to as string,
+    );
+    sendOk(res, pyg);
+  }),
+
   /**
    * GET /companies/:companyId/reports/income
    * Ingresos contabilizados (base imponible de facturas emitidas del VATBook)
