@@ -8,11 +8,18 @@ import {
   updateContact,
   deleteContact,
   listContactsBySupplier,
-} from './supplierContact.service';
-import { prisma } from '../../config/database';
+} from '../services/suppliers/supplierContact.service';
+import { prisma } from '../config/database';
 
 // Mock de Prisma
-jest.mock('../../config/database');
+// Doble explicito: el cliente de Prisma extendido no se deja auto-mockear.
+jest.mock('../config/database', () => {
+  const delegado = () => ({
+    findUnique: jest.fn(), findFirst: jest.fn(), findMany: jest.fn(),
+    create: jest.fn(), update: jest.fn(), updateMany: jest.fn(), delete: jest.fn(),
+  });
+  return { prisma: { supplier: delegado(), supplierContact: delegado() } };
+});
 
 describe('SupplierContact Service', () => {
   const mockSupplierId = 'supplier-123';
@@ -192,9 +199,8 @@ describe('SupplierContact Service', () => {
       (prisma.supplierContact.findFirst as jest.Mock).mockResolvedValue(existingContact);
       (prisma.supplierContact.delete as jest.Mock).mockResolvedValue(existingContact);
 
-      const result = await deleteContact(mockSupplierId, mockContactId);
-
-      expect(result).toEqual(existingContact);
+      // deleteContact no devuelve nada; lo que importa es que borra ese contacto.
+      await expect(deleteContact(mockSupplierId, mockContactId)).resolves.toBeUndefined();
       expect(prisma.supplierContact.delete).toHaveBeenCalledWith({
         where: { id: mockContactId },
       });

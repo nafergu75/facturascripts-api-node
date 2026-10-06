@@ -1,19 +1,44 @@
 /**
- * Tests de integración para endpoints de Proveedores
- * Utiliza supertest para hacer peticiones HTTP reales
+ * Ficha del proveedor: contactos, cuentas bancarias, historial y exportacion.
+ *
+ * Este test estaba en src/routes/ y jest no lo ejecutaba (solo mira tests/).
+ * Describia rutas que no existian; ahora las cubre. Adaptado a dos requisitos
+ * nuevos: las rutas piden permiso (el usuario de prueba es admin) y el proveedor
+ * tiene que ser de la empresa de la ruta (casos al final).
  */
 
 import request from 'supertest';
 import express from 'express';
-import proveedoresRouter from './proveedores.routes';
+import proveedoresRouter from '../routes/proveedores.routes';
 import { prisma } from '../config/database';
+import { errorMiddleware } from '../middleware/error.middleware';
 
-// Mock de Prisma
-jest.mock('../config/database');
+// Doble explicito de Prisma: el cliente extendido no se deja auto-mockear.
+jest.mock('../config/database', () => {
+  const delegado = () => ({
+    findUnique: jest.fn(),
+    findFirst: jest.fn(),
+    findMany: jest.fn(),
+    create: jest.fn(),
+    update: jest.fn(),
+    updateMany: jest.fn(),
+    delete: jest.fn(),
+    count: jest.fn(),
+  });
+  return {
+    prisma: {
+      supplier: delegado(),
+      supplierContact: delegado(),
+      supplierBankAccount: delegado(),
+      supplierAudit: delegado(),
+      expenseInvoice: delegado(),
+    },
+  };
+});
 
 // Mock de middleware de autenticación
 const mockAuthMiddleware = (req: any, res: any, next: any) => {
-  req.user = { email: 'test@empresa.com', id: 'user-123' };
+  req.user = { email: 'test@empresa.com', userId: 'user-123', roles: ['admin'], companies: ['1'] };
   next();
 };
 
@@ -25,10 +50,14 @@ describe('Proveedores Routes', () => {
     app.use(express.json());
     app.use(mockAuthMiddleware);
     app.use('/api/companies/:companyId/proveedores', proveedoresRouter);
+    // El manejador de la app: los errores llegan como { message } y no como HTML.
+    app.use(errorMiddleware);
   });
 
   beforeEach(() => {
     jest.clearAllMocks();
+    // Por defecto el proveedor es de la empresa '1' (la de las rutas).
+    (prisma.supplier.findUnique as jest.Mock).mockResolvedValue({ id: 'supplier-123', companyId: '1' });
   });
 
   describe('POST /contacts - Create Contact', () => {
@@ -45,7 +74,7 @@ describe('Proveedores Routes', () => {
         esPrincipal: false,
       };
 
-      const mockSupplier = { id: supplierId };
+      const mockSupplier = { id: supplierId, companyId };
       const mockContact = {
         id: 'contact-456',
         supplierId,
@@ -63,7 +92,7 @@ describe('Proveedores Routes', () => {
         .send(contactData);
 
       expect(res.status).toBe(201);
-      expect(res.body.data).toEqual(mockContact);
+      expect(res.body.data).toEqual(JSON.parse(JSON.stringify(mockContact)));
     });
 
     it('should reject contact without nombre', async () => {
@@ -93,7 +122,7 @@ describe('Proveedores Routes', () => {
         esPrincipal: false,
       };
 
-      (prisma.supplier.findUnique as jest.Mock).mockResolvedValue({ id: supplierId });
+      (prisma.supplier.findUnique as jest.Mock).mockResolvedValue({ id: supplierId, companyId });
       (prisma.supplierContact.create as jest.Mock).mockResolvedValue({
         id: 'contact-789',
         supplierId,
@@ -198,7 +227,7 @@ describe('Proveedores Routes', () => {
       const supplierId = 'supplier-123';
 
       const accountData = {
-        iban: 'ES9121123456789012345678990',
+        iban: 'ES9121000418450200051332',
         bic: 'BBVAESMMXXX',
         banco: 'BBVA',
         alias: 'Cuenta principal',
@@ -214,7 +243,7 @@ describe('Proveedores Routes', () => {
         updatedAt: new Date(),
       };
 
-      (prisma.supplier.findUnique as jest.Mock).mockResolvedValue({ id: supplierId });
+      (prisma.supplier.findUnique as jest.Mock).mockResolvedValue({ id: supplierId, companyId });
       (prisma.supplierBankAccount.findFirst as jest.Mock).mockResolvedValue(null); // No existe
       (prisma.supplierBankAccount.updateMany as jest.Mock).mockResolvedValue({ count: 0 });
       (prisma.supplierBankAccount.create as jest.Mock).mockResolvedValue(mockAccount);
@@ -225,7 +254,7 @@ describe('Proveedores Routes', () => {
         .send(accountData);
 
       expect(res.status).toBe(201);
-      expect(res.body.data.iban).toBe('ES9121123456789012345678990');
+      expect(res.body.data.iban).toBe('ES9121000418450200051332');
     });
 
     it('should reject invalid IBAN', async () => {
@@ -252,13 +281,13 @@ describe('Proveedores Routes', () => {
       const supplierId = 'supplier-123';
 
       const newAccountData = {
-        iban: 'ES9121123456789012345678990',
+        iban: 'ES9121000418450200051332',
         alias: 'Nueva principal',
         formaPagoPorDefecto: 'transferencia',
         esPrincipal: true,
       };
 
-      (prisma.supplier.findUnique as jest.Mock).mockResolvedValue({ id: supplierId });
+      (prisma.supplier.findUnique as jest.Mock).mockResolvedValue({ id: supplierId, companyId });
       (prisma.supplierBankAccount.findFirst as jest.Mock).mockResolvedValue(null);
       (prisma.supplierBankAccount.updateMany as jest.Mock).mockResolvedValue({ count: 1 }); // Demotó otros
       (prisma.supplierBankAccount.create as jest.Mock).mockResolvedValue({
@@ -356,9 +385,11 @@ describe('Proveedores Routes', () => {
         nombreFiscal: 'Test Company',
         nifCif: 'A12345678',
         email: 'test@company.com',
+        companyId,
       };
 
       (prisma.supplier.findUnique as jest.Mock).mockResolvedValue(mockSupplier);
+      (prisma.supplier.findFirst as jest.Mock).mockResolvedValue(mockSupplier);
       (prisma.supplierContact.findMany as jest.Mock).mockResolvedValue([]);
       (prisma.supplierBankAccount.findMany as jest.Mock).mockResolvedValue([]);
 
@@ -378,9 +409,11 @@ describe('Proveedores Routes', () => {
         id: supplierId,
         nombreFiscal: 'Test Company',
         nifCif: 'A12345678',
+        companyId,
       };
 
       (prisma.supplier.findUnique as jest.Mock).mockResolvedValue(mockSupplier);
+      (prisma.supplier.findFirst as jest.Mock).mockResolvedValue(mockSupplier);
       (prisma.supplierContact.findMany as jest.Mock).mockResolvedValue([]);
       (prisma.supplierBankAccount.findMany as jest.Mock).mockResolvedValue([]);
 
@@ -396,7 +429,8 @@ describe('Proveedores Routes', () => {
       const companyId = '1';
       const supplierId = 'supplier-123';
 
-      (prisma.supplier.findUnique as jest.Mock).mockResolvedValue({ id: supplierId });
+      (prisma.supplier.findUnique as jest.Mock).mockResolvedValue({ id: supplierId, companyId });
+      (prisma.supplier.findFirst as jest.Mock).mockResolvedValue({ id: supplierId, companyId });
       (prisma.supplierContact.findMany as jest.Mock).mockResolvedValue([]);
       (prisma.supplierBankAccount.findMany as jest.Mock).mockResolvedValue([]);
 
@@ -410,5 +444,35 @@ describe('Proveedores Routes', () => {
 
       expect(res.status).toBe(200);
     });
+  });
+
+  describe('proveedor de otra empresa', () => {
+    beforeEach(() => {
+      (prisma.supplier.findUnique as jest.Mock).mockResolvedValue({ id: 'supplier-123', companyId: 'otra' });
+    });
+
+    it('no deja ver sus cuentas bancarias', async () => {
+      const res = await request(app).get('/api/companies/1/proveedores/supplier-123/bank-accounts');
+      expect(res.status).toBe(404);
+      expect(prisma.supplierBankAccount.findMany).not.toHaveBeenCalled();
+    });
+
+    it('no deja anadirle contactos', async () => {
+      const res = await request(app)
+        .post('/api/companies/1/proveedores/supplier-123/contacts')
+        .send({ nombre: 'Intruso' });
+      expect(res.status).toBe(404);
+      expect(prisma.supplierContact.create).not.toHaveBeenCalled();
+    });
+  });
+
+  it('lista las facturas de gasto del proveedor, solo de esta empresa', async () => {
+    (prisma.expenseInvoice.findMany as jest.Mock).mockResolvedValue([{ id: 'g1', numeroCompleto: 'G-1' }]);
+    const res = await request(app).get('/api/companies/1/proveedores/supplier-123/invoices');
+    expect(res.status).toBe(200);
+    expect(res.body.data).toHaveLength(1);
+    expect(prisma.expenseInvoice.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { companyId: '1', supplierId: 'supplier-123' } }),
+    );
   });
 });

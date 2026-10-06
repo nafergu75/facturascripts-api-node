@@ -99,7 +99,9 @@ export async function logContactChange(
     data: {
       supplierId: String(supplierId),
       usuarioEmail: usuarioEmail || null,
-      tipoAccion: 'update', // Se registra como update general
+      // La accion real (antes siempre 'update'): filtrar el historial por
+      // creaciones o borrados no encontraba nada.
+      tipoAccion,
       campo: 'contacto',
       valorAnterior: null,
       valorNuevo: contactoNombre,
@@ -125,7 +127,7 @@ export async function logBankAccountChange(
     data: {
       supplierId: String(supplierId),
       usuarioEmail: usuarioEmail || null,
-      tipoAccion: 'update',
+      tipoAccion,
       campo: 'cuenta_bancaria',
       valorAnterior: null,
       valorNuevo: iban,
