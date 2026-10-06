@@ -1,2 +1,2 @@
-# Los scripts de bash deben tener LF: con CRLF fallan con "$'': command not found".
+# Los scripts de bash deben tener LF: con CRLF, bash falla al ejecutarlos en Windows.
 *.sh text eol=lf
