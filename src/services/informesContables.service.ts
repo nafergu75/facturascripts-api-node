@@ -36,7 +36,7 @@ import {
   type SaldoTercero,
   type TipoTercero,
 } from './informesContables.calculo';
-import { fechaES, textoPeriodo, type FilaInforme, type TablaInforme } from './informesContables.documentos';
+import { fechaES, num, textoPeriodo, type FilaInforme, type TablaInforme } from './informesContables.documentos';
 
 const round2 = (n: number): number => Math.round((n + Number.EPSILON) * 100) / 100;
 
@@ -213,7 +213,7 @@ export async function informeBalance(companyId: string, periodo: Periodo) {
   ];
 
   const notas: string[] = ['Modelo de balance del PGC de PYMES. No incluye los asientos de regularización ni de cierre.'];
-  if (balance.descuadre) notas.push(`Atención: el balance no cuadra (diferencia de ${balance.descuadre.toFixed(2)} €). Revisa los asientos.`);
+  if (balance.descuadre) notas.push(`Atención: el balance no cuadra (diferencia de ${num(balance.descuadre)} €). Revisa los asientos.`);
 
   const tabla: TablaInforme = {
     titulo: 'Balance de situación',
@@ -548,7 +548,7 @@ export async function informeDetalleTercero(companyId: string, tipo: TipoTercero
   if (tipo === 'clientes' && t.id !== SIN_IDENTIFICAR && !t.id.startsWith('subcuenta:')) {
     notas.push(
       facturasPendientes.length
-        ? `Según facturación, ${facturasPendientes.length} factura(s) pendiente(s) de cobro por ${totalPendiente.toFixed(2).replace('.', ',')} €: ${facturasPendientes.map((f) => f.numeroCompleto ?? '').filter(Boolean).join(', ')}.`
+        ? `Según facturación, ${facturasPendientes.length} factura(s) pendiente(s) de cobro por ${num(totalPendiente)} €: ${facturasPendientes.map((f) => f.numeroCompleto ?? '').filter(Boolean).join(', ')}.`
         : 'Según facturación, no tiene facturas pendientes de cobro.',
     );
   }

@@ -49,7 +49,7 @@ export interface TablaInforme {
 
 // ---------- Formatos ----------
 
-const num = (n: number): string =>
+export const num = (n: number): string =>
   `${n < 0 ? '−' : ''}${Math.abs(n).toLocaleString('es-ES', { minimumFractionDigits: 2, maximumFractionDigits: 2, useGrouping: true })}`;
 export const fechaES = (iso: string): string =>
   /^\d{4}-\d{2}-\d{2}/.test(iso) ? `${iso.slice(8, 10)}/${iso.slice(5, 7)}/${iso.slice(0, 4)}` : iso;
