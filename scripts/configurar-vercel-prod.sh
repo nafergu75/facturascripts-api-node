@@ -51,11 +51,24 @@ fi
 
 echo "3/5 Base de datos..."
 if [ -z "$(valor DATABASE_URL)" ]; then
+  echo "    En Git Bash se pega con Shift+Insert o clic derecho > Paste (Ctrl+V NO pega)."
   read -rsp "    Pega la DATABASE_URL de TiDB (no se mostrara) y pulsa Enter: " URL_BD
   echo
-  [[ "$URL_BD" == mysql://* ]] || { echo "    Debe empezar por mysql://. Abortado."; exit 1; }
+  # Limpieza: caracteres de control (un Ctrl+V mete uno invisible), espacios,
+  # comillas y un posible prefijo DATABASE_URL= copiado de un .env.
+  URL_BD="$(printf '%s' "$URL_BD" | tr -d '[:cntrl:]' | sed -E 's/^[[:space:]]+|[[:space:]]+$//g; s/^DATABASE_URL=//; s/^["'\'']//; s/["'\'']$//')"
+  if [[ "$URL_BD" != mysql://* ]]; then
+    # No se muestra lo pegado: podria contener la contrasena.
+    echo "    Lo pegado no empieza por mysql:// (${#URL_BD} caracteres). Abortado."
+    echo "    Vuelve a lanzar el script y pega SOLO la URL, sin comillas."
+    exit 1
+  fi
+  [[ "$URL_BD" == *sslaccept=strict* ]] || { echo "    La URL debe llevar sslaccept=strict (TLS obligatorio en TiDB). Abortado."; exit 1; }
+  # En serverless cada funcion abre su pool: una conexion por funcion.
+  [[ "$URL_BD" == *connection_limit=* ]] || URL_BD="${URL_BD}&connection_limit=1"
   echo "DATABASE_URL=$URL_BD" >> "$FICHERO"
   unset URL_BD
+  echo "    DATABASE_URL guardada (no se muestra)."
 fi
 
 echo "4/5 Subiendo variables a Vercel..."
