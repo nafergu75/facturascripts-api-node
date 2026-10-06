@@ -105,7 +105,7 @@ afterAll(async () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe('contabilizarFacturaIngreso', () => {
-  describe('factura DRAFT sin retención → asiento DRAFT', () => {
+  describe('factura sin retención → asiento en firme (POSTED)', () => {
     let invoiceId: string;
     let journalEntryId: string;
 
@@ -129,10 +129,10 @@ describe('contabilizarFacturaIngreso', () => {
       journalEntryId = r.journalEntryId;
     });
 
-    it('devuelve journalEntryId y estado DRAFT', async () => {
+    it('devuelve journalEntryId y el asiento queda en firme (no es del OCR)', async () => {
       expect(journalEntryId).toBeTruthy();
       const asiento = await prisma.journalEntry.findUnique({ where: { id: journalEntryId } });
-      expect(asiento?.estado).toBe('DRAFT');
+      expect(asiento?.estado).toBe('POSTED');
     });
 
     it('genera 3 líneas: 430 DEBE / 700 HABER / 477 HABER', async () => {

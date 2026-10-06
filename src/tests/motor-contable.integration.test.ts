@@ -145,6 +145,19 @@ describe('Motor Contable - Casos Realistas', () => {
 
       invoiceId = factura.id;
       expect(invoiceId).toBeDefined();
+      // Factura que viene del lector OCR: su asiento queda en borrador para revisarlo.
+      await prisma.incomeReaderDocument.create({
+        data: {
+          companyId,
+          sourceType: 'WEB_UPLOAD',
+          originalFileName: 'factura.pdf',
+          mimeType: 'application/pdf',
+          fileSize: 1,
+          storagePath: 'test/factura.pdf',
+          status: 'VERIFIED',
+          linkedInvoiceId: invoiceId,
+        },
+      });
       expect(factura.baseTotal).toBe(1000);
       expect(factura.ivaTotal).toBe(210);
     });

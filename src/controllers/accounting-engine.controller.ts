@@ -34,7 +34,7 @@ export class AccountingEngineController {
     mode: 'AUTO' | 'MANUAL' = 'AUTO',
   ): Promise<{
     journalEntryId: string;
-    estado: 'DRAFT' | 'PENDING_REVIEW';
+    estado: 'POSTED' | 'DRAFT' | 'PENDING_REVIEW';
     advertencias?: string[];
   }> {
     try {
@@ -53,11 +53,14 @@ export class AccountingEngineController {
       // Obtener factura de ingreso
       const factura = await prisma.incomeInvoice.findUnique({
         where: { id: invoiceId },
-        include: { customer: true, lineas: true },
+        include: { customer: true, lineas: true, readerDocument: { select: { id: true } } },
       });
       if (!factura || factura.companyId !== companyId) {
         throw notFound(`Factura de ingreso ${invoiceId} no encontrada.`);
       }
+      // Las facturas emitidas en la app se contabilizan en firme; las que vienen
+      // del lector OCR quedan en borrador hasta revisarlas en Motor contable.
+      const desdeOcr = !!factura.readerDocument;
       if (factura.estadoDocumento !== 'FINAL') {
         throw badRequest('La factura está en borrador: emítela antes de contabilizarla.');
       }
@@ -95,6 +98,7 @@ export class AccountingEngineController {
             clienteNif: factura.customer.nifCif,
             clienteNombre: factura.customer.nombreFiscal,
             tipoOperacion: 'NACIONAL',
+            estadoAsiento: desdeOcr ? 'DRAFT' : 'POSTED',
           },
           tx,
         );
@@ -118,7 +122,7 @@ export class AccountingEngineController {
 
       return {
         journalEntryId: result.asientoId,
-        estado: mode === 'AUTO' ? 'DRAFT' : 'PENDING_REVIEW',
+        estado: desdeOcr ? 'DRAFT' : 'POSTED',
         advertencias: [],
       };
     } catch (err) {
@@ -146,7 +150,7 @@ export class AccountingEngineController {
     mode: 'AUTO' | 'MANUAL' = 'AUTO',
   ): Promise<{
     journalEntryId: string;
-    estado: 'DRAFT' | 'PENDING_REVIEW';
+    estado: 'POSTED' | 'DRAFT' | 'PENDING_REVIEW';
     advertencias?: string[];
   }> {
     try {
@@ -234,7 +238,7 @@ export class AccountingEngineController {
 
       return {
         journalEntryId: result.asientoId,
-        estado: mode === 'AUTO' ? 'DRAFT' : 'PENDING_REVIEW',
+        estado: 'POSTED',
         advertencias: [],
       };
     } catch (err) {

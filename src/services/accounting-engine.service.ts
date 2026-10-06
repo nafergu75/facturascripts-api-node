@@ -153,6 +153,8 @@ export async function contabilizarFacturaIngreso(
     tipoOperacion?: 'NACIONAL' | 'INTRACOMUNITARIA' | 'EXPORTACION' | 'EXENTA'; // default: NACIONAL
     /** Base y cuota por tipo de IVA. Sin el, se registra todo al tipo `ivaRate`. */
     desgloseIva?: DesgloseIva[];
+    /** POSTED (por defecto): la factura emitida es definitiva. DRAFT: pendiente de revisar (OCR). */
+    estadoAsiento?: 'POSTED' | 'DRAFT';
   },
   tx?: TransaccionBD,
 ): Promise<{ asientoId: string; lineas: any[] }> {
@@ -170,7 +172,7 @@ export async function contabilizarFacturaIngreso(
       numeroAsiento: `FAC-ING-${invoiceData.numeroFactura}`,
       descripcion: `Factura de ingreso #${invoiceData.numeroFactura} - ${invoiceData.clienteNombre}`,
       origen: 'FACTURA_INGRESO',
-      estado: 'DRAFT',
+      estado: invoiceData.estadoAsiento ?? 'POSTED',
       invoiceId,
       invoiceType: 'INGRESO',
     },
@@ -298,6 +300,8 @@ export async function contabilizarFacturaGasto(
     tipoGasto?: 'COMPRA' | 'SERVICIO_PROFESIONAL' | 'ALQUILER' | 'SUMINISTROS'; // default: COMPRA
     /** Base y cuota por tipo de IVA. Sin el, se registra todo al tipo `ivaRate`. */
     desgloseIva?: DesgloseIva[];
+    /** POSTED (por defecto) o DRAFT si viene del lector OCR y hay que revisarla. */
+    estadoAsiento?: 'POSTED' | 'DRAFT';
   },
   tx?: TransaccionBD,
 ): Promise<{ asientoId: string; lineas: any[] }> {
@@ -324,7 +328,7 @@ export async function contabilizarFacturaGasto(
       numeroAsiento: `FAC-GAST-${invoiceData.numeroFactura}`,
       descripcion: `Factura de gasto #${invoiceData.numeroFactura} - ${invoiceData.proveedorNombre}`,
       origen: 'FACTURA_GASTO',
-      estado: 'DRAFT',
+      estado: invoiceData.estadoAsiento ?? 'POSTED',
       invoiceId,
       invoiceType: 'GASTO',
     },
