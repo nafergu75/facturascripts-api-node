@@ -487,6 +487,15 @@ export async function cobradoPorFactura(companyId: string, tipo: TipoDocumento, 
   return new Map(filas.map((r) => [r.invoiceId, round2(Number(r._sum.importe ?? 0))]));
 }
 
+/** Suma de los cobros/pagos activos con fecha entre `desde` y `hasta` (ambas incluidas). */
+export async function totalCobradoEntre(companyId: string, tipo: TipoDocumento, desde: string, hasta: string): Promise<number> {
+  const r = await prisma.invoicePayment.aggregate({
+    where: { companyId, invoiceType: tipo, estado: 'ACTIVO', fecha: { gte: desde, lte: hasta } },
+    _sum: { importe: true },
+  });
+  return round2(Number(r._sum.importe ?? 0));
+}
+
 /** Hay cobros activos en la factura (para no "desmarcar" una factura cobrada con asientos). */
 export async function tieneCobrosActivos(companyId: string, tipo: TipoDocumento, invoiceId: string): Promise<boolean> {
   return (await prisma.invoicePayment.count({ where: { companyId, invoiceType: tipo, invoiceId, estado: 'ACTIVO' } })) > 0;
