@@ -15,6 +15,6 @@ export interface MovimientoBancarioImportado {
   importe: number;
   concepto: string;
   referencia?: string;
-  origen: 'norma43' | 'csv';
+  origen: 'norma43' | 'csv' | 'excel';
   conciliado: boolean;
 }

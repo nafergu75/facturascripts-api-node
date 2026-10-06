@@ -1,6 +1,8 @@
 import { asyncHandler } from '../utils/async-handler';
 import { sendOk } from '../utils/response';
 import { treasuryService } from '../services/treasury.service';
+import { importarExtractoArchivo } from '../services/bancos.service';
+import { badRequest } from '../utils/http-errors';
 
 export const treasuryController = {
   resumen: asyncHandler(async (req, res) => {
@@ -22,6 +24,14 @@ export const treasuryController = {
 
   subirExtracto: asyncHandler(async (req, res) => {
     sendOk(res, await treasuryService.subirExtracto(req.companyId!, req.params.accountId, req.body?.contenidoCSV), undefined, 201);
+  }),
+
+  subirExtractoArchivo: asyncHandler(async (req, res) => {
+    const archivo = (req as unknown as { file?: { buffer: Buffer; originalname: string } }).file;
+    if (!archivo) throw badRequest('Adjunta el extracto en el campo "archivo".');
+    const vistaPrevia = ['1', 'true', 'si'].includes(String(req.query.vistaPrevia ?? ''));
+    const r = await importarExtractoArchivo(req.companyId!, req.params.accountId, archivo.buffer, archivo.originalname, { vistaPrevia });
+    sendOk(res, r, undefined, vistaPrevia ? 200 : 201);
   }),
 
   conciliar: asyncHandler(async (req, res) => {

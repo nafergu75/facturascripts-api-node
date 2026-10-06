@@ -1,6 +1,7 @@
 import { CuentaBancariaEmpresa, MovimientoBancarioImportado } from '../domain/bancos.model';
 import { badRequest } from '../utils/http-errors';
 import { prisma } from '../config/database';
+import { leerExtracto } from './extractoBancario.service';
 
 const aCuenta = (c: { id: string; companyId: string; iban: string; bancoNombre: string | null; subcuentaCodigo: string; activa: boolean }): CuentaBancariaEmpresa => ({
   id: c.id,
@@ -29,7 +30,7 @@ const aMovimiento = (m: {
   importe: m.importe,
   concepto: m.concepto,
   referencia: m.referencia ?? undefined,
-  origen: m.origen as 'norma43' | 'csv',
+  origen: m.origen as 'norma43' | 'csv' | 'excel',
   conciliado: m.conciliado,
 });
 
@@ -101,8 +102,56 @@ export async function importarMovimientosDesdeCSV(
     throw badRequest(`El extracto tiene lineas que no se pueden leer; no se ha importado nada. ${errores.join('; ')}`);
   }
 
+  return (await guardarMovimientos(companyId, cuentaBancariaId, aCrear, 'csv')).importados;
+}
+
+const clave = (m: { fecha: string; importe: number; concepto: string }) =>
+  `${m.fecha}|${Number(m.importe).toFixed(2)}|${m.concepto.trim().toLowerCase().replace(/\s+/g, ' ')}`;
+
+/**
+ * Separa los movimientos que ya estan en la cuenta (mismo dia, importe y
+ * concepto). Dos extractos que se solapan son lo normal: antes se duplicaban.
+ * Cuenta repeticiones: si un dia hay dos pagos iguales y ya habia uno, entra
+ * el otro.
+ */
+export async function separarRepetidos<T extends { fecha: string; importe: number; concepto: string }>(
+  cuentaBancariaId: string,
+  movimientos: T[],
+): Promise<{ nuevos: T[]; repetidos: T[] }> {
+  if (movimientos.length === 0) return { nuevos: [], repetidos: [] };
+  const fechas = movimientos.map((m) => m.fecha).sort();
+  const existentes = await prisma.bankMovement.findMany({
+    where: { cuentaBancariaId, fecha: { gte: fechas[0], lte: fechas[fechas.length - 1] } },
+    select: { fecha: true, importe: true, concepto: true },
+  });
+  const disponibles = new Map<string, number>();
+  for (const e of existentes) {
+    const k = clave({ fecha: e.fecha, importe: Number(e.importe), concepto: e.concepto });
+    disponibles.set(k, (disponibles.get(k) ?? 0) + 1);
+  }
+  const nuevos: T[] = [];
+  const repetidos: T[] = [];
+  for (const m of movimientos) {
+    const k = clave(m);
+    const n = disponibles.get(k) ?? 0;
+    if (n > 0) {
+      disponibles.set(k, n - 1);
+      repetidos.push(m);
+    } else nuevos.push(m);
+  }
+  return { nuevos, repetidos };
+}
+
+/** Guarda los movimientos nuevos de un extracto (los repetidos se omiten). */
+export async function guardarMovimientos(
+  companyId: string,
+  cuentaBancariaId: string,
+  movimientos: Array<{ fecha: string; importe: number; concepto: string; referencia?: string }>,
+  origen: 'csv' | 'excel' | 'norma43',
+): Promise<{ importados: MovimientoBancarioImportado[]; repetidos: number }> {
+  const { nuevos, repetidos } = await separarRepetidos(cuentaBancariaId, movimientos);
   const importados: MovimientoBancarioImportado[] = [];
-  for (const mov of aCrear) {
+  for (const mov of nuevos) {
     const creado = await prisma.bankMovement.create({
       data: {
         companyId,
@@ -111,13 +160,47 @@ export async function importarMovimientosDesdeCSV(
         importe: mov.importe,
         concepto: mov.concepto,
         referencia: mov.referencia,
-        origen: 'csv',
+        origen,
         conciliado: false,
       },
     });
     importados.push(aMovimiento(creado));
   }
-  return importados;
+  return { importados, repetidos: repetidos.length };
+}
+
+/**
+ * Extracto en Excel o CSV (ver extractoBancario.service). Con vistaPrevia no
+ * guarda nada: devuelve lo leido y cuantos movimientos son nuevos.
+ */
+export async function importarExtractoArchivo(
+  companyId: string,
+  cuentaBancariaId: string,
+  contenido: Buffer,
+  nombreArchivo: string,
+  opciones: { vistaPrevia?: boolean } = {},
+) {
+  const cuenta = await prisma.bankAccount.findUnique({ where: { id: cuentaBancariaId } });
+  if (!cuenta || cuenta.companyId !== companyId) throw badRequest('Cuenta bancaria no encontrada.');
+  const extracto = leerExtracto(contenido, nombreArchivo);
+  const origen = extracto.formato === 'csv' ? 'csv' : 'excel';
+  const fechas = extracto.filas.map((f) => f.fecha).sort();
+  const resumen = {
+    formato: extracto.formato,
+    columnas: extracto.columnas,
+    avisos: extracto.avisos,
+    total: extracto.filas.length,
+    desde: fechas[0],
+    hasta: fechas[fechas.length - 1],
+    entradas: Number(extracto.filas.filter((f) => f.importe > 0).reduce((t, f) => t + f.importe, 0).toFixed(2)),
+    salidas: Number(extracto.filas.filter((f) => f.importe < 0).reduce((t, f) => t + f.importe, 0).toFixed(2)),
+  };
+  if (opciones.vistaPrevia) {
+    const { nuevos, repetidos } = await separarRepetidos(cuentaBancariaId, extracto.filas);
+    return { ...resumen, nuevos: nuevos.length, repetidos: repetidos.length, muestra: extracto.filas.slice(0, 15) };
+  }
+  const r = await guardarMovimientos(companyId, cuentaBancariaId, extracto.filas, origen);
+  return { ...resumen, importados: r.importados.length, repetidos: r.repetidos };
 }
 
 export async function listarMovimientos(companyId: string, cuentaBancariaId?: string): Promise<MovimientoBancarioImportado[]> {

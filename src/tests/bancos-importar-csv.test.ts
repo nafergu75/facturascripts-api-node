@@ -13,6 +13,8 @@ jest.mock('../config/database', () => {
     prisma: {
       bankAccount: { findUnique: jest.fn(async () => ({ id: 'acc1', companyId: 'c1' })) },
       bankMovement: {
+        // Sin movimientos previos en la cuenta (los repetidos se prueban en extracto-bancario.test).
+        findMany: jest.fn(async () => []),
         create: jest.fn(async ({ data }: { data: Record<string, unknown> }) => {
           const fila = { id: `m${creados.length + 1}`, referencia: null, conciliado: false, ...data };
           creados.push(fila);
