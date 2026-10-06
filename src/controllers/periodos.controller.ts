@@ -2,7 +2,7 @@ import { asyncHandler } from '../utils/async-handler';
 import { sendOk } from '../utils/response';
 import { badRequest } from '../utils/http-errors';
 import { cambiarEstadoPeriodo, listarPeriodos } from '../services/periodos.service';
-import { ejecutarCierreEjercicio } from '../services/cierreEjercicio.service';
+import { deshacerCierreEjercicio, ejecutarCierreEjercicio, previsualizarCierre } from '../services/cierreEjercicio.service';
 import { EstadoPeriodo } from '../domain/periodos.model';
 import { registrarAuditoria } from '../services/auditoria.service';
 
@@ -29,14 +29,15 @@ export const periodosController = {
   cierre: asyncHandler(async (req, res) => {
     const ejercicio = parseEjercicio(req.query.ejercicio);
     try {
-      const resultado = await ejecutarCierreEjercicio(req.companyId!, ejercicio);
+      const reemplazarApertura = ['1', 'true'].includes(String(req.body?.reemplazarApertura ?? req.query.reemplazarApertura ?? ''));
+      const resultado = await ejecutarCierreEjercicio(req.companyId!, ejercicio, { reemplazarApertura });
       await registrarAuditoria({
         userId: req.user!.userId,
         companyId: req.companyId,
         action: 'CIERRE_EJERCICIO',
         resourceType: 'EJERCICIO',
         resourceId: String(ejercicio),
-        meta: { resultadoEjercicio: resultado.resultadoEjercicio },
+        meta: { resultadoEjercicio: resultado.resultadoEjercicio, asientos: resultado.numeros },
       });
       sendOk(res, resultado);
     } catch (err) {
@@ -51,5 +52,22 @@ export const periodosController = {
       });
       throw err;
     }
+  }),
+  vistaCierre: asyncHandler(async (req, res) => {
+    const reemplazarApertura = ['1', 'true'].includes(String(req.query.reemplazarApertura ?? ''));
+    sendOk(res, await previsualizarCierre(req.companyId!, parseEjercicio(req.query.ejercicio), { reemplazarApertura }));
+  }),
+  deshacerCierre: asyncHandler(async (req, res) => {
+    const ejercicio = parseEjercicio(req.query.ejercicio);
+    const r = await deshacerCierreEjercicio(req.companyId!, ejercicio);
+    await registrarAuditoria({
+      userId: req.user!.userId,
+      companyId: req.companyId,
+      action: 'DESHACER_CIERRE_EJERCICIO',
+      resourceType: 'EJERCICIO',
+      resourceId: String(ejercicio),
+      meta: r,
+    });
+    sendOk(res, r);
   }),
 };
