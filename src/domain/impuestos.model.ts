@@ -50,9 +50,13 @@ export interface DatosModelo303 {
   totalCuotaDeducible: number;
   /** Resultado = cuota devengada - cuota deducible. */
   resultado: number;
-  /** Cuotas a compensar de periodos anteriores [78] (patron Quipu "a compensar"). */
+  /** Cuotas pendientes de compensar de periodos anteriores [110]. */
   cuotasACompensarAnteriores?: number;
-  /** Resultado final = resultado - cuotas a compensar [71]. */
+  /** Parte de [110] aplicada en este periodo [78]: como mucho, el resultado positivo. */
+  cuotasAplicadas?: number;
+  /** Lo que queda por compensar en periodos posteriores [87] = [110] - [78]. */
+  cuotasPendientesPosteriores?: number;
+  /** Resultado final = resultado - cuotas aplicadas [71]. */
   resultadoFinal?: number;
   /** Informacion adicional pag.3: entregas intracomunitarias [59] y exportaciones [60]. */
   entregasIntracomunitarias?: number;

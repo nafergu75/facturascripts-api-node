@@ -3,6 +3,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import { randomUUID as uuid } from 'crypto';
 import { prisma } from '../config/database';
+import { cuadraEnCentimos } from '../utils/money';
 
 const STORAGE_DIR = path.join(process.cwd(), 'storage', 'accounting-closures');
 
@@ -380,7 +381,7 @@ export async function generarAsientoDeCierre(
   const sumaDebe = lineasCierre.reduce((sum, l) => sum + l.debe, 0);
   const sumaHaber = lineasCierre.reduce((sum, l) => sum + l.haber, 0);
 
-  if (Math.abs(sumaDebe - sumaHaber) > 0.01) {
+  if (!cuadraEnCentimos(sumaDebe, sumaHaber)) {
     throw badRequest(
       `El asiento de cierre no cuadra: DEBE=${sumaDebe.toFixed(2)}, HABER=${sumaHaber.toFixed(2)}`
     );

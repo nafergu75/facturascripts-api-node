@@ -72,7 +72,12 @@ export function agregar303(
   const totalCuotaDevengada = sumCuota(ivaDevengado);
   const totalCuotaDeducible = sumCuota(ivaDeducible);
   const resultado = round2(totalCuotaDevengada - totalCuotaDeducible);
-  const resultadoFinal = round2(resultado - Math.abs(cuotasACompensar));
+  // Las cuotas a compensar [110] solo se aplican [78] hasta dejar el resultado en
+  // cero: con resultado negativo no se aplica nada y todo pasa a [87].
+  const pendientesAnteriores = round2(Math.abs(cuotasACompensar));
+  const cuotasAplicadas = round2(Math.min(pendientesAnteriores, Math.max(resultado, 0)));
+  const cuotasPendientesPosteriores = round2(pendientesAnteriores - cuotasAplicadas);
+  const resultadoFinal = round2(resultado - cuotasAplicadas);
 
   // Casillas OFICIALES del 303. Bloque devengado RG = 3 filas por tipo de IVA
   // en orden descendente (habitualmente 21/10/4):
@@ -100,7 +105,9 @@ export function agregar303(
     '29_cuota_deducible': totalCuotaDeducible,
     '45_total_deducir': totalCuotaDeducible,
     '46_resultado_regimen_general': resultado,
-    '78_cuotas_a_compensar': round2(Math.abs(cuotasACompensar)),
+    '110_cuotas_pendientes_anteriores': pendientesAnteriores,
+    '78_cuotas_a_compensar': cuotasAplicadas,
+    '87_pendientes_periodos_posteriores': cuotasPendientesPosteriores,
     '71_resultado': resultadoFinal,
   });
 
@@ -113,7 +120,9 @@ export function agregar303(
     totalBaseDeducible: sumBase(ivaDeducible),
     totalCuotaDeducible,
     resultado,
-    cuotasACompensarAnteriores: round2(Math.abs(cuotasACompensar)),
+    cuotasACompensarAnteriores: pendientesAnteriores,
+    cuotasAplicadas,
+    cuotasPendientesPosteriores,
     resultadoFinal,
     entregasIntracomunitarias,
     exportaciones,
@@ -125,7 +134,9 @@ export function agregar303(
 export function agregar390(facturas: FacturaFiscal[], ejercicio: number): DatosModelo390 {
   const delAno = facturas.filter((f) => f.fecha.startsWith(String(ejercicio)));
   const ventas = delAno.filter((f) => f.tipo === 'venta' && f.operacion === 'interior');
-  const compras = delAno.filter((f) => f.tipo === 'compra');
+  // Mismo criterio que el 303: los gastos no deducibles no entran, o la suma de
+  // los 303 del ano no cuadra con el 390.
+  const compras = delAno.filter((f) => f.tipo === 'compra' && f.deducible !== false);
 
   const resumenDevengado = agruparPorTipoIva(ventas);
   const resumenDeducible = agruparPorTipoIva(compras);

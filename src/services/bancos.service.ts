@@ -67,39 +67,38 @@ export async function importarMovimientosDesdeCSV(
   const cuenta = await prisma.bankAccount.findUnique({ where: { id: cuentaBancariaId } });
   if (!cuenta || cuenta.companyId !== companyId) throw badRequest('Cuenta bancaria no encontrada.');
 
-  const lineas = csvContent.split(/\r?\n/).filter((l) => l.trim().length > 0);
+  const lineas = csvContent.split(/\r?\n/);
   const aCrear: { fecha: string; importe: number; concepto: string; referencia?: string }[] = [];
+  const errores: string[] = [];
 
-  // Detectar separador: si tiene `;`, es EU (sep=`;`, decimal=`,`)
-  // si no, asumir US (sep=`,`, decimal=`.`)
-  const primeraLinea = lineas[0] || '';
+  // Detectar separador: si la primera linea con contenido tiene `;`, es EU
+  // (sep=`;`, decimal=`,`, miles=`.`); si no, sep=`,` y decimal=`.`.
+  const primeraLinea = lineas.find((l) => l.trim().length > 0) ?? '';
   const usaSemicolon = primeraLinea.includes(';');
   const separador = usaSemicolon ? ';' : ',';
 
-  for (const linea of lineas) {
+  lineas.forEach((linea, i) => {
+    if (linea.trim().length === 0) return;
+    const numLinea = i + 1;
     const cols = linea.split(separador).map((c) => c.trim());
-    if (cols.length < 3) continue;
-    if (cols[0].toLowerCase() === 'fecha') continue; // cabecera
-
-    // Normalizar importe: (EU) "89,90" o (US) "89.90" -> number
-    // Si usa `;` (EU), la coma es decimal. Si usa `,` (US), el punto es decimal.
-    const importeStr = cols[1];
-    let importe = 0;
-    if (usaSemicolon) {
-      // EU: coma es decimal
-      importe = Number(importeStr.replace(',', '.'));
-    } else {
-      // US: punto es decimal (sin cambios)
-      importe = Number(importeStr);
+    if (cols[0].toLowerCase() === 'fecha') return; // cabecera
+    if (cols.length < 3) {
+      errores.push(`linea ${numLinea}: faltan columnas (fecha, importe, concepto)`);
+      return;
     }
-    if (!Number.isFinite(importe)) continue;
 
-    aCrear.push({
-      fecha: normalizarFecha(cols[0]),
-      importe,
-      concepto: cols[2] ?? '',
-      referencia: cols[3],
-    });
+    const fecha = normalizarFecha(cols[0]);
+    const importe = parsearImporte(cols[1], usaSemicolon);
+    if (!fecha) errores.push(`linea ${numLinea}: fecha no valida "${cols[0]}"`);
+    if (!Number.isFinite(importe)) errores.push(`linea ${numLinea}: importe no valido "${cols[1]}"`);
+    if (!fecha || !Number.isFinite(importe)) return;
+
+    aCrear.push({ fecha, importe, concepto: cols[2] ?? '', referencia: cols[3] });
+  });
+
+  // Todo o nada: un extracto con lineas ilegibles no se importa a medias.
+  if (errores.length > 0) {
+    throw badRequest(`El extracto tiene lineas que no se pueden leer; no se ha importado nada. ${errores.join('; ')}`);
   }
 
   const importados: MovimientoBancarioImportado[] = [];
@@ -149,10 +148,25 @@ export async function marcarMovimientoConciliado(
   return aMovimiento(actualizado);
 }
 
+/**
+ * Importe de un extracto. Con formato europeo admite miles con punto y decimal
+ * con coma ("1.234,56"); si no, decimal con punto ("1234.56"). Devuelve NaN si
+ * el texto no es un importe.
+ */
+export function parsearImporte(texto: string, formatoEuropeo: boolean): number {
+  const t = texto.replace(/[\s€]/g, '');
+  const patron = formatoEuropeo ? /^-?\d{1,3}(\.\d{3})*(,\d+)?$|^-?\d+(,\d+)?$/ : /^-?\d+(\.\d+)?$/;
+  if (!patron.test(t)) return NaN;
+  return Number(formatoEuropeo ? t.replace(/\./g, '').replace(',', '.') : t);
+}
+
+/** dd/mm/aaaa o aaaa-mm-dd -> aaaa-mm-dd; cadena vacia si no es una fecha real. */
 function normalizarFecha(s: string): string {
   const dmy = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(s);
-  if (dmy) return `${dmy[3]}-${dmy[2]}-${dmy[1]}`;
-  return s.slice(0, 10);
+  const iso = dmy ? `${dmy[3]}-${dmy[2]}-${dmy[1]}` : s.slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(iso)) return '';
+  const d = new Date(`${iso}T00:00:00Z`);
+  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === iso ? iso : '';
 }
 
 // TODO: importarMovimientosDesdeNorma43(companyId, cuentaBancariaId, contenido)

@@ -427,7 +427,8 @@ model VATBook {
   observaciones         String?               @db.Text
   createdAt             DateTime              @default(now())
 
-  @@unique([companyId, tipoLibro, numeroFactura])
+  // Un apunte por tipo de IVA: una factura 21% + 10% son dos filas.
+  @@unique([companyId, tipoLibro, numeroFactura, tipoIva])
   @@index([companyId])
   @@index([fechaFactura])
   @@index([tipoLibro])

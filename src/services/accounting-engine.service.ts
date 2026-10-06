@@ -12,8 +12,42 @@
 import { PrismaClient, Prisma } from '@prisma/client';
 import { badRequest, notFound, notImplemented } from '../utils/http-errors';
 import { prisma } from '../config/database';
+import { cuadraEnCentimos } from '../utils/money';
 
 type DbClient = PrismaClient | Prisma.TransactionClient;
+
+/** Base y cuota de IVA de una factura para un tipo concreto (0, 4, 10, 21). */
+export interface DesgloseIva {
+  tipoIva: number;
+  base: number;
+  cuota: number;
+}
+
+const centimos = (n: number) => Math.round(n * 100) / 100;
+
+/**
+ * Agrupa las lineas de una factura por tipo de IVA. El libro registro necesita
+ * un apunte por tipo: una factura con lineas al 21% y al 10% son dos apuntes,
+ * y una exenta es un apunte al 0% (no al 21%).
+ */
+export function desgloseIvaPorTipo(
+  lineas: Array<{ tipoIva: number; baseLine: number; ivaImporte: number }>,
+): DesgloseIva[] {
+  const porTipo = new Map<number, DesgloseIva>();
+  for (const l of lineas) {
+    const actual = porTipo.get(l.tipoIva) ?? { tipoIva: l.tipoIva, base: 0, cuota: 0 };
+    actual.base += l.baseLine;
+    actual.cuota += l.ivaImporte;
+    porTipo.set(l.tipoIva, actual);
+  }
+  return [...porTipo.values()].map((d) => ({ tipoIva: d.tipoIva, base: centimos(d.base), cuota: centimos(d.cuota) }));
+}
+
+/** Apuntes del libro de IVA: el desglose si viene, o los totales al tipo de la factura. */
+function apuntesLibroIva(d: { desgloseIva?: DesgloseIva[]; ivaRate: number; baseTotal: number; ivaTotal: number }): DesgloseIva[] {
+  if (d.desgloseIva && d.desgloseIva.length > 0) return d.desgloseIva;
+  return [{ tipoIva: d.ivaRate, base: d.baseTotal, cuota: d.ivaTotal }];
+}
 
 // ============================================================================
 // TIPOS Y CONFIGURACIÓN
@@ -116,6 +150,8 @@ export async function contabilizarFacturaIngreso(
     clienteNif: string;
     clienteNombre: string;
     tipoOperacion?: 'NACIONAL' | 'INTRACOMUNITARIA' | 'EXPORTACION' | 'EXENTA'; // default: NACIONAL
+    /** Base y cuota por tipo de IVA. Sin el, se registra todo al tipo `ivaRate`. */
+    desgloseIva?: DesgloseIva[];
   },
   tx?: Prisma.TransactionClient,
 ): Promise<{ asientoId: string; lineas: any[] }> {
@@ -211,15 +247,16 @@ export async function contabilizarFacturaIngreso(
   }
 
   // Validar que debe = haber (asiento equilibrado)
-  if (Math.abs(totalDebe - totalHaber) > 0.01) {
+  if (!cuadraEnCentimos(totalDebe, totalHaber)) {
     throw badRequest(
       `Asiento desequilibrado: debe ${totalDebe} ≠ haber ${totalHaber}`,
     );
   }
 
-  // VATBook: se registra aquí vinculado al asiento. Los informes filtran por asientos POSTED,
-  // por lo que los datos no aparecerán en informes hasta que el asiento sea aprobado.
-  if (invoiceData.ivaTotal > 0 || invoiceData.ivaRate === 0) {
+  // VATBook: un apunte por tipo de IVA, vinculado al asiento. Las exentas tambien
+  // se registran (libro de facturas expedidas). Los informes filtran por asientos
+  // POSTED, asi que no aparecen hasta que el asiento se aprueba.
+  for (const apunte of apuntesLibroIva(invoiceData)) {
     await db.vATBook.create({
       data: {
         companyId,
@@ -228,9 +265,9 @@ export async function contabilizarFacturaIngreso(
         fechaFactura: new Date(invoiceData.fechaEmision),
         nifTercero: invoiceData.clienteNif,
         nombreTercero: invoiceData.clienteNombre,
-        baseImponible: invoiceData.baseTotal,
-        tipoIva: invoiceData.ivaRate,
-        cuotaIva: invoiceData.ivaTotal,
+        baseImponible: apunte.base,
+        tipoIva: apunte.tipoIva,
+        cuotaIva: apunte.cuota,
         asientoId: asiento.id,
       },
     });
@@ -258,6 +295,8 @@ export async function contabilizarFacturaGasto(
     proveedorNif: string;
     proveedorNombre: string;
     tipoGasto?: 'COMPRA' | 'SERVICIO_PROFESIONAL' | 'ALQUILER' | 'SUMINISTROS'; // default: COMPRA
+    /** Base y cuota por tipo de IVA. Sin el, se registra todo al tipo `ivaRate`. */
+    desgloseIva?: DesgloseIva[];
   },
   tx?: Prisma.TransactionClient,
 ): Promise<{ asientoId: string; lineas: any[] }> {
@@ -361,14 +400,14 @@ export async function contabilizarFacturaGasto(
   totalHaber += invoiceData.totalFactura;
 
   // Validar equilibrio: DEBE (base+IVA) = HABER (retención+totalFactura)
-  if (Math.abs(totalDebe - totalHaber) > 0.01) {
+  if (!cuadraEnCentimos(totalDebe, totalHaber)) {
     throw badRequest(
       `Asiento desequilibrado: debe ${totalDebe} ≠ haber ${totalHaber}`,
     );
   }
 
-  // VATBook: vinculado al asiento. Informes filtran por asientos POSTED.
-  if (invoiceData.ivaTotal > 0 || invoiceData.ivaRate === 0) {
+  // VATBook: un apunte por tipo de IVA, vinculado al asiento. Informes filtran por asientos POSTED.
+  for (const apunte of apuntesLibroIva(invoiceData)) {
     await db.vATBook.create({
       data: {
         companyId,
@@ -377,9 +416,9 @@ export async function contabilizarFacturaGasto(
         fechaFactura: new Date(invoiceData.fechaEmision),
         nifTercero: invoiceData.proveedorNif,
         nombreTercero: invoiceData.proveedorNombre,
-        baseImponible: invoiceData.baseTotal,
-        tipoIva: invoiceData.ivaRate,
-        cuotaIva: invoiceData.ivaTotal,
+        baseImponible: apunte.base,
+        tipoIva: apunte.tipoIva,
+        cuotaIva: apunte.cuota,
         asientoId: asiento.id,
       },
     });

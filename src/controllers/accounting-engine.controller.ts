@@ -11,8 +11,9 @@
 
 import { badRequest, notFound, notImplemented } from '../utils/http-errors';
 import { registrarAuditoria } from '../services/auditoria.service';
-import { accountingEngineService } from '../services/accounting-engine.service';
+import { accountingEngineService, desgloseIvaPorTipo } from '../services/accounting-engine.service';
 import { prisma } from '../config/database';
+import { cuadraEnCentimos } from '../utils/money';
 
 export class AccountingEngineController {
   /**
@@ -83,9 +84,10 @@ export class AccountingEngineController {
           {
             baseTotal: factura.baseTotal,
             ivaTotal: factura.ivaTotal,
-            ivaRate: factura.lineas[0]?.tipoIva || 21,
+            ivaRate: factura.lineas[0]?.tipoIva ?? 21,
             retencionTotal: factura.retencionTotal,
-            retencionRate: factura.lineas[0]?.tipoRetencion || 0,
+            retencionRate: factura.lineas[0]?.tipoRetencion ?? 0,
+            desgloseIva: desgloseIvaPorTipo(factura.lineas),
             totalFactura: factura.totalFactura,
             fechaEmision: factura.fechaEmision,
             numeroFactura: factura.numeroCompleto,
@@ -165,7 +167,7 @@ export class AccountingEngineController {
       // Obtener factura de gasto con proveedor
       const factura = await prisma.expenseInvoice.findUnique({
         where: { id: invoiceId },
-        include: { supplier: true },
+        include: { supplier: true, lineas: true },
       });
       if (!factura || factura.companyId !== companyId) {
         throw notFound(`Factura de gasto ${invoiceId} no encontrada.`);
@@ -202,6 +204,8 @@ export class AccountingEngineController {
             ivaRate: factura.tipoIva,
             retencionTotal: factura.retencionTotal,
             retencionRate: factura.tipoRetencion,
+            // Facturas antiguas sin lineas: el servicio cae en los totales de cabecera.
+            desgloseIva: desgloseIvaPorTipo(factura.lineas),
             totalFactura: factura.totalFactura,
             fechaEmision: factura.fechaEmision,
             numeroFactura: factura.numeroCompleto,
@@ -283,7 +287,7 @@ export class AccountingEngineController {
       // Validar debe = haber
       const totalDebe = asiento.lineas.reduce((s, l) => s + (l.debe || 0), 0);
       const totalHaber = asiento.lineas.reduce((s, l) => s + (l.haber || 0), 0);
-      if (Math.abs(totalDebe - totalHaber) > 0.01) {
+      if (!cuadraEnCentimos(totalDebe, totalHaber)) {
         throw badRequest(
           `Asiento desequilibrado: debe ${totalDebe} ≠ haber ${totalHaber}. Contacta al equipo de soporte.`
         );
@@ -425,7 +429,7 @@ export class AccountingEngineController {
       // Validar debe = haber
       const totalDebe = asiento.lineas.reduce((s: number, l: any) => s + (l.debe || 0), 0);
       const totalHaber = asiento.lineas.reduce((s: number, l: any) => s + (l.haber || 0), 0);
-      const cuadrado = Math.abs(totalDebe - totalHaber) <= 0.01;
+      const cuadrado = cuadraEnCentimos(totalDebe, totalHaber);
 
       const errores: string[] = [];
       if (!cuadrado) {
@@ -554,7 +558,7 @@ export class AccountingEngineController {
       });
       const totalDebe = lineasActualizadas.reduce((s, l) => s + (l.debe || 0), 0);
       const totalHaber = lineasActualizadas.reduce((s, l) => s + (l.haber || 0), 0);
-      const cuadrado = Math.abs(totalDebe - totalHaber) <= 0.01;
+      const cuadrado = cuadraEnCentimos(totalDebe, totalHaber);
 
       if (!cuadrado) {
         throw badRequest(

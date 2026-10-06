@@ -261,10 +261,11 @@ export function generarPaginaModelo303_03(datos: DatosModelo303): string {
   put(216, numero(10000, 5)); // [65] % Estado = 100,00
   put(221, importe(datos.resultado, 17)); // [66] atribuible al Estado
 
-  const aCompensar = datos.cuotasACompensarAnteriores ?? 0;
-  put(255, importe(aCompensar, 17)); // [110] pendientes de periodos anteriores
-  put(272, importe(aCompensar, 17)); // [78] aplicadas en este periodo
-  put(289, importe(0, 17)); // [87] = [110]-[78]
+  const pendientes = datos.cuotasACompensarAnteriores ?? 0;
+  const aplicadas = datos.cuotasAplicadas ?? pendientes;
+  put(255, importe(pendientes, 17)); // [110] pendientes de periodos anteriores
+  put(272, importe(aplicadas, 17)); // [78] aplicadas en este periodo
+  put(289, importe(datos.cuotasPendientesPosteriores ?? pendientes - aplicadas, 17)); // [87] = [110]-[78]
 
   const resultadoFinal = datos.resultadoFinal ?? datos.resultado;
   put(340, importe(resultadoFinal, 17)); // [69] = [66]+[77]-[78]+[68]+[108]
