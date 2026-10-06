@@ -73,6 +73,8 @@ export interface LoginResult {
     permisos: string[];
     /** Permisos efectivos en cada empresa del usuario. */
     permisosPorEmpresa: Record<string, string[]>;
+    /** Roles en cada empresa (para mostrar "Contable", "Ventas"... en el menu). */
+    rolesPorEmpresa: Record<string, string[]>;
   };
   empresas: EmpresaLogin[];
   empresaSeleccionada?: string;
@@ -127,6 +129,7 @@ export const authService = {
         // Permisos en la empresa activa (la seleccionada o la primera), no la union.
         permisos: permisosEfectivos(rolesPorEmpresa[empresaSeleccionada ?? companies[0]] ?? [], esAdminGlobal),
         permisosPorEmpresa: permisosPorEmpresaDe(rolesPorEmpresa, esAdminGlobal),
+        rolesPorEmpresa,
       },
       empresas,
       empresaSeleccionada,
@@ -195,6 +198,7 @@ export const authService = {
         esAdminGlobal,
         permisos: permisosEfectivos(rolesPorEmpresa[companies[0]] ?? [], esAdminGlobal),
         permisosPorEmpresa: permisosPorEmpresaDe(rolesPorEmpresa, esAdminGlobal),
+        rolesPorEmpresa,
       },
       empresas,
     };
@@ -276,6 +280,7 @@ export const authService = {
         // Permisos en la empresa activa (la seleccionada o la primera), no la union.
         permisos: permisosEfectivos(rolesPorEmpresa[empresaSeleccionada ?? companies[0]] ?? [], esAdminGlobal),
         permisosPorEmpresa: permisosPorEmpresaDe(rolesPorEmpresa, esAdminGlobal),
+        rolesPorEmpresa,
       },
       empresas,
       empresaSeleccionada,
@@ -307,6 +312,7 @@ export const authService = {
         esAdminGlobal,
         permisos: permisosEfectivos(rolesPorEmpresa[companies[0]] ?? [], esAdminGlobal),
         permisosPorEmpresa: permisosPorEmpresaDe(rolesPorEmpresa, esAdminGlobal),
+        rolesPorEmpresa,
       },
       empresas,
     };
