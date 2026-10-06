@@ -16,6 +16,10 @@ router.get('/', movementsController.list);
 // GET /companies/:companyId/movements/stats/summary
 router.get('/stats/summary', movementsController.getSummary);
 
+// GET /companies/:companyId/movements/stats/fiscal?anio=2026[&trimestre=1-4]
+// IVA repercutido, IVA soportado y retenciones, sacados de las facturas.
+router.get('/stats/fiscal', movementsController.getResumenFiscal);
+
 // GET /companies/:companyId/movements/stats/by-category
 router.get('/stats/by-category', movementsController.getByCategory);
 

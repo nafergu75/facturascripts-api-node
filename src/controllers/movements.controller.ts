@@ -75,6 +75,63 @@ export const movementsController = {
     });
   }),
 
+  /**
+   * Resumen fiscal del periodo a partir de las FACTURAS (no de los movimientos):
+   * ventas emitidas e IVA repercutido, gastos e IVA soportado, y retenciones.
+   * Mismo criterio que el 303: ventas FINAL y ni ventas ni gastos en borrador.
+   */
+  getResumenFiscal: asyncHandler(async (req, res) => {
+    const companyId = req.companyId ?? req.params.companyId;
+    const anio = Number(req.query.anio ?? new Date().getFullYear());
+    const trimestre = req.query.trimestre ? Number(req.query.trimestre) : null;
+    if (!Number.isInteger(anio) || anio < 2000 || anio > 2100) throw badRequest('Año no válido.');
+    if (trimestre !== null && ![1, 2, 3, 4].includes(trimestre)) throw badRequest('Trimestre no válido (1 a 4).');
+    const mesDesde = trimestre ? (trimestre - 1) * 3 + 1 : 1;
+    const mesHasta = trimestre ? trimestre * 3 : 12;
+    const desde = `${anio}-${String(mesDesde).padStart(2, '0')}-01`;
+    const hasta = `${anio}-${String(mesHasta).padStart(2, '0')}-31`;
+    const fechas = { gte: desde, lte: hasta };
+    const suma = { baseTotal: true, ivaTotal: true, retencionTotal: true, totalFactura: true } as const;
+
+    const [ventas, gastos] = await Promise.all([
+      prisma.incomeInvoice.aggregate({
+        where: { companyId, estadoDocumento: 'FINAL', estado: { not: 'DRAFT' }, fechaEmision: fechas },
+        _sum: suma,
+        _count: true,
+      }),
+      prisma.expenseInvoice.aggregate({
+        where: { companyId, estado: { not: 'DRAFT' }, fechaEmision: fechas },
+        _sum: suma,
+        _count: true,
+      }),
+    ]);
+    const n = (v: unknown) => Math.round(Number(v ?? 0) * 100) / 100;
+    const ivaRepercutido = n(ventas._sum.ivaTotal);
+    const ivaSoportado = n(gastos._sum.ivaTotal);
+
+    sendOk(res, {
+      periodo: { anio, trimestre, desde, hasta },
+      ventas: {
+        facturas: ventas._count,
+        base: n(ventas._sum.baseTotal),
+        iva: ivaRepercutido,
+        retencion: n(ventas._sum.retencionTotal),
+        total: n(ventas._sum.totalFactura),
+      },
+      gastos: {
+        facturas: gastos._count,
+        base: n(gastos._sum.baseTotal),
+        iva: ivaSoportado,
+        retencion: n(gastos._sum.retencionTotal),
+        total: n(gastos._sum.totalFactura),
+      },
+      // Orientativo: el 303 real puede ajustar IVA no deducible, prorrata o compensaciones.
+      ivaResultado: n(ivaRepercutido - ivaSoportado),
+      // Retenciones que la empresa practica en sus gastos (modelo 111/115).
+      retencionesAIngresar: n(gastos._sum.retencionTotal),
+    });
+  }),
+
   // GET /companies/:companyId/stats/by-category - gastos por categoría
   getByCategory: asyncHandler(async (req, res) => {
     const { companyId } = req.params;
