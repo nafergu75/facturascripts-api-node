@@ -8,7 +8,7 @@ const router = Router({ mergeParams: true });
  * Crear cierre de período.
  * POST /api/accounting/closures
  */
-router.post('/', authorize('contable'), accountingClosureController.crearCierre);
+router.post('/', authorize('contabilidad:write'), accountingClosureController.crearCierre);
 
 /**
  * Listar cierres.
@@ -28,7 +28,7 @@ router.get('/:ejercicio', accountingClosureController.obtenerCierre);
  */
 router.patch(
   '/:ejercicio/status',
-  authorize('contable'),
+  authorize('contabilidad:write'),
   accountingClosureController.cambiarEstado,
 );
 
@@ -38,7 +38,7 @@ router.patch(
  */
 router.post(
   '/:ejercicio/upload',
-  authorize('contable'),
+  authorize('contabilidad:write'),
   raw({ type: ['application/json', 'text/plain', 'application/pdf', 'application/vnd.ms-excel', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'], limit: '10mb' }),
   accountingClosureController.subirArchivo,
 );
@@ -53,7 +53,7 @@ router.get('/:ejercicio/files', accountingClosureController.listarArchivos);
  * Guardar datos de ejercicio anterior.
  * POST /api/accounting/prior-years
  */
-router.post('/prior-years', authorize('contable'), accountingClosureController.guardarDatosAnterior);
+router.post('/prior-years', authorize('contabilidad:write'), accountingClosureController.guardarDatosAnterior);
 
 /**
  * Generar asiento de cierre contable.

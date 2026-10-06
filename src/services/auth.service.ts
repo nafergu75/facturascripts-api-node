@@ -4,6 +4,12 @@ import { config } from '../config/env';
 import { prisma } from '../config/database';
 import { verifyPassword } from '../utils/password';
 import { unauthorized } from '../utils/http-errors';
+import { permisosDeRoles } from './rbac.service';
+
+/** El admin global lo puede todo; el resto, lo que den sus roles. */
+function permisosEfectivos(roles: string[], esAdminGlobal: boolean): string[] {
+  return esAdminGlobal ? ['*'] : permisosDeRoles(roles);
+}
 
 export interface LoginInput {
   email: string;
@@ -42,6 +48,11 @@ export interface LoginResult {
     roles: string[];
     companies: string[];
     esAdminGlobal: boolean;
+    /**
+     * Permisos efectivos (misma tabla que usa authorize). El frontend filtra el
+     * menu con ellos: `roles` son nombres de rol ('contable'), no permisos.
+     */
+    permisos: string[];
   };
   empresas: EmpresaLogin[];
   empresaSeleccionada?: string;
@@ -86,7 +97,7 @@ export const authService = {
     return {
       token,
       refreshToken,
-      user: { id: user.id, email: user.email, roles, companies, esAdminGlobal },
+      user: { id: user.id, email: user.email, roles, companies, esAdminGlobal, permisos: permisosEfectivos(roles, esAdminGlobal) },
       empresas,
       empresaSeleccionada,
     };
@@ -142,7 +153,7 @@ export const authService = {
 
     const token = this.generateToken({ userId: user.id, email: user.email, roles, companies, esAdminGlobal });
     const nuevoRefresh = this.signRefreshToken(user.id);
-    return { token, refreshToken: nuevoRefresh, user: { id: user.id, email: user.email, roles, companies, esAdminGlobal }, empresas };
+    return { token, refreshToken: nuevoRefresh, user: { id: user.id, email: user.email, roles, companies, esAdminGlobal, permisos: permisosEfectivos(roles, esAdminGlobal) }, empresas };
   },
 
   /** Revoca un refresh token (logout). Idempotente: si ya no tiene jti o ya esta revocado, no falla. */
@@ -210,7 +221,7 @@ export const authService = {
     return {
       token,
       refreshToken,
-      user: { id: user.id, email: user.email, roles, companies, esAdminGlobal },
+      user: { id: user.id, email: user.email, roles, companies, esAdminGlobal, permisos: permisosEfectivos(roles, esAdminGlobal) },
       empresas,
       empresaSeleccionada,
     };

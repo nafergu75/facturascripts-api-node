@@ -28,7 +28,7 @@ const router = Router({ mergeParams: true });
  */
 router.get(
   '/303',
-  authorize('fiscal:read'),
+  authorize('impuestos:read'),
   taxModelsController.obtenerModelo303
 );
 
@@ -45,7 +45,7 @@ router.get(
  */
 router.post(
   '/303/presentado',
-  authorize('fiscal:write'),
+  authorize('impuestos:write'),
   taxModelsController.marcar303Presentado
 );
 
@@ -59,7 +59,7 @@ router.post(
  */
 router.get(
   '/111',
-  authorize('fiscal:read'),
+  authorize('impuestos:read'),
   taxModelsController.obtenerModelo111
 );
 
@@ -76,7 +76,7 @@ router.get(
  */
 router.post(
   '/111/presentado',
-  authorize('fiscal:write'),
+  authorize('impuestos:write'),
   taxModelsController.marcar111Presentado
 );
 
@@ -89,7 +89,7 @@ router.post(
  */
 router.get(
   '/200',
-  authorize('fiscal:read'),
+  authorize('impuestos:read'),
   taxModelsController.obtenerModelo200
 );
 
@@ -105,7 +105,7 @@ router.get(
  */
 router.post(
   '/200/presentado',
-  authorize('fiscal:write'),
+  authorize('impuestos:write'),
   taxModelsController.marcar200Presentado
 );
 
@@ -118,7 +118,7 @@ router.post(
  */
 router.get(
   '/347',
-  authorize('fiscal:read'),
+  authorize('impuestos:read'),
   taxModelsController.obtenerModelo347
 );
 
@@ -134,7 +134,7 @@ router.get(
  */
 router.post(
   '/347/presentado',
-  authorize('fiscal:write'),
+  authorize('impuestos:write'),
   taxModelsController.marcar347Presentado
 );
 
@@ -148,7 +148,7 @@ router.post(
  */
 router.get(
   '/115',
-  authorize('fiscal:read'),
+  authorize('impuestos:read'),
   taxModelsController.obtenerModelo115
 );
 
@@ -165,7 +165,7 @@ router.get(
  */
 router.post(
   '/115/presentado',
-  authorize('fiscal:write'),
+  authorize('impuestos:write'),
   taxModelsController.marcar115Presentado
 );
 
@@ -178,7 +178,7 @@ router.post(
  */
 router.get(
   '/390',
-  authorize('fiscal:read'),
+  authorize('impuestos:read'),
   taxModelsController.obtenerModelo390
 );
 
@@ -194,7 +194,7 @@ router.get(
  */
 router.post(
   '/390/presentado',
-  authorize('fiscal:write'),
+  authorize('impuestos:write'),
   taxModelsController.marcar390Presentado
 );
 
@@ -207,7 +207,7 @@ router.post(
  */
 router.get(
   '/190',
-  authorize('fiscal:read'),
+  authorize('impuestos:read'),
   taxModelsController.obtenerModelo190
 );
 
@@ -223,7 +223,7 @@ router.get(
  */
 router.post(
   '/190/presentado',
-  authorize('fiscal:write'),
+  authorize('impuestos:write'),
   taxModelsController.marcar190Presentado
 );
 
@@ -237,7 +237,7 @@ router.post(
  */
 router.get(
   '/',
-  authorize('fiscal:read'),
+  authorize('impuestos:read'),
   taxModelsController.listarModelos
 );
 
@@ -247,7 +247,7 @@ router.get(
  */
 router.get(
   '/:codigo/:ejercicio/:periodo',
-  authorize('fiscal:read'),
+  authorize('impuestos:read'),
   taxModelsController.obtenerModeloEspecifico
 );
 

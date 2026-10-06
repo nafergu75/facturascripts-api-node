@@ -60,7 +60,7 @@ router.get('/config', incomeReaderController.obtenerConfig);
  * Crear/actualizar configuración de email del lector.
  * POST /api/income-reader/config
  */
-router.post('/config', authorize('admin'), incomeReaderController.actualizarConfig);
+router.post('/config', authorize('admin:empresa'), incomeReaderController.actualizarConfig);
 
 /**
  * Obtener detalle de un documento.

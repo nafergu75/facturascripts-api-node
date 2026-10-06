@@ -8,7 +8,7 @@ const router = Router({ mergeParams: true });
  * Inicializar plan contable para una empresa.
  * POST /api/accounting/chart-of-accounts/init
  */
-router.post('/init', authorize('admin'), chartOfAccountsController.inicializar);
+router.post('/init', authorize('admin:empresa'), chartOfAccountsController.inicializar);
 
 /**
  * Listar plan contable con filtros.
@@ -32,12 +32,12 @@ router.get('/:codigo', chartOfAccountsController.obtenerPorCodigo);
  * Crear subcuenta personalizada.
  * POST /api/accounting/chart-of-accounts
  */
-router.post('/', authorize('contable'), chartOfAccountsController.crearSubcuenta);
+router.post('/', authorize('contabilidad:write'), chartOfAccountsController.crearSubcuenta);
 
 /**
  * Actualizar cuenta.
  * PATCH /api/accounting/chart-of-accounts/:id
  */
-router.patch('/:id', authorize('contable'), chartOfAccountsController.actualizar);
+router.patch('/:id', authorize('contabilidad:write'), chartOfAccountsController.actualizar);
 
 export default router;

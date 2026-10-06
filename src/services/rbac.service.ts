@@ -16,15 +16,18 @@ export const PERMISOS: Permiso[] = [
   // Modulo Impuestos (calendario fiscal, autorrelleno, presentaciones).
   { id: 'p11', code: 'impuestos:read' },
   { id: 'p12', code: 'impuestos:write' },
+  // Facturas de gasto y lector de gastos.
+  { id: 'p13', code: 'compras:read' },
+  { id: 'p14', code: 'compras:write' },
 ];
 
 /** Permisos por rol (admin = comodin total). */
 const ROL_PERMISOS: Record<NombreRol, string[]> = {
   admin: ['*'],
-  contable: ['contabilidad:read', 'contabilidad:write', 'aeat:read', 'tesoreria:read', 'impuestos:read', 'impuestos:write'],
+  contable: ['contabilidad:read', 'contabilidad:write', 'aeat:read', 'tesoreria:read', 'impuestos:read', 'impuestos:write', 'compras:read', 'compras:write'],
   tesoreria: ['tesoreria:read', 'tesoreria:write', 'contabilidad:read'],
   ventas: ['ventas:read', 'ventas:write', 'contabilidad:read'],
-  'solo-lectura': ['contabilidad:read', 'tesoreria:read', 'aeat:read', 'ventas:read', 'impuestos:read'],
+  'solo-lectura': ['contabilidad:read', 'tesoreria:read', 'aeat:read', 'ventas:read', 'impuestos:read', 'compras:read'],
 };
 
 /** Devuelve los permisos (codigos) derivados de un conjunto de roles. */
