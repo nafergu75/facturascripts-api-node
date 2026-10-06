@@ -49,6 +49,10 @@ export const legalizationService = {
     return { packageId: paquete.id, hash: paquete.hash, size: paquete.size, createdAt: paquete.createdAt, status: paquete.status };
   },
 
+  async listar(fyId: string) {
+    return prisma.legalizationPackage.findMany({ where: { fiscalYearId: fyId }, orderBy: { createdAt: 'desc' } });
+  },
+
   async obtener(packageId: string) {
     const p = await prisma.legalizationPackage.findUnique({ where: { id: packageId } });
     if (!p) throw notFound('Expediente de legalización no encontrado.');

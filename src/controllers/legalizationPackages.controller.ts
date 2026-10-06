@@ -25,6 +25,13 @@ export const legalizationPackagesController = {
     sendOk(res, paquete, undefined, 201);
   }),
 
+  // GET /fiscal-years/:fyId/legalization-packages
+  listar: asyncHandler(async (req, res) => {
+    const fy = await fiscalYearsService.obtener(req.params.fyId);
+    assertAccesoEmpresa(req.user, fy.companyId);
+    sendOk(res, await legalizationService.listar(fy.id));
+  }),
+
   // GET /legalization-packages/:packageId/download
   descargar: asyncHandler(async (req, res) => {
     const p = await legalizationService.obtener(req.params.packageId);

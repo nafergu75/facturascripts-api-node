@@ -55,12 +55,21 @@ export const annualAccountsService = {
       'NOTA: contenido de la memoria pendiente de integración (stub).',
     ]);
     const hash = sha256(pdf);
-    const filePath = await guardarArtefacto(fy.companyId, fyId, `cuentas-anuales-${ejercicio}.pdf`, pdf);
+
+    // Cada generacion es una version nueva con su propio fichero: antes todas se
+    // guardaban como cuentas-anuales-<ejercicio>.pdf y regenerar sobrescribia el
+    // PDF de las versiones anteriores (incluso de una ya presentada).
+    const anterior = await prisma.annualAccounts.findFirst({ where: { fiscalYearId: fyId }, orderBy: { version: 'desc' } });
+    const version = (anterior?.version ?? 0) + 1;
+    const filePath = await guardarArtefacto(fy.companyId, fyId, `cuentas-anuales-${ejercicio}-v${version}.pdf`, pdf);
+    await prisma.annualAccounts.updateMany({ where: { fiscalYearId: fyId, isLatestVersion: true }, data: { isLatestVersion: false } });
 
     const cuenta = await prisma.annualAccounts.create({
       data: {
         companyId: fy.companyId,
         fiscalYearId: fyId,
+        version,
+        isLatestVersion: true,
         modelo,
         filePath,
         dataJson: dataJson as unknown as Prisma.InputJsonValue,
@@ -69,11 +78,11 @@ export const annualAccountsService = {
       },
     });
 
-    return { accountId: cuenta.id, format: cuenta.format, filePath: cuenta.filePath, hash: cuenta.hash, status: cuenta.status };
+    return { accountId: cuenta.id, version: cuenta.version, format: cuenta.format, filePath: cuenta.filePath, hash: cuenta.hash, status: cuenta.status };
   },
 
   async listar(fyId: string) {
-    return prisma.annualAccounts.findMany({ where: { fiscalYearId: fyId }, orderBy: { createdAt: 'desc' } });
+    return prisma.annualAccounts.findMany({ where: { fiscalYearId: fyId }, orderBy: { version: 'desc' } });
   },
 
   async obtener(id: string) {
