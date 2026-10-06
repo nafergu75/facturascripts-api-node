@@ -718,6 +718,17 @@ model LegalConfig {
   obligaLibroSocios           Boolean  @default(true)  // Libro registro de socios/acciones
   obligaLibroContratos        Boolean  @default(false) // Solo sociedades unipersonales
   registroMercantilProvincia  String?  // Provincia del Registro Mercantil del domicilio social
+  // Identificacion de la sociedad para las cuentas anuales y la memoria.
+  denominacion                String?
+  nif                         String?
+  domicilioSocial             String?
+  codigoPostal                String?
+  municipio                   String?
+  provincia                   String?
+  actividad                   String?  @db.Text // Actividad principal (nota 1 de la memoria)
+  cnae                        String?
+  datosRegistrales            String?  // Tomo, folio, hoja e inscripcion
+  fechaConstitucion           String?  // YYYY-MM-DD
   createdAt                   DateTime @default(now())
   updatedAt                   DateTime @updatedAt
 }
@@ -734,6 +745,9 @@ model FiscalYear {
   legalizationDeadline     String?               // cierre + 4 meses
   accountsDepositDeadline  String?               // cierre + 7 meses
   asientosBloqueados       Boolean               @default(false)
+  /// Notas de la memoria que no salen de la contabilidad (plantilla media, partes
+  /// vinculadas, hechos posteriores...). Ver services/memoria.service.ts.
+  memoriaNotas             Json?
   createdAt                DateTime              @default(now())
   updatedAt                DateTime              @updatedAt
   books                    LegalBook[]

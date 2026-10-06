@@ -148,6 +148,9 @@ export interface EstadosFinancieros {
   efectivoInicial: number;
   /** Saldo acreedor de la reserva legal (112) al cierre. */
   reservaLegal: number;
+  /** Saldos por cuenta del ejercicio y del anterior (para la memoria). */
+  saldos: SaldosEjercicio;
+  saldosAnterior: SaldosEjercicio;
 }
 
 /**
@@ -173,6 +176,8 @@ export async function calcularEstadosFinancieros(companyId: string, ejercicio: n
 
   const anio = String(ejercicio);
   return {
+    saldos,
+    saldosAnterior: saldosAnt,
     reservaLegal: round2(reservaLegal),
     ...actual,
     asientos: todos.filter((a) => a.fecha.startsWith(anio) && (a.tipo ?? 'NORMAL') === 'NORMAL'),

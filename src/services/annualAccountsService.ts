@@ -5,8 +5,9 @@ import { generarPdfA } from '../utils/pdf-a';
 import { sha256 } from '../utils/zip';
 import { guardarArtefacto } from './registroMercantil.helpers';
 import { fiscalYearsService } from './fiscalYears.service';
-import { generarCuentasAnuales } from './cuentasAnuales.service';
-import { filasCuentasAnuales } from './cuentasAnualesPdf';
+import { generarCuentasAnualesDetalle } from './cuentasAnuales.service';
+import { filasCuentasAnuales, filasMemoria } from './cuentasAnualesPdf';
+import { generarMemoria, limpiarNotasMemoria, NotasMemoria } from './memoria.service';
 import { EstadoCuentas, ModeloCuentas, puedeTransicionarCuentas, RESOLUCIONES_CUENTAS } from '../domain/registroMercantil.model';
 
 function ejercicioDe(fy: { label: string; fechaFin: string }): number {
@@ -17,11 +18,10 @@ function ejercicioDe(fy: { label: string; fechaFin: string }): number {
 
 export const annualAccountsService = {
   /**
-   * Genera las cuentas anuales (balance, PyG, memoria) en JSON interno + un PDF
-   * de la memoria. El balance/PyG salen del motor contable real
-   * (generarCuentasAnuales, asientos POSTED). La MEMORIA es un stub: en
-   * producción se compone con el modelo oficial (normal/abreviado/pyme) del
-   * anexo técnico del Ministerio de Justicia.
+   * Genera las cuentas anuales (balance, PyG, ECPN, EFE, aplicacion del
+   * resultado y memoria) en JSON y en PDF/A. Las cifras salen de los asientos
+   * POSTED; la memoria, ademas, de los datos de la empresa y de las notas del
+   * ejercicio (ver memoria.service.ts).
    */
   async generar(fyId: string, modelo: ModeloCuentas = 'PYME') {
     if (!['PYME', 'ABREVIADO', 'NORMAL'].includes(modelo)) throw badRequest('modelo debe ser PYME, ABREVIADO o NORMAL.');
@@ -30,25 +30,23 @@ export const annualAccountsService = {
 
     // Si no se pueden calcular los estados, se para aqui: antes se generaba igual
     // un PDF sin cifras, que se podia presentar por error.
-    const estados = await generarCuentasAnuales(fy.companyId, ejercicio);
-
-    // MEMORIA: pendiente (punto 3). Solo los apartados.
-    const memoria = {
-      modelo,
+    const detalle = await generarCuentasAnualesDetalle(fy.companyId, ejercicio);
+    const estados = detalle.cuentas;
+    const memoria = generarMemoria({
       ejercicio,
-      nota: 'Memoria pendiente: solo se listan los apartados.',
-      apartados: ['Actividad de la empresa', 'Bases de presentación', 'Normas de registro y valoración', 'Inmovilizado', 'Situación fiscal'],
-    };
+      cuentas: estados,
+      sociedad: detalle.sociedad,
+      notas: (fy.memoriaNotas ?? {}) as NotasMemoria,
+      saldos: detalle.saldos,
+      saldosAnterior: detalle.saldosAnterior,
+      asientos: detalle.asientos,
+    });
 
     const dataJson = { modelo, ejercicio, estados, memoria };
 
     const pdf = await generarPdfA(`Cuentas anuales ${ejercicio} - ${estados.sociedad.denominacion || 'Empresa'}`, [
       ...filasCuentasAnuales(estados, modelo),
-      { texto: 'MEMORIA', nuevaPagina: true },
-      { texto: '' },
-      ...memoria.apartados.map((a) => ({ texto: `- ${a}` })),
-      { texto: '' },
-      { texto: 'Pendiente de redactar: la memoria todavía no se genera con contenido.' },
+      ...filasMemoria(memoria, ejercicio),
     ]);
     const hash = sha256(pdf);
 
@@ -75,6 +73,30 @@ export const annualAccountsService = {
     });
 
     return { accountId: cuenta.id, version: cuenta.version, format: cuenta.format, filePath: cuenta.filePath, hash: cuenta.hash, status: cuenta.status };
+  },
+
+  /** Notas de la memoria del ejercicio y lo que falta por completar. */
+  async obtenerMemoria(fyId: string) {
+    const fy = await fiscalYearsService.obtener(fyId);
+    const ejercicio = ejercicioDe(fy);
+    const notas = (fy.memoriaNotas ?? {}) as NotasMemoria;
+    const detalle = await generarCuentasAnualesDetalle(fy.companyId, ejercicio);
+    const memoria = generarMemoria({
+      ejercicio,
+      cuentas: detalle.cuentas,
+      sociedad: detalle.sociedad,
+      notas,
+      saldos: detalle.saldos,
+      saldosAnterior: detalle.saldosAnterior,
+      asientos: detalle.asientos,
+    });
+    return { notas, pendientes: memoria.pendientes, memoria };
+  },
+
+  async guardarNotasMemoria(fyId: string, datos: Record<string, unknown>) {
+    const notas = limpiarNotasMemoria(datos);
+    await prisma.fiscalYear.update({ where: { id: fyId }, data: { memoriaNotas: notas as unknown as Prisma.InputJsonValue } });
+    return this.obtenerMemoria(fyId);
   },
 
   async listar(fyId: string) {

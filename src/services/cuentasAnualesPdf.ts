@@ -2,6 +2,7 @@ import type { FilaPdf } from '../utils/pdf-a';
 import type { CuentasAnualesRM } from '../domain/cuentas-anuales.model';
 import type { BalancePartida } from '../domain/impuesto-sociedades.model';
 import type { ModeloCuentas } from '../domain/registroMercantil.model';
+import type { Memoria } from './memoria.service';
 
 /** 1234.5 -> '1.234,50' (con punto de miles tambien en las de 4 cifras). */
 function formatear(n: number): string {
@@ -180,4 +181,48 @@ export function filasCuentasAnuales(ca: CuentasAnualesRM, modelo: ModeloCuentas)
   filas.push({ texto: 'Propuesta automática (10% a reserva legal hasta el 20% del capital). La decide la junta.' });
 
   return filas;
+}
+
+/**
+ * Memoria: cada nota con sus parrafos (partidos en lineas que caben en la
+ * pagina) y sus tablas. Al final, la lista de lo que falta por completar.
+ */
+export function filasMemoria(memoria: Memoria, ejercicio: number): FilaPdf[] {
+  const filas: FilaPdf[] = [{ texto: `MEMORIA DEL EJERCICIO ${ejercicio}`, nuevaPagina: true }, { texto: '' }];
+  for (const nota of memoria.notas) {
+    filas.push({ texto: `${nota.numero}. ${nota.titulo.toUpperCase()}` });
+    for (const p of nota.parrafos) {
+      for (const linea of partirTexto(p, 105)) filas.push({ texto: linea });
+      filas.push({ texto: '' });
+    }
+    for (const t of nota.tablas) {
+      filas.push({ texto: t.cabeceras[0], columnas: t.cabeceras.slice(1) });
+      for (const f of t.filas) {
+        filas.push({ texto: f.texto, sangria: f.total ? 0 : 1, separador: f.total, columnas: f.valores.map(importe) });
+      }
+      filas.push({ texto: '' });
+    }
+    filas.push({ texto: '' });
+  }
+  if (memoria.pendientes.length) {
+    filas.push({ texto: 'DATOS PENDIENTES DE COMPLETAR ANTES DE PRESENTAR', nuevaPagina: true }, { texto: '' });
+    for (const p of memoria.pendientes) filas.push({ texto: `- ${p}` });
+  }
+  return filas;
+}
+
+/** Parte un texto en lineas de como mucho `max` caracteres, por palabras. */
+export function partirTexto(texto: string, max: number): string[] {
+  const lineas: string[] = [];
+  let actual = '';
+  for (const palabra of texto.split(/\s+/)) {
+    if (actual && (actual + ' ' + palabra).length > max) {
+      lineas.push(actual);
+      actual = palabra;
+    } else {
+      actual = actual ? `${actual} ${palabra}` : palabra;
+    }
+  }
+  if (actual) lineas.push(actual);
+  return lineas;
 }

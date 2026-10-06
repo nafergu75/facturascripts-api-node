@@ -1,4 +1,5 @@
 import { prisma } from '../config/database';
+import { badRequest } from '../utils/http-errors';
 
 export interface LegalConfigInput {
   tipoSociedad?: string;
@@ -7,6 +8,63 @@ export interface LegalConfigInput {
   obligaLibroSocios?: boolean;
   obligaLibroContratos?: boolean;
   registroMercantilProvincia?: string | null;
+  denominacion?: string | null;
+  nif?: string | null;
+  domicilioSocial?: string | null;
+  codigoPostal?: string | null;
+  municipio?: string | null;
+  provincia?: string | null;
+  actividad?: string | null;
+  cnae?: string | null;
+  datosRegistrales?: string | null;
+  fechaConstitucion?: string | null;
+}
+
+const TEXTOS = [
+  'registroMercantilProvincia',
+  'denominacion',
+  'nif',
+  'domicilioSocial',
+  'codigoPostal',
+  'municipio',
+  'provincia',
+  'actividad',
+  'cnae',
+  'datosRegistrales',
+  'fechaConstitucion',
+] as const;
+const TIPOS_SOCIEDAD = ['SA', 'SL', 'SLU', 'SCP', 'OTRA'];
+
+/**
+ * Solo los campos de la configuracion legal. Antes se guardaba el cuerpo tal
+ * cual (incluidos id o companyId).
+ */
+export function limpiarLegalConfig(datos: Record<string, unknown>): LegalConfigInput {
+  const limpio: Record<string, unknown> = {};
+  for (const campo of TEXTOS) {
+    if (datos[campo] === undefined) continue;
+    const v = datos[campo] === null ? '' : String(datos[campo]).trim();
+    limpio[campo] = v === '' ? null : v.slice(0, campo === 'actividad' ? 2000 : 300);
+  }
+  if (datos.tipoSociedad !== undefined) {
+    const t = String(datos.tipoSociedad).toUpperCase();
+    if (!TIPOS_SOCIEDAD.includes(t)) throw badRequest(`tipoSociedad debe ser uno de: ${TIPOS_SOCIEDAD.join(', ')}.`);
+    limpio.tipoSociedad = t;
+  }
+  for (const campo of ['ejercicioInicio', 'ejercicioFin'] as const) {
+    if (datos[campo] === undefined) continue;
+    const v = String(datos[campo]);
+    if (!/^\d{2}-\d{2}$/.test(v)) throw badRequest(`${campo} tiene que tener el formato MM-DD.`);
+    limpio[campo] = v;
+  }
+  for (const campo of ['obligaLibroSocios', 'obligaLibroContratos'] as const) {
+    if (datos[campo] !== undefined) limpio[campo] = Boolean(datos[campo]);
+  }
+  if (typeof limpio.nif === 'string') limpio.nif = (limpio.nif as string).toUpperCase().replace(/[\s-]/g, '');
+  if (typeof limpio.fechaConstitucion === 'string' && !/^\d{4}-\d{2}-\d{2}$/.test(limpio.fechaConstitucion as string)) {
+    throw badRequest('fechaConstitucion tiene que tener el formato AAAA-MM-DD.');
+  }
+  return limpio as LegalConfigInput;
 }
 
 export const legalConfigService = {
@@ -17,11 +75,12 @@ export const legalConfigService = {
     return prisma.legalConfig.create({ data: { companyId } });
   },
 
-  async actualizar(companyId: string, datos: LegalConfigInput) {
+  async actualizar(companyId: string, datos: Record<string, unknown>) {
+    const limpio = limpiarLegalConfig(datos ?? {});
     return prisma.legalConfig.upsert({
       where: { companyId },
-      update: { ...datos },
-      create: { companyId, ...datos },
+      update: limpio,
+      create: { companyId, ...limpio },
     });
   },
 };

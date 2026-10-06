@@ -17,6 +17,22 @@ export const annualAccountsController = {
     sendOk(res, cuenta, undefined, 201);
   }),
 
+  // GET /fiscal-years/:fyId/memoria -> notas del ejercicio, memoria y pendientes
+  memoria: asyncHandler(async (req, res) => {
+    const fy = await fiscalYearsService.obtener(req.params.fyId);
+    assertAccesoEmpresa(req.user, fy.companyId);
+    sendOk(res, await annualAccountsService.obtenerMemoria(fy.id));
+  }),
+
+  // PUT /fiscal-years/:fyId/memoria
+  guardarMemoria: asyncHandler(async (req, res) => {
+    const fy = await fiscalYearsService.obtener(req.params.fyId);
+    assertAccesoEmpresa(req.user, fy.companyId);
+    const r = await annualAccountsService.guardarNotasMemoria(fy.id, (req.body ?? {}) as Record<string, unknown>);
+    await registrarAuditoria({ userId: req.user!.userId, companyId: fy.companyId, action: 'UPDATE_MEMORIA_NOTES', resourceType: 'FISCAL_YEAR', resourceId: fy.id });
+    sendOk(res, r);
+  }),
+
   // GET /fiscal-years/:fyId/annual-accounts
   listar: asyncHandler(async (req, res) => {
     const fy = await fiscalYearsService.obtener(req.params.fyId);

@@ -62,6 +62,8 @@ router.post('/legalization-packages/:packageId/diligence', authorize('contabilid
 // --- Depósito de cuentas anuales ---
 router.post('/fiscal-years/:fyId/annual-accounts/generate', authorize('contabilidad:write'), annualAccountsController.generar);
 router.get('/fiscal-years/:fyId/annual-accounts', annualAccountsController.listar);
+router.get('/fiscal-years/:fyId/memoria', annualAccountsController.memoria);
+router.put('/fiscal-years/:fyId/memoria', authorize('contabilidad:write'), annualAccountsController.guardarMemoria);
 router.get('/annual-accounts/:id/download', annualAccountsController.descargar);
 router.post('/annual-accounts/:id/filing', authorize('contabilidad:write'), annualAccountsController.filing);
 router.post('/annual-accounts/:id/resolution', authorize('contabilidad:write'), annualAccountsController.resolution);

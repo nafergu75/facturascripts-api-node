@@ -16,12 +16,28 @@ import {
 } from './contabilidadDatos.service';
 import { getFsClientForCompany } from './facturascripts-client';
 import { prisma } from '../config/database';
+import type { DatosSociedad } from './memoria.service';
+import type { SaldosEjercicio } from './contabilidadDatos.service';
 
 const round2 = (n: number): number => Math.round((n + Number.EPSILON) * 100) / 100;
 
+/** Cuentas anuales mas lo que necesita la memoria (saldos, asientos, datos de la sociedad). */
+export interface CuentasAnualesDetalle {
+  cuentas: CuentasAnualesRM;
+  sociedad: DatosSociedad;
+  saldos: SaldosEjercicio;
+  saldosAnterior: SaldosEjercicio;
+  asientos: AsientoSimple[];
+}
+
 /** Genera las Cuentas Anuales (RM) completas, incluyendo el EFE. */
 export async function generarCuentasAnuales(companyId: string, ejercicio: number): Promise<CuentasAnualesRM> {
-  const { balance, pyg, ecpn, asientos, anterior, efectivoInicial, reservaLegal } = await calcularEstadosFinancieros(companyId, ejercicio);
+  return (await generarCuentasAnualesDetalle(companyId, ejercicio)).cuentas;
+}
+
+export async function generarCuentasAnualesDetalle(companyId: string, ejercicio: number): Promise<CuentasAnualesDetalle> {
+  const estados = await calcularEstadosFinancieros(companyId, ejercicio);
+  const { balance, pyg, ecpn, asientos, anterior, efectivoInicial, reservaLegal } = estados;
 
   const resultado = pyg.resultadoEjercicio;
   const aplicacionResultado = proponerAplicacion(resultado, ecpn.capital, reservaLegal);
@@ -38,38 +54,47 @@ export async function generarCuentasAnuales(companyId: string, ejercicio: number
       .catch(() => null),
   ]);
 
-  let denominacion = empresa?.name ?? '';
-  let nif = '';
-  try {
-    const fs = await getFsClientForCompany(companyId);
-    const { items } = await fs.listWithMeta('empresas', { limit: 1 });
-    const e = items[0] as Record<string, unknown> | undefined;
-    denominacion = String(e?.nombre || denominacion);
-    nif = String(e?.cifnif ?? '');
-  } catch {
-    // Si FS no responde, se deja vacio (no bloquea la generacion del resto del informe).
+  // Prioridad: lo que el contable puso en la configuracion legal; si falta,
+  // FacturaScripts; si tampoco, el nombre de la empresa en la aplicacion.
+  let denominacion = legal?.denominacion ?? '';
+  let nif = legal?.nif ?? '';
+  if (!denominacion || !nif) {
+    try {
+      const fs = await getFsClientForCompany(companyId);
+      const { items } = await fs.listWithMeta('empresas', { limit: 1 });
+      const e = items[0] as Record<string, unknown> | undefined;
+      denominacion = denominacion || String(e?.nombre ?? '');
+      nif = nif || String(e?.cifnif ?? '');
+    } catch {
+      // Si FS no responde, se sigue con lo que haya.
+    }
   }
+  denominacion = denominacion || empresa?.name || '';
 
-  return {
-    sociedad: {
-      denominacion,
-      nif,
-      // domicilio: PENDIENTE. No hay donde guardarlo todavia (falta un campo en
-      // la configuracion legal de la empresa).
-      domicilio: '',
-      ejercicio,
-      formaJuridica: FORMA_JURIDICA[legal?.tipoSociedad ?? ''] ?? legal?.tipoSociedad ?? '',
-    },
+  const formaJuridica = FORMA_JURIDICA[legal?.tipoSociedad ?? ''] ?? legal?.tipoSociedad ?? '';
+  const domicilio = legal?.domicilioSocial
+    ? [legal.domicilioSocial, [legal.codigoPostal, legal.municipio].filter(Boolean).join(' '), legal.provincia ? `(${legal.provincia})` : '']
+        .filter(Boolean)
+        .join(', ')
+    : '';
+
+  const cuentas: CuentasAnualesRM = {
+    sociedad: { denominacion, nif, domicilio, ejercicio, formaJuridica },
     balance,
     pyg,
     ecpn,
     anterior,
     efe,
     aplicacionResultado,
-    // notasMemoria: PENDIENTE BLOQUEADO. Requiere una memoria estructurada
-    // (politicas contables, info adicional ICAC) que hoy no existe como dato de
-    // entrada en el sistema; no hay nada que "leer" para rellenarla.
     notasMemoria: '',
+  };
+
+  return {
+    cuentas,
+    sociedad: { ...(legal ?? {}), denominacion, nif, formaJuridica },
+    saldos: estados.saldos,
+    saldosAnterior: estados.saldosAnterior,
+    asientos,
   };
 }
 
