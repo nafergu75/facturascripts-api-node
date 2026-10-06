@@ -1,4 +1,4 @@
-import { obtenerAsientosEjercicio, calcularSaldosPorSubcuenta } from './contabilidadDatos.service';
+import { obtenerAsientosHastaFinDe, saldosDelEjercicio, SaldoSubcuenta } from './contabilidadDatos.service';
 import { getFsClientForCompany } from './facturascripts-client';
 import { crearAsientoConApuntes, ApunteAsiento } from './asientos.service';
 import { listarPeriodos } from './periodos.service';
@@ -48,8 +48,13 @@ export async function ejecutarCierreEjercicio(companyId: string, ejercicio: numb
   const ej = await fs.listWithMeta('ejercicios', { 'filter[codejercicio]': ejercicio, limit: 1 });
   const idempresa = (ej.items[0] as Record<string, unknown> | undefined)?.idempresa ?? 1;
 
-  const asientos = await obtenerAsientosEjercicio(companyId, ejercicio);
-  const saldos = calcularSaldosPorSubcuenta(asientos);
+  // Saldos acumulados (las cuentas de balance arrastran el de años anteriores si
+  // no hay asiento de apertura) y sin regularizaciones/cierres previos.
+  const { balance, pyg } = saldosDelEjercicio(await obtenerAsientosHastaFinDe(companyId, ejercicio), ejercicio);
+  const saldos = new Map<string, SaldoSubcuenta>();
+  for (const [subcuenta, saldoDeudor] of [...pyg, ...balance]) {
+    saldos.set(subcuenta, { subcuenta, debe: Math.max(saldoDeudor, 0), haber: Math.max(-saldoDeudor, 0), saldoDeudor });
+  }
 
   // 2. Regularizacion (grupos 6 y 7 -> 129)
   const apuntesReg: ApunteAsiento[] = [];
@@ -85,6 +90,7 @@ export async function ejecutarCierreEjercicio(companyId: string, ejercicio: numb
       idempresa,
       fecha: `${ejercicio}-12-31`,
       concepto: `Regularizacion ejercicio ${ejercicio}`,
+      origen: 'REGULARIZACION',
       apuntes: apuntesReg,
     });
     asientoRegularizacionId = String(r.asiento.idasiento);
@@ -118,6 +124,7 @@ export async function ejecutarCierreEjercicio(companyId: string, ejercicio: numb
       idempresa,
       fecha: `${ejercicio}-12-31`,
       concepto: `Cierre ejercicio ${ejercicio}`,
+      origen: 'CIERRE',
       apuntes: apuntesCierre,
     });
     asientoCierreId = String(c.asiento.idasiento);
@@ -138,6 +145,7 @@ export async function ejecutarCierreEjercicio(companyId: string, ejercicio: numb
       idempresa,
       fecha: `${ejercicio + 1}-01-01`,
       concepto: `Apertura ejercicio ${ejercicio + 1}`,
+      origen: 'APERTURA',
       apuntes: apuntesApertura,
     });
     asientoAperturaId = String(ap.asiento.idasiento);

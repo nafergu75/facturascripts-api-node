@@ -1,118 +1,184 @@
 import {
   AjusteExtracontable,
   BalanceSituacion,
+  ComponenteECPN,
   CuentaPerdidasGanancias,
   DatosModelo200,
   EstadoCambiosPatrimonioNeto,
 } from '../domain/impuesto-sociedades.model';
+import { AsientoSimple, obtenerAsientosHastaFinDe, saldosDelEjercicio, SaldosEjercicio } from './contabilidadDatos.service';
 import {
-  AsientoSimple,
-  calcularSaldosPorSubcuenta,
-  obtenerAsientosEjercicio,
-  saldoAcreedor,
-  saldoDeudor,
-  SaldoSubcuenta,
-} from './contabilidadDatos.service';
+  BalanceModelo,
+  calcularBalanceModelo,
+  calcularPyGModelo,
+  PyGModelo,
+} from '../domain/modelos-cuentas-anuales';
 import { getFsClientForCompany } from './facturascripts-client';
 
 const round2 = (n: number): number => Math.round((n + Number.EPSILON) * 100) / 100;
 
-/** Construye balance, PyG y ECPN a partir de los saldos de subcuentas. */
-export function calcularEstadosDesdeSaldos(saldos: Map<string, SaldoSubcuenta>): {
+/**
+ * Balance, PyG y ECPN segun los modelos del PGC de PYMES.
+ *
+ * La PyG sale de las cuentas 6/7 del ejercicio y el balance de los saldos
+ * ACUMULADOS de las cuentas 1-5 al cierre (ver saldosDelEjercicio). Antes se
+ * usaban solo los asientos del año, con bloques genericos: el balance olvidaba
+ * los saldos de años anteriores, el 630 contaba dos veces (como tributo y como
+ * impuesto) y las cuentas sin bloque (13, 14, 465, 67...) lo descuadraban.
+ */
+export function calcularEstadosDesdeSaldos(
+  saldos: SaldosEjercicio,
+  anterior?: SaldosEjercicio,
+): {
   balance: BalanceSituacion;
   pyg: CuentaPerdidasGanancias;
   ecpn: EstadoCambiosPatrimonioNeto;
 } {
-  // --- Cuenta de Perdidas y Ganancias (grupos 6 y 7) ---
-  const importeNetoCifraNegocios = saldoAcreedor(saldos, ['70']);
-  const otrosIngresosExplotacion = saldoAcreedor(saldos, ['74', '75']);
-  const aprovisionamientos = saldoDeudor(saldos, ['60', '61']);
-  const gastosPersonal = saldoDeudor(saldos, ['64']);
-  const otrosGastosExplotacion = saldoDeudor(saldos, ['62', '63', '65']);
-  const amortizaciones = saldoDeudor(saldos, ['68']);
-  const resultadoExplotacion = round2(
-    importeNetoCifraNegocios + otrosIngresosExplotacion - aprovisionamientos - gastosPersonal - otrosGastosExplotacion - amortizaciones,
-  );
-  const ingresosFinancieros = saldoAcreedor(saldos, ['76']);
-  const gastosFinancieros = saldoDeudor(saldos, ['66']);
-  const resultadoFinanciero = round2(ingresosFinancieros - gastosFinancieros);
-  const resultadoAntesImpuestos = round2(resultadoExplotacion + resultadoFinanciero);
-  const impuestoBeneficios = saldoDeudor(saldos, ['630', '6300', '6301']); // TODO: gasto por IS real
-  const resultadoEjercicio = round2(resultadoAntesImpuestos - impuestoBeneficios);
+  const pygModelo = calcularPyGModelo(saldos.pyg);
+  const balanceModelo = calcularBalanceModelo(saldos.balance, pygModelo.resultadoEjercicio, saldos.resultadoAnteriores);
+  const pyg = pygDesdeModelo(pygModelo);
+  const balance = balanceDesdeModelo(balanceModelo);
 
-  const pyg: CuentaPerdidasGanancias = {
-    importeNetoCifraNegocios,
-    otrosIngresosExplotacion,
-    aprovisionamientos,
-    gastosPersonal,
-    otrosGastosExplotacion,
-    amortizaciones,
-    resultadoExplotacion,
-    ingresosFinancieros,
-    gastosFinancieros,
-    resultadoFinanciero,
-    resultadoAntesImpuestos,
-    impuestoBeneficios,
-    resultadoEjercicio,
-  };
-
-  // --- Balance de situacion (grandes bloques PGC) ---
-  const inmovilizado = saldoDeudor(saldos, ['20', '21', '22', '23', '24', '25', '26', '27', '28', '29']);
-  const existencias = saldoDeudor(saldos, ['30', '31', '32', '33', '34', '35', '36']);
-  // 470-474 = HP deudora (activo); 475-477 = HP acreedora (pasivo, abajo)
-  const deudores = saldoDeudor(saldos, ['43', '44', '470', '471', '472', '473', '474', '54']);
-  const efectivo = saldoDeudor(saldos, ['57']);
-
-  const capital = saldoAcreedor(saldos, ['10']);
-  const reservas = saldoAcreedor(saldos, ['11', '12']);
-  const pasivoNoCorrienteImporte = saldoAcreedor(saldos, ['15', '16', '17', '18']);
-  const pasivoCorrienteImporte = saldoAcreedor(saldos, ['40', '41', '475', '476', '477', '52', '55']);
-
-  const totalActivo = round2(inmovilizado + existencias + deudores + efectivo);
-  const patrimonioNetoImporte = round2(capital + reservas + resultadoEjercicio);
-  const totalPatrimonioNetoYPasivo = round2(patrimonioNetoImporte + pasivoNoCorrienteImporte + pasivoCorrienteImporte);
-
-  const balance: BalanceSituacion = {
-    activoNoCorriente: [{ descripcion: 'Inmovilizado (grupo 2)', importe: inmovilizado }],
-    activoCorriente: [
-      { descripcion: 'Existencias (grupo 3)', importe: existencias },
-      { descripcion: 'Deudores comerciales (43/44/46/47/54)', importe: deudores },
-      { descripcion: 'Efectivo y otros activos liquidos (57)', importe: efectivo },
-    ],
-    patrimonioNeto: [
-      { descripcion: 'Capital (10)', importe: capital },
-      { descripcion: 'Reservas (11/12)', importe: reservas },
-      { descripcion: 'Resultado del ejercicio', importe: resultadoEjercicio },
-    ],
-    pasivoNoCorriente: [{ descripcion: 'Deudas a largo plazo (15/16/17/18)', importe: pasivoNoCorrienteImporte }],
-    pasivoCorriente: [{ descripcion: 'Acreedores comerciales y otras deudas (40/41/46/47/52/55)', importe: pasivoCorrienteImporte }],
-    totalActivo,
-    totalPatrimonioNetoYPasivo,
-  };
-
-  const ecpn: EstadoCambiosPatrimonioNeto = {
-    capital,
-    reservas,
-    resultadoEjercicio,
-    otrasPartidas: 0,
-    totalPatrimonioNeto: patrimonioNetoImporte,
-  };
+  let pnInicial = new Map<string, number>();
+  let resultadoAnterior = 0;
+  if (anterior) {
+    const pygAnt = calcularPyGModelo(anterior.pyg);
+    resultadoAnterior = pygAnt.resultadoEjercicio;
+    const balAnt = calcularBalanceModelo(anterior.balance, resultadoAnterior, anterior.resultadoAnteriores);
+    pnInicial = new Map(balAnt.partidas.filter((p) => p.masa === 'PN').map((p) => [p.codigo, p.importe]));
+  }
+  const ecpn = ecpnDesdeBalances(balanceModelo, pnInicial, pygModelo.resultadoEjercicio);
 
   return { balance, pyg, ecpn };
 }
 
+const PARTIDAS_SOCIOS = new Set(['A1.I', 'A1.II', 'A1.IV', 'A1.VI', 'A1.VIII']);
+
 /**
- * Calcula los estados financieros del ejercicio leyendo los asientos de FS.
- * Reutilizado tanto por el Modelo 200 como por las Cuentas Anuales (RM) para
- * garantizar consistencia entre fiscal y mercantil.
+ * ECPN (estado total de cambios): por cada componente del PN, saldo inicial, el
+ * resultado del ejercicio, ingresos y gastos imputados directamente al PN
+ * (subvenciones), operaciones con socios (capital, prima, acciones propias,
+ * aportaciones, dividendo a cuenta) y el resto (sobre todo la aplicacion del
+ * resultado anterior). Cada fila cuadra: inicial + movimientos = final.
  */
-export async function calcularEstadosFinancieros(
-  companyId: string,
-  ejercicio: number,
-): Promise<{ balance: BalanceSituacion; pyg: CuentaPerdidasGanancias; ecpn: EstadoCambiosPatrimonioNeto; asientos: AsientoSimple[] }> {
-  const asientos = await obtenerAsientosEjercicio(companyId, ejercicio);
-  const saldos = calcularSaldosPorSubcuenta(asientos);
-  return { ...calcularEstadosDesdeSaldos(saldos), asientos };
+function ecpnDesdeBalances(
+  balance: BalanceModelo,
+  inicial: Map<string, number>,
+  resultadoEjercicio: number,
+): EstadoCambiosPatrimonioNeto {
+  const componentes: ComponenteECPN[] = balance.partidas
+    .filter((p) => p.masa === 'PN')
+    .map((p) => {
+      const saldoInicial = inicial.get(p.codigo) ?? 0;
+      const variacion = round2(p.importe - saldoInicial);
+      const resultado = p.codigo === 'A1.VII' ? resultadoEjercicio : 0;
+      const igReconocidos = p.codigo === 'A2' ? variacion : 0;
+      const socios = PARTIDAS_SOCIOS.has(p.codigo) ? variacion : 0;
+      return {
+        codigo: p.codigo,
+        descripcion: p.descripcion,
+        saldoInicial,
+        resultadoEjercicio: resultado,
+        ingresosGastosReconocidos: igReconocidos,
+        operacionesSocios: socios,
+        otrasVariaciones: round2(variacion - resultado - igReconocidos - socios),
+        saldoFinal: p.importe,
+      };
+    });
+
+  const imp = (codigo: string) => componentes.find((c) => c.codigo === codigo)?.saldoFinal ?? 0;
+  const capital = imp('A1.I');
+  const reservas = imp('A1.III');
+  return {
+    capital,
+    reservas,
+    resultadoEjercicio,
+    otrasPartidas: round2(balance.totales.PN - capital - reservas - resultadoEjercicio),
+    totalPatrimonioNeto: balance.totales.PN,
+    componentes,
+  };
+}
+
+function pygDesdeModelo(m: PyGModelo): CuentaPerdidasGanancias {
+  const p = (codigo: string) => m.partidas.find((x) => x.codigo === codigo)?.importe ?? 0;
+  // Campos agregados de siempre (los usa el Modelo 200), coherentes con las
+  // partidas: gastos en positivo, como antes.
+  return {
+    importeNetoCifraNegocios: p('1'),
+    otrosIngresosExplotacion: round2(p('2') + p('3') + p('5') + p('9') + p('10') + p('11') + p('12')),
+    aprovisionamientos: -p('4'),
+    gastosPersonal: -p('6'),
+    otrosGastosExplotacion: -p('7'),
+    amortizaciones: -p('8'),
+    resultadoExplotacion: m.resultadoExplotacion,
+    ingresosFinancieros: p('13'),
+    gastosFinancieros: round2(p('13') - m.resultadoFinanciero),
+    resultadoFinanciero: m.resultadoFinanciero,
+    resultadoAntesImpuestos: m.resultadoAntesImpuestos,
+    impuestoBeneficios: -p('18'),
+    resultadoEjercicio: m.resultadoEjercicio,
+    partidas: m.partidas,
+  };
+}
+
+function balanceDesdeModelo(m: BalanceModelo): BalanceSituacion {
+  const de = (masa: string) =>
+    m.partidas.filter((p) => p.masa === masa).map((p) => ({ codigo: p.codigo, descripcion: p.descripcion, importe: p.importe }));
+  return {
+    activoNoCorriente: de('ANC'),
+    activoCorriente: de('AC'),
+    patrimonioNeto: de('PN'),
+    pasivoNoCorriente: de('PNC'),
+    pasivoCorriente: de('PC'),
+    totalActivo: m.totalActivo,
+    totalPatrimonioNetoYPasivo: m.totalPatrimonioNetoYPasivo,
+    descuadre: m.descuadre,
+  };
+}
+
+export interface EstadosFinancieros {
+  balance: BalanceSituacion;
+  pyg: CuentaPerdidasGanancias;
+  ecpn: EstadoCambiosPatrimonioNeto;
+  /** Asientos del ejercicio, sin apertura, regularizacion ni cierre (para el EFE). */
+  asientos: AsientoSimple[];
+  /** Mismos estados del ejercicio anterior (columna N-1 de los modelos). */
+  anterior: { balance: BalanceSituacion; pyg: CuentaPerdidasGanancias };
+  /** Saldo de tesoreria (57) al cierre del ejercicio anterior. */
+  efectivoInicial: number;
+  /** Saldo acreedor de la reserva legal (112) al cierre. */
+  reservaLegal: number;
+}
+
+/**
+ * Calcula los estados financieros del ejercicio (y los del anterior, para la
+ * columna comparativa) con los asientos hasta su cierre. Reutilizado por el
+ * Modelo 200 y por las Cuentas Anuales (RM): las cifras fiscales y las
+ * mercantiles salen del mismo calculo.
+ */
+export async function calcularEstadosFinancieros(companyId: string, ejercicio: number): Promise<EstadosFinancieros> {
+  const todos = await obtenerAsientosHastaFinDe(companyId, ejercicio);
+  const saldos = saldosDelEjercicio(todos, ejercicio);
+  const saldosAnt = saldosDelEjercicio(todos, ejercicio - 1);
+  const saldosAnt2 = saldosDelEjercicio(todos, ejercicio - 2);
+
+  const actual = calcularEstadosDesdeSaldos(saldos, saldosAnt);
+  const anterior = calcularEstadosDesdeSaldos(saldosAnt, saldosAnt2);
+
+  let efectivoInicial = 0;
+  for (const [cuenta, saldo] of saldosAnt.balance) if (cuenta.startsWith('57')) efectivoInicial += saldo;
+
+  let reservaLegal = 0;
+  for (const [cuenta, saldo] of saldos.balance) if (cuenta.startsWith('112')) reservaLegal -= saldo;
+
+  const anio = String(ejercicio);
+  return {
+    reservaLegal: round2(reservaLegal),
+    ...actual,
+    asientos: todos.filter((a) => a.fecha.startsWith(anio) && (a.tipo ?? 'NORMAL') === 'NORMAL'),
+    anterior: { balance: anterior.balance, pyg: anterior.pyg },
+    efectivoInicial: round2(efectivoInicial),
+  };
 }
 
 /** Calcula los datos del Modelo 200 a partir de los estados financieros. */

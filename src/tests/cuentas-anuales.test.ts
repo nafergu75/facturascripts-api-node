@@ -32,8 +32,11 @@ jest.mock('../services/facturascripts-client', () => ({
 jest.mock('../config/database', () => ({
   prisma: {
     journalEntry: {
-      findMany: jest.fn(async (args?: { where?: { fecha?: { gte?: Date } } }) => {
-        if (args?.where?.fecha?.gte?.getUTCFullYear?.() !== 2026) return [];
+      findMany: jest.fn(async (args?: { where?: { fecha?: { gte?: Date; lt?: Date } } }) => {
+        // El asiento es de 2026: solo entra si el rango lo incluye.
+        const f = args?.where?.fecha;
+        const fecha = new Date(Date.UTC(2026, 5, 10));
+        if ((f?.gte && fecha < f.gte) || (f?.lt && fecha >= f.lt)) return [];
         return [
           {
             id: 'a1',

@@ -21,6 +21,8 @@ export interface BalanceSituacion {
   pasivoCorriente: BalancePartida[];
   totalActivo: number;
   totalPatrimonioNetoYPasivo: number;
+  /** Activo - (PN + pasivo). Distinto de 0 = hay un error en los asientos. */
+  descuadre?: number;
 }
 
 export interface CuentaPerdidasGanancias {
@@ -37,6 +39,8 @@ export interface CuentaPerdidasGanancias {
   resultadoAntesImpuestos: number;
   impuestoBeneficios: number;
   resultadoEjercicio: number;
+  /** Partidas 1-18 del modelo PYMES, ingresos en positivo y gastos en negativo. */
+  partidas?: BalancePartida[];
 }
 
 export interface EstadoCambiosPatrimonioNeto {
@@ -45,6 +49,19 @@ export interface EstadoCambiosPatrimonioNeto {
   resultadoEjercicio: number;
   otrasPartidas: number;
   totalPatrimonioNeto: number;
+  /** Movimiento de cada componente del patrimonio neto en el ejercicio. */
+  componentes?: ComponenteECPN[];
+}
+
+export interface ComponenteECPN {
+  codigo: string;
+  descripcion: string;
+  saldoInicial: number;
+  resultadoEjercicio: number;
+  ingresosGastosReconocidos: number;
+  operacionesSocios: number;
+  otrasVariaciones: number;
+  saldoFinal: number;
 }
 
 export interface AjusteExtracontable {

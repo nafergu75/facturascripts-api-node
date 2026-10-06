@@ -6,6 +6,7 @@ import { sha256 } from '../utils/zip';
 import { guardarArtefacto } from './registroMercantil.helpers';
 import { fiscalYearsService } from './fiscalYears.service';
 import { generarCuentasAnuales } from './cuentasAnuales.service';
+import { filasCuentasAnuales } from './cuentasAnualesPdf';
 import { EstadoCuentas, ModeloCuentas, puedeTransicionarCuentas, RESOLUCIONES_CUENTAS } from '../domain/registroMercantil.model';
 
 function ejercicioDe(fy: { label: string; fechaFin: string }): number {
@@ -23,36 +24,31 @@ export const annualAccountsService = {
    * anexo técnico del Ministerio de Justicia.
    */
   async generar(fyId: string, modelo: ModeloCuentas = 'PYME') {
+    if (!['PYME', 'ABREVIADO', 'NORMAL'].includes(modelo)) throw badRequest('modelo debe ser PYME, ABREVIADO o NORMAL.');
     const fy = await fiscalYearsService.obtener(fyId);
     const ejercicio = ejercicioDe(fy);
 
-    let estados: unknown = {};
-    try {
-      estados = await generarCuentasAnuales(fy.companyId, ejercicio);
-    } catch {
-      // Si el motor no puede calcular (sin datos), se deja vacío: la memoria
-      // sigue generándose y el usuario completa los estados.
-      estados = { aviso: 'No se pudieron calcular los estados financieros automáticamente.' };
-    }
+    // Si no se pueden calcular los estados, se para aqui: antes se generaba igual
+    // un PDF sin cifras, que se podia presentar por error.
+    const estados = await generarCuentasAnuales(fy.companyId, ejercicio);
 
+    // MEMORIA: pendiente (punto 3). Solo los apartados.
     const memoria = {
       modelo,
       ejercicio,
-      nota: 'STUB de memoria. Componer según el modelo oficial (normal/abreviado/pyme).',
+      nota: 'Memoria pendiente: solo se listan los apartados.',
       apartados: ['Actividad de la empresa', 'Bases de presentación', 'Normas de registro y valoración', 'Inmovilizado', 'Situación fiscal'],
     };
 
     const dataJson = { modelo, ejercicio, estados, memoria };
 
-    const pdf = await generarPdfA(`Memoria - Ejercicio ${ejercicio}`, [
-      `Empresa (companyId): ${fy.companyId}`,
-      `Modelo: ${modelo}`,
-      `Ejercicio: ${ejercicio}`,
-      '',
-      'Apartados de la memoria:',
-      ...memoria.apartados.map((a) => ` - ${a}`),
-      '',
-      'NOTA: contenido de la memoria pendiente de integración (stub).',
+    const pdf = await generarPdfA(`Cuentas anuales ${ejercicio} - ${estados.sociedad.denominacion || 'Empresa'}`, [
+      ...filasCuentasAnuales(estados, modelo),
+      { texto: 'MEMORIA', nuevaPagina: true },
+      { texto: '' },
+      ...memoria.apartados.map((a) => ({ texto: `- ${a}` })),
+      { texto: '' },
+      { texto: 'Pendiente de redactar: la memoria todavía no se genera con contenido.' },
     ]);
     const hash = sha256(pdf);
 

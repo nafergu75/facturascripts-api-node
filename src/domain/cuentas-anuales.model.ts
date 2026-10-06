@@ -62,10 +62,20 @@ export interface EstadoFlujosEfectivo {
 }
 
 // --- Aplicacion del resultado ---
+/**
+ * PROPUESTA de aplicacion del resultado (la decide la junta). Con beneficio:
+ * primero el 10% a reserva legal hasta llegar al 20% del capital (art. 274 LSC)
+ * y el resto a reservas voluntarias. Con perdidas: a resultados negativos de
+ * ejercicios anteriores (121).
+ */
 export interface AplicacionResultado {
   resultadoEjercicio: number;
+  /** Reserva legal + voluntarias. */
   aReservas: number;
+  aReservaLegal: number;
+  aReservasVoluntarias: number;
   aDividendos: number;
+  /** Perdidas del ejercicio llevadas a la 121 (resultados negativos). */
   aCompensacionPerdidas: number;
 }
 
@@ -81,6 +91,8 @@ export interface CuentasAnualesRM {
   balance: BalanceRM;
   pyg: PyGRM;
   ecpn: ECPNRM;
+  /** Ejercicio anterior, para la columna comparativa de los modelos. */
+  anterior?: { balance: BalanceRM; pyg: PyGRM };
   efe?: EstadoFlujosEfectivo;
   aplicacionResultado: AplicacionResultado;
   notasMemoria: string;

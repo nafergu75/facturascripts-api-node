@@ -15,31 +15,36 @@ import {
   saldoDeudor,
 } from './contabilidadDatos.service';
 import { getFsClientForCompany } from './facturascripts-client';
+import { prisma } from '../config/database';
 
 const round2 = (n: number): number => Math.round((n + Number.EPSILON) * 100) / 100;
 
 /** Genera las Cuentas Anuales (RM) completas, incluyendo el EFE. */
 export async function generarCuentasAnuales(companyId: string, ejercicio: number): Promise<CuentasAnualesRM> {
-  const { balance, pyg, ecpn, asientos } = await calcularEstadosFinancieros(companyId, ejercicio);
+  const { balance, pyg, ecpn, asientos, anterior, efectivoInicial, reservaLegal } = await calcularEstadosFinancieros(companyId, ejercicio);
 
-  // Aplicacion del resultado: por defecto todo a reservas (TODO: dividendos, etc.)
   const resultado = pyg.resultadoEjercicio;
-  const aplicacionResultado: AplicacionResultado = {
-    resultadoEjercicio: resultado,
-    aReservas: resultado >= 0 ? resultado : 0,
-    aDividendos: 0,
-    aCompensacionPerdidas: resultado < 0 ? Math.abs(resultado) : 0,
-  };
+  const aplicacionResultado = proponerAplicacion(resultado, ecpn.capital, reservaLegal);
 
-  const efe = calcularEFEDesdeAsientos(asientos);
+  const efe = calcularEFEDesdeAsientos(asientos, efectivoInicial);
 
-  let denominacion = '';
+  // Datos de la empresa: si no se pueden leer, el resto se genera igual.
+  const [legal, empresa] = await Promise.all([
+    Promise.resolve()
+      .then(() => prisma.legalConfig.findUnique({ where: { companyId } }))
+      .catch(() => null),
+    Promise.resolve()
+      .then(() => prisma.company.findUnique({ where: { id: companyId }, select: { name: true } }))
+      .catch(() => null),
+  ]);
+
+  let denominacion = empresa?.name ?? '';
   let nif = '';
   try {
     const fs = await getFsClientForCompany(companyId);
     const { items } = await fs.listWithMeta('empresas', { limit: 1 });
     const e = items[0] as Record<string, unknown> | undefined;
-    denominacion = String(e?.nombre ?? '');
+    denominacion = String(e?.nombre || denominacion);
     nif = String(e?.cifnif ?? '');
   } catch {
     // Si FS no responde, se deja vacio (no bloquea la generacion del resto del informe).
@@ -49,17 +54,16 @@ export async function generarCuentasAnuales(companyId: string, ejercicio: number
     sociedad: {
       denominacion,
       nif,
-      // domicilio/formaJuridica: PENDIENTE BLOQUEADO. FacturaScripts no expone un
-      // campo estandar y no verificado para domicilio fiscal/forma juridica en el
-      // recurso 'empresas'; rellenar requeriria adivinar el nombre de campo. Dejar
-      // en blanco hasta confirmar el esquema real o anadir configuracion propia.
+      // domicilio: PENDIENTE. No hay donde guardarlo todavia (falta un campo en
+      // la configuracion legal de la empresa).
       domicilio: '',
       ejercicio,
-      formaJuridica: '',
+      formaJuridica: FORMA_JURIDICA[legal?.tipoSociedad ?? ''] ?? legal?.tipoSociedad ?? '',
     },
     balance,
     pyg,
     ecpn,
+    anterior,
     efe,
     aplicacionResultado,
     // notasMemoria: PENDIENTE BLOQUEADO. Requiere una memoria estructurada
@@ -67,6 +71,24 @@ export async function generarCuentasAnuales(companyId: string, ejercicio: number
     // entrada en el sistema; no hay nada que "leer" para rellenarla.
     notasMemoria: '',
   };
+}
+
+const FORMA_JURIDICA: Record<string, string> = {
+  SA: 'Sociedad Anónima',
+  SL: 'Sociedad de Responsabilidad Limitada',
+  SLU: 'Sociedad de Responsabilidad Limitada Unipersonal',
+  SCP: 'Sociedad Civil Particular',
+};
+
+/** Propuesta de aplicacion del resultado (ver AplicacionResultado). */
+export function proponerAplicacion(resultado: number, capital: number, reservaLegalActual: number): AplicacionResultado {
+  if (resultado <= 0) {
+    return { resultadoEjercicio: resultado, aReservas: 0, aReservaLegal: 0, aReservasVoluntarias: 0, aDividendos: 0, aCompensacionPerdidas: round2(-resultado) };
+  }
+  const hastaVeintePorCiento = Math.max(0, round2(capital * 0.2 - reservaLegalActual));
+  const aReservaLegal = round2(Math.min(resultado * 0.1, hastaVeintePorCiento));
+  const aReservasVoluntarias = round2(resultado - aReservaLegal);
+  return { resultadoEjercicio: resultado, aReservas: resultado, aReservaLegal, aReservasVoluntarias, aDividendos: 0, aCompensacionPerdidas: 0 };
 }
 
 /** Libro Diario: todos los asientos del ejercicio ordenados por fecha y numero. */
@@ -123,8 +145,8 @@ export async function generarLibroInventarios(companyId: string, ejercicio: numb
 
 /** Punto de entrada publico del EFE (lee asientos y calcula). */
 export async function generarEstadoFlujosEfectivo(companyId: string, ejercicio: number): Promise<EstadoFlujosEfectivo> {
-  const asientos = await obtenerAsientosEjercicio(companyId, ejercicio);
-  return calcularEFEDesdeAsientos(asientos);
+  const { asientos, efectivoInicial } = await calcularEstadosFinancieros(companyId, ejercicio);
+  return calcularEFEDesdeAsientos(asientos, efectivoInicial);
 }
 
 // ---------------------------------------------------------------------------
@@ -143,7 +165,7 @@ function categoriaContrapartida(subcuenta: string): { categoria: Categoria; desc
   if (['40', '41'].includes(sg)) return { categoria: 'explotacion', descripcion: 'Pagos a proveedores y acreedores' };
   if (['47'].includes(sg)) return { categoria: 'explotacion', descripcion: 'Cobros/pagos por impuestos' };
   // 60/62/64/63/65/70/75... y resto -> explotacion
-  return { categoria: 'explotacion', descripcion: 'Otros cobros/pagos de explotacion' };
+  return { categoria: 'explotacion', descripcion: 'Otros cobros/pagos de explotación' };
 }
 
 /**
@@ -155,7 +177,7 @@ function categoriaContrapartida(subcuenta: string): { categoria: Categoria; desc
  * impuesto de explotacion vs IS; manejar asientos multi-contrapartida con varias
  * categorias (aqui se usa la contrapartida de mayor importe).
  */
-export function calcularEFEDesdeAsientos(asientos: AsientoSimple[]): EstadoFlujosEfectivo {
+export function calcularEFEDesdeAsientos(asientos: AsientoSimple[], efectivoInicial = 0): EstadoFlujosEfectivo {
   const agregados: Record<Categoria, Map<string, number>> = {
     explotacion: new Map(),
     inversion: new Map(),
@@ -163,6 +185,8 @@ export function calcularEFEDesdeAsientos(asientos: AsientoSimple[]): EstadoFlujo
   };
 
   for (const a of asientos) {
+    // Apertura, regularizacion y cierre no mueven dinero: solo trasladan saldos.
+    if (a.tipo && a.tipo !== 'NORMAL') continue;
     const lineas57 = a.lineas.filter((l) => l.subcuenta.startsWith('57'));
     if (lineas57.length === 0) continue;
 
@@ -176,7 +200,7 @@ export function calcularEFEDesdeAsientos(asientos: AsientoSimple[]): EstadoFlujo
     )[0];
     const clasif = dominante
       ? categoriaContrapartida(dominante.subcuenta)
-      : { categoria: 'explotacion' as Categoria, descripcion: 'Otros cobros/pagos de explotacion' };
+      : { categoria: 'explotacion' as Categoria, descripcion: 'Otros cobros/pagos de explotación' };
 
     const mapa = agregados[clasif.categoria];
     mapa.set(clasif.descripcion, round2((mapa.get(clasif.descripcion) ?? 0) + deltaEfectivo));
@@ -188,17 +212,15 @@ export function calcularEFEDesdeAsientos(asientos: AsientoSimple[]): EstadoFlujo
     return { titulo, partidas, subtotal };
   };
 
-  const flujosExplotacion = construirSeccion('Flujos de efectivo de las actividades de explotacion', 'explotacion');
-  const flujosInversion = construirSeccion('Flujos de efectivo de las actividades de inversion', 'inversion');
-  const flujosFinanciacion = construirSeccion('Flujos de efectivo de las actividades de financiacion', 'financiacion');
+  const flujosExplotacion = construirSeccion('Flujos de efectivo de las actividades de explotación', 'explotacion');
+  const flujosInversion = construirSeccion('Flujos de efectivo de las actividades de inversión', 'inversion');
+  const flujosFinanciacion = construirSeccion('Flujos de efectivo de las actividades de financiación', 'financiacion');
 
   const variacionNetaEfectivo = round2(flujosExplotacion.subtotal + flujosInversion.subtotal + flujosFinanciacion.subtotal);
 
-  // efectivoInicial: TODO (saldo de cierre del ejercicio anterior). Con solo los
-  // asientos del ejercicio, el efectivoFinal = inicial + variacion neta.
-  const saldos = calcularSaldosPorSubcuenta(asientos);
-  const efectivoInicial = 0;
-  const efectivoFinal = round2(efectivoInicial + saldoDeudor(saldos, ['57']));
+  // Efectivo inicial = saldo de tesoreria al cierre del año anterior (antes
+  // siempre 0). Final = inicial + variacion neta.
+  const efectivoFinal = round2(efectivoInicial + variacionNetaEfectivo);
 
   return {
     flujosExplotacion,

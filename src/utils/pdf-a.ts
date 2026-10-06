@@ -103,13 +103,28 @@ function construirXmp(titulo: string, part: '1' | '2', fecha: Date): string {
 }
 
 /**
- * Genera un PDF/A (por defecto 2b) de A4 con un título y líneas de texto
- * monoespaciadas/normales, equivalente en contenido a `generarPdfSimple` pero
- * archivable. Devuelve el Buffer del PDF.
+ * Fila de tabla: texto a la izquierda (con sangria) e importes alineados a la
+ * derecha en columnas fijas. `separador` dibuja una raya encima (totales) y
+ * `nuevaPagina` empieza pagina antes de la fila.
+ */
+export interface FilaPdf {
+  texto: string;
+  columnas?: string[];
+  sangria?: number;
+  separador?: boolean;
+  nuevaPagina?: boolean;
+}
+
+const ANCHO_COLUMNA = 78;
+const Y_MINIMA = 50;
+
+/**
+ * Genera un PDF/A (por defecto 2b) de A4 con un título y líneas de texto, o
+ * filas de tabla (FilaPdf) para estados financieros. Devuelve el Buffer del PDF.
  */
 export async function generarPdfA(
   titulo: string,
-  lineas: string[],
+  lineas: Array<string | FilaPdf>,
   opts: { conformance?: ConformidadPdfA } = {},
 ): Promise<Buffer> {
   const conformance = opts.conformance ?? '2B';
@@ -127,16 +142,43 @@ export async function generarPdfA(
   doc.setCreationDate(fecha);
   doc.setModificationDate(fecha);
 
-  // Paginación del contenido.
-  const total = Math.max(1, lineas.length);
-  for (let i = 0; i < total; i += LINEAS_POR_PAGINA) {
-    const page = doc.addPage([A4_ANCHO, A4_ALTO]);
-    page.drawText(titulo, { x: MARGEN_X, y: TITULO_Y, size: TAM_TITULO, font });
-    let y = PRIMERA_LINEA_Y;
-    for (const linea of lineas.slice(i, i + LINEAS_POR_PAGINA)) {
-      page.drawText(linea, { x: MARGEN_X, y, size: TAM_LINEA, font });
-      y -= INTERLINEADO;
+  // Paginación del contenido: como mucho LINEAS_POR_PAGINA por página, o antes
+  // si una fila pide página nueva.
+  const nuevaPagina = () => {
+    const p = doc.addPage([A4_ANCHO, A4_ALTO]);
+    p.drawText(titulo, { x: MARGEN_X, y: TITULO_Y, size: TAM_TITULO, font });
+    return p;
+  };
+  let page = nuevaPagina();
+  let y = PRIMERA_LINEA_Y;
+  let enPagina = 0;
+  for (const linea of lineas) {
+    const fila: FilaPdf = typeof linea === 'string' ? { texto: linea } : linea;
+    if (enPagina >= LINEAS_POR_PAGINA || y < Y_MINIMA || (fila.nuevaPagina && enPagina > 0)) {
+      page = nuevaPagina();
+      y = PRIMERA_LINEA_Y;
+      enPagina = 0;
     }
+    const columnas = fila.columnas ?? [];
+    const derecha = A4_ANCHO - MARGEN_X;
+    if (fila.separador) {
+      const desde = columnas.length ? derecha - columnas.length * ANCHO_COLUMNA : MARGEN_X;
+      page.drawLine({ start: { x: desde, y: y + INTERLINEADO - 3 }, end: { x: derecha, y: y + INTERLINEADO - 3 }, thickness: 0.5 });
+    }
+    // El texto se recorta para no pisar las columnas de importes.
+    const x = MARGEN_X + (fila.sangria ?? 0) * 12;
+    const maxAncho = derecha - columnas.length * ANCHO_COLUMNA - x - 6;
+    let texto = fila.texto;
+    while (columnas.length && texto.length > 1 && font.widthOfTextAtSize(texto, TAM_LINEA) > maxAncho) {
+      texto = `${texto.slice(0, -2)}…`;
+    }
+    if (texto) page.drawText(texto, { x, y, size: TAM_LINEA, font });
+    columnas.forEach((valor, k) => {
+      const borde = derecha - (columnas.length - 1 - k) * ANCHO_COLUMNA;
+      page.drawText(valor, { x: borde - font.widthOfTextAtSize(valor, TAM_LINEA), y, size: TAM_LINEA, font });
+    });
+    y -= INTERLINEADO;
+    enPagina += 1;
   }
 
   // OutputIntent + perfil ICC sRGB embebido (color independiente de dispositivo).
