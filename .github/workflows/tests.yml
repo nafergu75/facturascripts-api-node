@@ -1,0 +1,56 @@
+# Ejecuta TODOS los tests en GitHub con un MySQL de usar y tirar.
+#
+# En local, las suites que guardan y leen datos de verdad no pueden correr sin
+# MySQL instalado; aqui se levanta uno en cada ejecucion (base vacia, sin datos
+# reales y sin acceso a la base de produccion).
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: pruebas
+          MYSQL_DATABASE: conta_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -ppruebas"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+
+    env:
+      # Base de pruebas del propio job: no es ningun secreto.
+      DATABASE_URL: mysql://root:pruebas@127.0.0.1:3306/conta_test
+      NODE_ENV: test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Instalar dependencias
+        run: npm ci
+
+      - name: Crear las tablas en la base de pruebas
+        run: npx prisma db push --skip-generate --accept-data-loss
+
+      - name: Compilar
+        run: npx tsc --noEmit -p .
+
+      - name: Tests
+        run: npx jest --runInBand
