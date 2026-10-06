@@ -10,11 +10,13 @@ import fs from 'fs';
 import importController from '../controllers/import.controller';
 import { authMiddleware } from '../middleware/auth.middleware';
 import { authorize } from '../middleware/authorize.middleware';
+import { dirEscribible } from '../utils/paths';
 
 const router = Router();
 
 // Configurar multer para uploads
-const uploadsDir = path.join(process.cwd(), 'uploads', 'imports');
+// En Vercel solo /tmp es escribible (ver utils/paths).
+const uploadsDir = dirEscribible('uploads', 'imports');
 if (!fs.existsSync(uploadsDir)) {
   fs.mkdirSync(uploadsDir, { recursive: true });
 }

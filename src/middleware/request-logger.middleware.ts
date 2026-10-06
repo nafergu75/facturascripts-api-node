@@ -4,7 +4,8 @@
  * Uso: Agregar en app.ts antes de las rutas:
  *   app.use(requestLoggerMiddleware);
  *
- * Salida: archivo logs/requests.jsonl (una línea JSON por petición)
+ * Salida: en local, archivo logs/requests.jsonl (una línea JSON por petición).
+ * En Vercel el disco es de solo lectura: la línea va a stdout (logs de Vercel).
  * Formato:
  *   {"timestamp":"2026-06-30T10:15:30.123Z","method":"POST","path":"/auth/login","statusCode":200,"duration":45}
  */
@@ -12,6 +13,7 @@
 import { Request, Response, NextFunction } from 'express';
 import fs from 'fs';
 import path from 'path';
+import { enServerless } from '../utils/paths';
 
 interface RequestLog {
   timestamp: string;
@@ -23,13 +25,24 @@ interface RequestLog {
   companyId?: string;
 }
 
-// Crear directorio de logs si no existe
+// La carpeta se crea al escribir la primera linea, no al cargar el modulo: en
+// Vercel un mkdir en la carga tumbaba la funcion antes de atender nada (EROFS).
 const logsDir = path.join(process.cwd(), 'logs');
-if (!fs.existsSync(logsDir)) {
-  fs.mkdirSync(logsDir, { recursive: true });
-}
-
 const requestLogFile = path.join(logsDir, 'requests.jsonl');
+
+function escribirLinea(linea: string): void {
+  if (enServerless()) {
+    // eslint-disable-next-line no-console
+    console.log(linea);
+    return;
+  }
+  try {
+    fs.mkdirSync(logsDir, { recursive: true });
+    fs.appendFileSync(requestLogFile, linea + '\n');
+  } catch {
+    // Un fallo del log nunca debe romper la peticion.
+  }
+}
 
 /**
  * Middleware que loguea cada petición en formato JSONL
@@ -37,9 +50,14 @@ const requestLogFile = path.join(logsDir, 'requests.jsonl');
  */
 export function requestLoggerMiddleware(req: Request, res: Response, next: NextFunction): void {
   const startTime = Date.now();
+  // res.json llama a res.send, y este a res.end: sin esta marca, cada peticion
+  // se registraba dos o tres veces.
+  let registrado = false;
 
   // Crear una función de logging reutilizable
   const logRequest = () => {
+    if (registrado) return;
+    registrado = true;
     const duration = Date.now() - startTime;
     const log: RequestLog = {
       timestamp: new Date().toISOString(),
@@ -57,8 +75,7 @@ export function requestLoggerMiddleware(req: Request, res: Response, next: NextF
       log.companyId = (req as any).params.companyId;
     }
 
-    // Escribir en JSONL
-    fs.appendFileSync(requestLogFile, JSON.stringify(log) + '\n');
+    escribirLinea(JSON.stringify(log));
   };
 
   // Interceptar res.send
