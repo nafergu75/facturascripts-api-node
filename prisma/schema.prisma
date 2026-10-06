@@ -579,6 +579,9 @@ model ExpenseInvoice {
   tipoRetencion    Int                  @default(0)
   /// Importe neto a pagar al proveedor = base + IVA - retención
   totalFactura     Decimal              @default(0) @db.Decimal(14, 2)
+  /// Estado de PAGO (aparte de `estado`): PENDIENTE | PARCIAL | PAGADA.
+  /// Lo recalculan los pagos registrados (InvoicePayment GASTO).
+  estadoPago       String               @default("PENDIENTE")
   observaciones    String?              @db.Text
   createdAt        DateTime             @default(now())
   updatedAt        DateTime             @updatedAt
@@ -591,6 +594,36 @@ model ExpenseInvoice {
   @@unique([companyId, numeroCompleto])
   @@index([companyId, estado])
   @@index([supplierId])
+}
+
+/// Cobro de una factura de venta (INGRESO) o pago de una factura de gasto
+/// (GASTO), con su asiento de tesoreria (572/570 contra 430 o 400/410).
+/// Anular no borra: deja estado ANULADO y el asiento REVERSED (o un
+/// contraasiento si el periodo del cobro ya esta cerrado).
+model InvoicePayment {
+  id               String    @id @default(cuid())
+  companyId        String
+  /// INGRESO (cobro) | GASTO (pago)
+  invoiceType      String
+  invoiceId        String
+  fecha            String // YYYY-MM-DD
+  importe          Decimal   @db.Decimal(14, 2)
+  /// Subcuenta de tesoreria: la 572xxx de la cuenta bancaria o la 570 de caja.
+  cuentaTesoreria  String
+  bankAccountId    String?
+  nota             String?   @db.Text
+  /// Asiento del cobro/pago (JournalEntry).
+  journalEntryId   String?
+  /// ACTIVO | ANULADO
+  estado           String    @default("ACTIVO")
+  anuladoEn        DateTime?
+  /// Contraasiento de la anulacion, si el asiento original no se pudo marcar REVERSED.
+  anulacionEntryId String?
+  createdBy        String?
+  createdAt        DateTime  @default(now())
+
+  @@index([companyId, invoiceType, invoiceId])
+  @@index([companyId, estado])
 }
 
 /// Línea de factura de gasto.

@@ -7,8 +7,8 @@ import { badRequest } from '../utils/http-errors';
 /**
  * Puesta en marcha: importar balance (asiento de apertura), libro diario/mayor
  * del ejercicio en curso y saldos de ejercicios anteriores (comparativo).
- * Todas las peticiones llevan el fichero (o los datos ya mapeados): no se
- * guarda nada entre la vista previa y la confirmacion.
+ * Las peticiones llevan el fichero (o los datos ya mapeados), o el id de una
+ * subida por trozos para los ficheros grandes (se borra al confirmar).
  */
 const router = Router({ mergeParams: true });
 
@@ -21,7 +21,18 @@ const subida = multer({
   },
 });
 
+// Trozos de ficheros grandes (Vercel corta peticiones de mas de ~4,5 MB).
+const trozo = multer({ storage: multer.memoryStorage(), limits: { fileSize: 4 * 1024 * 1024, files: 1 } });
+
 router.get('/', authorize('contabilidad:read'), c.estado);
+
+/**
+ * Subida por trozos: POST /subidas (campo "trozo" + indice, total; el primero
+ * con nombre y tamano, los demas con el subidaId que devuelve el primero).
+ * Despues, las vistas previas y confirmaciones aceptan "subidaId" en vez de "archivo".
+ */
+router.post('/subidas', authorize('contabilidad:write'), trozo.single('trozo'), c.subirTrozo);
+router.delete('/subidas/:subidaId', authorize('contabilidad:write'), c.descartarSubida);
 
 router.post('/apertura/vista-previa', authorize('contabilidad:write'), subida.single('archivo'), c.vistaApertura);
 router.post('/apertura', authorize('contabilidad:write'), subida.single('archivo'), c.confirmarApertura);

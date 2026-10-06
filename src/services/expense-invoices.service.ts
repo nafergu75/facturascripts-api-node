@@ -55,6 +55,9 @@ export interface ExpenseInvoiceResp {
   fechaEmision: string;
   fechaVencimiento: string;
   estado: string;
+  /** Estado de pago: PENDIENTE | PARCIAL | PAGADA (ver cobrosPagos.service). */
+  estadoPago: string;
+  supplier?: { id: string; nombreFiscal: string; nifCif: string };
   tipoGasto: string;
   baseTotal: number;
   ivaTotal: number;
@@ -297,6 +300,7 @@ export const expenseInvoicesService = {
       fechaEmision: factura.fechaEmision,
       fechaVencimiento: factura.fechaVencimiento,
       estado: factura.estado,
+      estadoPago: factura.estadoPago,
       tipoGasto: factura.tipoGasto,
       baseTotal: factura.baseTotal,
       ivaTotal: factura.ivaTotal,
@@ -370,6 +374,7 @@ export const expenseInvoicesService = {
         fechaEmision: f.fechaEmision,
         fechaVencimiento: f.fechaVencimiento,
         estado: f.estado,
+        estadoPago: f.estadoPago,
         tipoGasto: f.tipoGasto,
         baseTotal: f.baseTotal,
         ivaTotal: f.ivaTotal,
@@ -390,12 +395,13 @@ export const expenseInvoicesService = {
   async obtenerPorId(companyId: string, id: string): Promise<ExpenseInvoiceResp> {
     const factura = await prisma.expenseInvoice.findFirst({
       where: { id, companyId },
-      include: { lineas: true },
+      include: { lineas: true, supplier: { select: { id: true, nombreFiscal: true, nifCif: true } } },
     });
 
     if (!factura) throw notFound('Factura de gasto no encontrada.');
 
     return {
+      supplier: factura.supplier,
       id: factura.id,
       companyId: factura.companyId,
       supplierId: factura.supplierId,
@@ -405,6 +411,7 @@ export const expenseInvoicesService = {
       fechaEmision: factura.fechaEmision,
       fechaVencimiento: factura.fechaVencimiento,
       estado: factura.estado,
+      estadoPago: factura.estadoPago,
       tipoGasto: factura.tipoGasto,
       baseTotal: factura.baseTotal,
       ivaTotal: factura.ivaTotal,
@@ -460,6 +467,7 @@ export const expenseInvoicesService = {
       fechaEmision: actualizada.fechaEmision,
       fechaVencimiento: actualizada.fechaVencimiento,
       estado: actualizada.estado,
+      estadoPago: actualizada.estadoPago,
       tipoGasto: actualizada.tipoGasto,
       baseTotal: actualizada.baseTotal,
       ivaTotal: actualizada.ivaTotal,

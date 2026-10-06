@@ -2,6 +2,7 @@ import type { Prisma } from '@prisma/client';
 import { badRequest, notFound } from '../utils/http-errors';
 import { prisma, type TransaccionBD as Tx } from '../config/database';
 import { obtenerOCrearSerie, obtenerSeriePorDefecto, resolverCodSerieFactura } from './series.service';
+import { listarCobros, registrarCobroFactura, tieneCobrosActivos, type DatosCobro } from './cobrosPagos.service';
 
 /**
  * Facturas de venta.
@@ -743,14 +744,29 @@ export const incomeInvoicesService = {
   /**
    * Cambiar el estado de COBRO de una factura emitida (PENDING, PAID, OVERDUE).
    * Emitir un borrador es `finalizar`, no un cambio de estado.
+   *
+   * PAID registra un cobro de verdad (con su asiento) por lo pendiente: con la
+   * fecha, cuenta bancaria o caja y nota que vengan, o con fecha de hoy y la
+   * primera cuenta bancaria activa. Volver a PENDING/OVERDUE solo se puede si
+   * no hay cobros registrados (si los hay, se anulan desde la factura).
    */
-  async cambiarEstado(companyId: string, id: string, nuevoEstado: string): Promise<IncomeInvoiceResp> {
+  async cambiarEstado(companyId: string, id: string, nuevoEstado: string, datosCobro: DatosCobro = {}): Promise<IncomeInvoiceResp> {
     if (!(ESTADOS_COBRO as readonly string[]).includes(nuevoEstado)) {
       throw badRequest(`Estado no válido. Usa: ${ESTADOS_COBRO.join(', ')}.`);
     }
     const factura = await cargar(companyId, id);
     if (factura.estadoDocumento !== ESTADO_FINAL) {
       throw badRequest('La factura está en borrador: emítela antes de marcar el cobro.');
+    }
+    if (nuevoEstado === 'PAID') {
+      const { importePendiente } = await listarCobros(companyId, 'INGRESO', id);
+      if (importePendiente > 0) {
+        await registrarCobroFactura(companyId, 'INGRESO', id, { ...datosCobro, importe: undefined });
+      }
+      return aRespuesta(await cargar(companyId, id));
+    }
+    if (await tieneCobrosActivos(companyId, 'INGRESO', id)) {
+      throw badRequest('La factura tiene cobros registrados: para dejarla pendiente, anula esos cobros desde la ficha de la factura.');
     }
     const actualizada = await prisma.incomeInvoice.update({
       where: { id },
@@ -845,7 +861,9 @@ export const incomeInvoicesService = {
 
     facturas.forEach((f) => {
       if (f.estado === 'PAID') baseCobrada += f.baseTotal;
-      else if (f.estado === 'PENDING') basePendiente += f.baseTotal;
+      // ACCOUNTED: facturas contabilizadas antes de que el estado de cobro se
+      // separara de la contabilidad; siguen pendientes de cobro.
+      else if (f.estado === 'PENDING' || f.estado === 'ACCOUNTED') basePendiente += f.baseTotal;
       else if (f.estado === 'OVERDUE') baseVencida += f.baseTotal;
       ivaTotal += f.ivaTotal;
       retencionTotal += f.retencionTotal;

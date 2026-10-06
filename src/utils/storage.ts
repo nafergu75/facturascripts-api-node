@@ -62,3 +62,75 @@ export async function getObject(ref: string): Promise<Buffer> {
   }
   return fsp.readFile(path.join(process.cwd(), ref));
 }
+
+/**
+ * Lee un objeto por su CLAVE (la que se paso a putObject), no por la referencia
+ * devuelta. Devuelve null si no existe. Sirve para objetos temporales cuya
+ * referencia no se guarda en BD (p. ej. los trozos de una subida grande).
+ */
+export async function getObjectByKey(key: string): Promise<Buffer | null> {
+  if (usarBlob) {
+    const { get } = await import('@vercel/blob');
+    // useCache false: un trozo reenviado tras un fallo reescribe la misma clave.
+    const res = await get(key, { access: 'private', token: BLOB_TOKEN, useCache: false });
+    if (!res || res.statusCode !== 200 || !res.stream) return null; // 404 -> null
+    return Buffer.from(await new Response(res.stream).arrayBuffer());
+  }
+  try {
+    return await fsp.readFile(path.join(process.cwd(), 'storage', key));
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw e;
+  }
+}
+
+/** Borra objetos por clave. Los que no existen se ignoran. */
+export async function deleteObjects(keys: string[]): Promise<void> {
+  if (keys.length === 0) return;
+  if (usarBlob) {
+    const { del } = await import('@vercel/blob');
+    // del admite varias rutas por llamada; en tandas para no pasar limites.
+    for (let i = 0; i < keys.length; i += 100) await del(keys.slice(i, i + 100), { token: BLOB_TOKEN });
+    return;
+  }
+  for (const key of keys) {
+    await fsp.rm(path.join(process.cwd(), 'storage', key), { force: true });
+  }
+}
+
+/** Objetos bajo un prefijo de clave, con su fecha de subida. */
+export async function listObjects(prefix: string): Promise<Array<{ key: string; fecha: Date }>> {
+  if (usarBlob) {
+    const { list } = await import('@vercel/blob');
+    const out: Array<{ key: string; fecha: Date }> = [];
+    let cursor: string | undefined;
+    do {
+      const r = await list({ prefix, cursor, limit: 1000, token: BLOB_TOKEN });
+      for (const b of r.blobs) out.push({ key: b.pathname, fecha: new Date(b.uploadedAt) });
+      cursor = r.hasMore ? r.cursor : undefined;
+    } while (cursor);
+    return out;
+  }
+  const base = path.join(process.cwd(), 'storage');
+  const out: Array<{ key: string; fecha: Date }> = [];
+  const recorrer = async (dir: string): Promise<void> => {
+    let entradas;
+    try {
+      entradas = await fsp.readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entradas) {
+      const ruta = path.join(dir, e.name);
+      if (e.isDirectory()) await recorrer(ruta);
+      else {
+        const key = path.relative(base, ruta).split(path.sep).join('/');
+        if (key.startsWith(prefix)) out.push({ key, fecha: (await fsp.stat(ruta)).mtime });
+      }
+    }
+  };
+  // Se empieza en la carpeta del prefijo (o su carpeta padre si acaba a medias).
+  const dirPrefijo = prefix.endsWith('/') ? prefix : path.posix.dirname(prefix);
+  await recorrer(path.join(base, ...dirPrefijo.split('/').filter(Boolean)));
+  return out;
+}

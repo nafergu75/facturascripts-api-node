@@ -234,6 +234,8 @@ export class AccountingHooksService {
         where: {
           companyId,
           invoiceId,
+          // Los asientos de cobro/pago de la factura no se recalculan.
+          origen: { not: 'TESORERIA' },
           estado: { in: ['POSTED', 'PENDING_REVIEW'] },
         },
       });
