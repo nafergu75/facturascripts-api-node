@@ -708,32 +708,29 @@ export const incomeReaderService = {
     // Importar el servicio de facturas de ingreso
     const { incomeInvoicesService } = await import('./income-invoices.service');
 
-    // Crear o usar cliente existente
+    // En una factura de INGRESO el emisor es la empresa: el cliente es el
+    // RECEPTOR. (Antes se usaba el emisor, y la empresa acababa dada de alta
+    // como cliente de si misma.)
     let customerId: string;
-
-    // Si hay NIF del emisor (quien nos emite la factura), buscar cliente
-    if (parsed.nifEmisor) {
-      const existente = await prisma.customer.findFirst({
-        where: { companyId, nifCif: parsed.nifEmisor },
-      });
-
-      if (existente) {
-        customerId = existente.id;
-      } else {
-        // Crear cliente nuevo
-        const nuevoCliente = await prisma.customer.create({
-          data: {
-            companyId,
-            nombreFiscal: parsed.nombreEmisor || `Cliente ${parsed.nifEmisor}`,
-            nifCif: parsed.nifEmisor,
-            pais: 'ES',
-            activo: true,
-          },
-        });
-        customerId = nuevoCliente.id;
-      }
+    if (!parsed.nifReceptor) {
+      throw badRequest('Falta el NIF del cliente (receptor) en los datos extraídos.');
+    }
+    const existente = await prisma.customer.findFirst({
+      where: { companyId, nifCif: parsed.nifReceptor },
+    });
+    if (existente) {
+      customerId = existente.id;
     } else {
-      throw badRequest('Falta el NIF del emisor en los datos extraídos.');
+      const nuevoCliente = await prisma.customer.create({
+        data: {
+          companyId,
+          nombreFiscal: parsed.nombreReceptor || `Cliente ${parsed.nifReceptor}`,
+          nifCif: parsed.nifReceptor,
+          pais: 'ES',
+          activo: true,
+        },
+      });
+      customerId = nuevoCliente.id;
     }
 
     // Mapear líneas extraídas
@@ -750,13 +747,22 @@ export const incomeReaderService = {
       throw badRequest('No hay líneas en los datos extraídos.');
     }
 
+    // Numeracion: la de la factura leida si se pudo leer; si no, el siguiente
+    // correlativo de la serie del ano. (Antes era un numero ALEATORIO: rompia la
+    // numeracion correlativa y podia repetirse.)
+    const { separarNumero } = await import('./ingresos-extractor.service');
+    const fechaEmision = parsed.fecha ?? new Date().toISOString().slice(0, 10);
+    const numeracion = parsed.numero
+      ? separarNumero(null, parsed.numero, fechaEmision)
+      : { serie: fechaEmision.slice(0, 4), numero: undefined };
+
     // Crear factura de ingreso
     const factura = await incomeInvoicesService.crearIngreso({
       companyId,
       customer: { id: customerId },
-      serie: new Date().getFullYear().toString(),
-      numero: Math.floor(Math.random() * 10000), // Número temporal
-      fechaEmision: parsed.fecha ?? new Date().toISOString().slice(0, 10),
+      serie: numeracion.serie,
+      numero: numeracion.numero,
+      fechaEmision,
       fechaVencimiento: parsed.fechaVencimiento,
       lineas,
       observaciones: `Digitalizado desde: ${documento.originalFileName}`,

@@ -167,7 +167,7 @@ model IncomeInvoice {
   customerId          String
   serie               String
   numero              Int
-  numeroCompleto      String                @unique
+  numeroCompleto      String
   fechaEmision        String                // YYYY-MM-DD
   fechaVencimiento    String                // YYYY-MM-DD
   estado              String                @default("PENDING") // DRAFT, PENDING, PAID, OVERDUE
@@ -188,6 +188,9 @@ model IncomeInvoice {
   readerDocument      IncomeReaderDocument?
 
   @@unique([companyId, serie, numero])
+  // Unico DENTRO de cada empresa: antes era unico en toda la BD, y dos empresas
+  // no podian tener cada una su factura 2026-1.
+  @@unique([companyId, numeroCompleto])
   @@index([companyId, estado])
   @@index([customerId])
 }
@@ -529,7 +532,7 @@ model ExpenseInvoice {
   supplierId       String
   serie            String
   numero           Int
-  numeroCompleto   String               @unique // serie + numero formateado
+  numeroCompleto   String // serie + numero formateado
   fechaEmision     String               // YYYY-MM-DD
   fechaVencimiento String               // YYYY-MM-DD
   /// DRAFT | CONFIRMED | ACCOUNTED
@@ -552,6 +555,9 @@ model ExpenseInvoice {
   supplier         Supplier             @relation(fields: [supplierId], references: [id], onDelete: Restrict)
 
   @@unique([companyId, serie, numero])
+  // Unico DENTRO de cada empresa: antes era unico en toda la BD, y dos empresas
+  // no podian tener cada una su factura 2026-1.
+  @@unique([companyId, numeroCompleto])
   @@index([companyId, estado])
   @@index([supplierId])
 }
