@@ -144,7 +144,14 @@ export const incomeInvoicesController = {
       throw badRequest(`Estado de cobro no válido. Usa: ${ESTADOS_COBRO.join(', ')}. Para emitir un borrador, finalízalo.`);
     }
 
-    const factura = await incomeInvoicesService.cambiarEstado(req.companyId!, req.params.id, nuevoEstado);
+    const b = req.body ?? {};
+    const factura = await incomeInvoicesService.cambiarEstado(req.companyId!, req.params.id, nuevoEstado, {
+      fecha: b.fecha,
+      cuentaBancariaId: b.cuentaBancariaId,
+      caja: b.caja === true || b.caja === 'true',
+      nota: b.nota,
+      userId: req.user?.userId,
+    });
 
     await registrarAuditoria({
       userId: req.user?.userId || 'unknown',

@@ -13,6 +13,7 @@
  */
 import { prisma } from '../config/database';
 import { notFound } from '../utils/http-errors';
+import { calcularPendiente, cobradoPorFactura } from './cobrosPagos.service';
 import { saldosDelEjercicio, type AsientoSimple } from './contabilidadDatos.service';
 import { calcularEstadosDesdeSaldos } from './impuestoSociedadesCalculo.service';
 import { calcularPyGModelo } from '../domain/modelos-cuentas-anuales';
@@ -439,18 +440,48 @@ async function calcularTerceros(companyId: string, tipo: TipoTercero, periodo: P
 }
 
 /**
- * Lo pendiente segun las facturas de venta emitidas (estado PENDING u OVERDUE)
- * hasta la fecha, por cliente: sirve para cruzarlo con el saldo contable. Las
- * facturas de compra no guardan si estan pagadas, asi que en proveedores no hay
- * cruce.
+ * Lo pendiente segun las facturas, por tercero, a una fecha: facturas de venta
+ * emitidas (o de gasto) hasta `hasta`, menos sus cobros (o pagos) activos con
+ * fecha hasta `hasta`. Sirve para cruzarlo con el saldo contable. Una factura
+ * de venta marcada como cobrada a mano, sin cobros registrados, cuenta como
+ * cobrada entera.
  */
-async function pendientesDeCobro(companyId: string, hasta: string) {
-  const facturas = await prisma.incomeInvoice.findMany({
-    where: { companyId, estadoDocumento: 'FINAL', estado: { in: ['PENDING', 'OVERDUE'] }, fechaEmision: { lte: hasta } },
-    select: { id: true, customerId: true, numeroCompleto: true, fechaEmision: true, fechaVencimiento: true, totalFactura: true, estado: true },
-    orderBy: { fechaEmision: 'asc' },
-  });
-  return facturas.map((f) => ({ ...f, totalFactura: Number(f.totalFactura) }));
+interface FacturaPendiente {
+  id: string;
+  terceroId: string;
+  numeroCompleto: string | null;
+  fechaEmision: string;
+  fechaVencimiento: string;
+  totalFactura: number;
+  importePendiente: number;
+  estado: string;
+}
+
+async function pendientesSegunFacturas(companyId: string, tipo: TipoTercero, hasta: string): Promise<FacturaPendiente[]> {
+  const tipoDoc = tipo === 'clientes' ? 'INGRESO' : 'GASTO';
+  const cobrado = await cobradoPorFactura(companyId, tipoDoc, hasta);
+  const facturas =
+    tipo === 'clientes'
+      ? (
+          await prisma.incomeInvoice.findMany({
+            where: { companyId, estadoDocumento: 'FINAL', fechaEmision: { lte: hasta } },
+            select: { id: true, customerId: true, numeroCompleto: true, fechaEmision: true, fechaVencimiento: true, totalFactura: true, estado: true },
+            orderBy: { fechaEmision: 'asc' },
+          })
+        ).map(({ customerId, ...f }) => ({ ...f, terceroId: customerId }))
+      : (
+          await prisma.expenseInvoice.findMany({
+            where: { companyId, fechaEmision: { lte: hasta } },
+            select: { id: true, supplierId: true, numeroCompleto: true, fechaEmision: true, fechaVencimiento: true, totalFactura: true, estadoPago: true },
+            orderBy: { fechaEmision: 'asc' },
+          })
+        ).map(({ supplierId, estadoPago, ...f }) => ({ ...f, terceroId: supplierId, estado: estadoPago }));
+  return facturas
+    .map((f) => {
+      const total = Number(f.totalFactura);
+      return { ...f, totalFactura: total, importePendiente: calcularPendiente(tipoDoc, total, f.estado, cobrado.get(f.id) ?? 0) };
+    })
+    .filter((f) => f.importePendiente !== 0);
 }
 
 export interface FiltroTerceros {
@@ -467,15 +498,13 @@ export async function informeMayorTerceros(companyId: string, tipo: TipoTercero,
   }
 
   const pendiente = new Map<string, number>();
-  if (tipo === 'clientes') {
-    for (const f of await pendientesDeCobro(companyId, periodo.hasta)) {
-      pendiente.set(f.customerId, round2((pendiente.get(f.customerId) ?? 0) + f.totalFactura));
-    }
+  for (const f of await pendientesSegunFacturas(companyId, tipo, periodo.hasta)) {
+    pendiente.set(f.terceroId, round2((pendiente.get(f.terceroId) ?? 0) + f.importePendiente));
   }
   const filasDatos = terceros.map(({ movimientos: _m, ...t }) => ({
     ...t,
     movimientos: _m.length,
-    pendienteFacturas: tipo === 'clientes' && t.id !== SIN_IDENTIFICAR && !t.id.startsWith('subcuenta:') ? (pendiente.get(t.id) ?? 0) : null,
+    pendienteFacturas: t.id !== SIN_IDENTIFICAR && !t.id.startsWith('subcuenta:') ? (pendiente.get(t.id) ?? 0) : null,
   }));
   const totales = {
     saldoInicial: round2(filasDatos.reduce((s, t) => s + t.saldoInicial, 0)),
@@ -484,7 +513,7 @@ export async function informeMayorTerceros(companyId: string, tipo: TipoTercero,
     saldoFinal: round2(filasDatos.reduce((s, t) => s + t.saldoFinal, 0)),
   };
 
-  const conPendiente = tipo === 'clientes';
+  const conPendiente = true;
   const tabla: TablaInforme = {
     titulo: TITULO_TERCEROS[tipo],
     periodo: textoPeriodo(periodo.desde, periodo.hasta),
@@ -513,7 +542,9 @@ export async function informeMayorTerceros(companyId: string, tipo: TipoTercero,
         ? 'Cuentas 43. Saldo positivo: lo que nos deben; negativo: anticipos o cobros de más.'
         : 'Cuentas 40 y 41. Saldo positivo: lo que debemos; negativo: anticipos o pagos de más.',
       'El tercero sale de la factura enlazada al asiento, de la referencia del apunte o de su subcuenta propia. Sin asientos de apertura, regularización ni cierre.',
-      ...(conPendiente ? ['Pendiente s/ facturas: facturas emitidas no marcadas como cobradas, para cruzarlo con el saldo contable.'] : []),
+      tipo === 'clientes'
+        ? 'Pendiente s/ facturas: importe de las facturas emitidas menos sus cobros registrados, para cruzarlo con el saldo contable.'
+        : 'Pendiente s/ facturas: importe de las facturas recibidas menos sus pagos registrados, para cruzarlo con el saldo contable.',
     ],
     fichero: `${TITULO_TERCEROS[tipo].toLowerCase()}_${periodo.desde}_${periodo.hasta}`,
   };
@@ -532,9 +563,8 @@ export async function informeDetalleTercero(companyId: string, tipo: TipoTercero
     if (!ficha) throw notFound(tipo === 'clientes' ? 'Cliente no encontrado.' : 'Proveedor no encontrado.');
     t = { id: ficha.id, nombre: ficha.nombreFiscal, nif: ficha.nifCif, cuentas: [], saldoInicial: 0, debe: 0, haber: 0, saldoFinal: 0, movimientos: [] };
   }
-  const facturasPendientes =
-    tipo === 'clientes' ? (await pendientesDeCobro(companyId, periodo.hasta)).filter((f) => f.customerId === t!.id) : [];
-  const totalPendiente = round2(facturasPendientes.reduce((s, f) => s + f.totalFactura, 0));
+  const facturasPendientes = (await pendientesSegunFacturas(companyId, tipo, periodo.hasta)).filter((f) => f.terceroId === t!.id);
+  const totalPendiente = round2(facturasPendientes.reduce((s, f) => s + f.importePendiente, 0));
 
   const filas: FilaInforme[] = [
     { celdas: [null, null, 'Saldo inicial', null, null, null, t.saldoInicial], estilo: 'nota' },
@@ -545,11 +575,12 @@ export async function informeDetalleTercero(companyId: string, tipo: TipoTercero
     tipo === 'clientes' ? 'Saldo positivo: lo que nos debe.' : 'Saldo positivo: lo que le debemos.',
     ...(t.cuentas.length ? [`Cuentas: ${t.cuentas.join(', ')}.`] : []),
   ];
-  if (tipo === 'clientes' && t.id !== SIN_IDENTIFICAR && !t.id.startsWith('subcuenta:')) {
+  if (t.id !== SIN_IDENTIFICAR && !t.id.startsWith('subcuenta:')) {
+    const de = tipo === 'clientes' ? 'cobro' : 'pago';
     notas.push(
       facturasPendientes.length
-        ? `Según facturación, ${facturasPendientes.length} factura(s) pendiente(s) de cobro por ${num(totalPendiente)} €: ${facturasPendientes.map((f) => f.numeroCompleto ?? '').filter(Boolean).join(', ')}.`
-        : 'Según facturación, no tiene facturas pendientes de cobro.',
+        ? `Según facturación, ${facturasPendientes.length} factura(s) pendiente(s) de ${de} por ${num(totalPendiente)} €: ${facturasPendientes.map((f) => f.numeroCompleto ?? '').filter(Boolean).join(', ')}.`
+        : `Según facturación, no tiene facturas pendientes de ${de}.`,
     );
   }
   const tabla: TablaInforme = {

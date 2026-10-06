@@ -63,10 +63,12 @@ export class AccountingEngineController {
       }
 
       // Validar que no esté ya contabilizada
+      // Los asientos de cobro (TESORERIA) tambien llevan invoiceId: no cuentan.
       const entryExistente = await prisma.journalEntry.findFirst({
         where: {
           companyId,
           invoiceId,
+          origen: { not: 'TESORERIA' },
           estado: { in: ['POSTED', 'PENDING_REVIEW', 'DRAFT'] },
         },
       });
@@ -74,7 +76,7 @@ export class AccountingEngineController {
         throw badRequest(`Esta factura ya ha sido contabilizada (asiento: ${entryExistente.id}).`);
       }
 
-      // Transacción atómica: crear asiento + líneas + VATBook + marcar factura ACCOUNTED
+      // Transacción atómica: crear asiento + líneas + VATBook
       const result = await prisma.$transaction(async (tx) => {
         const asiento = await accountingEngineService.contabilizarFacturaIngreso(
           companyId,
@@ -97,11 +99,9 @@ export class AccountingEngineController {
           tx,
         );
 
-        // Marcar factura como contabilizada dentro de la misma transacción
-        await tx.incomeInvoice.update({
-          where: { id: invoiceId },
-          data: { estado: 'ACCOUNTED' },
-        });
+        // El `estado` de una factura de venta es su estado de COBRO (PENDING,
+        // PAID, OVERDUE): contabilizarla no lo cambia. Antes se ponia ACCOUNTED y
+        // la factura dejaba de verse como pendiente de cobro.
 
         return asiento;
       });
@@ -167,10 +167,12 @@ export class AccountingEngineController {
         throw notFound(`Factura de gasto ${invoiceId} no encontrada.`);
       }
 
-      // Validar estado contabilizable
-      if (!['DRAFT', 'CONFIRMED'].includes(factura.estado)) {
+      // Validar estado contabilizable. Las facturas de gasto se crean PENDING u
+      // OVERDUE (segun su vencimiento): tambien se contabilizan. Solo se rechaza
+      // la que ya esta contabilizada.
+      if (factura.estado === 'ACCOUNTED') {
         throw badRequest(
-          `La factura de gasto está en estado "${factura.estado}" y no puede contabilizarse. Solo se permiten DRAFT o CONFIRMED.`,
+          `La factura de gasto está en estado "${factura.estado}" (ya contabilizada) y no puede contabilizarse otra vez.`,
         );
       }
 
@@ -180,6 +182,7 @@ export class AccountingEngineController {
           companyId,
           invoiceId,
           invoiceType: 'GASTO',
+          origen: { not: 'TESORERIA' },
           estado: { in: ['POSTED', 'PENDING_REVIEW', 'DRAFT'] },
         },
       });

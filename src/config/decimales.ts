@@ -55,6 +55,9 @@ export const importesComoNumero = Prisma.defineExtension({
     cobro: {
       importe: { needs: { importe: true }, compute: (r) => aNumero(r.importe) },
     },
+    invoicePayment: {
+      importe: { needs: { importe: true }, compute: (r) => aNumero(r.importe) },
+    },
     incomeInvoice: {
       baseTotal: { needs: { baseTotal: true }, compute: (r) => aNumero(r.baseTotal) },
       ivaTotal: { needs: { ivaTotal: true }, compute: (r) => aNumero(r.ivaTotal) },

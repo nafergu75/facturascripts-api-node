@@ -479,8 +479,14 @@ export function leerBalanceDeFilas(filas: unknown[][], opciones: OpcionesLectura
 
   // Si el fichero trae a la vez la cuenta 430 y sus subcuentas 4300000001...,
   // la de nivel superior es un total: se quita para no contar dos veces.
-  const codigos = [...porCodigo.keys()];
-  const agregadas = codigos.filter((c) => codigos.some((o) => o !== c && o.length > c.length && o.startsWith(c)));
+  // Ordenados, las subcuentas de una cuenta van justo detras de ella: basta con
+  // mirar la siguiente (antes se comparaba cada una con todas, y un balance de
+  // decenas de miles de subcuentas tardaba decenas de segundos).
+  const codigos = [...porCodigo.keys()].sort();
+  const agregadas = codigos.filter((c, i) => {
+    const sig = codigos[i + 1];
+    return sig !== undefined && sig.length > c.length && sig.startsWith(c);
+  });
   for (const c of agregadas) porCodigo.delete(c);
   if (agregadas.length) {
     avisos.push(`Se han ignorado ${agregadas.length} cuenta(s) de nivel superior (${agregadas.slice(0, 5).join(', ')}${agregadas.length > 5 ? '...' : ''}) porque el fichero trae también sus subcuentas.`);

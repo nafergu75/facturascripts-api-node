@@ -28,6 +28,7 @@ import {
   previsualizarDiario,
   type ParteComparativo,
 } from '../services/puestaEnMarcha/puestaEnMarcha.service';
+import { borrarSubida, reensamblarSubida, recibirTrozo } from '../services/puestaEnMarcha/subidasTrozos';
 
 type ConFichero = Request & { file?: { buffer: Buffer; originalname: string } };
 
@@ -54,17 +55,36 @@ function opcionesLectura<C extends string>(body: Record<string, unknown>): Opcio
   };
 }
 
-/** Saldos: del fichero (campo "archivo") o ya mapeados (campo "cuentas", JSON). */
-function entradaSaldos(req: ConFichero): { lectura?: LecturaBalance; cuentas?: ReturnType<typeof cuentasDesdeJson> } {
+/**
+ * El fichero de la peticion: subido directamente (campo "archivo") o ya subido
+ * por trozos (campo "subidaId", ver subidasTrozos.ts). Null si no hay ninguno.
+ */
+async function ficheroDe(req: ConFichero): Promise<{ buffer: Buffer; originalname: string } | null> {
+  if (req.file) return req.file;
+  const subidaId = (req.body ?? {}).subidaId;
+  if (subidaId) return reensamblarSubida(req.companyId!, subidaId);
+  return null;
+}
+
+/** Tras confirmar, los trozos ya no hacen falta. */
+async function limpiarSubida(req: ConFichero): Promise<void> {
+  const subidaId = (req.body ?? {}).subidaId;
+  if (!req.file && subidaId) await borrarSubida(req.companyId!, subidaId);
+}
+
+/** Saldos: del fichero (campo "archivo" o "subidaId") o ya mapeados (campo "cuentas", JSON). */
+async function entradaSaldos(req: ConFichero): Promise<{ lectura?: LecturaBalance; cuentas?: ReturnType<typeof cuentasDesdeJson> }> {
   const body = (req.body ?? {}) as Record<string, unknown>;
-  if (req.file) return { lectura: leerBalance(req.file.buffer, req.file.originalname, opcionesLectura<CampoBalance>(body)) };
+  const f = await ficheroDe(req);
+  if (f) return { lectura: leerBalance(f.buffer, f.originalname, opcionesLectura<CampoBalance>(body)) };
   if (body.cuentas !== undefined) return { cuentas: cuentasDesdeJson(body.cuentas) };
   throw badRequest('Adjunta el fichero en el campo "archivo".');
 }
 
-function lecturaDiario(req: ConFichero) {
-  if (!req.file) throw badRequest('Adjunta el fichero del diario o del mayor en el campo "archivo".');
-  return leerDiario(req.file.buffer, req.file.originalname, opcionesLectura<CampoDiario>((req.body ?? {}) as Record<string, unknown>));
+async function lecturaDiario(req: ConFichero) {
+  const f = await ficheroDe(req);
+  if (!f) throw badRequest('Adjunta el fichero del diario o del mayor en el campo "archivo".');
+  return leerDiario(f.buffer, f.originalname, opcionesLectura<CampoDiario>((req.body ?? {}) as Record<string, unknown>));
 }
 
 /**
@@ -88,18 +108,36 @@ function ejercicioDe(raw: unknown): number {
 }
 
 export const puestaEnMarchaController = {
+  /** POST /subidas — un trozo de un fichero grande (campo "trozo"). */
+  subirTrozo: asyncHandler(async (req, res) => {
+    const b = (req.body ?? {}) as Record<string, unknown>;
+    const f = (req as ConFichero).file;
+    sendOk(
+      res,
+      await recibirTrozo(req.companyId!, { subidaId: b.subidaId as string | undefined, indice: b.indice, total: b.total, nombre: b.nombre, tamano: b.tamano, hash: b.hash }, f?.buffer),
+      undefined,
+      201,
+    );
+  }),
+
+  /** DELETE /subidas/:subidaId — descarta una subida que no se va a usar. */
+  descartarSubida: asyncHandler(async (req, res) => {
+    await borrarSubida(req.companyId!, req.params.subidaId);
+    sendOk(res, { descartada: true });
+  }),
+
   estado: asyncHandler(async (req, res) => {
     sendOk(res, await estadoPuestaEnMarcha(req.companyId!));
   }),
 
   vistaApertura: asyncHandler(async (req, res) => {
     const b = req.body ?? {};
-    sendOk(res, await conMapeo(() => previsualizarApertura(req.companyId!, entradaSaldos(req as ConFichero), { ejercicio: b.ejercicio, fecha: b.fecha, reemplazar: si(b.reemplazar) })));
+    sendOk(res, await conMapeo(async () => previsualizarApertura(req.companyId!, await entradaSaldos(req as ConFichero), { ejercicio: b.ejercicio, fecha: b.fecha, reemplazar: si(b.reemplazar) })));
   }),
 
   confirmarApertura: asyncHandler(async (req, res) => {
     const b = req.body ?? {};
-    const r = await confirmarApertura(req.companyId!, entradaSaldos(req as ConFichero), {
+    const r = await confirmarApertura(req.companyId!, await entradaSaldos(req as ConFichero), {
       ejercicio: b.ejercicio,
       fecha: b.fecha,
       reemplazar: si(b.reemplazar),
@@ -113,6 +151,7 @@ export const puestaEnMarchaController = {
       resourceId: r.asiento.id,
       meta: { ejercicio: r.vista.ejercicio, numero: r.asiento.numero, cuentas: r.vista.cuentas.length, anulados: r.anulados },
     });
+    await limpiarSubida(req as ConFichero);
     sendOk(res, r, undefined, 201);
   }),
 
@@ -127,8 +166,8 @@ export const puestaEnMarchaController = {
     const b = req.body ?? {};
     sendOk(
       res,
-      await conMapeo(() =>
-        previsualizarDiario(req.companyId!, lecturaDiario(req as ConFichero), {
+      await conMapeo(async () =>
+        previsualizarDiario(req.companyId!, await lecturaDiario(req as ConFichero), {
           ejercicio: b.ejercicio,
           agrupacion: (b.agrupacion || 'auto') as Agrupacion,
           incluirEspeciales: si(b.incluirEspeciales),
@@ -140,7 +179,7 @@ export const puestaEnMarchaController = {
 
   confirmarDiario: asyncHandler(async (req, res) => {
     const b = req.body ?? {};
-    const r = await confirmarDiario(req.companyId!, lecturaDiario(req as ConFichero), {
+    const r = await confirmarDiario(req.companyId!, await lecturaDiario(req as ConFichero), {
       ejercicio: b.ejercicio,
       agrupacion: (b.agrupacion || 'auto') as Agrupacion,
       incluirEspeciales: si(b.incluirEspeciales),
@@ -154,6 +193,7 @@ export const puestaEnMarchaController = {
       resourceId: String(r.vista.ejercicio),
       meta: { asientos: r.asientosCreados, anulados: r.anulados, cuentasCreadas: r.cuentasCreadas },
     });
+    await limpiarSubida(req as ConFichero);
     sendOk(res, r, undefined, 201);
   }),
 
@@ -166,12 +206,13 @@ export const puestaEnMarchaController = {
 
   vistaComparativo: asyncHandler(async (req, res) => {
     const b = req.body ?? {};
-    sendOk(res, await conMapeo(() => previsualizarComparativo(req.companyId!, entradaSaldos(req as ConFichero), { ejercicio: b.ejercicio, parte: (b.parte || 'todo') as ParteComparativo })));
+    sendOk(res, await conMapeo(async () => previsualizarComparativo(req.companyId!, await entradaSaldos(req as ConFichero), { ejercicio: b.ejercicio, parte: (b.parte || 'todo') as ParteComparativo })));
   }),
 
   confirmarComparativo: asyncHandler(async (req, res) => {
     const b = req.body ?? {};
-    const r = await confirmarComparativo(req.companyId!, entradaSaldos(req as ConFichero), { ejercicio: b.ejercicio, parte: (b.parte || 'todo') as ParteComparativo });
+    const r = await confirmarComparativo(req.companyId!, await entradaSaldos(req as ConFichero), { ejercicio: b.ejercicio, parte: (b.parte || 'todo') as ParteComparativo });
+    await limpiarSubida(req as ConFichero);
     sendOk(res, r, undefined, 201);
   }),
 

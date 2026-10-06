@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { incomeInvoicesController } from '../controllers/income-invoices.controller';
 import { authorize } from '../middleware/authorize.middleware';
+import { cobrosController } from '../controllers/cobrosPagos.controller';
 
 const router = Router({ mergeParams: true });
 
@@ -46,6 +47,17 @@ router.get('/:id/pdf', incomeInvoicesController.pdf);
  * PATCH /api/invoices/income/:id/status
  */
 router.patch('/:id/status', authorize('ventas:write'), incomeInvoicesController.cambiarEstado);
+
+/**
+ * Cobros de la factura (parciales o totales), cada uno con su asiento
+ * 572/570 contra 430. Anular deja el cobro ANULADO y su asiento REVERSED.
+ * GET  /:id/cobros
+ * POST /:id/cobros               { fecha, importe, cuentaBancariaId | caja, nota }
+ * POST /:id/cobros/:cobroId/anular { fecha? } (solo si el periodo del cobro esta cerrado)
+ */
+router.get('/:id/cobros', authorize('ventas:read', 'contabilidad:read'), cobrosController.listar);
+router.post('/:id/cobros', authorize('ventas:write', 'contabilidad:write'), cobrosController.registrar);
+router.post('/:id/cobros/:cobroId/anular', authorize('ventas:write', 'contabilidad:write'), cobrosController.anular);
 
 /**
  * Crear factura rectificativa (abono).
