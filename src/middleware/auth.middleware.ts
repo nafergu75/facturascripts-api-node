@@ -27,7 +27,7 @@ export const authMiddleware: RequestHandler = (req, _res, next) => {
     if (config.allowInsecureDevAuth) {
       try {
         // Intenta verificar primero
-        payload = jwt.verify(token, config.jwtSecret) as jwt.JwtPayload;
+        payload = jwt.verify(token, config.jwtSecret, { algorithms: ['HS256'] }) as jwt.JwtPayload;
       } catch {
         // Atajo de desarrollo: decodifica sin validar firma
         const decoded = jwt.decode(token);
@@ -38,7 +38,12 @@ export const authMiddleware: RequestHandler = (req, _res, next) => {
       }
     } else {
       // Modo normal: validacion estricta de la firma
-      payload = jwt.verify(token, config.jwtSecret) as jwt.JwtPayload;
+      payload = jwt.verify(token, config.jwtSecret, { algorithms: ['HS256'] }) as jwt.JwtPayload;
+    }
+
+    // Un refresh token solo sirve para /auth/refresh, nunca como token de acceso.
+    if (payload.type === 'refresh') {
+      return next(unauthorized('Usa el token de acceso, no el de refresco.'));
     }
 
     if (!payload.sub && !payload.userId) {
@@ -49,6 +54,7 @@ export const authMiddleware: RequestHandler = (req, _res, next) => {
       userId: String(payload.sub ?? payload.userId),
       email: payload.email as string | undefined,
       roles: (payload.roles as string[] | undefined) ?? [],
+      rolesPorEmpresa: payload.rolesPorEmpresa as Record<string, string[]> | undefined,
       companies: ((payload.companies as Array<string | number> | undefined) ?? []).map(String),
       esAdminGlobal: payload.esAdminGlobal === true,
       empresaSeleccionada: payload.empresaSeleccionada as string | undefined,

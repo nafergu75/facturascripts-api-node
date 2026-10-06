@@ -11,6 +11,22 @@ function permisosEfectivos(roles: string[], esAdminGlobal: boolean): string[] {
   return esAdminGlobal ? ['*'] : permisosDeRoles(roles);
 }
 
+/** Agrupa las membresias del usuario: { companyId: [roles] }. */
+export function rolesPorEmpresaDe(memberships: Array<{ companyId: string; role: unknown }>): Record<string, string[]> {
+  const mapa: Record<string, string[]> = {};
+  for (const m of memberships) {
+    const roles = (mapa[m.companyId] ??= []);
+    const rol = String(m.role);
+    if (!roles.includes(rol)) roles.push(rol);
+  }
+  return mapa;
+}
+
+/** Permisos por empresa, para que el frontend sepa que puede hacer en cada una. */
+function permisosPorEmpresaDe(porEmpresa: Record<string, string[]>, esAdminGlobal: boolean): Record<string, string[]> {
+  return Object.fromEntries(Object.entries(porEmpresa).map(([id, roles]) => [id, permisosEfectivos(roles, esAdminGlobal)]));
+}
+
 export interface LoginInput {
   email: string;
   password: string;
@@ -25,6 +41,8 @@ export interface AuthClaims {
   userId: string;
   email: string;
   roles: string[];
+  /** Roles por empresa. Sin esto, admin en una empresa seria admin en todas. */
+  rolesPorEmpresa?: Record<string, string[]>;
   companies: string[];
   /** Admin global de plataforma: acceso a todas las empresas + administracion. */
   esAdminGlobal?: boolean;
@@ -53,6 +71,8 @@ export interface LoginResult {
      * menu con ellos: `roles` son nombres de rol ('contable'), no permisos.
      */
     permisos: string[];
+    /** Permisos efectivos en cada empresa del usuario. */
+    permisosPorEmpresa: Record<string, string[]>;
   };
   empresas: EmpresaLogin[];
   empresaSeleccionada?: string;
@@ -91,13 +111,23 @@ export const authService = {
       empresaSeleccionada = elegida?.companyId;
     }
 
-    const token = this.generateToken({ userId: user.id, email: user.email, roles, companies, esAdminGlobal, empresaSeleccionada });
+    const rolesPorEmpresa = rolesPorEmpresaDe(user.memberships);
+    const token = this.generateToken({ userId: user.id, email: user.email, roles, rolesPorEmpresa, companies, esAdminGlobal, empresaSeleccionada });
     const refreshToken = this.signRefreshToken(user.id);
 
     return {
       token,
       refreshToken,
-      user: { id: user.id, email: user.email, roles, companies, esAdminGlobal, permisos: permisosEfectivos(roles, esAdminGlobal) },
+      user: {
+        id: user.id,
+        email: user.email,
+        roles,
+        companies,
+        esAdminGlobal,
+        // Permisos en la empresa activa (la seleccionada o la primera), no la union.
+        permisos: permisosEfectivos(rolesPorEmpresa[empresaSeleccionada ?? companies[0]] ?? [], esAdminGlobal),
+        permisosPorEmpresa: permisosPorEmpresaDe(rolesPorEmpresa, esAdminGlobal),
+      },
       empresas,
       empresaSeleccionada,
     };
@@ -151,9 +181,23 @@ export const authService = {
       });
     }
 
-    const token = this.generateToken({ userId: user.id, email: user.email, roles, companies, esAdminGlobal });
+    const rolesPorEmpresa = rolesPorEmpresaDe(user.memberships);
+    const token = this.generateToken({ userId: user.id, email: user.email, roles, rolesPorEmpresa, companies, esAdminGlobal });
     const nuevoRefresh = this.signRefreshToken(user.id);
-    return { token, refreshToken: nuevoRefresh, user: { id: user.id, email: user.email, roles, companies, esAdminGlobal, permisos: permisosEfectivos(roles, esAdminGlobal) }, empresas };
+    return {
+      token,
+      refreshToken: nuevoRefresh,
+      user: {
+        id: user.id,
+        email: user.email,
+        roles,
+        companies,
+        esAdminGlobal,
+        permisos: permisosEfectivos(rolesPorEmpresa[companies[0]] ?? [], esAdminGlobal),
+        permisosPorEmpresa: permisosPorEmpresaDe(rolesPorEmpresa, esAdminGlobal),
+      },
+      empresas,
+    };
   },
 
   /** Revoca un refresh token (logout). Idempotente: si ya no tiene jti o ya esta revocado, no falla. */
@@ -185,6 +229,7 @@ export const authService = {
         sub: user.userId,
         email: user.email,
         roles: user.roles,
+        rolesPorEmpresa: user.rolesPorEmpresa,
         companies: user.companies,
         esAdminGlobal: user.esAdminGlobal ?? false,
         empresaSeleccionada: user.empresaSeleccionada,
@@ -215,13 +260,23 @@ export const authService = {
     }));
     const empresaSeleccionada = empresas[0]?.companyId;
 
-    const token = this.generateToken({ userId: user.id, email: user.email, roles, companies, esAdminGlobal, empresaSeleccionada });
+    const rolesPorEmpresa = rolesPorEmpresaDe(user.memberships);
+    const token = this.generateToken({ userId: user.id, email: user.email, roles, rolesPorEmpresa, companies, esAdminGlobal, empresaSeleccionada });
     const refreshToken = this.signRefreshToken(user.id);
 
     return {
       token,
       refreshToken,
-      user: { id: user.id, email: user.email, roles, companies, esAdminGlobal, permisos: permisosEfectivos(roles, esAdminGlobal) },
+      user: {
+        id: user.id,
+        email: user.email,
+        roles,
+        companies,
+        esAdminGlobal,
+        // Permisos en la empresa activa (la seleccionada o la primera), no la union.
+        permisos: permisosEfectivos(rolesPorEmpresa[empresaSeleccionada ?? companies[0]] ?? [], esAdminGlobal),
+        permisosPorEmpresa: permisosPorEmpresaDe(rolesPorEmpresa, esAdminGlobal),
+      },
       empresas,
       empresaSeleccionada,
     };

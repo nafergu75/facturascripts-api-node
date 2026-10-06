@@ -22,7 +22,13 @@ export function authorize(permisoNecesario: string): RequestHandler {
     // El admin global tiene acceso a todo lo demas.
     if (req.user.esAdminGlobal) return next();
 
-    const permisos = permisosDeRoles(req.user.roles ?? []);
+    // En rutas de empresa cuentan solo los roles en ESA empresa. Tokens antiguos
+    // (sin rolesPorEmpresa) y rutas sin empresa usan la lista general.
+    const roles =
+      req.companyId && req.user.rolesPorEmpresa
+        ? (req.user.rolesPorEmpresa[req.companyId] ?? [])
+        : (req.user.roles ?? []);
+    const permisos = permisosDeRoles(roles);
     if (usuarioTienePermiso(permisos, permisoNecesario)) return next();
     return next(forbidden(`Falta permiso: ${permisoNecesario}`));
   };
