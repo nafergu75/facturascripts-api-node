@@ -182,7 +182,7 @@ export async function renderizarFactura(f: DatosFacturaPdf): Promise<Buffer> {
 
   const nombreEmpresa = f.emisor?.denominacion?.trim() || 'Falta la denominación de la empresa';
   const nifEmpresa = nif(f.emisor?.nif) || 'falta el NIF';
-  const refDoc = esBorrador ? 'Borrador' : `${tipoDoc} ${f.numeroCompleto ?? ''}`.trim();
+  const refDoc = esBorrador ? `${tipoDoc} (borrador)` : `${tipoDoc} ${f.numeroCompleto ?? ''}`.trim();
 
   // ---------- Paginas ----------
   const paginas: PDFPage[] = [];
@@ -237,9 +237,10 @@ export async function renderizarFactura(f: DatosFacturaPdf): Promise<Buffer> {
   }
 
   // ---------- Cabecera: tipo de documento y numero ----------
-  texto(p, esBorrador ? 'Borrador' : tipoDoc, MARGEN, y, { tam: 24, fuente: negrita });
+  // El borrador es igual que la factura: solo cambian el numero (aun no lo tiene) y la marca de agua.
+  texto(p, tipoDoc, MARGEN, y, { tam: 24, fuente: negrita });
   if (esBorrador) {
-    texto(p, 'Sin número · sin validez fiscal', derecha, yNumero, { tam: 10, fuente: negrita, color: GRIS, alinear: 'der' });
+    texto(p, 'Borrador · sin número ni validez fiscal', derecha, yNumero, { tam: 10, fuente: negrita, color: GRIS, alinear: 'der' });
   } else {
     texto(p, f.numeroCompleto ?? '', derecha, yNumero, { tam: 13, fuente: monoNegrita, alinear: 'der' });
     const wNum = monoNegrita.widthOfTextAtSize(f.numeroCompleto ?? '', 13);
@@ -520,12 +521,13 @@ export async function generarPdfFactura(companyId: string, id: string): Promise<
   });
   if (!factura) throw notFound('Factura no encontrada.');
 
-  const [empresa, original, cuenta] = await Promise.all([
+  const [empresa, original, cuenta, compania] = await Promise.all([
     prisma.legalConfig.findUnique({ where: { companyId } }).catch(() => null),
     factura.facturaOriginalId
       ? prisma.incomeInvoice.findFirst({ where: { id: factura.facturaOriginalId, companyId } })
       : Promise.resolve(null),
     prisma.bankAccount.findFirst({ where: { companyId, activa: true }, orderBy: { createdAt: 'asc' } }).catch(() => null),
+    prisma.company.findUnique({ where: { id: companyId }, select: { name: true } }).catch(() => null),
   ]);
 
   const c = factura.customer;
@@ -564,14 +566,15 @@ export async function generarPdfFactura(companyId: string, id: string): Promise<
       provincia: c.provincia,
       pais: c.pais,
     },
-    emisor: empresa
+    // Sin denominacion en los datos de la sociedad, al menos el nombre con el que esta dada de alta.
+    emisor: empresa || compania
       ? {
-          denominacion: empresa.denominacion,
-          nif: empresa.nif,
-          domicilioSocial: empresa.domicilioSocial,
-          codigoPostal: empresa.codigoPostal,
-          municipio: empresa.municipio,
-          provincia: empresa.provincia,
+          denominacion: empresa?.denominacion?.trim() || compania?.name || null,
+          nif: empresa?.nif ?? null,
+          domicilioSocial: empresa?.domicilioSocial ?? null,
+          codigoPostal: empresa?.codigoPostal ?? null,
+          municipio: empresa?.municipio ?? null,
+          provincia: empresa?.provincia ?? null,
         }
       : null,
     original: original ? { numeroCompleto: original.numeroCompleto, fechaEmision: original.fechaEmision } : null,
@@ -584,4 +587,26 @@ export async function generarPdfFactura(companyId: string, id: string): Promise<
       ? `borrador_factura_${factura.id.slice(-6)}.pdf`
       : `factura_${factura.numeroCompleto}.pdf`;
   return { nombre: nombre.replace(/[^\w.-]/g, '_'), contenido };
+}
+
+/**
+ * Datos que faltan para que la factura salga completa (se avisan en pantalla).
+ * No bloquean el borrador; el NIF y la denominacion si bloquean la emision.
+ */
+export async function avisosFactura(companyId: string, id: string): Promise<string[]> {
+  const factura = await prisma.incomeInvoice.findFirst({ where: { id, companyId }, include: { customer: true } });
+  if (!factura) throw notFound('Factura no encontrada.');
+  const [empresa, cuenta] = await Promise.all([
+    prisma.legalConfig.findUnique({ where: { companyId }, select: { denominacion: true, nif: true, domicilioSocial: true, logoMime: true } }),
+    prisma.bankAccount.findFirst({ where: { companyId, activa: true }, select: { id: true } }),
+  ]);
+  const avisos: string[] = [];
+  if (!empresa?.denominacion?.trim()) avisos.push('EMISOR_DENOMINACION');
+  if (!empresa?.nif?.trim()) avisos.push('EMISOR_NIF');
+  if (!empresa?.domicilioSocial?.trim()) avisos.push('EMISOR_DOMICILIO');
+  if (!empresa?.logoMime) avisos.push('EMISOR_LOGO');
+  const c = factura.customer;
+  if (!c.direccion?.trim() || !(c.cp?.trim() || c.municipio?.trim())) avisos.push('CLIENTE_DIRECCION');
+  if (factura.formaPago === 'TRANSFERENCIA' && !cuenta) avisos.push('CUENTA_BANCARIA');
+  return avisos;
 }

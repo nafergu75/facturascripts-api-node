@@ -41,6 +41,9 @@ router.post('/:id/duplicar', authorize('ventas:write'), incomeInvoicesController
 /** Descargar la factura en PDF. */
 router.get('/:id/pdf', incomeInvoicesController.pdf);
 
+/** Datos que faltan en la factura (emisor, cliente, IBAN, logo). */
+router.get('/:id/avisos', incomeInvoicesController.avisos);
+
 /**
  * Cambiar estado de factura (PENDING -> PAID, etc.).
  * PATCH /api/invoices/income/:id/status

@@ -2,7 +2,7 @@ import { asyncHandler } from '../utils/async-handler';
 import { sendOk, sendMessage } from '../utils/response';
 import { badRequest, notImplemented } from '../utils/http-errors';
 import { incomeInvoicesService, CrearFacturaIngresoDTO, ESTADOS_COBRO } from '../services/income-invoices.service';
-import { generarPdfFactura } from '../services/facturaPdf.service';
+import { avisosFactura, generarPdfFactura } from '../services/facturaPdf.service';
 import { registrarAuditoria } from '../services/auditoria.service';
 import { accountingHooksService } from '../services/accounting-hooks.service';
 import { archivarVentaSinRomper } from '../services/archivoFacturas.service';
@@ -97,6 +97,11 @@ export const incomeInvoicesController = {
   duplicar: asyncHandler(async (req, res) => {
     const factura = await incomeInvoicesService.duplicar(req.companyId!, req.params.id);
     sendOk(res, { invoice: factura }, undefined, 201);
+  }),
+
+  /** GET /:id/avisos — datos que faltan para que la factura salga completa. */
+  avisos: asyncHandler(async (req, res) => {
+    sendOk(res, { avisos: await avisosFactura(req.companyId!, req.params.id) });
   }),
 
   /** GET /:id/pdf — la factura en PDF (o el borrador, marcado como tal). */
