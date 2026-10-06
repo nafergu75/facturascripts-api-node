@@ -1,9 +1,25 @@
 import { asyncHandler } from '../utils/async-handler';
 import { sendOk, sendMessage } from '../utils/response';
 import { badRequest, notImplemented } from '../utils/http-errors';
-import { incomeInvoicesService, CrearFacturaIngresoDTO } from '../services/income-invoices.service';
+import { incomeInvoicesService, CrearFacturaIngresoDTO, ESTADOS_COBRO } from '../services/income-invoices.service';
+import { generarPdfFactura } from '../services/facturaPdf.service';
 import { registrarAuditoria } from '../services/auditoria.service';
 import { accountingHooksService } from '../services/accounting-hooks.service';
+
+/**
+ * Contabiliza una factura recien emitida. No es critico: si falla (p. ej. sin
+ * plan contable), la factura queda emitida y se puede contabilizar a mano.
+ */
+async function contabilizar(companyId: string, invoiceId: string): Promise<void> {
+  try {
+    await accountingHooksService.onIncomeInvoiceConfirmed(companyId, invoiceId);
+  } catch (err) {
+    console.error(
+      `Aviso: no se pudo contabilizar automáticamente la factura ${invoiceId}:`,
+      err instanceof Error ? err.message : String(err),
+    );
+  }
+}
 
 export const incomeInvoicesController = {
   /**
@@ -31,7 +47,60 @@ export const incomeInvoicesController = {
       },
     });
 
+    // Si se ha emitido directamente (no borrador), se contabiliza como al finalizar.
+    if (factura.estadoDocumento === 'FINAL') await contabilizar(req.companyId!, factura.id);
+
     sendOk(res, { invoice: factura }, undefined, 201);
+  }),
+
+  /** PUT /:id — modifica un borrador (las emitidas no se tocan). */
+  actualizar: asyncHandler(async (req, res) => {
+    const factura = await incomeInvoicesService.actualizarBorrador(req.companyId!, req.params.id, req.body ?? {});
+    sendOk(res, { invoice: factura });
+  }),
+
+  /** DELETE /:id — borra un borrador. */
+  eliminar: asyncHandler(async (req, res) => {
+    await incomeInvoicesService.eliminarBorrador(req.companyId!, req.params.id);
+    await registrarAuditoria({
+      userId: req.user?.userId || 'unknown',
+      companyId: req.companyId,
+      action: 'BORRAR_BORRADOR_FACTURA',
+      resourceType: 'INCOME_INVOICE',
+      resourceId: req.params.id,
+    });
+    sendMessage(res, 'Borrador eliminado.');
+  }),
+
+  /** POST /:id/finalizar — emite el borrador: numero de la serie y datos congelados. */
+  finalizar: asyncHandler(async (req, res) => {
+    const factura = await incomeInvoicesService.finalizar(req.companyId!, req.params.id, {
+      fechaEmision: req.body?.fechaEmision,
+    });
+    await registrarAuditoria({
+      userId: req.user?.userId || 'unknown',
+      companyId: req.companyId,
+      action: 'EMITIR_FACTURA_INGRESO',
+      resourceType: 'INCOME_INVOICE',
+      resourceId: factura.id,
+      meta: { numeroCompleto: factura.numeroCompleto, total: factura.totalFactura },
+    });
+    await contabilizar(req.companyId!, factura.id);
+    sendOk(res, { invoice: factura });
+  }),
+
+  /** POST /:id/duplicar — copia la factura en un borrador nuevo. */
+  duplicar: asyncHandler(async (req, res) => {
+    const factura = await incomeInvoicesService.duplicar(req.companyId!, req.params.id);
+    sendOk(res, { invoice: factura }, undefined, 201);
+  }),
+
+  /** GET /:id/pdf — la factura en PDF (o el borrador, marcado como tal). */
+  pdf: asyncHandler(async (req, res) => {
+    const { nombre, contenido } = await generarPdfFactura(req.companyId!, req.params.id);
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${nombre}"`);
+    res.send(contenido);
   }),
 
   /**
@@ -41,6 +110,7 @@ export const incomeInvoicesController = {
   listar: asyncHandler(async (req, res) => {
     const resultado = await incomeInvoicesService.listar(req.companyId!, {
       estado: req.query.estado as string | undefined,
+      estadoDocumento: req.query.estadoDocumento as string | undefined,
       customerId: req.query.customerId as string | undefined,
       desde: req.query.desde as string | undefined,
       hasta: req.query.hasta as string | undefined,
@@ -66,24 +136,11 @@ export const incomeInvoicesController = {
    */
   cambiarEstado: asyncHandler(async (req, res) => {
     const nuevoEstado = String(req.body?.estado ?? '').toUpperCase();
-    if (!['DRAFT', 'PENDING', 'PAID', 'OVERDUE'].includes(nuevoEstado)) {
-      throw badRequest('Estado inválido. Usa: DRAFT, PENDING, PAID, OVERDUE');
+    if (!(ESTADOS_COBRO as readonly string[]).includes(nuevoEstado)) {
+      throw badRequest(`Estado de cobro no válido. Usa: ${ESTADOS_COBRO.join(', ')}. Para emitir un borrador, finalízalo.`);
     }
 
     const factura = await incomeInvoicesService.cambiarEstado(req.companyId!, req.params.id, nuevoEstado);
-
-    // 🔴 ENGANCHE: Contabilizar automáticamente al confirmar (PENDING)
-    if (nuevoEstado === 'PENDING') {
-      try {
-        await accountingHooksService.onIncomeInvoiceConfirmed(req.companyId!, req.params.id);
-      } catch (hookErr) {
-        // Log error but don't fail the factura confirmation
-        console.error(
-          `Aviso: Error en contabilización automática de factura ${req.params.id}:`,
-          hookErr instanceof Error ? hookErr.message : String(hookErr)
-        );
-      }
-    }
 
     await registrarAuditoria({
       userId: req.user?.userId || 'unknown',
@@ -102,11 +159,16 @@ export const incomeInvoicesController = {
    * Crear factura rectificativa (abono).
    */
   crearRectificativa: asyncHandler(async (req, res) => {
-    const factura = await incomeInvoicesService.crearRectificativa(
-      req.companyId!,
-      req.params.id,
-      req.body?.lineas,
-    );
+    const b = req.body ?? {};
+    const factura = await incomeInvoicesService.crearRectificativa(req.companyId!, req.params.id, {
+      motivo: b.motivo,
+      lineas: b.lineas,
+      tipoFactura: b.tipoFactura,
+      tipoRectificativa: b.tipoRectificativa,
+      serie: b.serie,
+      borrador: b.borrador,
+    });
+    if (factura.estadoDocumento === 'FINAL') await contabilizar(req.companyId!, factura.id);
 
     await registrarAuditoria({
       userId: req.user?.userId || 'unknown',

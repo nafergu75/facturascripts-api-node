@@ -1,5 +1,30 @@
+import type { Prisma } from '@prisma/client';
 import { badRequest, notFound } from '../utils/http-errors';
-import { prisma } from '../config/database';
+import { prisma, type TransaccionBD as Tx } from '../config/database';
+import { obtenerOCrearSerie, obtenerSeriePorDefecto, resolverCodSerieFactura } from './series.service';
+
+/**
+ * Facturas de venta.
+ *
+ * Ciclo de vida (como pide Verifactu):
+ *  - BORRADOR: sin numero, editable y borrable. No cuenta para impuestos,
+ *    informes ni contabilidad.
+ *  - FINAL: numerada en su serie (orden correlativo, sin huecos) y con sus
+ *    datos fiscales congelados. Ya no se edita ni se borra: los errores se
+ *    corrigen con una factura rectificativa en su propia serie.
+ *
+ * Aparte va `estado`, que es el estado de COBRO (PENDING, PAID, OVERDUE...).
+ */
+
+export const ESTADO_BORRADOR = 'BORRADOR';
+export const ESTADO_FINAL = 'FINAL';
+
+/** Tipos de factura de Verifactu: F1 completa, F2 simplificada, R1-R5 rectificativas. */
+export const TIPOS_FACTURA = ['F1', 'F2', 'R1', 'R2', 'R3', 'R4', 'R5'] as const;
+export type TipoFactura = (typeof TIPOS_FACTURA)[number];
+
+/** Estados de cobro que se pueden poner a mano en una factura final. */
+export const ESTADOS_COBRO = ['PENDING', 'PAID', 'OVERDUE'] as const;
 
 /**
  * DTO para crear una factura de ingreso.
@@ -20,14 +45,24 @@ export interface CrearFacturaIngresoDTO {
       email?: string;
     };
   };
-  serie: string; // Ej: "2024"
-  numero?: number; // Opcional, se autoincrementa si no se indica
+  /** Codigo de la serie. Si no se indica, la serie de facturas por defecto. */
+  serie?: string;
+  /**
+   * Solo para facturas YA emitidas fuera de la app (lector de facturas):
+   * se registran con su numero original. Al crear una factura nueva no se indica.
+   */
+  numero?: number;
   fechaEmision?: string; // YYYY-MM-DD, defecto: hoy
   fechaVencimiento?: string; // YYYY-MM-DD, defecto: fechaEmision + 15 días
   lineas: CrearLineaIngresoDTO[];
   plantillaId?: string; // Defecto: "default"
   observaciones?: string;
+  /** true: se guarda como borrador, sin numero. Por defecto se emite (final). */
+  borrador?: boolean;
+  tipoFactura?: TipoFactura;
   facturaOriginalId?: string; // Si es rectificativa
+  tipoRectificativa?: 'S' | 'I';
+  motivoRectificacion?: string;
 }
 
 export interface CrearLineaIngresoDTO {
@@ -40,13 +75,26 @@ export interface CrearLineaIngresoDTO {
   productoServicioId?: string;
 }
 
+/** Cambios admitidos en un borrador (todo opcional). */
+export type ActualizarBorradorDTO = Partial<
+  Pick<
+    CrearFacturaIngresoDTO,
+    'customer' | 'serie' | 'fechaEmision' | 'fechaVencimiento' | 'lineas' | 'observaciones' | 'tipoFactura' | 'plantillaId'
+  >
+>;
+
 export interface IncomeInvoiceResp {
   id: string;
   companyId: string;
   customerId: string;
   serie: string;
-  numero: number;
-  numeroCompleto: string;
+  numero: number | null;
+  numeroCompleto: string | null;
+  estadoDocumento: string;
+  tipoFactura: string;
+  tipoRectificativa?: string;
+  motivoRectificacion?: string;
+  finalizadaEn?: Date;
   fechaEmision: string;
   fechaVencimiento: string;
   estado: string;
@@ -76,18 +124,71 @@ export interface LineaIngresoResp {
   ivaImporte: number;
   tipoRetencion: number;
   retencionImporte: number;
+  productoServicioId?: string;
 }
 
 const round2 = (n: number): number => Math.round((n + Number.EPSILON) * 100) / 100;
+const hoyISO = (): string => new Date().toISOString().slice(0, 10);
+const FECHA_RE = /^\d{4}-\d{2}-\d{2}$/;
+const TIPOS_IVA = [0, 4, 5, 10, 21];
+
+// Tipos del cliente con extensiones: los importes ya llegan como number.
+type FacturaConLineas = NonNullable<Awaited<ReturnType<typeof buscarConLineas>>>;
+const buscarConLineas = (companyId: string, id: string) =>
+  prisma.incomeInvoice.findFirst({ where: { id, companyId }, include: { lineas: true } });
+
+function aRespuesta(f: FacturaConLineas): IncomeInvoiceResp {
+  return {
+    id: f.id,
+    companyId: f.companyId,
+    customerId: f.customerId,
+    serie: f.serie,
+    numero: f.numero,
+    numeroCompleto: f.numeroCompleto,
+    estadoDocumento: f.estadoDocumento,
+    tipoFactura: f.tipoFactura,
+    tipoRectificativa: f.tipoRectificativa ?? undefined,
+    motivoRectificacion: f.motivoRectificacion ?? undefined,
+    finalizadaEn: f.finalizadaEn ?? undefined,
+    fechaEmision: f.fechaEmision,
+    fechaVencimiento: f.fechaVencimiento,
+    estado: f.estado,
+    baseTotal: f.baseTotal,
+    ivaTotal: f.ivaTotal,
+    retencionTotal: f.retencionTotal,
+    totalFactura: f.totalFactura,
+    plantillaId: f.plantillaId,
+    observaciones: f.observaciones ?? undefined,
+    esRectificativa: f.esRectificativa,
+    facturaOriginalId: f.facturaOriginalId ?? undefined,
+    esRecurrente: f.esRecurrente,
+    createdAt: f.createdAt,
+    updatedAt: f.updatedAt,
+    lineas: f.lineas.map((l) => ({
+      id: l.id,
+      descripcion: l.descripcion,
+      cantidad: l.cantidad,
+      precioUnitario: l.precioUnitario,
+      baseLine: l.baseLine,
+      descuentoPorcentaje: l.descuentoPorcentaje,
+      descuentoImporte: l.descuentoImporte,
+      tipoIva: l.tipoIva,
+      ivaImporte: l.ivaImporte,
+      tipoRetencion: l.tipoRetencion,
+      retencionImporte: l.retencionImporte,
+      productoServicioId: l.productoServicioId ?? undefined,
+    })),
+  };
+}
 
 /**
  * Resuelve o crea el cliente. Retorna el customerId.
  */
 async function resolverCliente(
   companyId: string,
-  customerData: CrearFacturaIngresoDTO['customer'],
+  customerData: CrearFacturaIngresoDTO['customer'] | undefined,
 ): Promise<string> {
-  if (customerData.id) {
+  if (customerData?.id) {
     // Verificar que existe y pertenece a esta empresa
     const exists = await prisma.customer.findFirst({
       where: { id: customerData.id, companyId },
@@ -97,8 +198,8 @@ async function resolverCliente(
   }
 
   // Crear cliente nuevo
-  if (!customerData.nuevo?.nombreFiscal || !customerData.nuevo?.nifCif) {
-    throw badRequest('Indica customer.id o customer.nuevo con nombreFiscal y nifCif.');
+  if (!customerData?.nuevo?.nombreFiscal || !customerData?.nuevo?.nifCif) {
+    throw badRequest('Elige un cliente o indica el nombre fiscal y el NIF del cliente nuevo.');
   }
 
   const n = customerData.nuevo;
@@ -119,26 +220,40 @@ async function resolverCliente(
   return customer.id;
 }
 
-/**
- * Resuelve el siguiente número de factura para una serie.
- */
-async function resolverNumeroFactura(companyId: string, serie: string, numeroSugerido?: number): Promise<number> {
-  if (numeroSugerido) {
-    // Verificar que no exista ya
-    const exists = await prisma.incomeInvoice.findFirst({
-      where: { companyId, serie, numero: numeroSugerido },
-    });
-    if (exists) throw badRequest(`Factura ${serie}-${numeroSugerido} ya existe.`);
-    return numeroSugerido;
+/** Comprueba las lineas antes de guardarlas: una factura con datos absurdos no se emite. */
+function validarLineas(lineas: CrearLineaIngresoDTO[] | undefined): CrearLineaIngresoDTO[] {
+  if (!Array.isArray(lineas) || lineas.length === 0) {
+    throw badRequest('La factura necesita al menos una línea.');
   }
-
-  // Autoincremento: buscar el último número de esa serie
-  const ultima = await prisma.incomeInvoice.findFirst({
-    where: { companyId, serie },
-    orderBy: { numero: 'desc' },
+  lineas.forEach((l, i) => {
+    const n = i + 1;
+    if (!l || !String(l.descripcion ?? '').trim()) throw badRequest(`Línea ${n}: falta la descripción.`);
+    if (!Number.isFinite(Number(l.cantidad)) || Number(l.cantidad) === 0) {
+      throw badRequest(`Línea ${n}: la cantidad debe ser un número distinto de cero.`);
+    }
+    if (!Number.isFinite(Number(l.precioUnitario))) throw badRequest(`Línea ${n}: el precio no es un número.`);
+    const iva = l.tipoIva ?? 21;
+    if (!TIPOS_IVA.includes(Number(iva))) {
+      throw badRequest(`Línea ${n}: el IVA debe ser uno de ${TIPOS_IVA.join(', ')} %.`);
+    }
+    const desc = l.descuentoPorcentaje ?? 0;
+    if (!Number.isFinite(Number(desc)) || desc < 0 || desc > 100) {
+      throw badRequest(`Línea ${n}: el descuento debe estar entre 0 y 100 %.`);
+    }
+    const ret = l.tipoRetencion ?? 0;
+    if (!Number.isFinite(Number(ret)) || ret < 0 || ret > 50) {
+      throw badRequest(`Línea ${n}: la retención de IRPF no es válida.`);
+    }
   });
-
-  return (ultima?.numero ?? 0) + 1;
+  return lineas.map((l) => ({
+    ...l,
+    descripcion: String(l.descripcion).trim(),
+    cantidad: Number(l.cantidad),
+    precioUnitario: Number(l.precioUnitario),
+    descuentoPorcentaje: Number(l.descuentoPorcentaje ?? 0),
+    tipoIva: Number(l.tipoIva ?? 21),
+    tipoRetencion: Number(l.tipoRetencion ?? 0),
+  }));
 }
 
 /**
@@ -192,135 +307,325 @@ function calcularTotales(lineas: CrearLineaIngresoDTO[]): {
   };
 }
 
+/** Datos de las lineas listos para `lineas: { create }`, y los totales de cabecera. */
+function lineasYTotales(lineas: CrearLineaIngresoDTO[]) {
+  const { baseTotal, ivaTotal, retencionTotal, totalFactura, lineasConTotales } = calcularTotales(lineas);
+  return {
+    totales: { baseTotal, ivaTotal, retencionTotal, totalFactura },
+    crear: lineasConTotales.map((l) => ({
+      descripcion: l.descripcion,
+      cantidad: l.cantidad,
+      precioUnitario: l.precioUnitario,
+      baseLine: l.baseLine,
+      descuentoPorcentaje: l.descuentoPorcentaje ?? 0,
+      descuentoImporte: l.descuentoImporte,
+      tipoIva: l.tipoIva ?? 21,
+      ivaImporte: l.ivaImporte,
+      tipoRetencion: l.tipoRetencion ?? 0,
+      retencionImporte: l.retencionImporte,
+      productoServicioId: l.productoServicioId,
+    })),
+  };
+}
+
 /**
  * Determina el estado de la factura según la fecha de vencimiento.
  */
 function determinarEstado(fechaVencimiento: string): string {
-  const hoy = new Date().toISOString().slice(0, 10);
-  return fechaVencimiento < hoy ? 'OVERDUE' : 'PENDING';
+  return fechaVencimiento < hoyISO() ? 'OVERDUE' : 'PENDING';
+}
+
+function validarFecha(fecha: string, campo: string): string {
+  const f = fecha.slice(0, 10);
+  if (!FECHA_RE.test(f) || Number.isNaN(new Date(`${f}T00:00:00Z`).getTime())) {
+    throw badRequest(`La ${campo} no es una fecha válida (AAAA-MM-DD).`);
+  }
+  return f;
+}
+
+function sumarDias(fecha: string, dias: number): string {
+  const d = new Date(`${fecha}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + dias);
+  return d.toISOString().slice(0, 10);
+}
+
+function validarTipoFactura(tipo: string | undefined, porDefecto: TipoFactura): TipoFactura {
+  const t = (tipo ?? porDefecto).toUpperCase();
+  if (!(TIPOS_FACTURA as readonly string[]).includes(t)) {
+    throw badRequest(`Tipo de factura no válido. Usa: ${TIPOS_FACTURA.join(', ')}.`);
+  }
+  return t as TipoFactura;
+}
+
+/** Serie elegida en el DTO (o la por defecto), creandola si es un codigo antiguo. */
+async function resolverSerie(companyId: string, codigo: string | undefined, esRectificativa: boolean): Promise<string> {
+  if (esRectificativa && !codigo) {
+    const r = await obtenerSeriePorDefecto(companyId, 'RECTIFICATIVA');
+    if (!r) throw badRequest('No hay serie de rectificativas configurada.');
+    return r.codigo;
+  }
+  if (!codigo) return resolverCodSerieFactura(companyId, {});
+  const serie = await obtenerOCrearSerie(companyId, String(codigo).trim());
+  if (!serie.activa) throw badRequest(`La serie ${serie.codigo} está desactivada.`);
+  if (esRectificativa && serie.tipoDocumento !== 'RECTIFICATIVA') {
+    throw badRequest('Las rectificativas van en una serie propia de rectificativas, no en la de facturas.');
+  }
+  if (!esRectificativa && serie.tipoDocumento === 'RECTIFICATIVA') {
+    throw badRequest(`La serie ${serie.codigo} es solo para rectificativas.`);
+  }
+  return serie.codigo;
+}
+
+/**
+ * Asigna el siguiente numero de la serie DENTRO de la transaccion.
+ *
+ * El UPDATE ... SET ultimoNumero = ultimoNumero + 1 bloquea la fila de la serie
+ * hasta el final de la transaccion: dos facturas que se finalizan a la vez
+ * reciben numeros seguidos, y si algo falla despues el numero se devuelve
+ * (rollback), asi que no quedan huecos.
+ *
+ * La fecha de emision no puede ser anterior a la de la ultima factura de la
+ * serie: la numeracion tiene que ir en el mismo orden que las fechas.
+ */
+async function asignarNumero(tx: Tx, companyId: string, serie: string, fechaEmision: string): Promise<number> {
+  // Facturas anteriores a la tabla de series: el contador arranca en el mayor numero que ya exista.
+  const max = await tx.incomeInvoice.aggregate({ where: { companyId, serie }, _max: { numero: true } });
+  const mayorExistente = max._max.numero ?? 0;
+  await tx.invoiceSeries.updateMany({
+    where: { companyId, codigo: serie, ultimoNumero: { lt: mayorExistente } },
+    data: { ultimoNumero: mayorExistente },
+  });
+
+  const s = await tx.invoiceSeries.update({
+    where: { companyId_codigo: { companyId, codigo: serie } },
+    data: { ultimoNumero: { increment: 1 } },
+  });
+  if (s.ultimaFecha && fechaEmision < s.ultimaFecha) {
+    throw badRequest(
+      `La fecha de emisión (${fechaEmision}) no puede ser anterior a la de la última factura de la serie ${serie} (${s.ultimaFecha}).`,
+    );
+  }
+  await tx.invoiceSeries.update({ where: { id: s.id }, data: { ultimaFecha: fechaEmision } });
+  return s.ultimoNumero;
+}
+
+/** Carga una factura de la empresa con sus lineas, o 404. */
+async function cargar(companyId: string, id: string): Promise<FacturaConLineas> {
+  const factura = await buscarConLineas(companyId, id);
+  if (!factura) throw notFound('Factura no encontrada.');
+  return factura;
+}
+
+function exigirBorrador(f: FacturaConLineas, accion: string): void {
+  if (f.estadoDocumento !== ESTADO_BORRADOR) {
+    throw badRequest(
+      `La factura ${f.numeroCompleto ?? ''} ya está emitida y no se puede ${accion}. Para corregirla, haz una factura rectificativa.`,
+    );
+  }
 }
 
 export const incomeInvoicesService = {
   /**
-   * Crear factura de ingreso completa.
+   * Crear factura de venta: como borrador (sin numero) o ya emitida.
    */
   async crearIngreso(dto: CrearFacturaIngresoDTO): Promise<IncomeInvoiceResp> {
-    // En desarrollo, si no hay líneas, crear una automáticamente del concepto/descripción
-    let lineas = dto.lineas;
-    if (!lineas || lineas.length === 0) {
-      // Buscar si hay datos en el payload para crear línea automáticamente
-      const anyDto = dto as any;
-      const descripcion = anyDto.description || anyDto.concepto || 'Servicio general';
-      const baseAmount = anyDto.baseAmount || anyDto.base || 0;
-      const ivaPercentage = anyDto.ivaPercentage || anyDto.iva || 21;
-
-      if (baseAmount > 0) {
-        lineas = [{
-          descripcion,
-          cantidad: 1,
-          precioUnitario: baseAmount,
-          tipoIva: ivaPercentage,
-        }];
-      } else {
-        throw badRequest('La factura necesita al menos una línea o baseAmount.');
-      }
+    const lineas = validarLineas(dto.lineas);
+    const esRectificativa = !!dto.facturaOriginalId;
+    const tipoFactura = validarTipoFactura(dto.tipoFactura, esRectificativa ? 'R1' : 'F1');
+    if (esRectificativa !== tipoFactura.startsWith('R')) {
+      throw badRequest('Una factura rectificativa debe ser de tipo R1 a R5, y solo las rectificativas pueden serlo.');
     }
 
-    // 1) Resolver cliente
     const customerId = await resolverCliente(dto.companyId, dto.customer);
+    const serie = await resolverSerie(dto.companyId, dto.serie, esRectificativa);
 
-    // 2) Resolver numeración
-    const numero = await resolverNumeroFactura(dto.companyId, dto.serie, dto.numero);
-    const numeroCompleto = `${dto.serie}-${numero}`;
+    const fechaEmision = validarFecha(dto.fechaEmision ?? hoyISO(), 'fecha de emisión');
+    const fechaVencimiento = validarFecha(dto.fechaVencimiento ?? sumarDias(fechaEmision, 15), 'fecha de vencimiento');
+    if (fechaVencimiento < fechaEmision) throw badRequest('El vencimiento no puede ser anterior a la fecha de emisión.');
 
-    // 3) Resolver fechas
-    const fechaEmision = (dto.fechaEmision ?? new Date().toISOString().slice(0, 10)).slice(0, 10);
-    const fechaVencimiento = (
-      dto.fechaVencimiento ??
-      (() => {
-        const d = new Date(fechaEmision);
-        d.setDate(d.getDate() + 15);
-        return d.toISOString().slice(0, 10);
-      })()
-    ).slice(0, 10);
+    const { totales, crear } = lineasYTotales(lineas);
+    const comunes = {
+      companyId: dto.companyId,
+      customerId,
+      serie,
+      fechaEmision,
+      fechaVencimiento,
+      tipoFactura,
+      ...totales,
+      plantillaId: dto.plantillaId || 'default',
+      observaciones: dto.observaciones,
+      esRectificativa,
+      facturaOriginalId: dto.facturaOriginalId,
+      tipoRectificativa: esRectificativa ? (dto.tipoRectificativa ?? 'I') : null,
+      motivoRectificacion: esRectificativa ? dto.motivoRectificacion : null,
+      lineas: { create: crear },
+    };
 
-    // 4) Calcular totales
-    const { baseTotal, ivaTotal, retencionTotal, totalFactura, lineasConTotales } = calcularTotales(lineas);
+    // Borrador: sin numero, no cuenta para nada hasta que se finalice.
+    if (dto.borrador) {
+      const factura = await prisma.incomeInvoice.create({
+        data: { ...comunes, estadoDocumento: ESTADO_BORRADOR, estado: 'DRAFT' },
+        include: { lineas: true },
+      });
+      return aRespuesta(factura);
+    }
 
-    // 5) Crear factura en BD
-    const factura = await prisma.incomeInvoice.create({
-      data: {
-        companyId: dto.companyId,
-        customerId,
-        serie: dto.serie,
-        numero,
-        numeroCompleto,
-        fechaEmision,
-        fechaVencimiento,
-        estado: determinarEstado(fechaVencimiento),
-        baseTotal,
-        ivaTotal,
-        retencionTotal,
-        totalFactura,
-        plantillaId: dto.plantillaId || 'default',
-        observaciones: dto.observaciones,
-        esRectificativa: !!dto.facturaOriginalId,
-        facturaOriginalId: dto.facturaOriginalId,
-        lineas: {
-          create: lineasConTotales.map((l) => ({
-            descripcion: l.descripcion,
-            cantidad: l.cantidad,
-            precioUnitario: l.precioUnitario,
-            baseLine: l.baseLine,
-            descuentoPorcentaje: l.descuentoPorcentaje ?? 0,
-            descuentoImporte: l.descuentoImporte,
-            tipoIva: l.tipoIva ?? 21,
-            ivaImporte: l.ivaImporte,
-            tipoRetencion: l.tipoRetencion ?? 0,
-            retencionImporte: l.retencionImporte,
-            productoServicioId: l.productoServicioId,
-          })),
+    // Factura emitida fuera de la app (lector): conserva su numero original.
+    if (dto.numero) {
+      const existe = await prisma.incomeInvoice.findFirst({ where: { companyId: dto.companyId, serie, numero: dto.numero } });
+      if (existe) throw badRequest(`La factura ${serie}-${dto.numero} ya existe.`);
+      const factura = await prisma.incomeInvoice.create({
+        data: {
+          ...comunes,
+          numero: dto.numero,
+          numeroCompleto: `${serie}-${dto.numero}`,
+          estadoDocumento: ESTADO_FINAL,
+          finalizadaEn: new Date(),
+          estado: determinarEstado(fechaVencimiento),
         },
-      },
-      include: { lineas: true },
-    });
+        include: { lineas: true },
+      });
+      await prisma.invoiceSeries.updateMany({
+        where: { companyId: dto.companyId, codigo: serie, ultimoNumero: { lt: dto.numero } },
+        data: { ultimoNumero: dto.numero },
+      });
+      return aRespuesta(factura);
+    }
 
-    // 6) Mapear respuesta
-    return {
-      id: factura.id,
-      companyId: factura.companyId,
-      customerId: factura.customerId,
-      serie: factura.serie,
-      numero: factura.numero,
-      numeroCompleto: factura.numeroCompleto,
-      fechaEmision: factura.fechaEmision,
-      fechaVencimiento: factura.fechaVencimiento,
-      estado: factura.estado,
-      baseTotal: factura.baseTotal,
-      ivaTotal: factura.ivaTotal,
-      retencionTotal: factura.retencionTotal,
-      totalFactura: factura.totalFactura,
-      plantillaId: factura.plantillaId,
-      observaciones: factura.observaciones ?? undefined,
-      esRectificativa: factura.esRectificativa,
-      facturaOriginalId: factura.facturaOriginalId ?? undefined,
-      esRecurrente: factura.esRecurrente,
-      createdAt: factura.createdAt,
-      updatedAt: factura.updatedAt,
-      lineas: factura.lineas.map((l) => ({
-        id: l.id,
+    // Emision directa: numero de la serie en la misma transaccion.
+    const factura = await prisma.$transaction(async (tx) => {
+      const numero = await asignarNumero(tx, dto.companyId, serie, fechaEmision);
+      return tx.incomeInvoice.create({
+        data: {
+          ...comunes,
+          numero,
+          numeroCompleto: `${serie}-${numero}`,
+          estadoDocumento: ESTADO_FINAL,
+          finalizadaEn: new Date(),
+          estado: determinarEstado(fechaVencimiento),
+        },
+        include: { lineas: true },
+      });
+    });
+    return aRespuesta(factura);
+  },
+
+  /** Modifica un borrador. Una factura emitida no se toca. */
+  async actualizarBorrador(companyId: string, id: string, dto: ActualizarBorradorDTO): Promise<IncomeInvoiceResp> {
+    const actual = await cargar(companyId, id);
+    exigirBorrador(actual, 'modificar');
+
+    const data: Prisma.IncomeInvoiceUncheckedUpdateInput = {};
+    if (dto.customer) data.customerId = await resolverCliente(companyId, dto.customer);
+    if (dto.serie !== undefined) data.serie = await resolverSerie(companyId, dto.serie, actual.esRectificativa);
+    if (dto.tipoFactura !== undefined) {
+      const t = validarTipoFactura(dto.tipoFactura, 'F1');
+      if (actual.esRectificativa !== t.startsWith('R')) throw badRequest('El tipo no corresponde a esta factura.');
+      data.tipoFactura = t;
+    }
+    if (dto.observaciones !== undefined) data.observaciones = dto.observaciones;
+    if (dto.plantillaId !== undefined) data.plantillaId = dto.plantillaId;
+    const fechaEmision = dto.fechaEmision ? validarFecha(dto.fechaEmision, 'fecha de emisión') : actual.fechaEmision;
+    const fechaVencimiento = dto.fechaVencimiento
+      ? validarFecha(dto.fechaVencimiento, 'fecha de vencimiento')
+      : actual.fechaVencimiento;
+    if (fechaVencimiento < fechaEmision) throw badRequest('El vencimiento no puede ser anterior a la fecha de emisión.');
+    data.fechaEmision = fechaEmision;
+    data.fechaVencimiento = fechaVencimiento;
+
+    const factura = await prisma.$transaction(async (tx) => {
+      if (dto.lineas) {
+        const { totales, crear } = lineasYTotales(validarLineas(dto.lineas));
+        await tx.incomeInvoiceLine.deleteMany({ where: { invoiceId: id } });
+        Object.assign(data, totales, { lineas: { create: crear } });
+      }
+      return tx.incomeInvoice.update({ where: { id }, data, include: { lineas: true } });
+    });
+    return aRespuesta(factura);
+  },
+
+  /** Borra un borrador. Las facturas emitidas no se borran nunca. */
+  async eliminarBorrador(companyId: string, id: string): Promise<void> {
+    const actual = await cargar(companyId, id);
+    exigirBorrador(actual, 'borrar');
+    await prisma.incomeInvoice.delete({ where: { id } });
+  },
+
+  /**
+   * Emite un borrador: le da el siguiente numero de su serie y congela sus datos.
+   * La fecha de emision es la indicada o, si no, hoy.
+   */
+  async finalizar(companyId: string, id: string, opciones: { fechaEmision?: string } = {}): Promise<IncomeInvoiceResp> {
+    const actual = await cargar(companyId, id);
+    exigirBorrador(actual, 'volver a emitir');
+    if (actual.lineas.length === 0) throw badRequest('La factura no tiene líneas.');
+    if (actual.esRectificativa && !actual.motivoRectificacion?.trim()) {
+      throw badRequest('Indica el motivo de la rectificación antes de emitirla.');
+    }
+
+    const fechaEmision = validarFecha(opciones.fechaEmision ?? hoyISO(), 'fecha de emisión');
+    // Se mantienen los dias de plazo que tenia el borrador.
+    const plazo = Math.max(
+      0,
+      Math.round(
+        (new Date(`${actual.fechaVencimiento}T00:00:00Z`).getTime() - new Date(`${actual.fechaEmision}T00:00:00Z`).getTime()) /
+          86_400_000,
+      ),
+    );
+    const fechaVencimiento = sumarDias(fechaEmision, plazo);
+
+    const factura = await prisma.$transaction(async (tx) => {
+      const numero = await asignarNumero(tx, companyId, actual.serie, fechaEmision);
+      // Solo se finaliza si sigue en borrador (otra peticion podria haberse adelantado).
+      const r = await tx.incomeInvoice.updateMany({
+        where: { id, estadoDocumento: ESTADO_BORRADOR },
+        data: {
+          numero,
+          numeroCompleto: `${actual.serie}-${numero}`,
+          estadoDocumento: ESTADO_FINAL,
+          finalizadaEn: new Date(),
+          fechaEmision,
+          fechaVencimiento,
+          estado: determinarEstado(fechaVencimiento),
+        },
+      });
+      if (r.count !== 1) throw badRequest('La factura ya se había emitido.');
+      return tx.incomeInvoice.findUniqueOrThrow({ where: { id }, include: { lineas: true } });
+    });
+    return aRespuesta(factura);
+  },
+
+  /** Copia una factura (emitida o no) en un borrador nuevo, con fecha de hoy. */
+  async duplicar(companyId: string, id: string): Promise<IncomeInvoiceResp> {
+    const o = await cargar(companyId, id);
+    if (o.esRectificativa) throw badRequest('Las rectificativas no se duplican; crea una nueva desde la factura original.');
+    const plazo = Math.max(
+      0,
+      Math.round(
+        (new Date(`${o.fechaVencimiento}T00:00:00Z`).getTime() - new Date(`${o.fechaEmision}T00:00:00Z`).getTime()) / 86_400_000,
+      ),
+    );
+    const hoy = hoyISO();
+    return this.crearIngreso({
+      companyId,
+      customer: { id: o.customerId },
+      serie: o.serie,
+      fechaEmision: hoy,
+      fechaVencimiento: sumarDias(hoy, plazo),
+      tipoFactura: o.tipoFactura as TipoFactura,
+      plantillaId: o.plantillaId,
+      observaciones: o.observaciones ?? undefined,
+      borrador: true,
+      lineas: o.lineas.map((l) => ({
         descripcion: l.descripcion,
         cantidad: l.cantidad,
         precioUnitario: l.precioUnitario,
-        baseLine: l.baseLine,
         descuentoPorcentaje: l.descuentoPorcentaje,
-        descuentoImporte: l.descuentoImporte,
         tipoIva: l.tipoIva,
-        ivaImporte: l.ivaImporte,
         tipoRetencion: l.tipoRetencion,
-        retencionImporte: l.retencionImporte,
+        productoServicioId: l.productoServicioId ?? undefined,
       })),
-    };
+    });
   },
 
   /**
@@ -330,6 +635,7 @@ export const incomeInvoicesService = {
     companyId: string,
     filtros?: {
       estado?: string;
+      estadoDocumento?: string;
       customerId?: string;
       desde?: string;
       hasta?: string;
@@ -340,20 +646,23 @@ export const incomeInvoicesService = {
     const skip = filtros?.skip ?? 0;
     const take = filtros?.take ?? 20;
 
-    const where: Record<string, unknown> = { companyId };
+    const where: Prisma.IncomeInvoiceWhereInput = { companyId };
     if (filtros?.estado) where.estado = filtros.estado;
+    if (filtros?.estadoDocumento) where.estadoDocumento = filtros.estadoDocumento;
     if (filtros?.customerId) where.customerId = filtros.customerId;
     if (filtros?.desde || filtros?.hasta) {
-      where.fechaEmision = {};
-      if (filtros.desde) (where.fechaEmision as Record<string, unknown>).gte = filtros.desde;
-      if (filtros.hasta) (where.fechaEmision as Record<string, unknown>).lte = filtros.hasta;
+      where.fechaEmision = {
+        ...(filtros.desde ? { gte: filtros.desde } : {}),
+        ...(filtros.hasta ? { lte: filtros.hasta } : {}),
+      };
     }
 
     const [items, total] = await Promise.all([
       prisma.incomeInvoice.findMany({
         where,
-        include: { lineas: true, customer: true },
-        orderBy: { fechaEmision: 'desc' },
+        include: { customer: true },
+        // Los borradores primero (no tienen numero), luego por fecha y numero.
+        orderBy: [{ estadoDocumento: 'asc' }, { fechaEmision: 'desc' }, { numero: 'desc' }],
         skip,
         take,
       }),
@@ -369,6 +678,8 @@ export const incomeInvoicesService = {
         serie: f.serie,
         numero: f.numero,
         numeroCompleto: f.numeroCompleto,
+        estadoDocumento: f.estadoDocumento,
+        tipoFactura: f.tipoFactura,
         fechaEmision: f.fechaEmision,
         fechaVencimiento: f.fechaVencimiento,
         estado: f.estado,
@@ -377,6 +688,7 @@ export const incomeInvoicesService = {
         retencionTotal: f.retencionTotal,
         totalFactura: f.totalFactura,
         esRectificativa: f.esRectificativa,
+        facturaOriginalId: f.facturaOriginalId,
         createdAt: f.createdAt,
         updatedAt: f.updatedAt,
       })),
@@ -390,154 +702,92 @@ export const incomeInvoicesService = {
    * Obtener una factura por ID.
    */
   async obtenerPorId(companyId: string, id: string): Promise<IncomeInvoiceResp> {
-    const factura = await prisma.incomeInvoice.findFirst({
-      where: { id, companyId },
-      include: { lineas: true },
-    });
-
-    if (!factura) throw notFound('Factura no encontrada.');
-
-    return {
-      id: factura.id,
-      companyId: factura.companyId,
-      customerId: factura.customerId,
-      serie: factura.serie,
-      numero: factura.numero,
-      numeroCompleto: factura.numeroCompleto,
-      fechaEmision: factura.fechaEmision,
-      fechaVencimiento: factura.fechaVencimiento,
-      estado: factura.estado,
-      baseTotal: factura.baseTotal,
-      ivaTotal: factura.ivaTotal,
-      retencionTotal: factura.retencionTotal,
-      totalFactura: factura.totalFactura,
-      plantillaId: factura.plantillaId,
-      observaciones: factura.observaciones ?? undefined,
-      esRectificativa: factura.esRectificativa,
-      facturaOriginalId: factura.facturaOriginalId ?? undefined,
-      esRecurrente: factura.esRecurrente,
-      createdAt: factura.createdAt,
-      updatedAt: factura.updatedAt,
-      lineas: factura.lineas.map((l) => ({
-        id: l.id,
-        descripcion: l.descripcion,
-        cantidad: l.cantidad,
-        precioUnitario: l.precioUnitario,
-        baseLine: l.baseLine,
-        descuentoPorcentaje: l.descuentoPorcentaje,
-        descuentoImporte: l.descuentoImporte,
-        tipoIva: l.tipoIva,
-        ivaImporte: l.ivaImporte,
-        tipoRetencion: l.tipoRetencion,
-        retencionImporte: l.retencionImporte,
-      })),
-    };
+    return aRespuesta(await cargar(companyId, id));
   },
 
   /**
-   * Cambiar estado de la factura (ej. PENDING -> PAID).
+   * Cambiar el estado de COBRO de una factura emitida (PENDING, PAID, OVERDUE).
+   * Emitir un borrador es `finalizar`, no un cambio de estado.
    */
-  async cambiarEstado(
-    companyId: string,
-    id: string,
-    nuevoEstado: string,
-  ): Promise<IncomeInvoiceResp> {
-    const factura = await prisma.incomeInvoice.findFirst({
-      where: { id, companyId },
-      include: { lineas: true },
-    });
-
-    if (!factura) throw notFound('Factura no encontrada.');
-
+  async cambiarEstado(companyId: string, id: string, nuevoEstado: string): Promise<IncomeInvoiceResp> {
+    if (!(ESTADOS_COBRO as readonly string[]).includes(nuevoEstado)) {
+      throw badRequest(`Estado no válido. Usa: ${ESTADOS_COBRO.join(', ')}.`);
+    }
+    const factura = await cargar(companyId, id);
+    if (factura.estadoDocumento !== ESTADO_FINAL) {
+      throw badRequest('La factura está en borrador: emítela antes de marcar el cobro.');
+    }
     const actualizada = await prisma.incomeInvoice.update({
       where: { id },
       data: { estado: nuevoEstado },
       include: { lineas: true },
     });
-
-    return {
-      id: actualizada.id,
-      companyId: actualizada.companyId,
-      customerId: actualizada.customerId,
-      serie: actualizada.serie,
-      numero: actualizada.numero,
-      numeroCompleto: actualizada.numeroCompleto,
-      fechaEmision: actualizada.fechaEmision,
-      fechaVencimiento: actualizada.fechaVencimiento,
-      estado: actualizada.estado,
-      baseTotal: actualizada.baseTotal,
-      ivaTotal: actualizada.ivaTotal,
-      retencionTotal: actualizada.retencionTotal,
-      totalFactura: actualizada.totalFactura,
-      plantillaId: actualizada.plantillaId,
-      observaciones: actualizada.observaciones ?? undefined,
-      esRectificativa: actualizada.esRectificativa,
-      facturaOriginalId: actualizada.facturaOriginalId ?? undefined,
-      esRecurrente: actualizada.esRecurrente,
-      createdAt: actualizada.createdAt,
-      updatedAt: actualizada.updatedAt,
-      lineas: actualizada.lineas.map((l) => ({
-        id: l.id,
-        descripcion: l.descripcion,
-        cantidad: l.cantidad,
-        precioUnitario: l.precioUnitario,
-        baseLine: l.baseLine,
-        descuentoPorcentaje: l.descuentoPorcentaje,
-        descuentoImporte: l.descuentoImporte,
-        tipoIva: l.tipoIva,
-        ivaImporte: l.ivaImporte,
-        tipoRetencion: l.tipoRetencion,
-        retencionImporte: l.retencionImporte,
-      })),
-    };
+    return aRespuesta(actualizada);
   },
 
   /**
-   * Crear factura rectificativa (abono).
+   * Crear factura rectificativa de una factura emitida, en la serie de
+   * rectificativas. Por defecto es "por diferencias" (I) y anula la original
+   * entera (lineas en negativo); con `lineas` se rectifica solo una parte.
    */
   async crearRectificativa(
     companyId: string,
     facturaOriginalId: string,
-    lineasOverride?: CrearLineaIngresoDTO[],
+    opciones: {
+      motivo?: string;
+      lineas?: CrearLineaIngresoDTO[];
+      tipoFactura?: TipoFactura;
+      tipoRectificativa?: 'S' | 'I';
+      serie?: string;
+      borrador?: boolean;
+    } = {},
   ): Promise<IncomeInvoiceResp> {
-    const original = await this.obtenerPorId(companyId, facturaOriginalId);
+    const original = await cargar(companyId, facturaOriginalId);
+    if (original.estadoDocumento !== ESTADO_FINAL) {
+      throw badRequest('Un borrador no se rectifica: modifícalo directamente.');
+    }
+    const motivo = opciones.motivo?.trim();
+    if (!motivo) throw badRequest('Indica el motivo de la rectificación.');
+    const tipoRectificativa = opciones.tipoRectificativa ?? 'I';
+    if (!['S', 'I'].includes(tipoRectificativa)) throw badRequest('Tipo de rectificativa no válido: S (sustitución) o I (diferencias).');
+    if (tipoRectificativa === 'S' && !opciones.lineas?.length) {
+      throw badRequest('Una rectificativa por sustitución necesita las líneas correctas de la factura.');
+    }
 
-    let lineas = lineasOverride;
-    if (!lineas) {
-      // Negar las líneas originales
-      lineas = original.lineas.map((l) => ({
+    const lineas =
+      opciones.lineas ??
+      original.lineas.map((l) => ({
         descripcion: l.descripcion,
         cantidad: -l.cantidad,
         precioUnitario: l.precioUnitario,
         descuentoPorcentaje: l.descuentoPorcentaje,
         tipoIva: l.tipoIva,
         tipoRetencion: l.tipoRetencion,
+        productoServicioId: l.productoServicioId ?? undefined,
       }));
-    }
 
     return this.crearIngreso({
       companyId,
       customer: { id: original.customerId },
-      serie: original.serie,
+      serie: opciones.serie,
       lineas,
-      observaciones: `Rectificativa de ${original.numeroCompleto}`,
+      tipoFactura: opciones.tipoFactura ?? 'R1',
+      tipoRectificativa,
+      motivoRectificacion: motivo,
+      observaciones: `Rectifica la factura ${original.numeroCompleto} de ${original.fechaEmision}. Motivo: ${motivo}`,
       facturaOriginalId: original.id,
+      borrador: opciones.borrador,
     });
   },
 
   /**
    * Obtener resumen de ingresos por período (para el dashboard).
+   * Solo facturas emitidas: los borradores no son ventas todavía.
    */
-  async resumenPorPeriodo(
-    companyId: string,
-    desde?: string,
-    hasta?: string,
-  ) {
-    const where: Record<string, unknown> = { companyId };
+  async resumenPorPeriodo(companyId: string, desde?: string, hasta?: string) {
+    const where: Prisma.IncomeInvoiceWhereInput = { companyId, estadoDocumento: ESTADO_FINAL };
     if (desde || hasta) {
-      where.fechaEmision = {};
-      if (desde) (where.fechaEmision as Record<string, unknown>).gte = desde;
-      if (hasta) (where.fechaEmision as Record<string, unknown>).lte = hasta;
+      where.fechaEmision = { ...(desde ? { gte: desde } : {}), ...(hasta ? { lte: hasta } : {}) };
     }
 
     const facturas = await prisma.incomeInvoice.findMany({

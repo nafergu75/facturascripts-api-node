@@ -28,6 +28,19 @@ router.get('/resumen/periodo', incomeInvoicesController.resumenPeriodo);
  */
 router.get('/:id', incomeInvoicesController.obtenerPorId);
 
+/** Modificar / borrar un borrador (las facturas emitidas no se tocan). */
+router.put('/:id', authorize('ventas:write'), incomeInvoicesController.actualizar);
+router.delete('/:id', authorize('ventas:write'), incomeInvoicesController.eliminar);
+
+/** Emitir un borrador: numero de la serie, sin huecos. */
+router.post('/:id/finalizar', authorize('ventas:write'), incomeInvoicesController.finalizar);
+
+/** Copiar una factura en un borrador nuevo. */
+router.post('/:id/duplicar', authorize('ventas:write'), incomeInvoicesController.duplicar);
+
+/** Descargar la factura en PDF. */
+router.get('/:id/pdf', incomeInvoicesController.pdf);
+
 /**
  * Cambiar estado de factura (PENDING -> PAID, etc.).
  * PATCH /api/invoices/income/:id/status

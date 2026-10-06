@@ -504,6 +504,7 @@ export class TaxModelsService {
     const clientesFacturas = await prisma.incomeInvoice.findMany({
       where: {
         companyId,
+        estadoDocumento: 'FINAL',
         fechaEmision: {
           gte: `${ejercicio}-01-01`,
           lte: `${ejercicio}-12-31`,

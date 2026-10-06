@@ -58,6 +58,9 @@ export class AccountingEngineController {
       if (!factura || factura.companyId !== companyId) {
         throw notFound(`Factura de ingreso ${invoiceId} no encontrada.`);
       }
+      if (factura.estadoDocumento !== 'FINAL') {
+        throw badRequest('La factura está en borrador: emítela antes de contabilizarla.');
+      }
 
       // Validar que no esté ya contabilizada
       const entryExistente = await prisma.journalEntry.findFirst({
@@ -85,7 +88,7 @@ export class AccountingEngineController {
             desgloseIva: desgloseIvaPorTipo(factura.lineas),
             totalFactura: factura.totalFactura,
             fechaEmision: factura.fechaEmision,
-            numeroFactura: factura.numeroCompleto,
+            numeroFactura: factura.numeroCompleto ?? '',
             clienteId: factura.customerId,
             clienteNif: factura.customer.nifCif,
             clienteNombre: factura.customer.nombreFiscal,

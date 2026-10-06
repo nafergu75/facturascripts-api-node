@@ -252,7 +252,8 @@ export async function obtenerFacturasFiscales(companyId: string, desde: string, 
 
   const [ventas, compras] = await Promise.all([
     prisma.incomeInvoice.findMany({
-      where: { companyId, estado: { not: 'DRAFT' }, fechaEmision: { gte: desde, lte: hasta } },
+      // Solo facturas emitidas: un borrador no es una venta todavía.
+      where: { companyId, estadoDocumento: 'FINAL', estado: { not: 'DRAFT' }, fechaEmision: { gte: desde, lte: hasta } },
       include: { customer: true, lineas: true },
     }),
     prisma.expenseInvoice.findMany({
@@ -263,7 +264,7 @@ export async function obtenerFacturasFiscales(companyId: string, desde: string, 
 
   for (const f of ventas) {
     out.push({
-      idFactura: f.numeroCompleto,
+      idFactura: f.numeroCompleto ?? f.id,
       tipo: 'venta',
       cifnif: f.customer?.nifCif ?? '',
       nombreTercero: f.customer?.nombreFiscal ?? '',

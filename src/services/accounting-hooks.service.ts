@@ -31,6 +31,9 @@ export class AccountingHooksService {
     if (!factura) {
       throw badRequest('Factura no encontrada para validación contable.');
     }
+    if (factura.estadoDocumento !== 'FINAL') {
+      throw badRequest('La factura está en borrador. No se contabiliza hasta emitirla.');
+    }
 
     // Validaciones mínimas
     if (!factura.customer) {
@@ -90,7 +93,7 @@ export class AccountingHooksService {
       await invoiceArchivingService.archivarFacturaIngreso(
         companyId,
         invoiceId,
-        factura.numeroCompleto
+        factura.numeroCompleto ?? invoiceId
       );
 
       // Auditoría de éxito

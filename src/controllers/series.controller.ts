@@ -2,9 +2,7 @@ import { asyncHandler } from '../utils/async-handler';
 import { sendOk } from '../utils/response';
 import { badRequest } from '../utils/http-errors';
 import { listarSeries, crearSerie, actualizarSerie } from '../services/series.service';
-import { SerieDocumento } from '../domain/series.model';
-
-const TIPOS: SerieDocumento['tipoDocumento'][] = ['FACTURA', 'PEDIDO', 'ALBARAN', 'PRESUPUESTO'];
+import { SerieDocumento, TIPOS_DOCUMENTO_SERIE as TIPOS } from '../domain/series.model';
 
 export const seriesController = {
   listar: asyncHandler(async (req, res) => {
@@ -20,7 +18,7 @@ export const seriesController = {
     const serie = await crearSerie(req.companyId!, {
       codigo: String(b.codigo),
       descripcion: b.descripcion ?? '',
-      tipoDocumento: b.tipoDocumento,
+      tipoDocumento: b.tipoDocumento as SerieDocumento['tipoDocumento'],
       activa: b.activa ?? true,
       porDefecto: b.porDefecto ?? false,
     });

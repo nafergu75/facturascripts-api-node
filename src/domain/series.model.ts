@@ -1,19 +1,29 @@
 /**
- * Serie de numeracion de documentos (factura, pedido, etc.). En FacturaScripts
- * equivale al recurso `series` (campo `codserie`). Aqui se gestiona la serie
- * elegible por el usuario al facturar.
- *
- * NOTA: companyId es STRING en toda la API (req.companyId), aunque el prompt lo
- * describiese como number. Se mantiene string por coherencia con el resto.
+ * Serie de numeracion de documentos (factura, rectificativa, presupuesto...).
+ * Se guarda en la tabla InvoiceSeries, una fila por serie y empresa.
  */
+export type TipoDocumentoSerie = 'FACTURA' | 'RECTIFICATIVA' | 'PEDIDO' | 'ALBARAN' | 'PRESUPUESTO';
+
+export const TIPOS_DOCUMENTO_SERIE: readonly TipoDocumentoSerie[] = [
+  'FACTURA',
+  'RECTIFICATIVA',
+  'PEDIDO',
+  'ALBARAN',
+  'PRESUPUESTO',
+];
+
 export interface SerieDocumento {
   id: string;
   companyId: string;
-  codigo: string; // ej: 'A', 'B2026', 'FCTA' -> mapea a FS codserie
+  codigo: string; // ej: 'A', 'R', 'B2026'
   descripcion: string;
-  tipoDocumento: 'FACTURA' | 'PEDIDO' | 'ALBARAN' | 'PRESUPUESTO';
+  tipoDocumento: TipoDocumentoSerie;
   activa: boolean;
   porDefecto: boolean;
+  /** Ultimo numero emitido en la serie (0 si aun no hay facturas finales). */
+  ultimoNumero?: number;
+  /** Fecha (YYYY-MM-DD) de la ultima factura finalizada en la serie. */
+  ultimaFecha?: string;
   creadoEn: string;
   actualizadoEn: string;
 }

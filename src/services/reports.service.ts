@@ -271,6 +271,7 @@ export class ReportsService {
     const facturas = await prisma.incomeInvoice.findMany({
       where: {
         companyId,
+        estadoDocumento: 'FINAL',
         estado: { in: ['PENDING', 'PAID'] },
         fechaEmision: {
           gte: from,

@@ -102,7 +102,7 @@ export async function archivarFacturaIngreso(
     // Preparar datos para archivo
     const datosArchivo: FacturaArchivo = {
       id: factura.id,
-      numeroCompleto: factura.numeroCompleto,
+      numeroCompleto: factura.numeroCompleto ?? numeroCompleto,
       tipo: 'INGRESO',
       fechaEmision: factura.fechaEmision.slice(0, 10),
       baseTotal: factura.baseTotal,
@@ -219,6 +219,7 @@ async function actualizarResumenMensual(
         ? await prisma.incomeInvoice.findMany({
             where: {
               companyId,
+              estadoDocumento: 'FINAL',
               fechaEmision: { startsWith: yyyymm },
             },
           })

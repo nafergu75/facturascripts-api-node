@@ -188,6 +188,6 @@ export const ingresosExtractorService = {
       data: { status: 'VERIFIED', verifiedAt: new Date(), linkedInvoiceId: factura.id },
     });
 
-    return { facturaId: factura.id, numeroCompleto: factura.numeroCompleto, total: factura.totalFactura };
+    return { facturaId: factura.id, numeroCompleto: factura.numeroCompleto ?? '', total: factura.totalFactura };
   },
 };

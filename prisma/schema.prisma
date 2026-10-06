@@ -162,37 +162,66 @@ model Customer {
 
 /// Factura de ingreso (dinero que nos deben = venta/servicio realizado).
 model IncomeInvoice {
-  id                String                @id @default(cuid())
-  companyId         String
-  customerId        String
-  serie             String
-  numero            Int
-  numeroCompleto    String
-  fechaEmision      String // YYYY-MM-DD
-  fechaVencimiento  String // YYYY-MM-DD
-  estado            String                @default("PENDING") // DRAFT, PENDING, PAID, OVERDUE
-  baseTotal         Decimal               @default(0) @db.Decimal(14, 2)
-  ivaTotal          Decimal               @default(0) @db.Decimal(14, 2)
-  retencionTotal    Decimal               @default(0) @db.Decimal(14, 2)
-  totalFactura      Decimal               @default(0) @db.Decimal(14, 2)
-  plantillaId       String                @default("default")
-  observaciones     String?               @db.Text
-  esRectificativa   Boolean               @default(false)
-  facturaOriginalId String? // Si es rectificativa, ref a la original
-  esRecurrente      Boolean               @default(false)
-  recurrenciaConfig String? // JSON con patrón: { frecuencia: 'mensual'|'trimestral', proximaFecha: '...' }
-  createdAt         DateTime              @default(now())
-  updatedAt         DateTime              @updatedAt
-  lineas            IncomeInvoiceLine[]
-  customer          Customer              @relation(fields: [customerId], references: [id], onDelete: Restrict)
-  readerDocument    IncomeReaderDocument?
+  id                  String                @id @default(cuid())
+  companyId           String
+  customerId          String
+  serie               String
+  // Un borrador no tiene numero: se le asigna al finalizarla, en orden y sin huecos.
+  numero              Int?
+  numeroCompleto      String?
+  // BORRADOR (editable, no cuenta para impuestos) o FINAL (numerada e inmutable).
+  // Por defecto FINAL para que las facturas que ya existian sigan contando.
+  estadoDocumento     String                @default("FINAL")
+  // Verifactu: F1 completa, F2 simplificada, R1-R5 rectificativas.
+  tipoFactura         String                @default("F1")
+  // Rectificativas: S (por sustitucion) o I (por diferencias), y el motivo.
+  tipoRectificativa   String?
+  motivoRectificacion String?               @db.Text
+  finalizadaEn        DateTime?
+  fechaEmision        String // YYYY-MM-DD
+  fechaVencimiento    String // YYYY-MM-DD
+  estado              String                @default("PENDING") // DRAFT, PENDING, PAID, OVERDUE
+  baseTotal           Decimal               @default(0) @db.Decimal(14, 2)
+  ivaTotal            Decimal               @default(0) @db.Decimal(14, 2)
+  retencionTotal      Decimal               @default(0) @db.Decimal(14, 2)
+  totalFactura        Decimal               @default(0) @db.Decimal(14, 2)
+  plantillaId         String                @default("default")
+  observaciones       String?               @db.Text
+  esRectificativa     Boolean               @default(false)
+  facturaOriginalId   String? // Si es rectificativa, ref a la original
+  esRecurrente        Boolean               @default(false)
+  recurrenciaConfig   String? // JSON con patrón: { frecuencia: 'mensual'|'trimestral', proximaFecha: '...' }
+  createdAt           DateTime              @default(now())
+  updatedAt           DateTime              @updatedAt
+  lineas              IncomeInvoiceLine[]
+  customer            Customer              @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  readerDocument      IncomeReaderDocument?
 
   @@unique([companyId, serie, numero])
   // Unico DENTRO de cada empresa: antes era unico en toda la BD, y dos empresas
   // no podian tener cada una su factura 2026-1.
   @@unique([companyId, numeroCompleto])
   @@index([companyId, estado])
+  @@index([companyId, estadoDocumento])
   @@index([customerId])
+}
+
+/// Serie de facturacion de una empresa (A, RECTIFICATIVA, ...). Guarda el
+/// ultimo numero emitido para numerar sin huecos al finalizar cada factura.
+model InvoiceSeries {
+  id            String   @id @default(cuid())
+  companyId     String
+  codigo        String
+  descripcion   String
+  tipoDocumento String   @default("FACTURA") // FACTURA | RECTIFICATIVA | PRESUPUESTO | ALBARAN | PEDIDO
+  activa        Boolean  @default(true)
+  porDefecto    Boolean  @default(false)
+  ultimoNumero  Int      @default(0)
+  ultimaFecha   String? // YYYY-MM-DD de la ultima factura finalizada
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@unique([companyId, codigo])
 }
 
 /// Línea de factura de ingreso.

@@ -13,11 +13,42 @@ jest.mock('../services/facturascripts-client', () => ({
 const mockJECreate = jest.fn(() => Promise.resolve({ id: 'je-test', numeroAsiento: 'TES-00001', descripcion: '', estado: 'POSTED', origen: 'TESORERIA' }));
 // Clientes migrado a Prisma: buscarClientes usa prisma.customer.findMany.
 const mockCustomerFindMany = jest.fn();
+// Series en BD: tabla falsa en memoria con lo que usa series.service.
+type FilaSerie = Record<string, any>;
+const mockSeriesFilas: FilaSerie[] = [];
+const coincide = (f: FilaSerie, w: FilaSerie = {}): boolean =>
+  Object.entries(w).every(([k, v]) =>
+    k === 'NOT' ? !coincide(f, v as FilaSerie) : k === 'companyId_codigo' ? coincide(f, v as FilaSerie) : f[k] === v,
+  );
+const mockInvoiceSeries: Record<string, jest.Mock> = {
+  findMany: jest.fn(async (a: { where?: FilaSerie }) => mockSeriesFilas.filter((f) => coincide(f, a.where))),
+  findUnique: jest.fn(async (a: { where: FilaSerie }) => mockSeriesFilas.find((f) => coincide(f, a.where)) ?? null),
+  findFirst: jest.fn(async (a: { where: FilaSerie }) => mockSeriesFilas.find((f) => coincide(f, a.where)) ?? null),
+  create: jest.fn(async (a: { data: FilaSerie }) => {
+    const fila = { id: `s${mockSeriesFilas.length + 1}`, ultimoNumero: 0, ultimaFecha: null, createdAt: new Date(), updatedAt: new Date(), ...a.data };
+    mockSeriesFilas.push(fila);
+    return fila;
+  }),
+  upsert: jest.fn(async (a: { where: FilaSerie; create: FilaSerie }): Promise<FilaSerie> => {
+    const existe = mockSeriesFilas.find((f) => coincide(f, a.where));
+    return existe ?? mockInvoiceSeries.create({ data: a.create });
+  }),
+  update: jest.fn(async (a: { where: FilaSerie; data: FilaSerie }) => {
+    const fila = mockSeriesFilas.find((f) => coincide(f, a.where))!;
+    return Object.assign(fila, a.data);
+  }),
+  updateMany: jest.fn(async (a: { where: FilaSerie; data: FilaSerie }) => {
+    const filas = mockSeriesFilas.filter((f) => coincide(f, a.where));
+    filas.forEach((f) => Object.assign(f, a.data));
+    return { count: filas.length };
+  }),
+};
 jest.mock('../config/database', () => ({
   prisma: {
     journalEntry: { create: mockJECreate, count: jest.fn(() => Promise.resolve(0)) },
     journalEntryLine: { create: jest.fn((a: { data: Record<string, unknown> }) => Promise.resolve(a.data)) },
     customer: { findMany: mockCustomerFindMany },
+    invoiceSeries: mockInvoiceSeries,
   },
   connectDatabase: jest.fn(),
   disconnectDatabase: jest.fn(),

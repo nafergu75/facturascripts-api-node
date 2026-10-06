@@ -1,119 +1,137 @@
-import { randomUUID } from 'crypto';
-import { SerieDocumento } from '../domain/series.model';
+import type { InvoiceSeries } from '@prisma/client';
+import { prisma } from '../config/database';
+import { SerieDocumento, TipoDocumentoSerie } from '../domain/series.model';
 import { badRequest, notFound } from '../utils/http-errors';
 
-// PENDIENTE BLOQUEADO: persistir en BD (tabla series por empresa). Hoy en memoria.
-// Riesgo: al reiniciar se pierden series personalizadas y solo queda la semilla
-// 'A' por defecto — la numeracion de facturas seguiria funcionando (cae a la
-// serie por defecto) pero las series adicionales configuradas desaparecerian.
-// NOTA (deploy Vercel): el guard que LANZABA en produccion se ha rebajado a
-// AVISO para permitir el despliegue serverless. Sigue siendo cierto que el
-// almacenamiento es en memoria y NO persiste entre invocaciones serverless:
-// pendiente migrar SerieDocumento a una tabla Prisma (TODO produccion real).
-if (process.env.NODE_ENV !== 'test') {
-  console.warn(
-    '\x1b[33m[series.service] ADVERTENCIA: series de documentos en memoria. Se perderan al reiniciar.\x1b[0m',
-  );
-}
+/**
+ * Series de documentos por empresa, guardadas en la tabla InvoiceSeries.
+ * Cada serie lleva su ultimo numero emitido: la numeracion de las facturas
+ * finales sale de aqui, en orden y sin huecos (ver siguienteNumero).
+ */
 
-const store = new Map<string, SerieDocumento>(); // id -> serie
-const ahora = (): string => new Date().toISOString();
-
-/** Siembra una serie 'A' de FACTURA por defecto la primera vez que se consulta una empresa. */
-const sembradas = new Set<string>();
-function asegurarSemilla(companyId: string): void {
-  if (sembradas.has(companyId)) return;
-  sembradas.add(companyId);
-  const yaTiene = [...store.values()].some((s) => s.companyId === companyId);
-  if (yaTiene) return;
-  const s: SerieDocumento = {
-    id: randomUUID(),
-    companyId,
-    codigo: 'A',
-    descripcion: 'Serie general',
-    tipoDocumento: 'FACTURA',
-    activa: true,
-    porDefecto: true,
-    creadoEn: ahora(),
-    actualizadoEn: ahora(),
+function aDominio(s: InvoiceSeries): SerieDocumento {
+  return {
+    id: s.id,
+    companyId: s.companyId,
+    codigo: s.codigo,
+    descripcion: s.descripcion,
+    tipoDocumento: s.tipoDocumento as TipoDocumentoSerie,
+    activa: s.activa,
+    porDefecto: s.porDefecto,
+    ultimoNumero: s.ultimoNumero,
+    ultimaFecha: s.ultimaFecha ?? undefined,
+    creadoEn: s.createdAt.toISOString(),
+    actualizadoEn: s.updatedAt.toISOString(),
   };
-  store.set(s.id, s);
 }
 
-export async function listarSeries(
-  companyId: string,
-  tipoDocumento?: SerieDocumento['tipoDocumento'],
-): Promise<SerieDocumento[]> {
-  asegurarSemilla(companyId);
-  return [...store.values()].filter(
-    (s) => s.companyId === companyId && (!tipoDocumento || s.tipoDocumento === tipoDocumento),
-  );
-}
+/** Series que toda empresa necesita: la general de facturas y la de rectificativas. */
+const SEMILLAS: Array<Pick<SerieDocumento, 'codigo' | 'descripcion' | 'tipoDocumento'>> = [
+  { codigo: 'A', descripcion: 'Serie general', tipoDocumento: 'FACTURA' },
+  { codigo: 'R', descripcion: 'Facturas rectificativas', tipoDocumento: 'RECTIFICATIVA' },
+];
 
-/** Si la nueva serie es porDefecto, desmarca el resto del mismo tipo. */
-function desmarcarOtrasPorDefecto(companyId: string, tipoDocumento: SerieDocumento['tipoDocumento'], exceptoId?: string): void {
-  for (const s of store.values()) {
-    if (s.companyId === companyId && s.tipoDocumento === tipoDocumento && s.id !== exceptoId && s.porDefecto) {
-      s.porDefecto = false;
-      s.actualizadoEn = ahora();
-    }
+/** Crea las series por defecto que le falten a la empresa (idempotente). */
+async function asegurarSemilla(companyId: string): Promise<void> {
+  const existentes = await prisma.invoiceSeries.findMany({ where: { companyId }, select: { tipoDocumento: true } });
+  const tipos = new Set(existentes.map((s) => s.tipoDocumento));
+  for (const semilla of SEMILLAS) {
+    if (tipos.has(semilla.tipoDocumento)) continue;
+    // upsert: dos peticiones a la vez no deben chocar con el unico (empresa, codigo).
+    await prisma.invoiceSeries.upsert({
+      where: { companyId_codigo: { companyId, codigo: semilla.codigo } },
+      create: { companyId, ...semilla, activa: true, porDefecto: true },
+      update: {},
+    });
   }
+}
+
+export async function listarSeries(companyId: string, tipoDocumento?: TipoDocumentoSerie): Promise<SerieDocumento[]> {
+  await asegurarSemilla(companyId);
+  const series = await prisma.invoiceSeries.findMany({
+    where: { companyId, ...(tipoDocumento ? { tipoDocumento } : {}) },
+    orderBy: [{ tipoDocumento: 'asc' }, { codigo: 'asc' }],
+  });
+  return series.map(aDominio);
+}
+
+/** Si una serie pasa a ser la por defecto, el resto del mismo tipo deja de serlo. */
+async function desmarcarOtrasPorDefecto(companyId: string, tipoDocumento: string, exceptoId?: string): Promise<void> {
+  await prisma.invoiceSeries.updateMany({
+    where: { companyId, tipoDocumento, porDefecto: true, ...(exceptoId ? { NOT: { id: exceptoId } } : {}) },
+    data: { porDefecto: false },
+  });
 }
 
 export async function crearSerie(
   companyId: string,
-  data: Omit<SerieDocumento, 'id' | 'companyId' | 'creadoEn' | 'actualizadoEn'>,
+  data: Pick<SerieDocumento, 'codigo' | 'descripcion' | 'tipoDocumento' | 'activa' | 'porDefecto'>,
 ): Promise<SerieDocumento> {
-  if (!data.codigo) throw badRequest('codigo de serie obligatorio.');
-  const dup = [...store.values()].some(
-    (s) => s.companyId === companyId && s.tipoDocumento === data.tipoDocumento && s.codigo === data.codigo,
-  );
-  if (dup) throw badRequest(`Ya existe la serie '${data.codigo}' para ${data.tipoDocumento}.`);
+  const codigo = data.codigo?.trim().toUpperCase();
+  if (!codigo) throw badRequest('El código de la serie es obligatorio.');
+  if (!/^[A-Z0-9-]{1,10}$/.test(codigo)) {
+    throw badRequest('El código de la serie solo admite letras, números y guiones (máximo 10).');
+  }
+  const dup = await prisma.invoiceSeries.findUnique({ where: { companyId_codigo: { companyId, codigo } } });
+  if (dup) throw badRequest(`Ya existe la serie '${codigo}'.`);
 
-  const serie: SerieDocumento = { ...data, id: randomUUID(), companyId, creadoEn: ahora(), actualizadoEn: ahora() };
-  if (serie.porDefecto) desmarcarOtrasPorDefecto(companyId, serie.tipoDocumento);
-  store.set(serie.id, serie);
-  return serie;
+  if (data.porDefecto) await desmarcarOtrasPorDefecto(companyId, data.tipoDocumento);
+  const serie = await prisma.invoiceSeries.create({
+    data: {
+      companyId,
+      codigo,
+      descripcion: data.descripcion ?? '',
+      tipoDocumento: data.tipoDocumento,
+      activa: data.activa ?? true,
+      porDefecto: data.porDefecto ?? false,
+    },
+  });
+  return aDominio(serie);
 }
 
 export async function actualizarSerie(
   companyId: string,
   serieId: string,
-  data: Partial<Omit<SerieDocumento, 'id' | 'companyId' | 'creadoEn'>>,
+  data: Partial<Pick<SerieDocumento, 'descripcion' | 'activa' | 'porDefecto'>>,
 ): Promise<SerieDocumento> {
-  const actual = store.get(serieId);
-  if (!actual || actual.companyId !== companyId) throw notFound('Serie no encontrada.');
-  const actualizada: SerieDocumento = { ...actual, ...data, id: actual.id, companyId, creadoEn: actual.creadoEn, actualizadoEn: ahora() };
-  if (data.porDefecto === true) desmarcarOtrasPorDefecto(companyId, actualizada.tipoDocumento, actualizada.id);
-  store.set(serieId, actualizada);
-  return actualizada;
+  const actual = await prisma.invoiceSeries.findFirst({ where: { id: serieId, companyId } });
+  if (!actual) throw notFound('Serie no encontrada.');
+  // El codigo, el tipo y la numeracion no se tocan: cambiarlos romperia la
+  // correlatividad de las facturas ya emitidas.
+  if (data.porDefecto === true) await desmarcarOtrasPorDefecto(companyId, actual.tipoDocumento, actual.id);
+  const serie = await prisma.invoiceSeries.update({
+    where: { id: serieId },
+    data: {
+      ...(data.descripcion !== undefined ? { descripcion: String(data.descripcion) } : {}),
+      ...(data.activa !== undefined ? { activa: Boolean(data.activa) } : {}),
+      ...(data.porDefecto !== undefined ? { porDefecto: Boolean(data.porDefecto) } : {}),
+    },
+  });
+  return aDominio(serie);
 }
 
 export async function obtenerSeriePorDefecto(
   companyId: string,
-  tipoDocumento: SerieDocumento['tipoDocumento'],
+  tipoDocumento: TipoDocumentoSerie,
 ): Promise<SerieDocumento | null> {
-  asegurarSemilla(companyId);
-  const series = [...store.values()].filter((s) => s.companyId === companyId && s.tipoDocumento === tipoDocumento && s.activa);
+  const series = (await listarSeries(companyId, tipoDocumento)).filter((s) => s.activa);
   return series.find((s) => s.porDefecto) ?? series[0] ?? null;
 }
 
 /**
  * Resuelve la serie a usar al crear una factura a partir del DTO:
- *  - serieId    -> esa serie (validando pertenencia a la empresa y tipo FACTURA)
- *  - serieCodigo-> busca por codigo
- *  - si nada    -> serie por defecto de FACTURA
- * Devuelve el `codserie` que espera FacturaScripts.
+ *  - serieId     -> esa serie (de la empresa y de tipo FACTURA)
+ *  - serieCodigo -> busca por codigo
+ *  - si nada     -> serie por defecto de FACTURA
+ * Devuelve el codigo de la serie.
  */
 export async function resolverCodSerieFactura(
   companyId: string,
   dto: { serieId?: string; serieCodigo?: string },
 ): Promise<string> {
   if (dto.serieId) {
-    const s = store.get(dto.serieId);
-    if (!s || s.companyId !== companyId || s.tipoDocumento !== 'FACTURA') {
-      throw badRequest('serieId no valido para esta empresa.');
-    }
+    const s = await prisma.invoiceSeries.findFirst({ where: { id: dto.serieId, companyId } });
+    if (!s || s.tipoDocumento !== 'FACTURA') throw badRequest('serieId no valido para esta empresa.');
     return s.codigo;
   }
   if (dto.serieCodigo) {
@@ -125,4 +143,19 @@ export async function resolverCodSerieFactura(
   const def = await obtenerSeriePorDefecto(companyId, 'FACTURA');
   if (!def) throw badRequest('No hay serie por defecto de FACTURA configurada.');
   return def.codigo;
+}
+
+/** Serie por codigo; si no existe se crea (las facturas antiguas usaban "2026" como serie). */
+export async function obtenerOCrearSerie(
+  companyId: string,
+  codigo: string,
+  tipoDocumento: TipoDocumentoSerie = 'FACTURA',
+): Promise<SerieDocumento> {
+  await asegurarSemilla(companyId);
+  const s = await prisma.invoiceSeries.upsert({
+    where: { companyId_codigo: { companyId, codigo } },
+    create: { companyId, codigo, descripcion: `Serie ${codigo}`, tipoDocumento, activa: true, porDefecto: false },
+    update: {},
+  });
+  return aDominio(s);
 }
