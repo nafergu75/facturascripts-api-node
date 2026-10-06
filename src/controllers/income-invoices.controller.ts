@@ -5,10 +5,13 @@ import { incomeInvoicesService, CrearFacturaIngresoDTO, ESTADOS_COBRO } from '..
 import { generarPdfFactura } from '../services/facturaPdf.service';
 import { registrarAuditoria } from '../services/auditoria.service';
 import { accountingHooksService } from '../services/accounting-hooks.service';
+import { archivarVentaSinRomper } from '../services/archivoFacturas.service';
 
 /**
- * Contabiliza una factura recien emitida. No es critico: si falla (p. ej. sin
- * plan contable), la factura queda emitida y se puede contabilizar a mano.
+ * Contabiliza una factura recien emitida y la guarda en el archivo de su
+ * trimestre. No es critico: si falla (p. ej. sin plan contable o sin
+ * almacenamiento), la factura queda emitida y se puede contabilizar o archivar
+ * a mano (Archivo > Completar historial).
  */
 async function contabilizar(companyId: string, invoiceId: string): Promise<void> {
   try {
@@ -19,6 +22,7 @@ async function contabilizar(companyId: string, invoiceId: string): Promise<void>
       err instanceof Error ? err.message : String(err),
     );
   }
+  await archivarVentaSinRomper(companyId, invoiceId);
 }
 
 export const incomeInvoicesController = {

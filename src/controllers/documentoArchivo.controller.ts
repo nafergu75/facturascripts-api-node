@@ -11,6 +11,20 @@ import {
   obtenerEstadisticasPeriodo,
   buscarDocumentos,
 } from '../services/documentoArchivo.service';
+import {
+  arbolArchivo,
+  listarTrimestre,
+  zipTrimestre,
+  regenerarArchivo,
+  pdfFacturaVenta,
+  validarPeriodo,
+} from '../services/archivoFacturas.service';
+
+/** Content-Disposition que admite nombres con tildes (RFC 5987) sin romper la cabecera. */
+function adjunto(nombre: string): string {
+  const ascii = nombre.replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '_');
+  return `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(nombre)}`;
+}
 
 export const documentoArchivoController = {
   /**
@@ -35,6 +49,7 @@ export const documentoArchivoController = {
       origen,
       confianza,
       observaciones,
+      facturaId,
     } = req.body;
 
     // Validar campos obligatorios
@@ -63,10 +78,13 @@ export const documentoArchivoController = {
       archivoNombre: archivoNombre || req.file.originalname,
       archivoTipo: req.file.mimetype,
       archivoBuffer: req.file.buffer,
+      // Opcional: adjuntar el original a una factura ya registrada.
+      incomeInvoiceId: tipo === 'ingreso' && facturaId ? String(facturaId) : undefined,
+      expenseInvoiceId: tipo === 'gasto' && facturaId ? String(facturaId) : undefined,
       origen,
       confianza: confianza ? parseFloat(confianza) : undefined,
       observaciones,
-      uploadedBy: (req as any).userId,
+      uploadedBy: req.user?.userId,
     });
 
     sendOk(res, documento, undefined, 201);
@@ -127,8 +145,8 @@ export const documentoArchivoController = {
     const { companyId, id } = req.params;
     const { buffer, nombre, tipo } = await descargarArchivo(companyId, id);
 
-    res.setHeader('Content-Type', tipo);
-    res.setHeader('Content-Disposition', `attachment; filename="${nombre}"`);
+    res.setHeader('Content-Type', tipo || 'application/octet-stream');
+    res.setHeader('Content-Disposition', adjunto(nombre));
     res.setHeader('Content-Length', buffer.length);
 
     res.send(buffer);
@@ -211,5 +229,55 @@ export const documentoArchivoController = {
     );
 
     sendOk(res, documentos);
+  }),
+  /**
+   * GET /companies/:companyId/archivo/arbol
+   * Años (de más reciente a más antiguo) con sus 4 trimestres: nº y total de ventas y gastos.
+   */
+  arbol: asyncHandler(async (req, res) => {
+    sendOk(res, await arbolArchivo(req.params.companyId));
+  }),
+
+  /**
+   * GET /companies/:companyId/archivo/trimestre?anio=2026&trimestre=1
+   * Facturas de venta y de gasto del trimestre.
+   */
+  trimestre: asyncHandler(async (req, res) => {
+    const { anio, trimestre } = validarPeriodo(req.query.anio, req.query.trimestre ?? '');
+    sendOk(res, await listarTrimestre(req.params.companyId, anio, trimestre));
+  }),
+
+  /**
+   * GET /companies/:companyId/archivo/trimestre/zip?anio=2026&trimestre=1
+   * ZIP con ventas/*.pdf, gastos/* y resumen.csv.
+   */
+  trimestreZip: asyncHandler(async (req, res) => {
+    const { anio, trimestre } = validarPeriodo(req.query.anio, req.query.trimestre ?? '');
+    const { nombre, contenido } = await zipTrimestre(req.params.companyId, anio, trimestre);
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', adjunto(nombre));
+    res.setHeader('Content-Length', contenido.length);
+    res.send(contenido);
+  }),
+
+  /**
+   * GET /companies/:companyId/archivo/ventas/:facturaId/pdf
+   * PDF de una factura de venta del archivo (copia guardada o generada al vuelo).
+   */
+  pdfVenta: asyncHandler(async (req, res) => {
+    const { nombre, contenido, mime } = await pdfFacturaVenta(req.params.companyId, req.params.facturaId);
+    res.setHeader('Content-Type', mime);
+    res.setHeader('Content-Disposition', adjunto(nombre));
+    res.send(contenido);
+  }),
+
+  /**
+   * POST /companies/:companyId/archivo/regenerar  { anio?: number }
+   * Archiva las facturas que aún no tienen documento (completa el histórico).
+   */
+  regenerar: asyncHandler(async (req, res) => {
+    const anioBody = req.body?.anio ?? req.query.anio;
+    const anio = anioBody ? validarPeriodo(anioBody).anio : undefined;
+    sendOk(res, await regenerarArchivo(req.params.companyId, anio));
   }),
 };

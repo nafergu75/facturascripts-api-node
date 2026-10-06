@@ -3,6 +3,7 @@ import { badRequest, notFound } from '../utils/http-errors';
 import { aCentimos } from '../utils/money';
 import { incomeInvoicesService, type CrearLineaIngresoDTO } from './income-invoices.service';
 import { invoiceExtractorService, type InvoiceExtraction } from './invoice-extractor.service';
+import { archivarVentaSinRomper } from './archivoFacturas.service';
 
 /**
  * Lector de facturas de INGRESO (pantalla "Lector de ingresos").
@@ -187,6 +188,9 @@ export const ingresosExtractorService = {
       where: { id: documentId },
       data: { status: 'VERIFIED', verifiedAt: new Date(), linkedInvoiceId: factura.id },
     });
+
+    // Archivo por trimestres: el PDF original queda en su carpeta (no bloqueante).
+    await archivarVentaSinRomper(companyId, factura.id);
 
     return { facturaId: factura.id, numeroCompleto: factura.numeroCompleto ?? '', total: factura.totalFactura };
   },
