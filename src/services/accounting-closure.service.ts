@@ -1,18 +1,17 @@
 import { badRequest, notFound } from '../utils/http-errors';
-import * as fs from 'fs/promises';
-import * as path from 'path';
 import { randomUUID as uuid } from 'crypto';
 import { prisma } from '../config/database';
 import { cuadraEnCentimos } from '../utils/money';
+import { putObject } from '../utils/storage';
 
-const STORAGE_DIR = path.join(process.cwd(), 'storage', 'accounting-closures');
-
-async function ensureStorageDir(): Promise<void> {
-  try {
-    await fs.mkdir(STORAGE_DIR, { recursive: true });
-  } catch (err) {
-    console.error('Error creating storage dir:', err);
-  }
+/**
+ * Nombre de fichero apto para una ruta de almacenamiento. El nombre llega del
+ * cliente (?nombre=): sin limpiar, "../../x" escribiria fuera de la carpeta.
+ */
+export function nombreSeguro(nombre: string): string {
+  const base = nombre.split(/[\\/]/).pop() ?? '';
+  const limpio = base.replace(/[^A-Za-z0-9._-]/g, '_').replace(/^\.+/, '');
+  return limpio.slice(0, 120) || 'archivo';
 }
 
 /**
@@ -134,22 +133,22 @@ export async function subirArchivoCierre(
       ? 'EXCEL'
       : 'TXT';
 
-  // Guardar archivo
-  await ensureStorageDir();
-  const nombreGuardado = `${uuid()}-${Date.now()}-${archivo.originalname}`;
-  const rutaCompleta = path.join(STORAGE_DIR, nombreGuardado);
-  await fs.writeFile(rutaCompleta, archivo.buffer);
+  // Guardar archivo: Blob privado en Vercel, disco en local (utils/storage).
+  // En Vercel no se puede escribir en el disco del proyecto.
+  const nombre = nombreSeguro(archivo.originalname);
+  const key = `accounting-closures/${companyId}/${ejercicio}/${uuid()}-${nombre}`;
+  const storagePath = await putObject(key, archivo.buffer, archivo.mimetype);
 
   // Crear registro de archivo
   const archivoRegistro = await prisma.accountingClosureFile.create({
     data: {
       closureId: cierre.id,
       companyId,
-      nombre: archivo.originalname,
+      nombre,
       tipoArchivo,
       mimeType: archivo.mimetype,
       fileSize: archivo.buffer.length,
-      storagePath: `storage/accounting-closures/${nombreGuardado}`,
+      storagePath,
       ejercicio,
       tipoContenido,
     },
