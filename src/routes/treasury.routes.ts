@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { treasuryController } from '../controllers/treasury.controller';
+import { tesoreriaCategoriasController } from '../controllers/tesoreriaCategorias.controller';
 import multer from 'multer';
 import { authorize } from '../middleware/authorize.middleware';
 import { badRequest } from '../utils/http-errors';
@@ -31,5 +32,18 @@ router.post(
   treasuryController.subirExtractoArchivo,
 );
 router.post('/movements/:movementId/reconcile', authorize('tesoreria:write'), treasuryController.conciliar);
+
+// --- Tesoreria analitica: categorias y categorizacion de movimientos ---
+const c = tesoreriaCategoriasController;
+router.get('/categorias', authorize('tesoreria:read'), c.listarCategorias);
+router.post('/categorias', authorize('tesoreria:write'), c.crearCategoria);
+router.patch('/categorias/:categoriaId', authorize('tesoreria:write'), c.actualizarCategoria);
+router.delete('/categorias/:categoriaId', authorize('tesoreria:write'), c.borrarCategoria);
+router.get('/movimientos', authorize('tesoreria:read'), c.listarMovimientos);
+router.put('/movimientos/:movementId/categoria', authorize('tesoreria:write'), c.categorizar);
+router.post('/movimientos/:movementId/similares', authorize('tesoreria:write'), c.aplicarASimilares);
+router.put('/movimientos/:movementId/ignorado', authorize('tesoreria:write'), c.ignorar);
+router.put('/movimientos/:movementId/desglose', authorize('tesoreria:write'), c.desglosar);
+router.delete('/movimientos/:movementId/desglose', authorize('tesoreria:write'), c.deshacerDesglose);
 
 export default router;

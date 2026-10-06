@@ -1,7 +1,9 @@
 import { CuentaBancariaEmpresa, MovimientoBancarioImportado } from '../domain/bancos.model';
 import { badRequest } from '../utils/http-errors';
 import { prisma } from '../config/database';
+import { logger } from '../config/logger';
 import { leerExtracto } from './extractoBancario.service';
+import { aplicarReglas } from './tesoreriaCategorias.service';
 
 const aCuenta = (c: { id: string; companyId: string; iban: string; bancoNombre: string | null; subcuentaCodigo: string; activa: boolean }): CuentaBancariaEmpresa => ({
   id: c.id,
@@ -148,7 +150,7 @@ export async function guardarMovimientos(
   cuentaBancariaId: string,
   movimientos: Array<{ fecha: string; importe: number; concepto: string; referencia?: string }>,
   origen: 'csv' | 'excel' | 'norma43',
-): Promise<{ importados: MovimientoBancarioImportado[]; repetidos: number }> {
+): Promise<{ importados: MovimientoBancarioImportado[]; repetidos: number; categorizados: number }> {
   const { nuevos, repetidos } = await separarRepetidos(cuentaBancariaId, movimientos);
   const importados: MovimientoBancarioImportado[] = [];
   for (const mov of nuevos) {
@@ -166,7 +168,15 @@ export async function guardarMovimientos(
     });
     importados.push(aMovimiento(creado));
   }
-  return { importados, repetidos: repetidos.length };
+  // Las reglas guardadas al categorizar ("agua" -> Suministros) se aplican solas.
+  // Si fallan, los movimientos ya estan guardados: se quedan sin categoria.
+  let categorizados = 0;
+  try {
+    categorizados = await aplicarReglas(companyId, importados);
+  } catch (e) {
+    logger.warn(`tesoreria: no se pudieron aplicar las reglas de categorias (${(e as Error).message}).`);
+  }
+  return { importados, repetidos: repetidos.length, categorizados };
 }
 
 /**
@@ -200,7 +210,7 @@ export async function importarExtractoArchivo(
     return { ...resumen, nuevos: nuevos.length, repetidos: repetidos.length, muestra: extracto.filas.slice(0, 15) };
   }
   const r = await guardarMovimientos(companyId, cuentaBancariaId, extracto.filas, origen);
-  return { ...resumen, importados: r.importados.length, repetidos: r.repetidos };
+  return { ...resumen, importados: r.importados.length, repetidos: r.repetidos, categorizados: r.categorizados };
 }
 
 export async function listarMovimientos(companyId: string, cuentaBancariaId?: string): Promise<MovimientoBancarioImportado[]> {
