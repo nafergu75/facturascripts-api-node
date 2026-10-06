@@ -9,12 +9,12 @@
  * 5. Integración con tesorería
  */
 
-import { PrismaClient, Prisma } from '@prisma/client';
 import { badRequest, notFound, notImplemented } from '../utils/http-errors';
-import { prisma } from '../config/database';
+import { prisma, type ClienteBD, type TransaccionBD } from '../config/database';
 import { cuadraEnCentimos } from '../utils/money';
 
-type DbClient = PrismaClient | Prisma.TransactionClient;
+// Cliente compartido o el de una transaccion (los importes se leen como number).
+type DbClient = ClienteBD | TransaccionBD;
 
 /** Base y cuota de IVA de una factura para un tipo concreto (0, 4, 10, 21). */
 export interface DesgloseIva {
@@ -153,7 +153,7 @@ export async function contabilizarFacturaIngreso(
     /** Base y cuota por tipo de IVA. Sin el, se registra todo al tipo `ivaRate`. */
     desgloseIva?: DesgloseIva[];
   },
-  tx?: Prisma.TransactionClient,
+  tx?: TransaccionBD,
 ): Promise<{ asientoId: string; lineas: any[] }> {
   const db: DbClient = tx ?? prisma;
   const tipoOp = invoiceData.tipoOperacion || 'NACIONAL';
@@ -298,7 +298,7 @@ export async function contabilizarFacturaGasto(
     /** Base y cuota por tipo de IVA. Sin el, se registra todo al tipo `ivaRate`. */
     desgloseIva?: DesgloseIva[];
   },
-  tx?: Prisma.TransactionClient,
+  tx?: TransaccionBD,
 ): Promise<{ asientoId: string; lineas: any[] }> {
   const db: DbClient = tx ?? prisma;
   const tipoGasto = invoiceData.tipoGasto || 'COMPRA';

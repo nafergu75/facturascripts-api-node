@@ -4,10 +4,11 @@
  */
 
 import { Request, Response } from 'express';
-import { PrismaClient } from '@prisma/client';
+// Cliente compartido: un pool de conexiones para toda la app (en serverless,
+// un cliente por modulo agota las conexiones de la BD).
+import { prisma } from '../config/database';
 import { logger } from '../config/logger';
 
-const prisma = new PrismaClient();
 
 class OcrSessionsController {
   /**

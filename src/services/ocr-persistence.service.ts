@@ -3,10 +3,11 @@
  * Maneja la persistencia de sesiones y documentos OCR en la base de datos
  */
 
-import { PrismaClient } from '@prisma/client';
+// Cliente compartido: un pool de conexiones para toda la app (en serverless,
+// un cliente por modulo agota las conexiones de la BD).
+import { prisma } from '../config/database';
 import { logger } from '../config/logger';
 
-const prisma = new PrismaClient();
 
 export interface CreateOCRSessionInput {
   companyId: string;

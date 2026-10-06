@@ -1,0 +1,129 @@
+import { Prisma } from '@prisma/client';
+
+/**
+ * Importes en Decimal (exactos en MySQL), numeros en el codigo.
+ *
+ * Los importes (bases, cuotas, totales, debe/haber, saldos...) se guardan como
+ * DECIMAL(14,2) (precios unitarios DECIMAL(14,4)): con Float, MySQL los
+ * guardaba en binario y las sumas arrastraban error. Prisma devuelve esos
+ * campos como Prisma.Decimal; para no reescribir todo el codigo ni romper el
+ * JSON (Decimal se serializa como texto), se convierten a number al leer.
+ *
+ * Al escribir basta con pasar number: MySQL redondea al numero de decimales de
+ * la columna. Para comparar o cuadrar, usar siempre utils/money (en centimos).
+ *
+ * Generado a partir de la lista de campos migrados; si se migra un campo nuevo,
+ * anadirlo en CAMPOS_DECIMALES y en la extension de resultado.
+ */
+
+/** Decimal (o lo que llegue) -> number. null/undefined se respetan. */
+export function aNumero<T>(valor: T): T extends Prisma.Decimal ? number : T {
+  if (valor instanceof Prisma.Decimal) return valor.toNumber() as never;
+  return valor as never;
+}
+
+/** Nombres de los campos migrados a Decimal (en cualquier modelo). */
+export const CAMPOS_DECIMALES: ReadonlySet<string> = new Set(["baseImponible", "baseLine", "baseTotal", "beneficio", "cuotaIva", "cuotaRetencion", "debe", "descuentoImporte", "gasto", "haber", "importe", "ingresos", "irpfRetenido", "ivaDevengado", "ivaImporte", "ivaRepercutido", "ivaTotal", "precio", "precioUnitario", "retencionImporte", "retencionTotal", "saldoInicial", "totalBruto", "totalFactura", "totalIRPF", "totalLiquido", "totalSeguridadSocialEmpresa", "totalSeguridadSocialTrabajador"]);
+
+/**
+ * Recorre un resultado de Prisma y convierte a number los Decimal de los campos
+ * migrados. Cubre lo que la extension de resultado no alcanza: agregados
+ * (_sum, _avg... de aggregate y groupBy). Otros Decimal (Movement.amount,
+ * DocumentoArchivo) se dejan como Decimal: su codigo ya opera con ellos.
+ */
+export function decimalesANumero(valor: unknown, campo?: string): unknown {
+  if (valor instanceof Prisma.Decimal) return campo && CAMPOS_DECIMALES.has(campo) ? valor.toNumber() : valor;
+  if (Array.isArray(valor)) return valor.map((v) => decimalesANumero(v, campo));
+  if (valor && typeof valor === 'object' && !(valor instanceof Date) && !Buffer.isBuffer(valor)) {
+    const obj = valor as Record<string, unknown>;
+    for (const k of Object.keys(obj)) {
+      // En agregados el campo va anidado: { _sum: { importe } }
+      obj[k] = decimalesANumero(obj[k], k.startsWith('_') ? undefined : k);
+    }
+    return obj;
+  }
+  return valor;
+}
+
+/** Extension de resultado: los campos migrados se leen como number (y asi se tipan). */
+export const importesComoNumero = Prisma.defineExtension({
+  name: 'importes-como-numero',
+  result: {
+    vencimiento: {
+      importe: { needs: { importe: true }, compute: (r) => aNumero(r.importe) },
+    },
+    cobro: {
+      importe: { needs: { importe: true }, compute: (r) => aNumero(r.importe) },
+    },
+    incomeInvoice: {
+      baseTotal: { needs: { baseTotal: true }, compute: (r) => aNumero(r.baseTotal) },
+      ivaTotal: { needs: { ivaTotal: true }, compute: (r) => aNumero(r.ivaTotal) },
+      retencionTotal: { needs: { retencionTotal: true }, compute: (r) => aNumero(r.retencionTotal) },
+      totalFactura: { needs: { totalFactura: true }, compute: (r) => aNumero(r.totalFactura) },
+    },
+    incomeInvoiceLine: {
+      precioUnitario: { needs: { precioUnitario: true }, compute: (r) => aNumero(r.precioUnitario) },
+      baseLine: { needs: { baseLine: true }, compute: (r) => aNumero(r.baseLine) },
+      descuentoImporte: { needs: { descuentoImporte: true }, compute: (r) => aNumero(r.descuentoImporte) },
+      ivaImporte: { needs: { ivaImporte: true }, compute: (r) => aNumero(r.ivaImporte) },
+      retencionImporte: { needs: { retencionImporte: true }, compute: (r) => aNumero(r.retencionImporte) },
+    },
+    priorYearData: {
+      baseImponible: { needs: { baseImponible: true }, compute: (r) => aNumero(r.baseImponible) },
+      ivaDevengado: { needs: { ivaDevengado: true }, compute: (r) => aNumero(r.ivaDevengado) },
+      ivaRepercutido: { needs: { ivaRepercutido: true }, compute: (r) => aNumero(r.ivaRepercutido) },
+      irpfRetenido: { needs: { irpfRetenido: true }, compute: (r) => aNumero(r.irpfRetenido) },
+      gasto: { needs: { gasto: true }, compute: (r) => aNumero(r.gasto) },
+      ingresos: { needs: { ingresos: true }, compute: (r) => aNumero(r.ingresos) },
+      beneficio: { needs: { beneficio: true }, compute: (r) => aNumero(r.beneficio) },
+    },
+    journalEntryLine: {
+      debe: { needs: { debe: true }, compute: (r) => aNumero(r.debe) },
+      haber: { needs: { haber: true }, compute: (r) => aNumero(r.haber) },
+    },
+    vATBook: {
+      baseImponible: { needs: { baseImponible: true }, compute: (r) => aNumero(r.baseImponible) },
+      cuotaIva: { needs: { cuotaIva: true }, compute: (r) => aNumero(r.cuotaIva) },
+    },
+    retentionBook: {
+      baseImponible: { needs: { baseImponible: true }, compute: (r) => aNumero(r.baseImponible) },
+      cuotaRetencion: { needs: { cuotaRetencion: true }, compute: (r) => aNumero(r.cuotaRetencion) },
+    },
+    expenseInvoice: {
+      baseTotal: { needs: { baseTotal: true }, compute: (r) => aNumero(r.baseTotal) },
+      ivaTotal: { needs: { ivaTotal: true }, compute: (r) => aNumero(r.ivaTotal) },
+      retencionTotal: { needs: { retencionTotal: true }, compute: (r) => aNumero(r.retencionTotal) },
+      totalFactura: { needs: { totalFactura: true }, compute: (r) => aNumero(r.totalFactura) },
+    },
+    expenseInvoiceLine: {
+      precioUnitario: { needs: { precioUnitario: true }, compute: (r) => aNumero(r.precioUnitario) },
+      baseLine: { needs: { baseLine: true }, compute: (r) => aNumero(r.baseLine) },
+      descuentoImporte: { needs: { descuentoImporte: true }, compute: (r) => aNumero(r.descuentoImporte) },
+      ivaImporte: { needs: { ivaImporte: true }, compute: (r) => aNumero(r.ivaImporte) },
+      retencionImporte: { needs: { retencionImporte: true }, compute: (r) => aNumero(r.retencionImporte) },
+    },
+    product: {
+      precio: { needs: { precio: true }, compute: (r) => aNumero(r.precio) },
+    },
+    bankAccount: {
+      saldoInicial: { needs: { saldoInicial: true }, compute: (r) => aNumero(r.saldoInicial) },
+    },
+    bankMovement: {
+      importe: { needs: { importe: true }, compute: (r) => aNumero(r.importe) },
+    },
+    nominaResumen: {
+      totalBruto: { needs: { totalBruto: true }, compute: (r) => aNumero(r.totalBruto) },
+      totalSeguridadSocialEmpresa: { needs: { totalSeguridadSocialEmpresa: true }, compute: (r) => aNumero(r.totalSeguridadSocialEmpresa) },
+      totalSeguridadSocialTrabajador: { needs: { totalSeguridadSocialTrabajador: true }, compute: (r) => aNumero(r.totalSeguridadSocialTrabajador) },
+      totalIRPF: { needs: { totalIRPF: true }, compute: (r) => aNumero(r.totalIRPF) },
+      totalLiquido: { needs: { totalLiquido: true }, compute: (r) => aNumero(r.totalLiquido) },
+    },
+  },
+  query: {
+    $allModels: {
+      async $allOperations({ args, query }) {
+        return decimalesANumero(await query(args));
+      },
+    },
+  },
+});

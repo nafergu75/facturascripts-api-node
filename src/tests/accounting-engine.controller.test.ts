@@ -8,11 +8,11 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from '@jest/globals';
-import { PrismaClient } from '@prisma/client';
+// El cliente de la app (importes Decimal leidos como number), no uno propio.
+import { prisma } from '../config/database';
 import { AccountingEngineController } from '../controllers/accounting-engine.controller';
 import { inicializarPlanContableEmpresa } from '../services/chart-of-accounts.service';
 
-const prisma = new PrismaClient();
 const controller = new AccountingEngineController();
 
 // ─────────────────────────────────────────────────────────────────────────────

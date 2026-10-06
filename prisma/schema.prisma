@@ -74,7 +74,7 @@ model Vencimiento {
   tipo             String // cobro | pago
   numero           Int     @default(1)
   fecha            String
-  importe          Float
+  importe          Decimal @db.Decimal(14, 2)
   formaPago        String  @default("")
   estado           String  @default("pendiente") // pendiente | liquidado
   fechaLiquidacion String?
@@ -87,7 +87,7 @@ model Cobro {
   id        String @id @default(cuid())
   companyId String
   facturaId String
-  importe   Float
+  importe   Decimal @db.Decimal(14, 2)
   fecha     String
 
   @@index([companyId, facturaId])
@@ -171,10 +171,10 @@ model IncomeInvoice {
   fechaEmision        String                // YYYY-MM-DD
   fechaVencimiento    String                // YYYY-MM-DD
   estado              String                @default("PENDING") // DRAFT, PENDING, PAID, OVERDUE
-  baseTotal           Float                 @default(0)
-  ivaTotal            Float                 @default(0)
-  retencionTotal      Float                 @default(0)
-  totalFactura        Float                 @default(0)
+  baseTotal           Decimal @db.Decimal(14, 2) @default(0)
+  ivaTotal            Decimal @db.Decimal(14, 2) @default(0)
+  retencionTotal      Decimal @db.Decimal(14, 2) @default(0)
+  totalFactura        Decimal @db.Decimal(14, 2) @default(0)
   plantillaId         String                @default("default")
   observaciones       String?               @db.Text
   esRectificativa     Boolean               @default(false)
@@ -199,14 +199,14 @@ model IncomeInvoiceLine {
   productoServicioId String?
   descripcion       String
   cantidad          Float
-  precioUnitario    Float
-  baseLine          Float         // cantidad * precioUnitario - descuentoImporte
+  precioUnitario    Decimal @db.Decimal(14, 4)
+  baseLine          Decimal @db.Decimal(14, 2)// cantidad * precioUnitario - descuentoImporte
   descuentoPorcentaje Float       @default(0)
-  descuentoImporte  Float         @default(0)
+  descuentoImporte  Decimal @db.Decimal(14, 2) @default(0)
   tipoIva           Int           @default(21) // 0, 4, 10, 21
-  ivaImporte        Float         @default(0)
+  ivaImporte        Decimal @db.Decimal(14, 2) @default(0)
   tipoRetencion     Int           @default(0) // 0, 7, 15, 19 (IRPF/otros)
-  retencionImporte  Float         @default(0)
+  retencionImporte  Decimal @db.Decimal(14, 2) @default(0)
   // NUEVO: Referencia a cuenta contable (grupo 7 para ingresos)
   accountCode       String?       // Código PGC (ej. "700" para ventas)
   invoice           IncomeInvoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
@@ -350,13 +350,13 @@ model PriorYearData {
   companyId             String
   ejercicio             Int
   estado                String                // "BORRADOR", "CONFIRMADO", "AUDITADO"
-  baseImponible         Float                 @default(0)
-  ivaDevengado          Float                 @default(0)
-  ivaRepercutido        Float                 @default(0)
-  irpfRetenido          Float                 @default(0)
-  gasto                 Float                 @default(0)
-  ingresos              Float                 @default(0)
-  beneficio             Float                 @default(0)
+  baseImponible         Decimal @db.Decimal(14, 2) @default(0)
+  ivaDevengado          Decimal @db.Decimal(14, 2) @default(0)
+  ivaRepercutido        Decimal @db.Decimal(14, 2) @default(0)
+  irpfRetenido          Decimal @db.Decimal(14, 2) @default(0)
+  gasto                 Decimal @db.Decimal(14, 2) @default(0)
+  ingresos              Decimal @db.Decimal(14, 2) @default(0)
+  beneficio             Decimal @db.Decimal(14, 2) @default(0)
   datosJSON             String?               @db.Text // Estructura completa de datos contables
   observaciones         String?               @db.Text
   createdAt             DateTime              @default(now())
@@ -398,8 +398,8 @@ model JournalEntryLine {
   entryId               String
   accountCode           String                // Código PGC (700, 430, 477, etc.)
   accountName           String
-  debe                  Float                 @default(0)
-  haber                 Float                 @default(0)
+  debe                  Decimal @db.Decimal(14, 2) @default(0)
+  haber                 Decimal @db.Decimal(14, 2) @default(0)
   referencia            String?               // Número de factura, movimiento, etc.
   companyId             String
   createdAt             DateTime              @default(now())
@@ -420,9 +420,9 @@ model VATBook {
   fechaFactura          DateTime
   nifTercero            String                // NIF del cliente/proveedor
   nombreTercero         String
-  baseImponible         Float
+  baseImponible         Decimal @db.Decimal(14, 2)
   tipoIva               Int                   // 0, 4, 10, 21
-  cuotaIva              Float
+  cuotaIva              Decimal @db.Decimal(14, 2)
   asientoId             String?               // Referencia al asiento contable
   observaciones         String?               @db.Text
   createdAt             DateTime              @default(now())
@@ -480,9 +480,9 @@ model RetentionBook {
   tipoRetencionNombre     String                // PROFESIONAL, ASALARIADO
   nifTercero              String
   nombreTercero           String
-  baseImponible           Float
+  baseImponible           Decimal @db.Decimal(14, 2)
   porcentajeRetencion     Int                   // 7, 15, 19%
-  cuotaRetencion          Float
+  cuotaRetencion          Decimal @db.Decimal(14, 2)
   asientoId               String?
   createdAt               DateTime              @default(now())
 
@@ -536,15 +536,15 @@ model ExpenseInvoice {
   estado           String               @default("DRAFT")
   /// Tipo de gasto PGC: COMPRA | SERVICIO_PROFESIONAL | ALQUILER | SUMINISTROS
   tipoGasto        String               @default("COMPRA")
-  baseTotal        Float                @default(0)
-  ivaTotal         Float                @default(0)
+  baseTotal        Decimal @db.Decimal(14, 2) @default(0)
+  ivaTotal         Decimal @db.Decimal(14, 2) @default(0)
   /// Tipo de IVA principal aplicado (0, 4, 10, 21)
   tipoIva          Int                  @default(21)
-  retencionTotal   Float                @default(0)
+  retencionTotal   Decimal @db.Decimal(14, 2) @default(0)
   /// Tipo de retención IRPF (0, 7, 15, 19)
   tipoRetencion    Int                  @default(0)
   /// Importe neto a pagar al proveedor = base + IVA - retención
-  totalFactura     Float                @default(0)
+  totalFactura     Decimal @db.Decimal(14, 2) @default(0)
   observaciones    String?              @db.Text
   createdAt        DateTime             @default(now())
   updatedAt        DateTime             @updatedAt
@@ -562,14 +562,14 @@ model ExpenseInvoiceLine {
   invoiceId           String
   descripcion         String
   cantidad            Float
-  precioUnitario      Float
-  baseLine            Float
+  precioUnitario      Decimal @db.Decimal(14, 4)
+  baseLine            Decimal @db.Decimal(14, 2)
   descuentoPorcentaje Float          @default(0)
-  descuentoImporte    Float          @default(0)
+  descuentoImporte    Decimal @db.Decimal(14, 2) @default(0)
   tipoIva             Int            @default(21)
-  ivaImporte          Float          @default(0)
+  ivaImporte          Decimal @db.Decimal(14, 2) @default(0)
   tipoRetencion       Int            @default(0)
-  retencionImporte    Float          @default(0)
+  retencionImporte    Decimal @db.Decimal(14, 2) @default(0)
   /// Código PGC de gasto (ej. "600", "622", "621")
   accountCode         String?
   invoice             ExpenseInvoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
@@ -586,7 +586,7 @@ model Product {
   companyId   String
   referencia  String
   descripcion String?
-  precio      Float    @default(0)
+  precio      Decimal @db.Decimal(14, 4) @default(0)
   stock       Float    @default(0)
   bloqueado   Boolean  @default(false)
   createdAt   DateTime @default(now())
@@ -610,7 +610,7 @@ model BankAccount {
   subcuentaCodigo String
   bic             String?
   /// Saldo que el usuario declara al dar de alta la cuenta (pantalla de tesoreria).
-  saldoInicial    Float          @default(0)
+  saldoInicial    Decimal @db.Decimal(14, 2) @default(0)
   activa          Boolean        @default(true)
   createdAt       DateTime       @default(now())
   movimientos     BankMovement[]
@@ -625,7 +625,7 @@ model BankMovement {
   cuentaBancariaId String
   /// YYYY-MM-DD
   fecha            String
-  importe          Float
+  importe          Decimal @db.Decimal(14, 2)
   concepto         String
   referencia       String?
   /// 'norma43' | 'csv'
@@ -684,11 +684,11 @@ model NominaResumen {
   companyId                       String
   mes                             Int
   ejercicio                       Int
-  totalBruto                      Float
-  totalSeguridadSocialEmpresa     Float    @default(0)
-  totalSeguridadSocialTrabajador  Float    @default(0)
-  totalIRPF                       Float    @default(0)
-  totalLiquido                    Float    @default(0)
+  totalBruto                      Decimal @db.Decimal(14, 2)
+  totalSeguridadSocialEmpresa     Decimal @db.Decimal(14, 2) @default(0)
+  totalSeguridadSocialTrabajador  Decimal @db.Decimal(14, 2) @default(0)
+  totalIRPF                       Decimal @db.Decimal(14, 2) @default(0)
+  totalLiquido                    Decimal @db.Decimal(14, 2) @default(0)
   createdAt                       DateTime @default(now())
 
   @@index([companyId])
