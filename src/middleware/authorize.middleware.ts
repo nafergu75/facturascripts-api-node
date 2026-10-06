@@ -7,14 +7,17 @@ import { permisosDeRoles, usuarioTienePermiso } from '../services/rbac.service';
  * usuario (que viajan en el JWT) y exige el permiso indicado.
  *
  * Uso: router.post('/', authorize('contabilidad:write'), handler)
+ * Con varios permisos basta con tener UNO: authorize('compras:write', 'ventas:write').
  */
-export function authorize(permisoNecesario: string): RequestHandler {
+export function authorize(...permisosNecesarios: string[]): RequestHandler {
+  if (permisosNecesarios.length === 0) throw new Error('authorize() necesita al menos un permiso.');
+  const permisoNecesario = permisosNecesarios.join(' o ');
   return (req, _res, next) => {
     if (!req.user) return next(unauthorized('Usuario no autenticado.'));
 
     // 'admin:global' es EXCLUSIVO del admin global de plataforma (no del 'admin'
     // de una empresa). El comodin de rol no lo concede.
-    if (permisoNecesario === 'admin:global') {
+    if (permisosNecesarios.length === 1 && permisosNecesarios[0] === 'admin:global') {
       if (req.user.esAdminGlobal) return next();
       return next(forbidden('Requiere admin global de plataforma.'));
     }
@@ -29,7 +32,7 @@ export function authorize(permisoNecesario: string): RequestHandler {
         ? (req.user.rolesPorEmpresa[req.companyId] ?? [])
         : (req.user.roles ?? []);
     const permisos = permisosDeRoles(roles);
-    if (usuarioTienePermiso(permisos, permisoNecesario)) return next();
+    if (permisosNecesarios.some((p) => usuarioTienePermiso(permisos, p))) return next();
     return next(forbidden(`Falta permiso: ${permisoNecesario}`));
   };
 }

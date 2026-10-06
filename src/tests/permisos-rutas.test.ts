@@ -14,7 +14,10 @@ function permisosPedidosEnRutas(): Array<{ fichero: string; permiso: string }> {
   const pedidos: Array<{ fichero: string; permiso: string }> = [];
   for (const fichero of readdirSync(DIR_RUTAS).filter((f) => f.endsWith('.ts'))) {
     const codigo = readFileSync(join(DIR_RUTAS, fichero), 'utf-8');
-    for (const m of codigo.matchAll(/authorize\(\s*'([^']+)'\s*\)/g)) pedidos.push({ fichero, permiso: m[1] });
+    // authorize('a') o authorize('a', 'b'): se comprueba cada permiso.
+    for (const m of codigo.matchAll(/authorize\(([^)]*)\)/g)) {
+      for (const p of m[1].matchAll(/'([^']+)'/g)) pedidos.push({ fichero, permiso: p[1] });
+    }
   }
   return pedidos;
 }
@@ -30,11 +33,6 @@ const ESCRITURA_SIN_PERMISO: Record<string, string> = {
   'auth.routes.ts POST /logout': 'cerrar la propia sesion',
   'chatAssistant.routes.ts POST /': 'consulta al asistente, no modifica datos',
   'income-reader.routes.ts POST /email-hook': 'entrada de correo; acotada por companyScope',
-  // PENDIENTE: el OCR sirve a compras y a ventas; falta decidir el permiso.
-  'ocr.routes.ts POST /ocr/invoices': 'pendiente de permiso',
-  'ocr.routes.ts POST /ocr/cleanup': 'pendiente de permiso',
-  'ocr-sessions.routes.ts POST /ocr/sessions/:sessionId/retry': 'pendiente de permiso',
-  'ocr-sessions.routes.ts POST /ocr/sessions/:sessionId/send-to-reader': 'pendiente de permiso',
 };
 
 function rutasEscrituraSinAuthorize(): string[] {
@@ -67,6 +65,18 @@ describe('permisos que exigen las rutas', () => {
     for (const p of ['impuestos:read', 'impuestos:write', 'compras:read', 'compras:write', 'contabilidad:write']) {
       expect(usuarioTienePermiso(contable, p)).toBe(true);
     }
+  });
+
+  it('authorize con varios permisos deja pasar a quien tenga uno de ellos', () => {
+    const { authorize } = jest.requireActual('../middleware/authorize.middleware') as typeof import('../middleware/authorize.middleware');
+    const pasa = (roles: string[]) => {
+      const next = jest.fn();
+      authorize('compras:write', 'ventas:write')({ user: { roles } } as never, {} as never, next);
+      return next.mock.calls[0][0] === undefined;
+    };
+    expect(pasa(['ventas'])).toBe(true);
+    expect(pasa(['contable'])).toBe(true);
+    expect(pasa(['solo-lectura'])).toBe(false);
   });
 
   it('solo-lectura lee compras pero no escribe', () => {

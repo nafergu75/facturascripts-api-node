@@ -9,6 +9,7 @@ import path from 'path';
 import fs from 'fs';
 import ocrController from '../controllers/ocr.controller';
 import ILovePDFConfig from '../config/ilovepdf.config';
+import { authorize } from '../middleware/authorize.middleware';
 
 const router = Router();
 
@@ -72,6 +73,7 @@ const upload = multer({
  */
 router.post(
   '/ocr/invoices',
+  authorize('compras:write', 'ventas:write'),
   upload.single('file'),
   ocrController.processInvoiceOcr.bind(ocrController)
 );
@@ -116,6 +118,7 @@ router.get('/ocr/status', ocrController.getOCRStatus.bind(ocrController));
  */
 router.post(
   '/ocr/cleanup',
+  authorize('admin:empresa'),
   ocrController.cleanupTemporaryFiles.bind(ocrController)
 );
 

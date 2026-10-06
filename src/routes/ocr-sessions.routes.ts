@@ -5,6 +5,7 @@
 
 import express, { Router } from 'express';
 import ocrSessionsController from '../controllers/ocr-sessions.controller';
+import { authorize } from '../middleware/authorize.middleware';
 
 const router = Router();
 
@@ -23,12 +24,14 @@ router.get('/ocr/stats', ocrSessionsController.getStats.bind(ocrSessionsControll
 // POST /companies/:companyId/ocr/sessions/:sessionId/retry
 router.post(
   '/ocr/sessions/:sessionId/retry',
+  authorize('compras:write', 'ventas:write'),
   ocrSessionsController.retrySesion.bind(ocrSessionsController)
 );
 
 // POST /companies/:companyId/ocr/sessions/:sessionId/send-to-reader
 router.post(
   '/ocr/sessions/:sessionId/send-to-reader',
+  authorize('compras:write', 'ventas:write'),
   ocrSessionsController.sendToReader.bind(ocrSessionsController)
 );
 
