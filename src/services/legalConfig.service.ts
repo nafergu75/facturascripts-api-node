@@ -60,6 +60,13 @@ export function limpiarLegalConfig(datos: Record<string, unknown>): LegalConfigI
   for (const campo of ['obligaLibroSocios', 'obligaLibroContratos'] as const) {
     if (datos[campo] !== undefined) limpio[campo] = Boolean(datos[campo]);
   }
+  // CNAE-2025 (obligatorio en los depositos desde el 29/05/2026): codigo de 2 a
+  // 4 cifras, con o sin punto (47.11 o 4711). Se guarda sin punto.
+  if (typeof limpio.cnae === 'string') {
+    const cnae = (limpio.cnae as string).replace(/\./g, '');
+    if (!/^\d{2,4}$/.test(cnae)) throw badRequest('El CNAE tiene que ser un código CNAE-2025 de 2 a 4 cifras (por ejemplo 4711).');
+    limpio.cnae = cnae;
+  }
   if (typeof limpio.nif === 'string') limpio.nif = (limpio.nif as string).toUpperCase().replace(/[\s-]/g, '');
   if (typeof limpio.fechaConstitucion === 'string' && !/^\d{4}-\d{2}-\d{2}$/.test(limpio.fechaConstitucion as string)) {
     throw badRequest('fechaConstitucion tiene que tener el formato AAAA-MM-DD.');

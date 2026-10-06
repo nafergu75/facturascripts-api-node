@@ -8,6 +8,7 @@ import { fiscalYearsService } from './fiscalYears.service';
 import { generarCuentasAnualesDetalle } from './cuentasAnuales.service';
 import { filasCuentasAnuales, filasMemoria } from './cuentasAnualesPdf';
 import { generarMemoria, limpiarNotasMemoria, NotasMemoria } from './memoria.service';
+import { generarXbrl } from './xbrl.service';
 import { EstadoCuentas, ModeloCuentas, puedeTransicionarCuentas, RESOLUCIONES_CUENTAS } from '../domain/registroMercantil.model';
 
 function ejercicioDe(fy: { label: string; fechaFin: string }): number {
@@ -42,7 +43,14 @@ export const annualAccountsService = {
       asientos: detalle.asientos,
     });
 
-    const dataJson = { modelo, ejercicio, estados, memoria };
+    // XBRL para importar en D2 (taxonomia PGC2007 v1.6.0). El modelo normal pide
+    // mas desglose del que hay aqui: para ese no se genera.
+    const xbrl =
+      modelo === 'NORMAL'
+        ? null
+        : generarXbrl({ modelo, ejercicio, nif: estados.sociedad.nif, saldos: detalle.saldos, saldosAnterior: detalle.saldosAnterior });
+
+    const dataJson = { modelo, ejercicio, estados, memoria, xbrl: xbrl?.xml ?? null, avisosXbrl: xbrl?.avisos ?? [] };
 
     const pdf = await generarPdfA(`Cuentas anuales ${ejercicio} - ${estados.sociedad.denominacion || 'Empresa'}`, [
       ...filasCuentasAnuales(estados, modelo),
@@ -72,7 +80,21 @@ export const annualAccountsService = {
       },
     });
 
-    return { accountId: cuenta.id, version: cuenta.version, format: cuenta.format, filePath: cuenta.filePath, hash: cuenta.hash, status: cuenta.status };
+    return { accountId: cuenta.id, version: cuenta.version, avisosXbrl: xbrl?.avisos ?? [], format: cuenta.format, filePath: cuenta.filePath, hash: cuenta.hash, status: cuenta.status };
+  },
+
+  /** Fichero XBRL guardado al generar esa version de las cuentas. */
+  async obtenerXbrl(id: string): Promise<{ companyId: string; xml: string; nombre: string }> {
+    const c = await this.obtener(id);
+    const datos = (c.dataJson ?? {}) as { xbrl?: string | null; ejercicio?: number };
+    if (!datos.xbrl) {
+      throw notFound(
+        c.modelo === 'NORMAL'
+          ? 'Para el modelo normal no se genera XBRL todavía.'
+          : 'Esta versión se generó antes de que existiera el XBRL: genera una versión nueva.',
+      );
+    }
+    return { companyId: c.companyId, xml: datos.xbrl, nombre: `cuentas-anuales-${datos.ejercicio ?? ''}-v${c.version}.xbrl` };
   },
 
   /** Notas de la memoria del ejercicio y lo que falta por completar. */

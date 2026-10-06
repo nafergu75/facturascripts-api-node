@@ -51,6 +51,17 @@ export const annualAccountsController = {
     res.send(buf);
   }),
 
+  // GET /annual-accounts/:id/xbrl  (para importar en el programa D2)
+  descargarXbrl: asyncHandler(async (req, res) => {
+    const c = await annualAccountsService.obtener(req.params.id);
+    assertAccesoEmpresa(req.user, c.companyId);
+    const x = await annualAccountsService.obtenerXbrl(c.id);
+    await registrarAuditoria({ userId: req.user!.userId, companyId: c.companyId, action: 'DOWNLOAD_ANNUAL_ACCOUNTS_XBRL', resourceType: 'ANNUAL_ACCOUNTS', resourceId: c.id });
+    res.setHeader('Content-Type', 'application/xml; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${x.nombre}"`);
+    res.send(x.xml);
+  }),
+
   // POST /annual-accounts/:id/filing
   filing: asyncHandler(async (req, res) => {
     const c = await annualAccountsService.obtener(req.params.id);

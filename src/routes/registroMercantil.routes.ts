@@ -65,6 +65,7 @@ router.get('/fiscal-years/:fyId/annual-accounts', annualAccountsController.lista
 router.get('/fiscal-years/:fyId/memoria', annualAccountsController.memoria);
 router.put('/fiscal-years/:fyId/memoria', authorize('contabilidad:write'), annualAccountsController.guardarMemoria);
 router.get('/annual-accounts/:id/download', annualAccountsController.descargar);
+router.get('/annual-accounts/:id/xbrl', annualAccountsController.descargarXbrl);
 router.post('/annual-accounts/:id/filing', authorize('contabilidad:write'), annualAccountsController.filing);
 router.post('/annual-accounts/:id/resolution', authorize('contabilidad:write'), annualAccountsController.resolution);
 
