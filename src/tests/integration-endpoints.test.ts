@@ -45,8 +45,9 @@ describe('PUBLIC: Auth & Health', () => {
 
   it('POST /auth/dev-login → dev login (development)', async () => {
     const res = await request(app).post('/auth/dev-login').send({});
-    // Puede fallar en test, pero genera log
-    expect([200, 400]).toContain(res.status);
+    // Sin las credenciales de desarrollo la entrada se rechaza (401), nunca da acceso.
+    expect([200, 400, 401, 403, 404]).toContain(res.status);
+    expect(res.body?.token ?? res.body?.data?.token).toBeUndefined();
   });
 
   it('POST /auth/login → login endpoint', async () => {

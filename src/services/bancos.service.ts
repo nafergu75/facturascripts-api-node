@@ -248,6 +248,9 @@ export async function marcarMovimientoConciliado(
  */
 export function parsearImporte(texto: string, formatoEuropeo: boolean): number {
   const t = texto.replace(/[\s€]/g, '');
+  // "-90.00" en un CSV europeo: un punto seguido de 1 o 2 cifras no puede ser de
+  // miles (esos llevan siempre 3), asi que es el separador decimal.
+  if (formatoEuropeo && /^-?\d+\.\d{1,2}$/.test(t)) return Number(t);
   const patron = formatoEuropeo ? /^-?\d{1,3}(\.\d{3})*(,\d+)?$|^-?\d+(,\d+)?$/ : /^-?\d+(\.\d+)?$/;
   if (!patron.test(t)) return NaN;
   return Number(formatoEuropeo ? t.replace(/\./g, '').replace(',', '.') : t);

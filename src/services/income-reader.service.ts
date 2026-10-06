@@ -304,12 +304,12 @@ export async function procesarOCR(buffer: Buffer, mimeType: string): Promise<Par
     }
   }
 
-  // 2) PDF/imagen: OCR real vía Claude.
-  if (!anthropicClient) return { confianza: 0, ocrEstado: 'SIN_CLAVE' };
-
+  // 2) PDF/imagen: OCR real vía Claude. Primero el formato: un archivo que no
+  // se puede leer nunca lo es aunque haya clave, y el aviso debe decirlo asi.
   const esPdf = /pdf/i.test(mimeType);
   const esImagen = MIME_IMAGEN_OCR.test(mimeType);
   if (!esPdf && !esImagen) return { confianza: 0, ocrEstado: 'FORMATO_NO_SOPORTADO' };
+  if (!anthropicClient) return { confianza: 0, ocrEstado: 'SIN_CLAVE' };
 
   const data = buffer.toString('base64');
 

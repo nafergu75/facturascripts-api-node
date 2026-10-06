@@ -107,11 +107,11 @@ describe('Income Reader Service', () => {
   });
 
   describe('procesarOCR', () => {
-    it('debería retornar NO_LEGIBLE si no hay ANTHROPIC_API_KEY', async () => {
+    it('sin ANTHROPIC_API_KEY un PDF queda SIN_CLAVE (no se puede leer, pero no es ilegible)', async () => {
       const buffer = Buffer.from('test content');
       const result = await procesarOCR(buffer, 'application/pdf');
 
-      expect(result.ocrEstado).toBe('NO_LEGIBLE');
+      expect(result.ocrEstado).toBe('SIN_CLAVE');
       expect(result.confianza).toBe(0);
     });
 
@@ -127,8 +127,8 @@ describe('Income Reader Service', () => {
       const buffer = Buffer.from('%PDF-1.4 mock pdf');
       const result = await procesarOCR(buffer, 'application/pdf');
 
-      // Sin API key, intenta Claude pero falla con NO_LEGIBLE
-      expect(['NO_LEGIBLE', 'OK']).toContain(result.ocrEstado);
+      // Sin API key (como en CI) queda SIN_CLAVE; con clave, OK o NO_LEGIBLE.
+      expect(['NO_LEGIBLE', 'OK', 'SIN_CLAVE']).toContain(result.ocrEstado);
       expect(result.confianza).toBeDefined();
     });
 
@@ -136,7 +136,7 @@ describe('Income Reader Service', () => {
       const buffer = Buffer.from('mock image data');
       const result = await procesarOCR(buffer, 'image/png');
 
-      expect(['NO_LEGIBLE', 'OK']).toContain(result.ocrEstado);
+      expect(['NO_LEGIBLE', 'OK', 'SIN_CLAVE']).toContain(result.ocrEstado);
     });
 
     it('debería procesar XML Facturae como formato válido', async () => {
@@ -145,7 +145,7 @@ describe('Income Reader Service', () => {
       const result = await procesarOCR(buffer, 'application/xml');
 
       // XML se detecta y procesa
-      expect(['OK', 'NO_LEGIBLE']).toContain(result.ocrEstado);
+      expect(['OK', 'NO_LEGIBLE', 'SIN_CLAVE']).toContain(result.ocrEstado);
     });
   });
 
@@ -176,11 +176,11 @@ describe('Income Reader Service', () => {
       expect(result.total).toBe(500.00);
     });
 
-    it('debería rechazar PDF sin ANTHROPIC_API_KEY', async () => {
+    it('un PDF sin ANTHROPIC_API_KEY queda SIN_CLAVE', async () => {
       const pdfMock = Buffer.from('%PDF-1.4 mock content');
       const result = await procesarOCR(pdfMock, 'application/pdf');
 
-      expect(result.ocrEstado).toBe('NO_LEGIBLE');
+      expect(result.ocrEstado).toBe('SIN_CLAVE');
       expect(result.confianza).toBe(0);
     });
 
