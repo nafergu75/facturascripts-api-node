@@ -7,6 +7,7 @@
  * - Exportación de modelos
  */
 
+import { generarTxt303Trimestre } from '../services/impuestosModulo.service';
 import { Router, Request, Response } from 'express';
 import { taxDocumentsService } from '../services/tax-documents.service';
 import { authMiddleware } from '../middleware/auth.middleware';
@@ -235,18 +236,21 @@ taxRoutes.get(
         });
       }
 
-      const exportado = await taxDocumentsService.exportarModelo303(
-        companyId,
-        period as string,
-        (format as 'txt' | 'json') || 'json'
-      );
-
       if (format === 'txt') {
-        res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-        res.send(exportado);
-      } else {
-        res.json(exportado);
+        // Fichero OFICIAL para la sede de la AEAT (diseno de registro del 303,
+        // ISO-8859-1). Antes se descargaba un resumen legible que la sede rechaza.
+        const m = /^Q([1-4])-(\d{4})$/.exec(String(period));
+        if (!m) {
+          return res.status(400).json({ error: 'El periodo tiene que ser Q1-2026, Q2-2026...' });
+        }
+        const { nombre, contenido } = await generarTxt303Trimestre(companyId, Number(m[2]), Number(m[1]) as 1 | 2 | 3 | 4);
+        res.setHeader('Content-Type', 'text/plain; charset=ISO-8859-1');
+        res.setHeader('Content-Disposition', `attachment; filename="${nombre}"`);
+        return res.status(200).send(Buffer.from(contenido, 'latin1'));
       }
+
+      const exportado = await taxDocumentsService.exportarModelo303(companyId, period as string, 'json');
+      res.json(exportado);
     } catch (err) {
       const statusCode =
         err instanceof HttpError ? err.statusCode : 400;

@@ -123,7 +123,9 @@ export class TaxModelsService {
           origen: 'autorrelleno',
         },
       });
-    } else {
+    } else if (modelo.estado !== 'presentado' && modelo.estado !== 'omitido') {
+      // Un modelo presentado u omitido no se recalcula: lo guardado tiene que
+      // seguir siendo lo que se presento, aunque luego cambie una factura.
       modelo = await prisma.modeloImpuesto.update({
         where: { id: modelo.id },
         data: {
@@ -300,7 +302,9 @@ export class TaxModelsService {
           origen: 'autorrelleno',
         },
       });
-    } else {
+    } else if (modelo.estado !== 'presentado' && modelo.estado !== 'omitido') {
+      // Un modelo presentado u omitido no se recalcula: lo guardado tiene que
+      // seguir siendo lo que se presento, aunque luego cambie una factura.
       modelo = await prisma.modeloImpuesto.update({
         where: { id: modelo.id },
         data: {
@@ -430,7 +434,9 @@ export class TaxModelsService {
           origen: 'autorrelleno',
         },
       });
-    } else {
+    } else if (modelo.estado !== 'presentado' && modelo.estado !== 'omitido') {
+      // Un modelo presentado u omitido no se recalcula: lo guardado tiene que
+      // seguir siendo lo que se presento, aunque luego cambie una factura.
       modelo = await prisma.modeloImpuesto.update({
         where: { id: modelo.id },
         data: {
@@ -531,11 +537,17 @@ export class TaxModelsService {
       operaciones: any[];
     }>();
 
-    const MINIMO_347 = 3000.06;
+    // Se declara el tercero cuyo total ANUAL con IVA supera 3.005,06 €. Antes el
+    // umbral era 3.000,06 y se aplicaba factura a factura: tres facturas de
+    // 2.000 € al mismo cliente no salian.
+    const MINIMO_347 = 3005.06;
+    const importe = (f: { baseTotal: number; ivaTotal: number }) => Math.round((Number(f.baseTotal) + Number(f.ivaTotal)) * 100) / 100;
+    // Las operaciones con el extranjero no van en el 347 (las intracomunitarias, en el 349).
+    const espanol = (pais: string | null | undefined) => !pais || pais.toUpperCase() === 'ES';
 
     // Procesar clientes
     for (const factura of clientesFacturas) {
-      if (!factura.customer.nifCif || factura.totalFactura < MINIMO_347) continue;
+      if (!factura.customer.nifCif || !espanol(factura.customer.pais)) continue;
 
       const key = `cliente-${factura.customer.nifCif}`;
       if (!tercerosMapa.has(key)) {
@@ -549,17 +561,17 @@ export class TaxModelsService {
       }
 
       const tercero = tercerosMapa.get(key)!;
-      tercero.totalOperaciones += factura.totalFactura;
+      tercero.totalOperaciones += importe(factura);
       tercero.operaciones.push({
         tipoOperacion: 'venta',
-        importe: factura.totalFactura,
+        importe: importe(factura),
         id: factura.id,
       });
     }
 
     // Procesar proveedores
     for (const factura of proveedoresFacturas) {
-      if (!factura.supplier.nifCif || factura.totalFactura < MINIMO_347) continue;
+      if (!factura.supplier.nifCif || !espanol(factura.supplier.pais)) continue;
 
       const key = `proveedor-${factura.supplier.nifCif}`;
       if (!tercerosMapa.has(key)) {
@@ -573,15 +585,17 @@ export class TaxModelsService {
       }
 
       const tercero = tercerosMapa.get(key)!;
-      tercero.totalOperaciones += factura.totalFactura;
+      tercero.totalOperaciones += importe(factura);
       tercero.operaciones.push({
         tipoOperacion: 'compra',
-        importe: factura.totalFactura,
+        importe: importe(factura),
         id: factura.id,
       });
     }
 
-    const terceros = Array.from(tercerosMapa.values());
+    const terceros = Array.from(tercerosMapa.values())
+      .map((t) => ({ ...t, totalOperaciones: Math.round(t.totalOperaciones * 100) / 100 }))
+      .filter((t) => t.totalOperaciones > MINIMO_347);
     const totalOperaciones = terceros.reduce((sum, t) => sum + t.totalOperaciones, 0);
 
     // Generar casillas AEAT
@@ -641,7 +655,9 @@ export class TaxModelsService {
           origen: 'autorrelleno',
         },
       });
-    } else {
+    } else if (modelo.estado !== 'presentado' && modelo.estado !== 'omitido') {
+      // Un modelo presentado u omitido no se recalcula: lo guardado tiene que
+      // seguir siendo lo que se presento, aunque luego cambie una factura.
       modelo = await prisma.modeloImpuesto.update({
         where: { id: modelo.id },
         data: {
@@ -816,7 +832,9 @@ export class TaxModelsService {
           origen: 'autorrelleno',
         },
       });
-    } else {
+    } else if (modelo.estado !== 'presentado' && modelo.estado !== 'omitido') {
+      // Un modelo presentado u omitido no se recalcula: lo guardado tiene que
+      // seguir siendo lo que se presento, aunque luego cambie una factura.
       modelo = await prisma.modeloImpuesto.update({
         where: { id: modelo.id },
         data: {
@@ -979,7 +997,9 @@ export class TaxModelsService {
           origen: 'autorrelleno',
         },
       });
-    } else {
+    } else if (modelo.estado !== 'presentado' && modelo.estado !== 'omitido') {
+      // Un modelo presentado u omitido no se recalcula: lo guardado tiene que
+      // seguir siendo lo que se presento, aunque luego cambie una factura.
       modelo = await prisma.modeloImpuesto.update({
         where: { id: modelo.id },
         data: {
@@ -1124,7 +1144,9 @@ export class TaxModelsService {
           origen: 'autorrelleno',
         },
       });
-    } else {
+    } else if (modelo.estado !== 'presentado' && modelo.estado !== 'omitido') {
+      // Un modelo presentado u omitido no se recalcula: lo guardado tiene que
+      // seguir siendo lo que se presento, aunque luego cambie una factura.
       modelo = await prisma.modeloImpuesto.update({
         where: { id: modelo.id },
         data: {

@@ -29,10 +29,30 @@ describe('Modelo 303 (IVA trimestral)', () => {
 describe('Modelo 347 (operaciones con terceros > 3.005,06 anual)', () => {
   it('incluye al cliente que supera el umbral y excluye al que no', () => {
     const m = agregar347(facturas, 2026);
-    // Cliente A1: 1000 + 5000 + ... = 6000 (>3005). Proveedor B2: 400 (<3005, excluido).
+    // Cliente A1: 6.000 de base + 21 % de IVA = 7.260 (el 347 va con IVA
+    // incluido; antes se declaraba solo la base). Proveedor B2: 400 (excluido).
     const cliente = m.operaciones.find((o) => o.cifnif === 'A11111111');
-    expect(cliente?.baseAnual).toBe(6000);
+    expect(cliente?.baseAnual).toBe(7260);
     expect(m.operaciones.find((o) => o.cifnif === 'B22222222')).toBeUndefined();
+  });
+
+  it('suma todas las facturas del año del mismo tercero y solo declara lo que SUPERA 3.005,06', () => {
+    const f = (id: string, cifnif: string, base: number, operacion: 'interior' | 'intracomunitaria' = 'interior') => ({
+      idFactura: id, tipo: 'venta' as const, cifnif, nombreTercero: cifnif, fecha: '2026-03-01', operacion,
+      lineas: [{ tipoIva: 21, base, cuota: Math.round(base * 21) / 100 }],
+    });
+    const m = agregar347(
+      [
+        // Tres facturas de 2.000 € con IVA: ninguna supera el umbral, la suma si.
+        f('1', 'B1', 1652.89), f('2', 'B1', 1652.89), f('3', 'B1', 1652.89),
+        // Justo 3.005,06 con IVA: no se declara.
+        f('4', 'B2', 2483.52),
+        // Cliente de otro pais de la UE: va en el 349, no en el 347.
+        f('5', 'FR1', 10000, 'intracomunitaria'),
+      ],
+      2026,
+    );
+    expect(m.operaciones.map((o) => [o.cifnif, o.baseAnual])).toEqual([['B1', 6000]]);
   });
 });
 

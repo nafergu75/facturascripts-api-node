@@ -36,10 +36,11 @@ describe('generarFicheroModelo303', () => {
     // Ejercicio (pos 103) y periodo (pos 107)
     expect(fichero.slice(102, 106)).toBe('2026');
     expect(fichero.slice(106, 108)).toBe('2T');
-    // [01] base (pos 209), [02] tipo% (pos 226), [03] cuota (pos 231)
-    expect(fichero.slice(208, 225)).toBe('00000000000030000'); // 300,00 €
-    expect(fichero.slice(225, 230)).toBe('02100'); // 21,00 %
-    expect(fichero.slice(230, 247)).toBe('00000000000006300'); // 63,00 €
+    // El 21 % va en su fila fija: [07] base (pos 326), [08] tipo% (pos 343), [09] cuota (pos 348)
+    expect(fichero.slice(325, 342)).toBe('00000000000030000'); // 300,00 €
+    expect(fichero.slice(342, 347)).toBe('02100'); // 21,00 %
+    expect(fichero.slice(347, 364)).toBe('00000000000006300'); // 63,00 €
+    expect(fichero.slice(208, 225)).toBe('00000000000000000'); // [01] (4 %) vacia
     // [27] total cuota devengada (pos 696)
     expect(fichero.slice(695, 712)).toBe('00000000000006300');
   });

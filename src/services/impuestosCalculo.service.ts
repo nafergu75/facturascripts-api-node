@@ -10,6 +10,7 @@ import {
   DatosModelo390,
   DesgloseIva,
   FacturaFiscal,
+  filasRegimenGeneral303,
   OperacionTercero,
   PeriodoFiscal,
 } from '../domain/impuestos.model';
@@ -79,26 +80,27 @@ export function agregar303(
   const cuotasPendientesPosteriores = round2(pendientesAnteriores - cuotasAplicadas);
   const resultadoFinal = round2(resultado - cuotasAplicadas);
 
-  // Casillas OFICIALES del 303. Bloque devengado RG = 3 filas por tipo de IVA
-  // en orden descendente (habitualmente 21/10/4):
-  //   fila 1: [01] base, [02] tipo%, [03] cuota
-  //   fila 2: [04] base, [05] tipo%, [06] cuota
-  //   fila 3: [07] base, [08] tipo%, [09] cuota
+  // Casillas OFICIALES del 303. Bloque devengado del regimen general, una fila
+  // FIJA por tipo (ver FILA_303_POR_TIPO): [01]-[03] 4 %, [04]-[06] 10 %,
+  // [07]-[09] 21 %.
   const casillas: Record<string, number> = {};
   const filas: Array<[string, string, string]> = [
     ['01', '02', '03'],
     ['04', '05', '06'],
     ['07', '08', '09'],
   ];
-  [...ivaDevengado]
-    .sort((a, b) => b.tipo - a.tipo)
-    .slice(0, 3)
-    .forEach((d, i) => {
-      const [cBase, cTipo, cCuota] = filas[i];
-      casillas[`${cBase}_base_devengada_${d.tipo}`] = d.base;
-      casillas[`${cTipo}_tipo`] = d.tipo;
-      casillas[`${cCuota}_cuota_devengada_${d.tipo}`] = d.cuota;
-    });
+  const { filas: porFila, sinFila } = filasRegimenGeneral303(ivaDevengado);
+  porFila.forEach((d, i) => {
+    if (!d) return;
+    const [cBase, cTipo, cCuota] = filas[i];
+    casillas[`${cBase}_base_devengada_${d.tipo}`] = d.base;
+    casillas[`${cTipo}_tipo`] = d.tipo;
+    casillas[`${cCuota}_cuota_devengada_${d.tipo}`] = d.cuota;
+  });
+  const advertencias = sinFila.map(
+    (d) =>
+      `Hay ventas al ${d.tipo} % (base ${d.base.toFixed(2)} €, cuota ${d.cuota.toFixed(2)} €): ese tipo no tiene fila en el régimen general del 303. Revísalas antes de presentar.`,
+  );
   Object.assign(casillas, {
     '27_total_devengado': totalCuotaDevengada,
     '28_base_deducible': sumBase(ivaDeducible),
@@ -127,6 +129,7 @@ export function agregar303(
     entregasIntracomunitarias,
     exportaciones,
     casillas,
+    ...(advertencias.length && { advertencias }),
   };
 }
 
@@ -160,11 +163,14 @@ export function agregar347(
   ejercicio: number,
   umbral: number = UMBRAL_347,
 ): DatosModelo347 {
-  const delAno = facturas.filter((f) => f.fecha.startsWith(String(ejercicio)));
+  // Solo operaciones interiores: las intracomunitarias van en el 349 y las
+  // exportaciones no se declaran en el 347.
+  const delAno = facturas.filter((f) => f.fecha.startsWith(String(ejercicio)) && f.operacion === 'interior');
   const acumulado = new Map<string, OperacionTercero>();
 
   for (const f of delAno) {
-    const base = round2(f.lineas.reduce((a, l) => a + l.base, 0));
+    // El 347 se declara con IVA incluido (antes se sumaba solo la base).
+    const base = round2(f.lineas.reduce((a, l) => a + l.base + l.cuota, 0));
     const key = `${f.tipo}:${f.cifnif}`;
     const prev =
       acumulado.get(key) ??

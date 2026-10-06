@@ -84,7 +84,8 @@ export async function generarAlertasCompliance(companyId: string, ejercicio: num
   // 2) Umbral del 347 (3.005,06 € anuales por tercero)
   const m347 = await calcularModelo347(companyId, ejercicio, UMBRAL_347 * 0.8);
   for (const op of m347.operaciones) {
-    if (op.baseAnual >= UMBRAL_347) {
+    // Se declara lo que SUPERA el umbral (3.005,06 € no se declara).
+    if (op.baseAnual > UMBRAL_347) {
       alertas.push(
         alerta(companyId, ejercicio, 'OBLIGADO_347',
           `Operaciones con ${op.nombre} (${op.cifnif}) suman ${op.baseAnual} € -> declarar en el 347.`,

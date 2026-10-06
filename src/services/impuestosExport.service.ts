@@ -1,4 +1,5 @@
-import { DatosModelo111, DatosModelo115, DatosModelo303, DatosModelo347, DatosModelo349, DatosModelo390, PeriodoFiscal } from '../domain/impuestos.model';
+import { DatosModelo111, DatosModelo115, DatosModelo303, DatosModelo347, DatosModelo349, DatosModelo390, filasRegimenGeneral303, PeriodoFiscal } from '../domain/impuestos.model';
+import { badRequest } from '../utils/http-errors';
 
 /**
  * Generacion de ficheros BOE (ancho fijo) para importar en la Sede AEAT.
@@ -162,19 +163,25 @@ export function generarFicheroModelo303(
   put(103, numero(periodo.ejercicio, 4));
   put(107, texto(periodo.periodo, 2));
 
-  // IVA devengado regimen general: TRES filas por tipo impositivo (diseno oficial)
-  //   fila 1: [01]base@209 [02]tipo@226 [03]cuota@231   (habitualmente 21%)
-  //   fila 2: [04]base@287 [05]tipo@304 [06]cuota@309   (habitualmente 10%)
-  //   fila 3: [07]base@326 [08]tipo@343 [09]cuota@348   (habitualmente 4%)
-  // Se rellenan por tipo de IVA en orden descendente. TODO: si hubiera mas de 3
-  // tipos en un periodo, los excedentes no caben en el RG (revisar regimenes).
+  // IVA devengado regimen general: una fila FIJA por tipo (diseno oficial)
+  //   [01]base@209 [02]tipo@226 [03]cuota@231   4 %
+  //   [04]base@287 [05]tipo@304 [06]cuota@309   10 %
+  //   [07]base@326 [08]tipo@343 [09]cuota@348   21 %
+  // Antes se rellenaban por orden descendente y el 21 % caia en la fila del 4 %.
   const FILAS: Array<[number, number, number]> = [
     [209, 226, 231],
     [287, 304, 309],
     [326, 343, 348],
   ];
-  const desglose = [...datos.ivaDevengado].sort((a, b) => b.tipo - a.tipo).slice(0, 3);
-  desglose.forEach((d, i) => {
+  const { filas, sinFila } = filasRegimenGeneral303(datos.ivaDevengado);
+  if (sinFila.length) {
+    // Un fichero que se deja importes fuera se presentaria mal: mejor no generarlo.
+    throw badRequest(
+      `No se puede generar el fichero del 303: hay ventas al ${sinFila.map((d) => `${d.tipo} %`).join(', ')}, que no tiene fila en el régimen general. Revisa esas facturas.`,
+    );
+  }
+  filas.forEach((d, i) => {
+    if (!d) return;
     const [pBase, pTipo, pCuota] = FILAS[i];
     put(pBase, importe(d.base, 17)); // base
     put(pTipo, numero(Math.round(d.tipo * 100), 5)); // tipo% (21% -> 02100)

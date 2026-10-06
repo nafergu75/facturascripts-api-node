@@ -62,16 +62,40 @@ const facturas: FacturaFiscal[] = [
 describe('Modelo 303 — casillas oficiales por tipo de IVA', () => {
   const d = agregar303(facturas, periodo2T);
 
-  it('desglosa el devengado en las 3 filas [01-09] (21/10/4)', () => {
-    expect(d.casillas['01_base_devengada_21']).toBe(1000);
-    expect(d.casillas['02_tipo']).toBe(21);
-    expect(d.casillas['03_cuota_devengada_21']).toBe(210);
+  // Cada tipo tiene su fila fija en el modelo oficial: [01]-[03] el 4 %,
+  // [04]-[06] el 10 % y [07]-[09] el 21 %. Antes se rellenaban de mayor a menor
+  // tipo y este test lo daba por bueno.
+  it('cada tipo de IVA en su fila fija: [01-03] 4 %, [04-06] 10 %, [07-09] 21 %', () => {
+    expect(d.casillas['01_base_devengada_4']).toBe(200);
+    expect(d.casillas['02_tipo']).toBe(4);
+    expect(d.casillas['03_cuota_devengada_4']).toBe(8);
     expect(d.casillas['04_base_devengada_10']).toBe(500);
     expect(d.casillas['05_tipo']).toBe(10);
     expect(d.casillas['06_cuota_devengada_10']).toBe(50);
-    expect(d.casillas['07_base_devengada_4']).toBe(200);
-    expect(d.casillas['08_tipo']).toBe(4);
-    expect(d.casillas['09_cuota_devengada_4']).toBe(8);
+    expect(d.casillas['07_base_devengada_21']).toBe(1000);
+    expect(d.casillas['08_tipo']).toBe(21);
+    expect(d.casillas['09_cuota_devengada_21']).toBe(210);
+  });
+
+  it('sin ventas al 4 %, el 21 % sigue en [07-09] (no se desplaza a la primera fila)', () => {
+    const solo21 = agregar303(
+      [{ idFactura: 'x', tipo: 'venta', cifnif: 'B1', nombreTercero: 'X', fecha: '2026-05-10', operacion: 'interior', lineas: [{ tipoIva: 21, base: 100, cuota: 21 }] }],
+      periodo2T,
+    );
+    expect(solo21.casillas['07_base_devengada_21']).toBe(100);
+    expect(Object.keys(solo21.casillas).some((k) => k.startsWith('01_'))).toBe(false);
+    const reg = generarFicheroModelo303('B12345678', periodo2T, solo21).replace(/\r\n$/, '');
+    expect(reg.slice(208, 225)).toBe('00000000000000000'); // [01] vacia
+    expect(reg.slice(325, 342)).toBe('00000000000010000'); // [07] 100,00
+  });
+
+  it('un tipo sin fila (p. ej. 5 %) avisa en el calculo y el TXT no se genera', () => {
+    const d5 = agregar303(
+      [{ idFactura: 'x', tipo: 'venta', cifnif: 'B1', nombreTercero: 'X', fecha: '2026-05-10', operacion: 'interior', lineas: [{ tipoIva: 5, base: 100, cuota: 5 }] }],
+      periodo2T,
+    );
+    expect(d5.advertencias?.[0]).toMatch(/al 5 %/);
+    expect(() => generarFicheroModelo303('B12345678', periodo2T, d5)).toThrow(/al 5 %/);
   });
 
   it('totales: [27] devengado, [28]/[29] deducible (excluye NO deducible), [45]/[46]/[71]', () => {
@@ -86,18 +110,18 @@ describe('Modelo 303 — casillas oficiales por tipo de IVA', () => {
   it('el TXT BOE escribe las 3 filas en sus posiciones oficiales', () => {
     const reg = generarFicheroModelo303('B12345678', periodo2T, d).replace(/\r\n$/, '');
     expect(reg).toHaveLength(1581);
-    // fila 1 (21%): [01]@209 [02]@226 [03]@231
-    expect(reg.slice(208, 225)).toBe('00000000000100000'); // 1000.00
-    expect(reg.slice(225, 230)).toBe('02100'); // 21.00%
-    expect(reg.slice(230, 247)).toBe('00000000000021000'); // 210.00
-    // fila 2 (10%): [04]@287 [05]@304 [06]@309
+    // fila del 4 %: [01]@209 [02]@226 [03]@231
+    expect(reg.slice(208, 225)).toBe('00000000000020000'); // 200.00
+    expect(reg.slice(225, 230)).toBe('00400'); // 4.00%
+    expect(reg.slice(230, 247)).toBe('00000000000000800'); // 8.00
+    // fila del 10 %: [04]@287 [05]@304 [06]@309
     expect(reg.slice(286, 303)).toBe('00000000000050000'); // 500.00
     expect(reg.slice(303, 308)).toBe('01000'); // 10.00%
     expect(reg.slice(308, 325)).toBe('00000000000005000'); // 50.00
-    // fila 3 (4%): [07]@326 [08]@343 [09]@348
-    expect(reg.slice(325, 342)).toBe('00000000000020000'); // 200.00
-    expect(reg.slice(342, 347)).toBe('00400'); // 4.00%
-    expect(reg.slice(347, 364)).toBe('00000000000000800'); // 8.00
+    // fila del 21 %: [07]@326 [08]@343 [09]@348
+    expect(reg.slice(325, 342)).toBe('00000000000100000'); // 1000.00
+    expect(reg.slice(342, 347)).toBe('02100'); // 21.00%
+    expect(reg.slice(347, 364)).toBe('00000000000021000'); // 210.00
     // [27]@696 total devengado
     expect(reg.slice(695, 712)).toBe('00000000000026800'); // 268.00
   });

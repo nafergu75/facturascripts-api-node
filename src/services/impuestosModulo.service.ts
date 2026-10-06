@@ -235,15 +235,23 @@ function periodoFiscalDe(fila: FilaModelo): PeriodoFiscal {
 /** Configuracion de la empresa para el autorrelleno (NIF, razon social, IBAN). */
 async function configuracionEmpresa(companyId: string): Promise<Casillas> {
   const out: Casillas = {};
-  try {
-    const fs = await getFsClientForCompany(companyId);
-    const { items } = await fs.listWithMeta('empresas', { limit: 1 });
-    const e = items[0] as Record<string, unknown> | undefined;
-    out.config_nif = (e?.cifnif as string) ?? null;
-    out.config_razon_social = (e?.nombre as string) ?? null;
-  } catch {
-    out.config_nif = null;
-    out.config_razon_social = null;
+  // Primero los datos de la sociedad que guarda la app (Registro Mercantil >
+  // Datos para la memoria); si faltan, los de FacturaScripts.
+  const legal = await Promise.resolve()
+    .then(() => prisma.legalConfig.findUnique({ where: { companyId } }))
+    .catch(() => null);
+  out.config_nif = legal?.nif ?? null;
+  out.config_razon_social = legal?.denominacion ?? null;
+  if (!out.config_nif || !out.config_razon_social) {
+    try {
+      const fs = await getFsClientForCompany(companyId);
+      const { items } = await fs.listWithMeta('empresas', { limit: 1 });
+      const e = items[0] as Record<string, unknown> | undefined;
+      out.config_nif = out.config_nif || ((e?.cifnif as string) ?? null);
+      out.config_razon_social = out.config_razon_social || ((e?.nombre as string) ?? null);
+    } catch {
+      // Sin FacturaScripts: se queda con lo que haya.
+    }
   }
   const cuentas = await listarCuentasBancarias(companyId);
   out.config_iban = cuentas.find((c) => c.activa)?.iban ?? null;
@@ -404,6 +412,29 @@ export async function guardarModeloManual(
  * casillas NO viajan al TXT — TODO mapear casillas->datos por modelo; hoy el
  * TXT refleja el autorrelleno, como indica la advertencia del propio video.
  */
+/**
+ * Fichero oficial del 303 de un trimestre, calculado al momento (lo que
+ * descarga el boton de la pantalla del 303). Sin NIF no se genera: la sede de
+ * la AEAT lo rechazaria.
+ */
+export async function generarTxt303Trimestre(companyId: string, ejercicio: number, trimestre: 1 | 2 | 3 | 4) {
+  const fila: FilaModelo = { id: '', companyId, codigo: '303', ejercicio, periodo: `${trimestre}T`, estado: 'vigente', casillas: null, datos: null, origen: null };
+  const periodo = periodoFiscalDe(fila);
+  const cfg = await configuracionEmpresa(companyId);
+  const nif = String(cfg.config_nif ?? '').trim();
+  if (!nif) {
+    throw badRequest('Falta el NIF de la empresa. Rellénalo en Registro Mercantil > Datos para la memoria y vuelve a descargar el fichero.');
+  }
+  const d = await calcularModelo303(companyId, periodo);
+  const pag1 = generarFicheroModelo303(nif, periodo, d, String(cfg.config_razon_social ?? '')).replace(/\r\n$/, '');
+  const pag3 = generarPaginaModelo303_03(d);
+  return {
+    nombre: `303_${ejercicio}_${trimestre}T.txt`,
+    contenido: envolverFichero('303', ejercicio, periodo.periodo, pag1 + pag3, { versionPrograma: '0101' }),
+    advertencias: d.advertencias ?? [],
+  };
+}
+
 export async function generarTxtModelo(companyId: string, modeloId: string): Promise<{ nombre: string; contenido: string }> {
   const fila = await cargarFila(companyId, modeloId);
   if (!fila.datos) await autorrellenarModelo(companyId, modeloId);

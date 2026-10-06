@@ -63,6 +63,31 @@ export interface DatosModelo303 {
   exportaciones?: number;
   /** Importes pre-calculados por casilla (para UI tipo formulario AEAT). */
   casillas: Record<string, number>;
+  /** Avisos que hay que revisar antes de presentar (tipos de IVA sin casilla...). */
+  advertencias?: string[];
+}
+
+/**
+ * Fila fija de cada tipo de IVA en el bloque de regimen general del 303:
+ * [01]-[03] el 4 %, [04]-[06] el 10 % y [07]-[09] el 21 %. Antes se rellenaban
+ * por orden de mayor a menor tipo, asi que el 21 % acababa en [01]-[03].
+ */
+export const FILA_303_POR_TIPO: Readonly<Record<number, 0 | 1 | 2>> = { 4: 0, 10: 1, 21: 2 };
+
+/** Reparte el IVA devengado en las tres filas fijas; lo que no cabe va en `sinFila`. */
+export function filasRegimenGeneral303(ivaDevengado: DesgloseIva[]): {
+  filas: Array<DesgloseIva | null>;
+  sinFila: DesgloseIva[];
+} {
+  const filas: Array<DesgloseIva | null> = [null, null, null];
+  const sinFila: DesgloseIva[] = [];
+  for (const d of ivaDevengado) {
+    const i = FILA_303_POR_TIPO[d.tipo];
+    if (i !== undefined) filas[i] = d;
+    // Al 0 % (exentas o no sujetas) no hay cuota: no van en estas filas.
+    else if (d.tipo !== 0 && (d.base !== 0 || d.cuota !== 0)) sinFila.push(d);
+  }
+  return { filas, sinFila };
 }
 
 /** Modelo 390 — resumen anual de IVA. */
@@ -81,6 +106,7 @@ export interface OperacionTercero {
   cifnif: string;
   nombre: string;
   tipo: 'cliente' | 'proveedor';
+  /** Importe anual de las operaciones CON IVA incluido (el nombre es historico). */
   baseAnual: number;
 }
 
