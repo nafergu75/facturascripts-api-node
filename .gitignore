@@ -56,3 +56,13 @@ obra_scraper/
 node_portable/
 .venv/
 uploads/
+
+# Logs de peticiones: contienen userIds, companyIds y rutas. Nunca versionar.
+logs/
+
+# Datos personales de otro proyecto (dossiers con pasaportes). No pertenece a
+# este repositorio; mientras siga en esta carpeta, que git no lo vea.
+ifeval sport/
+
+# Ruta creada con un nombre corrupto ('"docs' con comilla). Revisar y mover.
+/?docs/
