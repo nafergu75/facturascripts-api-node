@@ -12,6 +12,7 @@
 import { Router, Request, Response } from 'express';
 import { reportsService } from '../services/reports.service';
 import { authMiddleware } from '../middleware/auth.middleware';
+import { authorize } from '../middleware/authorize.middleware';
 import { HttpError } from '../utils/http-errors';
 import { reportsController } from '../controllers/reports.controller';
 
@@ -37,6 +38,7 @@ export const reportsRoutes = Router({ mergeParams: true });
  */
 reportsRoutes.get(
   '/balance',
+  authorize('contabilidad:read'),
   reportsController.balance
 );
 
@@ -54,6 +56,7 @@ reportsRoutes.get(
  */
 reportsRoutes.get(
   '/profit-and-loss',
+  authorize('contabilidad:read'),
   reportsController.profitAndLoss
 );
 
@@ -77,6 +80,7 @@ reportsRoutes.get(
 reportsRoutes.get(
   '/ledger',
   authMiddleware,
+  authorize('contabilidad:read'),
   async (req: Request, res: Response) => {
     try {
       const { companyId } = req.params;

@@ -10,8 +10,26 @@
  * - Análisis por cliente
  */
 
-import { notFound } from '../utils/http-errors';
 import { prisma } from '../config/database';
+
+/**
+ * Filtro Prisma (sobre JournalEntry) que deja fuera los asientos de
+ * regularizacion y de cierre. Esos asientos dejan a cero las cuentas al 31-12:
+ * si se suman como uno normal, la PyG y el balance de un ejercicio cerrado
+ * salen a cero. Mismo criterio que tipoAsiento() (origen, o el concepto en los
+ * asientos antiguos que se guardaron como AJUSTE_MANUAL).
+ */
+export const SIN_REGULARIZACION_NI_CIERRE = {
+  NOT: {
+    OR: [
+      { origen: { in: ['REGULARIZACION', 'CIERRE', 'CIERRE_AUTOMATICO'] } },
+      { descripcion: { startsWith: 'Regularizacion ejercicio' } },
+      { descripcion: { startsWith: 'Regularización ejercicio' } },
+      { descripcion: { startsWith: 'Cierre ejercicio' } },
+      { descripcion: { startsWith: 'Cierre contable' } },
+    ],
+  },
+};
 
 export class ReportsService {
   /**
@@ -45,6 +63,7 @@ export class ReportsService {
           companyId,
           estado: 'POSTED',
           fecha: { gte: fromDate, lte: toDate },
+          ...SIN_REGULARIZACION_NI_CIERRE,
         },
       },
       _sum: { debe: true, haber: true },
@@ -60,7 +79,7 @@ export class ReportsService {
     for (const saldo of saldos) {
       if (!saldo.accountCode) continue;
 
-      const neto = (saldo._sum.debe || 0) - (saldo._sum.haber || 0);
+      const neto = Number(saldo._sum.debe ?? 0) - Number(saldo._sum.haber ?? 0);
       const grupo = parseInt(saldo.accountCode.charAt(0));
 
       if (grupo === 1) {
@@ -121,6 +140,7 @@ export class ReportsService {
           companyId,
           estado: 'POSTED',
           fecha: { gte: fromDate, lte: toDate },
+          ...SIN_REGULARIZACION_NI_CIERRE,
         },
       },
       _sum: { debe: true, haber: true },
@@ -136,10 +156,10 @@ export class ReportsService {
 
       if (grupo === 7) {
         // Ingresos: naturaleza HABER → saldo neto = haber - debe
-        ingresos += (mov._sum.haber || 0) - (mov._sum.debe || 0);
+        ingresos += Number(mov._sum.haber ?? 0) - Number(mov._sum.debe ?? 0);
       } else if (grupo === 6) {
         // Gastos: naturaleza DEBE → saldo neto positivo = debe - haber
-        gastos += (mov._sum.debe || 0) - (mov._sum.haber || 0);
+        gastos += Number(mov._sum.debe ?? 0) - Number(mov._sum.haber ?? 0);
       }
     }
 
@@ -178,25 +198,30 @@ export class ReportsService {
           companyId,
           estado: 'POSTED',
           fecha: { gte: fromDate, lte: toDate },
+          ...SIN_REGULARIZACION_NI_CIERRE,
         },
       },
-      orderBy: { createdAt: 'asc' },
+      include: { entry: { select: { fecha: true, numeroAsiento: true, descripcion: true } } },
+      // Por la fecha del ASIENTO (no por cuando se grabo la linea) y, en el mismo dia, por numero.
+      orderBy: [{ entry: { fecha: 'asc' } }, { entry: { numeroAsiento: 'asc' } }, { createdAt: 'asc' }],
     });
 
     let saldoFinal = 0;
     for (const mov of movimientos) {
-      saldoFinal += (mov.debe || 0) - (mov.haber || 0);
+      saldoFinal += Number(mov.debe ?? 0) - Number(mov.haber ?? 0);
     }
 
     return {
       cuenta: accountCode,
       movimientos: movimientos.map((m) => ({
-        fecha: m.createdAt,
+        fecha: m.entry.fecha,
+        asiento: m.entry.numeroAsiento,
+        concepto: m.entry.descripcion,
         referencia: m.referencia,
-        debe: m.debe,
-        haber: m.haber,
+        debe: Number(m.debe ?? 0),
+        haber: Number(m.haber ?? 0),
       })),
-      saldoFinal,
+      saldoFinal: Math.round(saldoFinal * 100) / 100,
     };
   }
 
@@ -218,6 +243,7 @@ export class ReportsService {
           gte: new Date(year, 0, 1),
           lte: new Date(year, 11, 31),
         },
+        ...SIN_REGULARIZACION_NI_CIERRE,
       },
       include: { lineas: true },
     });
@@ -238,9 +264,9 @@ export class ReportsService {
         if (!linea.accountCode) continue;
         const grupo = parseInt(linea.accountCode.charAt(0));
         if (grupo === 7) {
-          meses[mes].ingresos += linea.haber || 0;
+          meses[mes].ingresos += Number(linea.haber ?? 0);
         } else if (grupo === 6) {
-          meses[mes].gastos += linea.debe || 0;
+          meses[mes].gastos += Number(linea.debe ?? 0);
         }
       }
     }
