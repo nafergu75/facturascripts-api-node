@@ -15,10 +15,21 @@ import { listarCobros, registrarCobroFactura, tieneCobrosActivos, type DatosCobr
  *    corrigen con una factura rectificativa en su propia serie.
  *
  * Aparte va `estado`, que es el estado de COBRO (PENDING, PAID, OVERDUE...).
+ *
+ * Facturas PROFORMA: mismo documento, pero NO es una factura. Se numeran en su
+ * serie propia (P-1, P-2...) al crearlas y no cuentan para impuestos, informes,
+ * contabilidad, cobros ni archivo. Su `estado` es PENDIENTE, ACEPTADA o
+ * RECHAZADA. Si el cliente la acepta, "Pasar a factura" crea un borrador de
+ * factura enlazado (proformaId) y la proforma queda ACEPTADA.
  */
 
 export const ESTADO_BORRADOR = 'BORRADOR';
 export const ESTADO_FINAL = 'FINAL';
+export const ESTADO_PROFORMA = 'PROFORMA';
+
+/** Estados de una proforma (van en `estado`, que en las facturas es el de cobro). */
+export const ESTADOS_PROFORMA = ['PENDIENTE', 'ACEPTADA', 'RECHAZADA'] as const;
+export type EstadoProforma = (typeof ESTADOS_PROFORMA)[number];
 
 /** Tipos de factura de Verifactu: F1 completa, F2 simplificada, R1-R5 rectificativas. */
 export const TIPOS_FACTURA = ['F1', 'F2', 'R1', 'R2', 'R3', 'R4', 'R5'] as const;
@@ -64,6 +75,8 @@ export interface CrearFacturaIngresoDTO {
   observaciones?: string;
   /** true: se guarda como borrador, sin numero. Por defecto se emite (final). */
   borrador?: boolean;
+  /** true: factura proforma (serie P, numero al crearla, sin efectos fiscales). */
+  proforma?: boolean;
   tipoFactura?: TipoFactura;
   /** Transferencia bancaria (defecto), giro (recibo domiciliado) o contado. */
   formaPago?: FormaPago;
@@ -122,6 +135,10 @@ export interface IncomeInvoiceResp {
   observaciones?: string;
   esRectificativa: boolean;
   facturaOriginalId?: string;
+  /** Factura nacida de una proforma: id de esa proforma. */
+  proformaId?: string;
+  /** Proforma ya pasada a factura: id de la factura creada. */
+  facturaGeneradaId?: string;
   esRecurrente: boolean;
   createdAt: Date;
   updatedAt: Date;
@@ -178,6 +195,7 @@ function aRespuesta(f: FacturaConLineas): IncomeInvoiceResp {
     observaciones: f.observaciones ?? undefined,
     esRectificativa: f.esRectificativa,
     facturaOriginalId: f.facturaOriginalId ?? undefined,
+    proformaId: f.proformaId ?? undefined,
     esRecurrente: f.esRecurrente,
     createdAt: f.createdAt,
     updatedAt: f.updatedAt,
@@ -398,6 +416,22 @@ async function resolverSerie(companyId: string, codigo: string | undefined, esRe
   if (!esRectificativa && serie.tipoDocumento === 'RECTIFICATIVA') {
     throw badRequest(`La serie ${serie.codigo} es solo para rectificativas.`);
   }
+  if (serie.tipoDocumento === 'PROFORMA') {
+    throw badRequest(`La serie ${serie.codigo} es de proformas: una factura no puede ir en ella.`);
+  }
+  return serie.codigo;
+}
+
+/** Serie de las proformas: la indicada (si es de proformas) o la por defecto. */
+async function resolverSerieProforma(companyId: string, codigo: string | undefined): Promise<string> {
+  if (!codigo) {
+    const p = await obtenerSeriePorDefecto(companyId, 'PROFORMA');
+    if (!p) throw badRequest('No hay serie de proformas configurada.');
+    return p.codigo;
+  }
+  const serie = await obtenerOCrearSerie(companyId, String(codigo).trim(), 'PROFORMA');
+  if (!serie.activa) throw badRequest(`La serie ${serie.codigo} está desactivada.`);
+  if (serie.tipoDocumento !== 'PROFORMA') throw badRequest(`La serie ${serie.codigo} no es de proformas.`);
   return serie.codigo;
 }
 
@@ -412,7 +446,14 @@ async function resolverSerie(companyId: string, codigo: string | undefined, esRe
  * La fecha de emision no puede ser anterior a la de la ultima factura de la
  * serie: la numeracion tiene que ir en el mismo orden que las fechas.
  */
-async function asignarNumero(tx: Tx, companyId: string, serie: string, fechaEmision: string): Promise<number> {
+async function asignarNumero(
+  tx: Tx,
+  companyId: string,
+  serie: string,
+  fechaEmision: string,
+  // Las proformas no son facturas: su numero no tiene que ir en orden de fechas.
+  { controlarFecha = true }: { controlarFecha?: boolean } = {},
+): Promise<number> {
   // Facturas anteriores a la tabla de series: el contador arranca en el mayor numero que ya exista.
   const max = await tx.incomeInvoice.aggregate({ where: { companyId, serie }, _max: { numero: true } });
   const mayorExistente = max._max.numero ?? 0;
@@ -425,6 +466,7 @@ async function asignarNumero(tx: Tx, companyId: string, serie: string, fechaEmis
     where: { companyId_codigo: { companyId, codigo: serie } },
     data: { ultimoNumero: { increment: 1 } },
   });
+  if (!controlarFecha) return s.ultimoNumero;
   if (s.ultimaFecha && fechaEmision < s.ultimaFecha) {
     throw badRequest(
       `La fecha de emisión (${fechaEmision}) no puede ser anterior a la de la última factura de la serie ${serie} (${s.ultimaFecha}).`,
@@ -442,11 +484,43 @@ async function cargar(companyId: string, id: string): Promise<FacturaConLineas> 
 }
 
 function exigirBorrador(f: FacturaConLineas, accion: string): void {
+  if (f.estadoDocumento === ESTADO_PROFORMA) {
+    throw badRequest(`La proforma ${f.numeroCompleto ?? ''} no se puede ${accion}: para facturarla usa «Pasar a factura».`);
+  }
   if (f.estadoDocumento !== ESTADO_BORRADOR) {
     throw badRequest(
       `La factura ${f.numeroCompleto ?? ''} ya está emitida y no se puede ${accion}. Para corregirla, haz una factura rectificativa.`,
     );
   }
+}
+
+/** Se puede tocar: un borrador o una proforma aun pendiente. */
+function exigirEditable(f: FacturaConLineas, accion: string): void {
+  if (f.estadoDocumento === ESTADO_PROFORMA) {
+    if (f.estado !== 'PENDIENTE') {
+      throw badRequest(`La proforma ${f.numeroCompleto ?? ''} está ${f.estado.toLowerCase()} y ya no se puede ${accion}.`);
+    }
+    return;
+  }
+  exigirBorrador(f, accion);
+}
+
+/** Carga una proforma de la empresa, o 404 / 400 si no lo es. */
+async function cargarProforma(companyId: string, id: string): Promise<FacturaConLineas> {
+  const f = await buscarConLineas(companyId, id);
+  if (!f) throw notFound('Proforma no encontrada.');
+  if (f.estadoDocumento !== ESTADO_PROFORMA) throw badRequest('El documento no es una factura proforma.');
+  return f;
+}
+
+/** Dias entre la emision y el vencimiento (se conservan al copiar o emitir). */
+function plazoDias(f: { fechaEmision: string; fechaVencimiento: string }): number {
+  return Math.max(
+    0,
+    Math.round(
+      (new Date(`${f.fechaVencimiento}T00:00:00Z`).getTime() - new Date(`${f.fechaEmision}T00:00:00Z`).getTime()) / 86_400_000,
+    ),
+  );
 }
 
 export const incomeInvoicesService = {
@@ -455,6 +529,7 @@ export const incomeInvoicesService = {
    */
   async crearIngreso(dto: CrearFacturaIngresoDTO): Promise<IncomeInvoiceResp> {
     const lineas = validarLineas(dto.lineas);
+    if (dto.proforma && dto.facturaOriginalId) throw badRequest('Una proforma no puede ser una rectificativa.');
     const esRectificativa = !!dto.facturaOriginalId;
     const tipoFactura = validarTipoFactura(dto.tipoFactura, esRectificativa ? 'R1' : 'F1');
     if (esRectificativa !== tipoFactura.startsWith('R')) {
@@ -462,7 +537,9 @@ export const incomeInvoicesService = {
     }
 
     const customerId = await resolverCliente(dto.companyId, dto.customer);
-    const serie = await resolverSerie(dto.companyId, dto.serie, esRectificativa);
+    const serie = dto.proforma
+      ? await resolverSerieProforma(dto.companyId, dto.serie)
+      : await resolverSerie(dto.companyId, dto.serie, esRectificativa);
 
     const fechaEmision = validarFecha(dto.fechaEmision ?? hoyISO(), 'fecha de emisión');
     const fechaVencimiento = validarFecha(dto.fechaVencimiento ?? sumarDias(fechaEmision, 15), 'fecha de vencimiento');
@@ -486,6 +563,24 @@ export const incomeInvoicesService = {
       motivoRectificacion: esRectificativa ? dto.motivoRectificacion : null,
       lineas: { create: crear },
     };
+
+    // Proforma: numero de su serie al crearla (sin huecos), sin efectos fiscales.
+    if (dto.proforma) {
+      const proforma = await prisma.$transaction(async (tx) => {
+        const numero = await asignarNumero(tx, dto.companyId, serie, fechaEmision, { controlarFecha: false });
+        return tx.incomeInvoice.create({
+          data: {
+            ...comunes,
+            numero,
+            numeroCompleto: `${serie}-${numero}`,
+            estadoDocumento: ESTADO_PROFORMA,
+            estado: 'PENDIENTE',
+          },
+          include: { lineas: true },
+        });
+      });
+      return aRespuesta(proforma);
+    }
 
     // Borrador: sin numero, no cuenta para nada hasta que se finalice.
     if (dto.borrador) {
@@ -539,11 +634,18 @@ export const incomeInvoicesService = {
   /** Modifica un borrador. Una factura emitida no se toca. */
   async actualizarBorrador(companyId: string, id: string, dto: ActualizarBorradorDTO): Promise<IncomeInvoiceResp> {
     const actual = await cargar(companyId, id);
-    exigirBorrador(actual, 'modificar');
+    exigirEditable(actual, 'modificar');
 
     const data: Prisma.IncomeInvoiceUncheckedUpdateInput = {};
     if (dto.customer) data.customerId = await resolverCliente(companyId, dto.customer);
-    if (dto.serie !== undefined) data.serie = await resolverSerie(companyId, dto.serie, actual.esRectificativa);
+    if (actual.estadoDocumento === ESTADO_PROFORMA) {
+      // La proforma ya tiene su numero en la serie: no cambia de serie.
+      if (dto.serie !== undefined && dto.serie !== actual.serie) {
+        throw badRequest('Una proforma ya numerada no cambia de serie.');
+      }
+    } else if (dto.serie !== undefined) {
+      data.serie = await resolverSerie(companyId, dto.serie, actual.esRectificativa);
+    }
     if (dto.tipoFactura !== undefined) {
       const t = validarTipoFactura(dto.tipoFactura, 'F1');
       if (actual.esRectificativa !== t.startsWith('R')) throw badRequest('El tipo no corresponde a esta factura.');
@@ -571,11 +673,100 @@ export const incomeInvoicesService = {
     return aRespuesta(factura);
   },
 
-  /** Borra un borrador. Las facturas emitidas no se borran nunca. */
+  /**
+   * Borra un borrador o una proforma pendiente. Las facturas emitidas no se
+   * borran nunca.
+   *  - Si era la ultima proforma de su serie, el contador retrocede (sin huecos).
+   *  - Si el borrador nacio de una proforma, la proforma vuelve a PENDIENTE.
+   */
   async eliminarBorrador(companyId: string, id: string): Promise<void> {
     const actual = await cargar(companyId, id);
-    exigirBorrador(actual, 'borrar');
-    await prisma.incomeInvoice.delete({ where: { id } });
+    exigirEditable(actual, 'borrar');
+    await prisma.$transaction(async (tx) => {
+      await tx.incomeInvoice.delete({ where: { id } });
+      if (actual.estadoDocumento === ESTADO_PROFORMA && actual.numero) {
+        await tx.invoiceSeries.updateMany({
+          where: { companyId, codigo: actual.serie, ultimoNumero: actual.numero },
+          data: { ultimoNumero: actual.numero - 1 },
+        });
+      }
+      if (actual.proformaId) {
+        await tx.incomeInvoice.updateMany({
+          where: { id: actual.proformaId, companyId, estadoDocumento: ESTADO_PROFORMA, estado: 'ACEPTADA' },
+          data: { estado: 'PENDIENTE' },
+        });
+      }
+    });
+  },
+
+  /**
+   * "Pasar a factura" una proforma que el cliente acepta: crea un BORRADOR de
+   * factura en la serie de facturas por defecto, con el cliente, las lineas, la
+   * forma de pago y las observaciones de la proforma, enlazado a ella
+   * (proformaId). La proforma queda ACEPTADA. Una proforma solo se pasa una vez.
+   */
+  async pasarProformaAFactura(companyId: string, id: string): Promise<IncomeInvoiceResp> {
+    const p = await cargarProforma(companyId, id);
+    if (p.estado === 'ACEPTADA') throw badRequest(`La proforma ${p.numeroCompleto} ya se pasó a factura.`);
+    if (p.estado !== 'PENDIENTE') {
+      throw badRequest(`La proforma ${p.numeroCompleto} está rechazada: duplícala si el cliente cambia de idea.`);
+    }
+    if (p.lineas.length === 0) throw badRequest('La proforma no tiene líneas.');
+
+    const serie = await resolverCodSerieFactura(companyId, {});
+    const hoy = hoyISO();
+    const { totales, crear } = lineasYTotales(
+      p.lineas.map((l) => ({
+        descripcion: l.descripcion,
+        cantidad: l.cantidad,
+        precioUnitario: l.precioUnitario,
+        descuentoPorcentaje: l.descuentoPorcentaje,
+        tipoIva: l.tipoIva,
+        tipoRetencion: l.tipoRetencion,
+        productoServicioId: l.productoServicioId ?? undefined,
+      })),
+    );
+    const factura = await prisma.$transaction(async (tx) => {
+      // Solo si sigue pendiente: dos clics a la vez no crean dos facturas.
+      const r = await tx.incomeInvoice.updateMany({
+        where: { id, companyId, estadoDocumento: ESTADO_PROFORMA, estado: 'PENDIENTE' },
+        data: { estado: 'ACEPTADA' },
+      });
+      if (r.count !== 1) throw badRequest(`La proforma ${p.numeroCompleto} ya se pasó a factura.`);
+      return tx.incomeInvoice.create({
+        data: {
+          companyId,
+          customerId: p.customerId,
+          serie,
+          fechaEmision: hoy,
+          fechaVencimiento: sumarDias(hoy, plazoDias(p)),
+          tipoFactura: p.tipoFactura.startsWith('R') ? 'F1' : p.tipoFactura,
+          formaPago: p.formaPago,
+          ...totales,
+          plantillaId: p.plantillaId,
+          observaciones: p.observaciones,
+          esRectificativa: false,
+          proformaId: p.id,
+          estadoDocumento: ESTADO_BORRADOR,
+          estado: 'DRAFT',
+          lineas: { create: crear },
+        },
+        include: { lineas: true },
+      });
+    });
+    return aRespuesta(factura);
+  },
+
+  /** El cliente no acepta la proforma: queda RECHAZADA (solo se puede ver, descargar o duplicar). */
+  async rechazarProforma(companyId: string, id: string): Promise<IncomeInvoiceResp> {
+    const p = await cargarProforma(companyId, id);
+    if (p.estado !== 'PENDIENTE') throw badRequest(`La proforma ${p.numeroCompleto} ya está ${p.estado.toLowerCase()}.`);
+    const r = await prisma.incomeInvoice.updateMany({
+      where: { id, companyId, estadoDocumento: ESTADO_PROFORMA, estado: 'PENDIENTE' },
+      data: { estado: 'RECHAZADA' },
+    });
+    if (r.count !== 1) throw badRequest(`La proforma ${p.numeroCompleto} ya no está pendiente.`);
+    return aRespuesta(await cargar(companyId, id));
   },
 
   /**
@@ -599,14 +790,7 @@ export const incomeInvoicesService = {
 
     const fechaEmision = validarFecha(opciones.fechaEmision ?? hoyISO(), 'fecha de emisión');
     // Se mantienen los dias de plazo que tenia el borrador.
-    const plazo = Math.max(
-      0,
-      Math.round(
-        (new Date(`${actual.fechaVencimiento}T00:00:00Z`).getTime() - new Date(`${actual.fechaEmision}T00:00:00Z`).getTime()) /
-          86_400_000,
-      ),
-    );
-    const fechaVencimiento = sumarDias(fechaEmision, plazo);
+    const fechaVencimiento = sumarDias(fechaEmision, plazoDias(actual));
 
     const factura = await prisma.$transaction(async (tx) => {
       const numero = await asignarNumero(tx, companyId, actual.serie, fechaEmision);
@@ -629,16 +813,15 @@ export const incomeInvoicesService = {
     return aRespuesta(factura);
   },
 
-  /** Copia una factura (emitida o no) en un borrador nuevo, con fecha de hoy. */
+  /**
+   * Copia una factura (emitida o no) en un borrador nuevo, con fecha de hoy.
+   * Una proforma se copia en otra proforma (con el siguiente numero de su serie).
+   */
   async duplicar(companyId: string, id: string): Promise<IncomeInvoiceResp> {
     const o = await cargar(companyId, id);
     if (o.esRectificativa) throw badRequest('Las rectificativas no se duplican; crea una nueva desde la factura original.');
-    const plazo = Math.max(
-      0,
-      Math.round(
-        (new Date(`${o.fechaVencimiento}T00:00:00Z`).getTime() - new Date(`${o.fechaEmision}T00:00:00Z`).getTime()) / 86_400_000,
-      ),
-    );
+    const esProforma = o.estadoDocumento === ESTADO_PROFORMA;
+    const plazo = plazoDias(o);
     const hoy = hoyISO();
     return this.crearIngreso({
       companyId,
@@ -650,7 +833,8 @@ export const incomeInvoicesService = {
       formaPago: o.formaPago as FormaPago,
       plantillaId: o.plantillaId,
       observaciones: o.observaciones ?? undefined,
-      borrador: true,
+      borrador: !esProforma,
+      proforma: esProforma,
       lineas: o.lineas.map((l) => ({
         descripcion: l.descripcion,
         cantidad: l.cantidad,
@@ -683,7 +867,8 @@ export const incomeInvoicesService = {
 
     const where: Prisma.IncomeInvoiceWhereInput = { companyId };
     if (filtros?.estado) where.estado = filtros.estado;
-    if (filtros?.estadoDocumento) where.estadoDocumento = filtros.estadoDocumento;
+    // Las proformas no son facturas: solo salen si se piden (?estadoDocumento=PROFORMA).
+    where.estadoDocumento = filtros?.estadoDocumento ? filtros.estadoDocumento : { not: ESTADO_PROFORMA };
     if (filtros?.customerId) where.customerId = filtros.customerId;
     if (filtros?.desde || filtros?.hasta) {
       where.fechaEmision = {
@@ -725,6 +910,7 @@ export const incomeInvoicesService = {
         totalFactura: f.totalFactura,
         esRectificativa: f.esRectificativa,
         facturaOriginalId: f.facturaOriginalId,
+        proformaId: f.proformaId,
         createdAt: f.createdAt,
         updatedAt: f.updatedAt,
       })),
@@ -738,7 +924,13 @@ export const incomeInvoicesService = {
    * Obtener una factura por ID.
    */
   async obtenerPorId(companyId: string, id: string): Promise<IncomeInvoiceResp> {
-    return aRespuesta(await cargar(companyId, id));
+    const f = await cargar(companyId, id);
+    const resp = aRespuesta(f);
+    if (f.estadoDocumento === ESTADO_PROFORMA && f.estado === 'ACEPTADA') {
+      const generada = await prisma.incomeInvoice.findFirst({ where: { companyId, proformaId: f.id }, select: { id: true } });
+      if (generada) resp.facturaGeneradaId = generada.id;
+    }
+    return resp;
   },
 
   /**
@@ -755,6 +947,9 @@ export const incomeInvoicesService = {
       throw badRequest(`Estado no válido. Usa: ${ESTADOS_COBRO.join(', ')}.`);
     }
     const factura = await cargar(companyId, id);
+    if (factura.estadoDocumento === ESTADO_PROFORMA) {
+      throw badRequest('Una proforma no se cobra: pásala a factura y emítela antes.');
+    }
     if (factura.estadoDocumento !== ESTADO_FINAL) {
       throw badRequest('La factura está en borrador: emítela antes de marcar el cobro.');
     }
@@ -794,6 +989,9 @@ export const incomeInvoicesService = {
     } = {},
   ): Promise<IncomeInvoiceResp> {
     const original = await cargar(companyId, facturaOriginalId);
+    if (original.estadoDocumento === ESTADO_PROFORMA) {
+      throw badRequest('Una proforma no se rectifica: mientras esté pendiente, modifícala.');
+    }
     if (original.estadoDocumento !== ESTADO_FINAL) {
       throw badRequest('Un borrador no se rectifica: modifícalo directamente.');
     }

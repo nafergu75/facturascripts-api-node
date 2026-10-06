@@ -87,6 +87,7 @@ async function cargarFactura(db: Tx | typeof prisma, companyId: string, tipo: Ti
   if (tipo === 'INGRESO') {
     const f = await db.incomeInvoice.findFirst({ where: { id, companyId }, include: { customer: { select: { nombreFiscal: true } } } });
     if (!f) throw notFound('Factura no encontrada.');
+    if (f.estadoDocumento === 'PROFORMA') throw badRequest('Una proforma no admite cobros: pásala a factura y emítela antes.');
     if (f.estadoDocumento !== 'FINAL') throw badRequest('La factura está en borrador: emítela antes de registrar cobros.');
     return { ...f, tercero: f.customer.nombreFiscal };
   }

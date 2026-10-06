@@ -39,7 +39,7 @@ export interface LineaFacturaPdf {
 export interface DatosFacturaPdf {
   id: string;
   numeroCompleto: string | null;
-  estadoDocumento: string; // 'BORRADOR' | 'FINAL'
+  estadoDocumento: string; // 'BORRADOR' | 'FINAL' | 'PROFORMA'
   tipoFactura: string; // F1, F2, R1-R5
   formaPago: string; // TRANSFERENCIA | GIRO | CONTADO
   tipoRectificativa: string | null; // S | I
@@ -100,6 +100,9 @@ const MARGEN = 48;
 const PIE_Y = 30;
 const SUELO = 56; // nada de contenido por debajo (deja sitio al pie)
 const COL_B = 300; // segunda columna: cliente y forma de pago
+
+/** Nota que lleva la proforma bajo el titulo. */
+export const AVISO_PROFORMA = 'Documento sin validez fiscal. No es una factura.';
 
 const TITULO_TIPO: Record<string, string> = {
   F1: 'Factura',
@@ -165,8 +168,11 @@ const lineaPoblacion = (cp?: string | null, municipio?: string | null, provincia
 
 /** Dibuja la factura y devuelve el PDF/A. No toca la BD. */
 export async function renderizarFactura(f: DatosFacturaPdf): Promise<Buffer> {
-  const esBorrador = f.estadoDocumento !== 'FINAL';
-  const tipoDoc = TITULO_TIPO[f.tipoFactura] ?? 'Factura';
+  // La proforma es el mismo documento con su numero P-n, sin marca de agua y
+  // con una nota de que no es una factura.
+  const esProforma = f.estadoDocumento === 'PROFORMA';
+  const esBorrador = !esProforma && f.estadoDocumento !== 'FINAL';
+  const tipoDoc = esProforma ? 'Factura proforma' : (TITULO_TIPO[f.tipoFactura] ?? 'Factura');
   const tituloDoc = esBorrador ? `Borrador de ${tipoDoc.toLowerCase()}` : `${tipoDoc} ${f.numeroCompleto ?? ''}`.trim();
 
   const { doc, normal, negrita, mono, monoNegrita, ancho, alto } = await crearDocumentoPdfA(tituloDoc);
@@ -245,6 +251,7 @@ export async function renderizarFactura(f: DatosFacturaPdf): Promise<Buffer> {
   // ---------- Cabecera: tipo de documento y numero ----------
   // El borrador es igual que la factura: solo cambian el numero (aun no lo tiene) y la marca de agua.
   texto(p, tipoDoc, MARGEN, y, { tam: 24, fuente: negrita });
+  if (esProforma) texto(p, AVISO_PROFORMA, MARGEN, y - 17, { tam: 8.5, color: GRIS });
   if (esBorrador) {
     texto(p, 'Borrador · sin número ni validez fiscal', derecha, yNumero, { tam: 10, fuente: negrita, color: GRIS, alinear: 'der' });
   } else {
@@ -493,7 +500,7 @@ export async function renderizarFactura(f: DatosFacturaPdf): Promise<Buffer> {
   yt += 4;
   filete(p, yt, xEtq, derecha, 0.75, TINTA);
   yt -= 17;
-  texto(p, 'Total factura', xEtq, yt, { tam: 10.5, fuente: negrita });
+  texto(p, esProforma ? 'Total' : 'Total factura', xEtq, yt, { tam: 10.5, fuente: negrita });
   texto(p, eur(f.totalFactura), derecha, yt, { tam: 10.5, fuente: monoNegrita, alinear: 'der' });
   y = Math.min(yi, yt) - 28;
 
@@ -513,7 +520,9 @@ export async function renderizarFactura(f: DatosFacturaPdf): Promise<Buffer> {
   }
 
   // ---------- Pie en todas las paginas ----------
-  const pie = `${nombreEmpresa} · NIF ${nifEmpresa}${esBorrador ? ' · Borrador sin validez fiscal' : ''}`;
+  const pie = `${nombreEmpresa} · NIF ${nifEmpresa}${
+    esBorrador ? ' · Borrador sin validez fiscal' : esProforma ? ' · Proforma sin validez fiscal' : ''
+  }`;
   // Datos registrales (obligatorios en las sociedades) encima del pie, en letra pequena.
   const inscripcion = f.emisor?.inscripcion ? partir(f.emisor.inscripcion, normal, 6.5, anchoUtil) : [];
   paginas.forEach((pg, i) => {
@@ -600,9 +609,11 @@ export async function generarPdfFactura(companyId: string, id: string): Promise<
   });
 
   const nombre =
-    factura.estadoDocumento !== 'FINAL'
-      ? `borrador_factura_${factura.id.slice(-6)}.pdf`
-      : `factura_${factura.numeroCompleto}.pdf`;
+    factura.estadoDocumento === 'PROFORMA'
+      ? `proforma_${factura.numeroCompleto}.pdf`
+      : factura.estadoDocumento !== 'FINAL'
+        ? `borrador_factura_${factura.id.slice(-6)}.pdf`
+        : `factura_${factura.numeroCompleto}.pdf`;
   return { nombre: nombre.replace(/[^\w.-]/g, '_'), contenido };
 }
 

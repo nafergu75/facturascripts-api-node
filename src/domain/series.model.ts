@@ -2,11 +2,12 @@
  * Serie de numeracion de documentos (factura, rectificativa, presupuesto...).
  * Se guarda en la tabla InvoiceSeries, una fila por serie y empresa.
  */
-export type TipoDocumentoSerie = 'FACTURA' | 'RECTIFICATIVA' | 'PEDIDO' | 'ALBARAN' | 'PRESUPUESTO';
+export type TipoDocumentoSerie = 'FACTURA' | 'RECTIFICATIVA' | 'PROFORMA' | 'PEDIDO' | 'ALBARAN' | 'PRESUPUESTO';
 
 export const TIPOS_DOCUMENTO_SERIE: readonly TipoDocumentoSerie[] = [
   'FACTURA',
   'RECTIFICATIVA',
+  'PROFORMA',
   'PEDIDO',
   'ALBARAN',
   'PRESUPUESTO',

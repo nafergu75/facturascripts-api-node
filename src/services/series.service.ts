@@ -25,24 +25,36 @@ function aDominio(s: InvoiceSeries): SerieDocumento {
   };
 }
 
-/** Series que toda empresa necesita: la general de facturas y la de rectificativas. */
-const SEMILLAS: Array<Pick<SerieDocumento, 'codigo' | 'descripcion' | 'tipoDocumento'>> = [
+/**
+ * Series que toda empresa necesita: la general de facturas, la de rectificativas
+ * y la de facturas proforma (P-1, P-2...; no son facturas, no cuentan para nada fiscal).
+ * Si el codigo ya lo usa otra serie de otro tipo, se prueba con el alternativo.
+ */
+const SEMILLAS: Array<Pick<SerieDocumento, 'codigo' | 'descripcion' | 'tipoDocumento'> & { alternativo?: string }> = [
   { codigo: 'A', descripcion: 'Serie general', tipoDocumento: 'FACTURA' },
   { codigo: 'R', descripcion: 'Facturas rectificativas', tipoDocumento: 'RECTIFICATIVA' },
+  { codigo: 'P', descripcion: 'Facturas proforma', tipoDocumento: 'PROFORMA', alternativo: 'PF' },
 ];
 
 /** Crea las series por defecto que le falten a la empresa (idempotente). */
 async function asegurarSemilla(companyId: string): Promise<void> {
   const existentes = await prisma.invoiceSeries.findMany({ where: { companyId }, select: { tipoDocumento: true } });
   const tipos = new Set(existentes.map((s) => s.tipoDocumento));
-  for (const semilla of SEMILLAS) {
+  for (const { alternativo, ...semilla } of SEMILLAS) {
     if (tipos.has(semilla.tipoDocumento)) continue;
     // upsert: dos peticiones a la vez no deben chocar con el unico (empresa, codigo).
-    await prisma.invoiceSeries.upsert({
+    const s = await prisma.invoiceSeries.upsert({
       where: { companyId_codigo: { companyId, codigo: semilla.codigo } },
       create: { companyId, ...semilla, activa: true, porDefecto: true },
       update: {},
     });
+    if (s.tipoDocumento !== semilla.tipoDocumento && alternativo) {
+      await prisma.invoiceSeries.upsert({
+        where: { companyId_codigo: { companyId, codigo: alternativo } },
+        create: { companyId, ...semilla, codigo: alternativo, activa: true, porDefecto: true },
+        update: {},
+      });
+    }
   }
 }
 

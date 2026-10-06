@@ -169,7 +169,8 @@ model IncomeInvoice {
   // Un borrador no tiene numero: se le asigna al finalizarla, en orden y sin huecos.
   numero              Int?
   numeroCompleto      String?
-  // BORRADOR (editable, no cuenta para impuestos) o FINAL (numerada e inmutable).
+  // BORRADOR (editable, no cuenta para impuestos), FINAL (numerada e inmutable)
+  // o PROFORMA (serie P, no es factura: no cuenta para nada fiscal ni contable).
   // Por defecto FINAL para que las facturas que ya existian sigan contando.
   estadoDocumento     String                @default("FINAL")
   // Verifactu: F1 completa, F2 simplificada, R1-R5 rectificativas.
@@ -182,7 +183,7 @@ model IncomeInvoice {
   finalizadaEn        DateTime?
   fechaEmision        String // YYYY-MM-DD
   fechaVencimiento    String // YYYY-MM-DD
-  estado              String                @default("PENDING") // DRAFT, PENDING, PAID, OVERDUE
+  estado              String                @default("PENDING") // DRAFT, PENDING, PAID, OVERDUE; proformas: PENDIENTE, ACEPTADA, RECHAZADA
   baseTotal           Decimal               @default(0) @db.Decimal(14, 2)
   ivaTotal            Decimal               @default(0) @db.Decimal(14, 2)
   retencionTotal      Decimal               @default(0) @db.Decimal(14, 2)
@@ -191,6 +192,9 @@ model IncomeInvoice {
   observaciones       String?               @db.Text
   esRectificativa     Boolean               @default(false)
   facturaOriginalId   String? // Si es rectificativa, ref a la original
+  // Factura que nace de una proforma aceptada ("Pasar a factura"): id de la proforma.
+  // Unico: una proforma solo se convierte una vez.
+  proformaId          String?               @unique
   esRecurrente        Boolean               @default(false)
   recurrenciaConfig   String? // JSON con patrón: { frecuencia: 'mensual'|'trimestral', proximaFecha: '...' }
   createdAt           DateTime              @default(now())

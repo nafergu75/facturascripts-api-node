@@ -8,12 +8,14 @@ const router = Router({ mergeParams: true });
 /**
  * Crear factura de ingreso completa (cliente+líneas+totales).
  * POST /api/invoices/income
+ * Con { proforma: true } crea una factura proforma (serie P, sin efectos fiscales).
  */
 router.post('/', authorize('ventas:write'), incomeInvoicesController.crearIngreso);
 
 /**
- * Listar facturas de ingreso.
+ * Listar facturas de ingreso (sin proformas).
  * GET /api/invoices/income?estado=PENDING&customerId=...&desde=...&hasta=...
+ * Las proformas: ?estadoDocumento=PROFORMA
  */
 router.get('/', incomeInvoicesController.listar);
 
@@ -29,15 +31,19 @@ router.get('/resumen/periodo', incomeInvoicesController.resumenPeriodo);
  */
 router.get('/:id', incomeInvoicesController.obtenerPorId);
 
-/** Modificar / borrar un borrador (las facturas emitidas no se tocan). */
+/** Modificar / borrar un borrador o una proforma pendiente (las facturas emitidas no se tocan). */
 router.put('/:id', authorize('ventas:write'), incomeInvoicesController.actualizar);
 router.delete('/:id', authorize('ventas:write'), incomeInvoicesController.eliminar);
 
 /** Emitir un borrador: numero de la serie, sin huecos. */
 router.post('/:id/finalizar', authorize('ventas:write'), incomeInvoicesController.finalizar);
 
-/** Copiar una factura en un borrador nuevo. */
+/** Copiar una factura en un borrador nuevo (una proforma, en otra proforma). */
 router.post('/:id/duplicar', authorize('ventas:write'), incomeInvoicesController.duplicar);
+
+/** Proformas: pasar a factura (crea un borrador enlazado) o rechazar. */
+router.post('/:id/pasar-a-factura', authorize('ventas:write'), incomeInvoicesController.pasarAFactura);
+router.post('/:id/rechazar', authorize('ventas:write'), incomeInvoicesController.rechazar);
 
 /** Descargar la factura en PDF. */
 router.get('/:id/pdf', incomeInvoicesController.pdf);

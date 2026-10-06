@@ -41,7 +41,7 @@ export const incomeInvoicesController = {
     await registrarAuditoria({
       userId: req.user?.userId || 'unknown',
       companyId: req.companyId,
-      action: 'CREAR_FACTURA_INGRESO',
+      action: factura.estadoDocumento === 'PROFORMA' ? 'CREAR_PROFORMA' : 'CREAR_FACTURA_INGRESO',
       resourceType: 'INCOME_INVOICE',
       resourceId: factura.id,
       meta: {
@@ -63,17 +63,51 @@ export const incomeInvoicesController = {
     sendOk(res, { invoice: factura });
   }),
 
-  /** DELETE /:id — borra un borrador. */
+  /** DELETE /:id — borra un borrador o una proforma pendiente. */
   eliminar: asyncHandler(async (req, res) => {
+    const actual = await incomeInvoicesService.obtenerPorId(req.companyId!, req.params.id);
+    const esProforma = actual.estadoDocumento === 'PROFORMA';
     await incomeInvoicesService.eliminarBorrador(req.companyId!, req.params.id);
     await registrarAuditoria({
       userId: req.user?.userId || 'unknown',
       companyId: req.companyId,
-      action: 'BORRAR_BORRADOR_FACTURA',
+      action: esProforma ? 'BORRAR_PROFORMA' : 'BORRAR_BORRADOR_FACTURA',
       resourceType: 'INCOME_INVOICE',
       resourceId: req.params.id,
+      meta: esProforma ? { numeroCompleto: actual.numeroCompleto } : undefined,
     });
-    sendMessage(res, 'Borrador eliminado.');
+    sendMessage(res, esProforma ? 'Proforma eliminada.' : 'Borrador eliminado.');
+  }),
+
+  /**
+   * POST /:id/pasar-a-factura — la proforma aceptada pasa a un borrador de
+   * factura (serie de facturas por defecto). Devuelve la factura nueva.
+   */
+  pasarAFactura: asyncHandler(async (req, res) => {
+    const factura = await incomeInvoicesService.pasarProformaAFactura(req.companyId!, req.params.id);
+    await registrarAuditoria({
+      userId: req.user?.userId || 'unknown',
+      companyId: req.companyId,
+      action: 'PASAR_PROFORMA_A_FACTURA',
+      resourceType: 'INCOME_INVOICE',
+      resourceId: req.params.id,
+      meta: { facturaId: factura.id },
+    });
+    sendOk(res, { invoice: factura }, undefined, 201);
+  }),
+
+  /** POST /:id/rechazar — el cliente no acepta la proforma. */
+  rechazar: asyncHandler(async (req, res) => {
+    const proforma = await incomeInvoicesService.rechazarProforma(req.companyId!, req.params.id);
+    await registrarAuditoria({
+      userId: req.user?.userId || 'unknown',
+      companyId: req.companyId,
+      action: 'RECHAZAR_PROFORMA',
+      resourceType: 'INCOME_INVOICE',
+      resourceId: req.params.id,
+      meta: { numeroCompleto: proforma.numeroCompleto },
+    });
+    sendOk(res, { invoice: proforma });
   }),
 
   /** POST /:id/finalizar — emite el borrador: numero de la serie y datos congelados. */
