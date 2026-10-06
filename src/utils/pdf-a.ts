@@ -207,3 +207,55 @@ export async function generarPdfA(
   const bytes = await doc.save({ useObjectStreams: false });
   return Buffer.from(bytes);
 }
+
+// --- Documentos con maquetacion propia (p. ej. la factura) ---------------------
+
+const fuentesCache = new Map<string, Buffer>();
+function cargarFuente(fichero: string): Buffer {
+  let f = fuentesCache.get(fichero);
+  if (!f) {
+    f = fs.readFileSync(path.join(resolverAssetsDir(), fichero));
+    fuentesCache.set(fichero, f);
+  }
+  return f;
+}
+
+/**
+ * Documento PDF/A vacio con las fuentes de la marca (Geist normal y seminegrita, Geist Mono,
+ * licencia OFL en assets/pdfa/Geist-OFL.txt) para que el llamador lo maquete a
+ * mano. Se cierra con `guardarPdfA`.
+ */
+export async function crearDocumentoPdfA(titulo: string) {
+  const doc = await PDFDocument.create();
+  doc.registerFontkit(fontkit);
+  const normal = await doc.embedFont(cargarFuente('Geist-Regular.ttf'), { subset: true });
+  const negrita = await doc.embedFont(cargarFuente('Geist-SemiBold.ttf'), { subset: true });
+  // Geist Mono para cifras, NIF e IBAN: digitos del mismo ancho, columnas alineadas.
+  const mono = await doc.embedFont(cargarFuente('GeistMono-Regular.ttf'), { subset: true });
+  const monoNegrita = await doc.embedFont(cargarFuente('GeistMono-Medium.ttf'), { subset: true });
+  const fecha = new Date();
+  doc.setTitle(titulo);
+  doc.setCreator(PRODUCTOR);
+  doc.setProducer(PRODUCTOR);
+  doc.setCreationDate(fecha);
+  doc.setModificationDate(fecha);
+  return { doc, normal, negrita, mono, monoNegrita, ancho: A4_ANCHO, alto: A4_ALTO };
+}
+
+/** Anade lo que exige PDF/A-2b (perfil de color, XMP, /ID) y devuelve el fichero. */
+export async function guardarPdfA(doc: PDFDocument, titulo: string): Promise<Buffer> {
+  const iccRef = doc.context.register(doc.context.stream(cargarIcc(), { N: 3 }));
+  const outputIntent = doc.context.obj({
+    Type: 'OutputIntent',
+    S: 'GTS_PDFA1',
+    OutputConditionIdentifier: PDFString.of('sRGB IEC61966-2.1'),
+    Info: PDFString.of('sRGB IEC61966-2.1'),
+    DestOutputProfile: iccRef,
+  });
+  doc.catalog.set(PDFName.of('OutputIntents'), doc.context.obj([outputIntent]));
+  const xmp = construirXmp(titulo, '2', new Date());
+  doc.catalog.set(PDFName.of('Metadata'), doc.context.register(doc.context.stream(xmp, { Type: 'Metadata', Subtype: 'XML' })));
+  const id = PDFHexString.of(randomBytes(16).toString('hex').toUpperCase());
+  doc.context.trailerInfo.ID = doc.context.obj([id, id]);
+  return Buffer.from(await doc.save({ useObjectStreams: false }));
+}

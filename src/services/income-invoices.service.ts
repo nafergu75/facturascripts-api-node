@@ -23,6 +23,10 @@ export const ESTADO_FINAL = 'FINAL';
 export const TIPOS_FACTURA = ['F1', 'F2', 'R1', 'R2', 'R3', 'R4', 'R5'] as const;
 export type TipoFactura = (typeof TIPOS_FACTURA)[number];
 
+/** Formas de pago que se imprimen en la factura. */
+export const FORMAS_PAGO = ['TRANSFERENCIA', 'GIRO', 'CONTADO'] as const;
+export type FormaPago = (typeof FORMAS_PAGO)[number];
+
 /** Estados de cobro que se pueden poner a mano en una factura final. */
 export const ESTADOS_COBRO = ['PENDING', 'PAID', 'OVERDUE'] as const;
 
@@ -60,6 +64,8 @@ export interface CrearFacturaIngresoDTO {
   /** true: se guarda como borrador, sin numero. Por defecto se emite (final). */
   borrador?: boolean;
   tipoFactura?: TipoFactura;
+  /** Transferencia bancaria (defecto), giro (recibo domiciliado) o contado. */
+  formaPago?: FormaPago;
   facturaOriginalId?: string; // Si es rectificativa
   tipoRectificativa?: 'S' | 'I';
   motivoRectificacion?: string;
@@ -79,7 +85,15 @@ export interface CrearLineaIngresoDTO {
 export type ActualizarBorradorDTO = Partial<
   Pick<
     CrearFacturaIngresoDTO,
-    'customer' | 'serie' | 'fechaEmision' | 'fechaVencimiento' | 'lineas' | 'observaciones' | 'tipoFactura' | 'plantillaId'
+    | 'customer'
+    | 'serie'
+    | 'fechaEmision'
+    | 'fechaVencimiento'
+    | 'lineas'
+    | 'observaciones'
+    | 'tipoFactura'
+    | 'plantillaId'
+    | 'formaPago'
   >
 >;
 
@@ -92,6 +106,7 @@ export interface IncomeInvoiceResp {
   numeroCompleto: string | null;
   estadoDocumento: string;
   tipoFactura: string;
+  formaPago: string;
   tipoRectificativa?: string;
   motivoRectificacion?: string;
   finalizadaEn?: Date;
@@ -147,6 +162,7 @@ function aRespuesta(f: FacturaConLineas): IncomeInvoiceResp {
     numeroCompleto: f.numeroCompleto,
     estadoDocumento: f.estadoDocumento,
     tipoFactura: f.tipoFactura,
+    formaPago: f.formaPago,
     tipoRectificativa: f.tipoRectificativa ?? undefined,
     motivoRectificacion: f.motivoRectificacion ?? undefined,
     finalizadaEn: f.finalizadaEn ?? undefined,
@@ -207,7 +223,7 @@ async function resolverCliente(
     data: {
       companyId,
       nombreFiscal: n.nombreFiscal,
-      nifCif: n.nifCif,
+      nifCif: n.nifCif.replace(/[\s-]/g, '').toUpperCase(),
       direccion: n.direccion,
       pais: n.pais || 'ES',
       provincia: n.provincia,
@@ -357,6 +373,14 @@ function validarTipoFactura(tipo: string | undefined, porDefecto: TipoFactura): 
   return t as TipoFactura;
 }
 
+function validarFormaPago(forma: string | undefined): FormaPago {
+  const f = (forma ?? 'TRANSFERENCIA').toUpperCase();
+  if (!(FORMAS_PAGO as readonly string[]).includes(f)) {
+    throw badRequest(`Forma de pago no válida. Usa: ${FORMAS_PAGO.join(', ')}.`);
+  }
+  return f as FormaPago;
+}
+
 /** Serie elegida en el DTO (o la por defecto), creandola si es un codigo antiguo. */
 async function resolverSerie(companyId: string, codigo: string | undefined, esRectificativa: boolean): Promise<string> {
   if (esRectificativa && !codigo) {
@@ -451,6 +475,7 @@ export const incomeInvoicesService = {
       fechaEmision,
       fechaVencimiento,
       tipoFactura,
+      formaPago: validarFormaPago(dto.formaPago),
       ...totales,
       plantillaId: dto.plantillaId || 'default',
       observaciones: dto.observaciones,
@@ -524,6 +549,7 @@ export const incomeInvoicesService = {
       data.tipoFactura = t;
     }
     if (dto.observaciones !== undefined) data.observaciones = dto.observaciones;
+    if (dto.formaPago !== undefined) data.formaPago = validarFormaPago(dto.formaPago);
     if (dto.plantillaId !== undefined) data.plantillaId = dto.plantillaId;
     const fechaEmision = dto.fechaEmision ? validarFecha(dto.fechaEmision, 'fecha de emisión') : actual.fechaEmision;
     const fechaVencimiento = dto.fechaVencimiento
@@ -558,6 +584,13 @@ export const incomeInvoicesService = {
   async finalizar(companyId: string, id: string, opciones: { fechaEmision?: string } = {}): Promise<IncomeInvoiceResp> {
     const actual = await cargar(companyId, id);
     exigirBorrador(actual, 'volver a emitir');
+    // Art. 6 RD 1619/2012: la factura lleva el nombre y el NIF del emisor.
+    const emisor = await prisma.legalConfig.findUnique({ where: { companyId } });
+    if (!emisor?.nif?.trim() || !emisor?.denominacion?.trim()) {
+      throw badRequest(
+        'Antes de emitir facturas rellena la denominación y el NIF de tu empresa en Registro Mercantil > Datos para la memoria.',
+      );
+    }
     if (actual.lineas.length === 0) throw badRequest('La factura no tiene líneas.');
     if (actual.esRectificativa && !actual.motivoRectificacion?.trim()) {
       throw badRequest('Indica el motivo de la rectificación antes de emitirla.');
@@ -613,6 +646,7 @@ export const incomeInvoicesService = {
       fechaEmision: hoy,
       fechaVencimiento: sumarDias(hoy, plazo),
       tipoFactura: o.tipoFactura as TipoFactura,
+      formaPago: o.formaPago as FormaPago,
       plantillaId: o.plantillaId,
       observaciones: o.observaciones ?? undefined,
       borrador: true,
@@ -680,6 +714,7 @@ export const incomeInvoicesService = {
         numeroCompleto: f.numeroCompleto,
         estadoDocumento: f.estadoDocumento,
         tipoFactura: f.tipoFactura,
+        formaPago: f.formaPago,
         fechaEmision: f.fechaEmision,
         fechaVencimiento: f.fechaVencimiento,
         estado: f.estado,
@@ -772,6 +807,7 @@ export const incomeInvoicesService = {
       serie: opciones.serie,
       lineas,
       tipoFactura: opciones.tipoFactura ?? 'R1',
+      formaPago: original.formaPago as FormaPago,
       tipoRectificativa,
       motivoRectificacion: motivo,
       observaciones: `Rectifica la factura ${original.numeroCompleto} de ${original.fechaEmision}. Motivo: ${motivo}`,

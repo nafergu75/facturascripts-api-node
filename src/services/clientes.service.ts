@@ -49,7 +49,8 @@ function leerDatos(data: Record<string, unknown>): { nombreFiscal?: string; nifC
   const tel = (data.telefono ?? data.telefono1) as string | undefined;
   return {
     nombreFiscal: nombre !== undefined ? String(nombre) : undefined,
-    nifCif: nif !== undefined ? String(nif) : undefined,
+    // El NIF se guarda siempre igual: mayusculas y sin espacios ni guiones.
+    nifCif: nif !== undefined ? String(nif).replace(/[\s-]/g, '').toUpperCase() : undefined,
     email: data.email != null ? String(data.email) : null,
     telefono: tel != null && tel !== '' ? String(tel) : null,
     direccion: data.direccion != null ? String(data.direccion) : null,

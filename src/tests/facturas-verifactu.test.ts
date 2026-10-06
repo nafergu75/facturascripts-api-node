@@ -22,6 +22,17 @@ beforeAll(async () => {
   });
   const c = await prisma.customer.create({ data: { companyId: COMPANY_ID, nombreFiscal: 'Cliente Verifactu SL', nifCif: 'B12345678' } });
   customerId = c.id;
+  await prisma.legalConfig.create({ data: { companyId: COMPANY_ID, denominacion: 'Verifactu Test SL', nif: 'B00000000' } });
+});
+
+describe('Datos del emisor', () => {
+  it('no deja emitir si la empresa no tiene NIF o denominación', async () => {
+    const otra = `verifactu-sin-nif-${Date.now()}`;
+    await prisma.company.create({ data: { id: otra, name: 'Sin NIF', fsBaseUrl: 'http://localhost:8080', fsApiKeyEnc: 'k' } });
+    const cli = await prisma.customer.create({ data: { companyId: otra, nombreFiscal: 'Cliente', nifCif: 'B11111111' } });
+    const b = await incomeInvoicesService.crearIngreso({ companyId: otra, customer: { id: cli.id }, lineas: [linea(10)], borrador: true });
+    await expect(incomeInvoicesService.finalizar(otra, b.id)).rejects.toThrow(/NIF de tu empresa/);
+  });
 });
 
 describe('Facturas de venta: borrador y emision', () => {
