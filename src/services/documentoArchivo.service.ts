@@ -1,8 +1,8 @@
 import { prisma } from '../config/database';
 import { badRequest, notFound } from '../utils/http-errors';
 import { putObject, getObject } from '../utils/storage';
+import { nombreSeguro } from '../utils/nombre-seguro';
 import { createHash } from 'crypto';
-import * as path from 'path';
 
 export interface DocumentoArchivoDTO {
   id: string;
@@ -102,8 +102,10 @@ export async function crearDocumentoArchivo(
 
   // Construir ruta de almacenamiento
   const archivosPath = construirArchivosPath(companyId, anio, mes);
-  const nombreArchivo = `${Date.now()}-${input.archivoNombre}`;
-  const rutaCompleta = path.join(archivosPath, nombreArchivo);
+  // El nombre viene del cliente: se limpia para que no pueda salir de la carpeta.
+  // La clave usa '/', no path.join (en Windows pondria '\' en la ruta del Blob).
+  const nombreArchivo = `${Date.now()}-${nombreSeguro(input.archivoNombre)}`;
+  const rutaCompleta = `${archivosPath}/${nombreArchivo}`;
 
   // Guardar archivo en storage (local o Vercel Blob)
   const archivoPath = await putObject(rutaCompleta, input.archivoBuffer, input.archivoTipo);

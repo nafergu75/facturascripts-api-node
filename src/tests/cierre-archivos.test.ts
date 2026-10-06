@@ -51,3 +51,26 @@ describe('subirArchivoCierre', () => {
     expect(creados[0]).toMatchObject({ storagePath: `ref://${key}`, nombre: 'evil.pdf', tipoArchivo: 'PDF' });
   });
 });
+
+// El archivo documental tenia el mismo fallo: nombre del cliente sin limpiar y
+// la clave construida con path.join (barras invertidas en Windows).
+describe('crearDocumentoArchivo', () => {
+  it('limpia el nombre y usa "/" en la clave', async () => {
+    const { prisma } = jest.requireMock('../config/database') as { prisma: Record<string, unknown> };
+    prisma.documentoArchivo = { create: jest.fn(async ({ data }: { data: Record<string, unknown> }) => ({ id: 'd1', createdAt: new Date(), ...data })) };
+    const { crearDocumentoArchivo } = await import('../services/documentoArchivo.service');
+
+    await crearDocumentoArchivo('empresa-1', {
+      tipo: 'gasto',
+      fecha: '2026-03-15',
+      archivoNombre: '..\\..\\..\\factura proveedor.pdf',
+      archivoTipo: 'application/pdf',
+      archivoBuffer: Buffer.from('pdf'),
+    }).catch(() => undefined); // solo interesa la clave usada al guardar
+
+    const [key] = putObject.mock.calls[0];
+    expect(key).toMatch(/^archivos\/empresa-1\/2026\/03\/\d+-factura_proveedor\.pdf$/);
+    expect(key).not.toContain('..');
+    expect(key).not.toContain('\\');
+  });
+});

@@ -4,15 +4,9 @@ import { prisma } from '../config/database';
 import { cuadraEnCentimos } from '../utils/money';
 import { putObject } from '../utils/storage';
 
-/**
- * Nombre de fichero apto para una ruta de almacenamiento. El nombre llega del
- * cliente (?nombre=): sin limpiar, "../../x" escribiria fuera de la carpeta.
- */
-export function nombreSeguro(nombre: string): string {
-  const base = nombre.split(/[\\/]/).pop() ?? '';
-  const limpio = base.replace(/[^A-Za-z0-9._-]/g, '_').replace(/^\.+/, '');
-  return limpio.slice(0, 120) || 'archivo';
-}
+// Reexportado para los tests y otros modulos que ya lo importaban de aqui.
+export { nombreSeguro } from '../utils/nombre-seguro';
+import { nombreSeguro } from '../utils/nombre-seguro';
 
 /**
  * Crear un cierre de ejercicio contable.
