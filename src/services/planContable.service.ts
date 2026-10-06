@@ -6,77 +6,25 @@ import {
   SubgrupoCuenta,
 } from '../domain/plan-contable.model';
 import { badRequest } from '../utils/http-errors';
+import { PGC_BASE } from '../domain/pgc-model';
 
-// --- Plan base PGC-PYME (grupos 1-7). TODO: ampliable con el PGC completo (ICAC). ---
+// --- Plan base PGC-PYME (grupos 1-7) ---
+// Una sola fuente: domain/pgc-model.ts (PGC_BASE). Antes este fichero tenia su
+// propia copia (33 cuentas, sin tildes) y la pantalla Plan contable usaba otra
+// (44 cuentas): se podia ofrecer crear una subcuenta que luego se rechazaba.
 
-const GRUPOS_BASE: GrupoCuenta[] = [
-  { codigo: '1', nombre: 'Financiacion basica' },
-  { codigo: '2', nombre: 'Activo no corriente' },
-  { codigo: '3', nombre: 'Existencias' },
-  { codigo: '4', nombre: 'Acreedores y deudores por operaciones comerciales' },
-  { codigo: '5', nombre: 'Cuentas financieras' },
-  { codigo: '6', nombre: 'Compras y gastos' },
-  { codigo: '7', nombre: 'Ventas e ingresos' },
-];
+const GRUPOS_BASE: GrupoCuenta[] = PGC_BASE.filter((n) => n.level === 'group').map((n) => ({
+  codigo: n.code,
+  nombre: n.name,
+}));
 
-const SUBGRUPOS_BASE: SubgrupoCuenta[] = [
-  { codigo: '10', nombre: 'Capital', grupoCodigo: '1' },
-  { codigo: '11', nombre: 'Reservas', grupoCodigo: '1' },
-  { codigo: '17', nombre: 'Deudas a largo plazo', grupoCodigo: '1' },
-  { codigo: '20', nombre: 'Inmovilizaciones intangibles', grupoCodigo: '2' },
-  { codigo: '21', nombre: 'Inmovilizaciones materiales', grupoCodigo: '2' },
-  { codigo: '28', nombre: 'Amortizacion acumulada del inmovilizado', grupoCodigo: '2' },
-  { codigo: '30', nombre: 'Existencias comerciales', grupoCodigo: '3' },
-  { codigo: '40', nombre: 'Proveedores', grupoCodigo: '4' },
-  { codigo: '41', nombre: 'Acreedores varios', grupoCodigo: '4' },
-  { codigo: '43', nombre: 'Clientes', grupoCodigo: '4' },
-  { codigo: '44', nombre: 'Deudores varios', grupoCodigo: '4' },
-  { codigo: '47', nombre: 'Administraciones publicas', grupoCodigo: '4' },
-  { codigo: '52', nombre: 'Deudas a corto plazo', grupoCodigo: '5' },
-  { codigo: '57', nombre: 'Tesoreria', grupoCodigo: '5' },
-  { codigo: '60', nombre: 'Compras', grupoCodigo: '6' },
-  { codigo: '62', nombre: 'Servicios exteriores', grupoCodigo: '6' },
-  { codigo: '64', nombre: 'Gastos de personal', grupoCodigo: '6' },
-  { codigo: '68', nombre: 'Dotaciones para amortizaciones', grupoCodigo: '6' },
-  { codigo: '70', nombre: 'Ventas de mercaderias y prestacion de servicios', grupoCodigo: '7' },
-  { codigo: '76', nombre: 'Ingresos financieros', grupoCodigo: '7' },
-];
+const SUBGRUPOS_BASE: SubgrupoCuenta[] = PGC_BASE.flatMap((n) =>
+  n.level === 'subgroup' ? [{ codigo: n.code, nombre: n.name, grupoCodigo: n.groupCode }] : [],
+);
 
-const CUENTAS_BASE: CuentaContableBase[] = [
-  { codigo: '100', nombre: 'Capital social', subgrupoCodigo: '10', tipo: 'patrimonio_neto' },
-  { codigo: '101', nombre: 'Fondo social', subgrupoCodigo: '10', tipo: 'patrimonio_neto' },
-  { codigo: '110', nombre: 'Prima de emision', subgrupoCodigo: '11', tipo: 'patrimonio_neto' },
-  { codigo: '113', nombre: 'Reservas voluntarias', subgrupoCodigo: '11', tipo: 'patrimonio_neto' },
-  { codigo: '170', nombre: 'Deudas a largo plazo con entidades de credito', subgrupoCodigo: '17', tipo: 'pasivo' },
-  { codigo: '200', nombre: 'Inmovilizado intangible', subgrupoCodigo: '20', tipo: 'activo' },
-  { codigo: '210', nombre: 'Terrenos y bienes naturales', subgrupoCodigo: '21', tipo: 'activo' },
-  { codigo: '220', nombre: 'Inversiones en construcciones', subgrupoCodigo: '21', tipo: 'activo' },
-  { codigo: '300', nombre: 'Mercaderias', subgrupoCodigo: '30', tipo: 'activo' },
-  { codigo: '400', nombre: 'Proveedores', subgrupoCodigo: '40', tipo: 'pasivo' },
-  { codigo: '410', nombre: 'Acreedores por prestaciones de servicios', subgrupoCodigo: '41', tipo: 'pasivo' },
-  { codigo: '430', nombre: 'Clientes', subgrupoCodigo: '43', tipo: 'activo' },
-  { codigo: '440', nombre: 'Deudores', subgrupoCodigo: '44', tipo: 'activo' },
-  { codigo: '470', nombre: 'Hacienda Publica, deudora por diversos conceptos', subgrupoCodigo: '47', tipo: 'activo' },
-  { codigo: '472', nombre: 'Hacienda Publica, IVA soportado', subgrupoCodigo: '47', tipo: 'activo' },
-  { codigo: '475', nombre: 'Hacienda Publica, acreedora por conceptos fiscales', subgrupoCodigo: '47', tipo: 'pasivo' },
-  { codigo: '477', nombre: 'Hacienda Publica, IVA repercutido', subgrupoCodigo: '47', tipo: 'pasivo' },
-  { codigo: '520', nombre: 'Deudas a corto plazo con entidades de credito', subgrupoCodigo: '52', tipo: 'pasivo' },
-  { codigo: '570', nombre: 'Caja, euros', subgrupoCodigo: '57', tipo: 'activo' },
-  { codigo: '572', nombre: 'Bancos e instituciones de credito c/c vista, euros', subgrupoCodigo: '57', tipo: 'activo' },
-  { codigo: '600', nombre: 'Compras de mercaderias', subgrupoCodigo: '60', tipo: 'gasto' },
-  { codigo: '602', nombre: 'Compras de otros aprovisionamientos', subgrupoCodigo: '60', tipo: 'gasto' },
-  { codigo: '621', nombre: 'Arrendamientos y canones', subgrupoCodigo: '62', tipo: 'gasto' },
-  { codigo: '622', nombre: 'Reparaciones y conservacion', subgrupoCodigo: '62', tipo: 'gasto' },
-  { codigo: '626', nombre: 'Servicios bancarios y similares', subgrupoCodigo: '62', tipo: 'gasto' },
-  { codigo: '627', nombre: 'Publicidad, propaganda y relaciones publicas', subgrupoCodigo: '62', tipo: 'gasto' },
-  { codigo: '628', nombre: 'Suministros', subgrupoCodigo: '62', tipo: 'gasto' },
-  { codigo: '629', nombre: 'Otros servicios', subgrupoCodigo: '62', tipo: 'gasto' },
-  { codigo: '640', nombre: 'Sueldos y salarios', subgrupoCodigo: '64', tipo: 'gasto' },
-  { codigo: '642', nombre: 'Seguridad Social a cargo de la empresa', subgrupoCodigo: '64', tipo: 'gasto' },
-  { codigo: '700', nombre: 'Ventas de mercaderias', subgrupoCodigo: '70', tipo: 'ingreso' },
-  { codigo: '705', nombre: 'Prestaciones de servicios', subgrupoCodigo: '70', tipo: 'ingreso' },
-  { codigo: '769', nombre: 'Otros ingresos financieros', subgrupoCodigo: '76', tipo: 'ingreso' },
-];
+const CUENTAS_BASE: CuentaContableBase[] = PGC_BASE.flatMap((n) =>
+  n.level === 'account' ? [{ codigo: n.code, nombre: n.name, subgrupoCodigo: n.subgroupCode, tipo: n.type }] : [],
+);
 
 export function listarGruposBase(): GrupoCuenta[] {
   return GRUPOS_BASE;

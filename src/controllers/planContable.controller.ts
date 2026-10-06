@@ -1,4 +1,5 @@
 import { asyncHandler } from '../utils/async-handler';
+import { PGC_BASE } from '../domain/pgc-model';
 import { sendMessage, sendOk } from '../utils/response';
 import { badRequest, notFound } from '../utils/http-errors';
 import {
@@ -18,6 +19,12 @@ export const planContableController = {
   grupos: asyncHandler(async (_req, res) => sendOk(res, listarGruposBase())),
   subgrupos: asyncHandler(async (_req, res) => sendOk(res, listarSubgruposBase())),
   cuentas: asyncHandler(async (_req, res) => sendOk(res, listarCuentasBase())),
+  /**
+   * Plan base completo en una lista plana (grupos, subgrupos y cuentas), que es
+   * lo que pinta la pantalla Plan contable. Antes la pantalla pedia /todo y la
+   * ruta no existia: 404.
+   */
+  todo: asyncHandler(async (_req, res) => sendOk(res, PGC_BASE)),
 
   // --- Subcuentas por empresa ---
   listarSubcuentas: asyncHandler(async (req, res) => {

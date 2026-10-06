@@ -54,7 +54,7 @@ export type PgcNode = PgcGroup | PgcSubgroup | PgcAccount | PgcSubaccount;
  * Seed: Plan General de Contabilidad PYME base
  * Incluye grupos 1-7 con nuevas cuentas de nóminas, préstamos y leasing.
  */
-export const PGC_BASE: PgcNode[] = [
+const PGC_NODOS: PgcNode[] = [
   // === GRUPO 1: Financiación básica ===
   {
     level: 'group',
@@ -224,12 +224,12 @@ export const PGC_BASE: PgcNode[] = [
     level: 'account',
     code: '220',
     groupCode: '2',
-    subgroupCode: '21',
-    name: 'Inversiones en construcciones',
+    subgroupCode: '22',
+    name: 'Inversiones en terrenos y bienes naturales',
     type: 'activo',
     isSystem: true,
     isEditable: true,
-    parentCode: '21',
+    parentCode: '22',
   } as PgcAccount,
   {
     level: 'subgroup',
@@ -884,6 +884,97 @@ export const PGC_BASE: PgcNode[] = [
     parentCode: '76',
   } as PgcAccount,
 ];
+
+// ==== Ampliacion del plan base (PGC PYMES, RD 1515/2007) ====
+// Cuentas que usa el motor contable y que faltaban (473, 555, 623, 701, 702...),
+// y las de compras, gastos e ingresos de los grupos 6 y 7 para poder asignar
+// una factura a su cuenta. Nombres segun el cuadro de cuentas oficial.
+
+function subgrupo(code: string, name: string, type: PgcType): PgcSubgroup {
+  return { level: 'subgroup', code, groupCode: code[0], name, type, isSystem: true, isEditable: false, parentCode: code[0] };
+}
+
+function cuenta(code: string, name: string, type: PgcType): PgcAccount {
+  return {
+    level: 'account',
+    code,
+    groupCode: code[0],
+    subgroupCode: code.slice(0, 2),
+    name,
+    type,
+    isSystem: true,
+    isEditable: true,
+    parentCode: code.slice(0, 2),
+  };
+}
+
+const PGC_AMPLIACION: PgcNode[] = [
+  // Grupo 1
+  subgrupo('12', 'Resultados pendientes de aplicación', 'patrimonio_neto'),
+  cuenta('120', 'Remanente', 'patrimonio_neto'),
+  cuenta('121', 'Resultados negativos de ejercicios anteriores', 'patrimonio_neto'),
+  cuenta('129', 'Resultado del ejercicio', 'patrimonio_neto'),
+  // Grupo 2
+  subgrupo('22', 'Inversiones inmobiliarias', 'activo'),
+  cuenta('221', 'Inversiones en construcciones', 'activo'),
+  // Grupo 4
+  cuenta('473', 'Hacienda Pública, retenciones y pagos a cuenta', 'activo'),
+  // Grupo 5
+  cuenta('555', 'Partidas pendientes de aplicación', 'activo'),
+  // Grupo 6
+  cuenta('601', 'Compras de materias primas', 'gasto'),
+  cuenta('606', 'Descuentos sobre compras por pronto pago', 'gasto'),
+  cuenta('607', 'Trabajos realizados por otras empresas', 'gasto'),
+  cuenta('608', 'Devoluciones de compras y operaciones similares', 'gasto'),
+  cuenta('609', 'Rappels por compras', 'gasto'),
+  subgrupo('61', 'Variación de existencias', 'gasto'),
+  cuenta('610', 'Variación de existencias de mercaderías', 'gasto'),
+  cuenta('620', 'Gastos en investigación y desarrollo del ejercicio', 'gasto'),
+  cuenta('623', 'Servicios de profesionales independientes', 'gasto'),
+  cuenta('624', 'Transportes', 'gasto'),
+  cuenta('625', 'Primas de seguros', 'gasto'),
+  subgrupo('63', 'Tributos', 'gasto'),
+  cuenta('630', 'Impuesto sobre beneficios', 'gasto'),
+  cuenta('631', 'Otros tributos', 'gasto'),
+  cuenta('634', 'Ajustes negativos en la imposición indirecta', 'gasto'),
+  cuenta('636', 'Devolución de impuestos', 'gasto'),
+  subgrupo('65', 'Otros gastos de gestión', 'gasto'),
+  cuenta('650', 'Pérdidas de créditos comerciales incobrables', 'gasto'),
+  cuenta('659', 'Otras pérdidas en gestión corriente', 'gasto'),
+  subgrupo('66', 'Gastos financieros', 'gasto'),
+  cuenta('662', 'Intereses de deudas', 'gasto'),
+  cuenta('665', 'Intereses por descuento de efectos y operaciones de factoring', 'gasto'),
+  cuenta('668', 'Diferencias negativas de cambio', 'gasto'),
+  cuenta('669', 'Otros gastos financieros', 'gasto'),
+  subgrupo('67', 'Pérdidas procedentes de activos no corrientes y gastos excepcionales', 'gasto'),
+  cuenta('678', 'Gastos excepcionales', 'gasto'),
+  cuenta('682', 'Amortización de las inversiones inmobiliarias', 'gasto'),
+  subgrupo('69', 'Pérdidas por deterioro y otras dotaciones', 'gasto'),
+  cuenta('694', 'Pérdidas por deterioro de créditos por operaciones comerciales', 'gasto'),
+  // Grupo 7
+  cuenta('701', 'Ventas de productos terminados', 'ingreso'),
+  cuenta('702', 'Ventas de productos semiterminados', 'ingreso'),
+  cuenta('703', 'Ventas de subproductos y residuos', 'ingreso'),
+  cuenta('704', 'Ventas de envases y embalajes', 'ingreso'),
+  cuenta('706', 'Descuentos sobre ventas por pronto pago', 'ingreso'),
+  cuenta('708', 'Devoluciones de ventas y operaciones similares', 'ingreso'),
+  cuenta('709', 'Rappels sobre ventas', 'ingreso'),
+  subgrupo('74', 'Subvenciones, donaciones y legados', 'ingreso'),
+  cuenta('740', 'Subvenciones, donaciones y legados a la explotación', 'ingreso'),
+  subgrupo('75', 'Otros ingresos de gestión', 'ingreso'),
+  cuenta('752', 'Ingresos por arrendamientos', 'ingreso'),
+  cuenta('759', 'Ingresos por servicios diversos', 'ingreso'),
+  cuenta('762', 'Ingresos de créditos', 'ingreso'),
+  subgrupo('77', 'Beneficios procedentes de activos no corrientes e ingresos excepcionales', 'ingreso'),
+  cuenta('778', 'Ingresos excepcionales', 'ingreso'),
+];
+
+/**
+ * Plan base completo, ordenado por codigo. El orden por codigo coincide con el
+ * del arbol: 1, 10, 100, 101, 11, 110...
+ */
+export const PGC_BASE: PgcNode[] = [...PGC_NODOS, ...PGC_AMPLIACION].sort((a, b) => a.code.localeCompare(b.code));
+
 
 // ==== Funciones helper ====
 

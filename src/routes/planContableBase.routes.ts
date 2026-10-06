@@ -7,5 +7,6 @@ const router = Router();
 router.get('/grupos', planContableController.grupos);
 router.get('/subgrupos', planContableController.subgrupos);
 router.get('/cuentas', planContableController.cuentas);
+router.get('/todo', planContableController.todo);
 
 export default router;
