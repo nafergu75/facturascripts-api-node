@@ -396,7 +396,11 @@ function resolverCabecera<C extends string>(
       fila = buscarCabecera(filas, patrones, (m) => Object.keys(m).length >= 2)?.fila ?? -1;
     }
     if (!util(manual)) {
-      throw badRequest(`Faltan columnas obligatorias en el mapeo de ${queEs}.`);
+      throw badRequest(`Faltan columnas en el mapeo de ${queEs}: indica al menos ${queEs === 'el diario' ? 'la fecha' : 'la cuenta'} y los importes (Debe y Haber, o el saldo o importe).`, {
+        columnas: describirColumnas(filas, fila),
+        mapeo: manual,
+        necesitaMapeo: true,
+      });
     }
     return { fila, mapeo: manual };
   }

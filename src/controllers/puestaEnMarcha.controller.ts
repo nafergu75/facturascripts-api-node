@@ -1,7 +1,7 @@
 import type { Request } from 'express';
 import { asyncHandler } from '../utils/async-handler';
 import { sendOk } from '../utils/response';
-import { badRequest } from '../utils/http-errors';
+import { badRequest, HttpError } from '../utils/http-errors';
 import { registrarAuditoria } from '../services/auditoria.service';
 import {
   leerBalance,
@@ -67,6 +67,20 @@ function lecturaDiario(req: ConFichero) {
   return leerDiario(req.file.buffer, req.file.originalname, opcionesLectura<CampoDiario>((req.body ?? {}) as Record<string, unknown>));
 }
 
+/**
+ * En la vista previa, si no se reconocen las columnas, se responde 200 con las
+ * columnas del fichero para que el usuario indique cual es cada dato.
+ */
+async function conMapeo<T>(fn: () => Promise<T>): Promise<T | { necesitaMapeo: true; mensaje: string; columnas: unknown; mapeo?: unknown }> {
+  try {
+    return await fn();
+  } catch (e) {
+    const d = e instanceof HttpError ? (e.details as { necesitaMapeo?: boolean; columnas?: unknown; mapeo?: unknown } | undefined) : undefined;
+    if (d?.necesitaMapeo) return { necesitaMapeo: true, mensaje: (e as Error).message, columnas: d.columnas, mapeo: d.mapeo };
+    throw e;
+  }
+}
+
 function ejercicioDe(raw: unknown): number {
   const e = Number(raw);
   if (!Number.isInteger(e)) throw badRequest('Parámetro "ejercicio" no válido.');
@@ -80,7 +94,7 @@ export const puestaEnMarchaController = {
 
   vistaApertura: asyncHandler(async (req, res) => {
     const b = req.body ?? {};
-    sendOk(res, await previsualizarApertura(req.companyId!, entradaSaldos(req as ConFichero), { ejercicio: b.ejercicio, fecha: b.fecha, reemplazar: si(b.reemplazar) }));
+    sendOk(res, await conMapeo(() => previsualizarApertura(req.companyId!, entradaSaldos(req as ConFichero), { ejercicio: b.ejercicio, fecha: b.fecha, reemplazar: si(b.reemplazar) })));
   }),
 
   confirmarApertura: asyncHandler(async (req, res) => {
@@ -113,12 +127,14 @@ export const puestaEnMarchaController = {
     const b = req.body ?? {};
     sendOk(
       res,
-      await previsualizarDiario(req.companyId!, lecturaDiario(req as ConFichero), {
-        ejercicio: b.ejercicio,
-        agrupacion: (b.agrupacion || 'auto') as Agrupacion,
-        incluirEspeciales: si(b.incluirEspeciales),
-        reemplazar: si(b.reemplazar),
-      }),
+      await conMapeo(() =>
+        previsualizarDiario(req.companyId!, lecturaDiario(req as ConFichero), {
+          ejercicio: b.ejercicio,
+          agrupacion: (b.agrupacion || 'auto') as Agrupacion,
+          incluirEspeciales: si(b.incluirEspeciales),
+          reemplazar: si(b.reemplazar),
+        }),
+      ),
     );
   }),
 
@@ -150,7 +166,7 @@ export const puestaEnMarchaController = {
 
   vistaComparativo: asyncHandler(async (req, res) => {
     const b = req.body ?? {};
-    sendOk(res, await previsualizarComparativo(req.companyId!, entradaSaldos(req as ConFichero), { ejercicio: b.ejercicio, parte: (b.parte || 'todo') as ParteComparativo }));
+    sendOk(res, await conMapeo(() => previsualizarComparativo(req.companyId!, entradaSaldos(req as ConFichero), { ejercicio: b.ejercicio, parte: (b.parte || 'todo') as ParteComparativo })));
   }),
 
   confirmarComparativo: asyncHandler(async (req, res) => {
