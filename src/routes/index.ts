@@ -46,6 +46,7 @@ import ocrRoutes from './ocr.routes';
 import ocrSessionsRoutes from './ocr-sessions.routes';
 import ocrAnalyticsRoutes from './ocr-analytics.routes';
 import taxModelsRoutes from './tax-models.routes';
+import treasuryRoutes from './treasury.routes';
 
 const router = Router();
 
@@ -101,6 +102,7 @@ scoped.use('/accounting', accountingEngineRoutes);
 scoped.use('/reports', reportsRoutes);
 scoped.use('/tax', taxRoutes);
 scoped.use('/tax-models', taxModelsRoutes);
+scoped.use('/treasury', treasuryRoutes);
 scoped.use('/chat-assistant', chatAssistantRoutes);
 scoped.use('/legal-config', legalConfigRoutes);
 scoped.use('/fiscal-years', fiscalYearsRoutes);

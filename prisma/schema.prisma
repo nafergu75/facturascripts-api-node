@@ -607,6 +607,9 @@ model BankAccount {
   bancoNombre     String?
   /// Referencia a subcuenta 572xxx del plan contable.
   subcuentaCodigo String
+  bic             String?
+  /// Saldo que el usuario declara al dar de alta la cuenta (pantalla de tesoreria).
+  saldoInicial    Float          @default(0)
   activa          Boolean        @default(true)
   createdAt       DateTime       @default(now())
   movimientos     BankMovement[]
