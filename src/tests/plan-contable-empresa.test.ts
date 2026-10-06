@@ -17,8 +17,10 @@ jest.mock('../config/database', () => ({
       findMany: jest.fn(({ where }: { where: { companyId: string; codigo: { in: string[] } } }) =>
         Promise.resolve(filas.filter((f) => f.companyId === where.companyId && where.codigo.in.includes(f.codigo))),
       ),
-      findFirst: jest.fn(({ where }: { where: { companyId: string; codigo: string } }) =>
-        Promise.resolve(filas.find((f) => f.companyId === where.companyId && f.codigo === where.codigo) ?? null),
+      findFirst: jest.fn(({ where }: { where: { companyId: string; codigo?: string; id?: string } }) =>
+        Promise.resolve(
+          filas.find((f) => f.companyId === where.companyId && (where.id ? f.id === where.id : f.codigo === where.codigo)) ?? null,
+        ),
       ),
       createMany: jest.fn(({ data }: { data: Fila[] }) => {
         filas.push(...data);
@@ -42,7 +44,7 @@ jest.mock('../services/auditoria.service', () => ({ registrarAuditoria: jest.fn(
 import express from 'express';
 import request from 'supertest';
 import { PGC_BASE } from '../domain/pgc-model';
-import { asegurarPlanContableEmpresa, crearSubcuentaPersonalizada } from '../services/chart-of-accounts.service';
+import { actualizarCuenta, asegurarPlanContableEmpresa, crearSubcuentaPersonalizada } from '../services/chart-of-accounts.service';
 import chartOfAccountsRoutes from '../routes/chart-of-accounts.routes';
 import { CONTABLE_RULES } from '../services/accounting-engine.service';
 
@@ -112,6 +114,35 @@ describe('subcuentas propias', () => {
     await expect(
       crearSubcuentaPersonalizada({ companyId: 'e1', codigo: '7000001', nombre: 'x', parentCodigo: '629', naturaleza: '', tipoUso: '' }),
     ).rejects.toThrow(/empezar por 629/);
+  });
+});
+
+describe('editar cuentas', () => {
+  beforeEach(() => asegurarPlanContableEmpresa('e1'));
+  const propia = () =>
+    crearSubcuentaPersonalizada({ companyId: 'e1', codigo: '6290001', nombre: 'Oficina', parentCodigo: '629', naturaleza: '', tipoUso: '' });
+
+  it('renombra y desactiva una subcuenta propia', async () => {
+    const s = await propia();
+    const r = await actualizarCuenta(s.id, 'e1', { nombre: 'Material de oficina', activo: false });
+    expect(r).toMatchObject({ nombre: 'Material de oficina', activo: false });
+  });
+
+  it('solo guarda nombre, activo y notas', async () => {
+    const s = await propia();
+    const r = await actualizarCuenta(s.id, 'e1', { nombre: 'X', codigo: '999', companyId: 'e2', esBasePGC: true } as never);
+    expect(r).toMatchObject({ codigo: '6290001', companyId: 'e1', esBasePGC: false });
+  });
+
+  it('no deja desactivar ni renombrar una cuenta del PGC', async () => {
+    const c400 = filas.find((f) => f.codigo === '400')!;
+    await expect(actualizarCuenta(c400.id, 'e1', { activo: false })).rejects.toThrow(/no se pueden desactivar/);
+    await expect(actualizarCuenta(c400.id, 'e1', { nombre: 'Otro' })).rejects.toThrow(/PGC base/);
+  });
+
+  it('no toca cuentas de otra empresa', async () => {
+    const s = await propia();
+    await expect(actualizarCuenta(s.id, 'e2', { nombre: 'X' })).rejects.toThrow(/no encontrada/);
   });
 });
 

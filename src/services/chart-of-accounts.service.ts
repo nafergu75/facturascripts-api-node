@@ -207,10 +207,27 @@ export async function actualizarCuenta(
   if (cuenta.esBasePGC && datos.nombre) {
     throw badRequest('No se puede editar el nombre de cuentas del PGC base.');
   }
+  // El motor contabiliza en cuentas del PGC (400, 472, 4751...): desactivarlas
+  // dejaria de poder contabilizar facturas.
+  if (cuenta.esBasePGC && datos.activo === false) {
+    throw badRequest('Las cuentas del PGC no se pueden desactivar; sí tus subcuentas propias.');
+  }
+
+  // Solo estos campos: antes se guardaba el cuerpo tal cual y se podia cambiar
+  // el codigo, la empresa o marcar una cuenta propia como del PGC.
+  const data: { nombre?: string; activo?: boolean; notas?: string | null } = {};
+  if (datos.nombre !== undefined) {
+    const nombre = String(datos.nombre).trim();
+    if (!nombre) throw badRequest('El nombre no puede quedar vacío.');
+    data.nombre = nombre;
+  }
+  if (datos.activo !== undefined) data.activo = Boolean(datos.activo);
+  if (datos.notas !== undefined) data.notas = datos.notas ? String(datos.notas) : null;
+  if (Object.keys(data).length === 0) throw badRequest('Nada que actualizar (nombre, activo o notas).');
 
   const actualizada = await prisma.chartOfAccounts.update({
     where: { id },
-    data: datos,
+    data,
   });
 
   return actualizada;
