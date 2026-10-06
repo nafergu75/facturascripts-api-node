@@ -3,6 +3,13 @@ import { badRequest, notFound } from '../utils/http-errors';
 import { putObject, getObject } from '../utils/storage';
 import { nombreSeguro } from '../utils/nombre-seguro';
 import { createHash } from 'crypto';
+import {
+  periodoDeFecha,
+  nombreArchivoFactura,
+  rutaArchivoFactura,
+  extensionDe,
+  pdfFacturaVenta,
+} from './archivoFacturas.service';
 
 export interface DocumentoArchivoDTO {
   id: string;
@@ -27,6 +34,7 @@ export interface DocumentoArchivoDTO {
   archivoHash: string;
   readerDocumentId?: string;
   incomeInvoiceId?: string;
+  expenseInvoiceId?: string;
   origen?: string;
   estado: 'activo' | 'reemplazado' | 'anulado';
   confianza?: number;
@@ -52,18 +60,12 @@ export interface CrearDocumentoArchivoInput {
   archivoBuffer: Buffer;
   readerDocumentId?: string;
   incomeInvoiceId?: string;
+  /** Factura de gasto a la que se adjunta el original (opcional). */
+  expenseInvoiceId?: string;
   origen?: string;
   confianza?: number;
   observaciones?: string;
   uploadedBy?: string;
-}
-
-/**
- * Calcula el trimestre basado en el mes (1-12 -> trimestre 1-4)
- */
-function calcularTrimestre(mes: number): number {
-  if (mes < 1 || mes > 12) throw badRequest('Mes debe estar entre 1 y 12');
-  return Math.ceil(mes / 3);
 }
 
 /**
@@ -74,41 +76,60 @@ function calcularHash(buffer: Buffer): string {
 }
 
 /**
- * Construye la ruta de almacenamiento: archivos/{companyId}/{anio}/{mes}/
- */
-function construirArchivosPath(companyId: string, anio: number, mes: number): string {
-  return `archivos/${companyId}/${anio}/${String(mes).padStart(2, '0')}`;
-}
-
-/**
- * Crea un nuevo registro de documento en el archivo
+ * Crea un nuevo registro de documento en el archivo (subida manual).
+ * Se coloca en la carpeta de su año y trimestre según la fecha:
+ *   archivo/<empresa>/<anio>/<T>T/<ventas|gastos>/<fecha>_<numero>_<tercero>.<ext>
+ * Si se indica la factura (incomeInvoiceId / expenseInvoiceId), el fichero se
+ * adjunta a ella y sustituye al documento activo que tuviera.
  */
 export async function crearDocumentoArchivo(
   companyId: string,
   input: CrearDocumentoArchivoInput,
 ): Promise<DocumentoArchivoDTO> {
-  // Validar fechas
-  const fechaDate = new Date(input.fecha);
-  if (isNaN(fechaDate.getTime())) {
-    throw badRequest('Fecha inválida');
-  }
+  // La fecha se lee como texto AAAA-MM-DD: con new Date() el huso horario
+  // podía mover una factura del 1 de enero al año anterior.
+  const { anio, mes, trimestre } = periodoDeFecha(input.fecha);
+  const fecha = input.fecha.slice(0, 10);
 
-  const anio = fechaDate.getFullYear();
-  const mes = fechaDate.getMonth() + 1;
-  const trimestre = calcularTrimestre(mes);
+  // Enlace opcional con una factura de la empresa.
+  let incomeInvoiceId: string | undefined;
+  let expenseInvoiceId: string | undefined;
+  if (input.tipo === 'ingreso' && input.incomeInvoiceId) {
+    const f = await prisma.incomeInvoice.findFirst({ where: { id: input.incomeInvoiceId, companyId }, select: { id: true } });
+    if (!f) throw notFound('La factura de venta indicada no existe.');
+    incomeInvoiceId = f.id;
+  }
+  if (input.tipo === 'gasto' && input.expenseInvoiceId) {
+    const f = await prisma.expenseInvoice.findFirst({ where: { id: input.expenseInvoiceId, companyId }, select: { id: true } });
+    if (!f) throw notFound('La factura de gasto indicada no existe.');
+    expenseInvoiceId = f.id;
+  }
 
   // Calcular hash del archivo
   const hash = calcularHash(input.archivoBuffer);
 
-  // Construir ruta de almacenamiento
-  const archivosPath = construirArchivosPath(companyId, anio, mes);
-  // El nombre viene del cliente: se limpia para que no pueda salir de la carpeta.
-  // La clave usa '/', no path.join (en Windows pondria '\' en la ruta del Blob).
-  const nombreArchivo = `${Date.now()}-${nombreSeguro(input.archivoNombre)}`;
-  const rutaCompleta = `${archivosPath}/${nombreArchivo}`;
+  // Carpeta del trimestre. El nombre se limpia (nombreSeguro) para que no pueda
+  // salir de la carpeta; la clave usa '/', no path.join (en Windows pondría '').
+  const carpeta = input.tipo === 'ingreso' ? 'ventas' : 'gastos';
+  const tercero = input.tipo === 'ingreso' ? input.receptor : input.emisor;
+  const nombreArchivo = nombreArchivoFactura(
+    fecha,
+    input.numeroFactura || `subida-${Date.now()}`,
+    tercero || input.emisor || input.receptor,
+    extensionDe(input.archivoNombre, input.archivoTipo),
+  );
+  const rutaCompleta = rutaArchivoFactura(companyId, { anio, mes, trimestre }, carpeta, nombreArchivo);
 
   // Guardar archivo en storage (local o Vercel Blob)
   const archivoPath = await putObject(rutaCompleta, input.archivoBuffer, input.archivoTipo);
+
+  // El documento anterior de esa factura queda como reemplazado.
+  if (incomeInvoiceId || expenseInvoiceId) {
+    await prisma.documentoArchivo.updateMany({
+      where: { companyId, estado: 'activo', ...(incomeInvoiceId ? { incomeInvoiceId } : { expenseInvoiceId }) },
+      data: { estado: 'reemplazado' },
+    });
+  }
 
   // Crear registro en BD
   const documento = await prisma.documentoArchivo.create({
@@ -119,7 +140,7 @@ export async function crearDocumentoArchivo(
       emisor: input.emisor,
       receptor: input.receptor,
       nifCif: input.nifCif,
-      fecha: input.fecha,
+      fecha,
       mes,
       trimestre,
       anio,
@@ -133,8 +154,9 @@ export async function crearDocumentoArchivo(
       archivoPath,
       archivoHash: hash,
       readerDocumentId: input.readerDocumentId,
-      incomeInvoiceId: input.incomeInvoiceId,
-      origen: input.origen,
+      incomeInvoiceId,
+      expenseInvoiceId,
+      origen: input.origen || 'manual',
       confianza: input.confianza,
       observaciones: input.observaciones,
       uploadedBy: input.uploadedBy,
@@ -230,13 +252,21 @@ export async function descargarArchivo(
 ): Promise<{ buffer: Buffer; nombre: string; tipo: string }> {
   const documento = await obtenerDocumento(companyId, documentoId);
 
-  const buffer = await getObject(documento.archivoPath);
-
-  return {
-    buffer,
-    nombre: documento.archivoNombre,
-    tipo: documento.archivoTipo,
-  };
+  // Copia guardada: se sirve tal cual.
+  if (documento.archivoPath) {
+    try {
+      const buffer = await getObject(documento.archivoPath);
+      return { buffer, nombre: documento.archivoNombre, tipo: documento.archivoTipo };
+    } catch (err) {
+      if (!documento.incomeInvoiceId) throw err;
+    }
+  }
+  // Ventas sin copia (o ilegible): el PDF se genera al vuelo.
+  if (documento.incomeInvoiceId) {
+    const pdf = await pdfFacturaVenta(companyId, documento.incomeInvoiceId);
+    return { buffer: pdf.contenido, nombre: pdf.nombre, tipo: pdf.mime };
+  }
+  throw notFound('Este documento no tiene el fichero original guardado.');
 }
 
 /**
@@ -393,6 +423,7 @@ function mapearDocumento(doc: any): DocumentoArchivoDTO {
     archivoHash: doc.archivoHash,
     readerDocumentId: doc.readerDocumentId,
     incomeInvoiceId: doc.incomeInvoiceId,
+    expenseInvoiceId: doc.expenseInvoiceId,
     origen: doc.origen,
     estado: doc.estado,
     confianza: doc.confianza,

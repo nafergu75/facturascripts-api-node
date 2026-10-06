@@ -2,6 +2,7 @@ import { asyncHandler } from '../utils/async-handler';
 import { sendOk, sendMessage } from '../utils/response';
 import { badRequest, notFound } from '../utils/http-errors';
 import { expenseInvoicesService, CrearFacturaGastoDTO } from '../services/expense-invoices.service';
+import { archivarGastoSinRomper } from '../services/archivoFacturas.service';
 
 export const expenseInvoicesController = {
   /**
@@ -35,6 +36,9 @@ export const expenseInvoicesController = {
     };
 
     const factura = await expenseInvoicesService.crearGasto(dto);
+    // Queda registrada en el archivo de su trimestre (sin original: se puede
+    // adjuntar desde Archivo). No bloqueante.
+    await archivarGastoSinRomper(req.companyId!, factura.id);
     sendOk(res, { data: factura }, undefined, 201);
   }),
 

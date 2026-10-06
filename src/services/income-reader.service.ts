@@ -36,6 +36,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { prisma } from '../config/database';
 import { config } from '../config/env';
 import { putObject, getObject } from '../utils/storage';
+import { archivarVentaSinRomper } from './archivoFacturas.service';
 import {
   esVigente,
   diasParaCaducidad,
@@ -777,6 +778,9 @@ export const incomeReaderService = {
         verifiedAt: new Date(),
       },
     });
+
+    // Archivo por trimestres: se guarda el original subido (no bloqueante).
+    await archivarVentaSinRomper(companyId, factura.id);
 
     return await this.obtenerDetalle(companyId, documentId);
   },
