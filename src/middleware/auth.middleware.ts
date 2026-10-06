@@ -21,13 +21,15 @@ export const authMiddleware: RequestHandler = (req, _res, next) => {
   try {
     let payload: jwt.JwtPayload;
 
-    // En desarrollo, acepta tokens sin validar firma (permite tokens dummy del frontend)
-    if (config.nodeEnv === 'development') {
+    // Solo con el atajo de desarrollo activado de forma explicita
+    // (NODE_ENV=development + ALLOW_INSECURE_DEV_AUTH=1) se aceptan tokens
+    // sin firma valida, para probar con tokens dummy del frontend.
+    if (config.allowInsecureDevAuth) {
       try {
         // Intenta verificar primero
         payload = jwt.verify(token, config.jwtSecret) as jwt.JwtPayload;
       } catch {
-        // En development, decodifica sin validar firma
+        // Atajo de desarrollo: decodifica sin validar firma
         const decoded = jwt.decode(token);
         if (!decoded || typeof decoded !== 'object') {
           return next(unauthorized('Token invalido o no decodificable.'));
@@ -35,7 +37,7 @@ export const authMiddleware: RequestHandler = (req, _res, next) => {
         payload = decoded as jwt.JwtPayload;
       }
     } else {
-      // En producción, exige validación estricta
+      // Modo normal: validacion estricta de la firma
       payload = jwt.verify(token, config.jwtSecret) as jwt.JwtPayload;
     }
 

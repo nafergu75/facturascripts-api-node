@@ -30,12 +30,11 @@ export const companyScope: RequestHandler = (req, _res, next) => {
 
   // El admin GLOBAL puede acceder a cualquier empresa valida; el resto, solo a
   // las empresas de su token (memberships).
-  // En desarrollo, aceptamos cualquier companyId para facilitar testing
+  // Solo con el atajo de desarrollo explicito se acepta cualquier companyId.
   if (!req.user.esAdminGlobal && !req.user.companies.includes(companyId)) {
-    if (config.nodeEnv !== 'development') {
+    if (!config.allowInsecureDevAuth) {
       return next(forbidden('El usuario no tiene acceso a esta empresa.', { companyId }));
     }
-    // En development, aceptamos cualquier empresa
   }
 
   req.companyId = companyId;

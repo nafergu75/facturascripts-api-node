@@ -5,7 +5,13 @@ dotenv.config();
 
 const envSchema = z.object({
   PORT: z.coerce.number().int().positive().default(3000),
-  NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
+  // Por defecto 'production': si el despliegue olvida definir NODE_ENV, la API
+  // debe quedar en modo estricto, nunca en el relajado de desarrollo.
+  NODE_ENV: z.enum(['development', 'production', 'test']).default('production'),
+
+  // Atajo de desarrollo: aceptar tokens sin firma valida y cualquier companyId.
+  // Solo tiene efecto con NODE_ENV=development y ademas este flag a '1'.
+  ALLOW_INSECURE_DEV_AUTH: z.string().optional(),
 
   // BD propia (MySQL via Prisma)
   DATABASE_URL: z.string().min(1),
@@ -58,6 +64,7 @@ export const config = {
   nodeEnv: env.NODE_ENV,
   isProd: env.NODE_ENV === 'production',
   isTest: env.NODE_ENV === 'test',
+  allowInsecureDevAuth: env.NODE_ENV === 'development' && env.ALLOW_INSECURE_DEV_AUTH === '1',
   databaseUrl: env.DATABASE_URL,
   encryptionKey: env.ENCRYPTION_KEY,
   jwtSecret: env.JWT_SECRET,
