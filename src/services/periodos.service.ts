@@ -105,6 +105,16 @@ const ddmmaaaa = (f: string) => `${f.slice(8, 10)}/${f.slice(5, 7)}/${f.slice(0,
 const campoFecha = (accion: string) => (accion.startsWith('emitir') ? { campo: 'fechaEmision' } : {});
 
 /**
+ * Una factura recibida lleva la fecha que puso el proveedor: no se cambia para
+ * esquivar un mes bloqueado. Su IVA se deduce en el periodo en que se recibe
+ * (art. 99 LIVA), pero la app todavia no contabiliza una factura recibida en
+ * un periodo posterior al de su fecha: se dice asi, sin invitar a cambiarla.
+ */
+const esFacturaRecibida = (accion: string) => accion.includes('factura de gasto');
+const SIN_CAMBIAR_FECHA_RECIBIDA =
+  'No cambies la fecha de la factura: es la que puso el proveedor. Si ese periodo ya está declarado y la factura llegó tarde, su IVA se deduce en el periodo en que la recibes; la aplicación todavía no permite contabilizarla con otra fecha, así que consulta con tu asesor cómo anotarla antes de desbloquear el mes.';
+
+/**
  * No se apunta nada en un periodo cerrado o bloqueado, ni en un ejercicio
  * cerrado (con asientos de regularizacion/cierre o marcado como cerrado).
  *
@@ -120,9 +130,11 @@ export async function comprobarFechaAbierta(companyId: string, fecha: string, ac
     if (accion) {
       throw badRequest(
         `No se puede ${accion} con fecha ${ddmmaaaa(fecha)}: el mes ${mes} está ${estado}. ` +
-          (estado === 'bloqueado'
-            ? 'Usa otra fecha o desbloquea ese mes en Configuración > Ejercicios y periodos.'
-            : 'Usa otra fecha: ese mes ya se cerró.'),
+          (esFacturaRecibida(accion)
+            ? SIN_CAMBIAR_FECHA_RECIBIDA
+            : estado === 'bloqueado'
+              ? 'Usa otra fecha o desbloquea ese mes en Configuración > Ejercicios y periodos.'
+              : 'Usa otra fecha: ese mes ya se cerró.'),
         { ...campoFecha(accion), motivo: `periodo_${estado}` },
       );
     }
@@ -135,7 +147,9 @@ export async function comprobarFechaAbierta(companyId: string, fecha: string, ac
       const queHacer =
         estadoEj === 'CERRADO_SIN_ASIENTOS'
           ? await textoReabrir(companyId, ejercicio)
-          : 'Usa otra fecha o, si de verdad tiene que ir en ese año, deshaz antes el cierre en Contabilidad > Cierre y traspaso de saldos.';
+          : esFacturaRecibida(accion)
+            ? SIN_CAMBIAR_FECHA_RECIBIDA
+            : 'Usa otra fecha o, si de verdad tiene que ir en ese año, deshaz antes el cierre en Contabilidad > Cierre y traspaso de saldos.';
       throw badRequest(`No se puede ${accion} con fecha ${ddmmaaaa(fecha)}: el ejercicio ${ejercicio} está cerrado. ${queHacer}`, {
         ...campoFecha(accion),
         motivo: 'ejercicio_cerrado',

@@ -124,6 +124,10 @@ describe('facturas de gasto y aprobacion de asientos', () => {
     await expect(motor.contabilizarFacturaGasto(COMPANY_ID, g.id)).rejects.toThrow(
       /^No se puede contabilizar la factura de gasto con fecha 03\/03\/2026: el mes 03\/2026 está bloqueado/,
     );
+    // No invita a cambiar la fecha que puso el proveedor.
+    const err = await motor.contabilizarFacturaGasto(COMPANY_ID, g.id).catch((e: Error) => e);
+    expect((err as Error).message).toMatch(/No cambies la fecha de la factura/);
+    expect((err as Error).message).not.toMatch(/Usa otra fecha/);
     expect((await prisma.expenseInvoice.findUniqueOrThrow({ where: { id: g.id } })).estado).not.toBe('ACCOUNTED');
   });
 
