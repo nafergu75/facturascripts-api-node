@@ -8,19 +8,20 @@ import { prisma } from '../../../config/database';
 import { facturasPorCobrar, type FacturaPorCobrar } from '../../cobrosClientes.service';
 import { totalCobradoEntre } from '../../cobrosPagos.service';
 import { obtenerResumen } from '../../treasury.service';
-import { aCentimos } from '../../../utils/money';
+import { resumenFiscalPeriodo } from '../../resumenFiscal.service';
 import { plano } from '../../../utils/texto';
 import type { ColumnaInforme } from '../../informesContables.documentos';
 import { tiene } from '../contexto';
-import { botonIntencion, eur, fechaES, plural, tabla } from '../plantillas';
+import { botonIntencion, eur, fechaES, plural, sumar, tabla } from '../plantillas';
 import { hastaHoy, resolverCodigoPeriodo } from '../huecos/periodo';
 import { indiceTerceros } from '../terceros';
-import { AVISO_FESTIVOS, NOMBRES_MODELO, diasHasta, etiquetaPeriodo, proximosPlazos } from '../faq/calendario';
-import type { AreaIntencion, CarmenCtx, HuecosResueltos, Kpi, RespuestaDatos } from '../tipos';
+import { proximosPlazos } from '../faq/calendario';
+import { EJECUTORES_FACTURACION } from './facturacion';
+import { EJECUTORES_IMPUESTOS, resumenImpuestos } from './impuestos';
+import { cuentaDeResultados } from './resultados';
+import type { CarmenCtx, HuecosResueltos, Kpi, RespuestaDatos } from '../tipos';
 
 type Ejecutor = (ctx: CarmenCtx, h: HuecosResueltos) => Promise<RespuestaDatos>;
-
-const sumar = (importes: number[]) => importes.reduce((s, x) => s + aCentimos(x), 0) / 100;
 
 const COLS_FACTURAS: ColumnaInforme[] = [
   { titulo: 'Factura', tipo: 'codigo', ancho: 3 },
@@ -356,107 +357,95 @@ export const ultimosMovimientos: Ejecutor = async (ctx, h) => {
   };
 };
 
-// ---------------- INT-30: próximos impuestos ----------------
-
-export const proximosImpuestos: Ejecutor = async (ctx) => {
-  const plazos = proximosPlazos(ctx.hoy, 6);
-  const primero = plazos[0];
-  const dias = primero ? diasHasta(ctx.hoy, primero.fecha) : 0;
-  return {
-    entendido: `Próximos plazos de presentación desde el ${fechaES(ctx.hoy)}`,
-    texto:
-      (primero
-        ? `El próximo plazo es el ${fechaES(primero.fecha)}${dias === 0 ? ' (hoy)' : ` (dentro de ${plural(dias, 'día')})`}: modelo ${primero.modelo}, ${NOMBRES_MODELO[primero.modelo]}. `
-        : '') +
-      'Son los plazos generales de una empresa con ejercicio natural; no miran qué modelos te tocan ni si ya los has presentado.',
-    sinCifras: true,
-    tabla: tabla(
-      'Próximos plazos generales',
-      `Desde el ${fechaES(ctx.hoy)}`,
-      [
-        { titulo: 'Modelo', tipo: 'codigo', ancho: 2 },
-        { titulo: 'Qué es', tipo: 'texto', ancho: 8 },
-        { titulo: 'Periodo', tipo: 'texto', ancho: 4 },
-        { titulo: 'Hasta el', tipo: 'fecha', ancho: 3 },
-      ],
-      plazos.map((p) => ({ celdas: [p.modelo, p.nombre, etiquetaPeriodo(p).replace(/^el /, ''), p.fecha] })),
-    ),
-    avisos: [AVISO_FESTIVOS],
-    enlaces: tiene(ctx, 'impuestos:read') ? [{ texto: 'Ver el estado de tus modelos', href: '/dashboard/fiscal/estado' }] : [],
-  };
-};
-
 // ---------------- INT-39: resumen de la empresa ----------------
 
+/**
+ * Junta INT-09 (facturado del trimestre), INT-02/03 (pendiente y vencido),
+ * INT-24 (bancos), INT-30 (impuestos de la empresa) e INT-23 (asientos). Cada
+ * bloque solo sale si el usuario tiene su permiso; sin ninguno, solo el
+ * próximo plazo general.
+ */
 export const resumenEmpresa: Ejecutor = async (ctx) => {
-  const kpis: Kpi[] = [];
-  const frases: string[] = [];
-  const tareas: Array<Promise<void>> = [];
+  // Cada bloque llega cuando termina su consulta: se ordenan al final por su número.
+  const kpis: Array<[number, Kpi]> = [];
+  const frases: Array<[number, string]> = [];
+  const tareas: Array<Promise<unknown>> = [];
   // Permisos de los bloques que salen: si el usuario pierde alguno, el historial oculta la respuesta.
-  const permisos: string[] = [];
+  const permisos = new Set<string>();
+  const kpi = (orden: number, k: Kpi) => kpis.push([orden, k]);
   if (tiene(ctx, 'ventas:read', 'contabilidad:read')) {
-    permisos.push('ventas:read|contabilidad:read');
+    permisos.add('ventas:read|contabilidad:read');
+    const trimestre = resolverCodigoPeriodo('este-trimestre', ctx.hoy)!;
     tareas.push(
+      resumenFiscalPeriodo(ctx.companyId, trimestre.desde, hastaHoy(trimestre, ctx.hoy)).then((r) => {
+        kpi(1, { etiqueta: 'Facturado este trimestre', valor: eur(r.ventas.base), detalle: `sin IVA, ${plural(r.ventas.facturas, 'factura')}` });
+        frases.push([1, `En ${trimestre.etiqueta} llevas facturados ${eur(r.ventas.base)} sin IVA.`]);
+      }),
       facturasPorCobrar(ctx.companyId, ctx.hoy).then((r) => {
-        kpis.push({ etiqueta: 'Pendiente de cobro', valor: eur(r.pendientes.importe), detalle: plural(r.pendientes.numero, 'factura') });
-        kpis.push({ etiqueta: 'Vencido sin cobrar', valor: eur(r.vencidas.importe), detalle: plural(r.vencidas.numero, 'factura') });
-        frases.push(`Tienes ${eur(r.pendientes.importe)} pendientes de cobro, ${eur(r.vencidas.importe)} ya vencidos.`);
+        kpi(2, { etiqueta: 'Pendiente de cobro', valor: eur(r.pendientes.importe), detalle: plural(r.pendientes.numero, 'factura') });
+        kpi(3, { etiqueta: 'Vencido sin cobrar', valor: eur(r.vencidas.importe), detalle: plural(r.vencidas.numero, 'factura') });
+        frases.push([2, `Tienes ${eur(r.pendientes.importe)} pendientes de cobro, ${eur(r.vencidas.importe)} ya vencidos.`]);
       }),
     );
   }
   if (tiene(ctx, 'tesoreria:read')) {
-    permisos.push('tesoreria:read');
+    permisos.add('tesoreria:read');
     tareas.push(
       obtenerResumen(ctx.companyId).then((r) => {
-        kpis.push({ etiqueta: 'Saldo en bancos', valor: eur(r.saldoTotal), detalle: plural(r.cuentasActivas, 'cuenta') });
-        frases.push(`En bancos hay ${eur(r.saldoTotal)} según los extractos importados.`);
+        kpi(4, { etiqueta: 'Saldo en bancos', valor: eur(r.saldoTotal), detalle: plural(r.cuentasActivas, 'cuenta') });
+        frases.push([3, `En bancos hay ${eur(r.saldoTotal)} según los extractos importados.`]);
+      }),
+    );
+  }
+  let impuestos: Awaited<ReturnType<typeof resumenImpuestos>> = null;
+  if (tiene(ctx, 'impuestos:read')) {
+    permisos.add('impuestos:read');
+    tareas.push(
+      resumenImpuestos(ctx).then((r) => {
+        impuestos = r;
+        if (!r) return;
+        kpi(5, { etiqueta: 'Impuestos con plazo pasado', valor: r.caducados.toLocaleString('es-ES'), detalle: 'sin presentar' });
+        if (r.caducados) frases.push([4, `Hay ${plural(r.caducados, 'modelo', 'modelos')} con el plazo pasado sin marcar como presentados.`]);
+        if (r.siguiente) frases.push([5, `El próximo impuesto es el ${r.siguiente.codigo}, hasta el ${fechaES(r.siguiente.fechaVencimiento)}.`]);
       }),
     );
   }
   if (tiene(ctx, 'contabilidad:read')) {
-    permisos.push('contabilidad:read');
+    permisos.add('contabilidad:read');
     tareas.push(
       prisma.journalEntry.count({ where: { companyId: ctx.companyId, estado: { in: ['DRAFT', 'PENDING_REVIEW'] } } }).then((n) => {
-        kpis.push({ etiqueta: 'Asientos sin aprobar', valor: n.toLocaleString('es-ES') });
-        if (n) frases.push(`Hay ${plural(n, 'asiento sin aprobar', 'asientos sin aprobar')}.`);
+        kpi(6, { etiqueta: 'Asientos sin aprobar', valor: n.toLocaleString('es-ES') });
+        if (n) frases.push([6, `Hay ${plural(n, 'asiento sin aprobar', 'asientos sin aprobar')}.`]);
       }),
     );
   }
   await Promise.all(tareas);
-  const plazo = proximosPlazos(ctx.hoy, 1)[0];
-  if (plazo) frases.push(`El próximo plazo fiscal general es el ${fechaES(plazo.fecha)} (modelo ${plazo.modelo}).`);
+  if (!impuestos) {
+    const plazo = proximosPlazos(ctx.hoy, 1)[0];
+    if (plazo) frases.push([5, `El próximo plazo fiscal general es el ${fechaES(plazo.fecha)} (modelo ${plazo.modelo}).`]);
+  }
+  const texto = frases.sort((a, b) => a[0] - b[0]).map(([, f]) => f).join(' ');
+  const entendido = `Resumen de la empresa a ${fechaES(ctx.hoy)}`;
   if (!kpis.length) {
     return {
-      entendido: `Resumen de la empresa a ${fechaES(ctx.hoy)}`,
-      texto: `${frases.join(' ')} Con tus permisos no puedo enseñarte cifras de cobros, bancos ni contabilidad.`,
+      entendido,
+      texto: `${texto} Con tus permisos no puedo enseñarte cifras de facturación, cobros, bancos, impuestos ni contabilidad.`,
       sinCifras: true,
     };
   }
+  const ordenados = kpis.sort((a, b) => a[0] - b[0]).map(([, k]) => k);
   return {
-    entendido: `Resumen de la empresa a ${fechaES(ctx.hoy)}`,
-    texto: frases.join(' '),
-    permisoRequerido: permisos.join(';'),
-    kpis,
+    entendido,
+    texto,
+    permisoRequerido: [...permisos].join(';'),
+    kpis: ordenados,
     botones: [
       ...(tiene(ctx, 'ventas:read', 'contabilidad:read') ? [botonIntencion('Ver facturas vencidas', 'INT-03')] : []),
       ...(tiene(ctx, 'tesoreria:read') ? [botonIntencion('Saldo por cuenta', 'INT-24')] : []),
+      ...(tiene(ctx, 'impuestos:read') ? [botonIntencion('Mis impuestos y plazos', 'INT-30')] : []),
     ],
   };
 };
-
-// ---------------- Intenciones que por ahora solo llevan a su pantalla ----------------
-
-export function soloPantalla(permisos: string[], area: AreaIntencion, titulo: string, ruta: string, href: string): Ejecutor {
-  return async (ctx) => {
-    if (!tiene(ctx, ...permisos)) return { sinPermiso: true, area };
-    return {
-      entendido: titulo,
-      texto: `Esa cifra todavía no la calculo desde el chat. La tienes en ${ruta}.`,
-      sinCifras: true,
-      enlaces: [{ texto: `Ir a ${ruta.split(' → ').pop()}`, href }],
-    };
-  };
-}
 
 export const EJECUTORES = {
   deudaDeCliente,
@@ -466,8 +455,10 @@ export const EJECUTORES = {
   asientosPendientes,
   saldoBancos,
   ultimosMovimientos,
-  proximosImpuestos,
   resumenEmpresa,
+  cuentaDeResultados,
+  ...EJECUTORES_FACTURACION,
+  ...EJECUTORES_IMPUESTOS,
 };
 
 export type { Ejecutor };

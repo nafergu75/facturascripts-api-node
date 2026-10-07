@@ -9,16 +9,17 @@
  *    '__periodo', '__modelo' y '__numeroFactura' las pone el enrutador cuando
  *    encuentra ese hueco en la pregunta;
  *  - ejemplos: 8-12 frases para el kNN del clasificador (sin nombres propios:
- *    el nombre del tercero se quita del texto antes de clasificar).
- *
- * Las que aún no calculan su cifra desde el chat (implementada:false) llevan a
- * su pantalla, también comprobando antes el permiso.
+ *    el nombre del tercero se quita del texto antes de clasificar);
+ *  - ejecutar: herramienta de SOLO LECTURA con dos salidas, el texto con las
+ *    cifras calculadas por la app y los bloques para la pantalla (KPIs, tabla,
+ *    enlaces a la pantalla real, descargas y botones). Comprueba el permiso
+ *    antes de llamar al servicio de origen.
  */
 import type { AreaIntencion } from '../tipos';
 import type { RolTercero } from '../terceros';
-import { EJECUTORES, soloPantalla, type Ejecutor } from './datos';
+import { EJECUTORES, type Ejecutor } from './datos';
 
-export type NombreHueco = 'periodo' | 'sentido' | 'tercero' | 'modelo' | 'numeroFactura' | 'importeMinimo' | 'diasMinimos' | 'texto';
+export type NombreHueco = 'periodo' | 'sentido' | 'tercero' | 'modelo' | 'numeroFactura' | 'importeMinimo' | 'diasMinimos' | 'texto' | 'soloVencidas' | 'foco';
 
 export interface DefHueco {
   nombre: NombreHueco;
@@ -42,8 +43,6 @@ export interface Intencion {
   /** Prefijos de ruta donde se sugiere (y donde suma 0,10 al clasificar). */
   paginas?: string[];
   ejemplos: string[];
-  /** false: todavía solo lleva a su pantalla. */
-  implementada: boolean;
   ejecutar: Ejecutor;
 }
 
@@ -74,7 +73,6 @@ export const INTENCIONES: Intencion[] = [
       'saldo pendiente del cliente',
       'me debe algo',
     ],
-    implementada: true,
     ejecutar: EJECUTORES.deudaDeCliente,
   },
   {
@@ -101,7 +99,6 @@ export const INTENCIONES: Intencion[] = [
       'cuanto dinero me deben',
       'quienes son mis deudores',
     ],
-    implementada: true,
     ejecutar: EJECUTORES.pendienteDeCobro,
   },
   {
@@ -128,7 +125,6 @@ export const INTENCIONES: Intencion[] = [
       'listado de morosos',
       'facturas de clientes sin pagar',
     ],
-    implementada: true,
     ejecutar: EJECUTORES.facturasVencidas,
   },
   {
@@ -161,7 +157,6 @@ export const INTENCIONES: Intencion[] = [
       'cobros de octubre',
       'total pagado el año pasado',
     ],
-    implementada: true,
     ejecutar: EJECUTORES.cobradoEnPeriodo,
   },
   {
@@ -173,11 +168,15 @@ export const INTENCIONES: Intencion[] = [
     conceptos: {
       obligatorios: [
         ['debo', 'le debo', 'les debo', 'deber', 'por pagar', 'sin pagar', 'pendiente*', 'vencid*', 'tengo que pagar', 'toca pagar', 'hay que pagar', 'proximos pagos', 'adeud*', 'deuda*'],
-        ['proveedor*', 'acreedor*', 'pagar', 'pago*', 'le debo', 'les debo', '__proveedor'],
+        ['proveedor*', 'acreedor*', 'pagar', 'pago*', 'le debo', 'les debo', '__proveedor', 'compra', 'compras', 'facturas de compra', 'factura de compra'],
       ],
-      excluyentes: ['cobr*', 'me debe', 'me deben', 'impuesto*', 'iva', 'hacienda', 'modelo*', 'asiento*', 'seguridad social', 'nomina*'],
+      excluyentes: ['cobr*', 'me debe', 'me deben', 'impuesto*', 'iva', 'hacienda', 'modelo*', 'asiento*', 'seguridad social', 'nomina*', '__soloCliente'],
     },
-    huecos: [{ nombre: 'tercero', obligatorio: false, roles: ['proveedor'] }],
+    huecos: [
+      { nombre: 'tercero', obligatorio: false, roles: ['proveedor'] },
+      { nombre: 'periodo', obligatorio: false },
+      { nombre: 'soloVencidas', obligatorio: false },
+    ],
     paginas: ['/dashboard/compras', '/dashboard/proveedores'],
     ejemplos: [
       'que le debo',
@@ -191,8 +190,7 @@ export const INTENCIONES: Intencion[] = [
       'cuanto le debo al proveedor',
       'deudas con proveedores',
     ],
-    implementada: false,
-    ejecutar: soloPantalla(['compras:read', 'contabilidad:read'], 'pagos', 'Lo que debes a proveedores', 'Compras → Compras', '/dashboard/compras'),
+    ejecutar: EJECUTORES.deudaConProveedores,
   },
   {
     id: 'INT-09',
@@ -207,7 +205,10 @@ export const INTENCIONES: Intencion[] = [
       ],
       excluyentes: ['pendiente*', 'por cobrar', 'vencid*', 'cobrado', 'pagado', 'beneficio*', 'iva', '__numeroFactura', 'como', 'donde', 'crear', 'hacer', 'emitir', 'debe', 'deben', 'impuesto*', 'deducible*', 'deduci*', 'desgrava*', 'que es'],
     },
-    huecos: [{ nombre: 'periodo', obligatorio: false, porDefecto: 'este-trimestre' }],
+    huecos: [
+      { nombre: 'periodo', obligatorio: false, porDefecto: 'este-trimestre' },
+      { nombre: 'foco', obligatorio: false },
+    ],
     paginas: ['/dashboard/facturas', '/dashboard/compras', '/dashboard'],
     ejemplos: [
       'cuanto he facturado este trimestre',
@@ -221,8 +222,7 @@ export const INTENCIONES: Intencion[] = [
       'total de compras del trimestre',
       'volumen de facturacion',
     ],
-    implementada: false,
-    ejecutar: soloPantalla(['ventas:read', 'compras:read', 'contabilidad:read'], 'facturacion', 'Facturado y gastado en un periodo', 'Panel → Resumen', '/dashboard'),
+    ejecutar: EJECUTORES.facturadoEnPeriodo,
   },
   {
     id: 'INT-13',
@@ -245,8 +245,7 @@ export const INTENCIONES: Intencion[] = [
       'esta pagada la factura',
       'buscar factura por numero',
     ],
-    implementada: false,
-    ejecutar: soloPantalla(['ventas:read', 'compras:read'], 'facturacion', 'Buscar una factura', 'Ventas → Facturas de ingreso', '/dashboard/facturas'),
+    ejecutar: EJECUTORES.buscarFactura,
   },
   {
     id: 'INT-18',
@@ -255,7 +254,7 @@ export const INTENCIONES: Intencion[] = [
     area: 'contabilidad',
     permisos: ['contabilidad:read'],
     conceptos: {
-      obligatorios: [['beneficio*', 'gano', 'ganado', 'ganando', 'ganancia*', 'perdidas y ganancias', 'perdidas', 'resultado*', 'rentabl*', 'cuenta de resultados', 'margen']],
+      obligatorios: [['beneficio*', 'gano', 'gane', 'ganamos', 'gana', 'ganado', 'ganando', 'ganancia*', 'perdidas y ganancias', 'perdidas', 'resultado*', 'rentabl*', 'cuenta de resultados', 'margen']],
       excluyentes: ['donde', 'que es', 'descargar', 'como se', 'como saco', 'impuesto*', 'iva', '__modelo'],
     },
     huecos: [{ nombre: 'periodo', obligatorio: false, porDefecto: 'este-anio' }],
@@ -272,8 +271,7 @@ export const INTENCIONES: Intencion[] = [
       'cuanto he ganado el año pasado',
       'tengo perdidas',
     ],
-    implementada: false,
-    ejecutar: soloPantalla(['contabilidad:read'], 'contabilidad', 'Beneficio y cuenta de resultados', 'Contabilidad → Informes contables', '/dashboard/informes?tipo=pyg'),
+    ejecutar: EJECUTORES.cuentaDeResultados,
   },
   {
     id: 'INT-23',
@@ -297,7 +295,6 @@ export const INTENCIONES: Intencion[] = [
       'hay asientos sin aprobar',
       'tengo algo pendiente en el motor contable',
     ],
-    implementada: true,
     ejecutar: EJECUTORES.asientosPendientes,
   },
   {
@@ -309,7 +306,7 @@ export const INTENCIONES: Intencion[] = [
     conceptos: {
       obligatorios: [
         ['saldo*', 'dinero', 'cuanto tengo', 'liquidez', 'tesoreria', 'cuanto hay', 'acabada en', 'termina en', 'acaba en'],
-        ['banco*', 'cuenta*', 'caja', '__banco', ...BANCOS],
+        ['banco*', 'bancari*', 'cuenta*', 'caja', '__banco', ...BANCOS],
       ],
       excluyentes: ['movimiento*', 'cargo*', 'entrado', 'extracto*', 'cliente*', 'proveedor*', '__cliente', '__proveedor', 'debe', 'deben', 'como', 'importar', 'mayor'],
     },
@@ -327,7 +324,6 @@ export const INTENCIONES: Intencion[] = [
       'liquidez de la empresa',
       'saldo actual de las cuentas bancarias',
     ],
-    implementada: true,
     ejecutar: EJECUTORES.saldoBancos,
   },
   {
@@ -337,7 +333,7 @@ export const INTENCIONES: Intencion[] = [
     area: 'tesoreria',
     permisos: ['tesoreria:read'],
     conceptos: {
-      obligatorios: [['movimiento*', 'cargos', 'cargo', 'ha entrado', 'han entrado', 'entrado', 'ha salido', 'salido', 'apuntes del banco', 'transferencia*', 'recibos', 'recibo']],
+      obligatorios: [['movimiento*', 'cargos', 'cargo', 'cargado', 'cargados', 'han cargado', 'ha entrado', 'han entrado', 'entrado', 'ha salido', 'salido', 'apuntes del banco', 'transferencia*', 'recibos', 'recibo']],
       excluyentes: ['asiento*', 'como', 'importar', 'subir', 'categoria*', 'concilia*', 'que es'],
     },
     huecos: [
@@ -359,7 +355,6 @@ export const INTENCIONES: Intencion[] = [
       'recibos cargados este mes',
       'que movimientos hay en la cuenta',
     ],
-    implementada: true,
     ejecutar: EJECUTORES.ultimosMovimientos,
   },
   {
@@ -373,7 +368,7 @@ export const INTENCIONES: Intencion[] = [
         ['iva', '303', 'a devolver', 'sale a pagar'],
         ['cuanto', 'pagar', 'pago', 'sale', 'devolver', 'resultado', 'toca', 'liquidacion', '__periodo', '__modelo', 'salir'],
       ],
-      excluyentes: ['cuando', 'plazo*', 'vence', 'fecha limite', 'tipo*', 'que es', 'como', 'donde', 'repercutido', 'soportado', 'recargo', 'intracomunitari*', 'deduci*', 'deducible*', 'desgrava*'],
+      excluyentes: ['cuando', 'plazo*', 'vence', 'fecha limite', 'tipo*', 'que es', 'como', 'donde', 'repercutido', 'soportado', 'recargo*', 'intracomunitari*', 'deduci*', 'deducible*', 'desgrava*', 'aplaz*', 'fraccion*', 'tarde', 'fuera de plazo', 'pongo', 'cliente*', 'coche', 'para que sirve'],
     },
     huecos: [{ nombre: 'periodo', obligatorio: false, porDefecto: 'trimestre-pasado' }],
     paginas: ['/dashboard/fiscal'],
@@ -389,8 +384,7 @@ export const INTENCIONES: Intencion[] = [
       'cuanto iva me toca pagar',
       'iva del trimestre pasado',
     ],
-    implementada: false,
-    ejecutar: soloPantalla(['impuestos:read'], 'impuestos', 'IVA del trimestre (modelo 303)', 'Fiscalidad → Modelos Fiscales → Modelo 303', '/dashboard/fiscal/modelo-303'),
+    ejecutar: EJECUTORES.ivaDelTrimestre,
   },
   {
     id: 'INT-30',
@@ -401,9 +395,9 @@ export const INTENCIONES: Intencion[] = [
     conceptos: {
       obligatorios: [
         ['impuesto*', 'modelos', 'presentar', 'declaracion*', 'hacienda', 'obligaciones fiscales', 'caducado*', 'plazos', 'calendario fiscal'],
-        ['tengo que', 'toca', 'proximo*', 'pendiente*', 'caducad*', 'vencid*', 'cuales', 'que', 'hay que', 'este mes', 'este trimestre', '__periodo', 'algo'],
+        ['tengo que', 'toca', 'tocan', 'proximo*', 'pendiente*', 'caducad*', 'vencid*', 'cuales', 'que impuestos', 'que modelos', 'que declaraciones', 'que tengo', 'hay que', 'este mes', 'este trimestre', '__periodo', 'algo'],
       ],
-      excluyentes: ['iva', '303', 'cuanto', 'que es', 'como se', 'como presento', 'como'],
+      excluyentes: ['iva', '303', 'cuanto', 'que es', 'como se', 'como presento', 'como', 'tipo', 'tipos', 'tributa*', 'aplaz*', 'fraccion*', 'recargo*', 'tarde', 'fuera de plazo', 'prescri*', 'para que sirve', 'deduc*', 'sociedades'],
     },
     huecos: [],
     paginas: ['/dashboard/fiscal'],
@@ -417,7 +411,6 @@ export const INTENCIONES: Intencion[] = [
       'calendario fiscal',
       'proximos plazos de hacienda',
     ],
-    implementada: true,
     ejecutar: EJECUTORES.proximosImpuestos,
   },
   {
@@ -427,7 +420,7 @@ export const INTENCIONES: Intencion[] = [
     area: 'resumen',
     permisos: [],
     conceptos: {
-      obligatorios: [['resumen', 'como va', 'como vamos', 'como van', 'que tengo hoy', 'que hay hoy', 'situacion', 'como esta la empresa', 'novedades', 'que hay de nuevo']],
+      obligatorios: [['resumen', 'como va', 'como vamos', 'como van', 'que tal va', 'que tal vamos', 'como estamos', 'que tengo hoy', 'que hay hoy', 'situacion', 'como esta la empresa', 'novedades', 'que hay de nuevo']],
       excluyentes: ['ventas', 'gastos', 'iva', 'cobros', 'pagos', 'factur*', 'banco*', 'asiento*', 'impuesto*', 'modelo*', 'anual', 'fiscal'],
     },
     huecos: [],
@@ -443,7 +436,6 @@ export const INTENCIONES: Intencion[] = [
       'como esta la empresa',
       'que hay de nuevo',
     ],
-    implementada: true,
     ejecutar: EJECUTORES.resumenEmpresa,
   },
 ];

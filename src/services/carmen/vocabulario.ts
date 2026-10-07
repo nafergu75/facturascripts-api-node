@@ -47,7 +47,7 @@ vence vencen vencida vencidas vencido vencidos vencimiento vencimientos venta ve
 `;
 
 /** Formas verbales que se escriben sin tilde (facturé → facture). */
-const VERBOS = 'facture facturamos cobre cobramos pague pagamos gaste gastamos vendi vendimos compre compramos debemos deben';
+const VERBOS = 'facture facturamos cobre cobramos pague pagamos gaste gastamos vendi vendimos compre compramos debemos deben gane ganamos';
 
 /** Palabras corrientes que no se deben «corregir» hacia una del dominio («sabes» no es «saber»). */
 const COMUNES = `
@@ -56,6 +56,7 @@ necesito necesitas dime dame muestrame ensename pasame busca buscar encuentra ha
 voy van vamos ir ver mira miro veo salgo sale salen sales lleva llevo llevas falta faltan queda quedan
 bien mal mejor peor nuevo nueva nuevos nuevas grande pequeño mucho poco mas menos casi siempre nunca tambien
 dia dias semana semanas mes meses año años hora horas hoy ayer mañana tarde noche
+viene vienen venir siguiente siguientes ultimo ultima ultimos ultimas actual
 `;
 
 const VOCABULARIO = new Set<string>(`${BASE} ${VERBOS} ${COMUNES}`.split(/\s+/).filter(Boolean));

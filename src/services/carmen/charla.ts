@@ -50,14 +50,15 @@ const MARCADORES_PROPIOS = [
   'he facturado', 'hemos facturado', 'he pagado', 'hemos pagado', 'he cobrado', 'hemos cobrado', 'he gastado', 'hemos gastado',
   'he vendido', 'hemos vendido', 'cuanto llevo', 'llevamos', 'mis clientes', 'mi banco', 'mi empresa', 'nuestra', 'nuestro',
   'cobre', 'cobramos', 'pague', 'pagamos', 'facture', 'facturamos', 'gaste', 'gastamos', 'vendi', 'vendimos', 'compre', 'compramos',
-  'nuestros', 'nuestras', 'me sale', 'me toca', 'me han pagado', 'nos han pagado',
+  'nuestros', 'nuestras', 'me sale', 'me toca', 'me han pagado', 'nos han pagado', 'me han cargado', 'nos han cargado',
+  'me han cobrado', 'nos han cobrado', 'me han ingresado', 'nos han ingresado',
 ];
 
 const SUSTANTIVOS_DOMINIO = [
   'factura*', 'cliente*', 'proveedor*', 'banco*', 'cuenta*', 'saldo*', 'iva', 'asiento*', 'gasto*', 'venta*', 'cobr*', 'pag*',
   'impuesto*', 'modelo*', 'beneficio*', 'ingreso*', 'deuda*', 'dinero', 'hacienda', 'nomina*', 'trabajador*', 'empleado*', 'empresa',
   'caja', 'tesoreria', 'resultado*', 'perdida*', 'balance', 'contabilidad', 'irpf', 'retencion*', 'sueldo*', 'salario*', 'alquiler*',
-  'facturado', 'gastado', 'vendido', 'cobrado', 'pagado',
+  'facturado', 'gastado', 'vendido', 'cobrado', 'pagado', 'cargad*', 'cargo*', 'recibo*', 'movimiento*', 'ingresado',
 ];
 
 /** «mi/mis/tengo/me debe/...» junto a un sustantivo del dominio: la pregunta es sobre sus datos. */

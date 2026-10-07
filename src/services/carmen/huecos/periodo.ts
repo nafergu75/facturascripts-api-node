@@ -78,8 +78,18 @@ export function resolverCodigoPeriodo(codigo: string, hoy: string): Periodo | nu
       const lunes = sumarDias(hoy, -dia - 7);
       return crear(lunes, sumarDias(lunes, 6), 'la semana pasada', 'semana-pasada');
     }
+    case 'semana-que-viene': {
+      const dia = (new Date(`${hoy}T00:00:00Z`).getUTCDay() + 6) % 7;
+      const lunes = sumarDias(hoy, 7 - dia);
+      return crear(lunes, sumarDias(lunes, 6), 'la semana que viene', 'semana-que-viene');
+    }
     case 'este-mes':
       return periodoMes(anio, mes, `${MESES[mes - 1]} de ${anio}`, 'este-mes');
+    case 'mes-que-viene': {
+      const a = mes === 12 ? anio + 1 : anio;
+      const m = mes === 12 ? 1 : mes + 1;
+      return periodoMes(a, m, `el mes que viene (${MESES[m - 1]} de ${a})`, 'mes-que-viene');
+    }
     case 'mes-pasado': {
       const a = mes === 1 ? anio - 1 : anio;
       const m = mes === 1 ? 12 : mes - 1;
@@ -185,7 +195,9 @@ export function extraerPeriodo(texto: string, hoy: string): PeriodoExtraido | nu
   const fijos: Array<[RegExp, string]> = [
     [/\b(hoy)\b/, 'hoy'],
     [/\b(ayer)\b/, 'ayer'],
+    [/\b(la semana que viene|la proxima semana|proxima semana|semana proxima)\b/, 'semana-que-viene'],
     [/\b(esta semana)\b/, 'esta-semana'],
+    [/\b(el mes que viene|el proximo mes|proximo mes|mes que viene)\b/, 'mes-que-viene'],
     [/\b(la semana pasada|semana pasada|la ultima semana|semana anterior)\b/, 'semana-pasada'],
     [/\b((?:el |este )?mes pasado|el mes anterior|mes anterior|el ultimo mes)\b/, 'mes-pasado'],
     [/\b((?:en )?este mes|en lo que va de mes|del mes|el mes)\b/, 'este-mes'],

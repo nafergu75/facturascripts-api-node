@@ -68,3 +68,21 @@ export function permisosEnEmpresa(user: UsuarioConRoles, companyId?: string): st
   const roles = companyId && user.rolesPorEmpresa ? (user.rolesPorEmpresa[companyId] ?? []) : (user.roles ?? []);
   return permisosDeRoles(roles);
 }
+
+/**
+ * Decisión de permiso: basta con UNO de los necesarios. 'admin:global' (pedido
+ * solo) es exclusivo del admin global de plataforma; el admin global pasa todo
+ * lo demás. Es la única regla: la usan authorize.middleware (rutas) y Carmen
+ * (cada intención), para que las dos decidan exactamente igual.
+ */
+export function cubrePermisos(permisos: Iterable<string>, necesarios: string[], esAdminGlobal = false): boolean {
+  if (necesarios.length === 1 && necesarios[0] === 'admin:global') return esAdminGlobal;
+  if (esAdminGlobal) return true;
+  const lista = [...permisos];
+  return necesarios.some((p) => usuarioTienePermiso(lista, p));
+}
+
+/** ¿Puede el usuario, en esa empresa, con al menos uno de estos permisos? */
+export function autorizado(user: UsuarioConRoles, companyId: string | undefined, necesarios: string[]): boolean {
+  return cubrePermisos(permisosEnEmpresa(user, companyId), necesarios, user.esAdminGlobal === true);
+}

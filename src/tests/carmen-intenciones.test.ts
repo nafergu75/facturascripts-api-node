@@ -1,11 +1,15 @@
 /**
  * Carmen, intenciones de datos: matriz de permisos por rol, solo lectura y
  * contrato de cifras (cada cifra de la respuesta es la del servicio de origen).
- * Prisma y los servicios de origen, simulados.
+ * Prisma y los servicios de origen, simulados. Las mismas cifras se comprueban
+ * contra una BD real en carmen-intenciones.db.test.ts.
  */
 const llamadas: string[] = [];
 const lecturas: Record<string, (...a: unknown[]) => unknown> = {
-  'journalEntry.count': async (args: unknown) => ((args as { where: { estado: string } }).where.estado === 'DRAFT' ? 2 : 3),
+  'journalEntry.count': async (args: unknown) => {
+    const estado = (args as { where: { estado: string | { in: string[] } } }).where.estado;
+    return estado === 'DRAFT' ? 2 : estado === 'PENDING_REVIEW' ? 3 : 4;
+  },
   'journalEntry.findMany': async () => [{ fecha: new Date('2026-09-01T00:00:00Z'), numeroAsiento: 'FAC-ING-1', descripcion: 'Factura A-1', estado: 'DRAFT' }],
   'bankMovement.aggregate': async () => ({ _max: { fecha: '2026-10-05' } }),
   'bankMovement.findMany': async () => [
@@ -14,8 +18,18 @@ const lecturas: Record<string, (...a: unknown[]) => unknown> = {
   ],
   'invoicePayment.count': async () => 4,
   'customer.findMany': async () => [{ id: 'c1', nombreFiscal: 'CONSTRUCCIONES PÉREZ SL', nifCif: 'B11111111' }],
-  'supplier.findMany': async () => [],
+  'supplier.findMany': async () => [
+    { id: 'p1', nombreFiscal: 'IBERDROLA CLIENTES SAU', nifCif: 'A44444444' },
+    { id: 'p2', nombreFiscal: 'REPSOL COMERCIAL SA', nifCif: 'A55555555' },
+  ],
   'bankAccount.findMany': async () => [{ id: 'b1', bancoNombre: 'Banco Sabadell', iban: 'ES0000000000000000001234' }],
+  'incomeInvoice.findMany': async () => [
+    { id: 'f1', numeroCompleto: 'A-12', estadoDocumento: 'FINAL', fechaEmision: '2026-06-01', fechaVencimiento: '2026-07-01', totalFactura: 1210, customer: { nombreFiscal: 'CONSTRUCCIONES PÉREZ SL' } },
+    { id: 'f9', numeroCompleto: 'B-12', estadoDocumento: 'FINAL', fechaEmision: '2026-06-02', fechaVencimiento: '2026-07-02', totalFactura: 50, customer: { nombreFiscal: 'OTRO SL' } },
+  ],
+  'expenseInvoice.findMany': async () => [
+    { id: 'g12', numeroCompleto: 'A-12', fechaEmision: '2026-05-10', fechaVencimiento: '2026-06-10', totalFactura: 99, supplier: { nombreFiscal: 'IBERDROLA CLIENTES SAU' } },
+  ],
 };
 /** Prisma que apunta cada llamada y solo sabe leer lo que hay en `lecturas`. */
 const mockPrisma = new Proxy(
@@ -43,16 +57,38 @@ jest.mock('../config/database', () => ({ prisma: mockPrisma }));
 
 const mockFacturasPorCobrar = jest.fn();
 const mockTotalCobradoEntre = jest.fn();
+const mockListarCobros = jest.fn();
 const mockObtenerResumen = jest.fn();
+const mockPendientes = jest.fn();
+const mockPyG = jest.fn();
+const mockResumenFiscal = jest.fn();
+const mockCalendario = jest.fn();
+const mockModeloGuardado = jest.fn();
+const mockCalcular303 = jest.fn();
 jest.mock('../services/cobrosClientes.service', () => ({ facturasPorCobrar: (...a: unknown[]) => mockFacturasPorCobrar(...a) }));
-jest.mock('../services/cobrosPagos.service', () => ({ totalCobradoEntre: (...a: unknown[]) => mockTotalCobradoEntre(...a) }));
+jest.mock('../services/cobrosPagos.service', () => ({
+  totalCobradoEntre: (...a: unknown[]) => mockTotalCobradoEntre(...a),
+  listarCobros: (...a: unknown[]) => mockListarCobros(...a),
+}));
 jest.mock('../services/treasury.service', () => ({ obtenerResumen: (...a: unknown[]) => mockObtenerResumen(...a) }));
+jest.mock('../services/informesContables.service', () => ({
+  pendientesSegunFacturas: (...a: unknown[]) => mockPendientes(...a),
+  informePerdidasGanancias: (...a: unknown[]) => mockPyG(...a),
+}));
+jest.mock('../services/resumenFiscal.service', () => ({ resumenFiscalPeriodo: (...a: unknown[]) => mockResumenFiscal(...a) }));
+jest.mock('../services/impuestosModulo.service', () => ({
+  calendarioFiscalSoloLectura: (...a: unknown[]) => mockCalendario(...a),
+  modeloGuardadoSoloLectura: (...a: unknown[]) => mockModeloGuardado(...a),
+}));
+jest.mock('../services/impuestosCalculo.service', () => ({ calcularModelo303: (...a: unknown[]) => mockCalcular303(...a) }));
 
 import { construirContexto } from '../services/carmen/contexto';
 import { INTENCIONES, intencionPorId } from '../services/carmen/intenciones/catalogo';
+import { claveNumeroFactura } from '../services/carmen/intenciones/facturacion';
 import { olvidarIndices } from '../services/carmen/terceros';
 import { resolverCodigoPeriodo } from '../services/carmen/huecos/periodo';
 import { conservaPermiso } from '../services/carmen/sesiones';
+import { hrefValido } from '../services/carmen/menus';
 import type { AuthUser } from '../types/express';
 import type { HuecosResueltos, RespuestaDatos } from '../services/carmen/tipos';
 
@@ -79,6 +115,22 @@ const FACTURAS = {
   vencidas: { numero: 2, importe: 1615 },
 };
 
+/** Facturas de proveedores pendientes (pendientesSegunFacturas). */
+const PENDIENTES_PROVEEDORES = [
+  { id: 'g1', terceroId: 'p1', numeroCompleto: 'LUZ-7', fechaEmision: '2026-08-01', fechaVencimiento: '2026-08-31', totalFactura: 302.5, importePendiente: 302.5, estado: 'PENDIENTE' },
+  { id: 'g2', terceroId: 'p2', numeroCompleto: 'R-88', fechaEmision: '2026-10-01', fechaVencimiento: '2026-10-09', totalFactura: 121, importePendiente: 121, estado: 'PENDIENTE' },
+  { id: 'g3', terceroId: 'p1', numeroCompleto: 'LUZ-8', fechaEmision: '2026-10-01', fechaVencimiento: '2026-10-31', totalFactura: 200, importePendiente: 150, estado: 'PARCIAL' },
+];
+
+const totales = (facturas: number, base: number, iva: number) => ({ facturas, base, iva, retencion: 0, total: base + iva });
+const PYG_FILAS = [
+  { celdas: ['1. Importe neto de la cifra de negocios', 50000, 40000], sangria: 1 },
+  { celdas: ['6. Gastos de personal', -20000, -18000], sangria: 1 },
+  { celdas: ['7. Otros gastos de explotación', -10000, -9000], sangria: 1 },
+  { celdas: ['A) RESULTADO DE EXPLOTACIÓN (1 a 12)', 20000, 13000], estilo: 'subtotal' },
+  { celdas: ['D) RESULTADO DEL EJERCICIO (C + 18)', 15000, 9750], estilo: 'total' },
+];
+
 beforeEach(() => {
   llamadas.length = 0;
   olvidarIndices();
@@ -94,10 +146,41 @@ beforeEach(() => {
       { id: 'b2', nombre: 'BBVA', iban: 'ES0000000000000000005678', saldoInicial: 0, saldoActual: 5000 },
     ],
   });
+  mockPendientes.mockReset().mockResolvedValue(PENDIENTES_PROVEEDORES);
+  mockResumenFiscal.mockReset().mockImplementation(async (_c: string, desde: string) =>
+    desde.startsWith('2026')
+      ? { desde, hasta: '', ventas: totales(5, 10000, 2100), gastos: totales(8, 4000, 840), ivaResultado: 1260, retencionesAIngresar: 0 }
+      : { desde, hasta: '', ventas: totales(4, 8000, 1680), gastos: totales(0, 0, 0), ivaResultado: 1680, retencionesAIngresar: 0 },
+  );
+  mockListarCobros.mockReset().mockResolvedValue({
+    invoiceId: 'f1',
+    tipo: 'INGRESO',
+    numeroFactura: 'A-12',
+    totalFactura: 1210,
+    importeCobrado: 210,
+    importePendiente: 1000,
+    estado: 'OVERDUE',
+    cobros: [{ id: 'k1', fecha: '2026-07-15', importe: 210, medio: 'BANCO', estado: 'ACTIVO' }],
+  });
+  mockPyG.mockReset().mockResolvedValue({
+    actual: { partidas: [{ codigo: '1', descripcion: 'Importe neto de la cifra de negocios', importe: 50000 }], resultadoEjercicio: 15000 },
+    anterior: { partidas: [], resultadoEjercicio: 9750 },
+    tabla: { columnas: [{ titulo: 'Partida', tipo: 'texto', ancho: 9 }, { titulo: 'N', tipo: 'importe', ancho: 2 }, { titulo: 'N-1', tipo: 'importe', ancho: 2 }], filas: PYG_FILAS },
+  });
+  mockCalendario.mockReset().mockResolvedValue([
+    { codigo: '303', descripcion: 'IVA', ejercicio: 2026, periodo: '2T', fechaVencimiento: '2026-07-20', estado: 'expirado', tieneBorrador: false, guardado: true },
+    { codigo: '303', descripcion: 'IVA', ejercicio: 2026, periodo: '3T', fechaVencimiento: '2026-10-20', estado: 'vigente', tieneBorrador: true, guardado: true },
+    { codigo: '111', descripcion: 'Retenciones', ejercicio: 2026, periodo: '3T', fechaVencimiento: '2026-10-20', estado: 'vigente', tieneBorrador: false, guardado: false },
+  ]);
+  mockModeloGuardado.mockReset().mockResolvedValue(null);
+  mockCalcular303.mockReset().mockResolvedValue({ totalCuotaDevengada: 2100, totalCuotaDeducible: 840, resultado: 1260, resultadoFinal: 1260 });
 });
 
 const huecosDe = (id: string): HuecosResueltos =>
-  id === 'INT-01' ? { terceroId: 'c1', rol: 'cliente' } : id === 'INT-05' ? { periodo: resolverCodigoPeriodo('este-mes', HOY)!, sentido: 'cobros' } : {};
+  id === 'INT-01' ? { terceroId: 'c1', rol: 'cliente' }
+  : id === 'INT-05' ? { periodo: resolverCodigoPeriodo('este-mes', HOY)!, sentido: 'cobros' }
+  : id === 'INT-13' ? { numeroFactura: 'A-012' }
+  : {};
 
 const ejecutar = (id: string, rol: string, h?: HuecosResueltos) => intencionPorId(id)!.ejecutar(construirContexto(ROLES[rol], 'E1', HOY), h ?? huecosDe(id));
 const conCifras = (r: RespuestaDatos) => !r.sinPermiso && !r.sinCifras;
@@ -108,16 +191,18 @@ const MATRIZ: Record<string, Record<string, boolean>> = {
   'INT-02': { admin: true, contable: true, ventas: true, tesoreria: true, 'solo-lectura': true, 'sin rol': false, 'admin global': true },
   'INT-03': { admin: true, contable: true, ventas: true, tesoreria: true, 'solo-lectura': true, 'sin rol': false, 'admin global': true },
   'INT-05': { admin: true, contable: true, ventas: true, tesoreria: true, 'solo-lectura': true, 'sin rol': false, 'admin global': true },
+  'INT-06': { admin: true, contable: true, ventas: true, tesoreria: true, 'solo-lectura': true, 'sin rol': false, 'admin global': true },
+  'INT-09': { admin: true, contable: true, ventas: true, tesoreria: true, 'solo-lectura': true, 'sin rol': false, 'admin global': true },
+  'INT-13': { admin: true, contable: true, ventas: true, tesoreria: false, 'solo-lectura': true, 'sin rol': false, 'admin global': true },
+  'INT-18': { admin: true, contable: true, ventas: true, tesoreria: true, 'solo-lectura': true, 'sin rol': false, 'admin global': true },
   'INT-23': { admin: true, contable: true, ventas: true, tesoreria: true, 'solo-lectura': true, 'sin rol': false, 'admin global': true },
   'INT-24': { admin: true, contable: true, ventas: false, tesoreria: true, 'solo-lectura': true, 'sin rol': false, 'admin global': true },
   'INT-25': { admin: true, contable: true, ventas: false, tesoreria: true, 'solo-lectura': true, 'sin rol': false, 'admin global': true },
-};
-/** Las que por ahora solo llevan a su pantalla: true = el rol puede ir. */
-const PANTALLA: Record<string, Record<string, boolean>> = {
-  'INT-06': { admin: true, contable: true, ventas: true, tesoreria: true, 'solo-lectura': true, 'sin rol': false, 'admin global': true },
   'INT-28': { admin: true, contable: true, ventas: false, tesoreria: false, 'solo-lectura': true, 'sin rol': false, 'admin global': true },
-  'INT-18': { admin: true, contable: true, ventas: true, tesoreria: true, 'solo-lectura': true, 'sin rol': false, 'admin global': true },
+  'INT-30': { admin: true, contable: true, ventas: false, tesoreria: false, 'solo-lectura': true, 'sin rol': false, 'admin global': true },
 };
+
+const SERVICIOS = [mockFacturasPorCobrar, mockTotalCobradoEntre, mockObtenerResumen, mockPendientes, mockPyG, mockResumenFiscal, mockListarCobros, mockCalendario, mockModeloGuardado, mockCalcular303];
 
 const ESCRITURAS = /\.(create|createMany|update|updateMany|upsert|delete|deleteMany)$|^\$(executeRaw|executeRawUnsafe|queryRawUnsafe|transaction)$/;
 
@@ -127,20 +212,17 @@ describe('matriz de permisos', () => {
     const r = await ejecutar(id, rol);
     expect(conCifras(r)).toBe(ve);
     if (!ve) {
-      expect(r).toEqual({ sinPermiso: true, area: intencionPorId(id)!.area === 'resumen' ? 'resumen' : expect.any(String) });
-      // Sin permiso, el servicio de origen NO se llama.
-      expect(mockFacturasPorCobrar).not.toHaveBeenCalled();
-      expect(mockTotalCobradoEntre).not.toHaveBeenCalled();
-      expect(mockObtenerResumen).not.toHaveBeenCalled();
+      if (id === 'INT-30') {
+        // Sin permiso de impuestos: los plazos generales, sin mirar la empresa.
+        expect(r.sinPermiso).toBeFalsy();
+        expect(!r.sinPermiso && r.sinCifras).toBe(true);
+      } else {
+        expect(r).toEqual({ sinPermiso: true, area: expect.any(String) });
+      }
+      // Sin permiso, ningún servicio de origen se llama ni se lee nada de la empresa.
+      for (const s of SERVICIOS) expect(s).not.toHaveBeenCalled();
       expect(llamadas.filter((l) => !/^(customer|supplier|bankAccount)\.findMany$/.test(l))).toEqual([]);
     }
-  });
-
-  const pantallas = Object.entries(PANTALLA).flatMap(([id, roles]) => Object.entries(roles).map(([rol, puede]) => [id, rol, puede] as const));
-  it.each(pantallas)('%s (solo pantalla) con rol %s: puede ir = %s', async (id, rol, puede) => {
-    const r = await ejecutar(id, rol);
-    expect(!r.sinPermiso).toBe(puede);
-    expect(llamadas).toEqual([]);
   });
 
   it('pagos (INT-05) piden compras o contabilidad', async () => {
@@ -149,16 +231,59 @@ describe('matriz de permisos', () => {
     expect(conCifras(await ejecutar('INT-05', 'sin rol', pagos))).toBe(false);
   });
 
+  it('INT-09: sin el permiso de una parte, esa parte no sale; si se pregunta solo por ella, no hay cifras', async () => {
+    const soloVentas = construirContexto(usuario(['ventas']), 'E1', HOY);
+    const r = await intencionPorId('INT-09')!.ejecutar({ ...soloVentas, permisos: new Set(['ventas:read']) }, {});
+    if (r.sinPermiso) throw new Error('sin permiso');
+    expect(r.kpis?.map((k) => k.etiqueta)).toEqual(['Facturado sin IVA', 'Mismo periodo de 2025']);
+    const gastos = await intencionPorId('INT-09')!.ejecutar({ ...soloVentas, permisos: new Set(['ventas:read']) }, { foco: 'gastos' });
+    expect(gastos).toEqual({ sinPermiso: true, area: 'pagos' });
+  });
+
+  it('INT-13: con ventas solo busca entre las emitidas y con compras solo entre las recibidas', async () => {
+    const ventas = construirContexto(ROLES.ventas, 'E1', HOY);
+    await intencionPorId('INT-13')!.ejecutar({ ...ventas, permisos: new Set(['ventas:read']) }, { numeroFactura: 'A-12' });
+    expect(llamadas).toContain('incomeInvoice.findMany');
+    expect(llamadas).not.toContain('expenseInvoice.findMany');
+    llamadas.length = 0;
+    await intencionPorId('INT-13')!.ejecutar({ ...ventas, permisos: new Set(['compras:read']) }, { numeroFactura: 'A-12' });
+    expect(llamadas).not.toContain('incomeInvoice.findMany');
+    expect(llamadas).toContain('expenseInvoice.findMany');
+  });
+
+  it('INT-18: sin acceso a nóminas no salen los gastos de personal ni la descarga del informe', async () => {
+    const lectura = await ejecutar('INT-18', 'solo-lectura');
+    if (lectura.sinPermiso) throw new Error('sin permiso');
+    expect(lectura.tabla?.filas.map((f) => f.celdas[0])).not.toContain('6. Gastos de personal');
+    expect(JSON.stringify(lectura.tabla)).not.toMatch(/Gastos de personal|-20000|-18000/);
+    expect(lectura.descargas).toBeUndefined();
+    expect(lectura.avisos).toEqual(expect.arrayContaining([expect.stringMatching(/nóminas/)]));
+    const contable = await ejecutar('INT-18', 'contable');
+    if (contable.sinPermiso) throw new Error('sin permiso');
+    expect(contable.tabla?.filas.map((f) => f.celdas[0])).toContain('6. Gastos de personal');
+    expect(contable.descargas?.map((d) => d.formato)).toEqual(['pdf', 'xlsx']);
+  });
+
   it('el resumen (INT-39) solo enseña los bloques permitidos', async () => {
     const ventas = await ejecutar('INT-39', 'ventas');
     if (ventas.sinPermiso) throw new Error('sin permiso');
     const etiquetas = (ventas.kpis ?? []).map((k) => k.etiqueta);
-    expect(etiquetas).toEqual(expect.arrayContaining(['Pendiente de cobro', 'Asientos sin aprobar']));
-    expect(etiquetas).not.toContain('Saldo en bancos');
+    expect(etiquetas).toEqual(['Facturado este trimestre', 'Pendiente de cobro', 'Vencido sin cobrar', 'Asientos sin aprobar']);
     expect(mockObtenerResumen).not.toHaveBeenCalled();
+    expect(mockCalendario).not.toHaveBeenCalled();
     const nadie = await ejecutar('INT-39', 'sin rol');
     expect(nadie.sinPermiso || nadie.sinCifras).toBe(true);
     expect(mockFacturasPorCobrar).toHaveBeenCalledTimes(1);
+    const admin = await ejecutar('INT-39', 'admin');
+    if (admin.sinPermiso) throw new Error('sin permiso');
+    expect(admin.kpis?.map((k) => k.etiqueta)).toEqual([
+      'Facturado este trimestre',
+      'Pendiente de cobro',
+      'Vencido sin cobrar',
+      'Saldo en bancos',
+      'Impuestos con plazo pasado',
+      'Asientos sin aprobar',
+    ]);
   });
 
   it('el resumen guarda los permisos de cada bloque y el historial lo oculta si se pierde uno', async () => {
@@ -181,9 +306,21 @@ describe('matriz de permisos', () => {
   });
 });
 
+describe('enlaces a la pantalla real', () => {
+  it.each(INTENCIONES.map((i) => [i.id] as const))('%s: cada enlace existe en el menú de la app y las descargas son de informes', async (id) => {
+    const variantes: HuecosResueltos[] = [huecosDe(id), { soloVencidas: true }, { terceroId: 'p1', rol: 'proveedor' }, { periodo: resolverCodigoPeriodo('esta-semana', HOY)! }];
+    for (const h of variantes) {
+      const r = await ejecutar(id, 'admin', h);
+      if (r.sinPermiso) continue;
+      for (const e of r.enlaces ?? []) expect({ href: e.href, valido: hrefValido(e.href) }).toEqual({ href: e.href, valido: true });
+      for (const d of r.descargas ?? []) expect(d.ruta).toMatch(/^\/informes-contables\/[a-z-]+\?.*formato=(pdf|xlsx)$/);
+    }
+  });
+});
+
 describe('solo lectura', () => {
   it.each(INTENCIONES.map((i) => [i.id] as const))('%s no crea, actualiza ni borra nada', async (id) => {
-    await ejecutar(id, 'admin');
+    for (const rol of ['admin', 'ventas', 'sin rol']) await ejecutar(id, rol);
     expect(llamadas.filter((l) => ESCRITURAS.test(l))).toEqual([]);
   });
 });
@@ -232,6 +369,97 @@ describe('contrato de cifras', () => {
     expect(mockTotalCobradoEntre).toHaveBeenCalledWith('E1', 'INGRESO', '2026-10-01', HOY);
     expect(r.kpis?.[0]).toEqual({ etiqueta: 'Total cobrado', valor: '2.345,60 €', detalle: '4 cobros' });
     expect(r.texto).toMatch(/^En octubre de 2026 \(hasta hoy\) has cobrado 2\.345,60 € en 4 cobros registrados\./);
+  });
+
+  it('INT-06: lo pendiente con proveedores es el de pendientesSegunFacturas, por proveedor, vencido o de un periodo', async () => {
+    const r = await ejecutar('INT-06', 'contable');
+    if (!conCifras(r) || r.sinPermiso) throw new Error('sin cifras');
+    expect(mockPendientes).toHaveBeenCalledWith('E1', 'proveedores', HOY);
+    expect(r.texto).toMatch(/^Debes 573,50 € a tus proveedores en 3 facturas de 2 proveedores\. 1 está vencida \(302,50 €\)\./);
+    expect(r.tabla?.filas.map((f) => f.celdas[0])).toEqual(['LUZ-7', 'R-88', 'LUZ-8']);
+    expect(r.tabla?.filas[0].celdas[3]).toBe('37 días');
+
+    const iberdrola = await ejecutar('INT-06', 'contable', { terceroId: 'p1', rol: 'proveedor' });
+    expect(!iberdrola.sinPermiso && iberdrola.texto).toMatch(/^Le debes 452,50 € a IBERDROLA CLIENTES SAU en 2 facturas\./);
+    expect(!iberdrola.sinPermiso && iberdrola.enlaces?.[0].href).toBe('/dashboard/proveedores/p1');
+
+    const vencidas = await ejecutar('INT-06', 'contable', { soloVencidas: true });
+    expect(!vencidas.sinPermiso && vencidas.kpis?.[0]).toEqual({ etiqueta: 'Vencido sin pagar', valor: '302,50 €', detalle: '1 factura' });
+
+    const semana = await ejecutar('INT-06', 'contable', { periodo: resolverCodigoPeriodo('esta-semana', HOY)! });
+    expect(!semana.sinPermiso && semana.texto).toMatch(
+      /^Con vencimiento en esta semana tienes 1 factura de proveedores por 121,00 €\. Además tienes 1 factura vencida de antes sin pagar por 302,50 €\./,
+    );
+  });
+
+  it('INT-09: lo facturado y lo gastado son los de resumenFiscalPeriodo, frente al mismo periodo del año anterior', async () => {
+    const r = await ejecutar('INT-09', 'admin', { periodo: resolverCodigoPeriodo('este-trimestre', HOY)! });
+    if (!conCifras(r) || r.sinPermiso) throw new Error('sin cifras');
+    expect(mockResumenFiscal).toHaveBeenCalledWith('E1', '2026-10-01', HOY);
+    expect(mockResumenFiscal).toHaveBeenCalledWith('E1', '2025-10-01', '2025-10-07');
+    expect(r.texto).toMatch(
+      /^En este trimestre \(4T de 2026\), hasta hoy, has facturado 10\.000,00 € en 5 facturas; en el mismo periodo de 2025, 8\.000,00 € \(\+25,0 %\)\. Has gastado 4\.000,00 € en 8 facturas; en el mismo periodo de 2025 no hay facturas\./,
+    );
+    expect(r.kpis?.map((k) => k.valor)).toEqual(['10.000,00 €', '8.000,00 €', '4.000,00 €', '0,00 €']);
+    const soloGastos = await ejecutar('INT-09', 'admin', { foco: 'gastos' });
+    expect(!soloGastos.sinPermiso && soloGastos.kpis?.map((k) => k.etiqueta)).toEqual(['Gastado sin IVA', 'Gastos en 2025']);
+  });
+
+  it('INT-13: busca sin ceros a la izquierda y da el estado de cobro de listarCobros', async () => {
+    expect(claveNumeroFactura('2026-0045')).toBe(claveNumeroFactura('2026-45'));
+    expect(claveNumeroFactura('a-012')).toBe('A12');
+    const r = await ejecutar('INT-13', 'ventas');
+    if (!conCifras(r) || r.sinPermiso) throw new Error('sin cifras');
+    expect(mockListarCobros).toHaveBeenCalledWith('E1', 'INGRESO', 'f1');
+    expect(r.texto).toBe(
+      'La factura A-12 emitida a CONSTRUCCIONES PÉREZ SL, del 01/06/2026, es de 1.210,00 €. Lleva 210,00 € cobrados y quedan 1.000,00 € pendientes de cobro. Venció el 01/07/2026 (hace 98 días).',
+    );
+    expect(r.enlaces).toEqual([{ texto: 'Abrir la factura A-12', href: '/dashboard/facturas/f1' }]);
+    const ninguna = await ejecutar('INT-13', 'ventas', { numeroFactura: 'Z-9' });
+    expect(!ninguna.sinPermiso && ninguna.sinCifras).toBe(true);
+  });
+
+  it('INT-18: el resultado es el de informePerdidasGanancias, hasta hoy, con el aviso de los asientos sin aprobar', async () => {
+    const r = await ejecutar('INT-18', 'contable');
+    if (!conCifras(r) || r.sinPermiso) throw new Error('sin cifras');
+    expect(mockPyG).toHaveBeenCalledWith('E1', { desde: '2026-01-01', hasta: HOY, ejercicio: 2026 });
+    expect(r.kpis).toEqual([
+      { etiqueta: 'Cifra de negocios', valor: '50.000,00 €' },
+      { etiqueta: 'Resultado', valor: '15.000,00 €', detalle: '01/01/2026 a 07/10/2026' },
+      { etiqueta: 'Mismo periodo de 2025', valor: '9.750,00 €' },
+    ]);
+    expect(r.texto).toMatch(/^En lo que va de 2026 vas en beneficios: 15\.000,00 €/);
+    expect(r.avisos?.[0]).toMatch(/^Hay 4 asientos sin aprobar/);
+    const dosAnios = await ejecutar('INT-18', 'contable', { periodo: resolverCodigoPeriodo('2025-12-15_2026-01-15', HOY)! });
+    expect(!dosAnios.sinPermiso && dosAnios.sinCifras).toBe(true);
+  });
+
+  it('INT-28: el modelo guardado manda; si no hay, calcularModelo303 del trimestre', async () => {
+    const calculado = await ejecutar('INT-28', 'contable');
+    if (!conCifras(calculado) || calculado.sinPermiso) throw new Error('sin cifras');
+    expect(mockModeloGuardado).toHaveBeenCalledWith('E1', '303', 2026, '3T');
+    expect(mockCalcular303).toHaveBeenCalledWith('E1', { ejercicio: 2026, periodo: '3T', tipo: 'trimestral', fechaInicio: '2026-07-01', fechaFin: '2026-09-30' });
+    expect(calculado.texto).toMatch(/^El 303 del 3T de 2026 sale a ingresar 1\.260,00 €\. Todavía no lo tienes guardado/);
+    expect(calculado.texto).toContain('hasta el 20/10/2026 (quedan 13 días)');
+
+    mockModeloGuardado.mockResolvedValue({ id: 'm1', estado: 'presentado', origen: 'manual-mixto', casillas: { '71_resultado': -300.5, '27_total_devengado': 100, '45_total_deducir': 400.5 } });
+    const guardado = await ejecutar('INT-28', 'contable');
+    if (guardado.sinPermiso) throw new Error('sin permiso');
+    expect(mockCalcular303).toHaveBeenCalledTimes(1);
+    expect(guardado.kpis?.map((k) => k.valor)).toEqual(['100,00 €', '400,50 €', '-300,50 €']);
+    expect(guardado.texto).toBe(
+      'El 303 del 3T de 2026 sale negativo, 300,50 €, que se compensa en los trimestres siguientes. Es el importe del modelo guardado en Fiscalidad → Modelo 303, con cambios hechos a mano. En la app consta como presentado.',
+    );
+  });
+
+  it('INT-30: con permiso, el estado de los modelos de la empresa sin crear nada', async () => {
+    const r = await ejecutar('INT-30', 'contable');
+    if (!conCifras(r) || r.sinPermiso) throw new Error('sin cifras');
+    expect(mockCalendario).toHaveBeenCalledWith('E1', HOY);
+    expect(r.texto).toMatch(/^Tienes 1 modelo con el plazo ya pasado que en la app no consta como presentado ni omitido: el 303 del 2T de 2026\. El próximo es el 303/);
+    expect(r.tabla?.filas.map((f) => f.celdas[4])).toEqual(['Plazo pasado', 'Preparado', 'Pendiente']);
+    const ventas = await ejecutar('INT-30', 'ventas');
+    expect(!ventas.sinPermiso && ventas.tabla?.titulo).toBe('Próximos plazos generales');
   });
 
   it('INT-24: el saldo es el de obtenerResumen, con la fecha del último extracto', async () => {

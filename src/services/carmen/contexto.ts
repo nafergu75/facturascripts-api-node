@@ -4,7 +4,7 @@
  * authorize.middleware: Carmen no amplía nunca lo que el usuario ya puede ver.
  */
 import type { AuthUser } from '../../types/express';
-import { permisosEnEmpresa, usuarioTienePermiso } from '../rbac.service';
+import { cubrePermisos, permisosEnEmpresa } from '../rbac.service';
 import { hoyEspana } from '../../utils/fechas';
 import type { CarmenCtx } from './tipos';
 
@@ -25,8 +25,10 @@ export function construirContexto(user: AuthUser, companyId: string, hoy: string
   };
 }
 
-/** Tiene al menos uno de los permisos (con comodines '*' y 'recurso:*'). */
-export function tiene(ctx: Pick<CarmenCtx, 'permisos'>, ...necesarios: string[]): boolean {
-  const lista = [...ctx.permisos];
-  return necesarios.some((p) => usuarioTienePermiso(lista, p));
+/**
+ * Tiene al menos uno de los permisos (con comodines '*' y 'recurso:*'). Es la
+ * misma regla que authorize.middleware (rbac.service, cubrePermisos).
+ */
+export function tiene(ctx: Pick<CarmenCtx, 'permisos'> & Partial<Pick<CarmenCtx, 'esAdminGlobal'>>, ...necesarios: string[]): boolean {
+  return cubrePermisos(ctx.permisos, necesarios, ctx.esAdminGlobal === true);
 }

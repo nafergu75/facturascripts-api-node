@@ -56,3 +56,12 @@ export function extraerSentido(texto: string): 'cobros' | 'pagos' | null {
   if (pagos && !cobros) return 'pagos';
   return null;
 }
+
+/** INT-09: si se pregunta por lo facturado (ventas) o por lo gastado (gastos); null si por los dos o ninguno. */
+export function extraerFoco(texto: string): 'ventas' | 'gastos' | null {
+  const gastos = /\b(gast\w*|compr\w*|facturas? (?:de|del) proveedor\w*|proveedor\w*)\b/.test(texto);
+  const ventas = /\b(factur\w*|vend\w*|ventas?|ingresos)\b/.test(texto) && !/\bfacturas? (?:de|del) (?:compra|proveedor\w*|gasto\w*)\b/.test(texto);
+  if (ventas && !gastos) return 'ventas';
+  if (gastos && !ventas) return 'gastos';
+  return null;
+}

@@ -23,7 +23,7 @@ import { contarPalabras, plano } from '../../utils/texto';
 import { tiene } from './contexto';
 import { normalizar, type TextoNormalizado } from './normalizar';
 import { extraerPeriodo, resolverCodigoPeriodo } from './huecos/periodo';
-import { extraerImporteMinimo, extraerModelo, extraerNumeroFactura, extraerSentido } from './huecos/otros';
+import { extraerFoco, extraerImporteMinimo, extraerModelo, extraerNumeroFactura, extraerSentido } from './huecos/otros';
 import { buscarTercero, indiceTerceros, trozosCandidatos, UMBRAL_USAR, type ResultadoTercero, type Tercero } from './terceros';
 import { clasificar, decidir, textoParaClasificar, UMBRAL_DATOS, type Puntuacion } from './clasificador';
 import { INTENCIONES, intencionPorId, type Intencion } from './intenciones/catalogo';
@@ -171,6 +171,9 @@ async function extraerHuecos(ctx: CarmenCtx, n: TextoNormalizado): Promise<Hueco
   const dias = texto.match(/\bmas de (\d{1,3}) dias\b/);
   if (dias) resueltos.diasMinimos = Number(dias[1]);
   else if (importe) resueltos.importeMinimo = importe;
+  if (/\b(vencid\w*|atrasad\w*|impagad\w*|con retraso)\b/.test(texto)) resueltos.soloVencidas = true;
+  const foco = extraerFoco(texto);
+  if (foco) resueltos.foco = foco;
   const iban = texto.match(/\b(?:acabada|acaba|termina|terminada) en (\d{4})\b/);
   if (iban) {
     resueltos.ibanFinal = iban[1];
@@ -184,6 +187,9 @@ async function extraerHuecos(ctx: CarmenCtx, n: TextoNormalizado): Promise<Hueco
     if (roles.includes('cliente')) senales.add('__cliente');
     if (roles.includes('proveedor')) senales.add('__proveedor');
     if (roles.includes('banco')) senales.add('__banco');
+    // Un nombre que solo es cliente no puede ser «lo que le debo» (ni al revés).
+    if (roles.includes('cliente') && !roles.includes('proveedor')) senales.add('__soloCliente');
+    if (roles.includes('proveedor') && !roles.includes('cliente')) senales.add('__soloProveedor');
     if (tercero.tipo === 'unico') {
       resueltos.terceroId = tercero.tercero.id;
       resueltos.rol = tercero.tercero.rol;
@@ -200,6 +206,22 @@ async function extraerHuecos(ctx: CarmenCtx, n: TextoNormalizado): Promise<Hueco
   return { resueltos, tercero, senales, textoClasificar: texto.replace(/\s+/g, ' ').trim() };
 }
 
+/** «¿Qué es…?», «¿Cómo se…?», «¿Cuánto cuesta…?»: preguntas de concepto, no sobre los datos de la empresa. */
+const PREGUNTA_DE_CONCEPTO = /^(que es|que son|que significa|que diferencia|como se|como funciona|cuanto cuesta|cuanto vale|para que sirve|quien paga|que pide|que dice)\b/;
+
+/**
+ * ¿La pregunta nombra a un cliente, proveedor o banco de la empresa? Un nombre
+ * reconocido sin dudas, siempre; uno solo parecido (botones «¿te refieres a…?»),
+ * salvo en una pregunta de concepto («¿qué es un concurso de acreedores?» no
+ * habla de CONSTRUCCIONES PÉREZ). Aun así, antes de ir a la IA los nombres de
+ * la caché de terceros se sustituyen (depurar.ts).
+ */
+function nombraTercero(h: HuecosTexto, texto: string): boolean {
+  if (!h.tercero || h.tercero.tipo === 'ninguno') return false;
+  if (h.tercero.tipo === 'unico') return true;
+  return !PREGUNTA_DE_CONCEPTO.test(texto);
+}
+
 function huecosEntradaDe(h: HuecosResueltos): HuecosEntrada {
   const e: HuecosEntrada = {};
   if (h.periodo) e.periodo = h.periodo.codigo;
@@ -210,6 +232,9 @@ function huecosEntradaDe(h: HuecosResueltos): HuecosEntrada {
   if (h.importeMinimo) e.importeMinimo = h.importeMinimo;
   if (h.diasMinimos) e.diasMinimos = h.diasMinimos;
   if (h.ibanFinal) e.ibanFinal = h.ibanFinal;
+  if (h.numeroFactura) e.numeroFactura = h.numeroFactura;
+  if (h.soloVencidas) e.soloVencidas = true;
+  if (h.foco) e.foco = h.foco;
   return e;
 }
 
@@ -228,6 +253,9 @@ function resolverEntrada(e: HuecosEntrada | undefined, hoy: string): HuecosResue
   if (e.importeMinimo && e.importeMinimo > 0) h.importeMinimo = e.importeMinimo;
   if (e.diasMinimos && e.diasMinimos > 0) h.diasMinimos = e.diasMinimos;
   if (e.ibanFinal && /^\d{4}$/.test(e.ibanFinal)) h.ibanFinal = e.ibanFinal;
+  if (typeof e.numeroFactura === 'string' && /^[A-Za-z0-9/-]{1,30}$/.test(e.numeroFactura)) h.numeroFactura = e.numeroFactura;
+  if (e.soloVencidas === true) h.soloVencidas = true;
+  if (e.foco === 'ventas' || e.foco === 'gastos') h.foco = e.foco;
   return h;
 }
 
@@ -463,6 +491,14 @@ async function intentarSeguimiento(ctx: CarmenCtx, n: TextoNormalizado, h: Hueco
     id = 'INT-03';
     cambia = true;
   }
+  if (h.resueltos.soloVencidas && id === 'INT-06' && !nuevos.soloVencidas) {
+    nuevos.soloVencidas = true;
+    cambia = true;
+  }
+  if (h.resueltos.foco && id === 'INT-09' && h.resueltos.foco !== nuevos.foco) {
+    nuevos.foco = h.resueltos.foco;
+    cambia = true;
+  }
   if (!cambia) return null;
   // Sin «y», «también»... solo cuenta si el mensaje no trae nada más que el hueco.
   const sobra = textoParaClasificar(h.textoClasificar, ctx.hoy).split(' ').filter((p) => p && !/^(el|la|los|las|de|del|a|al|en|que|y|solo|pasado|pasada)$/.test(p));
@@ -504,7 +540,7 @@ async function responderAccion(ctx: CarmenCtx, entrada: EntradaCarmen, sesion: S
       const ranking = clasificar(h.textoClasificar, h.senales, entrada.currentPage, ctx.hoy);
       const fichas = buscarFichas(entrada.message, ctx.hoy, 3);
       // La guarda de datos propios vale también para el botón: una pregunta de datos nunca va a la IA.
-      if ((ranking[0]?.puntuacion ?? 0) >= UMBRAL_DATOS || tieneMarcadoresPropios(n.texto) || h.senales.has('__tercero')) {
+      if ((ranking[0]?.puntuacion ?? 0) >= UMBRAL_DATOS || tieneMarcadoresPropios(n.texto) || nombraTercero(h, n.texto)) {
         return { cuerpo: aclaracion(ctx, 'Eso es una pregunta sobre tus datos, y a la IA no le paso datos de tu empresa. Prueba con una de estas consultas:', { ranking, fichas, pagina: entrada.currentPage }) };
       }
       const disp = await disponibilidadIA(ctx, ajustes);
@@ -576,7 +612,7 @@ export async function responder(ctx: CarmenCtx, entrada: EntradaCarmen, sesion: 
   }
 
   // 6. Guarda de datos propios: estas preguntas nunca llegan a la IA.
-  const propia = tieneMarcadoresPropios(n.texto) || h.senales.has('__tercero');
+  const propia = tieneMarcadoresPropios(n.texto) || nombraTercero(h, n.texto);
 
   // 7. Fichas.
   if (fichaClara) return { cuerpo: respuestaFicha(f1.ficha), contexto: null };

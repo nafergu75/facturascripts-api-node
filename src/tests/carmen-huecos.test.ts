@@ -11,7 +11,7 @@ jest.mock('../config/database', () => ({ prisma: mockPrisma }));
 
 import { normalizar, distanciaEdicion } from '../services/carmen/normalizar';
 import { extraerPeriodo, resolverCodigoPeriodo } from '../services/carmen/huecos/periodo';
-import { extraerImporteMinimo, extraerModelo, extraerNif, extraerNumeroFactura, extraerSentido } from '../services/carmen/huecos/otros';
+import { extraerFoco, extraerImporteMinimo, extraerModelo, extraerNif, extraerNumeroFactura, extraerSentido } from '../services/carmen/huecos/otros';
 import { buscarEnIndice, buscarTercero, olvidarIndices, tokensNombre, type Tercero } from '../services/carmen/terceros';
 import { sinTildes } from '../utils/texto';
 
@@ -101,7 +101,31 @@ describe('hueco periodo (hoy = 07/10/2026)', () => {
   });
 });
 
+describe('periodos hacia delante (vencimientos)', () => {
+  const p = (t: string, hoy = HOY) => extraerPeriodo(normalizar(t).texto, hoy)?.periodo;
+  it('«la semana que viene» y «el mes que viene»', () => {
+    // 07/10/2026 es miércoles: la semana que viene va del lunes 12 al domingo 18.
+    expect(p('que tengo que pagar la semana que viene')).toMatchObject({ desde: '2026-10-12', hasta: '2026-10-18', codigo: 'semana-que-viene' });
+    expect(p('pagos de la proxima semana')).toMatchObject({ codigo: 'semana-que-viene' });
+    expect(p('que vence el mes que viene')).toMatchObject({ desde: '2026-11-01', hasta: '2026-11-30', codigo: 'mes-que-viene' });
+    expect(p('que vence el proximo mes', '2026-12-10')).toMatchObject({ desde: '2027-01-01', hasta: '2027-01-31' });
+  });
+
+  it('«viene» no se corrige a «tiene»', () => {
+    expect(normalizar('la semana que viene').texto).toBe('la semana que viene');
+  });
+});
+
 describe('otros huecos', () => {
+  it('foco de INT-09: facturado (ventas) o gastado (gastos)', () => {
+    expect(extraerFoco('cuanto he facturado este trimestre')).toBe('ventas');
+    expect(extraerFoco('ventas de septiembre')).toBe('ventas');
+    expect(extraerFoco('cuanto he gastado este año')).toBe('gastos');
+    expect(extraerFoco('total de compras del trimestre')).toBe('gastos');
+    expect(extraerFoco('facturas de proveedores del mes')).toBe('gastos');
+    expect(extraerFoco('facturado y gastado este año')).toBeNull();
+  });
+
   it('modelo, número de factura, importe mínimo, NIF y sentido', () => {
     expect(extraerModelo('el 303 del tercer trimestre')).toBe('303');
     expect(extraerModelo('la factura 303')).toBeNull();

@@ -3,6 +3,7 @@ import { sendOk } from '../utils/response';
 import { badRequest } from '../utils/http-errors';
 import { prisma } from '../config/database';
 import { Decimal } from '@prisma/client/runtime/library';
+import { resumenFiscalPeriodo } from '../services/resumenFiscal.service';
 
 export const movementsController = {
   // POST /companies/:companyId/movements
@@ -90,45 +91,15 @@ export const movementsController = {
     const mesHasta = trimestre ? trimestre * 3 : 12;
     const desde = `${anio}-${String(mesDesde).padStart(2, '0')}-01`;
     const hasta = `${anio}-${String(mesHasta).padStart(2, '0')}-31`;
-    const fechas = { gte: desde, lte: hasta };
-    const suma = { baseTotal: true, ivaTotal: true, retencionTotal: true, totalFactura: true } as const;
-
-    const [ventas, gastos] = await Promise.all([
-      prisma.incomeInvoice.aggregate({
-        where: { companyId, estadoDocumento: 'FINAL', estado: { not: 'DRAFT' }, fechaEmision: fechas },
-        _sum: suma,
-        _count: true,
-      }),
-      prisma.expenseInvoice.aggregate({
-        where: { companyId, estado: { not: 'DRAFT' }, fechaEmision: fechas },
-        _sum: suma,
-        _count: true,
-      }),
-    ]);
-    const n = (v: unknown) => Math.round(Number(v ?? 0) * 100) / 100;
-    const ivaRepercutido = n(ventas._sum.ivaTotal);
-    const ivaSoportado = n(gastos._sum.ivaTotal);
-
+    const r = await resumenFiscalPeriodo(companyId, desde, hasta);
     sendOk(res, {
       periodo: { anio, trimestre, desde, hasta },
-      ventas: {
-        facturas: ventas._count,
-        base: n(ventas._sum.baseTotal),
-        iva: ivaRepercutido,
-        retencion: n(ventas._sum.retencionTotal),
-        total: n(ventas._sum.totalFactura),
-      },
-      gastos: {
-        facturas: gastos._count,
-        base: n(gastos._sum.baseTotal),
-        iva: ivaSoportado,
-        retencion: n(gastos._sum.retencionTotal),
-        total: n(gastos._sum.totalFactura),
-      },
+      ventas: r.ventas,
+      gastos: r.gastos,
       // Orientativo: el 303 real puede ajustar IVA no deducible, prorrata o compensaciones.
-      ivaResultado: n(ivaRepercutido - ivaSoportado),
+      ivaResultado: r.ivaResultado,
       // Retenciones que la empresa practica en sus gastos (modelo 111/115).
-      retencionesAIngresar: n(gastos._sum.retencionTotal),
+      retencionesAIngresar: r.retencionesAIngresar,
     });
   }),
 

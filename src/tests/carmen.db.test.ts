@@ -193,7 +193,7 @@ describe('de punta a punta', () => {
 
   it('una pregunta genérica con la IA activa: una llamada simulada, coste liquidado y auditoría sin el texto', async () => {
     const crear = jest.fn(async () => ({
-      content: [{ type: 'text', text: 'Es un régimen que retrasa el IVA hasta el cobro. Consúltalo con tu asesor.' }],
+      content: [{ type: 'text', text: 'En una sociedad limitada respondes con el capital de la sociedad; como autónomo, con tu patrimonio. Consúltalo con tu asesor.' }],
       usage: { input_tokens: 1800, output_tokens: 60, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
       stop_reason: 'end_turn',
     }));
@@ -205,13 +205,13 @@ describe('de punta a punta', () => {
     await prisma.carmenContador.deleteMany({ where: { clave: { in: Object.values(clavesContador(EMPRESA, ANA.userId, dia)) } } });
     try {
       const ctx = construirContexto(ANA, EMPRESA, dia);
-      const r = await atender(ctx, { message: '¿Qué es el criterio de caja del IVA?' });
+      const r = await atender(ctx, { message: '¿Qué diferencia hay entre ser autónomo y tener una sociedad limitada?' });
       expect(r.origen).toBe('ia');
       expect(crear).toHaveBeenCalledTimes(1);
       const llamada = await prisma.carmenLlamadaIA.findFirstOrThrow({ where: { mensajeId: r.mensajeId } });
       expect(llamada).toMatchObject({ companyId: EMPRESA, estado: 'ok', tokensEntrada: 1800, tokensSalida: 60, modelo: 'claude-haiku-4-5-20251001' });
       expect(Number(llamada.costeUsd)).toBeCloseTo(0.0021, 6);
-      expect(JSON.stringify(llamada)).not.toMatch(/criterio de caja/i);
+      expect(JSON.stringify(llamada)).not.toMatch(/sociedad limitada/i);
       const global = await prisma.carmenContador.findUniqueOrThrow({ where: { clave: 'global:2099-04' } });
       expect(Number(global.costeUsd)).toBeCloseTo(0.0021, 6);
       const usuarioHoy = await prisma.carmenContador.findUniqueOrThrow({ where: { clave: `usuario:${ANA.userId}:${dia}` } });

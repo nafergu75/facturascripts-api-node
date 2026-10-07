@@ -26,6 +26,12 @@ export interface HuecosEntrada {
   importeMinimo?: number;
   diasMinimos?: number;
   ibanFinal?: string;
+  /** Número de factura tal como lo escribió el usuario («A-12», «2026-0045»). */
+  numeroFactura?: string;
+  /** Solo lo vencido («facturas de proveedores vencidas»). */
+  soloVencidas?: boolean;
+  /** De qué lado se pregunta en INT-09: lo facturado (ventas) o lo gastado (gastos). */
+  foco?: 'ventas' | 'gastos';
 }
 
 export interface Boton {
@@ -138,6 +144,8 @@ export interface HuecosResueltos {
   /** Texto a buscar en el concepto de los movimientos («cargos de Repsol»). Nunca se guarda ni va a la IA. */
   texto?: string;
   numeroFactura?: string;
+  soloVencidas?: boolean;
+  foco?: 'ventas' | 'gastos';
 }
 
 /** Area de la app de una intencion (para chips por pagina y para el mensaje de permisos). */
