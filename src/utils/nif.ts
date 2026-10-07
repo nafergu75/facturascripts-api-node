@@ -28,7 +28,10 @@ export type TipoNif = 'DNI' | 'NIE' | 'CIF';
 
 export interface ResultadoNif {
   valido: boolean;
-  /** Mayusculas, sin espacios, guiones, puntos ni el prefijo ES del NIF-IVA. */
+  /**
+   * Como normalizarNif: mayusculas, sin espacios, guiones, puntos ni el prefijo
+   * ES del NIF-IVA, y con los ceros que Excel quita en DNI y NIE.
+   */
   normalizado: string;
   tipo?: TipoNif;
   /** Por que no vale, en castellano y para mostrarlo tal cual. */
@@ -63,7 +66,7 @@ export function letraDni(numero: string): string {
 
 /** Lo mismo que letraDni, con el numero como cifra (nominas y sus tests). */
 export function letraNif(numero: number): string {
-  return LETRAS_DNI[numero % 23];
+  return letraDni(String(numero));
 }
 
 /** Control de un CIF a partir de sus 7 cifras: la cifra y su letra equivalente. */
