@@ -451,12 +451,18 @@ describeBd('permisos a medida y contraseña provisional (BD real)', () => {
       expect((await prisma.user.findUniqueOrThrow({ where: { id: U.id } })).debeCambiarContrasena).toBe(true);
     });
 
-    it('27. la propia no es provisional; generarla para uno mismo, o pedir las dos cosas, es un 400', async () => {
-      const propia = nuevaContrasena();
-      const res = await como(tokenG).patch(`/admin/usuarios/${G.id}`, { nuevaContrasena: propia });
-      expect(res.status).toBe(200);
-      expect((await prisma.user.findUniqueOrThrow({ where: { id: G.id } })).debeCambiarContrasena).toBe(false);
-      tokenG = await tokenConHuella(G.id); // la huella ha cambiado: el token anterior ya no vale
+    it('27. la propia no se cambia desde el panel ni desde /users (sin la actual); pedir las dos cosas es un 400', async () => {
+      const hashAntes = (await prisma.user.findUniqueOrThrow({ where: { id: G.id } })).passwordHash;
+      const escrita = await como(tokenG).patch(`/admin/usuarios/${G.id}`, { nuevaContrasena: nuevaContrasena() });
+      expect(escrita.status).toBe(400);
+      expect(escrita.body.message).toBe('Tu propia contraseña cámbiala en «Cambiar contraseña».');
+      const antigua = await como(tokenG).put(`/users/${G.id}`, { password: nuevaContrasena() });
+      expect(antigua.status).toBe(400);
+      expect(antigua.body.message).toBe('Tu propia contraseña cámbiala en «Cambiar contraseña».');
+      const g = await prisma.user.findUniqueOrThrow({ where: { id: G.id } });
+      expect(g.passwordHash).toBe(hashAntes);
+      expect(g.debeCambiarContrasena).toBe(false);
+      expect((await como(tokenG).get('/admin/usuarios')).status).toBe(200); // su sesion sigue
 
       const generar = await como(tokenG).patch(`/admin/usuarios/${G.id}`, { restablecerContrasena: true });
       expect(generar.status).toBe(400);

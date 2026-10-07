@@ -649,8 +649,8 @@ export interface CambiosUsuario {
  * Contrasena de OTRO usuario: queda provisional (tendra que poner una suya al
  * entrar). Con `restablecerContrasena: true` la genera el servidor y se
  * devuelve una vez en `contrasenaProvisional`; con `nuevaContrasena` la escribe
- * el administrador y no se devuelve. La propia no es provisional, y la
- * generada no se puede pedir para uno mismo (se cambia en "Cambiar contrasena").
+ * el administrador y no se devuelve. La propia no se cambia aqui de ninguna de
+ * las dos formas: se cambia en "Cambiar contrasena", que pide la actual.
  *
  * Protecciones:
  * - Nadie se desactiva ni se quita el modo administrador a si mismo (se
@@ -675,7 +675,11 @@ export async function actualizarUsuario(
   if (restablecer && hayContrasena) {
     throw badRequest('Elige una de las dos: generar una contraseña provisional o escribirla.');
   }
-  if (restablecer && userId === actorId) throw badRequest('Tu propia contraseña cámbiala en «Cambiar contraseña».');
+  // La propia, ni generada ni escrita: se cambia en POST /auth/cambiar-contrasena,
+  // que pide la actual. Si no, quien robe el token de un administrador global
+  // podria ponerle una contrasena nueva sin saber la actual y quedarse la cuenta.
+  // Cubre PATCH /admin/usuarios y PUT /users (los dos pasan por aqui).
+  if ((restablecer || hayContrasena) && userId === actorId) throw badRequest('Tu propia contraseña cámbiala en «Cambiar contraseña».');
   if (userId === actorId && activo === false) throw badRequest('No puedes desactivar tu propio usuario.');
   if (userId === actorId && esAdminGlobal === false) {
     throw badRequest('No puedes quitarte a ti mismo el modo administrador. Pídeselo a otro administrador global.');
@@ -684,8 +688,6 @@ export async function actualizarUsuario(
   const generada = restablecer ? generarContrasenaProvisional() : null;
   const nuevaContrasena = hayContrasena ? validarContrasena(datos.nuevaContrasena) : generada;
   const nuevoHash = nuevaContrasena ? hashPassword(nuevaContrasena) : null;
-  // La de otro usuario la conoce quien la pone: provisional. La propia, no.
-  const provisional = userId !== actorId;
 
   return prisma.$transaction(async (tx) => {
     const objetivo = await tx.user.findUnique({
@@ -711,9 +713,10 @@ export async function actualizarUsuario(
     if (nuevaContrasena && nuevoHash) {
       validarContrasena(nuevaContrasena, objetivo.email); // que no sea su propio email
       data.passwordHash = nuevoHash;
-      data.debeCambiarContrasena = provisional;
+      // Es la de OTRO usuario (la propia no llega aqui): la conoce quien la pone, provisional.
+      data.debeCambiarContrasena = true;
       cambios.contrasenaRestablecida = true;
-      cambios.contrasenaProvisional = provisional;
+      cambios.contrasenaProvisional = true;
       if (generada) cambios.contrasenaGenerada = true;
     }
 
