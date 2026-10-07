@@ -3,8 +3,9 @@
  *
  * En la v1 solo lo que cambia el calendario de modelos: periodicidad del IVA,
  * REDEME, SII y gran empresa (y, por la forma jurídica, el 130 de los
- * autónomos). Reglas, en pantalla y aquí: gran empresa obliga a SII; SII o
- * REDEME obligan a IVA mensual. El recargo de equivalencia, el criterio de caja
+ * autónomos). Reglas, en pantalla y aquí: gran empresa y REDEME obligan a SII
+ * (art. 62.6 RIVA), y el IVA mensual existe solo con el SII: IVA mensual y SII
+ * van siempre juntos (así, con IVA mensual nunca salen el 390 ni el 347). El recargo de equivalencia, el criterio de caja
  * y la prorrata todavía no se aplican en los asientos ni en el 303: el PUT los
  * rechaza si no tienen su valor por defecto.
  *
@@ -110,6 +111,15 @@ export function validarReglasFiscales(a: AjustesFiscales): void {
   }
   if ((a.sii || a.redeme) && a.periodicidadIva !== 'MENSUAL') {
     throw badRequest('Con el SII o la inscripción en REDEME el IVA se declara cada mes: elige la periodicidad mensual.', { campo: 'periodicidadIva' });
+  }
+  if (a.redeme && !a.sii) {
+    throw badRequest('Las empresas inscritas en REDEME llevan los libros por el SII: marca también el SII.', { campo: 'sii' });
+  }
+  if (a.periodicidadIva === 'MENSUAL' && !a.sii) {
+    throw badRequest(
+      'El IVA mensual solo es para las empresas que llevan los libros por el SII (gran empresa, REDEME o SII voluntario): marca el SII o deja el IVA trimestral.',
+      { campo: 'sii' },
+    );
   }
 }
 

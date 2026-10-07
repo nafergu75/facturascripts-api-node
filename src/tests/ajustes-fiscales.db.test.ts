@@ -119,9 +119,11 @@ describe('GET/PUT /ajustes-fiscales', () => {
     expect(await prisma.ajustesFiscales.count({ where: { companyId: ES } })).toBe(0);
   });
 
-  it('reglas: gran empresa obliga a SII; SII o REDEME obligan a mensual; RE, caja y prorrata aún no', async () => {
+  it('reglas: gran empresa y REDEME obligan a SII; IVA mensual y SII van juntos; RE, caja y prorrata aún no', async () => {
     const casos: Array<[object, string]> = [
       [{ granEmpresa: true, periodicidadIva: 'MENSUAL' }, 'sii'],
+      [{ redeme: true, periodicidadIva: 'MENSUAL' }, 'sii'],
+      [{ periodicidadIva: 'MENSUAL' }, 'sii'],
       [{ sii: true }, 'periodicidadIva'],
       [{ redeme: true, periodicidadIva: 'TRIMESTRAL' }, 'periodicidadIva'],
       [{ recargoEquivalencia: true }, 'recargoEquivalencia'],
@@ -160,7 +162,7 @@ describe('GET/PUT /ajustes-fiscales', () => {
     const t1 = await prisma.modeloImpuesto.findFirstOrThrow({ where: { companyId: ES, codigo: '303', ejercicio: 2026, periodo: '1T' } });
     await prisma.modeloImpuesto.update({ where: { id: t1.id }, data: { estado: 'presentado' } });
 
-    const r = await guardarAjustesFiscales(ES, 'u-admin', { periodicidadIva: 'MENSUAL', redeme: true }, '2026-04-10');
+    const r = await guardarAjustesFiscales(ES, 'u-admin', { periodicidadIva: 'MENSUAL', redeme: true, sii: true }, '2026-04-10');
     expect(r.cambiosCalendario.find((c) => c.ejercicio === 2026)).toMatchObject({ aplicadoDesde: '2026-04-01', borradas: 3, creadas: 9 });
     expect(r.aviso).toMatch(/desde el 01\/04\/2026/);
 
