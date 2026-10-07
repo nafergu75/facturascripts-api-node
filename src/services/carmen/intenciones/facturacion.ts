@@ -204,13 +204,16 @@ export const facturadoEnPeriodo: Ejecutor = async (ctx, h) => {
   const kpis: Kpi[] = [];
   const filas: Array<{ celdas: Array<string | number> }> = [];
   const permisos: string[] = [];
+  // Una empresa no establecida en España no lleva IVA español: ni la fila del IVA ni «sin IVA».
+  const sinImpuesto = ctx.espanola ? 'sin IVA' : 'sin impuestos';
   if (verVentas) {
     permisos.push('ventas:read|contabilidad:read');
     const verbo = tercero ? `En ${periodo.etiqueta}${recorte} le has facturado a ${tercero.nombre}` : `En ${periodo.etiqueta}${recorte} has facturado`;
     frases.push(fraseComparada(verbo, actual.ventas, anterior.ventas, anioAnt));
-    kpis.push({ etiqueta: 'Facturado sin IVA', valor: eur(actual.ventas.base), detalle: plural(actual.ventas.facturas, 'factura') });
+    kpis.push({ etiqueta: `Facturado ${sinImpuesto}`, valor: eur(actual.ventas.base), detalle: plural(actual.ventas.facturas, 'factura') });
     kpis.push({ etiqueta: `Mismo periodo de ${anioAnt}`, valor: eur(anterior.ventas.base), detalle: variacion(actual.ventas.base, anterior.ventas.base) ?? undefined });
-    filas.push({ celdas: ['Ventas (base imponible)', actual.ventas.base, anterior.ventas.base] }, { celdas: ['IVA repercutido', actual.ventas.iva, anterior.ventas.iva] });
+    filas.push({ celdas: ['Ventas (base imponible)', actual.ventas.base, anterior.ventas.base] });
+    if (ctx.espanola) filas.push({ celdas: ['IVA repercutido', actual.ventas.iva, anterior.ventas.iva] });
   }
   if (verGastos) {
     permisos.push('compras:read|contabilidad:read');
@@ -218,9 +221,10 @@ export const facturadoEnPeriodo: Ejecutor = async (ctx, h) => {
       ? `En ${periodo.etiqueta}${recorte} has gastado con ${tercero.nombre}`
       : `${verVentas ? 'Has gastado' : `En ${periodo.etiqueta}${recorte} has gastado`}`;
     frases.push(fraseComparada(verbo, actual.gastos, anterior.gastos, anioAnt));
-    kpis.push({ etiqueta: 'Gastado sin IVA', valor: eur(actual.gastos.base), detalle: plural(actual.gastos.facturas, 'factura') });
+    kpis.push({ etiqueta: `Gastado ${sinImpuesto}`, valor: eur(actual.gastos.base), detalle: plural(actual.gastos.facturas, 'factura') });
     kpis.push({ etiqueta: `Gastos en ${anioAnt}`, valor: eur(anterior.gastos.base), detalle: variacion(actual.gastos.base, anterior.gastos.base) ?? undefined });
-    filas.push({ celdas: ['Gastos (base imponible)', actual.gastos.base, anterior.gastos.base] }, { celdas: ['IVA soportado', actual.gastos.iva, anterior.gastos.iva] });
+    filas.push({ celdas: ['Gastos (base imponible)', actual.gastos.base, anterior.gastos.base] });
+    if (ctx.espanola) filas.push({ celdas: ['IVA soportado', actual.gastos.iva, anterior.gastos.iva] });
   }
   // Los botones repiten la consulta con el mismo cliente o proveedor (por su id, nunca por el nombre).
   const mismos = { ...(h.foco && !tercero ? { foco: h.foco } : {}), ...(tercero ? { terceroId: tercero.id, rol: tercero.rol } : {}) };
@@ -231,7 +235,7 @@ export const facturadoEnPeriodo: Ejecutor = async (ctx, h) => {
     : botonIntencion('¿Y este año?', 'INT-09', { periodo: 'este-anio', ...mismos });
   return {
     entendido,
-    texto: `${frases.join(' ')} ${CRITERIO_FACTURADO}`,
+    texto: `${frases.join(' ')} ${ctx.espanola ? CRITERIO_FACTURADO : CRITERIO_FACTURADO.replace('sin IVA', 'sin impuestos')}`,
     permisoRequerido: permisos.join(';'),
     kpis,
     ...(avisos.length ? { avisos } : {}),

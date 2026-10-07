@@ -6,6 +6,8 @@
 const mockPrisma = {
   // authMiddleware relee de la BD el usuario, sus empresas y sus roles (modo-admin).
   user: { findUnique: jest.fn() },
+  // Perfil de la empresa (país y moneda de cuenta): sin configuración legal, española y en euros.
+  legalConfig: { findUnique: jest.fn() },
   chatSession: { findFirst: jest.fn(), create: jest.fn(), updateMany: jest.fn(), findMany: jest.fn(), count: jest.fn(), deleteMany: jest.fn() },
   chatMessage: { create: jest.fn(), findMany: jest.fn(), updateMany: jest.fn(), deleteMany: jest.fn() },
   carmenContador: { createMany: jest.fn(), findMany: jest.fn() },
@@ -38,6 +40,7 @@ const ruta = (empresa = 'E1') => `/companies/${empresa}/chat-assistant`;
 beforeEach(() => {
   jest.clearAllMocks();
   olvidarPurgas();
+  mockPrisma.legalConfig.findUnique.mockResolvedValue(null);
   // Lo mismo que dice el token de U1: ventas en E1 y administrador en E2.
   mockPrisma.user.findUnique.mockResolvedValue({
     isActive: true,

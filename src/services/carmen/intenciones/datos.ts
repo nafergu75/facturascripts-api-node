@@ -401,8 +401,9 @@ export const resumenEmpresa: Ejecutor = async (ctx) => {
     const trimestre = resolverCodigoPeriodo('este-trimestre', ctx.hoy)!;
     tareas.push(
       resumenFiscalPeriodo(ctx.companyId, trimestre.desde, hastaHoy(trimestre, ctx.hoy)).then((r) => {
-        kpi(1, { etiqueta: 'Facturado este trimestre', valor: eur(r.ventas.base), detalle: `sin IVA, ${plural(r.ventas.facturas, 'factura')}` });
-        frases.push([1, `En ${trimestre.etiqueta} llevas facturados ${eur(r.ventas.base)} sin IVA.`]);
+        const sinImpuesto = ctx.espanola ? 'sin IVA' : 'sin impuestos';
+        kpi(1, { etiqueta: 'Facturado este trimestre', valor: eur(r.ventas.base), detalle: `${sinImpuesto}, ${plural(r.ventas.facturas, 'factura')}` });
+        frases.push([1, `En ${trimestre.etiqueta} llevas facturados ${eur(r.ventas.base)} ${sinImpuesto}.`]);
       }),
       facturasPorCobrar(ctx.companyId, ctx.hoy).then((r) => {
         kpi(2, { etiqueta: 'Pendiente de cobro', valor: eur(r.pendientes.importe), detalle: plural(r.pendientes.numero, 'factura') });
@@ -421,7 +422,8 @@ export const resumenEmpresa: Ejecutor = async (ctx) => {
     );
   }
   let impuestos: Awaited<ReturnType<typeof resumenImpuestos>> = null;
-  if (tiene(ctx, 'impuestos:read')) {
+  // Una empresa no establecida en España no presenta modelos de la AEAT: ni bloque de impuestos ni plazos.
+  if (ctx.espanola && tiene(ctx, 'impuestos:read')) {
     permisos.add('impuestos:read');
     tareas.push(
       resumenImpuestos(ctx).then((r) => {
@@ -443,7 +445,7 @@ export const resumenEmpresa: Ejecutor = async (ctx) => {
     );
   }
   await Promise.all(tareas);
-  if (!impuestos) {
+  if (!impuestos && ctx.espanola) {
     const plazo = proximosPlazos(ctx.hoy, 1)[0];
     if (plazo) frases.push([5, `El próximo plazo fiscal general es el ${fechaES(plazo.fecha)} (modelo ${plazo.modelo}).`]);
   }
@@ -452,7 +454,7 @@ export const resumenEmpresa: Ejecutor = async (ctx) => {
   if (!kpis.length) {
     return {
       entendido,
-      texto: `${texto} Con tus permisos no puedo enseñarte cifras de facturación, cobros, bancos, impuestos ni contabilidad.`,
+      texto: `${texto} Con tus permisos no puedo enseñarte cifras de facturación, cobros, bancos, impuestos ni contabilidad.`.trim(),
       sinCifras: true,
     };
   }
@@ -465,7 +467,7 @@ export const resumenEmpresa: Ejecutor = async (ctx) => {
     botones: [
       ...(tiene(ctx, 'ventas:read', 'contabilidad:read') ? [botonIntencion('Ver facturas vencidas', 'INT-03')] : []),
       ...(tiene(ctx, 'tesoreria:read') ? [botonIntencion('Saldo por cuenta', 'INT-24')] : []),
-      ...(tiene(ctx, 'impuestos:read') ? [botonIntencion('Mis impuestos y plazos', 'INT-30')] : []),
+      ...(ctx.espanola && tiene(ctx, 'impuestos:read') ? [botonIntencion('Mis impuestos y plazos', 'INT-30')] : []),
     ],
   };
 };

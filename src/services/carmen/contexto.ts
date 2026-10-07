@@ -18,7 +18,16 @@ export const PERMISO_NOMINAS = 'nominas:read';
 /** Grupo con que se guardaban esas respuestas antes de existir 'nominas:read'. */
 export const PERMISO_NOMINAS_ANTIGUO = 'nominas';
 
-export function construirContexto(user: AuthUser, companyId: string, hoy: string = hoyEspana()): CarmenCtx {
+/** Lo que Carmen necesita del perfil de la empresa (perfilEmpresa.service). */
+export interface PerfilCarmen {
+  espanola: boolean;
+  monedaCuenta: string;
+}
+
+/** Empresa sin configuración legal: española y en euros (como perfilEmpresa). */
+export const PERFIL_POR_DEFECTO: PerfilCarmen = { espanola: true, monedaCuenta: 'EUR' };
+
+export function construirContexto(user: AuthUser, companyId: string, hoy: string = hoyEspana(), perfil: PerfilCarmen = PERFIL_POR_DEFECTO): CarmenCtx {
   const permisos = permisosEnEmpresa(user, companyId);
   const roles = user.rolesPorEmpresa ? (user.rolesPorEmpresa[companyId] ?? []) : (user.roles ?? []);
   const esAdminGlobal = user.esAdminGlobal === true;
@@ -32,6 +41,8 @@ export function construirContexto(user: AuthUser, companyId: string, hoy: string
     // Misma regla que authorize('nominas:read') en las rutas de nóminas.
     puedeNominas: cubrePermisos(permisos, [PERMISO_NOMINAS], esAdminGlobal),
     hoy,
+    espanola: perfil.espanola,
+    monedaCuenta: perfil.monedaCuenta,
   };
 }
 

@@ -42,14 +42,16 @@ jest.mock('../services/carmen/intenciones/datos', () => {
 });
 
 import { config } from '../config/env';
-import { responder, type EntradaCarmen } from '../services/carmen/enrutador';
-import { fijarClienteIA } from '../services/carmen/llm';
+import { responder, TEXTO_EMPRESA_EXTRANJERA, type EntradaCarmen } from '../services/carmen/enrutador';
+import { construirMensajes, fijarClienteIA, NOTA_EMPRESA_EXTRANJERA } from '../services/carmen/llm';
+import { buscarFichas, fichaParaEmpresa, fichaPorId } from '../services/carmen/faq/faq';
+import { enMonedaDeCuenta } from '../services/carmen/plantillas';
 import { olvidarIndices } from '../services/carmen/terceros';
 import type { CarmenCtx } from '../services/carmen/tipos';
 import type { AjustesCarmen } from '../services/carmen/ajustes.service';
 
 const HOY = '2026-10-07';
-const admin: CarmenCtx = { companyId: 'E1', userId: 'U1', permisos: new Set(['*']), esAdminGlobal: false, esAdminEmpresa: true, puedeNominas: true, hoy: HOY };
+const admin: CarmenCtx = { companyId: 'E1', userId: 'U1', permisos: new Set(['*']), esAdminGlobal: false, esAdminEmpresa: true, puedeNominas: true, hoy: HOY, espanola: true, monedaCuenta: 'EUR' };
 const iaActiva: AjustesCarmen = { iaActiva: true, topeConsultasDia: null, conservarDias: 90 };
 const crearMensaje = jest.fn();
 const cfg = config as unknown as { anthropicApiKey?: string; carmen: { llmActivo: boolean } };
@@ -948,5 +950,57 @@ describe('revisión: «No era esto»', () => {
   it('sin pregunta escrita (la respuesta venía de un botón), el catálogo', async () => {
     const r = await responder(admin, { accion: { tipo: 'noEraEsto', intencion: 'INT-02' } }, null, iaActiva);
     expect(r.cuerpo.origen).toBe('sistema');
+  });
+});
+
+describe('empresa no establecida en España', () => {
+  // Contabilidad en dólares, sin IVA español, sin modelos de la AEAT y sin nóminas.
+  const extranjera: CarmenCtx = { ...admin, espanola: false, monedaCuenta: 'USD' };
+  const idsDe = (botones: Array<{ accion: { tipo: string; id?: string } }> = []) => botones.map((b) => (b.accion.tipo === 'intencion' ? b.accion.id : ''));
+
+  it('el catálogo no ofrece el IVA del trimestre ni los impuestos y plazos', async () => {
+    const r = await preguntar('¿qué sabes hacer?', {}, extranjera);
+    const ids = idsDe(r.cuerpo.botones);
+    expect(ids).not.toContain('INT-28');
+    expect(ids).not.toContain('INT-30');
+    expect(ids).toContain('INT-02');
+  });
+
+  it('un botón del 303 o de los plazos responde que no aplica, sin ejecutar nada', async () => {
+    for (const id of ['INT-28', 'INT-30']) {
+      const r = await responder(extranjera, { accion: { tipo: 'intencion', id } }, null, iaActiva);
+      expect(r.cuerpo.origen).toBe('sistema');
+      expect(r.cuerpo.texto).toBe(TEXTO_EMPRESA_EXTRANJERA);
+    }
+    expect(crearMensaje).not.toHaveBeenCalled();
+  });
+
+  it('los plazos de un modelo de la AEAT no se calculan para ella', async () => {
+    const r = await preguntar('¿hasta cuándo puedo presentar el 303?', {}, extranjera);
+    expect(r.cuerpo.texto).toBe(TEXTO_EMPRESA_EXTRANJERA);
+    expect(mockPrisma.modeloImpuesto.findUnique).not.toHaveBeenCalled();
+  });
+
+  it('sin fichas de IVA, modelos, IRPF ni nóminas; sí las de uso de la app', () => {
+    expect(fichaPorId('app-modelo-303', HOY, false)).toBeNull();
+    expect(fichaPorId('cont-iva-repercutido-soportado', HOY, false)).toBeNull();
+    expect(fichaPorId('app-factura-nueva', HOY, false)).not.toBeNull();
+    const deIva = buscarFichas('¿qué tipos de IVA hay?', HOY, 3, false);
+    expect(deIva.every((f) => fichaParaEmpresa(f.ficha, false))).toBe(true);
+    expect(deIva.some((f) => f.ficha.bloque === 'iva')).toBe(false);
+    // Una española sigue viendo todas.
+    expect(buscarFichas('¿qué tipos de IVA hay?', HOY, 3).some((f) => f.ficha.bloque === 'iva')).toBe(true);
+  });
+
+  it('los importes llevan la moneda de cuenta, no el euro', async () => {
+    expect(enMonedaDeCuenta('Tienes 1.234,50 € pendientes, -12,00 € vencidos.', 'USD')).toBe('Tienes 1.234,50 USD pendientes, -12,00 USD vencidos.');
+    expect(enMonedaDeCuenta('1.234,50 €', 'EUR')).toBe('1.234,50 €');
+  });
+
+  it('a la IA se le dice que la empresa no es española', () => {
+    const { messages } = construirMensajes({ hoy: HOY, pregunta: '¿Qué es una amortización?', fichas: [], turnos: [], empresaEspanola: false });
+    expect(String(messages[messages.length - 1].content)).toContain(NOTA_EMPRESA_EXTRANJERA);
+    const espanola = construirMensajes({ hoy: HOY, pregunta: '¿Qué es una amortización?', fichas: [], turnos: [] });
+    expect(String(espanola.messages[espanola.messages.length - 1].content)).not.toContain(NOTA_EMPRESA_EXTRANJERA);
   });
 });

@@ -642,6 +642,8 @@ export interface ModeloCalendarioLectura extends ModeloImpuestoResumen {
  * borrador, que es como nacería al abrir la pantalla. Lo usa Carmen (INT-30).
  */
 export async function calendarioFiscalSoloLectura(companyId: string, hoy: string): Promise<ModeloCalendarioLectura[]> {
+  // Como listarModelosImpuesto: una empresa no establecida en Espana no tiene calendario de la AEAT.
+  if (!(await esEmpresaEspanolaFiscal(companyId))) return [];
   const anio = Number(hoy.slice(0, 4));
   const ejercicios = [anio - 1, anio];
   let filas: FilaModelo[];

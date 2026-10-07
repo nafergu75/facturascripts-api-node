@@ -5,6 +5,7 @@ import { sendOk } from '../utils/response';
 import { badRequest, notFound } from '../utils/http-errors';
 import { config } from '../config/env';
 import { construirContexto } from '../services/carmen/contexto';
+import { perfilEmpresa } from '../services/perfilEmpresa.service';
 import { atender, catalogoParaPagina } from '../services/carmen/enrutador';
 import { borrarSesion, listarSesiones, mensajesDeSesion, purgarSiToca, purgarTodas, valorarMensaje } from '../services/carmen/sesiones';
 import { HttpError } from '../utils/http-errors';
@@ -55,8 +56,10 @@ export const esquemaChat = z
   })
   .refine((b) => b.message !== undefined || b.accion !== undefined, { message: 'Hace falta "message" o "accion".' });
 
-function contexto(req: Request) {
-  return construirContexto(req.user!, req.companyId!);
+/** Contexto de la petición, con el país y la moneda de cuenta de la empresa (perfilEmpresa). */
+async function contexto(req: Request) {
+  const perfil = await perfilEmpresa(req.companyId!);
+  return construirContexto(req.user!, req.companyId!, undefined, { espanola: perfil.espanola, monedaCuenta: perfil.monedaCuenta });
 }
 
 function idDeRuta(valor: string | undefined, que: string): string {
@@ -69,12 +72,12 @@ export const chatAssistantController = {
   chat: asyncHandler(async (req, res) => {
     const r = esquemaChat.safeParse(req.body ?? {});
     if (!r.success) throw badRequest('Datos de entrada no válidos.', r.error.flatten());
-    sendOk(res, await atender(contexto(req), r.data));
+    sendOk(res, await atender(await contexto(req), r.data));
   }),
 
   // GET /companies/:companyId/chat-assistant/sesiones?pagina=
   sesiones: asyncHandler(async (req, res) => {
-    const ctx = contexto(req);
+    const ctx = await contexto(req);
     const ajustes = await leerAjustes(ctx.companyId);
     const lista = await listarSesiones(ctx, Number(req.query.pagina ?? 1), ajustes.conservarDias);
     // Lo caducado ya no se lista; además se borra (sin esperar a que alguien pregunte).
@@ -84,7 +87,7 @@ export const chatAssistantController = {
 
   // GET /companies/:companyId/chat-assistant/:sessionId/messages
   getHistory: asyncHandler(async (req, res) => {
-    const ctx = contexto(req);
+    const ctx = await contexto(req);
     const sessionId = idDeRuta(req.params.sessionId, 'Conversación');
     const ajustes = await leerAjustes(ctx.companyId);
     // Primero la conversación (una ajena o caducada da 404 sin leer nada); después la purga.
@@ -95,7 +98,7 @@ export const chatAssistantController = {
 
   // DELETE /companies/:companyId/chat-assistant/:sessionId
   borrar: asyncHandler(async (req, res) => {
-    await borrarSesion(contexto(req), idDeRuta(req.params.sessionId, 'Conversación'));
+    await borrarSesion(await contexto(req), idDeRuta(req.params.sessionId, 'Conversación'));
     sendOk(res, { borrada: true });
   }),
 
@@ -103,19 +106,19 @@ export const chatAssistantController = {
   valorar: asyncHandler(async (req, res) => {
     const r = z.object({ util: z.boolean() }).strict().safeParse(req.body ?? {});
     if (!r.success) throw badRequest('Indica si la respuesta te ha servido (util: true o false).');
-    await valorarMensaje(contexto(req), idDeRuta(req.params.id, 'Respuesta'), r.data.util);
+    await valorarMensaje(await contexto(req), idDeRuta(req.params.id, 'Respuesta'), r.data.util);
     sendOk(res, { guardada: true });
   }),
 
   // GET /companies/:companyId/chat-assistant/catalogo?pagina=
   catalogo: asyncHandler(async (req, res) => {
     const pagina = typeof req.query.pagina === 'string' && req.query.pagina.startsWith('/') ? req.query.pagina.slice(0, 200) : undefined;
-    sendOk(res, await catalogoParaPagina(contexto(req), pagina));
+    sendOk(res, await catalogoParaPagina(await contexto(req), pagina));
   }),
 
   // GET /companies/:companyId/chat-assistant/estado
   estado: asyncHandler(async (req, res) => {
-    const ctx = contexto(req);
+    const ctx = await contexto(req);
     const ajustes = await leerAjustes(ctx.companyId);
     await purgarSiToca(ctx.companyId, ajustes.conservarDias);
     const tope = topeEmpresaDia(ajustes);
@@ -157,7 +160,7 @@ export const chatAssistantController = {
 
   // GET /companies/:companyId/chat-assistant/uso (admin de la empresa)
   uso: asyncHandler(async (req, res) => {
-    const ctx = contexto(req);
+    const ctx = await contexto(req);
     const ajustes = await leerAjustes(ctx.companyId);
     const uso = await leerUso(ctx.companyId, ctx.userId, ctx.hoy, topeEmpresaDia(ajustes));
     sendOk(res, {

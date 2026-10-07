@@ -32,6 +32,7 @@ import { peticionDeAccion, tieneMarcadoresPropios, tipoDeCharla } from './charla
 import { buscarFichas, fichaPorId, respuestaFicha, MARGEN_FAQ, UMBRAL_FAQ, UMBRAL_FAQ_DUDA, type FichaPuntuada, FICHAS } from './faq/faq';
 import { AVISO_FESTIVOS, FUENTE_CALENDARIO, esPreguntaDeCalendario, frasePlazo, modeloPorNombre, proximosPlazos } from './faq/calendario';
 import { hrefValido } from './menus';
+import { enMonedaDeCuenta } from './plantillas';
 import { leerAjustes, topeEmpresaDia, type AjustesCarmen } from './ajustes.service';
 import { contarMensaje, leerUso, motivoConfiguracion, motivoSinIA, TEXTO_MOTIVO, type MotivoSinIA } from './presupuesto.service';
 import { preguntarIA, ETIQUETA_IA, type AuditoriaIA } from './llm';
@@ -83,7 +84,16 @@ const TEXTO_SIN_RESPUESTA = 'No tengo una respuesta para eso. Para dudas que no 
 
 // ---------------- Utilidades ----------------
 
-export function intencionPermitida(ctx: Pick<CarmenCtx, 'permisos' | 'puedeNominas'>, i: Intencion): boolean {
+/** IVA, modelos de la AEAT o nóminas: no aplican a una empresa no establecida en España. */
+export function intencionAplicaALaEmpresa(ctx: Pick<CarmenCtx, 'espanola'>, i: Intencion): boolean {
+  return ctx.espanola || (!i.soloEspana && !i.requiereNominas);
+}
+
+export const TEXTO_EMPRESA_EXTRANJERA =
+  'Tu empresa no está establecida en España: no lleva IVA español, ni presenta modelos de la AEAT, ni tiene nóminas en la app.';
+
+export function intencionPermitida(ctx: Pick<CarmenCtx, 'permisos' | 'puedeNominas' | 'espanola'>, i: Intencion): boolean {
+  if (!intencionAplicaALaEmpresa(ctx, i)) return false;
   if (i.requiereNominas && !ctx.puedeNominas) return false;
   return !i.permisos.length || tiene(ctx, ...i.permisos);
 }
@@ -97,7 +107,7 @@ const BOTON_CATALOGO: Boton = { texto: 'Ver todo lo que puedo consultar', accion
 const BOTON_IA: Boton = { texto: 'Ninguna: preguntar a la IA', accion: { tipo: 'ia' } };
 
 /** Intenciones permitidas que se sugieren en una página (para chips y aclaraciones sin ranking). */
-export function intencionesDePagina(ctx: Pick<CarmenCtx, 'permisos' | 'puedeNominas'>, pagina?: string): Intencion[] {
+export function intencionesDePagina(ctx: Pick<CarmenCtx, 'permisos' | 'puedeNominas' | 'espanola'>, pagina?: string): Intencion[] {
   const permitidas = INTENCIONES.filter((i) => intencionPermitida(ctx, i));
   const dePagina = pagina ? permitidas.filter((i) => (i.paginas ?? []).some((p) => pagina === p || pagina.startsWith(`${p}/`))) : [];
   const resto = permitidas.filter((i) => !dePagina.includes(i));
@@ -320,6 +330,9 @@ async function ejecutarIntencion(
   huecos: HuecosResueltos,
   tercero: ResultadoTercero | null = null,
 ): Promise<Resultado> {
+  if (!intencionAplicaALaEmpresa(ctx, intencion)) {
+    return { cuerpo: { origen: 'sistema', intencion: intencion.id, texto: TEXTO_EMPRESA_EXTRANJERA }, contexto: null };
+  }
   if (!intencionPermitida(ctx, intencion)) {
     return {
       cuerpo: {
@@ -404,16 +417,17 @@ async function ejecutarIntencion(
   if (tercero?.tipo === 'ninguno' && ['INT-02', 'INT-03', 'INT-06'].includes(intencion.id)) {
     avisos.push(`No encuentro a «${mostrarTrozo(tercero.trozo)}» entre tus clientes ni tus proveedores; te enseño el total.`);
   }
+  const moneda = (t: string) => enMonedaDeCuenta(t, ctx.monedaCuenta);
   const comunes = {
     intencion: intencion.id,
-    entendido: r.entendido,
-    texto: r.texto,
-    ...(r.kpis ? { kpis: r.kpis } : {}),
+    entendido: r.entendido === undefined ? r.entendido : moneda(r.entendido),
+    texto: r.texto === undefined ? r.texto : moneda(r.texto),
+    ...(r.kpis ? { kpis: r.kpis.map((k) => ({ ...k, valor: moneda(k.valor), ...(k.detalle ? { detalle: moneda(k.detalle) } : {}) })) } : {}),
     ...(r.tabla ? { tabla: r.tabla } : {}),
     ...(r.enlaces?.length ? { enlaces: r.enlaces.filter((e) => hrefValido(e.href)) } : {}),
     ...(r.descargas?.length ? { descargas: r.descargas } : {}),
     ...(r.botones?.length ? { botones: r.botones } : {}),
-    ...(avisos.length ? { avisos } : {}),
+    ...(avisos.length ? { avisos: avisos.map(moneda) } : {}),
     huecos: entrada,
   };
   const contexto: ContextoSesion = { intencion: intencion.id, huecos: entrada, en: new Date().toISOString() };
@@ -500,7 +514,16 @@ async function responderConIA(
   const turnos = sesion
     ? (await turnosParaIA(ctx, sesion.id, conservarDias)).map((t) => ({ pregunta: depurarParaIA(t.pregunta, terceros), respuesta: depurarParaIA(t.respuesta, terceros) }))
     : [];
-  const r = await preguntarIA({ companyId: ctx.companyId, userId: ctx.userId, hoy: ctx.hoy, topeEmpresa, pregunta, fichas: fichas.map((f) => f.ficha), turnos });
+  const r = await preguntarIA({
+    companyId: ctx.companyId,
+    userId: ctx.userId,
+    hoy: ctx.hoy,
+    topeEmpresa,
+    pregunta,
+    fichas: fichas.map((f) => f.ficha),
+    turnos,
+    empresaEspanola: ctx.espanola,
+  });
   const botonesFichas = fichas.slice(0, 3).map((f) => botonFicha(f.ficha));
   switch (r.tipo) {
     case 'ok':
@@ -610,7 +633,7 @@ async function noEraEsto(ctx: CarmenCtx, entrada: EntradaCarmen, descartada: str
   const n = normalizar(entrada.message);
   const h = await extraerHuecos(ctx, n);
   const ranking = clasificar(h.textoClasificar, h.senales, entrada.currentPage, ctx.hoy).filter((p) => p.intencion.id !== descartada);
-  const fichas = buscarFichas(entrada.message, ctx.hoy, 3);
+  const fichas = buscarFichas(entrada.message, ctx.hoy, 3, ctx.espanola);
   const deDatos = (ranking[0]?.puntuacion ?? 0) >= UMBRAL_DATOS || tieneMarcadoresPropios(n.texto) || nombraTercero(h, n.texto);
   const disp = deDatos || contarPalabras(entrada.message) < PALABRAS_MIN_IA ? null : await disponibilidadIA(ctx, ajustes);
   const texto = fichas.length || ranking.some((p) => p.puntuacion > 0.15)
@@ -640,7 +663,7 @@ async function responderAccion(ctx: CarmenCtx, entrada: EntradaCarmen, sesion: S
       return ejecutarIntencion(ctx, intencion, { ...previos, terceroId: accion.terceroId, rol: accion.rol });
     }
     case 'faq': {
-      const ficha = fichaPorId(accion.id, ctx.hoy);
+      const ficha = fichaPorId(accion.id, ctx.hoy, ctx.espanola);
       if (!ficha) return { cuerpo: aclaracion(ctx, 'Esa ficha ya no está disponible.', { pagina: entrada.currentPage }) };
       return { cuerpo: respuestaFicha(ficha), contexto: null };
     }
@@ -653,7 +676,7 @@ async function responderAccion(ctx: CarmenCtx, entrada: EntradaCarmen, sesion: S
       const n = normalizar(entrada.message);
       const h = await extraerHuecos(ctx, n);
       const ranking = clasificar(h.textoClasificar, h.senales, entrada.currentPage, ctx.hoy);
-      const fichas = buscarFichas(entrada.message, ctx.hoy, 3);
+      const fichas = buscarFichas(entrada.message, ctx.hoy, 3, ctx.espanola);
       // La guarda de datos propios vale también para el botón: una pregunta de datos nunca va a la IA.
       if ((ranking[0]?.puntuacion ?? 0) >= UMBRAL_DATOS || tieneMarcadoresPropios(n.texto) || nombraTercero(h, n.texto)) {
         return { cuerpo: aclaracion(ctx, 'Eso es una pregunta sobre tus datos, y a la IA no le paso datos de tu empresa. Prueba con una de estas consultas:', { ranking, fichas, pagina: entrada.currentPage }) };
@@ -702,6 +725,8 @@ export async function responder(ctx: CarmenCtx, entrada: EntradaCarmen, sesion: 
   // 5a. Plazos de un modelo: se calculan con la tabla de plazos (sin IA).
   if (esPreguntaDeCalendario(n.texto) && !h.senales.has('__tercero') && !h.senales.has('__numeroFactura')) {
     const modelo = h.resueltos.modelo ?? modeloPorNombre(n.texto);
+    // Una empresa no establecida en España no presenta modelos de la AEAT.
+    if (modelo && !ctx.espanola) return { cuerpo: { origen: 'sistema', texto: TEXTO_EMPRESA_EXTRANJERA }, contexto: null };
     if (modelo) {
       const cal = await respuestaCalendario(ctx, modelo);
       if (cal) return { cuerpo: cal, contexto: null };
@@ -724,7 +749,7 @@ export async function responder(ctx: CarmenCtx, entrada: EntradaCarmen, sesion: 
     }
     return ejecutarIntencion(ctx, intencion, h.resueltos, h.tercero);
   }
-  const fichas = buscarFichas(mensaje, ctx.hoy, 3);
+  const fichas = buscarFichas(mensaje, ctx.hoy, 3, ctx.espanola);
   const [f1, f2] = fichas;
   const fichaClara = !!f1 && f1.puntuacion >= UMBRAL_FAQ && f1.puntuacion - (f2?.puntuacion ?? 0) >= MARGEN_FAQ;
   if (decision.tipo === 'dudas') {
@@ -879,7 +904,7 @@ export async function catalogoParaPagina(ctx: CarmenCtx, pagina?: string) {
   const prefijo = pagina ? plano(pagina) : '';
   const fichasPagina = FICHAS.filter((f) => f.enlaceApp && prefijo && prefijo.startsWith(f.enlaceApp.href) && f.enlaceApp.href !== '/dashboard');
   const destacadas = (fichasPagina.length ? fichasPagina : FICHAS.filter((f) => f.bloque === 'app'))
-    .filter((f) => fichaPorId(f.id, ctx.hoy))
+    .filter((f) => fichaPorId(f.id, ctx.hoy, ctx.espanola))
     .slice(0, 3)
     .map((f) => ({ id: f.id, pregunta: f.pregunta }));
   return { areas: [...areas.entries()].map(([area, intenciones]) => ({ area, intenciones })), chips, fichas: destacadas };

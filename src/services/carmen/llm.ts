@@ -54,7 +54,13 @@ export interface PeticionIA {
   pregunta: string;
   fichas: FichaFAQ[];
   turnos: TurnoPrevio[];
+  /** false: empresa no establecida en España (sin IVA español, modelos de la AEAT ni nóminas). Por defecto, true. */
+  empresaEspanola?: boolean;
 }
+
+/** Aviso para la IA cuando la empresa no está establecida en España (va en el mensaje, no en el system fijo). */
+export const NOTA_EMPRESA_EXTRANJERA =
+  'La empresa del usuario no está establecida en España: no lleva IVA español, no presenta modelos de la AEAT y no tiene nóminas en la aplicación. No le hables de esas obligaciones como suyas; si pregunta por ellas, díselo y que lo consulte con su asesor.\n\n';
 
 export interface AuditoriaIA {
   companyId: string;
@@ -104,7 +110,7 @@ function textoFicha(f: FichaFAQ, i: number): string {
 }
 
 /** Arma los mensajes recortando hasta caber en MAX_TOKENS_ENTRADA: fuera turnos, luego fichas. */
-export function construirMensajes(p: Pick<PeticionIA, 'hoy' | 'pregunta' | 'fichas' | 'turnos'>): { system: string; messages: Anthropic.MessageParam[]; fichasUsadas: FichaFAQ[] } {
+export function construirMensajes(p: Pick<PeticionIA, 'hoy' | 'pregunta' | 'fichas' | 'turnos' | 'empresaEspanola'>): { system: string; messages: Anthropic.MessageParam[]; fichasUsadas: FichaFAQ[] } {
   const system = systemPrompt();
   let turnos = p.turnos.slice(-2);
   let fichas = p.fichas.slice(0, 3);
@@ -114,7 +120,8 @@ export function construirMensajes(p: Pick<PeticionIA, 'hoy' | 'pregunta' | 'fich
       { role: 'assistant' as const, content: t.respuesta },
     ]);
     const referencia = fichas.length ? `Fichas de referencia:\n${fichas.map(textoFicha).join('\n\n')}\n\n` : 'No hay fichas de referencia para esta pregunta.\n\n';
-    const ultimo: Anthropic.MessageParam = { role: 'user', content: `Hoy es ${fechaES(p.hoy)}.\n\n${referencia}Pregunta: ${p.pregunta}` };
+    const nota = p.empresaEspanola === false ? NOTA_EMPRESA_EXTRANJERA : '';
+    const ultimo: Anthropic.MessageParam = { role: 'user', content: `Hoy es ${fechaES(p.hoy)}.\n\n${nota}${referencia}Pregunta: ${p.pregunta}` };
     return [...historial, ultimo];
   };
   const tamano = (msgs: Anthropic.MessageParam[]) => estimarTokens(system) + msgs.reduce((s, m) => s + estimarTokens(String(m.content)), 0);

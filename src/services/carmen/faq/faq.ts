@@ -27,6 +27,25 @@ export function fichaServible(f: FichaFAQ, hoy: string): boolean {
   return f.revisarAntes > hoy;
 }
 
+/** Bloques que valen también para una empresa no establecida en España. */
+const BLOQUES_COMUNES = new Set<FichaFAQ['bloque']>(['app', 'contabilidad']);
+/** Pregunta, etiquetas o pantalla de IVA, AEAT, modelos, IRPF o nóminas: solo para empresas establecidas en España. */
+const SOLO_ESPANA = /\b(iva|aeat|irpf|n[oó]minas?|hacienda)\b|\bmodelos? \d{3}\b|\b(303|111|115|190|200|347|349|390)\b|\/fiscal\b/i;
+/** Respuesta que explica el IVA español (cuentas 472/477), la AEAT o nóminas (mencionar el IVA como un campo más no basta). */
+const RESPUESTA_SOLO_ESPANA = /\b(aeat|irpf|n[oó]minas?|hacienda)\b|\bmodelos? \d{3}\b|\biva (repercutido|soportado)\b/i;
+
+/**
+ * ¿Sirve la ficha para esta empresa? A una empresa no establecida en España no
+ * se le ofrecen fichas de IVA, IRPF, Sociedades, facturación española, normas
+ * de la AEAT ni nóminas: solo las de uso de la app y de contabilidad que no
+ * hablan de ello.
+ */
+export function fichaParaEmpresa(f: FichaFAQ, espanola: boolean): boolean {
+  if (espanola) return true;
+  if (!BLOQUES_COMUNES.has(f.bloque)) return false;
+  return !SOLO_ESPANA.test([f.pregunta, ...f.etiquetas, f.enlaceApp?.href ?? ''].join(' ')) && !RESPUESTA_SOLO_ESPANA.test(f.respuesta);
+}
+
 let indice: { dia: string; bm25: IndiceBM25 } | null = null;
 
 function indiceDelDia(hoy: string): IndiceBM25 {
@@ -46,16 +65,17 @@ export interface FichaPuntuada {
   puntuacion: number;
 }
 
-export function buscarFichas(pregunta: string, hoy: string, max = 3): FichaPuntuada[] {
+export function buscarFichas(pregunta: string, hoy: string, max = 3, espanola = true): FichaPuntuada[] {
   return indiceDelDia(hoy)
-    .buscar(pregunta, max)
+    .buscar(pregunta, espanola ? max : FICHAS.length)
     .map((r) => ({ ficha: FICHAS.find((f) => f.id === r.id)!, puntuacion: r.puntuacion }))
-    .filter((r) => r.ficha && r.puntuacion > 0);
+    .filter((r) => r.ficha && r.puntuacion > 0 && fichaParaEmpresa(r.ficha, espanola))
+    .slice(0, max);
 }
 
-export function fichaPorId(id: string, hoy: string): FichaFAQ | null {
+export function fichaPorId(id: string, hoy: string, espanola = true): FichaFAQ | null {
   const f = FICHAS.find((x) => x.id === id);
-  return f && fichaServible(f, hoy) ? f : null;
+  return f && fichaServible(f, hoy) && fichaParaEmpresa(f, espanola) ? f : null;
 }
 
 /** Respuesta con una ficha: el texto, su fuente y la fecha en que se verificó. */

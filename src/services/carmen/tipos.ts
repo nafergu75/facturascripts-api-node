@@ -124,6 +124,13 @@ export interface CarmenCtx {
   puedeNominas: boolean;
   /** Hoy en hora peninsular, AAAA-MM-DD. */
   hoy: string;
+  /**
+   * Empresa establecida en España (perfilEmpresa). Si no lo está, no lleva IVA
+   * español, ni modelos de la AEAT, ni nóminas: Carmen no los ofrece.
+   */
+  espanola: boolean;
+  /** Moneda de la contabilidad (ISO 4217): la de todos los importes que enseña Carmen. */
+  monedaCuenta: string;
 }
 
 /** Periodo resuelto: fechas incluidas y una etiqueta para el texto. */

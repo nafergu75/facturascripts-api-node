@@ -38,6 +38,8 @@ export interface Intencion {
   area: AreaIntencion;
   permisos: string[];
   requiereNominas?: boolean;
+  /** IVA español o modelos de la AEAT: no se ofrece a una empresa no establecida en España. */
+  soloEspana?: boolean;
   conceptos: { obligatorios: string[][]; excluyentes?: string[] };
   huecos: DefHueco[];
   /** Prefijos de ruta donde se sugiere (y donde suma 0,10 al clasificar). */
@@ -367,6 +369,7 @@ export const INTENCIONES: Intencion[] = [
     pregunta: '¿Cuánto IVA pago este trimestre?',
     area: 'impuestos',
     permisos: ['impuestos:read'],
+    soloEspana: true,
     conceptos: {
       obligatorios: [
         ['iva', '303', 'a devolver', 'sale a pagar'],
@@ -396,6 +399,7 @@ export const INTENCIONES: Intencion[] = [
     pregunta: '¿Qué impuestos tengo que presentar?',
     area: 'impuestos',
     permisos: [],
+    soloEspana: true,
     conceptos: {
       obligatorios: [
         ['impuesto*', 'modelos', 'presentar', 'declaracion*', 'hacienda', 'obligaciones fiscales', 'caducado*', 'plazos', 'calendario fiscal'],

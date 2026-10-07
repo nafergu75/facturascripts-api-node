@@ -427,6 +427,22 @@ describe('contrato de cifras', () => {
     expect(!soloGastos.sinPermiso && soloGastos.kpis?.map((k) => k.etiqueta)).toEqual(['Gastado sin IVA', 'Gastos en 2025']);
   });
 
+  it('empresa no establecida en España: INT-09 sin filas de IVA e INT-39 sin impuestos ni plazos de la AEAT', async () => {
+    const extranjera = construirContexto(ROLES.admin, 'E1', HOY, { espanola: false, monedaCuenta: 'USD' });
+    const r = await intencionPorId('INT-09')!.ejecutar(extranjera, { periodo: resolverCodigoPeriodo('este-trimestre', HOY)! });
+    if (!conCifras(r) || r.sinPermiso) throw new Error('sin cifras');
+    expect(r.kpis?.map((k) => k.etiqueta)).toEqual(['Facturado sin impuestos', 'Mismo periodo de 2025', 'Gastado sin impuestos', 'Gastos en 2025']);
+    expect(r.tabla?.filas.map((f) => f.celdas[0])).toEqual(['Ventas (base imponible)', 'Gastos (base imponible)']);
+    expect(r.texto).not.toMatch(/IVA/);
+    mockCalendario.mockClear();
+    const resumen = await intencionPorId('INT-39')!.ejecutar(extranjera, {});
+    if (resumen.sinPermiso) throw new Error('sin permiso');
+    expect(resumen.kpis?.map((k) => k.etiqueta)).not.toContain('Impuestos con plazo pasado');
+    expect(resumen.texto).not.toMatch(/plazo fiscal|modelo|IVA/);
+    expect((resumen.botones ?? []).some((b) => b.accion.tipo === 'intencion' && b.accion.id === 'INT-30')).toBe(false);
+    expect(mockCalendario).not.toHaveBeenCalled();
+  });
+
   it('INT-13: busca sin ceros a la izquierda y da el estado de cobro de listarCobros', async () => {
     expect(claveNumeroFactura('2026-0045')).toBe(claveNumeroFactura('2026-45'));
     expect(claveNumeroFactura('a-012')).toBe('A12');

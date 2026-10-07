@@ -19,6 +19,15 @@ export function eur(n: number): string {
   return `${v < 0 ? '-' : ''}${ent.replace(/\B(?=(\d{3})+(?!\d))/g, '.')},${dec} €`;
 }
 
+/**
+ * Los importes salen siempre de las columnas en moneda de cuenta. Si la
+ * contabilidad no va en euros (empresa de fuera de la UE, en dólares), el «€»
+ * de eur() se cambia por el código de su moneda: «1.234,50 USD».
+ */
+export function enMonedaDeCuenta(texto: string, moneda: string): string {
+  return moneda === 'EUR' ? texto : texto.replace(/(\d,\d{2}) €/g, `$1 ${moneda}`);
+}
+
 /** AAAA-MM-DD → DD/MM/AAAA. */
 export function fechaES(iso: string): string {
   return /^\d{4}-\d{2}-\d{2}/.test(iso) ? `${iso.slice(8, 10)}/${iso.slice(5, 7)}/${iso.slice(0, 4)}` : iso;
