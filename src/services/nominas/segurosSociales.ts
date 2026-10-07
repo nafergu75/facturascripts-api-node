@@ -11,7 +11,11 @@
  *   Haber 572  el importe del RLC (o 570 si fuera en efectivo)
  *
  * La complementaria (tipo COMPLEMENTARIA, p. ej. por una orden de cotizacion
- * con efectos atrasados) no tiene nominas detras: todo su importe va a la 642.
+ * con efectos atrasados) va a la 642, salvo la parte que corresponde a nominas
+ * contabilizadas DESPUES de pagar el RLC normal (un trabajador que llego tarde):
+ * esa SS esta en la 476 y la complementaria la salda (si no, la 642 saldria
+ * doble y la 476 quedaria acreedora para siempre). Lo que cubre cada pago es su
+ * totalPrevisto: lo pendiente es lo de las nominas menos lo ya cubierto.
  * La compensacion de IT va a la 471: la prestacion de IT en pago delegado tiene
  * que estar en la 471 (ver pendientes del ADR-004).
  */
@@ -89,17 +93,68 @@ export async function previstoSegurosSociales(companyId: string, ejercicio: numb
   return { nominas: contabilizadas.length, borradores, cuotaObrera: euros(obrera), cuotaPatronal: euros(patronal), totalPrevisto: euros(obrera + patronal) };
 }
 
+type Previsto = Awaited<ReturnType<typeof previstoSegurosSociales>>;
+
+/** Lo que ya cubren los pagos de seguros sociales del mes (su totalPrevisto), en centimos. */
+function cubiertoPorPagos(filasMes: FilaSS[], excluirId?: string | null): number {
+  return filasMes.filter((f) => f.estado === 'PAGADA' && f.id !== excluirId).reduce((a, f) => a + aCentimos(Number(f.totalPrevisto)), 0);
+}
+
+/**
+ * Lo previsto que le toca a una liquidacion sin pagar, en centimos: la SS de
+ * las nominas contabilizadas que aun no cubre ningun pago. La complementaria
+ * solo salda 476 si el RLC normal ya esta pagado (lo que queda son nominas
+ * contabilizadas despues); si no, todo su importe va a la 642.
+ */
+export function previstoPendienteCentimos(
+  tipo: TipoLiquidacionSS,
+  previsto: { totalPrevisto: number },
+  filasMes: Array<{ id: string; tipo: string; estado: string; totalPrevisto: unknown }>,
+  filaId?: string | null,
+): number {
+  const normalPagada = filasMes.some((f) => f.tipo === 'NORMAL' && f.estado === 'PAGADA');
+  if (tipo === 'COMPLEMENTARIA' && !normalPagada) return 0;
+  const cubierto = filasMes.filter((f) => f.estado === 'PAGADA' && f.id !== filaId).reduce((a, f) => a + aCentimos(Number(f.totalPrevisto)), 0);
+  return Math.max(0, aCentimos(previsto.totalPrevisto) - cubierto);
+}
+
+/**
+ * Cuota obrera y patronal de lo pendiente: lo de las nominas menos lo que ya se
+ * pago de cada una (cada pago guarda su reparto).
+ */
+function repartoCuotas(previsto: Previsto, pendiente: number, filasMes: FilaSS[] = [], filaId?: string | null): { cuotaObrera: number; cuotaPatronal: number } {
+  const pagadas = filasMes.filter((f) => f.estado === 'PAGADA' && f.id !== filaId);
+  const yaObrera = pagadas.reduce((a, f) => a + aCentimos(Number(f.cuotaObrera)), 0);
+  const obrera = Math.min(pendiente, Math.max(0, aCentimos(previsto.cuotaObrera) - yaObrera));
+  return { cuotaObrera: euros(obrera), cuotaPatronal: euros(pendiente - obrera) };
+}
+
+/** Seguros sociales del mes ya pagados: si el RLC normal lo esta y cuanto cubren los pagos (para nominas.service). */
+export async function coberturaSegurosSociales(companyId: string, ejercicio: number, mes: number): Promise<{ normalPagada: boolean; cubierto: number; previsto: number }> {
+  const [filas, previsto] = await Promise.all([
+    prisma.liquidacionSS.findMany({ where: { companyId, ejercicio, mes } }),
+    previstoSegurosSociales(companyId, ejercicio, mes),
+  ]);
+  return {
+    normalPagada: filas.some((f) => f.tipo === 'NORMAL' && f.estado === 'PAGADA'),
+    cubierto: euros(cubiertoPorPagos(filas)),
+    previsto: previsto.totalPrevisto,
+  };
+}
+
 function aDTO(
   ejercicio: number,
   mes: number,
   tipo: TipoLiquidacionSS,
   fila: FilaSS | null,
-  previsto: Awaited<ReturnType<typeof previstoSegurosSociales>>,
+  previsto: Previsto,
   numeroPago: string | null,
+  filasMes: FilaSS[],
 ): SegurosSocialesMes {
   const pagada = fila?.estado === 'PAGADA';
-  // Pagada: lo que se pago (foto del momento). Pendiente: lo de las nominas de hoy.
-  const base = tipo === 'COMPLEMENTARIA' ? { cuotaObrera: 0, cuotaPatronal: 0, totalPrevisto: 0 } : previsto;
+  // Pagada: lo que se pago (foto del momento). Pendiente: lo de las nominas de hoy que no cubre otro pago.
+  const pendiente = pagada ? 0 : previstoPendienteCentimos(tipo, previsto, filasMes, fila?.id);
+  const base = { ...repartoCuotas(previsto, pendiente, filasMes, fila?.id), totalPrevisto: euros(pendiente) };
   const cuotaObrera = pagada ? Number(fila!.cuotaObrera) : base.cuotaObrera;
   const cuotaPatronal = pagada ? Number(fila!.cuotaPatronal) : base.cuotaPatronal;
   const totalPrevisto = pagada ? Number(fila!.totalPrevisto) : base.totalPrevisto;
@@ -146,11 +201,12 @@ function tipoValido(tipo: unknown): TipoLiquidacionSS {
 /** Seguros sociales de un mes: lo previsto por las nominas, el RLC y su pago. */
 export async function obtenerSegurosSociales(companyId: string, ejercicio: number, mes: number, tipoEntrada?: unknown): Promise<SegurosSocialesMes> {
   const tipo = tipoValido(tipoEntrada);
-  const [fila, previsto] = await Promise.all([
-    prisma.liquidacionSS.findUnique({ where: { companyId_ejercicio_mes_tipo: { companyId, ejercicio, mes, tipo } } }),
+  const [filasMes, previsto] = await Promise.all([
+    prisma.liquidacionSS.findMany({ where: { companyId, ejercicio, mes } }),
     previstoSegurosSociales(companyId, ejercicio, mes),
   ]);
-  return aDTO(ejercicio, mes, tipo, fila, previsto, await numeroAsiento(fila?.asientoPagoId));
+  const fila = filasMes.find((f) => f.tipo === tipo) ?? null;
+  return aDTO(ejercicio, mes, tipo, fila, previsto, await numeroAsiento(fila?.asientoPagoId), filasMes);
 }
 
 /** Los doce meses del ejercicio (y las complementarias que haya). */
@@ -176,10 +232,11 @@ export async function listarSegurosSociales(companyId: string, ejercicio: number
   };
   const out: SegurosSocialesMes[] = [];
   for (let mes = 1; mes <= 12; mes++) {
-    const fila = filas.find((f) => f.mes === mes && f.tipo === 'NORMAL') ?? null;
-    out.push(aDTO(ejercicio, mes, 'NORMAL', fila, previstoMes(mes), fila?.asientoPagoId ? (numeros.get(fila.asientoPagoId) ?? null) : null));
-    for (const c of filas.filter((f) => f.mes === mes && f.tipo === 'COMPLEMENTARIA')) {
-      out.push(aDTO(ejercicio, mes, 'COMPLEMENTARIA', c, previstoMes(mes), c.asientoPagoId ? (numeros.get(c.asientoPagoId) ?? null) : null));
+    const delMes = filas.filter((f) => f.mes === mes);
+    const fila = delMes.find((f) => f.tipo === 'NORMAL') ?? null;
+    out.push(aDTO(ejercicio, mes, 'NORMAL', fila, previstoMes(mes), fila?.asientoPagoId ? (numeros.get(fila.asientoPagoId) ?? null) : null, delMes));
+    for (const c of delMes.filter((f) => f.tipo === 'COMPLEMENTARIA')) {
+      out.push(aDTO(ejercicio, mes, 'COMPLEMENTARIA', c, previstoMes(mes), c.asientoPagoId ? (numeros.get(c.asientoPagoId) ?? null) : null, delMes));
     }
   }
   return out;
@@ -240,10 +297,13 @@ export async function pagarSegurosSociales(
     create: { companyId, ejercicio, mes, tipo, fechaCargoPrevista: fechaCargoPorDefecto(ejercicio, mes) },
   });
   if (fila.estado === 'PAGADA') throw conflict(`Los seguros sociales ${tipo === 'COMPLEMENTARIA' ? 'complementarios ' : ''}de ${periodoTexto(ejercicio, mes)} ya están pagados.`);
+  const filasMes = await prisma.liquidacionSS.findMany({ where: { companyId, ejercicio, mes } });
 
   const { cuentas } = await cuentasNominasEmpresa(companyId);
   const t = await resolverMedioPago(companyId, opciones, cuentas);
-  const totalPrevisto = tipo === 'COMPLEMENTARIA' ? 0 : aCentimos(previsto.totalPrevisto);
+  // Lo que salda la 476: la SS de las nominas que aun no cubre otro pago del mes.
+  const totalPrevisto = previstoPendienteCentimos(tipo, previsto, filasMes, fila.id);
+  const cuotas = repartoCuotas(previsto, totalPrevisto, filasMes, fila.id);
   const compensacionIt = aCentimos(opciones.compensacionIt ?? Number(fila.compensacionIt ?? 0));
   const rlcGuardado = fila.totalRlc === null || fila.totalRlc === undefined ? null : aCentimos(Number(fila.totalRlc));
   const rlc =
@@ -282,8 +342,8 @@ export async function pagarSegurosSociales(
         where: { id: fila.id, estado: 'PENDIENTE' },
         data: {
           estado: 'PAGADA',
-          cuotaObrera: tipo === 'COMPLEMENTARIA' ? 0 : previsto.cuotaObrera,
-          cuotaPatronal: tipo === 'COMPLEMENTARIA' ? 0 : previsto.cuotaPatronal,
+          cuotaObrera: cuotas.cuotaObrera,
+          cuotaPatronal: cuotas.cuotaPatronal,
           totalPrevisto: euros(totalPrevisto),
           totalRlc: euros(rlc),
           compensacionIt: euros(compensacionIt),

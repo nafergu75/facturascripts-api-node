@@ -356,7 +356,8 @@ async function calcularCasillas(companyId: string, fila: FilaModelo): Promise<{ 
           suma_111_del_ano: m.cuadre111.total,
           cuadra_con_111: m.cuadre111.coincide ? 'si' : 'no',
         },
-        datos: { ejercicio: m.ejercicio, totales: m.totales, cuadre111: m.cuadre111, avisos: m.avisos },
+        // El desglose por trimestres son totales (sin datos de cada perceptor).
+        datos: { ejercicio: m.ejercicio, totales: m.totales, cuadre111: m.cuadre111, desglose: m.desglose, avisos: m.avisos },
       };
     }
     case '200': {

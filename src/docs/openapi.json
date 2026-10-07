@@ -5985,7 +5985,7 @@
         "tags": [
           "Nominas"
         ],
-        "summary": "Modelo 111 (1T-4T, 01-12): casillas 01-09, 28 y 30 con la misma fuente que Impuestos (nominas por fecha de pago, perceptores distintos) y su pago",
+        "summary": "Modelo 111 (1T-4T, 01-12): casillas 01-09, 28 y 30 con la misma fuente que Impuestos (nominas por fecha de pago, perceptores distintos), su pago y lo que se paga (aPagar: lo presentado o editado en Impuestos manda sobre el calculo)",
         "security": [
           {
             "bearerAuth": []
@@ -6029,7 +6029,7 @@
         "tags": [
           "Nominas"
         ],
-        "summary": "Pagar el 111: 4751 de trabajo y de profesionales contra 572/570",
+        "summary": "Pagar el 111 (lo presentado o, si no, lo calculado): 4751 de trabajo, la del IRPF del resumen antiguo y la de profesionales contra 572/570. 409 si hay nominas del periodo en borrador",
         "security": [
           {
             "bearerAuth": []
@@ -6076,7 +6076,8 @@
                   "cuentaBancariaId": "...",
                   "caja": false,
                   "movimientoId": "...",
-                  "cuentaProfesionales": "475100"
+                  "cuentaProfesionales": "475100",
+                  "cuentaResumenAntiguo": "475100"
                 }
               }
             }
@@ -6279,6 +6280,50 @@
           },
           {
             "name": "movimientoId",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/companies/{companyId}/nominas/conciliacion/cargos": {
+      "get": {
+        "tags": [
+          "Nominas"
+        ],
+        "summary": "Cargos del extracto sin conciliar por un importe exacto (para pagar eligiendo el cargo, que queda conciliado)",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "parameters": [
+          {
+            "name": "companyId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "importe",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "fecha",
             "in": "query",
             "required": false,
             "schema": {

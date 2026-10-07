@@ -389,6 +389,9 @@ export async function calcularModelo111(companyId: string, periodo: PeriodoFisca
     nPerceptoresActividades: actividades.perceptores,
     percepcionesActividades: actividades.percepciones,
     retencionesActividades: actividades.retenciones,
+    actividadesPorTipo: actividades.porTipo,
+    resumenAntiguo: trabajo.resumenAntiguo,
+    borradores: trabajo.borradores,
     totalRetenciones,
     resultadoIngresar: totalRetenciones, // [30] = [28] - resultados anteriores [29] (0)
     avisos: trabajo.avisos,

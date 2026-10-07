@@ -98,6 +98,23 @@ export async function deleteObjects(keys: string[]): Promise<void> {
   }
 }
 
+/**
+ * Borra un objeto por la REFERENCIA que devolvio putObject (URL del blob o ruta
+ * relativa 'storage/...'). Una ruta local fuera de storage/ o una URL publica
+ * antigua no se tocan.
+ */
+export async function deleteObject(ref: string): Promise<void> {
+  if (/^https?:\/\//i.test(ref)) {
+    if (!usarBlob || !/^https:\/\/[^/]+\.blob\.vercel-storage\.com\//i.test(ref)) return;
+    const { del } = await import('@vercel/blob');
+    await del(ref, { token: BLOB_TOKEN });
+    return;
+  }
+  const normal = path.posix.normalize(ref.replace(/\\/g, '/'));
+  if (!normal.startsWith('storage/') || normal.includes('..')) return;
+  await fsp.rm(path.join(process.cwd(), normal), { force: true });
+}
+
 /** Objetos bajo un prefijo de clave, con su fecha de subida. */
 export async function listObjects(prefix: string): Promise<Array<{ key: string; fecha: Date }>> {
   if (usarBlob) {

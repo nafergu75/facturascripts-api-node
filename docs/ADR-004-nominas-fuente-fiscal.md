@@ -28,11 +28,17 @@ Hasta ahora había dos cálculos del 111 que se pisaban en `ModeloImpuesto`:
    - **Por fecha de pago** (art. 78.1 RIRPF: la obligación de retener nace al
      pagar). Una nómina de diciembre pagada en enero va al 1T siguiente. Al
      registrar el pago de los líquidos, la fecha de pago de la nómina pasa a ser
-     la del pago.
+     la del pago, con dos excepciones para no declarar dos veces el mismo IRPF:
+     si eso la saca de un trimestre cuyo 111 ya está presentado o pagado, se
+     mantiene la fecha y se avisa (hay que corregir con una complementaria); si
+     la mete en uno, 409. Al anular el pago vuelve a la fecha de antes
+     (`Nomina.fechaPagoAnterior`), con la misma regla. Editar la fecha de pago
+     de un borrador entre trimestres con el 111 presentado también da 409.
    - Casillas 01 y 04: perceptores distintos por NIF. 02: bruto dinerario más
-     indemnización sujeta (sin dietas ni indemnizaciones exentas). 05:
-     valoración de la especie más el ingreso a cuenta no repercutido (art. 43.2
-     LIRPF). 06: ingresos a cuenta.
+     indemnización sujeta (sin dietas ni indemnizaciones exentas). 05: solo la
+     valoración de la especie, como el campo de valoración del 190 (antes
+     sumaba el ingreso a cuenta no repercutido y los cuatro 111 no cuadraban
+     con el 190). 06: ingresos a cuenta.
    - Profesionales (07-09): facturas de gasto confirmadas con retención, por
      fecha de factura, como antes.
    - El resumen mensual antiguo (`NominaResumen`) solo cuenta en los meses sin
@@ -46,7 +52,13 @@ Hasta ahora había dos cálculos del 111 que se pisaban en `ModeloImpuesto`:
    trabajo; L.01 dietas exentas; L.05 indemnización por despido exenta; G
    profesionales, subclave 03 si la retención es del 7 %). Gastos deducibles =
    SS del trabajador. Comprueba que sus retenciones coinciden con la suma de
-   los cuatro 111. El detalle por perceptor solo se ve con `nominas:read`; en
+   los cuatro 111: con lo PRESENTADO (casillas guardadas) en los trimestres
+   presentados y con el cálculo en los demás (si se recalculara todo, siempre
+   coincidiría). El desglose por trimestres que enseñan las pantallas sale de
+   la misma fuente que sus totales (sin el resumen antiguo). Los atrasos de
+   otro año llevan su ejercicio de devengo (columna del Excel y campo de la
+   nómina) y van en un registro aparte. El detalle por perceptor solo se ve
+   con `nominas:read`; en
    `ModeloImpuesto`, en la pantalla de modelos fiscales y en el calendario del
    módulo Impuestos (vence el 31 de enero) quedan solo totales, y el fichero no
    se descarga desde Impuestos.
@@ -67,8 +79,13 @@ Hasta ahora había dos cálculos del 111 que se pisaban en `ModeloImpuesto`:
    - Seguros sociales (`SS`, tabla `LiquidacionSS`): 476 por lo previsto en las
      nóminas, la diferencia con el RLC a la 642 y la IT compensada a la 471,
      contra 572/570.
-   - 111 (`TES`, `invoiceType` `MODELO_111`): 4751 de trabajo y de
-     profesionales contra 572/570.
+   - 111 (`TES`, `invoiceType` `MODELO_111`): 4751 de trabajo, la del IRPF
+     del resumen antiguo y la de profesionales contra 572/570. Se paga lo
+     presentado (o editado a mano en Impuestos) y, si no, el cálculo. No se paga
+     con nóminas del periodo en borrador (su IRPF no está en la 4751).
+   - Seguros sociales complementarios: si el RLC normal ya está pagado, la SS de
+     las nóminas contabilizadas después (un trabajador que llegó tarde) sale de
+     la 476, no de la 642. No se anula una nómina cuya SS ya cubre un pago.
    - Con `movimientoId` se concilia un cargo del extracto por el mismo importe:
      no se contabiliza dos veces.
    - Anular: con el periodo abierto el asiento pasa a `REVERSED`; con el
@@ -76,6 +93,22 @@ Hasta ahora había dos cálculos del 111 que se pisaban en `ModeloImpuesto`:
 7. **PDF de la gestoría** en el almacenamiento privado y en `DocumentoArchivo`
    con tipo `nomina` o `seguros_sociales` (SHA-256 contra duplicados). Solo se
    listan y descargan por `/nominas`. El archivo de facturas los excluye.
+   Borrar un PDF (o sustituirlo por otro recibo) lo borra del almacenamiento y
+   ya no se descarga; la fila queda como anulada o reemplazada.
+8. **La contabilidad no lleva el nombre ni el NIF de los trabajadores.** El
+   diario, el mayor, el sumas y saldos y el plan de cuentas los ve cualquiera
+   con `contabilidad:read` (ventas, tesorería, solo-lectura), que no tiene
+   `nominas:read`. Los asientos se describen por la subcuenta 465 del
+   trabajador ("Nómina 05/2026 - trabajador 4650001") y la subcuenta se llama
+   "Remuneraciones pendientes - trabajador 4650001". Quién es cada subcuenta se
+   ve en Nóminas > Empleados. Los importes por subcuenta siguen en el diario
+   (son seudónimos, no anónimos): quitarlos exigiría agrupar las nóminas en un
+   asiento por mes.
+9. **Despliegue**: el 111 y el 190 de todas las empresas leen las tablas
+   `Nomina` y `Empleado`. Antes de subir el código hay que aplicar el esquema
+   en producción (`scripts/aplicar-esquema-prod.sh`, `prisma db push`). Si no
+   se ha hecho, el 111 y el 190 siguen funcionando sin nóminas y con un aviso
+   (se captura P2021/P2022) en lugar de responder 500.
 
 ## Consecuencias
 

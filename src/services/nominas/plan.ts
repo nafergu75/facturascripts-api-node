@@ -1,15 +1,16 @@
 /**
  * Cuentas de las nominas en el plan de la empresa: longitud de los codigos,
  * subcuentas de 640/642/476/4751... y la subcuenta 465 propia de cada
- * trabajador (colgando de la 465, con su nombre), igual que la puesta en
- * marcha da de alta las subcuentas que trae un fichero.
+ * trabajador (colgando de la 465), igual que la puesta en marcha da de alta las
+ * subcuentas que trae un fichero. La 465 del trabajador NO lleva su nombre: el
+ * plan lo ve cualquiera con contabilidad:read (ver etiquetaTrabajador).
  */
 import { randomUUID } from 'crypto';
 import { prisma, type TransaccionBD } from '../../config/database';
 import type { CuentasNominas } from '../../domain/nominas.model';
 import { obtenerReglas } from '../reglasContables.service';
 import { crearCuentasNuevas, prepararPlanEmpresa, type CuentaNueva } from '../puestaEnMarcha/planCuentas';
-import { longitudMasHabitual, NOMBRES_CUENTAS, resolverCuentasNominas, siguienteSubcuenta465 } from './calculo';
+import { conceptoSubcuenta465, longitudMasHabitual, NOMBRES_CUENTAS, resolverCuentasNominas, siguienteSubcuenta465 } from './calculo';
 
 /**
  * Longitud de los codigos de la empresa: la mas habitual entre los de sus
@@ -105,7 +106,7 @@ export interface TrabajadorPlan {
 
 /**
  * Subcuenta 465 del trabajador: la que ya tiene o una nueva (siguiente libre),
- * creada en el plan con su nombre y guardada en su ficha. Dentro de la
+ * creada en el plan (sin su nombre) y guardada en su ficha. Dentro de la
  * transaccion: si dos procesos eligen el mismo codigo, el indice unico del plan
  * hace fallar a uno y la transaccion se reintenta.
  */
@@ -119,18 +120,18 @@ export async function asegurarSubcuenta465(
 ): Promise<string> {
   if (trabajador.subcuenta465) {
     const existe = await tx.chartOfAccounts.findFirst({ where: { companyId, codigo: trabajador.subcuenta465 }, select: { id: true } });
-    if (!existe) await crearSubcuenta465(tx, companyId, trabajador.subcuenta465, trabajador.nombreCompleto);
+    if (!existe) await crearSubcuenta465(tx, companyId, trabajador.subcuenta465);
     return trabajador.subcuenta465;
   }
   const codigo = siguienteSubcuenta465(ocupadas, longitud, cuentas);
   ocupadas.add(codigo);
-  await crearSubcuenta465(tx, companyId, codigo, trabajador.nombreCompleto);
+  await crearSubcuenta465(tx, companyId, codigo);
   await tx.empleado.update({ where: { id: trabajador.id }, data: { subcuenta465: codigo } });
   trabajador.subcuenta465 = codigo;
   return codigo;
 }
 
-async function crearSubcuenta465(tx: TransaccionBD, companyId: string, codigo: string, nombre: string): Promise<void> {
+async function crearSubcuenta465(tx: TransaccionBD, companyId: string, codigo: string): Promise<void> {
   const padre =
     (await tx.chartOfAccounts.findFirst({ where: { companyId, codigo: '465' } })) ??
     (await tx.chartOfAccounts.findFirst({ where: { companyId, codigo: { in: ['46', '4'] } }, orderBy: { codigo: 'desc' } }));
@@ -139,7 +140,7 @@ async function crearSubcuenta465(tx: TransaccionBD, companyId: string, codigo: s
       id: randomUUID(),
       companyId,
       codigo,
-      nombre: nombre.slice(0, 190) || `Trabajador ${codigo}`,
+      nombre: conceptoSubcuenta465(codigo),
       grupo: 4,
       nivel: (padre?.nivel ?? 3) + 1,
       naturaleza: padre?.naturaleza ?? 'PASIVO',
@@ -160,10 +161,4 @@ export async function subcuentas465Ocupadas(tx: TransaccionBD, companyId: string
     tx.empleado.findMany({ where: { companyId, subcuenta465: { not: null } }, select: { subcuenta465: true } }),
   ]);
   return new Set([...plan.map((c) => c.codigo), ...empleados.map((e) => e.subcuenta465!)]);
-}
-
-/** Cambia el nombre de la subcuenta 465 del trabajador en el plan (al cambiar su nombre). */
-export async function renombrarSubcuenta465(companyId: string, codigo: string | null, nombre: string): Promise<void> {
-  if (!codigo) return;
-  await prisma.chartOfAccounts.updateMany({ where: { companyId, codigo, esPersonalizadaEmpresa: true }, data: { nombre: nombre.slice(0, 190) } });
 }

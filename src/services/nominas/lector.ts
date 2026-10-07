@@ -39,6 +39,7 @@ export const CAMPOS_FICHERO = [
   'naf',
   'periodo',
   'tipo',
+  'ejercicioDevengo',
   'bruto',
   'especie',
   'ingresoACuenta',
@@ -67,6 +68,7 @@ export const ETIQUETAS_CAMPOS: Record<CampoFichero, string> = {
   naf: 'Nº de afiliación a la SS',
   periodo: 'Mes / periodo',
   tipo: 'Tipo de nómina (ordinaria, extra...)',
+  ejercicioDevengo: 'Ejercicio de devengo (atrasos de otro año)',
   bruto: 'Bruto / total devengado',
   especie: 'Retribución en especie',
   ingresoACuenta: 'Ingreso a cuenta (especie)',
@@ -149,6 +151,7 @@ const PRUEBAS: Array<[CampoFichero, Prueba, Prueba?]> = [
       /^(trabajador|trabajadores|empleado|empleados|nombre|nombre y apellidos|apellidos y nombre|apellidos nombre|nombre apellidos|nombre completo|perceptor|nombre trabajador|nombre del trabajador|nombre empleado|nombre del empleado|trabajador nombre|empleado nombre|razon social)$/.test(t),
   ],
   ['apellido2', (t) => /^(segundo apellido|apellido 2|apellido2|2 apellido)$/.test(t)],
+  ['ejercicioDevengo', (t) => /^(ejercicio|ano|anio|año) (de )?(devengo|atrasos)$|^devengo (ejercicio|ano)$/.test(t)],
   ['apellidos', (t) => /^(apellidos|primer apellido|apellido 1|apellido1|1 apellido|apellido)$/.test(t)],
   [
     'periodo',
@@ -178,6 +181,23 @@ export function mapearTitulosNominas(titulos: string[]): MapeoNominas {
 }
 
 const mapeoUtil = (m: MapeoNominas) => CAMPOS_OBLIGATORIOS.every((c) => m[c] !== undefined);
+
+/**
+ * Fila de titulos mas probable (0-based): la de las 40 primeras con mas titulos
+ * reconocidos, si al menos son dos; -1 si ninguna.
+ */
+export function filaTitulosProbable(filas: unknown[][]): number {
+  let mejor = -1;
+  let puntos = 1;
+  for (let i = 0; i < Math.min(filas.length, 40); i++) {
+    const n = Object.keys(mapearTitulosNominas((filas[i] ?? []).map(normalizarTituloNomina))).length;
+    if (n > puntos) {
+      mejor = i;
+      puntos = n;
+    }
+  }
+  return mejor;
+}
 
 export interface ColumnaFichero {
   indice: number;
@@ -328,6 +348,8 @@ export interface FilaNomina extends ImportesNomina {
   mes: number;
   tipo: TipoNomina;
   porcentajeIrpf: number | null;
+  /** Ejercicio al que corresponden unos atrasos de otro año (190); null si no lo trae. */
+  ejercicioDevengo: number | null;
   /** Coste total que trae el fichero (solo para comprobarlo). */
   costeTotal: number | null;
   cuadre: CuadreNomina;
@@ -398,6 +420,23 @@ function elegirLectura(
   return primera!;
 }
 
+/** Nombre de cada importe en los mensajes (nunca la clave interna de la API). */
+export const ETIQUETAS_IMPORTES: Record<string, string> = {
+  brutoDinerario: 'Bruto dinerario',
+  dietasExentas: 'Dietas exentas',
+  especieValoracion: 'Retribución en especie',
+  ingresoACuenta: 'Ingreso a cuenta',
+  indemnizacionExenta: 'Indemnización exenta',
+  indemnizacionSujeta: 'Indemnización sujeta',
+  ssTrabajador: 'SS del trabajador',
+  irpf: 'IRPF',
+  anticipos: 'Anticipos',
+  embargos: 'Embargos',
+  otrasDeducciones: 'Otras deducciones',
+  liquido: 'Líquido a percibir',
+  ssEmpresa: 'SS de la empresa',
+};
+
 /** Comprueba una nomina ya normalizada y rellena su cuadre, errores y avisos. */
 export function validarFilaNomina(f: FilaNomina): FilaNomina {
   const errores = [...f.errores];
@@ -416,8 +455,23 @@ export function validarFilaNomina(f: FilaNomina): FilaNomina {
     errores.push('Falta el mes de la nómina: añade una columna "Mes" o indícalo al importar.');
   }
   for (const [k, v] of Object.entries(f) as Array<[string, unknown]>) {
-    if (['fila', 'ejercicio', 'mes', 'porcentajeIrpf', 'costeTotal'].includes(k)) continue;
-    if (typeof v === 'number' && (!Number.isFinite(v) || v < 0)) errores.push(`El importe de "${k}" no es válido (${v}).`);
+    if (['fila', 'ejercicio', 'mes', 'porcentajeIrpf', 'costeTotal', 'ejercicioDevengo'].includes(k)) continue;
+    if (typeof v !== 'number' || (Number.isFinite(v) && v >= 0)) continue;
+    if (k === 'liquido' && Number.isFinite(v)) {
+      errores.push(`El líquido a percibir es negativo (${fmtEuros(v)}): suele ser un finiquito o una regularización que deja saldo a favor de la empresa. No se puede importar: regístrala a mano.`);
+    } else {
+      errores.push(`El importe de "${ETIQUETAS_IMPORTES[k] ?? k}" no es válido (${Number.isFinite(v) ? fmtEuros(v) : v}).`);
+    }
+  }
+  if (f.ejercicioDevengo !== null) {
+    if (!Number.isInteger(f.ejercicioDevengo) || f.ejercicioDevengo < 2000 || f.ejercicioDevengo > 2100) {
+      errores.push(`El ejercicio de devengo (${f.ejercicioDevengo}) no es un año válido.`);
+    } else if (Number.isInteger(f.ejercicio) && f.ejercicioDevengo > f.ejercicio) {
+      errores.push(`El ejercicio de devengo (${f.ejercicioDevengo}) es posterior al de la nómina (${f.ejercicio}).`);
+    }
+  }
+  if (f.tipo === 'ATRASOS' && f.ejercicioDevengo === null) {
+    avisos.push('Son atrasos sin ejercicio de devengo: si son de un año anterior, añade la columna "Ejercicio devengo" (el 190 los declara aparte).');
   }
   if (f.porcentajeIrpf !== null && (!Number.isFinite(f.porcentajeIrpf) || f.porcentajeIrpf < 0 || f.porcentajeIrpf > 100)) {
     avisos.push(`El % de IRPF (${f.porcentajeIrpf}) no es válido: no se guardará.`);
@@ -454,22 +508,14 @@ export function leerNominasDeFilas(filas: unknown[][], opciones: OpcionesLectura
       if (!(Number.isInteger(fila) && fila >= -1 && fila < filas.length)) throw badRequest('La fila de títulos indicada no existe en el fichero.');
     } else {
       // La fila de titulos que se detecte (aunque no sea util por si sola), o ninguna.
-      let mejor = -1;
-      let puntos = 1;
-      for (let i = 0; i < Math.min(filas.length, 40); i++) {
-        const n = Object.keys(mapearTitulosNominas((filas[i] ?? []).map(normalizarTituloNomina))).length;
-        if (n > puntos) {
-          mejor = i;
-          puntos = n;
-        }
-      }
-      fila = mejor;
+      fila = filaTitulosProbable(filas);
     }
     const faltan = CAMPOS_OBLIGATORIOS.filter((c) => mapeo[c] === undefined);
     if (faltan.length) {
       throw badRequest(`Faltan columnas en el mapeo: ${faltan.map((c) => ETIQUETAS_CAMPOS[c]).join(', ')}.`, {
         necesitaMapeo: true,
         columnas: describirColumnas(filas, fila),
+        filaCabecera: fila + 1,
         mapeo,
         campos: ETIQUETAS_CAMPOS,
       });
@@ -483,9 +529,12 @@ export function leerNominasDeFilas(filas: unknown[][], opciones: OpcionesLectura
       if (!mejor || puntos > mejor.puntos) mejor = { fila: i, mapeo: m, puntos };
     }
     if (!mejor) {
+      // La fila que mas titulos reconocidos tiene, aunque no basten: con ella se
+      // describen las columnas y la pantalla de mapeo parte de ahi (no de la 1).
+      const probable = filaTitulosProbable(filas);
       throw badRequest(
         'No encuentro la fila de títulos del fichero de nóminas (por ejemplo "Trabajador", "NIF", "Total devengado", "Líquido"). Indica qué columna es cada dato.',
-        { necesitaMapeo: true, columnas: describirColumnas(filas, -1), campos: ETIQUETAS_CAMPOS },
+        { necesitaMapeo: true, columnas: describirColumnas(filas, probable), filaCabecera: probable + 1, mapeo: probable >= 0 ? mapearTitulosNominas((filas[probable] ?? []).map(normalizarTituloNomina)) : {}, campos: ETIQUETAS_CAMPOS },
       );
     }
     fila = mejor.fila;
@@ -602,6 +651,14 @@ export function leerNominasDeFilas(filas: unknown[][], opciones: OpcionesLectura
     const coste = celda('costeTotal');
     const costeTotal = coste === undefined || texto(coste) === '' ? null : parsearImporte(coste, decimal);
 
+    const devengoRaw = celda('ejercicioDevengo');
+    let ejercicioDevengo: number | null = null;
+    if (devengoRaw !== undefined && texto(devengoRaw) !== '') {
+      const m = /^\s*(\d{4})(?:[.,]0+)?\s*$/.exec(texto(devengoRaw));
+      if (m) ejercicioDevengo = Number(m[1]);
+      else errores.push(`No entiendo el ejercicio de devengo "${texto(devengoRaw).slice(0, 20)}" (un año, por ejemplo 2025).`);
+    }
+
     const nombre = texto(celda('nombre'));
     const apellidos = [texto(celda('apellidos')), texto(celda('apellido2'))].filter(Boolean).join(' ');
     const nafTexto = texto(celda('naf'));
@@ -618,6 +675,7 @@ export function leerNominasDeFilas(filas: unknown[][], opciones: OpcionesLectura
         tipo: tipo ?? 'ORDINARIA',
         ...importes,
         porcentajeIrpf,
+        ejercicioDevengo,
         costeTotal: costeTotal !== null && Number.isFinite(costeTotal) ? costeTotal : null,
         cuadre: cuadreNomina(importes),
         errores,
@@ -710,9 +768,10 @@ export function filasDesdeJson(valor: unknown): FilaNomina[] {
       ssEmpresa: num(r.ssEmpresa),
     };
     for (const [k, v] of Object.entries(importes)) {
-      if (typeof v === 'number' && Number.isFinite(v) && Math.abs(v * 100 - Math.round(v * 100)) > 1e-6) errores.push(`"${k}" tiene más de dos decimales.`);
+      if (typeof v === 'number' && Number.isFinite(v) && Math.abs(v * 100 - Math.round(v * 100)) > 1e-6) errores.push(`"${ETIQUETAS_IMPORTES[k] ?? k}" tiene más de dos decimales.`);
     }
     const pct = r.porcentajeIrpf === undefined || r.porcentajeIrpf === null || r.porcentajeIrpf === '' ? null : Number(r.porcentajeIrpf);
+    const devengo = r.ejercicioDevengo === undefined || r.ejercicioDevengo === null || r.ejercicioDevengo === '' ? null : Number(r.ejercicioDevengo);
     return validarFilaNomina({
       fila: Number.isInteger(r.fila) ? (r.fila as number) : i + 1,
       nif: normalizarNif(r.nif),
@@ -724,6 +783,7 @@ export function filasDesdeJson(valor: unknown): FilaNomina[] {
       tipo: tipo ?? 'ORDINARIA',
       ...importes,
       porcentajeIrpf: pct,
+      ejercicioDevengo: devengo,
       costeTotal: null,
       cuadre: cuadreNomina(importes),
       errores,
@@ -740,6 +800,7 @@ export const TITULOS_PLANTILLA: Array<[CampoFichero, string]> = [
   ['naf', 'Nº afiliación SS'],
   ['periodo', 'Mes'],
   ['tipo', 'Tipo'],
+  ['ejercicioDevengo', 'Ejercicio devengo'],
   ['bruto', 'Total devengado'],
   ['especie', 'Retribución en especie'],
   ['ingresoACuenta', 'Ingreso a cuenta'],

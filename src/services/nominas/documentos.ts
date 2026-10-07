@@ -8,12 +8,18 @@
  * Solo se listan y descargan por /nominas (nominas:read). El archivo general de
  * facturas (contabilidad:read: ventas, tesoreria, solo-lectura) no los muestra:
  * ver TIPOS_DOCUMENTO_PRIVADOS en documentoArchivo.service.ts.
+ *
+ * Borrar un PDF (o subir el recibo nuevo de una nomina, que sustituye al
+ * anterior) borra el fichero del almacenamiento: es un dato personal que ya no
+ * hace falta (RGPD, limitacion del plazo de conservacion). En DocumentoArchivo
+ * queda la fila (quien, cuando, hash) con estado anulado o reemplazado, y ya no
+ * se puede descargar.
  */
 import { createHash } from 'crypto';
 import { prisma } from '../../config/database';
 import { badRequest, conflict, HttpError, notFound } from '../../utils/http-errors';
 import { logger } from '../../config/logger';
-import { getObject, putObject } from '../../utils/storage';
+import { deleteObject, getObject, putObject } from '../../utils/storage';
 import { nombreSeguro } from '../../utils/nombre-seguro';
 import { crearZip, type ZipEntry } from '../../utils/zip';
 import { nombreCompleto } from '../empleados.service';
@@ -140,7 +146,11 @@ export async function subirDocumentoNominas(
   }
 
   if (nominaId) {
-    await prisma.documentoArchivo.updateMany({ where: { companyId, nominaId, estado: 'activo', tipo: 'nomina' }, data: { estado: 'reemplazado' } });
+    const anteriores = await prisma.documentoArchivo.findMany({ where: { companyId, nominaId, estado: 'activo', tipo: 'nomina' }, select: { id: true, archivoPath: true } });
+    if (anteriores.length) {
+      await prisma.documentoArchivo.updateMany({ where: { id: { in: anteriores.map((a) => a.id) } }, data: { estado: 'reemplazado' } });
+      for (const a of anteriores) await borrarFichero(a.archivoPath);
+    }
   }
   const etiqueta = claseTxt === 'nomina' ? null : claseTxt.toUpperCase();
   const doc = await prisma.documentoArchivo.create({
@@ -188,17 +198,30 @@ async function cargarDocumento(companyId: string, id: string): Promise<FilaDoc> 
   return d;
 }
 
+/** Borra el fichero del almacenamiento; si falla, lo deja anotado (la fila ya no se puede descargar). */
+async function borrarFichero(ruta: string | null): Promise<void> {
+  if (!ruta) return;
+  try {
+    await deleteObject(ruta);
+  } catch (e) {
+    logger.warn(`[nominas] No se pudo borrar el PDF ${ruta}: ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
+/** Descarga un PDF del archivo de nominas. Solo los activos: uno borrado o sustituido ya no existe. */
 export async function descargarDocumentoNominas(companyId: string, id: string): Promise<{ buffer: Buffer; nombre: string; tipo: string }> {
   const d = await cargarDocumento(companyId, id);
+  if (d.estado !== 'activo') throw notFound(d.estado === 'reemplazado' ? 'Este PDF se sustituyó por otro y ya no está en el archivo.' : 'Este PDF se borró del archivo.');
   if (!d.archivoPath) throw notFound('El documento no tiene el fichero guardado.');
   return { buffer: await getObject(d.archivoPath), nombre: d.archivoNombre, tipo: d.archivoTipo };
 }
 
-/** Anula un documento (no se borra el fichero: queda fuera del archivo). */
+/** Borra un documento: el fichero sale del almacenamiento y la fila queda anulada (con quien y cuando). */
 export async function anularDocumentoNominas(companyId: string, id: string): Promise<void> {
   const d = await cargarDocumento(companyId, id);
   if (d.estado === 'anulado') return;
   await prisma.documentoArchivo.update({ where: { id: d.id }, data: { estado: 'anulado' } });
+  if (d.estado === 'activo') await borrarFichero(d.archivoPath);
 }
 
 /** ZIP de los documentos de nominas de un ejercicio, trimestre o mes: <MM>/<nominas|seguros-sociales>/<fichero>. */

@@ -60,8 +60,10 @@ module.exports = function nominasSwagger(ep, B) {
     body: { ...medio, tipo: 'NORMAL', totalRlc: 1936.55, compensacionIt: 0 },
   });
   ep(B + '/nominas/seguros-sociales/{ejercicio}/{mes}/pago/anular', 'post', T, 'Anular el pago de los seguros sociales', { body: { tipo: 'NORMAL', fecha: '2026-03-01' } });
-  ep(B + '/nominas/retenciones/{ejercicio}/{periodo}', 'get', T, 'Modelo 111 (1T-4T, 01-12): casillas 01-09, 28 y 30 con la misma fuente que Impuestos (nominas por fecha de pago, perceptores distintos) y su pago');
-  ep(B + '/nominas/retenciones/{ejercicio}/{periodo}/pago', 'post', T, 'Pagar el 111: 4751 de trabajo y de profesionales contra 572/570', { body: { ...medio, cuentaProfesionales: '475100' } });
+  ep(B + '/nominas/retenciones/{ejercicio}/{periodo}', 'get', T, 'Modelo 111 (1T-4T, 01-12): casillas 01-09, 28 y 30 con la misma fuente que Impuestos (nominas por fecha de pago, perceptores distintos), su pago y lo que se paga (aPagar: lo presentado o editado en Impuestos manda sobre el calculo)');
+  ep(B + '/nominas/retenciones/{ejercicio}/{periodo}/pago', 'post', T, 'Pagar el 111 (lo presentado o, si no, lo calculado): 4751 de trabajo, la del IRPF del resumen antiguo y la de profesionales contra 572/570. 409 si hay nominas del periodo en borrador', {
+    body: { ...medio, cuentaProfesionales: '475100', cuentaResumenAntiguo: '475100' },
+  });
   ep(B + '/nominas/retenciones/{ejercicio}/{periodo}/pago/anular', 'post', T, 'Anular el pago del 111', { body: { fecha: '2026-05-01' } });
   ep(B + '/nominas/190/{ejercicio}/perceptores', 'get', T, 'Modelo 190: un registro por perceptor y clave (A trabajo, L.01 dietas, L.05 indemnizacion exenta, G profesionales), totales y cuadre con los cuatro 111. ?formato=xlsx', {
     query: ['formato'],
@@ -70,6 +72,7 @@ module.exports = function nominasSwagger(ep, B) {
     query: ['telefono', 'contacto', 'email', 'numeroDeclaracion'],
   });
   ep(B + '/nominas/conciliacion/sugerencias', 'get', T, 'Pagos de nominas, seguros sociales o 111 pendientes que cuadran con un cargo del extracto', { query: ['movimientoId'] });
+  ep(B + '/nominas/conciliacion/cargos', 'get', T, 'Cargos del extracto sin conciliar por un importe exacto (para pagar eligiendo el cargo, que queda conciliado)', { query: ['importe', 'fecha'] });
   ep(B + '/nominas/prevision', 'get', T, 'Prevision de pagos: liquidos sin pagar, seguros sociales pendientes y 111 que vence en el rango', { query: ['desde', 'hasta'] });
 
   // Archivo privado de los PDF de la gestoria (solo nominas:read).

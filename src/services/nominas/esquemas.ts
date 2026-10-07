@@ -179,20 +179,75 @@ export const pagoSegurosSocialesSchema = z
 export const anularPagoSegurosSocialesSchema = z.object({ tipo: tipoSS.optional(), fecha: fecha.optional(), motivo: textoOpcional(500) }).strict();
 
 export const pago111Schema = z
-  .object({ ...medioPago, cuentaProfesionales: z.string().regex(/^4751\d{0,6}$/, 'tiene que ser una subcuenta de la 4751').optional() })
+  .object({
+    ...medioPago,
+    cuentaProfesionales: z.string().regex(/^4751\d{0,6}$/, 'tiene que ser una subcuenta de la 4751').optional(),
+    /** 4751 donde se abono el IRPF de los meses que solo tienen el resumen antiguo. */
+    cuentaResumenAntiguo: z.string().regex(/^4751\d{0,6}$/, 'tiene que ser una subcuenta de la 4751').optional(),
+  })
   .strict();
 
 export const anularPago111Schema = z.object({ fecha: fecha.optional(), motivo: textoOpcional(500) }).strict();
 
-const NOMBRES_CAMPOS: Record<string, string> = {
+/** Nombre de cada campo en los mensajes de error (nunca la clave interna de la API). */
+export const NOMBRES_CAMPOS: Record<string, string> = {
+  // Trabajador
   nif: 'NIF',
   naf: 'Nº de afiliación',
   nombre: 'Nombre',
+  apellidos: 'Apellidos',
+  fechaAlta: 'Fecha de alta',
+  fechaBaja: 'Fecha de baja',
+  tipoContrato: 'Tipo de contrato',
+  jornadaParcial: 'Jornada parcial',
+  grupoCotizacion: 'Grupo de cotización',
+  porcentajeIrpfActual: '% de IRPF actual',
+  clave190: 'Clave del 190',
+  subclave190: 'Subclave del 190',
+  provincia: 'Provincia',
+  anioNacimiento: 'Año de nacimiento',
+  situacionFamiliar: 'Situación familiar',
+  nifConyuge: 'NIF del cónyuge',
+  discapacidad: 'Discapacidad',
+  movilidadGeografica: 'Movilidad geográfica',
+  activo: 'De alta',
+  observaciones: 'Observaciones',
+  // Nomina
+  empleadoId: 'Trabajador',
+  ejercicio: 'Ejercicio',
+  mes: 'Mes',
+  tipo: 'Tipo',
+  ejercicioDevengo: 'Ejercicio de devengo',
+  fechaPago: 'Fecha de pago',
+  porcentajeIrpf: '% de IRPF',
   brutoDinerario: 'Bruto',
-  liquido: 'Líquido',
+  dietasExentas: 'Dietas exentas',
+  especieValoracion: 'Retribución en especie',
+  ingresoACuenta: 'Ingreso a cuenta',
+  ingresoACuentaRepercutido: 'Ingreso a cuenta repercutido',
+  indemnizacionExenta: 'Indemnización exenta',
+  indemnizacionSujeta: 'Indemnización sujeta',
   ssTrabajador: 'SS trabajador',
-  ssEmpresa: 'SS empresa',
   irpf: 'IRPF',
+  anticipos: 'Anticipos',
+  embargos: 'Embargos',
+  otrasDeducciones: 'Otras deducciones',
+  liquido: 'Líquido',
+  ssEmpresa: 'SS empresa',
+  // Seleccion, pagos y seguros sociales
+  nominaIds: 'Nóminas',
+  fecha: 'Fecha',
+  motivo: 'Motivo',
+  dejarAnuladas: 'Dejarlas anuladas',
+  cuentaBancariaId: 'Cuenta bancaria',
+  caja: 'En efectivo',
+  movimientoId: 'Movimiento del banco',
+  incluirEmbargos: 'Pagar los embargos',
+  totalRlc: 'Importe del RLC',
+  compensacionIt: 'IT compensada',
+  fechaCargoPrevista: 'Fecha de cargo',
+  cuentaProfesionales: 'Cuenta de profesionales',
+  cuentaResumenAntiguo: 'Cuenta del resumen antiguo',
 };
 
 /** Valida con un esquema Zod; si falla, 400 con el detalle por campo. */

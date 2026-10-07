@@ -206,7 +206,11 @@ export function generarFicheroModelo190(ejercicio: number, declarante: Declarant
   return [tipo1, ...perceptores.map((p) => registroPerceptor190(ejercicio, declarante.nif, p))].join('\r\n') + '\r\n';
 }
 
-/** Informe del 190 en Excel: una fila por registro de perceptor y los totales. */
+/**
+ * Informe del 190 en Excel: una fila por registro de perceptor y los totales.
+ * Sin la discapacidad (dato de salud, art. 9 RGPD): solo va en el fichero de la
+ * AEAT y se revisa en la ficha de cada trabajador. La descarga queda en la auditoria.
+ */
 export function informe190Excel(m: Modelo190): Buffer {
   const cab = [
     'Clave',
@@ -223,7 +227,6 @@ export function informe190Excel(m: Modelo190): Buffer {
     'Gastos deducibles',
     'Año nacimiento',
     'Situación familiar',
-    'Discapacidad',
     'Contrato',
     'Movilidad geográfica',
     'Nóminas / facturas',
@@ -244,7 +247,6 @@ export function informe190Excel(m: Modelo190): Buffer {
     p.gastosDeducibles,
     p.anioNacimiento ?? '',
     p.situacionFamiliar ?? '',
-    p.discapacidad ?? '',
     p.contrato ?? '',
     p.clave === 'A' ? (p.movilidadGeografica ? 'Sí' : 'No') : '',
     p.documentos,

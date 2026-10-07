@@ -234,6 +234,12 @@ describe('seguros sociales', () => {
 
 describe('pago del 111', () => {
   it('4751 de trabajo y de profesionales contra 572; no se paga dos veces; se anula', async () => {
+    // La nomina de diciembre pagada en enero sigue en borrador: su IRPF no esta en la 4751.
+    await expect(pagarModelo111(COMPANY_ID, 2026, '1T', { fecha: '2026-04-15', cuentaBancariaId: banco })).rejects.toMatchObject({
+      statusCode: 409,
+      message: expect.stringMatching(/en borrador/),
+    });
+    await contabilizarNominas(COMPANY_ID, 2025, 12);
     const r = await pagarModelo111(COMPANY_ID, 2026, '1T', { fecha: '2026-04-15', cuentaBancariaId: banco });
     expect(r).toMatchObject({ importe: 1650, trabajo: 1500, profesionales: 150, cuentaProfesionales: '475100' });
     const a = await asiento(r.asiento.id);
@@ -289,7 +295,8 @@ describe('coste de personal y prevision de pagos', () => {
     const p = await previsionPagos(COMPANY_ID, '2026-01-01', '2026-04-30');
     expect(p.pagos).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ tipo: 'liquidos', ejercicio: 2026, mes: 2, importe: LIQUIDO_MES, fecha: '2026-02-27', categoria: 'Nóminas' }),
+        // Su pago se anulo: la fecha de pago vuelve a la de antes del pago (la de devengo), no la del pago anulado.
+        expect.objectContaining({ tipo: 'liquidos', ejercicio: 2026, mes: 2, importe: LIQUIDO_MES, fecha: '2026-02-28', categoria: 'Nóminas' }),
         expect.objectContaining({ tipo: 'seguros_sociales', mes: 1, importe: 1936.55, fecha: '2026-02-28' }),
         expect.objectContaining({ tipo: 'seguros_sociales', mes: 3, importe: 363.5, fecha: '2026-04-30' }),
         expect.objectContaining({ tipo: 'modelo111', periodo: '1T', importe: 1650, fecha: '2026-04-20' }),

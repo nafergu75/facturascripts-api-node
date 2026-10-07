@@ -25,26 +25,40 @@ import {
 } from '../utils/aeat-models';
 import type { DatosModelo111 } from '../domain/impuestos.model';
 import { calcularCasillasModelo } from './impuestosModulo.service';
-import { calcularModelo111 } from './impuestosCalculo.service';
-import { periodoFiscal } from './nominas/fiscal';
+import type { Modelo190 } from './nominas/fiscal';
 
 type CasillasGuardadas = Record<string, unknown>;
+
+type PorTipoActividades = NonNullable<DatosModelo111['actividadesPorTipo']>;
 
 /**
  * Casillas del 111 para la pantalla de modelos fiscales a partir de las
  * oficiales (las que guarda el modulo Impuestos y usa el TXT): claves '01'..'30'
- * con su importe y el desglose por tipo de rendimiento.
+ * con su importe y el desglose por tipo de rendimiento. Los profesionales van
+ * por el tipo real de sus facturas (15 %, 7 %) si el desglose cuadra con las
+ * casillas 08 y 09; si no (casillas editadas a mano), en una fila con el tipo
+ * medio. En el trabajo el porcentaje es siempre el medio (cada nomina lleva el suyo).
  */
-function casillasPantalla111(oficiales: CasillasGuardadas) {
+function casillasPantalla111(oficiales: CasillasGuardadas, porTipo?: PorTipoActividades) {
   const v = (k: string) => Number(oficiales[k] ?? 0) || 0;
+  const cent = (n: number) => Math.round(n * 100);
   const tasa = (cuota: number, base: number) => (base ? Math.round((cuota / base) * 10000) / 100 : 0);
+  const base08 = v('08_percepciones_actividades');
+  const cuota09 = v('09_retenciones_actividades');
+  const desgloseCuadra =
+    !!porTipo?.length &&
+    cent(porTipo.reduce((a, t) => a + t.base, 0)) === cent(base08) &&
+    cent(porTipo.reduce((a, t) => a + t.cuota, 0)) === cent(cuota09);
+  const profesionales = desgloseCuadra
+    ? porTipo!.map((t) => ({ tipo: `Profesionales (${t.porcentaje} %)`, base: t.base, cuota: t.cuota, operaciones: t.perceptores, porcentaje: t.porcentaje, medio: false }))
+    : [{ tipo: 'Profesionales', base: base08, cuota: cuota09, operaciones: v('07_perceptores_actividades'), porcentaje: tasa(cuota09, base08), medio: true }];
   const retenciones = [
     { tipo: 'Trabajo (nóminas)', base: v('02_percepciones_trabajo'), cuota: v('03_retenciones_trabajo'), operaciones: v('01_perceptores_trabajo') },
     { tipo: 'Trabajo en especie (ingresos a cuenta)', base: v('05_percepciones_especie'), cuota: v('06_ingresos_a_cuenta'), operaciones: v('04_perceptores_especie') },
-    { tipo: 'Profesionales', base: v('08_percepciones_actividades'), cuota: v('09_retenciones_actividades'), operaciones: v('07_perceptores_actividades') },
   ]
-    .filter((r) => r.base || r.cuota || r.operaciones)
-    .map((r) => ({ ...r, porcentaje: tasa(r.cuota, r.base) }));
+    .map((r) => ({ ...r, porcentaje: tasa(r.cuota, r.base), medio: true }))
+    .concat(profesionales)
+    .filter((r) => r.base || r.cuota || r.operaciones);
   return {
     casillas: {
       '01': v('01_perceptores_trabajo'),
@@ -270,9 +284,10 @@ export class TaxModelsService {
     // Lo guardado manda (presentado o editado a mano); si es de antes (otro formato), el calculo.
     const guardadas = (modelo.casillas as CasillasGuardadas | null) ?? {};
     const base = '28_total_retenciones' in guardadas ? guardadas : oficiales;
-    const pantalla = casillasPantalla111(base);
+    const pantalla = casillasPantalla111(base, datos.actividadesPorTipo);
     const avisos = [...(datos.avisos ?? [])];
-    if (modelo.origen === 'manual-mixto') avisos.push('Casillas editadas a mano en Impuestos: se muestran tal como se guardaron.');
+    if (modelo.estado === 'presentado') avisos.push('Modelo presentado: se muestran las casillas tal como se presentaron, aunque después hayan cambiado las nóminas o las facturas.');
+    else if (modelo.origen === 'manual-mixto') avisos.push('Casillas editadas a mano en Impuestos: se muestran tal como se guardaron.');
 
     await registrarAuditoria({
       userId: userId || 'SYSTEM',
@@ -1021,25 +1036,31 @@ export class TaxModelsService {
   }> {
     const calculo = await calcularCasillasModelo(companyId, '190', ejercicio, '0A');
     const oficiales = calculo.casillas as CasillasGuardadas;
-    const datos = calculo.datos as { avisos: string[]; cuadre111: { total: number; coincide: boolean } };
+    const datos = calculo.datos as { avisos: string[]; cuadre111: { total: number; coincide: boolean }; desglose: Modelo190['desglose'] };
 
-    const desgloseTrimestral = [];
-    for (const numero of [1, 2, 3, 4]) {
-      const d = await calcularModelo111(companyId, periodoFiscal(ejercicio, `${numero}T`));
-      const p = casillasPantalla111({
-        '01_perceptores_trabajo': d.nPerceptoresTrabajo,
-        '02_percepciones_trabajo': d.percepcionesTrabajo,
-        '03_retenciones_trabajo': d.retencionesTrabajo,
-        '04_perceptores_especie': d.nPerceptoresEspecie ?? 0,
-        '05_percepciones_especie': d.percepcionesEspecie ?? 0,
-        '06_ingresos_a_cuenta': d.ingresosACuentaEspecie ?? 0,
-        '07_perceptores_actividades': d.nPerceptoresActividades ?? 0,
-        '08_percepciones_actividades': d.percepcionesActividades ?? 0,
-        '09_retenciones_actividades': d.retencionesActividades ?? 0,
-        '28_total_retenciones': d.totalRetenciones,
-      });
-      desgloseTrimestral.push({ numero, retenciones: p.casillas.retenciones, base: p.totalBase, cuota: p.totalRetenido });
-    }
+    // Por trimestres, con la misma fuente que los totales del 190 (sin el resumen
+    // antiguo, que el 190 no incluye): las filas suman lo mismo que el total.
+    const cent = (n: number) => Math.round(n * 100);
+    const desgloseTrimestral = datos.desglose.map((d) => {
+      const t = d.trabajo;
+      const a = d.actividades;
+      const p = casillasPantalla111(
+        {
+          '01_perceptores_trabajo': t.perceptoresDinerarios,
+          '02_percepciones_trabajo': t.percepcionesDinerarias,
+          '03_retenciones_trabajo': t.retencionesDinerarias,
+          '04_perceptores_especie': t.perceptoresEspecie,
+          '05_percepciones_especie': t.percepcionesEspecie,
+          '06_ingresos_a_cuenta': t.ingresosACuenta,
+          '07_perceptores_actividades': a.perceptores,
+          '08_percepciones_actividades': a.percepciones,
+          '09_retenciones_actividades': a.retenciones,
+          '28_total_retenciones': (cent(t.retencionesDinerarias) + cent(t.ingresosACuenta) + cent(a.retenciones)) / 100,
+        },
+        a.porTipo,
+      );
+      return { numero: Number(d.periodo[0]), retenciones: p.casillas.retenciones, base: p.totalBase, cuota: p.totalRetenido };
+    });
 
     const auditoria: ModeloFiscalAuditoria = {
       generadoPor: userId || 'SYSTEM',

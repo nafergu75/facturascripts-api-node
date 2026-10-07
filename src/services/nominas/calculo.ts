@@ -221,8 +221,20 @@ const TIPO_TEXTO: Record<string, string> = {
   COMPLEMENTARIA: 'Nómina complementaria',
 };
 
-export function conceptoAsientoNomina(n: { mes: number; ejercicio: number; tipo: string }, nombre: string): string {
-  return `${TIPO_TEXTO[n.tipo] ?? 'Nómina'} ${String(n.mes).padStart(2, '0')}/${n.ejercicio} - ${nombre}`;
+/**
+ * Como se nombra a un trabajador en la contabilidad: por su subcuenta 465, nunca
+ * por su nombre ni su NIF. El diario, el mayor, el sumas y saldos y el plan de
+ * cuentas los ve cualquiera con contabilidad:read (ventas, tesoreria,
+ * solo-lectura), que no tiene nominas:read. Quien si lo tiene ve la subcuenta
+ * de cada trabajador en Nominas > Empleados.
+ */
+export const etiquetaTrabajador = (subcuenta465: string): string => `trabajador ${subcuenta465}`;
+
+/** Nombre de la subcuenta 465 de un trabajador en el plan y en los apuntes. */
+export const conceptoSubcuenta465 = (subcuenta465: string): string => `Remuneraciones pendientes - trabajador ${subcuenta465}`;
+
+export function conceptoAsientoNomina(n: { mes: number; ejercicio: number; tipo: string }, subcuenta465: string): string {
+  return `${TIPO_TEXTO[n.tipo] ?? 'Nómina'} ${String(n.mes).padStart(2, '0')}/${n.ejercicio} - ${etiquetaTrabajador(subcuenta465)}`;
 }
 
 /**
@@ -256,7 +268,7 @@ export function generarAsientoNomina(n: DatosAsientoNomina, cuentas: CuentasNomi
   sumar(haber, cuentas.anticipos, NOMBRES_CUENTAS.anticipos, c(n.anticipos));
   sumar(haber, cuentas.embargos, NOMBRES_CUENTAS.embargos, c(n.embargos));
   sumar(haber, cuentas.otrasDeducciones, NOMBRES_CUENTAS.otrasDeducciones, c(n.otrasDeducciones));
-  sumar(haber, trabajador.subcuenta465, trabajador.nombreCompleto, c(n.liquido));
+  sumar(haber, trabajador.subcuenta465, conceptoSubcuenta465(trabajador.subcuenta465), c(n.liquido));
 
   const lineas: LineaAsiento[] = [];
   for (const [cuenta, cent] of debe) {
@@ -275,7 +287,7 @@ export function generarAsientoNomina(n: DatosAsientoNomina, cuentas: CuentasNomi
 
   return {
     fecha: n.fechaDevengo,
-    descripcion: conceptoAsientoNomina(n, trabajador.nombreCompleto),
+    descripcion: conceptoAsientoNomina(n, trabajador.subcuenta465),
     lineas,
     debeTotal: euros(totalDebe),
     haberTotal: euros(totalHaber),

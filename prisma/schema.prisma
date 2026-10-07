@@ -932,6 +932,9 @@ model Nomina {
   fechaDevengo              String
   /// Fecha de pago (YYYY-MM-DD); por defecto, la de devengo.
   fechaPago                 String
+  /// Fecha de pago que tenia antes de registrar el pago de los liquidos: se
+  /// restaura al anular el pago (el 111 va por fecha de pago).
+  fechaPagoAnterior         String?
   brutoDinerario            Decimal   @default(0) @db.Decimal(14, 2)
   dietasExentas             Decimal   @default(0) @db.Decimal(14, 2)
   especieValoracion         Decimal   @default(0) @db.Decimal(14, 2)

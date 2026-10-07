@@ -144,6 +144,12 @@ export interface DatosModelo111 {
   nPerceptoresActividades?: number; // [07]
   percepcionesActividades?: number; // [08]
   retencionesActividades?: number; // [09]
+  /** Desglose de [08]/[09] por el tipo de retencion de las facturas (15 %, 7 %...). */
+  actividadesPorTipo?: Array<{ porcentaje: number; perceptores: number; base: number; cuota: number }>;
+  /** Parte de [02]/[03] que sale del resumen mensual antiguo (meses sin nominas por trabajador). */
+  resumenAntiguo?: { bruto: number; irpf: number };
+  /** Nominas en borrador con pago en el periodo (cuentan, pero aun no tienen asiento). */
+  borradores?: number;
   totalRetenciones: number; // suma retenciones e ingresos a cuenta [casilla 28]
   resultadoIngresar: number; // [casilla 30]
   /** Avisos del calculo (nominas en borrador, meses solo con el resumen antiguo...). */

@@ -15,6 +15,7 @@
  *    sin nominas por trabajador, con aviso de que la casilla 01 no es fiable.
  *    No entra en el 190.
  */
+import { Prisma } from '@prisma/client';
 import { prisma } from '../../config/database';
 import type { PeriodoFiscal } from '../../domain/impuestos.model';
 import { badRequest } from '../../utils/http-errors';
@@ -22,9 +23,30 @@ import { aCentimos } from '../../utils/money';
 
 const euros = (centimos: number): number => Math.round(centimos) / 100;
 const mm = (n: number) => String(n).padStart(2, '0');
+const fmt = (n: number) => `${n.toLocaleString('es-ES', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €`;
 
 const tablaLista = (nombre: string): boolean =>
   typeof (prisma as unknown as Record<string, { findMany?: unknown } | undefined>)[nombre]?.findMany === 'function';
+
+export const AVISO_SIN_TABLAS =
+  'Las tablas de nóminas no existen todavía en la base de datos: el 111 y el 190 salen sin nóminas. Aplica el esquema (scripts/aplicar-esquema-prod.sh) antes de usar Nóminas.';
+
+/**
+ * Consulta de las tablas de nominas. Si el codigo se despliega antes de aplicar
+ * el esquema (la tabla o una columna no existen: P2021/P2022), el 111 y el 190
+ * de las empresas sin nominas siguen funcionando: sin nominas y con un aviso.
+ */
+async function consultaNominas<T>(fn: () => Promise<T>, vacio: T, avisos?: string[]): Promise<T> {
+  try {
+    return await fn();
+  } catch (e) {
+    if (e instanceof Prisma.PrismaClientKnownRequestError && (e.code === 'P2021' || e.code === 'P2022')) {
+      if (avisos && !avisos.includes(AVISO_SIN_TABLAS)) avisos.push(AVISO_SIN_TABLAS);
+      return vacio;
+    }
+    throw e;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Periodos
@@ -67,6 +89,7 @@ export interface NominaFiscal {
   ejercicioDevengo: number | null;
   fechaPago: string;
   estado: string;
+  tipo?: string;
   brutoDinerario: number;
   indemnizacionSujeta: number;
   indemnizacionExenta: number;
@@ -94,7 +117,11 @@ export interface Casillas111Trabajo {
   retencionesDinerarias: number;
   /** [04] Perceptores distintos con retribucion en especie. */
   perceptoresEspecie: number;
-  /** [05] Valoracion de la especie + ingresos a cuenta no repercutidos (art. 43.2 LIRPF). */
+  /**
+   * [05] Valoracion de la especie, sin el ingreso a cuenta (va en la [06]),
+   * con el mismo criterio que el campo "valoracion" del 190: asi la suma de los
+   * cuatro 111 cuadra con las percepciones del 190.
+   */
   percepcionesEspecie: number;
   /** [06] Ingresos a cuenta de la especie. */
   ingresosACuenta: number;
@@ -118,7 +145,7 @@ export function agregarTrabajo111(nominas: NominaFiscal[], antiguos: ResumenAnti
     especiePorNif.set(n.nif, (especiePorNif.get(n.nif) ?? 0) + c(n.especieValoracion));
     dinerario += d;
     irpf += c(n.irpf);
-    especie += c(n.especieValoracion) + (n.ingresoACuentaRepercutido ? 0 : c(n.ingresoACuenta));
+    especie += c(n.especieValoracion);
     iac += c(n.ingresoACuenta);
   }
   const avisos: string[] = [];
@@ -154,6 +181,8 @@ export interface RetencionesTrabajo {
   borradores: number;
   /** Meses que solo tienen el resumen antiguo (sin trabajadores). */
   mesesResumenAntiguo: number[];
+  /** Lo que suman esos resumenes antiguos (ya incluido en las casillas 02 y 03). */
+  resumenAntiguo: { bruto: number; irpf: number };
   avisos: string[];
 }
 
@@ -167,6 +196,7 @@ function aNominaFiscal(n: Record<string, unknown> & { empleado: { nif: string } 
     ejercicioDevengo: n.ejercicioDevengo === null || n.ejercicioDevengo === undefined ? null : Number(n.ejercicioDevengo),
     fechaPago: String(n.fechaPago),
     estado: String(n.estado),
+    tipo: n.tipo === undefined ? undefined : String(n.tipo),
     brutoDinerario: num('brutoDinerario'),
     indemnizacionSujeta: num('indemnizacionSujeta'),
     indemnizacionExenta: num('indemnizacionExenta'),
@@ -180,20 +210,29 @@ function aNominaFiscal(n: Record<string, unknown> & { empleado: { nif: string } 
 }
 
 /** Nominas no anuladas pagadas (fecha de pago) entre dos fechas, con el NIF del trabajador. */
-async function nominasPagadasEntre(companyId: string, desde: string, hasta: string): Promise<NominaFiscal[]> {
+async function nominasPagadasEntre(companyId: string, desde: string, hasta: string, avisos?: string[]): Promise<NominaFiscal[]> {
   if (!tablaLista('nomina')) return [];
-  const filas = await prisma.nomina.findMany({
-    where: { companyId, estado: { not: 'ANULADA' }, fechaPago: { gte: desde, lte: hasta } },
-    include: { empleado: { select: { nif: true } } },
-  });
+  const filas = await consultaNominas(
+    () =>
+      prisma.nomina.findMany({
+        where: { companyId, estado: { not: 'ANULADA' }, fechaPago: { gte: desde, lte: hasta } },
+        include: { empleado: { select: { nif: true } } },
+      }),
+    [],
+    avisos,
+  );
   return filas.map((n) => aNominaFiscal(n as unknown as Record<string, unknown> & { empleado: { nif: string } }));
 }
 
+const NOMBRE_MES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
+
 /**
  * Resumenes antiguos (solo totales) de los meses del periodo que no tienen
- * ninguna nomina por trabajador; si un mes se grabo varias veces, el ultimo.
+ * ninguna nomina por trabajador. Si un mes se grabo varias veces, cuenta el
+ * ultimo (antes se sumaban y un mes grabado dos veces salia doble), pero con
+ * un aviso que dice cuantos hay y sus importes, para que el usuario decida.
  */
-async function resumenesAntiguos(companyId: string, periodo: PeriodoFiscal): Promise<ResumenAntiguoNominas[]> {
+async function resumenesAntiguos(companyId: string, periodo: PeriodoFiscal, avisos?: string[]): Promise<ResumenAntiguoNominas[]> {
   if (!tablaLista('nominaResumen')) return [];
   const meses = mesesDe(periodo);
   const filas = await prisma.nominaResumen.findMany({
@@ -204,18 +243,34 @@ async function resumenesAntiguos(companyId: string, periodo: PeriodoFiscal): Pro
   const conNominas = tablaLista('nomina')
     ? new Set(
         (
-          await prisma.nomina.findMany({
-            where: { companyId, ejercicio: periodo.ejercicio, mes: { in: meses }, estado: { not: 'ANULADA' } },
-            select: { mes: true },
-            distinct: ['mes'],
-          })
+          await consultaNominas(
+            () =>
+              prisma.nomina.findMany({
+                where: { companyId, ejercicio: periodo.ejercicio, mes: { in: meses }, estado: { not: 'ANULADA' } },
+                select: { mes: true },
+                distinct: ['mes'],
+              }),
+            [] as Array<{ mes: number }>,
+            avisos,
+          )
         ).map((n) => n.mes),
       )
     : new Set<number>();
   const porMes = new Map<number, ResumenAntiguoNominas>();
+  const todosPorMes = new Map<number, number[]>();
   for (const r of filas) {
-    if (conNominas.has(r.mes) || porMes.has(r.mes)) continue;
+    if (conNominas.has(r.mes)) continue;
+    todosPorMes.set(r.mes, [...(todosPorMes.get(r.mes) ?? []), Number(r.totalIRPF)]);
+    if (porMes.has(r.mes)) continue;
     porMes.set(r.mes, { mes: r.mes, totalBruto: Number(r.totalBruto), totalIRPF: Number(r.totalIRPF) });
+  }
+  for (const [mes, irpfs] of todosPorMes) {
+    if (irpfs.length < 2 || !avisos) continue;
+    // irpfs va del mas reciente al mas antiguo: el primero es el que cuenta.
+    avisos.push(
+      `${NOMBRE_MES[mes - 1]} de ${periodo.ejercicio} tiene ${irpfs.length} resúmenes antiguos de nóminas (IRPF ${[...irpfs].reverse().map(fmt).join(', ')}, del más antiguo al último): ` +
+        `solo cuenta el último grabado (${fmt(irpfs[0])}). Si eran nóminas distintas (por ejemplo, la ordinaria y la paga extra), impórtalas por trabajador o corrige la casilla 03.`,
+    );
   }
   return [...porMes.values()].sort((a, b) => a.mes - b.mes);
 }
@@ -225,18 +280,32 @@ async function resumenesAntiguos(companyId: string, periodo: PeriodoFiscal): Pro
  * pago cae en el periodo (y el resumen antiguo de los meses sin nominas).
  */
 export async function retencionesTrabajo(companyId: string, periodo: PeriodoFiscal): Promise<RetencionesTrabajo> {
+  const avisosConsulta: string[] = [];
   const [nominas, antiguos] = await Promise.all([
-    nominasPagadasEntre(companyId, periodo.fechaInicio, periodo.fechaFin),
-    resumenesAntiguos(companyId, periodo),
+    nominasPagadasEntre(companyId, periodo.fechaInicio, periodo.fechaFin, avisosConsulta),
+    resumenesAntiguos(companyId, periodo, avisosConsulta),
   ]);
   const { casillas, avisos } = agregarTrabajo111(nominas, antiguos);
+  avisos.push(...avisosConsulta);
   const borradores = nominas.filter((n) => n.estado === 'BORRADOR').length;
   if (borradores) {
     avisos.unshift(
       `${borradores} nómina(s) con pago en el periodo siguen en borrador: cuentan en el 111, pero contabilízalas (o corrígelas) antes de presentarlo.`,
     );
   }
-  return { periodo, casillas, nominas: nominas.length, borradores, mesesResumenAntiguo: antiguos.map((a) => a.mes), avisos };
+  const c = (v: number) => aCentimos(Number(v) || 0);
+  return {
+    periodo,
+    casillas,
+    nominas: nominas.length,
+    borradores,
+    mesesResumenAntiguo: antiguos.map((a) => a.mes),
+    resumenAntiguo: {
+      bruto: euros(antiguos.reduce((a, r) => a + c(r.totalBruto), 0)),
+      irpf: euros(antiguos.reduce((a, r) => a + c(r.totalIRPF), 0)),
+    },
+    avisos,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -250,6 +319,26 @@ export interface RetencionesActividades {
   percepciones: number;
   /** [09] Retenciones practicadas. */
   retenciones: number;
+  /** Desglose por el tipo de retencion de las facturas (15 %, 7 %...), para las pantallas. */
+  porTipo: Array<{ porcentaje: number; perceptores: number; base: number; cuota: number }>;
+}
+
+/** Desglose de las facturas con retencion por su tipo (puro). */
+export function desgloseActividadesPorTipo(
+  facturas: Array<{ supplierId: string; baseTotal: unknown; retencionTotal: unknown; tipoRetencion?: unknown }>,
+): RetencionesActividades['porTipo'] {
+  const grupos = new Map<number, { prov: Set<string>; base: number; cuota: number }>();
+  for (const f of facturas) {
+    const pct = Number(f.tipoRetencion) || 0;
+    const g = grupos.get(pct) ?? { prov: new Set<string>(), base: 0, cuota: 0 };
+    g.prov.add(f.supplierId);
+    g.base += aCentimos(Number(f.baseTotal));
+    g.cuota += aCentimos(Number(f.retencionTotal));
+    grupos.set(pct, g);
+  }
+  return [...grupos]
+    .sort((a, b) => b[0] - a[0])
+    .map(([porcentaje, g]) => ({ porcentaje, perceptores: g.prov.size, base: euros(g.base), cuota: euros(g.cuota) }));
 }
 
 /**
@@ -257,7 +346,7 @@ export interface RetencionesActividades {
  * retencion y fecha de la factura en el periodo.
  */
 export async function retencionesActividades(companyId: string, periodo: PeriodoFiscal): Promise<RetencionesActividades> {
-  if (!tablaLista('expenseInvoice')) return { perceptores: 0, percepciones: 0, retenciones: 0 };
+  if (!tablaLista('expenseInvoice')) return { perceptores: 0, percepciones: 0, retenciones: 0, porTipo: [] };
   const conIrpf = await prisma.expenseInvoice.findMany({
     where: {
       companyId,
@@ -265,12 +354,13 @@ export async function retencionesActividades(companyId: string, periodo: Periodo
       fechaEmision: { gte: periodo.fechaInicio, lte: periodo.fechaFin },
       retencionTotal: { gt: 0 },
     },
-    select: { supplierId: true, retencionTotal: true, baseTotal: true },
+    select: { supplierId: true, retencionTotal: true, baseTotal: true, tipoRetencion: true },
   });
   return {
     perceptores: new Set(conIrpf.map((f) => f.supplierId)).size,
     percepciones: euros(conIrpf.reduce((a, f) => a + aCentimos(Number(f.baseTotal)), 0)),
     retenciones: euros(conIrpf.reduce((a, f) => a + aCentimos(Number(f.retencionTotal)), 0)),
+    porTipo: desgloseActividadesPorTipo(conIrpf),
   };
 }
 
@@ -327,9 +417,32 @@ export interface Modelo190 {
     /** Retenciones + ingresos a cuenta efectuados. */
     retenciones: number;
   };
-  /** Suma de los cuatro 111 del ano (retenciones e ingresos a cuenta), para cuadrar con el 190. */
-  cuadre111: { trimestres: Array<{ periodo: string; retenciones: number }>; total: number; coincide: boolean };
+  /**
+   * Suma de los cuatro 111 del ano (retenciones e ingresos a cuenta), para
+   * cuadrar con el 190: el 111 presentado (sus casillas guardadas) o, si no se
+   * ha presentado, el calculado sin el resumen antiguo (que no entra en el 190).
+   */
+  cuadre111: {
+    trimestres: Array<{ periodo: string; retenciones: number; fuente: 'presentado' | 'calculado' }>;
+    total: number;
+    coincide: boolean;
+  };
+  /**
+   * El 190 repartido por trimestres de pago, con la misma fuente que sus
+   * totales (sin el resumen antiguo): es el desglose que enseñan las pantallas.
+   */
+  desglose: Array<{ periodo: string; trabajo: Casillas111Trabajo; actividades: RetencionesActividades }>;
   avisos: string[];
+}
+
+/** Casillas 03 + 06 + 09 (retenciones e ingresos a cuenta) de un 111 guardado, o null si no tiene ese formato. */
+export function retenciones111Guardadas(casillas: unknown): number | null {
+  if (!casillas || typeof casillas !== 'object') return null;
+  const c = casillas as Record<string, unknown>;
+  const v = (k: string) => aCentimos(Number(c[k] ?? 0) || 0);
+  if ('03_retenciones_trabajo' in c) return euros(v('03_retenciones_trabajo') + v('06_ingresos_a_cuenta') + v('09_retenciones_actividades'));
+  if ('28_total_retenciones' in c) return euros(v('28_total_retenciones'));
+  return null;
 }
 
 /** Codigos de provincia del 190 (los dos primeros digitos del codigo postal, salvo La Palma = 53). */
@@ -528,12 +641,18 @@ export async function calcularModelo190(companyId: string, ejercicio: number): P
   const anio = periodoFiscal(ejercicio, '0A');
   const avisos: string[] = [];
 
-  const nominas = await nominasPagadasEntre(companyId, anio.fechaInicio, anio.fechaFin);
+  const nominas = await nominasPagadasEntre(companyId, anio.fechaInicio, anio.fechaFin, avisos);
   const ids = [...new Set(nominas.map((n) => n.empleadoId))];
   const fichas = ids.length && tablaLista('empleado') ? await prisma.empleado.findMany({ where: { companyId, id: { in: ids } } }) : [];
   const empleados = new Map<string, EmpleadoFiscal>(fichas.map((e) => [e.id, e as unknown as EmpleadoFiscal]));
   const borradores = nominas.filter((n) => n.estado === 'BORRADOR').length;
   if (borradores) avisos.push(`${borradores} nómina(s) pagadas en ${ejercicio} siguen en borrador: entran en el 190, pero contabilízalas antes de presentarlo.`);
+  const atrasosSinAnio = nominas.filter((n) => n.tipo === 'ATRASOS' && n.ejercicioDevengo === null).length;
+  if (atrasosSinAnio) {
+    avisos.push(
+      `${atrasosSinAnio} nómina(s) de atrasos no indican el ejercicio de devengo: el 190 las declara como rentas de ${ejercicio}. Si son de un año anterior, indícalo en la nómina (van en un registro aparte con ese ejercicio).`,
+    );
+  }
 
   const facturas = tablaLista('expenseInvoice')
     ? await prisma.expenseInvoice.findMany({
@@ -556,7 +675,10 @@ export async function calcularModelo190(companyId: string, ejercicio: number): P
   const sinDatos = perceptores.filter((p) => p.faltan.length);
   if (sinDatos.length) {
     // Sin nombres: este aviso tambien sale en el modulo Impuestos (impuestos:read).
-    avisos.push(`A ${sinDatos.length} registro(s) les faltan datos para el fichero (${[...new Set(sinDatos.flatMap((p) => p.faltan))].join(', ')}): revisa el informe por perceptor en Nóminas.`);
+    const deTrabajadores = sinDatos.some((p) => p.origen === 'nomina');
+    const deProveedores = sinDatos.some((p) => p.origen === 'profesional');
+    const donde = [deTrabajadores ? 'la ficha de cada trabajador en Nóminas > Empleados' : '', deProveedores ? 'el código postal del proveedor' : ''].filter(Boolean).join(' y ');
+    avisos.push(`A ${sinDatos.length} registro(s) les faltan datos para el fichero (${[...new Set(sinDatos.flatMap((p) => p.faltan))].join(', ')}): complétalos en ${donde}.`);
   }
 
   const c = (v: number) => aCentimos(v);
@@ -567,22 +689,33 @@ export async function calcularModelo190(companyId: string, ejercicio: number): P
     retenciones: euros(perceptores.reduce((a, p) => a + c(p.retenciones) + c(p.ingresosACuentaEfectuados), 0)),
   };
 
-  // Lo mismo, por trimestres, como lo declara el 111 (misma fuente): tiene que coincidir.
-  const trimestres: Modelo190['cuadre111']['trimestres'] = [];
+  // El 190 por trimestres de pago (misma fuente que los totales: sin el resumen antiguo).
+  const desglose: Modelo190['desglose'] = [];
   for (const t of ['1T', '2T', '3T', '4T']) {
     const p = periodoFiscal(ejercicio, t);
-    const [trabajo, actividades] = await Promise.all([retencionesTrabajo(companyId, p), retencionesActividades(companyId, p)]);
-    // Sin el resumen antiguo: el 190 no lo incluye.
-    const antiguos = trabajo.mesesResumenAntiguo.length
-      ? (await resumenesAntiguos(companyId, p)).reduce((a, r) => a + c(r.totalIRPF), 0)
-      : 0;
-    const ret = c(trabajo.casillas.retencionesDinerarias) - antiguos + c(trabajo.casillas.ingresosACuenta) + c(actividades.retenciones);
-    trimestres.push({ periodo: t, retenciones: euros(ret) });
+    const delTrimestre = nominas.filter((n) => n.fechaPago >= p.fechaInicio && n.fechaPago <= p.fechaFin);
+    desglose.push({ periodo: t, trabajo: agregarTrabajo111(delTrimestre).casillas, actividades: await retencionesActividades(companyId, p) });
   }
+
+  // Cuadre con los 111: lo PRESENTADO manda (si se recalculara, siempre coincidiria
+  // y no avisaria nunca); de los trimestres sin presentar, el calculo.
+  const guardados = tablaLista('modeloImpuesto')
+    ? await prisma.modeloImpuesto.findMany({ where: { companyId, codigo: '111', ejercicio, periodo: { in: ['1T', '2T', '3T', '4T'] }, estado: 'presentado' } })
+    : [];
+  const trimestres: Modelo190['cuadre111']['trimestres'] = desglose.map((d) => {
+    const presentado = retenciones111Guardadas(guardados.find((g) => g.periodo === d.periodo)?.casillas);
+    if (presentado !== null) return { periodo: d.periodo, retenciones: presentado, fuente: 'presentado' as const };
+    const calculado = c(d.trabajo.retencionesDinerarias) + c(d.trabajo.ingresosACuenta) + c(d.actividades.retenciones);
+    return { periodo: d.periodo, retenciones: euros(calculado), fuente: 'calculado' as const };
+  });
   const total = euros(trimestres.reduce((a, t) => a + c(t.retenciones), 0));
   const coincide = c(total) === c(totales.retenciones);
   if (!coincide) {
-    avisos.push(`Las retenciones del 190 (${totales.retenciones.toFixed(2)} €) no coinciden con la suma de los cuatro 111 (${total.toFixed(2)} €).`);
+    const presentados = trimestres.filter((t) => t.fuente === 'presentado').map((t) => t.periodo);
+    avisos.push(
+      `Las retenciones del 190 (${fmt(totales.retenciones)}) no coinciden con la suma de los cuatro 111 (${fmt(total)}` +
+        `${presentados.length ? `; ${presentados.join(', ')} con lo presentado` : ''}). Revisa las nóminas o los 111 presentados antes de presentar el 190.`,
+    );
   }
-  return { ejercicio, perceptores, totales, cuadre111: { trimestres, total, coincide }, avisos };
+  return { ejercicio, perceptores, totales, cuadre111: { trimestres, total, coincide }, desglose, avisos };
 }

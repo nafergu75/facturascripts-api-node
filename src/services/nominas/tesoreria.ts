@@ -12,7 +12,11 @@
  * queda conciliado con el asiento del pago (no se contabiliza dos veces).
  *
  * Al pagar los liquidos, la fecha de pago de la nomina pasa a ser la del pago:
- * es la que decide el trimestre del 111 (art. 78.1 RIRPF).
+ * es la que decide el trimestre del 111 (art. 78.1 RIRPF). Salvo si eso la
+ * saca de un trimestre cuyo 111 ya esta presentado o pagado: entonces se
+ * mantiene la fecha (su IRPF ya esta declarado ahi; moverla lo declararia dos
+ * veces) y se avisa. Y no se mete en un 111 ya presentado o pagado (409). La
+ * fecha anterior se guarda y se restaura al anular el pago.
  *
  * Anular un pago: con el periodo del asiento abierto, el asiento pasa a
  * REVERSED; con el periodo cerrado, contraasiento con la fecha de anulacion
@@ -29,7 +33,7 @@ import { comprobarFechaAbierta } from '../cobrosPagos.service';
 import { calcularModelo111 } from '../impuestosCalculo.service';
 import { obtenerReglas } from '../reglasContables.service';
 import { nombreCompleto } from '../empleados.service';
-import { NOMBRES_CUENTAS, fmtEuros } from './calculo';
+import { NOMBRES_CUENTAS, conceptoSubcuenta465, etiquetaTrabajador, fmtEuros } from './calculo';
 import { asegurarCuentas, cuentasNominasEmpresa, prepararPlanEmpresa } from './plan';
 import { periodoFiscal } from './fiscal';
 
@@ -197,6 +201,45 @@ export async function revertirAsiento(
 }
 
 // ---------------------------------------------------------------------------
+// Trimestre del 111 de una fecha de pago, y si ya esta presentado o pagado
+// ---------------------------------------------------------------------------
+
+/** Trimestre del 111 al que va una fecha de pago (AAAA-MM-DD). */
+export function trimestre111(fecha: string): { ejercicio: number; periodo: string } {
+  return { ejercicio: Number(fecha.slice(0, 4)), periodo: `${Math.ceil(Number(fecha.slice(5, 7)) / 3)}T` };
+}
+
+export interface Estado111 {
+  ejercicio: number;
+  periodo: string;
+  /** Presentado (ModeloImpuesto en estado 'presentado') o pagado (asiento del pago del 111). */
+  cerrado: boolean;
+  motivo: 'presentado' | 'pagado' | null;
+}
+
+export const textoTrimestre = (e: { ejercicio: number; periodo: string }) => `${e.periodo}/${e.ejercicio}`;
+const mismoTrimestre = (a: { ejercicio: number; periodo: string }, b: { ejercicio: number; periodo: string }) => a.ejercicio === b.ejercicio && a.periodo === b.periodo;
+
+/** Si el 111 de un trimestre ya esta presentado o pagado. */
+export async function estado111(companyId: string, ejercicio: number, periodo: string): Promise<Estado111> {
+  const presentado = await prisma.modeloImpuesto.findFirst({ where: { companyId, codigo: '111', ejercicio, periodo, estado: 'presentado' }, select: { id: true } });
+  if (presentado) return { ejercicio, periodo, cerrado: true, motivo: 'presentado' };
+  const pago = await pagoModelo111(companyId, ejercicio, periodo);
+  return { ejercicio, periodo, cerrado: !!pago, motivo: pago ? 'pagado' : null };
+}
+
+/** Estado del 111 por fecha de pago, consultando una sola vez cada trimestre. */
+export function consultor111(companyId: string): (fecha: string) => Promise<Estado111> {
+  const cache = new Map<string, Promise<Estado111>>();
+  return (fecha: string) => {
+    const q = trimestre111(fecha);
+    const k = textoTrimestre(q);
+    if (!cache.has(k)) cache.set(k, estado111(companyId, q.ejercicio, q.periodo));
+    return cache.get(k)!;
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Pago de los liquidos
 // ---------------------------------------------------------------------------
 
@@ -254,16 +297,15 @@ export async function pagarNominas(companyId: string, ejercicio: number, mes: nu
   if (sinSubcuenta.length) throw conflict(`${nombreCompleto(sinSubcuenta[0].empleado)} no tiene subcuenta 465: anula y vuelve a contabilizar su nómina.`);
 
   const { cuentas } = await cuentasNominasEmpresa(companyId);
-  // Una linea por subcuenta 465 (un trabajador con dos recibos en el mes, una sola linea).
-  const porSubcuenta = new Map<string, { nombre: string; centimos: number }>();
+  // Una linea por subcuenta 465 (un trabajador con dos recibos en el mes, una sola
+  // linea). Sin el nombre del trabajador: el diario lo ve quien tiene contabilidad:read.
+  const porSubcuenta = new Map<string, number>();
   for (const n of aPagar) {
     const sub = n.empleado.subcuenta465!;
-    const v = porSubcuenta.get(sub) ?? { nombre: nombreCompleto(n.empleado), centimos: 0 };
-    v.centimos += aCentimos(Number(n.liquido));
-    porSubcuenta.set(sub, v);
+    porSubcuenta.set(sub, (porSubcuenta.get(sub) ?? 0) + aCentimos(Number(n.liquido)));
   }
   const embargos = opciones.incluirEmbargos ? aPagar.reduce((a, n) => a + aCentimos(Number(n.embargos)), 0) : 0;
-  const liquidos = [...porSubcuenta.values()].reduce((a, v) => a + v.centimos, 0);
+  const liquidos = [...porSubcuenta.values()].reduce((a, v) => a + v, 0);
   const total = liquidos + embargos;
   if (total <= 0) throw badRequest('Las nóminas seleccionadas no tienen líquido que pagar.');
 
@@ -272,20 +314,63 @@ export async function pagarNominas(companyId: string, ejercicio: number, mes: nu
   await comprobarFechaAbierta(companyId, t.fecha);
   const avisos: string[] = [];
   if (t.fecha < `${ejercicio}-${mm(mes)}-01`) avisos.push('La fecha de pago es anterior al mes de la nómina (¿un anticipo?).');
-  const trimestrePago = `${Math.ceil(Number(t.fecha.slice(5, 7)) / 3)}T/${t.fecha.slice(0, 4)}`;
-  const trimestreDevengo = `${Math.ceil(mes / 3)}T/${ejercicio}`;
-  if (trimestrePago !== trimestreDevengo) avisos.push(`Se paga en el ${trimestrePago}: el IRPF de estas nóminas va al 111 de ese trimestre (fecha de pago).`);
+
+  // Trimestre del 111: la fecha de pago pasa a ser la del pago, salvo que la saque
+  // de un 111 ya presentado o pagado (se mantiene) o la meta en uno (409).
+  const estadoDe = consultor111(companyId);
+  const qNuevo = await estadoDe(t.fecha);
+  const mueven = new Set<string>();
+  const mantenidas = new Map<string, { q: Estado111; nominas: number }>();
+  const cambianDeTrimestre = new Set<string>();
+  for (const n of aPagar) {
+    const qViejo = await estadoDe(n.fechaPago);
+    if (mismoTrimestre(qViejo, qNuevo)) {
+      mueven.add(n.id);
+      continue;
+    }
+    if (qViejo.cerrado) {
+      const k = textoTrimestre(qViejo);
+      mantenidas.set(k, { q: qViejo, nominas: (mantenidas.get(k)?.nominas ?? 0) + 1 });
+      continue;
+    }
+    if (qNuevo.cerrado) {
+      throw conflict(
+        `El 111 del ${textoTrimestre(qNuevo)} ya está ${qNuevo.motivo}: con un pago de esa fecha, el IRPF de ${nombreCompleto(n.empleado)} (en el 111 del ${textoTrimestre(qViejo)}) ` +
+          `pasaría a un 111 ya ${qNuevo.motivo}. Pon la fecha real del pago; si es esa, marca antes el 111 como no presentado (o anula su pago) y presenta una complementaria.`,
+      );
+    }
+    mueven.add(n.id);
+    cambianDeTrimestre.add(textoTrimestre(qViejo));
+  }
+  for (const { q, nominas } of mantenidas.values()) {
+    avisos.push(
+      `El 111 del ${textoTrimestre(q)} ya está ${q.motivo} con ${nominas === 1 ? 'una de estas nóminas' : `${nominas} de estas nóminas`}: se mantiene su fecha de pago para no declarar dos veces su IRPF. ` +
+        `Si el pago real cae en otro trimestre, corrige el 111 del ${textoTrimestre(q)} con una complementaria.`,
+    );
+  }
+  if (cambianDeTrimestre.size) {
+    avisos.push(`Se paga en el ${textoTrimestre(qNuevo)}: el IRPF de estas nóminas pasa del 111 del ${[...cambianDeTrimestre].join(', ')} al de ese trimestre (fecha de pago).`);
+  }
   if (t.bankAccountId === null) await prepararPlanEmpresa(companyId);
 
   const apuntes = [...porSubcuenta]
-    .filter(([, v]) => v.centimos > 0)
-    .map(([subcuenta, v]) => ({ subcuenta, concepto: v.nombre, debe: euros(v.centimos), haber: 0 }));
+    .filter(([, centimos]) => centimos > 0)
+    .map(([subcuenta, centimos]) => ({ subcuenta, concepto: conceptoSubcuenta465(subcuenta), debe: euros(centimos), haber: 0 }));
   if (embargos) apuntes.push({ subcuenta: cuentas.embargos, concepto: NOMBRES_CUENTAS.embargos, debe: euros(embargos), haber: 0 });
   apuntes.push({ subcuenta: t.cuenta, concepto: t.nombre, debe: 0, haber: euros(total) });
   const concepto =
-    aPagar.length === 1
-      ? `Pago nómina ${periodoTexto(ejercicio, mes)} - ${nombreCompleto(aPagar[0].empleado)}`
+    porSubcuenta.size === 1
+      ? `Pago nómina ${periodoTexto(ejercicio, mes)} - ${etiquetaTrabajador(aPagar[0].empleado.subcuenta465!)}`
       : `Pago nóminas ${periodoTexto(ejercicio, mes)} (${porSubcuenta.size} trabajadores)`;
+  // Fecha de pago anterior de cada nomina (se restaura al anular el pago).
+  const grupos = new Map<string, { anterior: string; mueve: boolean; ids: string[] }>();
+  for (const n of aPagar) {
+    const mueve = mueven.has(n.id);
+    const k = `${n.fechaPago}|${mueve}`;
+    const g = grupos.get(k) ?? { anterior: n.fechaPago, mueve, ids: [] };
+    g.ids.push(n.id);
+    grupos.set(k, g);
+  }
 
   return conReintento(() =>
     prisma.$transaction(async (tx) => {
@@ -293,9 +378,12 @@ export async function pagarNominas(companyId: string, ejercicio: number, mes: nu
       // Primero el estado: si otro proceso paga lo mismo a la vez, uno de los dos para aqui.
       const marcadas = await tx.nomina.updateMany({
         where: { id: { in: idsPago }, estado: 'CONTABILIZADA' },
-        data: { estado: 'PAGADA', fechaPago: t.fecha, cuentaPago: t.cuenta },
+        data: { estado: 'PAGADA', cuentaPago: t.cuenta },
       });
       if (marcadas.count !== idsPago.length) throw conflict('Alguna nómina ha cambiado de estado mientras tanto: vuelve a cargar el mes.');
+      for (const g of grupos.values()) {
+        await tx.nomina.updateMany({ where: { id: { in: g.ids } }, data: { fechaPagoAnterior: g.anterior, ...(g.mueve ? { fechaPago: t.fecha } : {}) } });
+      }
       if (t.bankAccountId === null) await asegurarCuentas(tx, companyId, [{ codigo: t.cuenta, nombre: NOMBRES_CUENTAS.caja }]);
       const creado = await crearAsientoConApuntes(companyId, {
         tx,
@@ -338,11 +426,14 @@ export interface ResultadoAnulacionPago {
   asientosRevertidos: string[];
   contraasientos: Array<{ id: string; numero: string }>;
   movimientosDesconciliados: number;
+  avisos: string[];
 }
 
 /**
  * Anula el pago de las nominas pagadas de un mes (o de las indicadas). Un pago
  * se anula entero: si incluia otras nominas, tambien vuelven a CONTABILIZADA.
+ * Su fecha de pago vuelve a la que tenian antes del pago (la del pago anulado
+ * ya no es real), salvo que eso las mueva de un 111 presentado o pagado.
  */
 export async function anularPagoNominas(
   companyId: string,
@@ -363,11 +454,36 @@ export async function anularPagoNominas(
   const asientoIds = [...new Set(pagadas.map((n) => n.asientoPagoId).filter((x): x is string => !!x))];
   const afectadas = await prisma.nomina.findMany({
     where: { companyId, estado: 'PAGADA', OR: [{ id: { in: pagadas.map((n) => n.id) } }, ...(asientoIds.length ? [{ asientoPagoId: { in: asientoIds } }] : [])] },
-    select: { id: true },
+    select: { id: true, fechaPago: true, fechaPagoAnterior: true, fechaDevengo: true },
   });
   const originales = asientoIds.length ? await prisma.journalEntry.findMany({ where: { companyId, id: { in: asientoIds } }, select: { id: true, fecha: true } }) : [];
   const fechaDe = new Map(originales.map((a) => [a.id, a.fecha.toISOString().slice(0, 10)]));
   const { abiertos, fechaAnulacion } = await fechaAnulacionPara(companyId, [...fechaDe.values()], opciones.fecha);
+
+  // Fecha de pago a la que vuelve cada nomina: la de antes del pago (o, si no se
+  // guardo, la de devengo), si no cruza un 111 ya presentado o pagado.
+  const estadoDe = consultor111(companyId);
+  const restaurar = new Map<string, string[]>();
+  const mantenidas = new Map<string, { q: Estado111; nominas: number }>();
+  for (const n of afectadas) {
+    const anterior = n.fechaPagoAnterior ?? n.fechaDevengo;
+    if (anterior === n.fechaPago) continue;
+    const [qActual, qAnterior] = await Promise.all([estadoDe(n.fechaPago), estadoDe(anterior)]);
+    if (!mismoTrimestre(qActual, qAnterior)) {
+      const cerrado = qActual.cerrado ? qActual : qAnterior.cerrado ? qAnterior : null;
+      if (cerrado) {
+        const k = textoTrimestre(cerrado);
+        mantenidas.set(k, { q: cerrado, nominas: (mantenidas.get(k)?.nominas ?? 0) + 1 });
+        continue;
+      }
+    }
+    restaurar.set(anterior, [...(restaurar.get(anterior) ?? []), n.id]);
+  }
+  const avisos = [...mantenidas.values()].map(
+    ({ q, nominas }) =>
+      `El 111 del ${textoTrimestre(q)} ya está ${q.motivo}: ${nominas === 1 ? 'una nómina conserva' : `${nominas} nóminas conservan`} la fecha de pago del pago anulado para no cambiar ese 111. ` +
+      'Al registrar el pago bueno, revisa en qué trimestre declaras su IRPF.',
+  );
 
   return conReintento(() =>
     prisma.$transaction(async (tx) => {
@@ -389,9 +505,10 @@ export async function anularPagoNominas(
       const idsAfectadas = afectadas.map((n) => n.id);
       const r = await tx.nomina.updateMany({
         where: { id: { in: idsAfectadas }, estado: 'PAGADA' },
-        data: { estado: 'CONTABILIZADA', asientoPagoId: null, cuentaPago: null },
+        data: { estado: 'CONTABILIZADA', asientoPagoId: null, cuentaPago: null, fechaPagoAnterior: null },
       });
       if (r.count !== idsAfectadas.length) throw conflict('Alguna nómina ha cambiado de estado mientras tanto: vuelve a cargar el mes.');
+      for (const [fecha, ids] of restaurar) await tx.nomina.updateMany({ where: { id: { in: ids } }, data: { fechaPago: fecha } });
       return {
         ejercicio,
         mes,
@@ -401,6 +518,7 @@ export async function anularPagoNominas(
         asientosRevertidos,
         contraasientos,
         movimientosDesconciliados: movimientos,
+        avisos,
       };
     }, OPCIONES_TX),
   );
@@ -438,37 +556,121 @@ export async function pagoModelo111(companyId: string, ejercicio: number, period
   });
 }
 
+export interface ImportePago111 {
+  /** De donde sale el importe: el 111 presentado, el editado a mano en Impuestos o el calculo. */
+  fuente: 'presentado' | 'editado' | 'calculado';
+  /** Retenciones e ingresos a cuenta de las nominas por trabajador (4751 de trabajo). */
+  trabajoNominas: number;
+  /** IRPF de los meses que solo tienen el resumen antiguo (se abono en otra 4751). */
+  trabajoResumenAntiguo: number;
+  /** Retenciones de profesionales (4751 de profesionales). */
+  profesionales: number;
+  total: number;
+  /** Nominas con pago en el periodo aun en borrador: su IRPF no esta en la 4751. */
+  borradores: number;
+  avisos: string[];
+}
+
 /**
- * Paga el 111 de un periodo (el resultado calculado: trabajo + profesionales):
- * Debe 4751 de trabajo (retenciones e ingresos a cuenta de las nominas) y la
- * 4751 de profesionales / Haber 572 o 570.
+ * Lo que se paga del 111 de un periodo: las casillas del 111 presentado o
+ * editado a mano en Impuestos (lo que se ingresa es lo declarado) y, si no, el
+ * calculo. El trabajo se reparte entre la 4751 de las nominas y la del IRPF del
+ * resumen antiguo (que nunca paso por la 4751 de trabajo).
+ */
+export async function importePago111(companyId: string, periodo: ReturnType<typeof periodoFiscal>): Promise<ImportePago111> {
+  const d = await calcularModelo111(companyId, periodo);
+  const c = (v: unknown) => aCentimos(Number(v ?? 0) || 0);
+  const modelo = await prisma.modeloImpuesto.findUnique({
+    where: { companyId_codigo_ejercicio_periodo: { companyId, codigo: '111', ejercicio: periodo.ejercicio, periodo: periodo.periodo } },
+  });
+  const guardadas = (modelo?.casillas ?? null) as Record<string, unknown> | null;
+  const usaGuardadas = !!guardadas && '03_retenciones_trabajo' in guardadas && (modelo!.estado === 'presentado' || modelo!.origen === 'manual-mixto');
+  const avisos = [...(d.avisos ?? [])];
+  let trabajo: number;
+  let profesionales: number;
+  let fuente: ImportePago111['fuente'] = 'calculado';
+  if (usaGuardadas) {
+    fuente = modelo!.estado === 'presentado' ? 'presentado' : 'editado';
+    trabajo = c(guardadas!['03_retenciones_trabajo']) + c(guardadas!['06_ingresos_a_cuenta']);
+    profesionales = c(guardadas!['09_retenciones_actividades']);
+    const calculado = c(d.retencionesTrabajo) + c(d.ingresosACuentaEspecie) + c(d.retencionesActividades);
+    if (calculado !== trabajo + profesionales) {
+      avisos.push(
+        `Se paga lo ${fuente === 'presentado' ? 'presentado' : 'editado a mano en Impuestos'} (${fmtEuros(euros(trabajo + profesionales))}); ` +
+          `con las nóminas y facturas de hoy saldría ${fmtEuros(euros(calculado))}. Si han cambiado después de presentarlo, hace falta una complementaria.`,
+      );
+    }
+  } else {
+    trabajo = c(d.retencionesTrabajo) + c(d.ingresosACuentaEspecie);
+    profesionales = c(d.retencionesActividades);
+  }
+  const resumen = Math.min(c(d.resumenAntiguo?.irpf), trabajo);
+  return {
+    fuente,
+    trabajoNominas: euros(trabajo - resumen),
+    trabajoResumenAntiguo: euros(resumen),
+    profesionales: euros(profesionales),
+    total: euros(trabajo + profesionales),
+    borradores: d.borradores ?? 0,
+    avisos,
+  };
+}
+
+/**
+ * Paga el 111 de un periodo (lo presentado o, si no, lo calculado): Debe 4751
+ * de trabajo (retenciones e ingresos a cuenta de las nominas), la 4751 del
+ * resumen antiguo y la de profesionales / Haber 572 o 570. No se paga con
+ * nominas del periodo en borrador: su IRPF aun no esta en la 4751.
  */
 export async function pagarModelo111(
   companyId: string,
   ejercicio: number,
   periodoTxt: string,
-  opciones: MedioPago & { cuentaProfesionales?: string } = {},
+  opciones: MedioPago & { cuentaProfesionales?: string; cuentaResumenAntiguo?: string } = {},
 ) {
   const periodo = periodoFiscal(ejercicio, periodoTxt);
   const ya = await pagoModelo111(companyId, ejercicio, periodo.periodo);
   if (ya) throw conflict(`El 111 de ${periodo.periodo}/${ejercicio} ya está pagado (asiento ${ya.numeroAsiento}).`);
-  const d = await calcularModelo111(companyId, periodo);
-  const trabajo = aCentimos(d.retencionesTrabajo) + aCentimos(d.ingresosACuentaEspecie ?? 0);
-  const profesionales = aCentimos(d.retencionesActividades ?? 0);
-  const total = trabajo + profesionales;
+  const imp = await importePago111(companyId, periodo);
+  if (imp.borradores) {
+    throw conflict(
+      `Hay ${imp.borradores} nómina(s) con pago en el ${periodo.periodo}/${ejercicio} en borrador: contabilízalas antes de pagar el 111 (su IRPF aún no está en la 4751).`,
+    );
+  }
+  const trabajo = aCentimos(imp.trabajoNominas);
+  const resumen = aCentimos(imp.trabajoResumenAntiguo);
+  const profesionales = aCentimos(imp.profesionales);
+  const total = trabajo + resumen + profesionales;
   if (total <= 0) throw badRequest(`El 111 de ${periodo.periodo}/${ejercicio} sale a cero: no hay nada que pagar.`);
 
   const { cuentas } = await cuentasNominasEmpresa(companyId);
-  const cuentaProf = opciones.cuentaProfesionales?.trim() || (profesionales ? await cuentaRetencionesProfesionales(companyId, cuentas.irpfTrabajo) : '');
+  const generica = profesionales || resumen ? await cuentaRetencionesProfesionales(companyId, cuentas.irpfTrabajo) : '';
+  const cuentaProf = opciones.cuentaProfesionales?.trim() || (profesionales ? generica : '');
+  const cuentaResumen = opciones.cuentaResumenAntiguo?.trim() || (resumen ? generica : '');
   if (profesionales && !/^4751\d{0,6}$/.test(cuentaProf)) throw badRequest('La cuenta de las retenciones de profesionales tiene que ser una 4751.');
+  if (resumen && !/^4751\d{0,6}$/.test(cuentaResumen)) throw badRequest('La cuenta del IRPF del resumen antiguo de nóminas tiene que ser una 4751.');
   const t = await resolverMedioPago(companyId, opciones, cuentas);
-  comprobarImporteMovimiento(t, total, `el resultado del 111`);
+  comprobarImporteMovimiento(t, total, `el ${imp.fuente === 'calculado' ? 'resultado' : 'importe presentado'} del 111`);
   await comprobarFechaAbierta(companyId, t.fecha);
   await prepararPlanEmpresa(companyId);
 
-  const apuntes: Array<{ subcuenta: string; concepto: string; debe: number; haber: number }> = [];
-  if (trabajo) apuntes.push({ subcuenta: cuentas.irpfTrabajo, concepto: NOMBRES_CUENTAS.irpfTrabajo, debe: euros(trabajo), haber: 0 });
-  if (profesionales) apuntes.push({ subcuenta: cuentaProf, concepto: 'HP acreedora por retenciones de profesionales', debe: euros(profesionales), haber: 0 });
+  // Una linea por cuenta (la del resumen antiguo puede ser la misma que la de profesionales).
+  const debePor = new Map<string, { concepto: string; centimos: number }>();
+  const sumar = (cuenta: string, concepto: string, centimos: number) => {
+    if (!centimos) return;
+    const v = debePor.get(cuenta) ?? { concepto, centimos: 0 };
+    v.centimos += centimos;
+    debePor.set(cuenta, v);
+  };
+  sumar(cuentas.irpfTrabajo, NOMBRES_CUENTAS.irpfTrabajo, trabajo);
+  sumar(cuentaResumen, 'HP acreedora por retenciones (nóminas del resumen antiguo)', resumen);
+  sumar(cuentaProf, 'HP acreedora por retenciones de profesionales', profesionales);
+  const apuntes: Array<{ subcuenta: string; concepto: string; debe: number; haber: number }> = [...debePor].map(([subcuenta, v]) => ({
+    subcuenta,
+    concepto: v.concepto,
+    debe: euros(v.centimos),
+    haber: 0,
+  }));
   apuntes.push({ subcuenta: t.cuenta, concepto: t.nombre, debe: 0, haber: euros(total) });
 
   return conReintento(() =>
@@ -479,8 +681,8 @@ export async function pagarModelo111(
       });
       if (otro) throw conflict(`El 111 de ${periodo.periodo}/${ejercicio} ya está pagado (asiento ${otro.numeroAsiento}).`);
       await asegurarCuentas(tx, companyId, [
-        { codigo: cuentas.irpfTrabajo, nombre: NOMBRES_CUENTAS.irpfTrabajo },
-        ...(profesionales ? [{ codigo: cuentaProf, nombre: 'HP acreedora por retenciones de profesionales' }] : []),
+        ...(trabajo ? [{ codigo: cuentas.irpfTrabajo, nombre: NOMBRES_CUENTAS.irpfTrabajo }] : []),
+        ...[...debePor].filter(([codigo]) => codigo !== cuentas.irpfTrabajo).map(([codigo, v]) => ({ codigo, nombre: v.concepto })),
         ...(t.bankAccountId === null ? [{ codigo: t.cuenta, nombre: NOMBRES_CUENTAS.caja }] : []),
       ]);
       const creado = await crearAsientoConApuntes(companyId, {
@@ -500,14 +702,17 @@ export async function pagarModelo111(
         ejercicio,
         periodo: periodo.periodo,
         importe: euros(total),
-        trabajo: euros(trabajo),
+        fuente: imp.fuente,
+        trabajo: euros(trabajo + resumen),
+        trabajoResumenAntiguo: euros(resumen),
         profesionales: euros(profesionales),
         cuentaProfesionales: profesionales ? cuentaProf : null,
+        cuentaResumenAntiguo: resumen ? cuentaResumen : null,
         fecha: t.fecha,
         cuentaTesoreria: t.cuenta,
         asiento: { id: asientoId, numero: String(creado.asiento.numero) },
         movimientoId: t.movimiento?.id ?? null,
-        avisos: d.avisos ?? [],
+        avisos: imp.avisos,
       };
     }, OPCIONES_TX),
   );

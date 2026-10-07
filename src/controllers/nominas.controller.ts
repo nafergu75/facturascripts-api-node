@@ -22,7 +22,43 @@ import {
 import { ETIQUETAS_CAMPOS, filasDesdeJson, leerNominas, type BrutoConEspecie, type OpcionesLecturaNominas } from '../services/nominas/lector';
 import { ejercicio as esquemaEjercicio, mes as esquemaMes, parsear, seleccionSchema } from '../services/nominas/esquemas';
 import { ESTADOS_NOMINA } from '../domain/nominas.model';
-import { borrarSubida, reensamblarSubida, recibirTrozo } from '../services/puestaEnMarcha/subidasTrozos';
+import { borrarSubida, limpiarSubidasCaducadas, reensamblarSubida, recibirTrozo } from '../services/puestaEnMarcha/subidasTrozos';
+import type { NominaDTO } from '../domain/nominas.model';
+
+/** Campos de una nomina cuyo cambio queda en la auditoria (importes y lo que decide el 111 y el 190). */
+const CAMPOS_AUDITADOS = [
+  'ejercicio',
+  'mes',
+  'tipo',
+  'ejercicioDevengo',
+  'fechaPago',
+  'brutoDinerario',
+  'dietasExentas',
+  'especieValoracion',
+  'ingresoACuenta',
+  'ingresoACuentaRepercutido',
+  'indemnizacionExenta',
+  'indemnizacionSujeta',
+  'ssTrabajador',
+  'irpf',
+  'porcentajeIrpf',
+  'anticipos',
+  'embargos',
+  'otrasDeducciones',
+  'liquido',
+  'ssEmpresa',
+] as const;
+
+/** Lo que cambia entre dos versiones de una nomina: { campo: { antes, despues } }. */
+export function cambiosNomina(antes: Partial<NominaDTO>, despues: Partial<NominaDTO>): Record<string, { antes: unknown; despues: unknown }> {
+  const out: Record<string, { antes: unknown; despues: unknown }> = {};
+  for (const k of CAMPOS_AUDITADOS) {
+    const a = antes[k] ?? null;
+    const d = despues[k] ?? null;
+    if (a !== d) out[k] = { antes: a, despues: d };
+  }
+  return out;
+}
 
 type ConFichero = Request & { file?: { buffer: Buffer; originalname: string } };
 
@@ -102,12 +138,33 @@ export const nominasController = {
     sendOk(res, await obtenerNomina(req.companyId!, req.params.id));
   }),
 
+  /** POST / — alta a mano (queda en la auditoria: entra en el 111 y el 190 aunque este en borrador). */
   crear: asyncHandler(async (req, res) => {
-    sendOk(res, await crearNomina(req.companyId!, req.body), undefined, 201);
+    const n = await crearNomina(req.companyId!, req.body);
+    await registrarAuditoria({
+      userId: req.user!.userId,
+      companyId: req.companyId,
+      action: 'CREAR_NOMINA',
+      resourceType: 'NOMINA',
+      resourceId: n.id,
+      meta: { empleadoId: n.empleadoId, ...Object.fromEntries(CAMPOS_AUDITADOS.map((k) => [k, n[k] ?? null])) },
+    });
+    sendOk(res, n, undefined, 201);
   }),
 
+  /** PUT /:id — con los campos que cambian (antes y despues) en la auditoria. */
   actualizar: asyncHandler(async (req, res) => {
-    sendOk(res, await actualizarNomina(req.companyId!, req.params.id, req.body));
+    const antes = await obtenerNomina(req.companyId!, req.params.id);
+    const n = await actualizarNomina(req.companyId!, req.params.id, req.body);
+    await registrarAuditoria({
+      userId: req.user!.userId,
+      companyId: req.companyId,
+      action: 'EDITAR_NOMINA',
+      resourceType: 'NOMINA',
+      resourceId: n.id,
+      meta: { empleadoId: n.empleadoId, cambios: cambiosNomina(antes, n) },
+    });
+    sendOk(res, n);
   }),
 
   borrar: asyncHandler(async (req, res) => {
@@ -157,13 +214,16 @@ export const nominasController = {
    * columnas, responde 200 con `necesitaMapeo` y las columnas del fichero.
    */
   vistaPrevia: asyncHandler(async (req, res) => {
+    // Las subidas por trozos abandonadas (Excel con los datos de la plantilla) no se quedan guardadas.
+    await limpiarSubidasCaducadas();
     try {
       const entrada = await entradaImportacion(req as ConFichero);
       sendOk(res, await previsualizarImportacion(req.companyId!, entrada));
     } catch (e) {
-      const d = e instanceof HttpError ? (e.details as { necesitaMapeo?: boolean; columnas?: unknown; mapeo?: unknown } | undefined) : undefined;
+      const d = e instanceof HttpError ? (e.details as { necesitaMapeo?: boolean; columnas?: unknown; mapeo?: unknown; filaCabecera?: number } | undefined) : undefined;
       if (!d?.necesitaMapeo) throw e;
-      sendOk(res, { necesitaMapeo: true, mensaje: (e as Error).message, columnas: d.columnas, mapeo: d.mapeo ?? {}, campos: ETIQUETAS_CAMPOS });
+      // filaCabecera: la fila de titulos que se ha detectado (1-based; 0 = ninguna), para no fijarla en la 1.
+      sendOk(res, { necesitaMapeo: true, mensaje: (e as Error).message, columnas: d.columnas, mapeo: d.mapeo ?? {}, filaCabecera: d.filaCabecera ?? 0, campos: ETIQUETAS_CAMPOS });
     }
   }),
 
@@ -173,6 +233,7 @@ export const nominasController = {
     const entrada = await entradaImportacion(req as ConFichero);
     const r = await confirmarImportacion(req.companyId!, entrada, { contabilizar: si(body.contabilizar) });
     if (!(req as ConFichero).file && body.subidaId) await borrarSubida(req.companyId!, body.subidaId);
+    await limpiarSubidasCaducadas();
     await registrarAuditoria({
       userId: req.user!.userId,
       companyId: req.companyId,

@@ -126,12 +126,17 @@ describe('importar el Excel de la gestoria y contabilizar un asiento por trabaja
       const debe = a.lineas.reduce((s, l) => s + Math.round(Number(l.debe) * 100), 0);
       const haber = a.lineas.reduce((s, l) => s + Math.round(Number(l.haber) * 100), 0);
       expect(debe).toBe(haber);
-      expect(a.descripcion).toContain(n.empleado.nombre);
-      // La subcuenta del trabajador, en el plan con su nombre y colgando de la 465.
+      // La subcuenta del trabajador, en el plan colgando de la 465. Ni el asiento ni
+      // el plan llevan su nombre o su NIF: los ve quien tiene contabilidad:read.
       const sub = n.empleado.subcuenta465!;
       expect(sub).toMatch(/^46500[123]$/);
+      expect(a.descripcion).toBe(`Nómina 01/2026 - trabajador ${sub}`);
       const cuenta = await prisma.chartOfAccounts.findFirstOrThrow({ where: { companyId: COMPANY_ID, codigo: sub } });
-      expect(cuenta).toMatchObject({ nombre: n.empleado.nombre, parentCodigo: '465', esPersonalizadaEmpresa: true });
+      expect(cuenta).toMatchObject({ nombre: `Remuneraciones pendientes - trabajador ${sub}`, parentCodigo: '465', esPersonalizadaEmpresa: true });
+      for (const texto of [JSON.stringify(a), JSON.stringify(cuenta)]) {
+        expect(texto).not.toContain(n.empleado.nombre);
+        expect(texto).not.toContain(n.empleado.nif);
+      }
     }
     const b = ns[1];
     expect(porCuenta((await asiento(b.asientoId)).lineas)).toEqual({

@@ -82,7 +82,7 @@ REGLAS CLAVE:
 6. BASE IMPONIBLE: Cantidad sin impuestos.
 7. IVA: Porcentaje y/o cantidad.
 8. TOTAL: Total a pagar.
-9. TIPO DE DOCUMENTO: si es una NÓMINA (recibo individual de salarios de un trabajador) indica "nomina"; si es un recibo de liquidación de cotizaciones de la Seguridad Social (RLC, TC1, seguros sociales) indica "seguros_sociales". Una factura de una gestoría o asesoría por llevar las nóminas ES una factura ("factura").
+9. TIPO DE DOCUMENTO: si es una NÓMINA (recibo individual de salarios de un trabajador) indica "nomina"; si es un recibo de liquidación de cotizaciones de la Seguridad Social de los trabajadores de la empresa (RLC, TC1, seguros sociales del Régimen General) indica "seguros_sociales". Una factura de una gestoría o asesoría por llevar las nóminas ES una factura ("factura"). La cuota de autónomos (RETA, Régimen Especial de Trabajadores Autónomos) NO es "seguros_sociales": es un "recibo".
 
 Si algo falta o es ilegible, deja null. NO inventes datos.
 Formatos: fechas YYYY-MM-DD; importes sin símbolo; NIF sin "ES" ni separadores.`;
@@ -204,6 +204,8 @@ export function clasificarDocumentoGasto(lectura: { tipo_documento?: string | nu
   const concepto = (lectura.concepto ?? '').trim().toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
   const sinIva = !lectura.iva_cantidad && !lectura.iva_porcentaje;
   if (sinIva && /^(nomina|nominas|salario|salarios|sueldo|sueldos|recibo de salarios|finiquito)$/.test(concepto)) return 'nomina';
+  // La cuota de autonomos (RETA) no son los seguros sociales de los trabajadores.
+  if (/\b(autonomos?|reta|regimen especial)\b/.test(concepto)) return 'factura';
   if (sinIva && /^(seguridad social|seguros sociales|cotizaciones|cotizacion|rlc|tc1|recibo de liquidacion de cotizaciones)$/.test(concepto)) return 'seguros_sociales';
   return 'factura';
 }

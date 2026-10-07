@@ -68,14 +68,15 @@ describe('111: rendimientos del trabajo (casillas 01-06)', () => {
     expect(casillas.retencionesDinerarias).toBe(150);
   });
 
-  it('especie: 04 perceptores, 05 valoracion + ingreso a cuenta no repercutido, 06 ingresos a cuenta', () => {
+  it('especie: 04 perceptores, 05 solo la valoracion (como el 190), 06 ingresos a cuenta', () => {
     const { casillas } = agregarTrabajo111([
       nomina({ empleadoId: 'a', nif: A, brutoDinerario: 1000, especieValoracion: 200, ingresoACuenta: 30, ingresoACuentaRepercutido: false }),
       nomina({ empleadoId: 'b', nif: B, brutoDinerario: 1000, especieValoracion: 100, ingresoACuenta: 15, ingresoACuentaRepercutido: true }),
       nomina({ empleadoId: 'c', nif: C, brutoDinerario: 1000 }),
     ]);
     expect(casillas.perceptoresEspecie).toBe(2);
-    expect(casillas.percepcionesEspecie).toBe(330);
+    // Antes 330 (con el ingreso a cuenta no repercutido): no cuadraba con la valoracion del 190.
+    expect(casillas.percepcionesEspecie).toBe(300);
     expect(casillas.ingresosACuenta).toBe(45);
   });
 

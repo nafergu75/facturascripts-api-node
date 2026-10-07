@@ -159,11 +159,14 @@ describe('asiento de la nomina (uno por trabajador)', () => {
   it('nomina simple: 640 y 642 al debe; 476, 4751 y la 465 del trabajador al haber', () => {
     const a = generarAsientoNomina(datos({ brutoDinerario: 2000, ssTrabajador: 127, irpf: 300, liquido: 1573, ssEmpresa: 600 }), cuentas, trabajador);
     expect(a.fecha).toBe('2026-01-31');
-    expect(a.descripcion).toBe('Nómina 01/2026 - Persona Prueba Uno');
+    // Sin el nombre del trabajador: el diario lo ve quien tiene contabilidad:read (y no nominas:read).
+    expect(a.descripcion).toBe('Nómina 01/2026 - trabajador 465001');
     expect(porCuenta(a)).toEqual({ '640000': [2000, 0], '642000': [600, 0], '476000': [0, 727], '475101': [0, 300], '465001': [0, 1573] });
     expect(a.debeTotal).toBe(2600);
     expect(a.haberTotal).toBe(2600);
-    expect(a.lineas.find((l) => l.subcuenta === '465001')?.concepto).toBe('Persona Prueba Uno');
+    expect(a.lineas.find((l) => l.subcuenta === '465001')?.concepto).toBe('Remuneraciones pendientes - trabajador 465001');
+    expect(JSON.stringify(a)).not.toMatch(/Persona|Prueba/);
+    expect(JSON.stringify(a)).not.toContain(trabajador.nif);
   });
 
   it('con anticipo (460) y embargo (465 de embargos)', () => {
@@ -366,7 +369,9 @@ describe('lector del Excel de la gestoria', () => {
       { nif: nif(10000002), nombre: 'Dos', ejercicio: 2026, mes: 1, brutoDinerario: '2000', liquido: 2000 },
     ]);
     expect(ok.errores).toEqual([]);
-    expect(mal.errores.join(' ')).toMatch(/brutoDinerario/);
+    // Con el nombre del campo, no la clave interna de la API.
+    expect(mal.errores.join(' ')).toMatch(/Bruto dinerario/);
+    expect(mal.errores.join(' ')).not.toMatch(/brutoDinerario/);
     expect(() => filasDesdeJson('no es json')).toThrow(/JSON/);
   });
 
@@ -374,7 +379,7 @@ describe('lector del Excel de la gestoria', () => {
     const { filas } = leerFilasArchivo(generarPlantillaNominas(), 'plantilla.xlsx');
     const m = mapearTitulosNominas(filas[0].map(normalizarTituloNomina));
     expect(Object.keys(m).sort()).toEqual(
-      ['nombre', 'apellidos', 'nif', 'naf', 'periodo', 'tipo', 'bruto', 'especie', 'ingresoACuenta', 'dietas', 'indemnizacion', 'ssTrabajador', 'irpf', 'porcentajeIrpf', 'embargos', 'anticipos', 'otrasDeducciones', 'liquido', 'ssEmpresa', 'costeTotal'].sort(),
+      ['nombre', 'apellidos', 'nif', 'naf', 'periodo', 'tipo', 'ejercicioDevengo', 'bruto', 'especie', 'ingresoACuenta', 'dietas', 'indemnizacion', 'ssTrabajador', 'irpf', 'porcentajeIrpf', 'embargos', 'anticipos', 'otrasDeducciones', 'liquido', 'ssEmpresa', 'costeTotal'].sort(),
     );
   });
 

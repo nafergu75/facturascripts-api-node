@@ -19,6 +19,8 @@ export interface NominaResumen {
   origen?: 'nominas' | 'resumen';
   /** Trabajadores distintos del mes (solo con origen 'nominas'). */
   perceptores?: number;
+  /** Resumenes antiguos grabados para el mes, si hay mas de uno (solo cuenta el ultimo). */
+  resumenesGrabados?: number;
 }
 
 export const TIPOS_NOMINA = ['ORDINARIA', 'EXTRA', 'ATRASOS', 'FINIQUITO', 'COMPLEMENTARIA'] as const;

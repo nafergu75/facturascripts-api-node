@@ -23,7 +23,7 @@ import {
   parsear,
   segurosSocialesSchema,
 } from '../services/nominas/esquemas';
-import { anularPagoModelo111, anularPagoNominas, pagarModelo111, pagarNominas, pagoModelo111 } from '../services/nominas/tesoreria';
+import { anularPagoModelo111, anularPagoNominas, importePago111, pagarModelo111, pagarNominas, pagoModelo111 } from '../services/nominas/tesoreria';
 import {
   anularPagoSegurosSociales,
   guardarSegurosSociales,
@@ -41,7 +41,7 @@ import {
   zipDocumentosNominas,
   type FicheroSubido,
 } from '../services/nominas/documentos';
-import { informeCoste, informeCosteExcel, previsionPagos, sugerenciasMovimiento } from '../services/nominas/informes';
+import { cargosParaPago, informeCoste, informeCosteExcel, previsionPagos, sugerenciasMovimiento } from '../services/nominas/informes';
 
 const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 
@@ -133,10 +133,11 @@ export const nominasConexionesController = {
   /** GET /retenciones/:ejercicio/:periodo — casillas del 111 (misma fuente que Impuestos) y su pago. */
   retenciones: asyncHandler(async (req, res) => {
     const periodo = periodo111De(req);
-    const [d, trabajo, pago] = await Promise.all([
+    const [d, trabajo, pago, aPagar] = await Promise.all([
       calcularModelo111(req.companyId!, periodo),
       retencionesTrabajo(req.companyId!, periodo),
       pagoModelo111(req.companyId!, periodo.ejercicio, periodo.periodo),
+      importePago111(req.companyId!, periodo),
     ]);
     sendOk(res, {
       periodo,
@@ -157,7 +158,9 @@ export const nominasConexionesController = {
       borradores: trabajo.borradores,
       mesesResumenAntiguo: trabajo.mesesResumenAntiguo,
       pago: pago ? { asientoId: pago.id, numero: pago.numeroAsiento, fecha: pago.fecha.toISOString().slice(0, 10) } : null,
-      avisos: d.avisos ?? [],
+      // Lo que se paga (lo presentado o editado en Impuestos manda sobre el calculo).
+      aPagar: { importe: aPagar.total, fuente: aPagar.fuente, trabajo: aPagar.trabajoNominas + aPagar.trabajoResumenAntiguo, profesionales: aPagar.profesionales },
+      avisos: aPagar.avisos,
     });
   }),
 
@@ -183,7 +186,11 @@ export const nominasConexionesController = {
   perceptores190: asyncHandler(async (req, res) => {
     const ejercicio = ejercicioDe(req);
     const m = await calcularModelo190(req.companyId!, ejercicio);
-    if (quiereExcel(req)) return descargar(res, `modelo190_${ejercicio}.xlsx`, XLSX_MIME, informe190Excel(m));
+    if (quiereExcel(req)) {
+      // Exportacion masiva con los datos de toda la plantilla: queda en la auditoria.
+      await auditar(req, 'EXPORTAR_PERCEPTORES_190', String(ejercicio), { ejercicio, registros: m.totales.registros, perceptores: m.totales.perceptores });
+      return descargar(res, `modelo190_${ejercicio}.xlsx`, XLSX_MIME, informe190Excel(m));
+    }
     sendOk(res, { ...m, ficheroDisponible: !!DISENOS_190_VERIFICADOS[ejercicio] });
   }),
 
@@ -278,13 +285,27 @@ export const nominasConexionesController = {
     const agrupar = String(req.query.agrupar ?? 'mes');
     if (agrupar !== 'mes' && agrupar !== 'empleado') throw badRequest('Parámetro "agrupar" no válido: mes o empleado.');
     const inf = await informeCoste(req.companyId!, ejercicio, agrupar);
-    if (quiereExcel(req)) return descargar(res, `coste_personal_${ejercicio}_${agrupar}.xlsx`, XLSX_MIME, informeCosteExcel(inf));
+    if (quiereExcel(req)) {
+      await auditar(req, 'EXPORTAR_COSTE_PERSONAL', `${ejercicio}-${agrupar}`, { ejercicio, agrupar, filas: inf.filas.length, trabajadores: inf.totales.trabajadores });
+      return descargar(res, `coste_personal_${ejercicio}_${agrupar}.xlsx`, XLSX_MIME, informeCosteExcel(inf));
+    }
     sendOk(res, inf);
   }),
 
   /** GET /prevision?desde&hasta — pagos de nominas, seguros sociales y 111 previstos. */
   prevision: asyncHandler(async (req, res) => {
     sendOk(res, await previsionPagos(req.companyId!, texto(req.query.desde), texto(req.query.hasta)));
+  }),
+
+  /**
+   * GET /conciliacion/cargos?importe&fecha — cargos del extracto sin conciliar por
+   * ese importe exacto (para pagar liquidos, seguros sociales o el 111 eligiendo
+   * el cargo, que queda conciliado con el asiento del pago).
+   */
+  cargos: asyncHandler(async (req, res) => {
+    const importe = Number(String(req.query.importe ?? '').replace(',', '.'));
+    if (!Number.isFinite(importe) || importe <= 0) throw badRequest('Parámetro "importe" no válido.');
+    sendOk(res, await cargosParaPago(req.companyId!, importe, texto(req.query.fecha)));
   }),
 
   /** GET /conciliacion/sugerencias?movimientoId — pagos de nominas que cuadran con un cargo del banco. */

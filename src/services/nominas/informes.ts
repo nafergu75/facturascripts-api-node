@@ -15,12 +15,11 @@ import { badRequest, notFound } from '../../utils/http-errors';
 import { aCentimos } from '../../utils/money';
 import { hoyEspana } from '../../utils/fechas';
 import { CAMPOS_IMPORTE, type ImportesNomina } from '../../domain/nominas.model';
-import { calcularModelo111 } from '../impuestosCalculo.service';
 import { nombreCompleto } from '../empleados.service';
 import { cuadreNomina } from './calculo';
 import { periodoFiscal } from './fiscal';
 import { listarSegurosSociales } from './segurosSociales';
-import { pagoModelo111 } from './tesoreria';
+import { importePago111, pagoModelo111 } from './tesoreria';
 
 const mm = (n: number) => String(n).padStart(2, '0');
 const euros = (centimos: number): number => Math.round(centimos) / 100;
@@ -275,14 +274,15 @@ export async function previsionPagos(companyId: string, desdeEntrada?: string, h
       const vence = vencimiento111(ej, t);
       if (vence < desde || vence > hasta) continue;
       if (await pagoModelo111(companyId, ej, `${t}T`)) continue;
-      const d = await calcularModelo111(companyId, periodoFiscal(ej, `${t}T`));
-      if (aCentimos(d.resultadoIngresar) <= 0) continue;
+      // Lo presentado (o editado en Impuestos) manda sobre el calculo: es lo que se ingresa.
+      const d = await importePago111(companyId, periodoFiscal(ej, `${t}T`));
+      if (aCentimos(d.total) <= 0) continue;
       pagos.push({
         fecha: vence,
         tipo: 'modelo111',
         categoria: 'Impuestos',
         concepto: `Modelo 111 ${t}T/${ej} (retenciones de nóminas y profesionales)`,
-        importe: d.resultadoIngresar,
+        importe: d.total,
         ejercicio: ej,
         periodo: `${t}T`,
         vencido: vence < hoy,
@@ -384,17 +384,46 @@ export async function sugerenciasMovimiento(companyId: string, movimientoId: str
   const ej111 = trimestre === 0 ? anio - 1 : anio;
   const per111 = `${trimestre === 0 ? 4 : trimestre}T`;
   if (!(await pagoModelo111(companyId, ej111, per111))) {
-    const d = await calcularModelo111(companyId, periodoFiscal(ej111, per111));
-    if (aCentimos(d.resultadoIngresar) === cargo) {
+    const d = await importePago111(companyId, periodoFiscal(ej111, per111));
+    if (aCentimos(d.total) === cargo) {
       sugerencias.push({
         tipo: 'modelo111',
         ejercicio: ej111,
         periodo: per111,
         concepto: `Modelo 111 ${per111}/${ej111}`,
-        importe: d.resultadoIngresar,
+        importe: d.total,
         accion: `POST /nominas/retenciones/${ej111}/${per111}/pago`,
       });
     }
   }
   return { movimiento, sugerencias };
+}
+
+/**
+ * Cargos del extracto sin conciliar por un importe exacto (el de un pago de
+ * nominas, seguros sociales o 111), los mas cercanos a la fecha primero. Al
+ * pagar eligiendo uno, queda conciliado con el asiento del pago.
+ */
+export async function cargosParaPago(companyId: string, importe: number, fecha?: string) {
+  const cargo = aCentimos(importe);
+  const movs = await prisma.bankMovement.findMany({
+    where: { companyId, conciliado: false, importe: -cargo / 100 },
+    include: { cuentaBancaria: { select: { bancoNombre: true, iban: true, subcuentaCodigo: true } } },
+    orderBy: { fecha: 'desc' },
+    take: 50,
+  });
+  const ref = /^\d{4}-\d{2}-\d{2}$/.test(fecha ?? '') ? new Date(`${fecha}T00:00:00Z`).getTime() : null;
+  const dias = (f: string) => (ref === null ? 0 : Math.abs(new Date(`${f}T00:00:00Z`).getTime() - ref) / 86400000);
+  return movs
+    .filter((m) => aCentimos(-Number(m.importe)) === cargo)
+    .sort((a, b) => dias(a.fecha) - dias(b.fecha) || b.fecha.localeCompare(a.fecha))
+    .slice(0, 20)
+    .map((m) => ({
+      id: m.id,
+      fecha: m.fecha,
+      importe: Number(m.importe),
+      concepto: m.concepto,
+      cuentaBancariaId: m.cuentaBancariaId,
+      cuenta: `${m.cuentaBancaria.bancoNombre ? `${m.cuentaBancaria.bancoNombre} · ` : ''}${m.cuentaBancaria.iban.replace(/\s/g, '').slice(-8)} (${m.cuentaBancaria.subcuentaCodigo})`,
+    }));
 }

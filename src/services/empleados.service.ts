@@ -14,7 +14,6 @@ import {
   parsear,
   type EmpleadoActualizar,
 } from './nominas/esquemas';
-import { renombrarSubcuenta465 } from './nominas/plan';
 
 type FilaEmpleado = Awaited<ReturnType<typeof prisma.empleado.findFirstOrThrow>>;
 
@@ -142,8 +141,8 @@ export async function actualizarEmpleado(companyId: string, id: string, body: un
     if (v !== undefined) (data as Record<string, unknown>)[k] = k === 'apellidos' ? (v ?? '') : v;
   }
   try {
+    // La subcuenta 465 no lleva el nombre (ver etiquetaTrabajador): no hay que renombrarla.
     const e = await prisma.empleado.update({ where: { id: actual.id }, data });
-    if (nombreCompleto(e) !== nombreCompleto(actual)) await renombrarSubcuenta465(companyId, e.subcuenta465, nombreCompleto(e));
     return aEmpleadoDTO(e);
   } catch (e) {
     if (esDuplicado(e)) throw conflict(`Ya hay un trabajador con el NIF ${d.nif}.`);

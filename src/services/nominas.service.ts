@@ -57,6 +57,8 @@ import {
   type LecturaNominas,
 } from './nominas/lector';
 import { nominaActualizarSchema, nominaCrearSchema, parsear, type NominaActualizar } from './nominas/esquemas';
+import { consultor111, textoTrimestre, trimestre111 } from './nominas/tesoreria';
+import { coberturaSegurosSociales } from './nominas/segurosSociales';
 import {
   asegurarCuentasNominas,
   asegurarSubcuenta465,
@@ -252,9 +254,15 @@ function exigirCuadre(importes: ImportesNomina): void {
   }
 }
 
-function avisosNomina(n: { ejercicio: number; mes: number; fechaPago: string; fechaDevengo: string }, empleado: { fechaBaja: string | null; fechaAlta: string | null }): string[] {
+function avisosNomina(
+  n: { ejercicio: number; mes: number; fechaPago: string; fechaDevengo: string; tipo?: string; ejercicioDevengo?: number | null },
+  empleado: { fechaBaja: string | null; fechaAlta: string | null },
+): string[] {
   const avisos: string[] = [];
   const inicioMes = `${n.ejercicio}-${mm(n.mes)}-01`;
+  if (n.tipo === 'ATRASOS' && !n.ejercicioDevengo) {
+    avisos.push('Son atrasos sin ejercicio de devengo: si son de un año anterior, indícalo (el 190 los declara aparte, con ese ejercicio).');
+  }
   if (n.fechaPago < n.fechaDevengo.slice(0, 8) + '01') avisos.push('La fecha de pago es anterior al mes de devengo.');
   if (empleado.fechaBaja && empleado.fechaBaja < inicioMes) avisos.push(`El trabajador está de baja desde el ${empleado.fechaBaja}: ¿es un finiquito o unos atrasos?`);
   if (empleado.fechaAlta && empleado.fechaAlta > n.fechaDevengo) avisos.push(`El trabajador se da de alta el ${empleado.fechaAlta}, después de este mes.`);
@@ -262,6 +270,40 @@ function avisosNomina(n: { ejercicio: number; mes: number; fechaPago: string; fe
 }
 
 const textoTipo = (tipo: string) => tipo.toLowerCase();
+
+/** El ejercicio de devengo de unos atrasos no puede ser posterior al de la nomina. */
+function comprobarEjercicioDevengo(ejercicioDevengo: number | null | undefined, ejercicio: number): void {
+  if (ejercicioDevengo && ejercicioDevengo > ejercicio) {
+    throw badRequest(`El ejercicio de devengo (${ejercicioDevengo}) no puede ser posterior al de la nómina (${ejercicio}).`);
+  }
+}
+
+/**
+ * La fecha de pago decide el trimestre del 111. Si una nomina cambia de
+ * trimestre y uno de los dos tiene el 111 presentado o pagado, su IRPF se
+ * declararia dos veces o se quitaria de un 111 ya presentado: 409.
+ */
+async function comprobarCambioTrimestre(companyId: string, antes: string, despues: string): Promise<void> {
+  const qa = trimestre111(antes);
+  const qd = trimestre111(despues);
+  if (qa.ejercicio === qd.ejercicio && qa.periodo === qd.periodo) return;
+  const estadoDe = consultor111(companyId);
+  for (const e of [await estadoDe(antes), await estadoDe(despues)]) {
+    if (e.cerrado) {
+      throw conflict(
+        `El 111 del ${textoTrimestre(e)} ya está ${e.motivo}: cambiar la fecha de pago de ${antes} a ${despues} mueve el IRPF de esta nómina de trimestre y lo declararía dos veces (o lo quitaría de un 111 presentado). ` +
+          'Deja la fecha como estaba o, si hay que corregirlo, marca antes el 111 como no presentado y presenta una complementaria.',
+      );
+    }
+  }
+}
+
+/** Aviso si la nomina entra en un 111 que ya esta presentado o pagado. */
+async function avisoTrimestreCerrado(companyId: string, fechaPago: string): Promise<string | null> {
+  const e = await consultor111(companyId)(fechaPago);
+  if (!e.cerrado) return null;
+  return `El 111 del ${textoTrimestre(e)} ya está ${e.motivo} y esta nómina (pago el ${fechaPago}) cambia sus retenciones: presenta una complementaria o, si se pagó en otra fecha, pon la fecha de pago real.`;
+}
 
 export async function crearNomina(companyId: string, body: unknown): Promise<NominaDTO & { avisos: string[] }> {
   const d = parsear(nominaCrearSchema, body);
@@ -272,6 +314,8 @@ export async function crearNomina(companyId: string, body: unknown): Promise<Nom
   const fechaDevengo = ultimoDiaMes(d.ejercicio, d.mes);
   const fechaPago = d.fechaPago ?? fechaDevengo;
   const tipo = d.tipo ?? 'ORDINARIA';
+  comprobarEjercicioDevengo(d.ejercicioDevengo, d.ejercicio);
+  const avisoCerrado = await avisoTrimestreCerrado(companyId, fechaPago);
   try {
     const n = await prisma.nomina.create({
       data: {
@@ -289,7 +333,9 @@ export async function crearNomina(companyId: string, body: unknown): Promise<Nom
         observaciones: d.observaciones ?? null,
       },
     });
-    return { ...aNominaDTO(n, empleado, null), avisos: avisosNomina({ ejercicio: d.ejercicio, mes: d.mes, fechaPago, fechaDevengo }, empleado) };
+    const avisos = avisosNomina({ ejercicio: d.ejercicio, mes: d.mes, fechaPago, fechaDevengo, tipo, ejercicioDevengo: d.ejercicioDevengo }, empleado);
+    if (avisoCerrado) avisos.push(avisoCerrado);
+    return { ...aNominaDTO(n, empleado, null), avisos };
   } catch (e) {
     if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
       throw conflict(`${nombreCompleto(empleado)} ya tiene una nómina ${textoTipo(tipo)} de ${periodoTexto(d.ejercicio, d.mes)}.`);
@@ -316,6 +362,9 @@ export async function actualizarNomina(companyId: string, id: string, body: unkn
   const fechaDevengo = ultimoDiaMes(ejercicio, mes);
   // Si la fecha de pago era la de devengo por defecto, se mueve con el mes.
   const fechaPago = d.fechaPago ?? (actual.fechaPago === actual.fechaDevengo ? fechaDevengo : actual.fechaPago);
+  comprobarEjercicioDevengo(d.ejercicioDevengo !== undefined ? d.ejercicioDevengo : actual.ejercicioDevengo, ejercicio);
+  // Un borrador ya cuenta en el 111 de su fecha de pago (con aviso).
+  await comprobarCambioTrimestre(companyId, actual.fechaPago, fechaPago);
   try {
     const r = await prisma.nomina.updateMany({
       where: { id: actual.id, estado: 'BORRADOR' },
@@ -339,7 +388,10 @@ export async function actualizarNomina(companyId: string, id: string, body: unkn
     throw e;
   }
   const n = await obtenerNomina(companyId, id);
-  return { ...n, avisos: avisosNomina(n, actual.empleado) };
+  const avisos = avisosNomina(n, actual.empleado);
+  const avisoCerrado = await avisoTrimestreCerrado(companyId, n.fechaPago);
+  if (avisoCerrado) avisos.push(avisoCerrado);
+  return { ...n, avisos };
 }
 
 /** Borra una nomina en borrador o anulada (las contabilizadas hay que anularlas antes). */
@@ -573,8 +625,11 @@ export async function confirmarImportacion(
           ejercicio: f.ejercicio,
           mes: f.mes,
           tipo: f.tipo,
+          // Siempre el del fichero (null si no viene): no se hereda el de la nomina sustituida.
+          ejercicioDevengo: f.ejercicioDevengo ?? null,
           fechaDevengo,
           fechaPago: fechaDevengo,
+          fechaPagoAnterior: null,
           ...importesDe(f as unknown as Record<string, unknown>),
           porcentajeIrpf: f.porcentajeIrpf,
           estado: 'BORRADOR',
@@ -604,6 +659,12 @@ export async function confirmarImportacion(
     }, OPCIONES_TX),
   );
 
+  const avisos = [...vista.avisos];
+  if (r.empleadosCreados) {
+    avisos.push(
+      `${r.empleadosCreados === 1 ? 'El trabajador nuevo no tiene' : `Los ${r.empleadosCreados} trabajadores nuevos no tienen`} provincia ni año de nacimiento: complétalos en Nóminas > Empleados (hacen falta para el modelo 190).`,
+    );
+  }
   const resultado: ResultadoImportacion = {
     loteImportacionId,
     nominasCreadas: r.creadas,
@@ -611,7 +672,7 @@ export async function confirmarImportacion(
     empleadosCreados: r.empleadosCreados,
     periodos,
     nominaIds: r.ids,
-    avisos: vista.avisos,
+    avisos,
   };
   if (opciones.contabilizar) {
     resultado.contabilizacion = [];
@@ -723,7 +784,7 @@ export async function previsualizarAsientos(companyId: string, ejercicio: number
         ...base,
         numero: null,
         fecha: n.fechaDevengo,
-        concepto: conceptoAsientoNomina(n, nombre),
+        concepto: conceptoAsientoNomina(n, subcuenta),
         subcuentaNueva,
         lineas: [],
         debe: 0,
@@ -742,6 +803,7 @@ export interface ResultadoContabilizacion {
   contabilizadas: number;
   asientos: Array<{ nominaId: string; empleadoId: string; trabajador: string; asientoId: string; numero: string; subcuenta465: string; importe: number }>;
   subcuentasCreadas: string[];
+  avisos: string[];
 }
 
 /**
@@ -780,6 +842,18 @@ export async function contabilizarNominas(companyId: string, ejercicio: number, 
     );
   }
   for (const fecha of new Set(pendientes.map((n) => n.fechaDevengo))) await comprobarFechaAbierta(companyId, fecha);
+  const avisos: string[] = [];
+  // Seguros sociales del mes ya pagados: la SS de estas nominas queda en la 476
+  // hasta que se pague con el RLC complementario (que la saldara, no ira a la 642).
+  const ss = await coberturaSegurosSociales(companyId, ejercicio, mes);
+  if (ss.normalPagada) {
+    const centimos = pendientes.reduce((a, n) => a + aCentimos(Number(n.ssTrabajador)) + aCentimos(Number(n.ssEmpresa)), 0);
+    if (centimos) {
+      avisos.push(
+        `Los seguros sociales de ${periodoTexto(ejercicio, mes)} ya están pagados: la SS de estas nóminas (${fmtEuros(centimos / 100)}) queda en la 476 hasta que pagues el RLC complementario (en esta pantalla, en «Seguros sociales complementarios»).`,
+      );
+    }
+  }
 
   const { cuentas, longitud } = await cuentasNominasEmpresa(companyId);
   await prepararPlanEmpresa(companyId);
@@ -824,7 +898,8 @@ export async function contabilizarNominas(companyId: string, ejercicio: number, 
           origen: 'NOMINA',
           invoiceId: n.id,
           invoiceType: 'NOMINA',
-          referencia: `NOM ${periodoTexto(n.ejercicio, n.mes)} ${t.nif}`,
+          // Sin el NIF ni el nombre: el diario lo ve quien tiene contabilidad:read.
+          referencia: `NOM ${periodoTexto(n.ejercicio, n.mes)} ${subcuenta}`,
           exigirCuadre: true,
         });
         const asientoId = String(creado.asiento.idasiento);
@@ -839,7 +914,7 @@ export async function contabilizarNominas(companyId: string, ejercicio: number, 
           importe: asiento.debeTotal,
         });
       }
-      return { ejercicio, mes, contabilizadas: asientos.length, asientos, subcuentasCreadas };
+      return { ejercicio, mes, contabilizadas: asientos.length, asientos, subcuentasCreadas, avisos };
     }, OPCIONES_TX),
   );
 }
@@ -896,6 +971,17 @@ export async function anularNominas(companyId: string, ejercicio: number, mes: n
   const contabilizadas = nominas.filter((n) => n.estado === 'CONTABILIZADA');
   const borradores = opciones.dejarAnuladas && opciones.nominaIds?.length ? nominas.filter((n) => n.estado === 'BORRADOR') : [];
   if (!contabilizadas.length && !borradores.length) throw conflict(`No hay nóminas contabilizadas en ${periodoTexto(ejercicio, mes)}.`);
+  // Si los seguros sociales pagados ya cubren la SS de estas nominas, anularlas
+  // dejaria la 476 deudora: antes hay que anular ese pago (y volver a pagarlo).
+  const ss = await coberturaSegurosSociales(companyId, ejercicio, mes);
+  if (ss.cubierto > 0) {
+    const quitar = contabilizadas.reduce((a, n) => a + aCentimos(Number(n.ssTrabajador)) + aCentimos(Number(n.ssEmpresa)), 0);
+    if (quitar && aCentimos(ss.previsto) - quitar < aCentimos(ss.cubierto)) {
+      throw conflict(
+        `Los seguros sociales de ${periodoTexto(ejercicio, mes)} ya están pagados con la cuota de estas nóminas: anula antes el pago de los seguros sociales y vuelve a pagarlo después de corregirlas.`,
+      );
+    }
+  }
 
   const originales = await prisma.journalEntry.findMany({
     where: { companyId, id: { in: contabilizadas.map((n) => n.asientoId).filter((x): x is string => !!x) } },
@@ -1004,6 +1090,8 @@ export async function listarResumenesNominas(companyId: string, ejercicio: numbe
     }
   }
   const antiguos = await prisma.nominaResumen.findMany({ where: { companyId, ejercicio }, orderBy: { createdAt: 'desc' } });
+  const grabadosPorMes = new Map<number, number>();
+  for (const r of antiguos) grabadosPorMes.set(r.mes, (grabadosPorMes.get(r.mes) ?? 0) + 1);
   for (const r of antiguos) {
     if (porMes.has(r.mes)) continue; // el mas reciente ya esta, o el mes tiene nominas por trabajador
     porMes.set(r.mes, {
@@ -1017,6 +1105,8 @@ export async function listarResumenesNominas(companyId: string, ejercicio: numbe
       totalIRPF: Number(r.totalIRPF),
       totalLiquido: Number(r.totalLiquido),
       origen: 'resumen',
+      // Mas de uno: solo cuenta este (el ultimo), y el 111 avisa de los demas.
+      ...((grabadosPorMes.get(r.mes) ?? 0) > 1 ? { resumenesGrabados: grabadosPorMes.get(r.mes) } : {}),
     });
   }
   return [...porMes.values()].sort((a, b) => a.mes - b.mes);

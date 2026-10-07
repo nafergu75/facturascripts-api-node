@@ -102,6 +102,7 @@ router.get('/190/:ejercicio/fichero', authorize('nominas:read'), x.fichero190);
 router.get('/informes/coste', authorize('nominas:read'), x.informeCoste);
 router.get('/prevision', authorize('nominas:read'), x.prevision);
 router.get('/conciliacion/sugerencias', authorize('nominas:read'), x.sugerencias);
+router.get('/conciliacion/cargos', authorize('nominas:read'), x.cargos);
 
 router.get('/:id', authorize('nominas:read'), c.obtener);
 router.put('/:id', authorize('nominas:write'), c.actualizar);
