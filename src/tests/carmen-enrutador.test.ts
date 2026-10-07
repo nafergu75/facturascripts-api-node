@@ -1021,9 +1021,18 @@ describe('empresa no establecida en España', () => {
     expect(enMonedaDeCuenta('1.234,50 €', 'EUR')).toBe('1.234,50 €');
   });
 
-  it('a la IA se le dice que la empresa no es española', () => {
+  it('a la IA se le dice que la empresa no es española, con un aviso fijo: ni país ni moneda', () => {
     const { messages } = construirMensajes({ hoy: HOY, pregunta: '¿Qué es una amortización?', fichas: [], turnos: [], empresaEspanola: false });
     expect(String(messages[messages.length - 1].content)).toContain(NOTA_EMPRESA_EXTRANJERA);
+    // Excepción aceptada a «sin datos de la empresa»: solo ese texto, igual para todas.
+    expect(String(messages[messages.length - 1].content)).toBe(
+      `Hoy es 07/10/2026.
+
+${NOTA_EMPRESA_EXTRANJERA}No hay fichas de referencia para esta pregunta.
+
+Pregunta: ¿Qué es una amortización?`,
+    );
+    expect(NOTA_EMPRESA_EXTRANJERA).not.toMatch(/USD|EUR|dólar|Estados Unidos|México|Reino Unido/i);
     const espanola = construirMensajes({ hoy: HOY, pregunta: '¿Qué es una amortización?', fichas: [], turnos: [] });
     expect(String(espanola.messages[espanola.messages.length - 1].content)).not.toContain(NOTA_EMPRESA_EXTRANJERA);
   });

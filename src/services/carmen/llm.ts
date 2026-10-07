@@ -6,8 +6,13 @@
  *  - el system prompt fijo (llm-prompt.ts);
  *  - las 3 fichas FAQ más cercanas;
  *  - como mucho 2 turnos anteriores con origen 'faq' o 'ia' (nunca de datos);
- *  - la pregunta depurada (sin NIF, IBAN, correos, teléfonos ni nombres de
- *    terceros) y la fecha de hoy.
+ *  - la pregunta depurada (sin NIF, IBAN, correos, NAF, teléfonos ni nombres
+ *    de terceros ni de trabajadores) y la fecha de hoy;
+ *  - solo en las empresas no establecidas en España, el aviso fijo
+ *    NOTA_EMPRESA_EXTRANJERA (sin IVA español, modelos de la AEAT ni nóminas).
+ *    Es el único dato de la empresa que llega a la IA, y es el mismo texto
+ *    para todas: ni país, ni moneda, ni nombre. Se acepta para que la IA no le
+ *    hable a una empresa extranjera de obligaciones españolas.
  * Nada de resultados de servicios ni respuestas de datos del historial.
  *
  * Antes se reserva el tope (presupuesto.service) y después se liquida con
