@@ -6,8 +6,9 @@
 # Que hace:
 #   1. Enlaza ESTA carpeta (la raiz) con el proyecto Vercel del backend. Ojo: la
 #      subcarpeta facturascripts-api-node/ esta enlazada al FRONTEND; no usarla.
-#   2. Genera JWT_SECRET y ENCRYPTION_KEY nuevas en .env.vercel-prod.local
-#      (ignorado por git). Nunca se muestran por pantalla.
+#   2. Genera JWT_SECRET, ENCRYPTION_KEY y CRON_SECRET (la clave con la que
+#      Vercel llama a la purga diaria de Carmen, /cron/carmen-purga) en
+#      .env.vercel-prod.local (ignorado por git). Nunca se muestran por pantalla.
 #   3. Pide la DATABASE_URL sin mostrarla y la guarda en el mismo fichero.
 #   4. Sube las variables a Vercel, crea las tablas (prisma db push) y el usuario
 #      demo con la contrasena que elijas.
@@ -48,6 +49,11 @@ if [ -z "$(valor JWT_SECRET)" ] || [ -z "$(valor ENCRYPTION_KEY)" ]; then
 else
   echo "    Reutilizando las de $FICHERO."
 fi
+# CRON_SECRET aparte: los ficheros creados antes de Carmen ya tienen las otras dos.
+if [ -z "$(valor CRON_SECRET)" ]; then
+  echo "CRON_SECRET=$(openssl rand -hex 32)" >> "$FICHERO"
+  echo "    CRON_SECRET generada en $FICHERO (no se muestra)."
+fi
 
 echo "3/5 Base de datos..."
 if [ -z "$(valor DATABASE_URL)" ]; then
@@ -83,6 +89,9 @@ subir() {
 subir JWT_SECRET "$(valor JWT_SECRET)" --sensitive
 subir ENCRYPTION_KEY "$(valor ENCRYPTION_KEY)" --sensitive
 subir DATABASE_URL "$(valor DATABASE_URL)" --sensitive
+# Sin CRON_SECRET la purga diaria de Carmen responde 503. CARMEN_LLM_ACTIVO no se
+# sube: si no existe vale false (IA apagada) y asi no se pisa si alguien la enciende.
+subir CRON_SECRET "$(valor CRON_SECRET)" --sensitive
 subir CORS_ORIGIN "$URL_FRONTEND" --no-sensitive
 
 export JWT_SECRET ENCRYPTION_KEY DATABASE_URL
