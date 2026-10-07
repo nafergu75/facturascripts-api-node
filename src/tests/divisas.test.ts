@@ -11,12 +11,14 @@ import {
   fechaObservacionEsperada,
   importesDoc,
   inverso,
+  monedasCuentaPermitidas,
   MONEDAS_CUENTA_HABILITADAS,
   MONEDAS_FACTURA,
   MONEDAS_FACTURA_ACTIVAS,
   pareceInvertido,
   pascua,
   textoTipo,
+  tipoOrientativo,
   tipoCruzado,
   ultimoDiaHabilTarget,
   validarFormatoTipoCambio,
@@ -51,6 +53,18 @@ describe('catalogo de monedas', () => {
     expect(() => validarMonedaCuenta('USD', 'ES')).toThrow(/euros/);
     expect(() => validarMonedaCuenta('GBP', 'GB')).toThrow(/habilitada/);
   });
+
+  it('segun el pais: Espana y la UE solo EUR; EE. UU. y Hong Kong solo USD; el resto, las dos', () => {
+    expect(monedasCuentaPermitidas('ES')).toEqual(['EUR']);
+    expect(monedasCuentaPermitidas('FR')).toEqual(['EUR']);
+    expect(monedasCuentaPermitidas('US')).toEqual(['USD']);
+    expect(monedasCuentaPermitidas('HK')).toEqual(['USD']);
+    expect(monedasCuentaPermitidas('MA')).toEqual(['EUR', 'USD']);
+    expect(() => validarMonedaCuenta('EUR', 'US')).toThrow(/dólares/);
+    expect(() => validarMonedaCuenta('EUR', 'HK')).toThrow(/dólares/);
+    expect(() => validarMonedaCuenta('USD', 'DE')).toThrow(/UE/);
+    expect(validarMonedaCuenta('EUR', 'MA')).toBe('EUR');
+  });
 });
 
 describe('tipo de cambio', () => {
@@ -81,6 +95,8 @@ describe('tipo de cambio', () => {
     for (const malo of [0, -1, 'abc', '', 1e7, 1.123456789, Number.NaN, Infinity]) {
       expect(() => validarFormatoTipoCambio(malo)).toThrow();
     }
+    // Un valor diminuto que con 8 decimales queda en 0: 400, no un error interno al dividir.
+    expect(() => validarFormatoTipoCambio(1e-13)).toThrow(/mayor que cero/);
   });
 
   it('detecta el tipo invertido y el que se sale de [BCE/2, BCE×2]', () => {
@@ -93,9 +109,24 @@ describe('tipo de cambio', () => {
     expect(() => comprobarTipoManual(2.4, 1.149, 'EUR', 'USD')).toThrow(/lejos/);
     expect(comprobarTipoManual(1.15, 1.149, 'EUR', 'USD')).toEqual({});
     expect(comprobarTipoManual(1.17, 1.149, 'EUR', 'USD').aviso).toMatch(/0,5 %/);
-    // Sin BCE de esa fecha, no se puede comprobar: se acepta.
-    expect(comprobarTipoManual(0.87, null, 'EUR', 'USD')).toEqual({});
     expect(desviacion(1.15, 1.15)).toBe(0);
+  });
+
+  it('sin BCE de esa fecha se compara con el ultimo guardado o con uno orientativo: lo invertido o absurdo no pasa', () => {
+    // Sin ninguna referencia (BCE caido y sin cache): orientativo 1 EUR = 1,12 USD.
+    expect(tipoOrientativo('EUR', 'USD')).toBe(1.12);
+    expect(() => comprobarTipoManual(0.87, null, 'EUR', 'USD')).toThrow(/invertido/);
+    expect(() => comprobarTipoManual(0.0001, null, 'EUR', 'USD')).toThrow(/lejos/);
+    expect(() => comprobarTipoManual(2000, null, 'EUR', 'USD')).toThrow(/lejos/);
+    expect(comprobarTipoManual(1.15, null, 'EUR', 'USD').aviso).toMatch(/No se ha podido comprobar/);
+    // Empresa en USD que factura en EUR: el orientativo es el inverso.
+    expect(() => comprobarTipoManual(1.149, null, 'USD', 'EUR')).toThrow(/invertido/);
+    expect(comprobarTipoManual(0.87, null, 'USD', 'EUR').aviso).toMatch(/No se ha podido comprobar/);
+    // Con el ultimo tipo guardado (aproximado): mismas reglas, y aviso en vez de la desviacion del 0,5 %.
+    expect(() => comprobarTipoManual(0.87, 1.149, 'EUR', 'USD', { aproximado: true })).toThrow(/invertido/);
+    expect(comprobarTipoManual(1.17, 1.149, 'EUR', 'USD', { aproximado: true }).aviso).toMatch(/No se ha podido comprobar/);
+    // Lo recibido en el banco: el mensaje lo dice.
+    expect(() => comprobarTipoManual(0.1, 1.15, 'EUR', 'USD', { origen: 'banco' })).toThrow(/Lo recibido en el banco equivale a 1 EUR = 0,1000 USD.*lejos.*EUR/);
   });
 });
 
@@ -218,6 +249,27 @@ describe('calcularCobroDivisa', () => {
     // La diferencia de cambio es la misma que sin comision.
     expect(r.diferenciaCambio).toBe(43.29);
     expect(() => calcularCobroDivisa({ ...factura, importeDoc: 10, tipoCambio: 1.05, comisionBancaria: 20 })).toThrow(/comisión/);
+  });
+
+  it('en una cuenta en la moneda de la factura, la comision tambien se descuenta del banco (sin 768 ficticia)', () => {
+    // Factura de 1.000 USD a 1,0 (430 = 1.000 EUR), cobro a 1,0 con 10 EUR de comision en una cuenta en USD.
+    const r = calcularCobroDivisa({
+      ...factura,
+      monedaTesoreria: 'USD',
+      totalCuenta: 1000,
+      importeDoc: 1000,
+      tipoCambio: 1,
+      fuenteTipoCambio: 'BCE',
+      comisionBancaria: 10,
+    });
+    expect(apunte(r, 'TESORERIA')).toMatchObject({ debe: 990 });
+    expect(apunte(r, 'COMISION')).toMatchObject({ debe: 10 });
+    expect(apunte(r, 'TERCERO')).toMatchObject({ haber: 1000 });
+    expect(r.diferenciaCambio).toBe(0);
+    expect(apunte(r, 'DIF_POSITIVA')).toBeUndefined();
+    expect(() =>
+      calcularCobroDivisa({ ...factura, monedaTesoreria: 'USD', importeDoc: 10, tipoCambio: 1.05, comisionBancaria: 20 }),
+    ).toThrow(/comisión/);
   });
 
   it('cada cobro cuadra: debe = haber', () => {

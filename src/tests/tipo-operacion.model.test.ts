@@ -4,6 +4,7 @@ import {
   desgloseVerifactu,
   destinatarioVerifactu,
   esPaisUe,
+  fechaDevengoVenta,
   fueraDelTai,
   inferirTipoOperacion,
   normalizarPais,
@@ -15,6 +16,7 @@ import {
   revisarFiscalidad,
   sugerirTipoOperacion,
   tieneNifIvaUe,
+  tieneNifIvaXi,
   tipoOperacionLegacy,
   TIPOS_OPERACION_VENTA,
   TIPOS_SELECCIONABLES,
@@ -184,15 +186,19 @@ describe('facturas anteriores (tipoOperacion null): la clasificacion de siempre'
     }
   });
 
-  it('clasificarOperacion (compras) ya entiende ISO-2; con ISO-3 y por NIF da lo de siempre', () => {
-    expect(clasificarOperacion('FR', 'FR12345678901')).toBe('intracomunitaria');
-    expect(clasificarOperacion('EL', 'EL123456789')).toBe('intracomunitaria');
+  it('clasificarOperacion (compras) da EXACTAMENTE lo de siempre, tambien con ISO-2 (no mueve el 349 ya presentado)', () => {
+    // Un proveedor con pais ISO-2 de la UE seguia fuera del 349: no entra ahora con clave A.
+    expect(clasificarOperacion('DE', 'DE123456789')).toBe('exportacion');
+    expect(clasificarOperacion('FR', 'FR12345678901')).toBe('exportacion');
     expect(clasificarOperacion('US', '1')).toBe('exportacion');
     expect(clasificarOperacion('es', 'B1')).toBe('interior');
     const casos: Array<[string | undefined, string | undefined]> = [
       ['ES', 'B12345678'],
       ['ESP', 'B1'],
       ['FRA', 'FR1'],
+      ['FR', 'FR12345678901'],
+      ['DE', 'DE123456789'],
+      ['EL', 'EL123456789'],
       ['USA', '1'],
       ['', 'DE123'],
       ['', 'B12345678'],
@@ -210,6 +216,76 @@ describe('facturas anteriores (tipoOperacion null): la clasificacion de siempre'
     expect(operacionEfectiva({ tipoOperacion: null }, { pais: 'USA', nifCif: '1' })).toBe('EXPORTACION');
     expect(operacionEfectiva({ tipoOperacion: 'RARO' }, ES)).toBe('NACIONAL');
   });
+
+  it('operacionEfectiva sin tipo usa el pais congelado en la factura, no el de la ficha de hoy', () => {
+    // La ficha paso de 'ES' a 'FR' (o 'FRA' a 'FR') despues de emitir: la factura sigue como se declaro.
+    expect(operacionEfectiva({ tipoOperacion: null, paisClienteLegacy: 'ES' }, { pais: 'FR', nifCif: 'FR40303265045' })).toBe('NACIONAL');
+    expect(operacionEfectiva({ tipoOperacion: null, paisClienteLegacy: 'FRA' }, { pais: 'FR', nifCif: 'FR1' })).toBe('INTRACOMUNITARIA');
+    // Sin congelar (null): la ficha, como siempre. Un '' congelado es "sin pais": por el NIF.
+    expect(operacionEfectiva({ tipoOperacion: null, paisClienteLegacy: null }, { pais: 'USA', nifCif: '1' })).toBe('EXPORTACION');
+    expect(operacionEfectiva({ tipoOperacion: null, paisClienteLegacy: '' }, { pais: 'US', nifCif: 'DE123' })).toBe('INTRACOMUNITARIA');
+    // Con tipo guardado, el congelado no cuenta.
+    expect(operacionEfectiva({ tipoOperacion: 'EXPORTACION', paisClienteLegacy: 'ES' }, ES)).toBe('EXPORTACION');
+  });
+});
+
+describe('fecha de devengo de una venta (art. 75 LIVA)', () => {
+  it('sin fecha de operacion, la de emision (las facturas anteriores, como siempre)', () => {
+    expect(fechaDevengoVenta({ tipoOperacion: null, fechaOperacion: null, fechaEmision: '2026-04-03' })).toBe('2026-04-03');
+  });
+  it('en general, la de la operacion aunque la factura se emita en el trimestre siguiente', () => {
+    expect(fechaDevengoVenta({ tipoOperacion: 'NACIONAL', fechaOperacion: '2026-03-28', fechaEmision: '2026-04-03' })).toBe('2026-03-28');
+    expect(fechaDevengoVenta({ tipoOperacion: 'SERVICIOS_EXTRANJERO', fechaOperacion: '2026-03-28', fechaEmision: '2026-04-03' })).toBe(
+      '2026-03-28',
+    );
+  });
+  it('entrega intracomunitaria (art. 75.Uno.8.º): la emision o, si es posterior, el dia 15 del mes siguiente', () => {
+    expect(fechaDevengoVenta({ tipoOperacion: 'INTRACOMUNITARIA', fechaOperacion: '2026-03-28', fechaEmision: '2026-04-03' })).toBe(
+      '2026-04-03',
+    );
+    expect(fechaDevengoVenta({ tipoOperacion: 'INTRACOMUNITARIA', fechaOperacion: '2026-03-28', fechaEmision: '2026-04-20' })).toBe(
+      '2026-04-15',
+    );
+    expect(fechaDevengoVenta({ tipoOperacion: 'INTRACOMUNITARIA', fechaOperacion: '2026-12-10', fechaEmision: '2027-01-20' })).toBe(
+      '2027-01-15',
+    );
+  });
+});
+
+describe('Irlanda del Norte (NIF-IVA XI)', () => {
+  const XI = { pais: 'GB', nifCif: 'XI123456789' };
+  const XI_SIN_PAIS = { pais: 'ES', nifCif: 'XI123456789' };
+  it('vale como NIF-IVA de la UE solo en las entregas de bienes', () => {
+    expect(tieneNifIvaXi(XI)).toBe(true);
+    expect(tieneNifIvaXi(XI_SIN_PAIS)).toBe(true);
+    expect(paisDelCliente(XI_SIN_PAIS)).toBe('GB');
+    expect(tieneNifIvaXi({ pais: 'GB', nifCif: 'GB123456789' })).toBe(false);
+    expect(tieneNifIvaUe(XI)).toBe(false);
+  });
+  it('entrega intracomunitaria a XI: sin CLIENTE_NO_UE ni CLIENTE_SIN_NIF_IVA, casilla [59] y clave E', () => {
+    const r = revisarFiscalidad(
+      { empresaEspanola: true, tipoOperacion: 'INTRACOMUNITARIA', lineas: [{ tipoIva: 0, tipoRetencion: 0 }], cliente: XI },
+      'emitir',
+    );
+    expect(r.errores).toEqual([]);
+    expect(REGLA_OPERACION.INTRACOMUNITARIA.casilla303({ cliente: XI })).toBe('59');
+    expect(REGLA_OPERACION.INTRACOMUNITARIA.clave349({ cliente: XI })).toBe('E');
+    expect(destinatarioVerifactu(XI)).toEqual({ idOtro: { codigoPais: 'GB', idType: '02', id: 'XI123456789' } });
+  });
+  it('los servicios a XI son de pais tercero: [120], sin 349', () => {
+    expect(REGLA_OPERACION.SERVICIOS_EXTRANJERO.casilla303({ cliente: XI })).toBe('120');
+    expect(REGLA_OPERACION.SERVICIOS_EXTRANJERO.clave349({ cliente: XI })).toBeNull();
+  });
+  it('se sugiere e infiere intracomunitaria para bienes; exportacion avisa', () => {
+    expect(sugerirTipoOperacion(XI, ['PRODUCTO']).tipoOperacion).toBe('INTRACOMUNITARIA');
+    expect(sugerirTipoOperacion(XI, ['SERVICIO']).tipoOperacion).toBe('SERVICIOS_EXTRANJERO');
+    expect(inferirTipoOperacion(XI, [{ tipoIva: 0 }])).toBe('INTRACOMUNITARIA');
+    const exp = revisarFiscalidad(
+      { empresaEspanola: true, tipoOperacion: 'EXPORTACION', lineas: [{ tipoIva: 0, tipoRetencion: 0 }], cliente: XI },
+      'emitir',
+    );
+    expect(exp.avisos.map((a) => a.codigo)).toContain('OPERACION_INCOHERENTE_PAIS');
+  });
 });
 
 describe('inferencia y sugerencia', () => {
@@ -220,7 +296,9 @@ describe('inferencia y sugerencia', () => {
     expect(inferirTipoOperacion(US, [{ tipoIva: 0 }])).toBe('EXPORTACION');
     expect(inferirTipoOperacion(ES, [{ tipoIva: 0 }])).toBeNull();
     expect(inferirTipoOperacion(FR_SIN_PREFIJO, [{ tipoIva: 0 }])).toBeNull();
-    expect(inferirTipoOperacion(ES, [{ tipoIva: 21 }, { tipoIva: 0 }])).toBeNull();
+    // Con alguna linea con IVA y otras al 0 % (suplidos) y cliente espanol: nacional, como siempre.
+    expect(inferirTipoOperacion(ES, [{ tipoIva: 21 }, { tipoIva: 0 }])).toBe('NACIONAL');
+    expect(inferirTipoOperacion(US, [{ tipoIva: 21 }, { tipoIva: 0 }])).toBeNull();
   });
 
   it('sugerirTipoOperacion segun el cliente y el tipo de producto', () => {
@@ -231,6 +309,9 @@ describe('inferencia y sugerencia', () => {
     expect(sugerirTipoOperacion(FR_SIN_PREFIJO).avisos).toContain('CLIENTE_EXTRANJERO_CON_IVA');
     expect(sugerirTipoOperacion(US, ['PRODUCTO']).tipoOperacion).toBe('EXPORTACION');
     expect(sugerirTipoOperacion(US).tipoOperacion).toBe('SERVICIOS_EXTRANJERO');
+    // Servicios fuera de la UE: se avisa de que un particular lleva IVA (art. 69.Uno.2.º) salvo el art. 69.Dos.
+    expect(sugerirTipoOperacion(US).avisos).toContain('SERVICIOS_PARTICULAR');
+    expect(sugerirTipoOperacion(US, ['PRODUCTO']).avisos).not.toContain('SERVICIOS_PARTICULAR');
     expect(sugerirTipoOperacion(CANARIAS, ['PRODUCTO'])).toEqual({ tipoOperacion: 'EXPORTACION', avisos: ['CLIENTE_FUERA_TAI'] });
     expect(sugerirTipoOperacion(FR, ['PRODUCTO', 'SERVICIO']).avisos).toContain('TIPO_PRODUCTO');
   });
@@ -274,7 +355,13 @@ describe('revisarFiscalidad', () => {
 
     const nacionalAl0 = { lineas: [{ tipoIva: 21, tipoRetencion: 0 }, { tipoIva: 0, tipoRetencion: 0 }] };
     expect(codigos(nacionalAl0, 'guardar').errores).toEqual([]);
-    expect(codigos(nacionalAl0, 'emitir').errores).toEqual(['LINEA_SIN_IVA']);
+    // Una linea al 0 % en una nacional (suplido) se emite, como siempre, con aviso.
+    expect(codigos(nacionalAl0, 'emitir').errores).toEqual([]);
+    expect(codigos(nacionalAl0, 'emitir').avisos).toContain('LINEAS_AL_0');
+    // Todas al 0 %: no es nacional; al emitir, error.
+    const nacionalTodoAl0 = { lineas: [{ tipoIva: 0, tipoRetencion: 0 }] };
+    expect(codigos(nacionalTodoAl0, 'guardar').errores).toEqual([]);
+    expect(codigos(nacionalTodoAl0, 'emitir').errores).toEqual(['LINEA_SIN_IVA']);
 
     const exentaSinRef = { tipoOperacion: 'EXENTA', causaExencion: 'E1', lineas: [{ tipoIva: 0, tipoRetencion: 0 }] };
     expect(codigos(exentaSinRef, 'emitir').errores).toEqual(['EXENCION_SIN_SUPUESTO']);
@@ -352,9 +439,18 @@ describe('resolverFiscalidadPura', () => {
       { empresaEspanola: true, tipoOperacion: null, lineas: [{ tipoIva: 21, tipoRetencion: 0 }, { tipoIva: 0, tipoRetencion: 0 }], cliente: ES },
       'lector',
     );
+    // Cliente espanol con IVA y una linea al 0 %: nacional, como siempre (aviso de suplidos).
     expect(conIva.tipoOperacion).toBe('NACIONAL');
     expect(conIva.errores).toEqual([]);
-    expect(conIva.avisos.map((a) => a.codigo)).toEqual(expect.arrayContaining(['TIPO_LEIDO_OCR', 'LINEA_SIN_IVA']));
+    expect(conIva.avisos.map((a) => a.codigo)).toEqual(['LINEAS_AL_0']);
+    // Cliente extranjero con lineas mezcladas: no se deduce; con IVA, nacional para revisar.
+    const extranjero = resolverFiscalidadPura(
+      { empresaEspanola: true, tipoOperacion: null, lineas: [{ tipoIva: 21, tipoRetencion: 0 }, { tipoIva: 0, tipoRetencion: 0 }], cliente: US },
+      'lector',
+    );
+    expect(extranjero.tipoOperacion).toBe('NACIONAL');
+    expect(extranjero.errores).toEqual([]);
+    expect(extranjero.avisos.map((a) => a.codigo)).toEqual(expect.arrayContaining(['TIPO_LEIDO_OCR', 'LINEAS_AL_0']));
   });
 
   it('lector sin tipo deducible: EXENTA E6 para revisar', () => {

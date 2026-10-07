@@ -14,7 +14,7 @@ import {
 } from '../domain/divisas';
 import { CONTABLE_RULES } from './accounting-engine.service';
 import { perfilEmpresa } from './perfilEmpresa.service';
-import { tipoReferencia } from './tiposCambio.service';
+import { referenciaParaComprobar, tipoReferencia } from './tiposCambio.service';
 import { asegurarPlanContableEmpresa } from './chart-of-accounts.service';
 
 /**
@@ -480,8 +480,9 @@ async function tipoDelCobro(
 ): Promise<{ tipoCambio: number; fuente: 'BCE' | 'MANUAL' }> {
   if (hay(manual)) {
     const tipoCambio = validarFormatoTipoCambio(manual);
-    const ref = await tipoReferencia(monedaCuenta, moneda, fecha, { permitirVieja: true }).catch(() => null);
-    comprobarTipoManual(tipoCambio, ref?.tipoCambio ?? null, monedaCuenta, moneda);
+    // Sin el BCE de esa fecha, con el ultimo guardado o uno orientativo: un tipo invertido o absurdo no pasa.
+    const ref = await referenciaParaComprobar(monedaCuenta, moneda, fecha);
+    comprobarTipoManual(tipoCambio, ref?.tipoCambio ?? null, monedaCuenta, moneda, { aproximado: ref?.aproximado });
     return { tipoCambio, fuente: 'MANUAL' };
   }
   const ref = await tipoReferencia(monedaCuenta, moneda, fecha, { permitirVieja: false }).catch(() => null);
@@ -539,6 +540,10 @@ export async function registrarCobroFactura(
 
   // El tipo del dia se resuelve ANTES de la transaccion (puede consultar al BCE).
   const delDia = enDivisa && !hay(datos.importeRecibido) ? await tipoDelCobro(monedaCuenta, moneda, fecha, datos.tipoCambio) : null;
+  // Con lo recibido en el banco, el tipo que sale de ahi se compara con el de
+  // referencia de la fecha del cobro (como un tipo manual): una cifra en otra
+  // moneda o con un cero de mas daria una diferencia de cambio desorbitada.
+  const refRecibido = enDivisa && hay(datos.importeRecibido) ? await referenciaParaComprobar(monedaCuenta, moneda, fecha) : null;
   // 768, 668 y 626 en el plan de las empresas que ya existian.
   if (enDivisa) await asegurarPlanContableEmpresa(companyId);
 
@@ -573,6 +578,12 @@ export async function registrarCobroFactura(
         fuenteTipoCambio: delDia?.fuente ?? null,
         comisionBancaria: hay(datos.comisionBancaria) ? Number(datos.comisionBancaria) : null,
       });
+      if (calculo.fuenteTipoCambio === 'BANCO') {
+        comprobarTipoManual(calculo.tipoCambio, refRecibido?.tipoCambio ?? null, monedaCuenta, moneda, {
+          aproximado: refRecibido?.aproximado,
+          origen: 'banco',
+        });
+      }
 
       const divisa = enDivisa
         ? ` [${importeConMoneda(calculo.importeDoc, moneda)}; ${textoTipo(monedaCuenta, moneda, calculo.tipoCambio)}]`

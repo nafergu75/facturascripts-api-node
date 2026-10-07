@@ -13,6 +13,7 @@ import {
 import { importesDoc, normalizarMoneda, textoTipo, validarFormatoTipoCambio, validarMoneda } from '../domain/divisas';
 import {
   esTipoOperacion,
+  fechaDevengoVenta,
   inferirTipoOperacion,
   mencionFiscal,
   normalizarPais,
@@ -279,12 +280,26 @@ const clienteFiscal = (c: { pais: string | null; nifCif: string | null; cp: stri
   cp: c.cp,
 });
 
-/** Tipo con el que se trata la factura: el guardado; si no, el de siempre (emitidas) o el que se deduce. */
+/**
+ * Tipo con el que se trata la factura: el guardado; si no, el de siempre
+ * (emitidas anteriores, con el pais del cliente congelado en ellas) o el que se
+ * deduce (borradores).
+ */
 function tipoOperacionEfectivo(f: FacturaConLineas): TipoOperacionVenta | null {
   if (esTipoOperacion(f.tipoOperacion)) return f.tipoOperacion;
   const cliente = clienteFiscal(f.customer);
   if (f.estadoDocumento === ESTADO_FINAL) return operacionEfectiva(f, cliente);
   return inferirTipoOperacion(cliente, f.lineas);
+}
+
+/**
+ * Mencion fiscal que lleva (o llevara) el PDF: la de su tipo guardado o, en un
+ * borrador o proforma, la del que se deduce. Una factura emitida sin tipo
+ * (anterior a esta funcion) no lleva mencion propia, igual que su PDF.
+ */
+function mencionDeFactura(f: FacturaConLineas, efectivo: TipoOperacionVenta | null): Mencion | null {
+  if (f.estadoDocumento === ESTADO_FINAL && !esTipoOperacion(f.tipoOperacion)) return null;
+  return mencionFiscal(efectivo, { cliente: clienteFiscal(f.customer), causaExencion: f.causaExencion, referenciaLegal: f.referenciaLegal });
 }
 
 interface ContextoRespuesta {
@@ -334,11 +349,7 @@ function aRespuesta(f: FacturaConLineas, ctx: ContextoRespuesta): IncomeInvoiceR
     tipoOperacionEfectivo: efectivo,
     causaExencion: f.causaExencion ?? undefined,
     referenciaLegal: f.referenciaLegal ?? undefined,
-    mencionFiscal: mencionFiscal(efectivo, {
-      cliente: clienteFiscal(f.customer),
-      causaExencion: f.causaExencion,
-      referenciaLegal: f.referenciaLegal,
-    }),
+    mencionFiscal: mencionDeFactura(f, efectivo),
     ...(ctx.avisosFiscales?.length ? { avisosFiscales: ctx.avisosFiscales } : {}),
     plantillaId: f.plantillaId,
     observaciones: f.observaciones ?? undefined,
@@ -772,6 +783,21 @@ function comprobarHerencia(original: FacturaConLineas, dto: { moneda?: string | 
   }
 }
 
+/** Lo que una rectificativa hereda de la factura que rectifica para su fiscalidad. */
+function herencia(original: FacturaConLineas) {
+  return {
+    tipoOperacion: original.tipoOperacion,
+    causaExencion: original.causaExencion,
+    referenciaLegal: original.referenciaLegal,
+    paisClienteLegacy: original.paisClienteLegacy,
+  };
+}
+
+/** Pais con el que se clasifica una factura sin tipo: el congelado o, si no, el de la ficha ahora. */
+function paisCongelado(f: FacturaConLineas): string {
+  return f.paisClienteLegacy ?? f.customer.pais ?? '';
+}
+
 /** Herencia y lineas espejo de una rectificativa: solo se pasan desde este servicio. */
 interface Interno {
   original?: FacturaConLineas;
@@ -799,6 +825,14 @@ async function crear(dto: CrearFacturaIngresoDTO, opciones: { origen?: OrigenFac
     original = await buscarConLineas(dto.companyId, String(dto.facturaOriginalId));
     if (!original) throw badRequest('La factura que se rectifica no existe.');
   }
+  // Solo se rectifica una factura emitida (ni un borrador ni una proforma: su tipo de cambio no es definitivo).
+  if (original && original.estadoDocumento !== ESTADO_FINAL) {
+    throw badRequest(
+      original.estadoDocumento === ESTADO_PROFORMA
+        ? 'Una proforma no se rectifica: mientras esté pendiente, modifícala.'
+        : 'Un borrador no se rectifica: modifícalo directamente.',
+    );
+  }
   if (original) comprobarHerencia(original, dto);
   const moneda = original ? original.moneda : validarMoneda(dto.moneda ?? perfil.monedaCuenta, perfil.monedasFactura);
   comprobarMonedaLineas(dto.lineas, moneda, false);
@@ -812,7 +846,6 @@ async function crear(dto: CrearFacturaIngresoDTO, opciones: { origen?: OrigenFac
   const fechaVencimiento = validarFecha(dto.fechaVencimiento ?? sumarDias(fechaEmision, 15), 'fecha de vencimiento');
   if (fechaVencimiento < fechaEmision) throw badRequest('El vencimiento no puede ser anterior a la fecha de emisión.');
   const fechaOperacion = validarFechaOperacion(dto.fechaOperacion, fechaEmision);
-  const devengo = fechaOperacion ?? fechaEmision;
 
   // Quien revisa la fiscalidad lo decide el servidor, nunca el cuerpo.
   const modo: ModoFiscal = esRectificativa
@@ -832,20 +865,14 @@ async function crear(dto: CrearFacturaIngresoDTO, opciones: { origen?: OrigenFac
       referenciaLegal: dto.referenciaLegal,
       tipoFactura,
       lineas,
-      ...(original
-        ? {
-            heredado: {
-              tipoOperacion: original.tipoOperacion,
-              causaExencion: original.causaExencion,
-              referenciaLegal: original.referenciaLegal,
-            },
-          }
-        : {}),
+      ...(original ? { heredado: herencia(original) } : {}),
     },
     modo,
   );
   // Las lineas espejo de una rectificativa total se copian tal cual de la original.
   if (!interno.importes) lineas = conFiscalidad(lineas, fiscal);
+  // Devengo (fija el tipo de cambio, art. 79.Once LIVA): el de la operacion o el de emision.
+  const devengo = fechaDevengoVenta({ tipoOperacion: fiscal.tipoOperacion, fechaOperacion, fechaEmision });
 
   // Tipo de cambio, ANTES de cualquier transaccion. Emitir exige el definitivo.
   const emite = !dto.proforma && !dto.borrador;
@@ -871,6 +898,8 @@ async function crear(dto: CrearFacturaIngresoDTO, opciones: { origen?: OrigenFac
     tipoOperacion: fiscal.tipoOperacion,
     causaExencion: fiscal.causaExencion,
     referenciaLegal: fiscal.referenciaLegal,
+    // Rectificativa de una factura sin tipo: se clasifica con el mismo pais que la original.
+    ...(original && !fiscal.tipoOperacion && !esTipoOperacion(original.tipoOperacion) ? { paisClienteLegacy: paisCongelado(original) } : {}),
     plantillaId: dto.plantillaId || 'default',
     observaciones: dto.observaciones,
     esRectificativa,
@@ -1015,8 +1044,6 @@ export const incomeInvoicesService = {
       fechaEmision,
     );
     data.fechaOperacion = fechaOperacion;
-    const devengo = fechaOperacion ?? fechaEmision;
-    const devengoAntes = actual.fechaOperacion ?? actual.fechaEmision;
 
     // Moneda: los precios no se convierten solos.
     const original = actual.esRectificativa && actual.facturaOriginalId ? await buscarConLineas(companyId, actual.facturaOriginalId) : null;
@@ -1043,15 +1070,7 @@ export const incomeInvoicesService = {
         referenciaLegal: dto.referenciaLegal !== undefined ? dto.referenciaLegal : actual.referenciaLegal,
         tipoFactura,
         lineas,
-        ...(original
-          ? {
-              heredado: {
-                tipoOperacion: original.tipoOperacion,
-                causaExencion: original.causaExencion,
-                referenciaLegal: original.referenciaLegal,
-              },
-            }
-          : {}),
+        ...(original ? { heredado: herencia(original) } : {}),
       },
       actual.esRectificativa ? 'heredar' : 'guardar',
     );
@@ -1060,6 +1079,8 @@ export const incomeInvoicesService = {
     data.referenciaLegal = fiscal.referenciaLegal;
     const normaliza = fiscal.lineas.some((l, i) => l.tipoIva !== (lineas[i].tipoIva ?? 21) || l.tipoRetencion !== (lineas[i].tipoRetencion ?? 0));
     lineas = conFiscalidad(lineas, fiscal);
+    const devengo = fechaDevengoVenta({ tipoOperacion: fiscal.tipoOperacion, fechaOperacion, fechaEmision });
+    const devengoAntes = fechaDevengoVenta(actual);
 
     // Tipo de cambio: se vuelve a pedir si cambian la moneda o el devengo (salvo el manual).
     let tipo: TipoResuelto | null = null;
@@ -1085,6 +1106,15 @@ export const incomeInvoicesService = {
 
     const recalcular = !!dto.lineas || normaliza || moneda !== actual.moneda || (tipo !== null && tipo.tipoCambio !== actual.tipoCambio) || (tipo !== null && tipo.fuente !== actual.fuenteTipoCambio);
     const factura = await transaccion(async (tx) => {
+      // Bloquea la fila y comprueba que nadie la ha emitido ni cambiado desde que se leyo
+      // (mientras se consultaba el tipo de cambio, otra peticion podria haberla emitido).
+      const libre = await tx.incomeInvoice.updateMany({
+        where: { id, companyId, estadoDocumento: actual.estadoDocumento, updatedAt: actual.updatedAt },
+        data: { updatedAt: new Date() },
+      });
+      if (libre.count !== 1) {
+        throw badRequest('La factura ha cambiado (o se ha emitido) mientras se guardaba: vuelve a abrirla y repite el cambio.');
+      }
       if (recalcular) {
         exigirNoFinal(actual);
         const importes = calcularImportesFactura(lineas, { tipoCambio, mismaMoneda: misma });
@@ -1245,8 +1275,6 @@ export const incomeInvoicesService = {
     // Se mantienen los dias de plazo que tenia el borrador.
     const fechaVencimiento = sumarDias(fechaEmision, plazoDias(actual));
     const fechaOperacion = actual.fechaOperacion && actual.fechaOperacion !== fechaEmision ? actual.fechaOperacion : null;
-    const devengo = fechaOperacion ?? fechaEmision;
-    const devengoBorrador = actual.fechaOperacion ?? actual.fechaEmision;
 
     // Tipo de operacion definitivo, con el cliente y la empresa de ahora.
     const original = actual.esRectificativa && actual.facturaOriginalId ? await buscarConLineas(companyId, actual.facturaOriginalId) : null;
@@ -1261,20 +1289,14 @@ export const incomeInvoicesService = {
         referenciaLegal: actual.referenciaLegal,
         tipoFactura: actual.tipoFactura,
         lineas,
-        ...(original
-          ? {
-              heredado: {
-                tipoOperacion: original.tipoOperacion,
-                causaExencion: original.causaExencion,
-                referenciaLegal: original.referenciaLegal,
-              },
-            }
-          : {}),
+        ...(original ? { heredado: herencia(original) } : {}),
       },
       actual.esRectificativa ? 'heredar' : 'emitir',
     );
     const normaliza = fiscal.lineas.some((l, i) => l.tipoIva !== (lineas[i].tipoIva ?? 21) || l.tipoRetencion !== (lineas[i].tipoRetencion ?? 0));
     lineas = conFiscalidad(lineas, fiscal);
+    const devengo = fechaDevengoVenta({ tipoOperacion: fiscal.tipoOperacion, fechaOperacion, fechaEmision });
+    const devengoBorrador = fechaDevengoVenta(actual);
 
     // Tipo de cambio definitivo.
     const misma = actual.moneda === perfil.monedaCuenta;
@@ -1290,7 +1312,8 @@ export const incomeInvoicesService = {
         : { tipoCambio: actual.tipoCambio, fechaTipoCambio: actual.fechaTipoCambio, fuente: 'HEREDADO', provisional: false };
     } else if (hayValor(opciones.tipoCambio)) {
       tipo = await resolverTipoCambio({ monedaCuenta: perfil.monedaCuenta, moneda: actual.moneda, devengo, manual: opciones.tipoCambio, definitivo: true });
-    } else if (actual.fuenteTipoCambio === 'MANUAL' && devengo === devengoBorrador) {
+    } else if (actual.fuenteTipoCambio === 'MANUAL' && devengo === devengoBorrador && opciones.tipoCambio !== null) {
+      // El manual del borrador se mantiene; con tipoCambio: null se vuelve al del BCE.
       tipo = { tipoCambio: actual.tipoCambio, fechaTipoCambio: actual.fechaTipoCambio, fuente: 'MANUAL', provisional: false };
     } else {
       tipo = await resolverTipoCambio({ monedaCuenta: perfil.monedaCuenta, moneda: actual.moneda, devengo, definitivo: true });
@@ -1298,15 +1321,20 @@ export const incomeInvoicesService = {
     if (tipo.tipoCambio === null) throw badRequest(mensajeSinTipo(actual.moneda, devengo));
 
     // EUR -> EUR sin normalizar: no se recalcula nada (igual bit a bit que antes).
-    const recalcular = !misma || normaliza;
+    // Rectificativa (tipo heredado): sus importes ya se calcularon con el tipo
+    // definitivo al crearla; la total es el espejo exacto de la original, y
+    // recalcularla con el redondeo de siempre no daria la pareja a cero.
+    const heredado = !misma && (actual.fuenteTipoCambio === 'HEREDADO' || !!original);
+    const recalcular = normaliza || (!misma && !heredado);
     exigirNoFinal(actual);
     const importes = recalcular ? calcularImportesFactura(lineas, { tipoCambio: tipo.tipoCambio, mismaMoneda: misma }) : null;
 
     const factura = await transaccion(async (tx) => {
       const numero = await asignarNumero(tx, companyId, actual.serie, fechaEmision);
-      // Solo se finaliza si sigue en borrador (otra peticion podria haberse adelantado).
+      // Solo se finaliza si sigue en borrador y sin cambios desde que se leyo (otra
+      // peticion podria haberla emitido o modificado: moneda, lineas, tipo...).
       const r = await tx.incomeInvoice.updateMany({
-        where: { id, estadoDocumento: ESTADO_BORRADOR },
+        where: { id, companyId, estadoDocumento: ESTADO_BORRADOR, updatedAt: actual.updatedAt },
         data: {
           numero,
           numeroCompleto: `${actual.serie}-${numero}`,
@@ -1320,10 +1348,17 @@ export const incomeInvoicesService = {
           tipoOperacion: fiscal.tipoOperacion,
           causaExencion: fiscal.causaExencion,
           referenciaLegal: fiscal.referenciaLegal,
+          // Rectificativa de una factura sin tipo: el pais de la original, congelado.
+          ...(original && !fiscal.tipoOperacion && !actual.paisClienteLegacy ? { paisClienteLegacy: paisCongelado(original) } : {}),
           ...(importes ? cabecera(importes) : {}),
         },
       });
-      if (r.count !== 1) throw badRequest('La factura ya se había emitido.');
+      if (r.count !== 1) {
+        const ahora = await tx.incomeInvoice.findUnique({ where: { id }, select: { estadoDocumento: true } });
+        throw badRequest(
+          ahora?.estadoDocumento === ESTADO_FINAL ? 'La factura ya se había emitido.' : 'La factura ha cambiado mientras se emitía: vuelve a intentarlo.',
+        );
+      }
       if (importes) {
         // Se releen las lineas: si alguien las ha cambiado mientras tanto, no se emite con importes viejos.
         const ahora = await tx.incomeInvoiceLine.findMany({ where: { invoiceId: id }, select: { id: true } });

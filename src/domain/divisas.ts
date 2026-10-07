@@ -92,11 +92,37 @@ export function validarMoneda(valor: unknown, permitidas: readonly string[] = MO
   return codigo;
 }
 
-/** Valida la moneda de la contabilidad de una empresa. */
+/** Estados de la UE (ISO-2), Espana incluida: llevan la contabilidad en euros. */
+const PAISES_UE_EUR = new Set([
+  'AT', 'BE', 'BG', 'CY', 'CZ', 'DE', 'DK', 'EE', 'ES', 'FI', 'FR', 'GR', 'EL', 'HR', 'HU', 'IE', 'IT', 'LT', 'LU', 'LV',
+  'MT', 'NL', 'PL', 'PT', 'RO', 'SE', 'SI', 'SK',
+]);
+/** Paises cuyas empresas trabajan SOLO en dolares (decision del usuario: EE. UU. y Hong Kong). */
+const PAISES_SOLO_USD = new Set(['US', 'HK']);
+
+/**
+ * Monedas de la contabilidad que admite una empresa segun su pais: Espana y el
+ * resto de la UE, solo EUR; EE. UU. y Hong Kong, solo USD; el resto, las dos.
+ */
+export function monedasCuentaPermitidas(pais: string | null | undefined): readonly string[] {
+  const p = String(pais ?? '').trim().toUpperCase() || 'ES';
+  if (PAISES_UE_EUR.has(p)) return ['EUR'];
+  if (PAISES_SOLO_USD.has(p)) return ['USD'];
+  return MONEDAS_CUENTA_HABILITADAS;
+}
+
+/** Valida la moneda de la contabilidad de una empresa (y que corresponde a su pais). */
 export function validarMonedaCuenta(valor: unknown, pais: string): string {
   const codigo = validarMoneda(valor, MONEDAS_CUENTA_HABILITADAS);
-  if (String(pais ?? 'ES').toUpperCase() === 'ES' && codigo !== 'EUR') {
-    throw badRequest('Una empresa establecida en España lleva la contabilidad en euros (EUR).');
+  if (!monedasCuentaPermitidas(pais).includes(codigo)) {
+    const p = String(pais ?? 'ES').trim().toUpperCase() || 'ES';
+    throw badRequest(
+      p === 'ES'
+        ? 'Una empresa establecida en España lleva la contabilidad en euros (EUR).'
+        : PAISES_SOLO_USD.has(p)
+          ? 'Las empresas de EE. UU. y Hong Kong llevan la contabilidad en dólares (USD).'
+          : 'Una empresa de la UE lleva la contabilidad en euros (EUR).',
+    );
   }
   return codigo;
 }
@@ -116,6 +142,8 @@ export function validarFormatoTipoCambio(valor: unknown): number {
   if (n <= 0) throw badRequest('El tipo de cambio tiene que ser mayor que cero.');
   if (n > 1e6) throw badRequest('El tipo de cambio es demasiado grande.');
   if (Math.abs(redondear8(n) - n) > 1e-12) throw badRequest('El tipo de cambio admite como máximo 8 decimales.');
+  // Con 8 decimales un valor diminuto queda en 0: no vale (y dividir por el daria un error interno).
+  if (!(redondear8(n) > 0)) throw badRequest('El tipo de cambio tiene que ser mayor que cero.');
   return redondear8(n);
 }
 
@@ -136,28 +164,60 @@ export function desviacion(manual: number, bce: number): number {
 export const DESVIACION_AVISO = 0.005;
 
 /**
- * Comprueba un tipo manual contra el del BCE de esa fecha (si se conoce):
- * rechaza el invertido y el que se sale de [BCE/2, BCE*2]; avisa si se desvia
- * mas de un 0,5 %.
+ * Unidades por 1 EUR APROXIMADAS de las monedas activas (orden de magnitud de
+ * 2024-2026). Solo sirven para descartar un tipo manual absurdo o invertido
+ * cuando no hay ningun dato del BCE (ni de ese dia ni guardado): nunca se
+ * aplican a un importe.
+ */
+const UNIDADES_POR_EUR_ORIENTATIVAS: Readonly<Record<string, number>> = Object.freeze({ EUR: 1, USD: 1.12 });
+
+/** Tipo aproximado "unidades de `moneda` por 1 de `monedaCuenta`", o null si no se conoce. */
+export function tipoOrientativo(monedaCuenta: string, moneda: string): number | null {
+  const doc = UNIDADES_POR_EUR_ORIENTATIVAS[moneda];
+  const cuenta = UNIDADES_POR_EUR_ORIENTATIVAS[monedaCuenta];
+  return doc && cuenta ? redondear8(doc / cuenta) : null;
+}
+
+/**
+ * Comprueba un tipo indicado a mano (o el que sale de lo recibido en el banco)
+ * contra el de referencia: rechaza el invertido y el que se sale de
+ * [ref/2, ref*2]; avisa si se desvia mas de un 0,5 %.
+ *
+ * La referencia es la del BCE de esa fecha. Si no la hay, `aproximado` (el
+ * ultimo tipo guardado) o, sin ninguno, el orientativo: se rechaza igual lo
+ * invertido o absurdo, y se avisa de que no se ha podido comprobar con el BCE.
  */
 export function comprobarTipoManual(
   manual: number,
-  bce: number | null,
+  referencia: number | null,
   monedaCuenta: string,
   moneda: string,
+  opciones: { aproximado?: boolean; origen?: 'manual' | 'banco' } = {},
 ): { aviso?: string } {
-  if (bce === null || !(bce > 0)) return {};
-  const ref = textoTipo(monedaCuenta, moneda, bce);
-  if (pareceInvertido(manual, bce)) {
-    throw badRequest(
-      `El tipo ${formatoTipo(manual)} parece invertido: indica cuántos ${moneda} vale 1 ${monedaCuenta} (BCE: ${ref}).`,
-    );
+  let ref = referencia !== null && referencia > 0 ? referencia : null;
+  let aproximado = !!opciones.aproximado;
+  if (ref === null) {
+    ref = tipoOrientativo(monedaCuenta, moneda);
+    aproximado = true;
   }
-  if (manual < bce / 2 || manual > bce * 2) {
-    throw badRequest(`El tipo ${formatoTipo(manual)} está muy lejos del de referencia del BCE (${ref}). Revísalo.`);
+  if (ref === null) return {};
+  const texto = aproximado
+    ? `referencia aproximada, sin el tipo del BCE de esa fecha: 1 ${monedaCuenta} = ${formatoTipo(ref)} ${moneda}`
+    : `BCE: ${textoTipo(monedaCuenta, moneda, ref)}`;
+  const banco = opciones.origen === 'banco';
+  const sujeto = banco ? `Lo recibido en el banco equivale a ${textoTipo(monedaCuenta, moneda, manual)}, que` : `El tipo ${formatoTipo(manual)}`;
+  const revisa = banco ? ` Comprueba que lo recibido está en ${monedaCuenta}.` : '';
+  if (pareceInvertido(manual, ref)) {
+    throw badRequest(`${sujeto} parece invertido: indica cuántos ${moneda} vale 1 ${monedaCuenta} (${texto}).${revisa}`);
   }
-  if (desviacion(manual, bce) > DESVIACION_AVISO) {
-    return { aviso: `El tipo indicado se desvía más de un 0,5 % del de referencia del BCE (${ref}).` };
+  if (manual < ref / 2 || manual > ref * 2) {
+    throw badRequest(`${sujeto} está muy lejos del tipo de referencia (${texto}). Revísalo.${revisa}`);
+  }
+  if (aproximado) {
+    return { aviso: `No se ha podido comprobar el tipo con el del BCE de esa fecha (${texto}): revisa que es correcto.` };
+  }
+  if (desviacion(manual, ref) > DESVIACION_AVISO) {
+    return { aviso: `El tipo indicado se desvía más de un 0,5 % del de referencia del BCE (${textoTipo(monedaCuenta, moneda, ref)}).` };
   }
   return {};
 }
@@ -514,7 +574,10 @@ export function calcularCobroDivisa(e: EntradaCobroDivisa): ResultadoCobroDivisa
     }
     if (!(e.tipoCambio && e.tipoCambio > 0)) throw badRequest('Indica el tipo de cambio del día del cobro.');
     tipoCambio = e.tipoCambio;
-    importeTesoreria = aCuenta(importeDoc, tipoCambio);
+    // Igual que en una cuenta en moneda de cuenta: la comision la descuenta el
+    // banco (cobro) o sale aparte (pago); la diferencia de cambio no la absorbe.
+    importeTesoreria = e.tipo === 'INGRESO' ? redondear2(aCuenta(importeDoc, tipoCambio) - comision) : aCuenta(importeDoc, tipoCambio);
+    if (!(importeTesoreria > 0)) throw badRequest('La comisión no puede ser mayor que lo cobrado.');
     fuente = e.fuenteTipoCambio ?? 'MANUAL';
   } else {
     throw badRequest(`Cobrar una factura en ${e.moneda} en una cuenta en ${e.monedaTesoreria} no está admitido todavía.`);

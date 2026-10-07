@@ -15,8 +15,8 @@ import { prisma } from '../config/database';
 import { taxDocumentsService } from './tax-documents.service';
 import { reportsService } from './reports.service';
 import { registrarAuditoria } from './auditoria.service';
-import { esEmpresaEspanolaFiscal, MENSAJE_SIN_MODELOS } from './impuestosCalculo.service';
-import { esTipoOperacion } from '../domain/tipo-operacion.model';
+import { esEmpresaEspanolaFiscal, MENSAJE_SIN_MODELOS, ventasQuePuedenDevengarseEntre } from './impuestosCalculo.service';
+import { esTipoOperacion, fechaDevengoVenta, paisLegacy } from '../domain/tipo-operacion.model';
 import {
   generarCasillas303,
   generarCasillas111,
@@ -530,19 +530,19 @@ export class TaxModelsService {
     // Una empresa no establecida en Espana no presenta modelos de la AEAT.
     await exigirEmpresaEspanola(companyId);
     // Obtener clientes (facturas de ingreso)
-    const clientesFacturas = await prisma.incomeInvoice.findMany({
-      where: {
-        companyId,
-        estadoDocumento: 'FINAL',
-        fechaEmision: {
-          gte: `${ejercicio}-01-01`,
-          lte: `${ejercicio}-12-31`,
+    // Ventas por fecha de devengo (art. 75 LIVA; las anteriores, por la de emision como siempre).
+    const clientesFacturas = (
+      await prisma.incomeInvoice.findMany({
+        where: {
+          companyId,
+          estadoDocumento: 'FINAL',
+          ...ventasQuePuedenDevengarseEntre(`${ejercicio}-01-01`, `${ejercicio}-12-31`),
         },
-      },
-      include: {
-        customer: true,
-      },
-    });
+        include: {
+          customer: true,
+        },
+      })
+    ).filter((f) => fechaDevengoVenta(f).startsWith(`${ejercicio}-`));
 
     // Obtener proveedores (facturas de gasto)
     const proveedoresFacturas = await prisma.expenseInvoice.findMany({
@@ -581,9 +581,10 @@ export class TaxModelsService {
     const TIPOS_347 = ['NACIONAL', 'EXENTA', 'ISP_NACIONAL'];
     const declarable = (tipo: string | null) => !esTipoOperacion(tipo) || TIPOS_347.includes(tipo);
 
-    // Procesar clientes
+    // Procesar clientes. Las facturas sin tipo, con el pais del cliente congelado en ellas (si se cambio la ficha).
     for (const factura of clientesFacturas) {
-      if (!factura.customer.nifCif || !espanol(factura.customer.pais) || !declarable(factura.tipoOperacion)) continue;
+      const pais = esTipoOperacion(factura.tipoOperacion) ? factura.customer.pais : paisLegacy(factura, factura.customer);
+      if (!factura.customer.nifCif || !espanol(pais) || !declarable(factura.tipoOperacion)) continue;
 
       const key = `cliente-${factura.customer.nifCif}`;
       if (!tercerosMapa.has(key)) {

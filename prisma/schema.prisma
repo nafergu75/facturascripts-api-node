@@ -217,6 +217,11 @@ model IncomeInvoice {
   causaExencion       String?               @db.VarChar(2)
   /// Precepto que ampara la exencion (obligatorio en EXENTA, opcional en ISP_NACIONAL).
   referenciaLegal     String?               @db.VarChar(200)
+  /// Solo facturas sin tipo de operacion (anteriores a esta funcion y sus
+  /// rectificativas): pais del cliente TAL CUAL estaba en su ficha, congelado
+  /// antes de que cambie. Con el se clasifican como siempre en 303/347/349/390
+  /// aunque luego se edite la ficha. null = el pais actual de la ficha.
+  paisClienteLegacy   String?
   plantillaId         String                @default("default")
   observaciones       String?               @db.Text
   esRectificativa     Boolean               @default(false)

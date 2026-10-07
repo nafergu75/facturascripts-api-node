@@ -2,7 +2,7 @@ import { prisma } from '../config/database';
 import { badRequest } from '../utils/http-errors';
 import { esPaisEspana } from '../domain/perfil-empresa.model';
 import { esPaisUe } from '../domain/tipo-operacion.model';
-import { validarMonedaCuenta } from '../domain/divisas';
+import { monedasCuentaPermitidas, validarMonedaCuenta } from '../domain/divisas';
 
 export { esPaisEspana };
 export { esEmpresaEspanola, monedaDeCuenta, perfilEmpresa } from './perfilEmpresa.service';
@@ -173,8 +173,12 @@ export function monedaCuentaPorPais(pais: string): string {
 
 /**
  * Decide la moneda de cuenta tras guardar la configuracion:
- *  - la indicada (validada: EUR obligatoria en Espana);
- *  - si no se indica y cambia el pais, la de su pais (USD fuera de la UE);
+ *  - con facturas o asientos, el pais no pasa de Espana a otro ni al reves: el
+ *    IVA, el idioma y los modelos de lo ya emitido dependen de ello;
+ *  - sin cambiar el pais ni la moneda, se deja como esta;
+ *  - la indicada o, si cambia el pais, la de su pais (USD fuera de la UE); con
+ *    documentos, la que ya habia. Tiene que valer para el pais: Espana y la UE,
+ *    EUR; EE. UU. y Hong Kong, USD;
  *  - no cambia si la empresa ya tiene facturas o asientos.
  */
 export function decidirMonedaCuenta(opc: {
@@ -185,14 +189,25 @@ export function decidirMonedaCuenta(opc: {
   tieneDocumentos: boolean;
 }): string {
   const { indicada, paisAnterior, paisNuevo, monedaActual, tieneDocumentos } = opc;
-  const nueva = indicada ?? (paisNuevo !== paisAnterior ? monedaCuentaPorPais(paisNuevo) : monedaActual);
-  if (esPaisEspana(paisNuevo) && nueva !== 'EUR') {
-    throw badRequest('Una empresa establecida en España lleva la contabilidad en euros (EUR).');
+  const cambiaPais = paisNuevo !== paisAnterior;
+  if (tieneDocumentos && cambiaPais && esPaisEspana(paisAnterior) !== esPaisEspana(paisNuevo)) {
+    throw badRequest(
+      esPaisEspana(paisAnterior)
+        ? 'La empresa ya tiene facturas o asientos como empresa establecida en España: no se puede cambiar a otro país (sus facturas llevan IVA español y se declaran a la AEAT). Si va a operar desde otro país, dala de alta como empresa nueva.'
+        : 'La empresa ya tiene facturas o asientos como empresa no establecida en España: no se puede cambiar a España. Si tiene establecimiento permanente en España, dala de alta como empresa nueva con país España.',
+    );
   }
+  if (!cambiaPais && (indicada === undefined || indicada === monedaActual)) return monedaActual;
+  // Sin indicarla: un cambio de pais no reescribe una contabilidad con documentos.
+  const nueva = indicada ?? (tieneDocumentos ? monedaActual : monedaCuentaPorPais(paisNuevo));
+  if (!monedasCuentaPermitidas(paisNuevo).includes(nueva) && tieneDocumentos && nueva === monedaActual) {
+    throw badRequest(
+      `La contabilidad está en ${monedaActual} y la empresa ya tiene facturas o asientos: no se puede cambiar a un país que la lleva en otra moneda.`,
+    );
+  }
+  validarMonedaCuenta(nueva, paisNuevo);
   if (nueva === monedaActual) return monedaActual;
   if (tieneDocumentos) {
-    // Sin indicarla, se conserva la que hay (un cambio de pais no reescribe la contabilidad).
-    if (indicada === undefined && !esPaisEspana(paisNuevo)) return monedaActual;
     throw badRequest(
       `No se puede cambiar la moneda de la contabilidad (${monedaActual}): la empresa ya tiene facturas o asientos.`,
     );
@@ -257,10 +272,18 @@ export const legalConfigService = {
         tieneDocumentos: await tieneDocumentos(companyId),
       });
     }
-    const guardada = await prisma.legalConfig.upsert({
-      where: { companyId },
-      update: limpio,
-      create: { companyId, ...limpio },
+    const guardada = await prisma.$transaction(async (tx) => {
+      const cfg = await tx.legalConfig.upsert({
+        where: { companyId },
+        update: limpio,
+        create: { companyId, ...limpio },
+      });
+      // Sin facturas ni asientos se puede cambiar la moneda de la contabilidad: las
+      // cuentas bancarias, que se dieron de alta en la anterior, pasan a la nueva.
+      if (limpio.monedaCuenta !== undefined && limpio.monedaCuenta !== monedaActual) {
+        await tx.bankAccount.updateMany({ where: { companyId, moneda: monedaActual }, data: { moneda: limpio.monedaCuenta } });
+      }
+      return cfg;
     });
     return { ...sinLogo(guardada), monedaCuentaEditable: !(await tieneDocumentos(companyId)) };
   },

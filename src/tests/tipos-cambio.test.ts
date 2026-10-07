@@ -149,7 +149,7 @@ describe('resolverTipoCambio', () => {
     expect(t.aviso).toBe('No se ha podido obtener el tipo del BCE para USD a 21/09/2026: indícalo a mano.');
   });
 
-  it('manual: invertido o muy lejos del BCE -> 400; desviado -> aviso; sin BCE se acepta', async () => {
+  it('manual: invertido o muy lejos del BCE -> 400; desviado -> aviso; sin BCE, con la referencia aproximada', async () => {
     get.mockResolvedValue({ data: csv('USD', '2026-09-21', '1.149') });
     const base = { monedaCuenta: 'EUR', moneda: 'USD', devengo: '2026-09-21', definitivo: true, ahora: AHORA };
     await expect(resolverTipoCambio({ ...base, manual: 0.87 })).rejects.toThrow(/invertido/);
@@ -162,7 +162,18 @@ describe('resolverTipoCambio', () => {
     cache.clear();
     get.mockReset();
     get.mockRejectedValue(new Error('caido'));
-    await expect(resolverTipoCambio({ ...base, manual: 0.87 })).resolves.toMatchObject({ fuente: 'MANUAL', tipoCambio: 0.87 });
+    // Sin BCE ni cache: el invertido o absurdo no pasa; uno razonable, con aviso.
+    await expect(resolverTipoCambio({ ...base, manual: 0.87 })).rejects.toThrow(/invertido/);
+    await expect(resolverTipoCambio({ ...base, manual: '0,0001' })).rejects.toThrow(/lejos/);
+    const sinBce = await resolverTipoCambio({ ...base, manual: 1.15 });
+    expect(sinBce).toMatchObject({ fuente: 'MANUAL', tipoCambio: 1.15 });
+    expect(sinBce.aviso).toMatch(/No se ha podido comprobar/);
+
+    // Sin BCE del dia pero con un tipo guardado de hace meses: se compara con el.
+    limpiarMemoTiposCambio();
+    cache.set('USD|2026-03-02', { moneda: 'USD', fecha: '2026-03-02', unidadesPorEur: 1.6 });
+    await expect(resolverTipoCambio({ ...base, manual: 1.12 })).resolves.toMatchObject({ fuente: 'MANUAL', tipoCambio: 1.12 });
+    await expect(resolverTipoCambio({ ...base, manual: 0.625 })).rejects.toThrow(/invertido.*1,6000/);
   });
 
   it('empresa en USD: EUR con el inverso y HKD con el cruzado del mismo dia', async () => {

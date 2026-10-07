@@ -17,7 +17,7 @@ import { cuadraEnCentimos } from '../utils/money';
 import { asegurarPlanContableEmpresa } from '../services/chart-of-accounts.service';
 import { perfilEmpresa } from '../services/perfilEmpresa.service';
 import { motivoSinTipoFijado, notaDivisa } from '../domain/divisas';
-import { esTipoOperacion } from '../domain/tipo-operacion.model';
+import { esTipoOperacion, fechaDevengoVenta } from '../domain/tipo-operacion.model';
 
 export class AccountingEngineController {
   /**
@@ -101,6 +101,7 @@ export class AccountingEngineController {
             desgloseIva: desgloseIvaPorTipo(factura.lineas),
             totalFactura: factura.totalFactura,
             fechaEmision: factura.fechaEmision,
+            fechaDevengo: fechaDevengoVenta(factura),
             numeroFactura: factura.numeroCompleto ?? '',
             clienteId: factura.customerId,
             clienteNif: factura.customer.nifCif,

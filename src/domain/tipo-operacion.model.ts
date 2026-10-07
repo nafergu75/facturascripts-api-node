@@ -161,13 +161,14 @@ export interface ClienteFiscal {
 
 /**
  * Pais del cliente en ISO-2. Si viene vacio o 'ES' y el NIF lleva prefijo de
- * otro Estado de la UE, el del prefijo (el pais por defecto de la ficha es ES).
+ * otro Estado de la UE, el del prefijo (el pais por defecto de la ficha es ES);
+ * con el prefijo XI (Irlanda del Norte), GB.
  */
 export function paisDelCliente(c: ClienteFiscal): string {
   const pais = normalizarPais(c.pais);
   if (pais === '' || pais === 'ES') {
     const pref = prefijoNifIvaUe(c.nifCif);
-    if (pref && pref.prefijo !== 'ES' && pref.prefijo !== 'XI') return pref.pais;
+    if (pref && pref.prefijo !== 'ES') return pref.pais;
     return 'ES';
   }
   return pais;
@@ -182,6 +183,17 @@ export function esClienteUe(c: ClienteFiscal): boolean {
 /** Cliente de otro Estado de la UE con NIF-IVA con el prefijo de su Estado. */
 export function tieneNifIvaUe(c: ClienteFiscal): boolean {
   return esClienteUe(c) && validarFormatoNifIvaUe(c.nifCif, paisDelCliente(c));
+}
+
+/**
+ * Empresario de Irlanda del Norte con NIF-IVA XI. Solo en las entregas de
+ * BIENES se trata como un cliente de la UE (Protocolo de Irlanda/Irlanda del
+ * Norte): entrega intracomunitaria exenta, casilla [59] y clave E del 349. En
+ * los servicios es un cliente de pais tercero (Reino Unido).
+ */
+export function tieneNifIvaXi(c: ClienteFiscal): boolean {
+  const pref = prefijoNifIvaUe(c.nifCif);
+  return !!pref && pref.prefijo === 'XI' && paisDelCliente(c) === 'GB';
 }
 
 /** Espana fuera del territorio de aplicacion del IVA: Canarias (35, 38), Ceuta (51) y Melilla (52). */
@@ -223,13 +235,41 @@ export function tipoOperacionLegacy(pais: string | null | undefined, nif: string
   return LEGACY_PREFIJOS.has(pref) ? 'INTRACOMUNITARIA' : 'NACIONAL';
 }
 
-/** Tipo con el que se trata una factura: el guardado o, si no tiene, el de siempre. */
+/**
+ * Tipo con el que se trata una factura: el guardado o, si no tiene, el de
+ * siempre con el pais del cliente congelado en la factura (`paisClienteLegacy`)
+ * o, si aun no se ha congelado, el de su ficha.
+ */
 export function operacionEfectiva(
-  factura: { tipoOperacion?: string | null },
+  factura: { tipoOperacion?: string | null; paisClienteLegacy?: string | null },
   cliente: ClienteFiscal,
 ): TipoOperacionVenta {
   if (esTipoOperacion(factura.tipoOperacion)) return factura.tipoOperacion;
-  return tipoOperacionLegacy(cliente.pais, cliente.nifCif);
+  return tipoOperacionLegacy(paisLegacy(factura, cliente), cliente.nifCif);
+}
+
+/**
+ * Fecha de devengo del IVA de una venta (art. 75 LIVA): decide el periodo de
+ * los modelos (303, 349, 390, 347) y el del libro de IVA.
+ *  - En general, la de la operacion si se indica (fechaOperacion); si no, la
+ *    de emision.
+ *  - Entrega intracomunitaria de bienes (art. 75.Uno.8.º): la de emision de la
+ *    factura o, si es posterior, el dia 15 del mes siguiente al de la operacion.
+ * Las facturas anteriores no tienen fecha de operacion: la de emision, como siempre.
+ */
+export function fechaDevengoVenta(f: { tipoOperacion?: string | null; fechaOperacion?: string | null; fechaEmision: string }): string {
+  if (!f.fechaOperacion) return f.fechaEmision;
+  if (f.tipoOperacion === 'INTRACOMUNITARIA') {
+    const [anio, mes] = f.fechaOperacion.split('-').map(Number);
+    const dia15 = mes === 12 ? `${anio + 1}-01-15` : `${anio}-${String(mes + 1).padStart(2, '0')}-15`;
+    return f.fechaEmision < dia15 ? f.fechaEmision : dia15;
+  }
+  return f.fechaOperacion;
+}
+
+/** Pais con el que se clasifica una factura sin tipo: el congelado en ella o, si no, el de la ficha del cliente. */
+export function paisLegacy(factura: { paisClienteLegacy?: string | null }, cliente: { pais?: string | null }): string | null {
+  return factura.paisClienteLegacy ?? cliente.pais ?? null;
 }
 
 // ---------------------------------------------------------------------------
@@ -435,8 +475,8 @@ export function destinatarioVerifactu(
   const pais = paisDelCliente(c);
   const nif = limpiarNif(c.nifCif);
   if (pais === 'ES') return { nif };
-  // 02 = NIF-IVA (cliente UE con NIF-IVA); 04 = documento oficial del pais de residencia.
-  return { idOtro: { codigoPais: pais, idType: tieneNifIvaUe(c) ? '02' : '04', id: nif } };
+  // 02 = NIF-IVA (cliente UE con NIF-IVA, o XI de Irlanda del Norte); 04 = documento oficial del pais de residencia.
+  return { idOtro: { codigoPais: pais, idType: tieneNifIvaUe(c) || tieneNifIvaXi(c) ? '02' : '04', id: nif } };
 }
 
 /** Desglose de Verifactu de la factura (null si no aplica). */
@@ -461,15 +501,16 @@ export type TipoProducto = 'PRODUCTO' | 'SERVICIO';
 
 /**
  * Tipo de una factura NUEVA que llega sin tipo (API antigua, scripts...):
- * todas las lineas con IVA -> NACIONAL; todas al 0 % con cliente UE con NIF-IVA
- * -> INTRACOMUNITARIA; todas al 0 % con cliente de fuera de la UE ->
- * EXPORTACION. Cualquier otro caso, null (TIPO_AMBIGUO).
+ * todas las lineas con IVA -> NACIONAL; alguna con IVA y otras al 0 % (p. ej.
+ * suplidos) con cliente espanol -> NACIONAL, como siempre; todas al 0 % con
+ * cliente UE con NIF-IVA (o XI) -> INTRACOMUNITARIA; todas al 0 % con cliente
+ * de fuera de la UE -> EXPORTACION. Cualquier otro caso, null (TIPO_AMBIGUO).
  */
 export function inferirTipoOperacion(cliente: ClienteFiscal, lineas: Array<{ tipoIva: number }>): TipoOperacionVenta | null {
   if (lineas.length === 0) return null;
   if (lineas.every((l) => l.tipoIva > 0)) return 'NACIONAL';
-  if (!lineas.every((l) => l.tipoIva === 0)) return null;
-  if (tieneNifIvaUe(cliente)) return 'INTRACOMUNITARIA';
+  if (!lineas.every((l) => l.tipoIva === 0)) return paisDelCliente(cliente) === 'ES' ? 'NACIONAL' : null;
+  if (tieneNifIvaUe(cliente) || tieneNifIvaXi(cliente)) return 'INTRACOMUNITARIA';
   const pais = paisDelCliente(cliente);
   if (pais !== 'ES' && !PAISES_UE.has(pais)) return 'EXPORTACION';
   return null;
@@ -497,7 +538,12 @@ export function sugerirTipoOperacion(cliente: ClienteFiscal, tiposProducto: Tipo
     if (!tieneNifIvaUe(cliente)) return { tipoOperacion: 'NACIONAL', avisos: ['CLIENTE_EXTRANJERO_CON_IVA'] };
     return { tipoOperacion: bienes ? 'INTRACOMUNITARIA' : 'SERVICIOS_EXTRANJERO', avisos };
   }
-  return { tipoOperacion: bienes ? 'EXPORTACION' : 'SERVICIOS_EXTRANJERO', avisos };
+  // Irlanda del Norte (XI): las entregas de bienes son intracomunitarias.
+  if (bienes && !servicios && tieneNifIvaXi(cliente)) return { tipoOperacion: 'INTRACOMUNITARIA', avisos };
+  // Servicios fuera de la UE: no sujetos si el cliente es empresario (o en los del art. 69.Dos).
+  return bienes
+    ? { tipoOperacion: 'EXPORTACION', avisos }
+    : { tipoOperacion: 'SERVICIOS_EXTRANJERO', avisos: [...avisos, 'SERVICIOS_PARTICULAR'] };
 }
 
 /** Quien revisa: guardar (borrador/proforma), emitir, heredar (rectificativa) o lector (OCR). */
@@ -533,7 +579,9 @@ const MENSAJES: Record<string, string> = {
   REFERENCIA_LARGA: `La referencia legal admite como máximo ${MAX_REFERENCIA_LEGAL} caracteres.`,
   TIPO_RESERVADO: 'Tipo de operación no válido.',
   LINEA_SIN_IVA:
-    'Hay líneas al 0 % en una factura nacional: elige Exenta, Intracomunitaria, Exportación… o separa la venta en dos facturas.',
+    'Todas las líneas van al 0 % en una factura nacional: elige Exenta, Intracomunitaria, Exportación… o pon el IVA que corresponda.',
+  LINEAS_AL_0:
+    'Hay líneas al 0 % en una factura nacional: solo es correcto con suplidos (gastos pagados en nombre y por cuenta del cliente, art. 78.Tres.3.º LIVA). Si es una operación exenta, hazla en otra factura con su tipo.',
   CLIENTE_NO_UE: 'Una entrega intracomunitaria exige un cliente de otro Estado de la UE.',
   CLIENTE_SIN_NIF_IVA:
     'Falta el NIF-IVA del cliente con el prefijo de su Estado (por ejemplo FR…, DE…; EL para Grecia).',
@@ -547,6 +595,8 @@ const MENSAJES: Record<string, string> = {
   CLIENTE_FUERA_TAI: 'El cliente está en Canarias, Ceuta o Melilla: no se le repercute IVA peninsular.',
   TIPO_PRODUCTO: 'Revisa si la factura es de bienes o de servicios: cada uno tiene su tipo de operación.',
   ART70: 'Algunos servicios se gravan en España aunque el cliente sea extranjero (art. 70 LIVA): inmuebles, eventos, restauración…',
+  SERVICIOS_PARTICULAR:
+    'Comprueba que el cliente es un empresario: a un particular de fuera de la UE solo se le factura sin IVA en los servicios del art. 69.Dos LIVA (asesoría, publicidad, servicios electrónicos…); en los demás el servicio se grava en España (art. 69.Uno.2.º) y lleva IVA.',
   ROI_Y_PRUEBA_TRANSPORTE:
     'Comprueba el alta del cliente en el ROI (VIES) y guarda la prueba del transporte de los bienes a otro Estado.',
   DUA_DAE: 'Guarda el DUA o DAE de la exportación como prueba de la salida de los bienes.',
@@ -599,9 +649,14 @@ export function revisarFiscalidad(e: EntradaFiscal, modo: ModoFiscal): { errores
 
   // En una rectificativa los datos del cliente ya se revisaron al emitir la original.
   const deCliente = modo === 'heredar' ? avisar : alEmitir;
-  if (tipo === 'NACIONAL' && e.lineas.some((l) => l.tipoIva === 0)) (modo === 'heredar' ? avisar : alEmitir)('LINEA_SIN_IVA');
-  if (tipo === 'INTRACOMUNITARIA' && !esClienteUe(cliente)) deCliente('CLIENTE_NO_UE');
-  else if ((tipo === 'INTRACOMUNITARIA' || (tipo === 'SERVICIOS_EXTRANJERO' && esClienteUe(cliente))) && !tieneNifIvaUe(cliente)) {
+  // Nacional con TODAS las lineas al 0 %: no es nacional. Con alguna (suplidos), solo aviso, como siempre.
+  if (tipo === 'NACIONAL' && e.lineas.length > 0 && e.lineas.every((l) => l.tipoIva === 0)) {
+    (modo === 'heredar' ? avisar : alEmitir)('LINEA_SIN_IVA');
+  } else if (tipo === 'NACIONAL' && e.lineas.some((l) => l.tipoIva === 0)) avisar('LINEAS_AL_0');
+  // Irlanda del Norte (XI): entrega intracomunitaria de bienes.
+  const intraXi = tipo === 'INTRACOMUNITARIA' && tieneNifIvaXi(cliente);
+  if (tipo === 'INTRACOMUNITARIA' && !esClienteUe(cliente) && !intraXi) deCliente('CLIENTE_NO_UE');
+  else if (((tipo === 'INTRACOMUNITARIA' && !intraXi) || (tipo === 'SERVICIOS_EXTRANJERO' && esClienteUe(cliente))) && !tieneNifIvaUe(cliente)) {
     deCliente('CLIENTE_SIN_NIF_IVA');
   }
   if ((tipo === 'EXPORTACION' || tipo === 'SERVICIOS_EXTRANJERO') && pais === 'ES' && !fueraDelTai(pais, cliente.cp)) {
@@ -611,13 +666,14 @@ export function revisarFiscalidad(e: EntradaFiscal, modo: ModoFiscal): { errores
   if (tipo === 'ISP_NACIONAL' && (pais !== 'ES' || !limpiarNif(cliente.nifCif))) deCliente('ISP_CLIENTE');
 
   if (tipo === 'NACIONAL' && pais !== 'ES') avisar('CLIENTE_EXTRANJERO_CON_IVA');
-  if (tipo === 'EXPORTACION' && esClienteUe(cliente)) avisar('OPERACION_INCOHERENTE_PAIS');
+  if (tipo === 'EXPORTACION' && (esClienteUe(cliente) || tieneNifIvaXi(cliente))) avisar('OPERACION_INCOHERENTE_PAIS');
   if (fueraDelTai(pais, cliente.cp)) avisar('CLIENTE_FUERA_TAI');
   const tp = e.tiposProducto ?? [];
   if ((tipo === 'SERVICIOS_EXTRANJERO' && tp.includes('PRODUCTO')) || ((tipo === 'INTRACOMUNITARIA' || tipo === 'EXPORTACION') && tp.includes('SERVICIO'))) {
     avisar('TIPO_PRODUCTO');
   }
   if (tipo === 'SERVICIOS_EXTRANJERO') avisar('ART70');
+  if (tipo === 'SERVICIOS_EXTRANJERO' && pais !== 'ES' && !PAISES_UE.has(pais)) avisar('SERVICIOS_PARTICULAR');
   if (tipo === 'INTRACOMUNITARIA') avisar('ROI_Y_PRUEBA_TRANSPORTE');
   if (tipo === 'EXPORTACION') avisar('DUA_DAE');
   if (tipo === 'EXENTA' && (causa === 'E1' || causa === 'E6')) avisar('PRORRATA');

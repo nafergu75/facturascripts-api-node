@@ -25,14 +25,29 @@ describe('moneda de cuenta', () => {
     expect(() => limpiarLegalConfig({ monedaCuenta: 'GBP', pais: 'GB' }, 'ES')).toThrow(/habilitada/);
   });
 
-  it('al pasar a EE. UU. sin facturas ni asientos, USD; con documentos no cambia', () => {
+  it('al pasar a EE. UU. sin facturas ni asientos, USD; con documentos no se sale de Espana', () => {
     expect(decidirMonedaCuenta({ ...base, paisNuevo: 'US' })).toBe('USD');
-    expect(decidirMonedaCuenta({ ...base, paisNuevo: 'US', tieneDocumentos: true })).toBe('EUR');
+    // Con facturas o asientos, Espana <-> otro pais no se cambia: el PDF, el IVA y los modelos de lo emitido dependen de ello.
+    expect(() => decidirMonedaCuenta({ ...base, paisNuevo: 'US', tieneDocumentos: true })).toThrow(/ya tiene facturas/);
+    expect(() => decidirMonedaCuenta({ ...base, paisNuevo: 'FR', tieneDocumentos: true })).toThrow(/ya tiene facturas/);
     expect(() => decidirMonedaCuenta({ ...base, paisNuevo: 'US', indicada: 'USD', tieneDocumentos: true })).toThrow(/ya tiene facturas/);
     // Volver a Espana desde una empresa en USD con documentos: no se puede.
     expect(() => decidirMonedaCuenta({ ...base, paisAnterior: 'US', monedaActual: 'USD', tieneDocumentos: true })).toThrow();
     // La misma moneda siempre vale.
     expect(decidirMonedaCuenta({ ...base, indicada: 'EUR', tieneDocumentos: true })).toBe('EUR');
+  });
+
+  it('EE. UU. y Hong Kong solo en USD; la UE solo en EUR; cambios entre paises extranjeros', () => {
+    const us = { paisAnterior: 'US', paisNuevo: 'US', monedaActual: 'USD', tieneDocumentos: false };
+    expect(() => decidirMonedaCuenta({ ...us, indicada: 'EUR' })).toThrow(/dólares/);
+    expect(decidirMonedaCuenta({ ...us, paisNuevo: 'HK', tieneDocumentos: true })).toBe('USD');
+    // De EE. UU. (USD, con documentos) a un pais de la UE (EUR): la moneda no puede cambiar.
+    expect(() => decidirMonedaCuenta({ ...us, paisNuevo: 'FR', tieneDocumentos: true })).toThrow(/otra moneda/);
+    expect(decidirMonedaCuenta({ ...us, paisNuevo: 'FR' })).toBe('EUR');
+    // Una empresa antigua de EE. UU. que se quedo en EUR con documentos puede seguir guardando sus datos.
+    expect(decidirMonedaCuenta({ ...us, monedaActual: 'EUR', tieneDocumentos: true })).toBe('EUR');
+    // Sin documentos, en cuanto toca la moneda tiene que ser USD.
+    expect(() => decidirMonedaCuenta({ ...us, monedaActual: 'EUR', indicada: 'EUR', paisAnterior: 'ES' })).toThrow(/dólares/);
   });
 
   it('perfil: sin configuracion, espanola y en euros; extranjera, en ingles y solo su moneda', () => {

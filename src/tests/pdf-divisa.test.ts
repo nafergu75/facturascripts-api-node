@@ -3,6 +3,7 @@
 // documento se dibuja en cada caso. Sin BD.
 import {
   elegirCuentaCobro,
+  facturaConIva,
   fraseDivisa,
   mencionDocumento,
   renderizarFactura,
@@ -200,5 +201,34 @@ describe('renderizarFactura', () => {
   it.each(Object.entries(casos))('%s: genera un PDF', async (_n, datos) => {
     const pdf = await renderizarFactura(datos);
     expect(pdf.subarray(0, 5).toString()).toBe('%PDF-');
+  });
+});
+
+describe('una factura emitida conserva su IVA y su mencion aunque cambie el pais de la empresa', () => {
+  it('con un tipo de operacion espanol, con IVA (y mencion) tambien en una empresa ya no espanola', () => {
+    // Exportacion emitida cuando la empresa era espanola: sin cuota, pero con su mencion del art. 21.
+    expect(facturaConIva('EXPORTACION', false, 0, [0])).toBe(true);
+    expect(facturaConIva('INTRACOMUNITARIA', false, 0, [0])).toBe(true);
+    const datos = base({
+      ...sinIva,
+      tipoOperacion: 'EXPORTACION',
+      cliente: cli({ nombreFiscal: 'Coffee LLC', nifCif: '84-1234567', pais: 'US' }),
+      emisor: emi({ denominacion: 'Exportadora SL', nif: 'B12345678', pais: 'US' }),
+      conIva: facturaConIva('EXPORTACION', false, 0, [0]),
+    });
+    expect(mencionDocumento(datos)?.es).toMatch(/Exportación exenta de IVA \(art\. 21/);
+  });
+  it('y el PDF se dibuja', async () => {
+    const pdf = await renderizarFactura(
+      base({ ...sinIva, tipoOperacion: 'EXPORTACION', emisor: emi({ denominacion: 'Exportadora SL', nif: 'B12345678', pais: 'US' }), conIva: true }),
+    );
+    expect(pdf.subarray(0, 5).toString()).toBe('%PDF-');
+  });
+  it('sin IVA: las de una empresa no establecida en Espana; las anteriores, segun lleven IVA', () => {
+    expect(facturaConIva('EMPRESA_EXTRANJERA', false, 0, [0])).toBe(false);
+    expect(facturaConIva('EMPRESA_EXTRANJERA', true, 21, [21])).toBe(false);
+    expect(facturaConIva(null, true, 0, [0])).toBe(true);
+    expect(facturaConIva(null, false, 0, [0])).toBe(false);
+    expect(facturaConIva(null, false, 21, [21])).toBe(true);
   });
 });

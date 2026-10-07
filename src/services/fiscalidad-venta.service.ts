@@ -36,8 +36,11 @@ export interface EntradaResolverFiscalidad {
   referenciaLegal?: string | null;
   tipoFactura?: string | null;
   lineas: Array<{ tipoIva?: number; tipoRetencion?: number; productoServicioId?: string | null }>;
-  /** Rectificativa: el tipo de la factura que rectifica (null si es anterior a esta funcion). */
-  heredado?: { tipoOperacion: string | null; causaExencion: string | null; referenciaLegal: string | null };
+  /**
+   * Rectificativa: el tipo de la factura que rectifica (null si es anterior a
+   * esta funcion; entonces, el pais del cliente congelado en ella, si lo tiene).
+   */
+  heredado?: { tipoOperacion: string | null; causaExencion: string | null; referenciaLegal: string | null; paisClienteLegacy?: string | null };
 }
 
 /** PRODUCTO o SERVICIO de las lineas que vienen del catalogo (solo para avisos). */
@@ -55,16 +58,32 @@ async function tiposDeProducto(companyId: string, lineas: EntradaResolverFiscali
  *
  *  - Empresa no espanola: EMPRESA_EXTRANJERA con las lineas a 0 % y sin
  *    retencion (normaliza, no rechaza).
- *  - Rectificativa: hereda el tipo de la original (el de siempre si es
- *    anterior) y valida sus lineas contra el.
+ *  - Rectificativa: hereda el tipo de la original y valida sus lineas contra
+ *    el. Si la original es anterior a los tipos (null), la rectificativa
+ *    tampoco lleva tipo: se trata como la original.
  */
 export async function resolverFiscalidad(e: EntradaResolverFiscalidad, modo: ModoFiscal, db: Db = prisma): Promise<ResultadoFiscalidad> {
   const tiposProducto = await tiposDeProducto(e.companyId, e.lineas, db);
   const lineas = e.lineas.map((l) => ({ tipoIva: Number(l.tipoIva ?? 21), tipoRetencion: Number(l.tipoRetencion ?? 0) }));
   let r: ResultadoFiscalidad;
 
-  if (e.heredado) {
-    const tipo = e.heredado.tipoOperacion ?? tipoOperacionLegacy(e.cliente.pais, e.cliente.nifCif);
+  if (e.heredado && !e.heredado.tipoOperacion) {
+    // Rectificativa de una factura anterior a los tipos de operacion: tampoco
+    // lleva tipo. Asi se contabiliza y se declara exactamente como la original
+    // (con su pais congelado, ver paisClienteLegacy) y el PDF no imprime una
+    // mencion de exencion junto a una cuota de IVA.
+    const legacy = tipoOperacionLegacy(e.heredado.paisClienteLegacy ?? e.cliente.pais, e.cliente.nifCif);
+    r = {
+      tipoOperacion: null,
+      tipoOperacionEfectivo: legacy,
+      causaExencion: null,
+      referenciaLegal: null,
+      lineas,
+      errores: [],
+      avisos: [],
+    };
+  } else if (e.heredado) {
+    const tipo = e.heredado.tipoOperacion as string;
     r = resolverFiscalidadPura(
       {
         empresaEspanola: tipo !== 'EMPRESA_EXTRANJERA',
@@ -75,7 +94,6 @@ export async function resolverFiscalidad(e: EntradaResolverFiscalidad, modo: Mod
         lineas,
         cliente: e.cliente,
         tiposProducto,
-        heredadoLegacy: !e.heredado.tipoOperacion,
       },
       'heredar',
     );

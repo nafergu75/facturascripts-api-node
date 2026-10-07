@@ -268,6 +268,36 @@ export async function tipoReferencia(
   return { tipoCambio: tipoCruzado(rDoc, rCuenta), fecha: base.fecha, vieja: base.vieja };
 }
 
+/**
+ * Referencia para comprobar un tipo indicado a mano (o el que sale de lo
+ * recibido en el banco) en una fecha: el del BCE de ese dia (o de los 7
+ * anteriores); si no se puede obtener, el ultimo guardado en la cache, como
+ * referencia APROXIMADA. null si no hay ninguno (entonces el dominio usa un
+ * tipo orientativo fijo): nunca se deja de comprobar un tipo manual.
+ */
+export async function referenciaParaComprobar(
+  monedaCuenta: string,
+  moneda: string,
+  fecha: string,
+  ahora?: Date,
+): Promise<{ tipoCambio: number; aproximado: boolean } | null> {
+  const ref = await tipoReferencia(monedaCuenta, moneda, fecha, { permitirVieja: true, ahora }).catch(() => null);
+  if (ref) return { tipoCambio: ref.tipoCambio, aproximado: false };
+  try {
+    const hasta = fechaObservacionEsperada(fecha, ahora);
+    const ultimo = async (m: string): Promise<number | null> => {
+      if (m === 'EUR') return 1;
+      const fila = await prisma.tipoCambioBce.findFirst({ where: { moneda: m, fecha: { lte: hasta, gte: '1999-01-01' } }, orderBy: { fecha: 'desc' } });
+      return fila ? Number(fila.unidadesPorEur) : null;
+    };
+    const [doc, cuenta] = [await ultimo(moneda), await ultimo(monedaCuenta)];
+    if (doc && cuenta) return { tipoCambio: tipoCruzado(doc, cuenta), aproximado: true };
+  } catch {
+    // Sin cache: se comprueba con el orientativo.
+  }
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // Resolver el tipo de una factura
 // ---------------------------------------------------------------------------
@@ -318,8 +348,9 @@ export async function resolverTipoCambio(opc: {
 
   if (hayManual) {
     const manual = validarFormatoTipoCambio(opc.manual);
-    const ref = await tipoReferencia(monedaCuenta, moneda, devengo, { permitirVieja: true, ahora });
-    const { aviso } = comprobarTipoManual(manual, ref?.tipoCambio ?? null, monedaCuenta, moneda);
+    // Sin el BCE de esa fecha se compara con el ultimo guardado o con uno orientativo: un tipo invertido o absurdo no pasa.
+    const ref = await referenciaParaComprobar(monedaCuenta, moneda, devengo, ahora);
+    const { aviso } = comprobarTipoManual(manual, ref?.tipoCambio ?? null, monedaCuenta, moneda, { aproximado: ref?.aproximado });
     return { tipoCambio: manual, fechaTipoCambio: devengo, fuente: 'MANUAL', provisional: false, ...(aviso ? { aviso } : {}) };
   }
 

@@ -190,6 +190,12 @@ export async function contabilizarFacturaIngreso(
     retencionRate: number; // 0, 7, 15, 19
     totalFactura: number;
     fechaEmision: string;
+    /**
+     * Fecha de devengo del IVA (domain/tipo-operacion.model.ts fechaDevengoVenta)
+     * si es distinta de la de emision: con ella se anota en el libro de IVA, para
+     * que el 303 la lleve al periodo de la operacion. El asiento va con la de emision.
+     */
+    fechaDevengo?: string | null;
     numeroFactura: string;
     clienteId: string;
     clienteNif: string;
@@ -331,13 +337,17 @@ export async function contabilizarFacturaIngreso(
     };
     // Facturas anteriores: el libro sin tipo, como siempre.
     const tipoLibro = invoiceData.tipoOperacion ? { tipoOperacion: tipoOp, causaExencion: reglaIva.causaLibro(ctx) } : {};
+    // Devengo distinto de la emision: el libro (y el 303) en el periodo del devengo, con la fecha de expedicion anotada.
+    const devengo = invoiceData.fechaDevengo && invoiceData.fechaDevengo !== invoiceData.fechaEmision ? invoiceData.fechaDevengo : null;
+    const fechaExpedicion = `${invoiceData.fechaEmision.slice(8, 10)}/${invoiceData.fechaEmision.slice(5, 7)}/${invoiceData.fechaEmision.slice(0, 4)}`;
     for (const apunte of apuntesLibroIva(invoiceData)) {
       await db.vATBook.create({
         data: {
           companyId,
           tipoLibro: 'EMITIDAS',
           numeroFactura: invoiceData.numeroFactura,
-          fechaFactura: new Date(invoiceData.fechaEmision),
+          fechaFactura: new Date(devengo ?? invoiceData.fechaEmision),
+          ...(devengo ? { observaciones: `Fecha de expedición: ${fechaExpedicion}` } : {}),
           nifTercero: invoiceData.clienteNif,
           nombreTercero: invoiceData.clienteNombre,
           baseImponible: apunte.base,

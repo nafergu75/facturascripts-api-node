@@ -1,3 +1,4 @@
+import type { Prisma } from '@prisma/client';
 import { prisma } from '../config/database';
 import { badRequest } from '../utils/http-errors';
 import { listarResumenesNominas } from './nominas.service';
@@ -18,13 +19,12 @@ import {
 } from '../domain/impuestos.model';
 import {
   esPaisEspana,
-  esPaisUe,
   esTipoOperacion,
+  fechaDevengoVenta,
   importeEnEuros,
   limpiarNif,
-  normalizarPais,
   paisDelCliente,
-  PREFIJOS_NIF_UE,
+  paisLegacy,
   REGLA_OPERACION,
   tipoOperacionLegacy,
   type ContextoOperacion,
@@ -376,22 +376,49 @@ function dbFacturasListo(): boolean {
 }
 
 /**
- * Clasifica la operacion por el pais del tercero (ISO-2 como guarda la app, o
- * ISO-3 como usa FacturaScripts en codpais) y, si no hay pais, por el prefijo
- * del NIF-IVA (DE..., FR...; EL = Grecia, XI = Irlanda del Norte). Antes solo
- * entendia ISO-3 y un pais 'FR' salia como exportacion.
- *
- * Se usa con las COMPRAS. Las ventas sin tipo de operacion (anteriores) se
- * siguen clasificando con la tabla de siempre (tipoOperacionLegacy) para que
- * sus cifras no cambien.
+ * Clasifica una COMPRA por el pais del proveedor (codpais de su ficha) y, si no
+ * hay pais, por el prefijo del NIF-IVA (DE..., FR...). Es EXACTAMENTE la
+ * clasificacion de siempre, con la tabla en ISO-3 (la de FacturaScripts): un
+ * pais guardado en ISO-2 distinto de ES ('DE') sale como exportacion y no va al
+ * 349. Se mantiene a proposito: las compras (gastos) en divisa y su tipo de
+ * operacion estan fuera de alcance, y entender ISO-2 aqui metia en el 349 de
+ * periodos ya presentados compras que antes no salian (y siempre con clave A,
+ * tambien las de servicios, que van con clave I).
  */
 export function clasificarOperacion(codpais?: string, cifnif?: string): 'interior' | 'intracomunitaria' | 'exportacion' {
-  const pais = normalizarPais(codpais);
-  if (pais === 'ES') return 'interior';
-  if (pais) return esPaisUe(pais) ? 'intracomunitaria' : 'exportacion';
+  const pais = (codpais ?? '').trim().toUpperCase();
+  if (pais === 'ESP' || pais === 'ES') return 'interior';
+  if (pais) return COMPRAS_UE_ISO3.has(pais) ? 'intracomunitaria' : 'exportacion';
   const pref = (cifnif ?? '').trim().slice(0, 2).toUpperCase();
-  if (pref !== 'ES' && PREFIJOS_NIF_UE[pref]) return 'intracomunitaria';
+  if (COMPRAS_PREFIJOS_UE.has(pref)) return 'intracomunitaria';
   return 'interior';
+}
+
+// Las tablas de siempre de clasificarOperacion (copiadas tal cual): paises UE en
+// ISO-3 sin ESP y prefijos de NIF-IVA ('EL' = Grecia, 'XI' = Irlanda del Norte).
+const COMPRAS_UE_ISO3 = new Set([
+  'DEU', 'FRA', 'ITA', 'PRT', 'BEL', 'NLD', 'LUX', 'IRL', 'AUT', 'FIN', 'SWE', 'DNK', 'GRC',
+  'POL', 'CZE', 'SVK', 'SVN', 'HUN', 'ROU', 'BGR', 'HRV', 'EST', 'LVA', 'LTU', 'CYP', 'MLT',
+]);
+const COMPRAS_PREFIJOS_UE = new Set([
+  'DE', 'FR', 'IT', 'PT', 'BE', 'NL', 'LU', 'IE', 'AT', 'FI', 'SE', 'DK', 'EL', 'PL', 'CZ',
+  'SK', 'SI', 'HU', 'RO', 'BG', 'HR', 'EE', 'LV', 'LT', 'CY', 'MT', 'XI',
+]);
+
+/**
+ * Ventas que PUEDEN devengarse entre `desde` y `hasta` (filtro amplio para la
+ * BD): emitidas en el periodo o con fecha de operacion desde dos meses antes
+ * (una entrega intracomunitaria se devenga, como tarde, el dia 15 del mes
+ * siguiente a la operacion). Las que salen se filtran despues con
+ * `fechaDevengoVenta`. Las facturas anteriores no tienen fecha de operacion:
+ * quedan las emitidas en el periodo, como siempre.
+ */
+export function ventasQuePuedenDevengarseEntre(desde: string, hasta: string): Prisma.IncomeInvoiceWhereInput {
+  const d = new Date(`${desde}T00:00:00Z`);
+  d.setUTCMonth(d.getUTCMonth() - 2);
+  return {
+    OR: [{ fechaEmision: { gte: desde, lte: hasta } }, { fechaOperacion: { gte: d.toISOString().slice(0, 10), lte: hasta } }],
+  };
 }
 
 const OPERACION_DE_TIPO: Readonly<Record<'NACIONAL' | 'INTRACOMUNITARIA' | 'EXPORTACION', FacturaFiscal['operacion']>> = {
@@ -426,8 +453,8 @@ export async function obtenerFacturasFiscales(companyId: string, desde: string, 
 
   const [ventas, compras] = await Promise.all([
     prisma.incomeInvoice.findMany({
-      // Solo facturas emitidas: un borrador no es una venta todavía.
-      where: { companyId, estadoDocumento: 'FINAL', estado: { not: 'DRAFT' }, fechaEmision: { gte: desde, lte: hasta } },
+      // Solo facturas emitidas: un borrador no es una venta todavía. Por fecha de devengo.
+      where: { companyId, estadoDocumento: 'FINAL', estado: { not: 'DRAFT' }, ...ventasQuePuedenDevengarseEntre(desde, hasta) },
       include: { customer: true, lineas: true },
     }),
     prisma.expenseInvoice.findMany({
@@ -437,9 +464,13 @@ export async function obtenerFacturasFiscales(companyId: string, desde: string, 
   ]);
 
   for (const f of ventas) {
+    // El IVA va en el periodo del devengo (art. 75 LIVA), aunque la factura se emita despues.
+    const devengo = fechaDevengoVenta(f);
+    if (!enRango(devengo, desde, hasta)) continue;
     const tipo = esTipoOperacion(f.tipoOperacion) ? f.tipoOperacion : null;
     if (tipo && !REGLA_OPERACION[tipo].enModelos) continue; // empresa extranjera: sin modelos
-    const pais = f.customer?.pais;
+    // Sin tipo (anteriores): el pais congelado en la factura, si se cambio la ficha despues.
+    const pais = tipo ? f.customer?.pais : paisLegacy(f, { pais: f.customer?.pais });
     const nif = f.customer?.nifCif ?? '';
     const cliente = { pais, nifCif: nif, cp: f.customer?.cp };
     const ctx: ContextoOperacion = { cliente, causaExencion: f.causaExencion };
@@ -449,7 +480,7 @@ export async function obtenerFacturasFiscales(companyId: string, desde: string, 
       tipo: 'venta',
       cifnif: nif,
       nombreTercero: f.customer?.nombreFiscal ?? '',
-      fecha: f.fechaEmision,
+      fecha: devengo,
       operacion: tipo ? operacionDeTipo(tipo, ctx) : OPERACION_DE_TIPO[tipoOperacionLegacy(pais, nif) as keyof typeof OPERACION_DE_TIPO],
       // Solo las ventas con tipo llevan los campos nuevos: las anteriores salen igual que siempre.
       ...(tipo && {
@@ -502,17 +533,17 @@ export const MENSAJE_SIN_MODELOS = 'La empresa no está establecida en España: 
  */
 export async function exigirModelosAeat(companyId: string, desde: string, hasta: string): Promise<void> {
   if (await esEmpresaEspanolaFiscal(companyId)) return;
-  const espanolas = dbFacturasListo()
-    ? await prisma.incomeInvoice.count({
+  const candidatas = dbFacturasListo()
+    ? await prisma.incomeInvoice.findMany({
         where: {
           companyId,
           estadoDocumento: 'FINAL',
-          fechaEmision: { gte: desde, lte: hasta },
-          OR: [{ tipoOperacion: null }, { tipoOperacion: { not: 'EMPRESA_EXTRANJERA' } }],
+          AND: [ventasQuePuedenDevengarseEntre(desde, hasta), { OR: [{ tipoOperacion: null }, { tipoOperacion: { not: 'EMPRESA_EXTRANJERA' } }] }],
         },
+        select: { tipoOperacion: true, fechaOperacion: true, fechaEmision: true },
       })
-    : 0;
-  if (espanolas === 0) throw badRequest(MENSAJE_SIN_MODELOS);
+    : [];
+  if (!candidatas.some((f) => enRango(fechaDevengoVenta(f), desde, hasta))) throw badRequest(MENSAJE_SIN_MODELOS);
 }
 
 /**

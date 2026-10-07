@@ -556,6 +556,23 @@ function llevaCuotaIva(f: DatosFacturaPdf): boolean {
  * Espana, tambien en ingles. Sin tipo (facturas anteriores) no hay mencion
  * propia: conservan el texto generico de siempre.
  */
+/**
+ * La factura se imprime con IVA (columna, desglose y mencion legal). Sin IVA:
+ * las de una empresa no establecida en Espana (EMPRESA_EXTRANJERA; las que ya
+ * lleven IVA, con su IVA). Una factura con un tipo de operacion espanol
+ * (exportacion, intracomunitaria...) conserva su mencion legal aunque despues
+ * cambie el pais de la empresa: el documento emitido no cambia.
+ */
+export function facturaConIva(
+  tipoOperacion: TipoOperacionVenta | null,
+  empresaEspanola: boolean,
+  ivaTotal: number,
+  tiposIva: number[],
+): boolean {
+  if (tipoOperacion === 'EMPRESA_EXTRANJERA') return false;
+  return empresaEspanola || tipoOperacion !== null || ivaTotal !== 0 || tiposIva.some((t) => t !== 0);
+}
+
 export function mencionDocumento(f: DatosFacturaPdf): { es: string; en: string | null } | null {
   if (f.conIva === false) return null;
   const tipo = tipoDelDocumento(f);
@@ -1109,11 +1126,7 @@ export async function generarPdfFactura(companyId: string, id: string): Promise<
     totalFacturaDoc: factura.totalFacturaDoc === null ? null : Number(factura.totalFacturaDoc),
   });
   const tipoOperacion = esTipoOperacion(factura.tipoOperacion) ? factura.tipoOperacion : null;
-  // Sin IVA: las facturas de una empresa no establecida en Espana (las que ya lleven IVA, con su IVA).
-  const conIva =
-    tipoOperacion === 'EMPRESA_EXTRANJERA'
-      ? false
-      : perfil.espanola || doc.ivaTotal !== 0 || factura.lineas.some((l) => Number(l.tipoIva) !== 0);
+  const conIva = facturaConIva(tipoOperacion, perfil.espanola, doc.ivaTotal, factura.lineas.map((l) => Number(l.tipoIva)));
   const otraMoneda = moneda !== perfil.monedaCuenta;
   const conTipo = otraMoneda && factura.fuenteTipoCambio !== 'PENDIENTE' && Number(factura.tipoCambio) > 0;
   const contravalor: ContravalorPdf | null = conTipo
@@ -1211,7 +1224,7 @@ export async function generarPdfFactura(companyId: string, id: string): Promise<
  * No bloquean el borrador; el NIF y la denominacion si bloquean la emision.
  *
  * Ademas, en divisa: TIPO_CAMBIO_PROVISIONAL / TIPO_CAMBIO_PENDIENTE (aun sin
- * emitir) y CUENTA_BANCARIA_MONEDA (ninguna cuenta en la moneda de la factura).
+ * emitir).
  * En un borrador o una proforma de una empresa espanola, los errores fiscales
  * que impediran emitirla (TIPO_AMBIGUO, CLIENTE_SIN_NIF_IVA...).
  */
@@ -1223,7 +1236,7 @@ export async function avisosFactura(companyId: string, id: string): Promise<stri
       where: { companyId },
       select: { denominacion: true, nif: true, domicilioSocial: true, logoMime: true, pais: true, monedaCuenta: true },
     }),
-    prisma.bankAccount.findMany({ where: { companyId, activa: true }, select: { id: true, moneda: true } }),
+    prisma.bankAccount.findMany({ where: { companyId, activa: true }, select: { id: true } }),
   ]);
   const perfil = perfilDesdeConfig(empresa);
   const avisos: string[] = [];
@@ -1236,10 +1249,10 @@ export async function avisosFactura(companyId: string, id: string): Promise<stri
   if (factura.formaPago === 'TRANSFERENCIA' && cuentas.length === 0) avisos.push('CUENTA_BANCARIA');
 
   const moneda = factura.moneda || perfil.monedaCuenta;
+  // Sin aviso de cuenta en la moneda de la factura: las cuentas bancarias van en
+  // la moneda de la contabilidad y no se pueden dar de alta en otra (el cliente
+  // paga en USD a la cuenta en EUR y el banco convierte).
   if (moneda !== perfil.monedaCuenta) {
-    if (factura.formaPago === 'TRANSFERENCIA' && cuentas.length > 0 && !cuentas.some((x) => x.moneda === moneda)) {
-      avisos.push('CUENTA_BANCARIA_MONEDA');
-    }
     if (factura.estadoDocumento !== 'FINAL') {
       avisos.push(factura.fuenteTipoCambio === 'PENDIENTE' ? 'TIPO_CAMBIO_PENDIENTE' : 'TIPO_CAMBIO_PROVISIONAL');
     }
