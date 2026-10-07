@@ -122,9 +122,9 @@ IFS='|' read -r _ _ _ ES_ADMIN _ N_ADMINS <<< "$LINEA"
 echo "Ahora $EMAIL_BD -> administrador global: $ES_ADMIN (administradores activos: $N_ADMINS)."
 
 if [ "$VALOR" = 1 ]; then
-  echo "LISTO. Para usarlo, CIERRA SESION en la app y vuelve a entrar: el permiso viaja en la"
-  echo "sesion, y recargar el panel solo actualiza el menu. Despues veras 'Administracion' en el menu."
+  echo "LISTO. Si tiene la app abierta, basta con RECARGAR la pagina: el servidor mira el permiso"
+  echo "en cada peticion. Despues vera 'Administracion' en el menu."
 else
-  echo "LISTO. Pierde la pantalla de Administracion al momento. Lo demas de su sesion abierta"
-  echo "caduca al volver a entrar (como mucho en 24 h)."
+  echo "LISTO. Lo pierde al momento: la pantalla de Administracion y el acceso a las empresas"
+  echo "de las que no es miembro. Sigue entrando en las suyas con el rol que tenga en cada una."
 fi

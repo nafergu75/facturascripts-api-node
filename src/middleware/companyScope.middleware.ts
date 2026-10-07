@@ -7,7 +7,9 @@ import { config } from '../config/env';
  *
  * 1. Obtiene companyId (prioriza params, luego query, luego body).
  * 2. Comprueba que ese companyId esta en la lista de empresas del usuario
- *    autenticado (req.user.companies). Si no, responde 403.
+ *    autenticado (req.user.companies). Si no, responde 403. Esa lista (y
+ *    esAdminGlobal) son los de la BD en este momento, no los del token:
+ *    authMiddleware los sustituye en cada peticion.
  * 3. Adjunta el companyId normalizado a req.companyId.
  *
  * Requiere que authMiddleware se haya ejecutado antes (necesita req.user).

@@ -312,7 +312,9 @@ export interface CambiosUsuario {
 
 /**
  * Activa/desactiva, da/quita el modo administrador global o restablece la
- * contrasena de un usuario.
+ * contrasena de un usuario. Todo surte efecto en su siguiente peticion
+ * (authMiddleware mira la BD): desactivarlo o cambiarle la contrasena cierra
+ * las sesiones que tuviera abiertas.
  *
  * Protecciones:
  * - Nadie se desactiva ni se quita el modo administrador a si mismo (se
@@ -373,14 +375,4 @@ export async function actualizarUsuario(
       : await tx.user.findUniqueOrThrow({ where: { id: userId }, select: SELECT_USUARIO });
     return { usuario: aUsuarioAdmin(u), cambios };
   });
-}
-
-/**
- * El usuario de la sesion sigue siendo administrador global activo segun la BD.
- * El token dura 24 h: sin esta comprobacion, a quien se le quita el modo
- * administrador (o se desactiva) seguiria usando el panel hasta que caducara.
- */
-export async function esAdminGlobalVigente(userId: string): Promise<boolean> {
-  const u = await prisma.user.findUnique({ where: { id: userId }, select: { isActive: true, isGlobalAdmin: true } });
-  return !!u && u.isActive && u.isGlobalAdmin;
 }

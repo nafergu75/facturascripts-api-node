@@ -142,6 +142,10 @@ describe('rutas /admin por HTTP', () => {
   const token = (claims: Partial<Parameters<typeof authService.generateToken>[0]>) =>
     authService.generateToken({ userId: 'u1', email: 'u1@test.local', roles: [], companies: [], ...claims });
 
+  /** Como esta el usuario u1 en la BD (authMiddleware lo lee en cada peticion). */
+  const enBd = (u: { isActive?: boolean; isGlobalAdmin?: boolean; memberships?: Array<{ companyId: string; role: string }> }) =>
+    bd.user.findUnique.mockImplementation(async () => ({ isActive: true, isGlobalAdmin: false, passwordHash: 'sal:hash', memberships: [], ...u }));
+
   const RUTAS: Array<['get' | 'post' | 'put' | 'patch' | 'delete', string]> = [
     ['get', '/admin/empresas'],
     ['post', '/admin/empresas'],
@@ -160,27 +164,30 @@ describe('rutas /admin por HTTP', () => {
   });
 
   it.each(RUTAS)('%s %s con el admin de una empresa responde 403', async (metodo, ruta) => {
+    enBd({ memberships: [{ companyId: 'E1', role: 'admin' }] });
     const t = token({ roles: ['admin'], rolesPorEmpresa: { E1: ['admin'] }, companies: ['E1'] });
     const res = await request(app)[metodo](ruta).set('Authorization', `Bearer ${t}`).send({});
     expect(res.status).toBe(403);
-    expect(bd.user.findUnique).not.toHaveBeenCalled();
+    expect(bd.company.findMany).not.toHaveBeenCalled();
   });
 
-  it('un token de administrador ya retirado en la BD recibe 403', async () => {
-    bd.user.findUnique.mockResolvedValueOnce({ isActive: true, isGlobalAdmin: false });
+  it('un token de administrador ya retirado en la BD recibe 403, sin volver a entrar', async () => {
+    enBd({ isGlobalAdmin: false });
     const res = await request(app).get('/admin/empresas').set('Authorization', `Bearer ${token({ esAdminGlobal: true })}`);
     expect(res.status).toBe(403);
-    expect(res.body.message).toMatch(/vuelve a entrar/);
+    expect(res.body.message).toMatch(/administrador global/);
+    expect(bd.company.findMany).not.toHaveBeenCalled();
   });
 
-  it('un administrador desactivado en la BD recibe 403', async () => {
-    bd.user.findUnique.mockResolvedValueOnce({ isActive: false, isGlobalAdmin: true });
+  it('un administrador desactivado en la BD recibe 401: se le cierra la sesion', async () => {
+    enBd({ isActive: false, isGlobalAdmin: true });
     const res = await request(app).get('/admin/usuarios').set('Authorization', `Bearer ${token({ esAdminGlobal: true })}`);
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(401);
+    expect(res.body.message).toMatch(/desactivado/);
   });
 
   it('el administrador vigente lista las empresas con NIF, pais y usuarios', async () => {
-    bd.user.findUnique.mockResolvedValueOnce({ isActive: true, isGlobalAdmin: true });
+    enBd({ isGlobalAdmin: true });
     bd.company.findMany.mockResolvedValueOnce([
       { id: 'E1', codigo: 'TL', name: 'Talleres', isActive: true, createdAt: new Date('2026-01-02'), _count: { memberships: 3 } },
       { id: 'E2', codigo: null, name: 'Nueva', isActive: false, createdAt: new Date('2026-02-03'), _count: { memberships: 0 } },

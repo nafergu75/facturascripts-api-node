@@ -2,6 +2,15 @@
 // probar el slice sin BD real. La factoria FS ya no se usa en clientes.
 jest.mock('../config/database', () => ({
   prisma: {
+    // authMiddleware lee el usuario de la BD en cada peticion: admin de la empresa 1.
+    user: {
+      findUnique: jest.fn(async () => ({
+        isActive: true,
+        isGlobalAdmin: false,
+        passwordHash: 'sal:hash',
+        memberships: [{ companyId: '1', role: 'admin' }],
+      })),
+    },
     customer: {
       findMany: jest.fn().mockResolvedValue([
         { id: 'CLI1', nombreFiscal: 'Cliente Demo', nifCif: 'B1', email: null, telefono: null, activo: true },

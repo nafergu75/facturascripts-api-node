@@ -31,6 +31,15 @@ jest.mock('../services/facturascripts-client', () => ({
 // haber 300 / 477 haber 63.
 jest.mock('../config/database', () => ({
   prisma: {
+    // authMiddleware lee el usuario de la BD en cada peticion: admin de la empresa 1.
+    user: {
+      findUnique: jest.fn(async () => ({
+        isActive: true,
+        isGlobalAdmin: false,
+        passwordHash: 'sal:hash',
+        memberships: [{ companyId: '1', role: 'admin' }],
+      })),
+    },
     journalEntry: {
       findMany: jest.fn(async (args?: { where?: { fecha?: { gte?: Date; lt?: Date } } }) => {
         // El asiento es de 2026: solo entra si el rango lo incluye.

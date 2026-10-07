@@ -11,6 +11,33 @@ import {
   quitarAcceso,
 } from '../services/admin.service';
 import { registrarAuditoria } from '../services/auditoria.service';
+import type { CambiosUsuario } from '../services/admin.service';
+import type { UsuarioAdmin } from '../domain/admin.model';
+
+/** Auditoria del alta de un usuario. Nunca la contrasena. (La usa tambien POST /users.) */
+export async function auditarAltaUsuario(actorId: string, usuario: UsuarioAdmin): Promise<void> {
+  await registrarAuditoria({
+    userId: actorId,
+    companyId: usuario.empresas?.[0]?.companyId,
+    action: 'CREATE_USUARIO',
+    resourceType: 'USUARIO',
+    resourceId: usuario.id,
+    after: { email: usuario.email, esAdminGlobal: usuario.esAdminGlobal, empresas: usuario.empresas?.map((e) => ({ companyId: e.companyId, rol: e.rol })) },
+  });
+}
+
+/** Auditoria de un cambio de usuario, si lo hubo. (La usa tambien PUT/DELETE /users.) */
+export async function auditarCambioUsuario(actorId: string, userId: string, email: string, cambios: CambiosUsuario): Promise<void> {
+  if (!Object.keys(cambios).length) return;
+  await registrarAuditoria({
+    userId: actorId,
+    action: 'UPDATE_USUARIO',
+    resourceType: 'USUARIO',
+    resourceId: userId,
+    // Solo QUE cambio: de la contrasena, que se restablecio, nunca cual es.
+    meta: { email, ...cambios },
+  });
+}
 
 /** Panel de administracion de la plataforma. Cada cambio queda en la auditoria. */
 export const adminController = {
@@ -53,31 +80,14 @@ export const adminController = {
   crearUsuario: asyncHandler(async (req, res) => {
     const { email, password, esAdminGlobal, companyId, rol, role } = req.body ?? {};
     const usuario = await crearUsuario({ email, password, esAdminGlobal, companyId, rol: rol ?? role });
-    await registrarAuditoria({
-      userId: req.user!.userId,
-      companyId: usuario.empresas?.[0]?.companyId,
-      action: 'CREATE_USUARIO',
-      resourceType: 'USUARIO',
-      resourceId: usuario.id,
-      // Nunca la contrasena.
-      after: { email: usuario.email, esAdminGlobal: usuario.esAdminGlobal, empresas: usuario.empresas?.map((e) => ({ companyId: e.companyId, rol: e.rol })) },
-    });
+    await auditarAltaUsuario(req.user!.userId, usuario);
     sendOk(res, usuario, undefined, 201);
   }),
 
   actualizarUsuario: asyncHandler(async (req, res) => {
     const { activo, esAdminGlobal, nuevaContrasena } = req.body ?? {};
     const { usuario, cambios } = await actualizarUsuario(req.user!.userId, req.params.userId, { activo, esAdminGlobal, nuevaContrasena });
-    if (Object.keys(cambios).length) {
-      await registrarAuditoria({
-        userId: req.user!.userId,
-        action: 'UPDATE_USUARIO',
-        resourceType: 'USUARIO',
-        resourceId: req.params.userId,
-        // Solo QUE cambio: de la contrasena, que se restablecio, nunca cual es.
-        meta: { email: usuario.email, ...cambios },
-      });
-    }
+    await auditarCambioUsuario(req.user!.userId, req.params.userId, usuario.email, cambios);
     sendOk(res, usuario);
   }),
 

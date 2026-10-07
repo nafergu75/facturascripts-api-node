@@ -13,6 +13,13 @@ export interface AuthUser {
   esAdminGlobal?: boolean;
   /** Empresa seleccionada en el login (si se envio empresaCodigo). */
   empresaSeleccionada?: string;
+  /** Huella de la contrasena con la que se emitio el token (claim `pwd`). */
+  huellaContrasena?: string;
+  /**
+   * true cuando authMiddleware ya ha cambiado lo que decia el token por lo que
+   * dice la BD (activo, empresas, roles y modo administrador actuales).
+   */
+  sesionVerificada?: boolean;
   [key: string]: unknown;
 }
 
