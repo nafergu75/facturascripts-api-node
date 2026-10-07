@@ -1,6 +1,6 @@
 import { RequestHandler } from 'express';
 import { forbidden, unauthorized } from '../utils/http-errors';
-import { permisosDeRoles, usuarioTienePermiso } from '../services/rbac.service';
+import { permisosEnEmpresa, usuarioTienePermiso } from '../services/rbac.service';
 
 /**
  * Middleware de autorizacion por permiso. Deriva los permisos de los roles del
@@ -27,11 +27,7 @@ export function authorize(...permisosNecesarios: string[]): RequestHandler {
 
     // En rutas de empresa cuentan solo los roles en ESA empresa. Tokens antiguos
     // (sin rolesPorEmpresa) y rutas sin empresa usan la lista general.
-    const roles =
-      req.companyId && req.user.rolesPorEmpresa
-        ? (req.user.rolesPorEmpresa[req.companyId] ?? [])
-        : (req.user.roles ?? []);
-    const permisos = permisosDeRoles(roles);
+    const permisos = permisosEnEmpresa(req.user, req.companyId);
     if (permisosNecesarios.some((p) => usuarioTienePermiso(permisos, p))) return next();
     return next(forbidden(`Falta permiso: ${permisoNecesario}`));
   };

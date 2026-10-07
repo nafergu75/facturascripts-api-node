@@ -14,7 +14,6 @@
     "prisma:generate": "prisma generate",
     "db:push": "prisma db push",
     "db:seed": "ts-node prisma/seed.ts",
-    "carmen:index": "ts-node scripts/initialize-carmen.ts",
     "smoke:carmen": "node scripts/smoke-carmen.mjs",
     "migrate:fs": "ts-node scripts/migrate-fs-to-prisma.ts",
     "migrate:fs:dry": "ts-node scripts/migrate-fs-to-prisma.ts --dry-run",

@@ -49,3 +49,22 @@ export function usuarioTienePermiso(permisos: string[], permisoNecesario: string
   const [recurso] = permisoNecesario.split(':');
   return permisos.includes(`${recurso}:*`);
 }
+
+/** Lo justo del usuario autenticado para calcular sus permisos (ver AuthUser). */
+export interface UsuarioConRoles {
+  roles?: string[];
+  rolesPorEmpresa?: Record<string, string[]>;
+  esAdminGlobal?: boolean;
+}
+
+/**
+ * Permisos del usuario en una empresa. Cuentan solo los roles en ESA empresa
+ * (rolesPorEmpresa); los tokens antiguos, sin rolesPorEmpresa, usan la lista
+ * general. El admin global lo tiene todo ('*'). Sin empresa, la lista general.
+ * La usan authorize.middleware y Carmen, para que las dos decidan igual.
+ */
+export function permisosEnEmpresa(user: UsuarioConRoles, companyId?: string): string[] {
+  if (user.esAdminGlobal) return ['*'];
+  const roles = companyId && user.rolesPorEmpresa ? (user.rolesPorEmpresa[companyId] ?? []) : (user.roles ?? []);
+  return permisosDeRoles(roles);
+}

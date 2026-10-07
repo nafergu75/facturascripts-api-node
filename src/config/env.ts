@@ -26,9 +26,25 @@ const envSchema = z.object({
   FS_API_URL: z.string().url().optional(),
   FS_API_KEY: z.string().optional(),
 
-  // Claude API (Anthropic) - Para el asistente "Carmen". Opcional: sin ella,
-  // el endpoint de chat sigue funcionando en modo degradado (solo RAG, sin LLM).
+  // Claude API (Anthropic). La usan el lector de facturas y, si se enciende, la
+  // capa de IA de Carmen. Opcional: sin ella Carmen responde con los datos de la
+  // app y sus fichas, sin IA.
   ANTHROPIC_API_KEY: z.string().optional(),
+
+  // --- Carmen (asistente) ---
+  // Interruptor general de la capa de IA. Apagada por defecto: aunque una empresa
+  // la active, no se llama a la API hasta que esto valga 'true'.
+  CARMEN_LLM_ACTIVO: z.enum(['true', 'false']).default('false'),
+  CARMEN_MODELO: z.string().min(1).default('claude-haiku-4-5-20251001'),
+  // Tope de gasto de la IA en el mes, para todas las empresas juntas (euros, 1 $ = 1 €).
+  CARMEN_TOPE_MENSUAL_EUR: z.coerce.number().positive().default(5),
+  // Preguntas a la IA por dia: por empresa y por usuario.
+  CARMEN_TOPE_EMPRESA_DIA: z.coerce.number().int().positive().default(100),
+  CARMEN_TOPE_USUARIO_DIA: z.coerce.number().int().positive().default(15),
+  // Mensajes a Carmen por usuario y dia, de cualquier tipo (freno contra abusos).
+  CARMEN_MENSAJES_USUARIO_DIA: z.coerce.number().int().positive().default(300),
+  // Tokens de salida de cada respuesta de la IA (500 como maximo).
+  CARMEN_MAX_TOKENS_SALIDA: z.coerce.number().int().positive().max(500).default(500),
 
   // Origenes permitidos por CORS (lista separada por comas). En produccion es
   // OBLIGATORIO acotar a los dominios del frontend. Por defecto, los puertos de
@@ -71,6 +87,15 @@ export const config = {
   fsApiUrl: env.FS_API_URL,
   fsApiKey: env.FS_API_KEY,
   anthropicApiKey: normalizarAnthropicKey(env.ANTHROPIC_API_KEY),
+  carmen: {
+    llmActivo: env.CARMEN_LLM_ACTIVO === 'true',
+    modelo: env.CARMEN_MODELO,
+    topeMensualEur: env.CARMEN_TOPE_MENSUAL_EUR,
+    topeEmpresaDia: env.CARMEN_TOPE_EMPRESA_DIA,
+    topeUsuarioDia: env.CARMEN_TOPE_USUARIO_DIA,
+    mensajesUsuarioDia: env.CARMEN_MENSAJES_USUARIO_DIA,
+    maxTokensSalida: env.CARMEN_MAX_TOKENS_SALIDA,
+  },
   corsOrigins: (env.CORS_ORIGIN ?? 'http://localhost:5173,http://localhost:4173,http://localhost:5174,http://localhost:4174,http://localhost:3000')
     .split(',')
     .map((o) => o.trim())

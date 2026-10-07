@@ -473,38 +473,109 @@ model VATBook {
 }
 
 /// ============================================================================
-/// ASISTENTE "CARMEN" (chat contable con RAG)
+/// ASISTENTE "CARMEN" (datos de la app, fichas verificadas y, como ultimo recurso, IA)
 /// ============================================================================
 
-/// Sesion de conversacion con Carmen.
+/// Sesion de conversacion con Carmen. Es de un usuario en una empresa: solo
+/// ese usuario la lee o la borra (companyId + userId en cada consulta).
 model ChatSession {
   id        String        @id @default(cuid())
   companyId String
   userId    String
+  /// Primeras palabras de la primera pregunta, para el historial.
+  titulo    String?       @db.VarChar(120)
+  /// Estado del dialogo que solo lee el servidor: { intencion, huecos, pendiente?, en }.
+  contexto  Json?
   createdAt DateTime      @default(now())
   updatedAt DateTime      @updatedAt
   messages  ChatMessage[]
 
   @@index([companyId])
   @@index([userId])
+  @@index([companyId, userId, updatedAt])
 }
 
 /// Mensaje (usuario o asistente) dentro de una sesion de Carmen.
 model ChatMessage {
-  id        String   @id @default(cuid())
-  sessionId String
-  companyId String
-  userId    String
-  role      String // user | assistant
-  content   String   @db.Text
-  sources   Json? // Fuentes citadas (DocumentChunk[] resumido)
-  createdAt DateTime @default(now())
+  id               String    @id @default(cuid())
+  sessionId        String
+  companyId        String
+  userId           String
+  role             String // user | assistant
+  content          String    @db.Text
+  sources          Json? // Fuentes citadas (solo mensajes antiguos, de antes del enrutador)
+  /// De donde sale la respuesta: datos | faq | ia | aclaracion | sistema.
+  origen           String?   @db.VarChar(12)
+  /// Intencion de datos que se ejecuto (INT-24...).
+  intencion        String?   @db.VarChar(40)
+  /// Huecos de la intencion (periodo, ids), sin nombres de terceros.
+  huecos           Json?
+  /// Bloques de la respuesta (kpis, tabla de 15 filas como maximo, enlaces, botones) para repintar el historial.
+  datos            Json?
+  /// Permiso con el que se calculo la respuesta: si el usuario lo pierde, el historial la oculta.
+  permisoRequerido String?   @db.VarChar(120)
+  calculadoEn      DateTime?
+  /// Valoracion del usuario: 1 util, 0 no util.
+  valoracion       Int?
+  /// Resultado del validador de cifras de la IA: ok | descartada.
+  validacion       String?   @db.VarChar(12)
+  createdAt        DateTime  @default(now())
 
   session ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
 
   @@index([sessionId])
   @@index([companyId])
   @@index([createdAt])
+  @@index([companyId, userId, createdAt])
+  @@index([origen, createdAt])
+}
+
+/// Contadores de uso de Carmen, compartidos entre instancias serverless.
+/// Claves: 'global:2026-10' (coste del mes), 'empresa:{id}:2026-10-07' y
+/// 'usuario:{id}:2026-10-07' (consultas a la IA y mensajes del dia),
+/// 'empresa:{id}:2026-10' (uso del mes, solo informativo).
+model CarmenContador {
+  clave         String   @id @db.VarChar(120)
+  consultasIA   Int      @default(0)
+  /// Coste reservado o liquidado en dolares (precios de la API).
+  costeUsd      Decimal  @default(0) @db.Decimal(12, 6)
+  mensajes      Int      @default(0)
+  actualizadoEn DateTime @updatedAt
+}
+
+/// Auditoria de cada llamada a la IA. No guarda el texto de la pregunta.
+model CarmenLlamadaIA {
+  id                   String   @id @default(cuid())
+  companyId            String
+  userId               String
+  mensajeId            String?
+  modelo               String   @db.VarChar(60)
+  tokensEntrada        Int      @default(0)
+  tokensSalida         Int      @default(0)
+  tokensCacheEscritura Int      @default(0)
+  tokensCacheLectura   Int      @default(0)
+  reservaUsd           Decimal  @default(0) @db.Decimal(12, 6)
+  costeUsd             Decimal  @default(0) @db.Decimal(12, 6)
+  /// ok | error | descartada | sin_tope
+  estado               String   @db.VarChar(12)
+  motivo               String?  @db.VarChar(120)
+  duracionMs           Int?
+  createdAt            DateTime @default(now())
+
+  @@index([companyId, createdAt])
+}
+
+/// Ajustes de Carmen por empresa. La IA viene apagada y solo la enciende un
+/// administrador de la empresa (o el admin global).
+model CarmenAjustes {
+  companyId        String   @id
+  iaActiva         Boolean  @default(false)
+  /// Tope propio de preguntas a la IA por dia en la empresa (solo puede bajar el general).
+  topeConsultasDia Int?
+  /// Dias que se guardan las conversaciones.
+  conservarDias    Int      @default(90)
+  actualizadoPor   String?
+  actualizadoEn    DateTime @updatedAt
 }
 
 /// Libro de retenciones (IRPF, otros)
