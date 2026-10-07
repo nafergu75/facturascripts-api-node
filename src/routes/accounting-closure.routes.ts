@@ -54,9 +54,9 @@ router.post('/prior-years', authorize('contabilidad:write'), accountingClosureCo
 router.get('/prior-years/:ejercicio', accountingClosureController.obtenerDatosAnterior);
 
 /**
- * Generar asiento de cierre contable.
+ * Antes generaba un asiento de cierre suelto. Ahora responde 409 y remite a
+ * Contabilidad > Cierre y traspaso de saldos (details.enlace).
  * POST /api/accounting/closures/generar-asiento
- * Body: { fechaDesde: YYYY-MM-DD, fechaHasta: YYYY-MM-DD }
  */
 router.post(
   '/generar-asiento',

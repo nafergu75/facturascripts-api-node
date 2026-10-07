@@ -1,8 +1,12 @@
 import { asyncHandler } from '../utils/async-handler';
 import { sendOk, sendMessage } from '../utils/response';
-import { badRequest } from '../utils/http-errors';
+import { badRequest, conflict } from '../utils/http-errors';
+import { enlaceCierre } from '../services/fiscalYears.service';
 import { accountingClosureService } from '../services/accounting-closure.service';
 import { registrarAuditoria } from '../services/auditoria.service';
+
+export const MENSAJE_ASIENTO_CIERRE_EN_OTRA_PANTALLA =
+  'El asiento de cierre ya no se genera desde aquí. Cierra el ejercicio en Contabilidad > Cierre y traspaso de saldos: allí se hacen la regularización, el cierre y la apertura del año siguiente, y se puede deshacer.';
 
 /**
  * Extrae el archivo subido del request.
@@ -226,31 +230,16 @@ export const accountingClosureController = {
   }),
 
   /**
-   * POST /api/accounting/closures/generar-asiento
-   * Generar asiento de cierre contable automático.
-   * Body: { fechaDesde: YYYY-MM-DD, fechaHasta: YYYY-MM-DD }
+   * POST /api/accounting/closures/generar-asiento. Ya no genera nada: grababa
+   * una regularizacion suelta (CIERRE_AUTOMATICO) sin mirar los meses
+   * bloqueados ni el cierre del ejercicio, y sin cierre ni apertura del año
+   * siguiente. El cierre se hace siempre en Contabilidad > Cierre y traspaso de
+   * saldos (POST /companies/:id/periodos/cierre). 409 con el enlace.
    */
-  generarAsientoCierre: asyncHandler(async (req, res) => {
-    const { fechaDesde, fechaHasta } = req.body ?? {};
-    if (!fechaDesde || !fechaHasta) {
-      throw badRequest('fechaDesde y fechaHasta son requeridos (formato: YYYY-MM-DD).');
-    }
-
-    const asiento = await accountingClosureService.generarAsientoDeCierre(
-      req.companyId!,
-      new Date(fechaDesde),
-      new Date(fechaHasta),
-    );
-
-    await registrarAuditoria({
-      userId: req.user?.userId || 'unknown',
-      companyId: req.companyId,
-      action: 'GENERAR_ASIENTO_CIERRE',
-      resourceType: 'JOURNAL_ENTRY',
-      resourceId: asiento.asientoId,
-      meta: { fechaDesde, fechaHasta, resultado: asiento.resultado },
+  generarAsientoCierre: asyncHandler(async (req) => {
+    const anio = /^(\d{4})-/.exec(String(req.body?.fechaHasta ?? ''))?.[1];
+    throw conflict(MENSAJE_ASIENTO_CIERRE_EN_OTRA_PANTALLA, {
+      enlace: anio ? enlaceCierre(anio) : '/dashboard/contabilidad/cierre-ejercicio',
     });
-
-    sendOk(res, { asiento }, undefined, 201);
   }),
 };

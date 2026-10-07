@@ -160,17 +160,22 @@ async function textoReabrir(companyId: string, ejercicio: number): Promise<strin
  * CERRADO_SIN_ASIENTOS si esta marcado como cerrado sin ellos; si no, ABIERTO.
  */
 export async function estadoCierreAnio(companyId: string, ejercicio: number): Promise<EstadoEfectivoEjercicio> {
+  // Sin alguna de esas tablas (tests con prisma simulado) se mira solo la que hay.
+  const hay = (t: unknown) => typeof (t as { findFirst?: unknown } | undefined)?.findFirst === 'function';
+  const p = prisma as unknown as { fiscalYear?: unknown; journalEntry?: unknown };
   const [fy, cierre] = await Promise.all([
-    prisma.fiscalYear.findFirst({ where: { companyId, label: String(ejercicio) }, select: { estado: true } }),
-    prisma.journalEntry.findFirst({
-      where: {
-        companyId,
-        estado: 'POSTED',
-        ...FILTRO_ASIENTOS_CIERRE,
-        fecha: { gte: new Date(Date.UTC(ejercicio, 0, 1)), lt: new Date(Date.UTC(ejercicio + 1, 0, 1)) },
-      },
-      select: { id: true },
-    }),
+    hay(p.fiscalYear) ? prisma.fiscalYear.findFirst({ where: { companyId, label: String(ejercicio) }, select: { estado: true } }) : null,
+    hay(p.journalEntry)
+      ? prisma.journalEntry.findFirst({
+          where: {
+            companyId,
+            estado: 'POSTED',
+            ...FILTRO_ASIENTOS_CIERRE,
+            fecha: { gte: new Date(Date.UTC(ejercicio, 0, 1)), lt: new Date(Date.UTC(ejercicio + 1, 0, 1)) },
+          },
+          select: { id: true },
+        })
+      : null,
   ]);
   return estadoEfectivoEjercicio(fy?.estado ?? 'OPEN', !!cierre);
 }

@@ -24,7 +24,32 @@ import {
 } from './lectorContable';
 import { analizarCuentas, crearCuentasNuevas, prepararPlanEmpresa, type CuentaNueva } from './planCuentas';
 // Cerrado: con asientos de regularizacion o cierre (los de ahora y los de cierres anteriores) o marcado CLOSED.
-import { ejercicioCerrado } from '../periodos.service';
+import { ejercicioCerrado, listarPeriodos } from '../periodos.service';
+
+/**
+ * Meses (MM/AAAA) bloqueados o cerrados del ejercicio que tocan esas fechas.
+ * La puesta en marcha graba, reemplaza y anula asientos: tampoco en un mes
+ * bloqueado (p. ej. con su 303 presentado), como el resto de la app.
+ */
+async function mesesNoAbiertos(companyId: string, ejercicio: number, fechas: string[]): Promise<string[]> {
+  const meses = new Set(fechas.filter((f) => f.startsWith(`${ejercicio}-`)).map((f) => Number(f.slice(5, 7))));
+  if (meses.size === 0) return [];
+  const periodos = await listarPeriodos(companyId, ejercicio);
+  return periodos.filter((p) => meses.has(p.mes) && p.estado !== 'abierto').map((p) => `${String(p.mes).padStart(2, '0')}/${ejercicio}`);
+}
+
+const textoMesesBloqueados = (meses: string[], salida: string) =>
+  `${meses.length === 1 ? `El mes ${meses[0]} está bloqueado o cerrado` : `Los meses ${meses.join(', ')} están bloqueados o cerrados`}: ` +
+  `desbloquéalos en Configuración > Ejercicios y periodos o ${salida}.`;
+
+/** Dias distintos de los asientos POSTED de ese origen en el ejercicio. */
+async function fechasDeOrigen(companyId: string, ejercicio: number, origen: string): Promise<string[]> {
+  const grupos = await prisma.journalEntry.groupBy({
+    by: ['fecha'],
+    where: { companyId, estado: 'POSTED', origen, fecha: rangoEjercicio(ejercicio) },
+  });
+  return grupos.map((g) => g.fecha.toISOString().slice(0, 10));
+}
 
 const round2 = (n: number): number => Math.round((n + Number.EPSILON) * 100) / 100;
 const esPyg = (codigo: string) => codigo.startsWith('6') || codigo.startsWith('7');
@@ -199,6 +224,8 @@ export async function previsualizarApertura(
   }
   const previa = await aperturaDelEjercicio(companyId, ejercicio);
   const aperturaExistente = previa ? { id: previa.id, numero: previa.numeroAsiento, fecha: previa.fecha.toISOString().slice(0, 10) } : null;
+  const bloqueadosApertura = await mesesNoAbiertos(companyId, ejercicio, [fecha, ...(aperturaExistente && opciones.reemplazar ? [aperturaExistente.fecha] : [])]);
+  if (bloqueadosApertura.length) errores.push(textoMesesBloqueados(bloqueadosApertura, 'elige otra fecha de apertura'));
   if (aperturaExistente) {
     const txt = `Ya hay un asiento de apertura del ejercicio ${ejercicio} (${aperturaExistente.numero}, ${fechaEs(aperturaExistente.fecha)}).`;
     if (opciones.reemplazar) avisos.push(`${txt} Se anulará y se creará el nuevo.`);
@@ -277,6 +304,8 @@ export async function confirmarApertura(
 /** Anula la apertura del ejercicio (p. ej. para volver a importar). */
 export async function anularApertura(companyId: string, ejercicio: number): Promise<{ anulados: number }> {
   if (await ejercicioCerrado(companyId, ejercicio)) throw badRequest(`El ejercicio ${ejercicio} está cerrado: deshaz antes el cierre.`);
+  const bloqueados = await mesesNoAbiertos(companyId, ejercicio, await fechasDeOrigen(companyId, ejercicio, 'APERTURA'));
+  if (bloqueados.length) throw badRequest(textoMesesBloqueados(bloqueados, 'déjala como está'));
   return prisma.$transaction(async (tx) => {
     const previas = await tx.journalEntry.findMany({
       where: { companyId, estado: 'POSTED', origen: 'APERTURA', fecha: rangoEjercicio(ejercicio) },
@@ -378,6 +407,9 @@ async function prepararDiario(companyId: string, lectura: LecturaDiario, opcione
     if (opciones.reemplazar) avisos.push(`${txt} Se anularán y se cargarán los de este fichero.`);
     else errores.push(`${txt} Marca "Reemplazar la importación anterior" para no duplicarlos.`);
   }
+  const fechasDiario = [...aImportar.map((a) => a.fecha), ...(importacionPrevia && opciones.reemplazar ? await fechasDeOrigen(companyId, ejercicio, 'IMPORTACION') : [])];
+  const bloqueadosDiario = await mesesNoAbiertos(companyId, ejercicio, fechasDiario);
+  if (bloqueadosDiario.length) errores.push(textoMesesBloqueados(bloqueadosDiario, 'quita del fichero los asientos de esos meses'));
 
   const nApuntes = aImportar.reduce((s, a) => s + a.lineas.length, 0);
   const vista: VistaDiario = {
@@ -459,6 +491,8 @@ export async function confirmarDiario(
 /** Anula los asientos importados de un ejercicio. */
 export async function anularDiarioImportado(companyId: string, ejercicio: number): Promise<{ anulados: number }> {
   if (await ejercicioCerrado(companyId, ejercicio)) throw badRequest(`El ejercicio ${ejercicio} está cerrado: deshaz antes el cierre.`);
+  const bloqueados = await mesesNoAbiertos(companyId, ejercicio, await fechasDeOrigen(companyId, ejercicio, 'IMPORTACION'));
+  if (bloqueados.length) throw badRequest(textoMesesBloqueados(bloqueados, 'deja la importación como está'));
   return prisma.$transaction(async (tx) => {
     const previos = await tx.journalEntry.findMany({
       where: { companyId, estado: 'POSTED', origen: 'IMPORTACION', fecha: rangoEjercicio(ejercicio) },
