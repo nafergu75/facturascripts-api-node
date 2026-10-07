@@ -8,6 +8,8 @@ import { badRequest } from '../utils/http-errors';
  * el estado del ejercicio (ese lo llevan FiscalYear y Cierre y traspaso de
  * saldos).
  *
+ * Todas las lecturas piden contabilidad:read (las escrituras, contabilidad:write).
+ *
  * Las rutas fijas (prior-years, generar-asiento, comparativas) van ANTES que
  * las de '/:ejercicio': antes GET '/:ejercicio' iba primero y GET '/prior-years'
  * nunca se alcanzaba (se buscaba el cierre del ejercicio "prior-years").
@@ -33,13 +35,13 @@ router.post('/', authorize('contabilidad:write'), accountingClosureController.cr
  * Listar cierres.
  * GET /api/accounting/closures?estado=CERRADO&desde=2024&hasta=2025
  */
-router.get('/', accountingClosureController.listarCierres);
+router.get('/', authorize('contabilidad:read'), accountingClosureController.listarCierres);
 
 /**
  * Listar ejercicios anteriores.
  * GET /api/accounting/closures/prior-years
  */
-router.get('/prior-years', accountingClosureController.listarEjerciciosAnteriores);
+router.get('/prior-years', authorize('contabilidad:read'), accountingClosureController.listarEjerciciosAnteriores);
 
 /**
  * Guardar datos de ejercicio anterior.
@@ -51,7 +53,7 @@ router.post('/prior-years', authorize('contabilidad:write'), accountingClosureCo
  * Obtener datos de ejercicio anterior.
  * GET /api/accounting/closures/prior-years/2023
  */
-router.get('/prior-years/:ejercicio', accountingClosureController.obtenerDatosAnterior);
+router.get('/prior-years/:ejercicio', authorize('contabilidad:read'), accountingClosureController.obtenerDatosAnterior);
 
 /**
  * Antes generaba un asiento de cierre suelto. Ahora responde 409 y remite a
@@ -68,7 +70,7 @@ router.post(
  * Obtener comparativa entre dos años.
  * GET /api/accounting/closures/comparativas/2023/2024
  */
-router.get('/comparativas/:ej1/:ej2', accountingClosureController.obtenerComparativa);
+router.get('/comparativas/:ej1/:ej2', authorize('contabilidad:read'), accountingClosureController.obtenerComparativa);
 
 // --- Rutas de un ejercicio (siempre detras de las fijas) ---
 
@@ -76,7 +78,7 @@ router.get('/comparativas/:ej1/:ej2', accountingClosureController.obtenerCompara
  * Obtener cierre por ejercicio.
  * GET /api/accounting/closures/2024
  */
-router.get('/:ejercicio', accountingClosureController.obtenerCierre);
+router.get('/:ejercicio', authorize('contabilidad:read'), accountingClosureController.obtenerCierre);
 
 /**
  * Cambiar estado del documento de cierre (solo ABIERTO, EN_CIERRE, CERRADO o REABIERTO).
@@ -103,6 +105,6 @@ router.post(
  * Listar archivos de cierre.
  * GET /api/accounting/closures/2024/files
  */
-router.get('/:ejercicio/files', accountingClosureController.listarArchivos);
+router.get('/:ejercicio/files', authorize('contabilidad:read'), accountingClosureController.listarArchivos);
 
 export default router;
