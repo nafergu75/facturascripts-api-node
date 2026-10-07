@@ -8,7 +8,9 @@ import { prisma } from '../config/database';
 import { CompanyScopedService, ID, Paginated } from '../domain/common.types';
 import { Cliente } from '../domain/cliente.model';
 import { parsePagination } from '../utils/pagination';
-import { notFound } from '../utils/http-errors';
+import { badRequest, notFound } from '../utils/http-errors';
+import { normalizarPais, prefijoNifIvaUe } from '../domain/tipo-operacion.model';
+import { MONEDAS_FACTURA_ACTIVAS, normalizarMoneda } from '../domain/divisas';
 
 /** Cliente en formato ligero para el selector/buscador al facturar. */
 export interface ClienteResumen {
@@ -28,6 +30,10 @@ type CustomerRow = {
   activo: boolean;
   direccion?: string | null;
   pais?: string | null;
+  cp?: string | null;
+  municipio?: string | null;
+  provincia?: string | null;
+  monedaPreferida?: string | null;
 };
 
 /** Customer (Prisma) -> forma de respuesta del recurso clientes. */
@@ -39,7 +45,51 @@ function aCliente(c: CustomerRow): Record<string, unknown> {
     email: c.email ?? '',
     telefono: c.telefono ?? '',
     activo: c.activo,
+    // Pais (ISO-2) y direccion: deciden el tipo de operacion de IVA que se sugiere y salen en la factura.
+    pais: c.pais ?? 'ES',
+    direccion: c.direccion ?? '',
+    cp: c.cp ?? '',
+    municipio: c.municipio ?? '',
+    provincia: c.provincia ?? '',
+    monedaPreferida: c.monedaPreferida ?? null,
   };
+}
+
+const textoONull = (v: unknown): string | null => (v === undefined || v === null || String(v).trim() === '' ? null : String(v).trim());
+
+/**
+ * Pais del cliente en ISO-2 (ES, FR, US...). Sin pais (o 'ES') y con un NIF-IVA
+ * de otro Estado de la UE, el del prefijo (EL se guarda como GR). Un valor que
+ * no es un codigo de dos letras da 400.
+ */
+export function leerPais(valor: unknown, nif?: string): string | undefined {
+  const crudo = textoONull(valor);
+  const prefijo = prefijoNifIvaUe(nif);
+  if (crudo === null) return prefijo && prefijo.pais !== 'ES' ? prefijo.pais : undefined;
+  const pais = normalizarPais(crudo);
+  if (!/^[A-Z]{2}$/.test(pais)) throw badRequest('El país del cliente tiene que ser un código de dos letras (ES, FR, US...).');
+  if (pais === 'ES' && prefijo && prefijo.pais !== 'ES') return prefijo.pais;
+  return pais;
+}
+
+/** Moneda en la que se le suele facturar: una de las activas, o null (la de la contabilidad). */
+export function leerMonedaPreferida(valor: unknown): string | null {
+  const crudo = textoONull(valor);
+  if (crudo === null) return null;
+  const codigo = normalizarMoneda(crudo);
+  if (!MONEDAS_FACTURA_ACTIVAS.includes(codigo)) {
+    throw badRequest(`La moneda preferida tiene que ser una de estas: ${MONEDAS_FACTURA_ACTIVAS.join(', ')}.`);
+  }
+  return codigo;
+}
+
+/** Direccion, CP, municipio y provincia que llegan en el cuerpo (solo los presentes). */
+function leerDireccion(data: Record<string, unknown>) {
+  const out: Record<string, string | null> = {};
+  for (const k of ['direccion', 'cp', 'municipio', 'provincia'] as const) {
+    if (data[k] !== undefined) out[k] = textoONull(data[k]);
+  }
+  return out;
 }
 
 /** Lee nombre/nif/teléfono del payload aceptando alias FS y Prisma. */
@@ -101,8 +151,9 @@ export const clientesService: CompanyScopedService<Cliente> = {
         nifCif: d.nifCif,
         email: d.email,
         telefono: d.telefono,
-        direccion: d.direccion,
-        pais: data.pais != null ? String(data.pais) : 'ES',
+        ...leerDireccion(data),
+        pais: leerPais(data.pais, d.nifCif) ?? 'ES',
+        monedaPreferida: leerMonedaPreferida(data.monedaPreferida),
       },
     })) as CustomerRow;
     return aCliente(c) as unknown as Cliente;
@@ -112,6 +163,9 @@ export const clientesService: CompanyScopedService<Cliente> = {
     const existe = await prisma.customer.findFirst({ where: { id: String(id), companyId: String(companyId) } });
     if (!existe) throw notFound('Cliente no encontrado.');
     const d = leerDatos(data);
+    // El pais se puede cambiar; si no llega, se revisa con el NIF nuevo (prefijo UE).
+    const pais =
+      data.pais !== undefined ? leerPais(data.pais, d.nifCif ?? existe.nifCif) : d.nifCif !== undefined ? leerPais(existe.pais, d.nifCif) : undefined;
     const c = (await prisma.customer.update({
       where: { id: String(id) },
       data: {
@@ -119,6 +173,9 @@ export const clientesService: CompanyScopedService<Cliente> = {
         ...(d.nifCif !== undefined ? { nifCif: d.nifCif } : {}),
         ...(data.email !== undefined ? { email: d.email } : {}),
         ...(data.telefono !== undefined || data.telefono1 !== undefined ? { telefono: d.telefono } : {}),
+        ...leerDireccion(data),
+        ...(pais !== undefined ? { pais } : {}),
+        ...(data.monedaPreferida !== undefined ? { monedaPreferida: leerMonedaPreferida(data.monedaPreferida) } : {}),
       },
     })) as CustomerRow;
     return aCliente(c) as unknown as Cliente;

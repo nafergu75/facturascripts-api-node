@@ -218,12 +218,26 @@ function tipoImagen(buf: Buffer): 'image/png' | 'image/jpeg' | null {
   return null;
 }
 
+/** La empresa ya tiene facturas o asientos: su moneda de cuenta no se puede cambiar. */
+async function tieneDocumentos(companyId: string): Promise<boolean> {
+  const [factura, gasto, asiento] = await Promise.all([
+    prisma.incomeInvoice.findFirst({ where: { companyId }, select: { id: true } }),
+    prisma.expenseInvoice.findFirst({ where: { companyId }, select: { id: true } }),
+    prisma.journalEntry.findFirst({ where: { companyId }, select: { id: true } }),
+  ]);
+  return !!(factura || gasto || asiento);
+}
+
 export const legalConfigService = {
-  /** Devuelve la config legal de la empresa, creándola con valores por defecto si no existe. */
+  /**
+   * Devuelve la config legal de la empresa, creándola con valores por defecto si
+   * no existe. `monedaCuentaEditable`: false si ya hay facturas o asientos (la
+   * moneda de la contabilidad ya no se puede cambiar).
+   */
   async obtener(companyId: string) {
-    const existente = await prisma.legalConfig.findUnique({ where: { companyId } });
-    if (existente) return sinLogo(existente);
-    return sinLogo(await prisma.legalConfig.create({ data: { companyId } }));
+    const existente =
+      (await prisma.legalConfig.findUnique({ where: { companyId } })) ?? (await prisma.legalConfig.create({ data: { companyId } }));
+    return { ...sinLogo(existente), monedaCuentaEditable: !(await tieneDocumentos(companyId)) };
   },
 
   async actualizar(companyId: string, datos: Record<string, unknown>) {
@@ -235,26 +249,20 @@ export const legalConfigService = {
     const paisNuevo = limpio.pais ?? paisAnterior;
     const monedaActual = actual?.monedaCuenta ?? 'EUR';
     if (limpio.monedaCuenta !== undefined || paisNuevo !== paisAnterior) {
-      const [facturas, gastos, asientos] = await Promise.all([
-        prisma.incomeInvoice.count({ where: { companyId } }),
-        prisma.expenseInvoice.count({ where: { companyId } }),
-        prisma.journalEntry.count({ where: { companyId } }),
-      ]);
       limpio.monedaCuenta = decidirMonedaCuenta({
         indicada: limpio.monedaCuenta,
         paisAnterior,
         paisNuevo,
         monedaActual,
-        tieneDocumentos: facturas + gastos + asientos > 0,
+        tieneDocumentos: await tieneDocumentos(companyId),
       });
     }
-    return sinLogo(
-      await prisma.legalConfig.upsert({
-        where: { companyId },
-        update: limpio,
-        create: { companyId, ...limpio },
-      }),
-    );
+    const guardada = await prisma.legalConfig.upsert({
+      where: { companyId },
+      update: limpio,
+      create: { companyId, ...limpio },
+    });
+    return { ...sinLogo(guardada), monedaCuentaEditable: !(await tieneDocumentos(companyId)) };
   },
 
   /** Guarda el logo de la empresa (PNG o JPG, hasta 1 MB). */

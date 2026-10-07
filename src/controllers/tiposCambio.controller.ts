@@ -4,6 +4,7 @@ import { badRequest } from '../utils/http-errors';
 import { inverso, textoTipo, validarMoneda } from '../domain/divisas';
 import { perfilEmpresa } from '../services/perfilEmpresa.service';
 import { resolverTipoCambio } from '../services/tiposCambio.service';
+import { hoyEspana } from '../utils/fechas';
 
 const FECHA_RE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -18,7 +19,7 @@ export const tiposCambioController = {
   obtener: asyncHandler(async (req, res) => {
     const perfil = await perfilEmpresa(req.companyId!);
     const moneda = validarMoneda(req.query.moneda ?? '', perfil.monedasFactura);
-    const fecha = String(req.query.fecha ?? new Date().toISOString().slice(0, 10)).slice(0, 10);
+    const fecha = String(req.query.fecha ?? hoyEspana()).slice(0, 10);
     if (!FECHA_RE.test(fecha) || Number.isNaN(new Date(`${fecha}T00:00:00Z`).getTime())) {
       throw badRequest('La fecha no es válida (AAAA-MM-DD).');
     }
