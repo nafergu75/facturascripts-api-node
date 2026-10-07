@@ -222,6 +222,18 @@ describe('entrada', () => {
     expect(roto.status).toBe(400);
   });
 
+  it('el tope de 16 KB es solo de Carmen: ni los JSON de otras rutas ni las subidas por trozos o de Excel lo notan', async () => {
+    // Sin token: el cuerpo se lee entero (el parser va antes) y responde la autenticación, no un 413.
+    const json = await request(app).post('/companies/E1/income-invoices').set('Content-Type', 'application/json').send(JSON.stringify({ relleno: 'x'.repeat(100_000) }));
+    expect(json.status).toBe(401);
+    // Trozo de una subida de nóminas (multipart): tampoco pasa por el parser de Carmen.
+    const trozo = await request(app).post('/companies/E1/nominas/importar/subidas').attach('trozo', Buffer.alloc(100_000, 1), 'trozo.bin');
+    expect(trozo.status).toBe(401);
+    // Una ruta que solo empieza igual no es la de Carmen.
+    const parecida = await request(app).post('/companies/E1/chat-assistantx').set('Content-Type', 'application/json').send(JSON.stringify({ relleno: 'x'.repeat(100_000) }));
+    expect(parecida.status).not.toBe(413);
+  });
+
   it('el freno de mensajes diarios devuelve 429 sin responder', async () => {
     mockPrisma.$executeRaw.mockResolvedValueOnce(0);
     const res = await request(app).post(ruta()).set('Authorization', U1).send({ message: 'hola' });
