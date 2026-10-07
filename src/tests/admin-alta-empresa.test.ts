@@ -162,6 +162,22 @@ describe('validarDatosAltaEmpresa', () => {
     expect(fallo({ ...IFBIO, tipoSociedad: 'XX' })).toMatchObject({ status: 400, campo: 'tipoSociedad' });
   });
 
+  it('el pais tiene que ser un codigo ISO que exista', () => {
+    // "SP" pensando en Espana la habria dado de alta como extranjera, sin comprobar el NIF.
+    for (const pais of ['SP', 'EP', 'UK', 'EU']) expect(fallo({ ...IFBIO, pais })).toMatchObject({ status: 400, campo: 'pais' });
+    expect(validarDatosAltaEmpresa({ ...IFBIO, pais: 'es' }).pais).toBe('ES');
+  });
+
+  it('en Espana el codigo postal tiene que existir y ser de la provincia', () => {
+    // 64120 en vez de 46120 (Alboraya): no existe ningun CP que empiece por 64.
+    expect(fallo({ ...IFBIO, codigoPostal: '64120' })).toMatchObject({ status: 400, campo: 'codigoPostal' });
+    for (const cp of ['00000', '99999']) expect(fallo({ ...IFBIO, codigoPostal: cp })).toMatchObject({ status: 400, campo: 'codigoPostal' });
+    const otraProvincia = fallo({ ...IFBIO, codigoPostal: '03120' });
+    expect(otraProvincia).toMatchObject({ status: 400, campo: 'codigoPostal' });
+    expect(otraProvincia.mensaje).toMatch(/es de Alicante, no de Valencia/);
+    expect(validarDatosAltaEmpresa({ ...IFBIO, provincia: 'València' }).codigoPostal).toBe('46120');
+  });
+
   it('valida el telefono y la web si vienen', () => {
     expect(fallo({ ...IFBIO, telefono: 'llámame' })).toMatchObject({ status: 400, campo: 'telefono' });
     expect(fallo({ ...IFBIO, telefono: '123' })).toMatchObject({ status: 400, campo: 'telefono' });

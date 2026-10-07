@@ -148,7 +148,9 @@ describeBd('modo administrador global (BD real)', () => {
       web: 'www.ejemplo.es',
     };
     const REGISTRO = ['Registro Mercantil (provincia)', 'Tomo', 'Folio', 'Hoja', 'Inscripción'];
+    const NIF_SLU = cifDePrueba('B');
     let idSa: string;
+    let idSlu: string;
 
     it('crea la empresa, el acceso de administrador y sus datos legales; sin Registro Mercantil queda pendiente', async () => {
       // El NIF escrito en minusculas y con guion: se guarda normalizado.
@@ -202,7 +204,7 @@ describeBd('modo administrador global (BD real)', () => {
         datos: {
           denominacion: `Center Test ${SUFIJO}, S.L.U.`,
           tipoSociedad: 'SLU',
-          nif: cifDePrueba('B'),
+          nif: NIF_SLU,
           domicilioSocial: 'Calle de Ejemplo 1',
           codigoPostal: '46001',
           municipio: 'Valencia',
@@ -215,10 +217,35 @@ describeBd('modo administrador global (BD real)', () => {
         },
       });
       expect(res.status).toBe(201);
-      empresasCreadas.push(res.body.data.id);
+      idSlu = res.body.data.id;
+      empresasCreadas.push(idSlu);
       expect(res.body.data).toMatchObject({ nombre: `Center ${SUFIJO}`, pais: 'ES', completo: true, pendientes: [] });
       const legal = await prisma.legalConfig.findUniqueOrThrow({ where: { companyId: res.body.data.id } });
       expect(legal).toMatchObject({ registroHoja: 'V-78901', obligaLibroSocios: true, obligaLibroContratos: true });
+    });
+
+    it('al editar sus datos: el NIF de otra empresa no, la forma tiene que cuadrar y los libros se recalculan', async () => {
+      const datosSlu = `/companies/${idSlu}/legal-config`;
+      const duplicado = await como(tokenA).put(datosSlu, { tipoSociedad: 'SA', nif: NIF_SA });
+      expect(duplicado.status).toBe(409);
+      expect(duplicado.body.details).toEqual({ campo: 'nif' });
+      expect(duplicado.body.message).toContain(DENOMINACION);
+      expect(await prisma.legalConfig.findUniqueOrThrow({ where: { companyId: idSlu } })).toMatchObject({ nif: NIF_SLU, tipoSociedad: 'SLU' });
+
+      // La S.A. no puede pasar a S.L. con su CIF de A.
+      const forma = await como(tokenA).put(`/companies/${idSa}/legal-config`, { tipoSociedad: 'SL' });
+      expect(forma.status).toBe(400);
+      expect(forma.body.details).toEqual({ campo: 'tipoSociedad' });
+
+      // SLU -> SL: deja de llevar el libro de contratos con el socio unico.
+      const sl = await como(tokenA).put(datosSlu, { tipoSociedad: 'SL' });
+      expect(sl.status).toBe(200);
+      expect(sl.body.data).toMatchObject({ tipoSociedad: 'SL', obligaLibroSocios: true, obligaLibroContratos: false });
+
+      // Su propio NIF, escrito de otra forma, no es un duplicado.
+      const mismo = await como(tokenA).put(datosSlu, { nif: `ES ${NIF_SLU}` });
+      expect(mismo.status).toBe(200);
+      expect(mismo.body.data.nif).toBe(NIF_SLU);
     });
 
     it('una empresa extranjera no necesita provincia ni Registro Mercantil', async () => {
