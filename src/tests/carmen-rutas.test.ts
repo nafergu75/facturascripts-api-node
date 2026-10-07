@@ -4,6 +4,8 @@
  * Prisma simulado; la API de Anthropic no se usa (la IA está apagada).
  */
 const mockPrisma = {
+  // authMiddleware relee de la BD el usuario, sus empresas y sus roles (modo-admin).
+  user: { findUnique: jest.fn() },
   chatSession: { findFirst: jest.fn(), create: jest.fn(), updateMany: jest.fn(), findMany: jest.fn(), count: jest.fn(), deleteMany: jest.fn() },
   chatMessage: { create: jest.fn(), findMany: jest.fn(), updateMany: jest.fn(), deleteMany: jest.fn() },
   carmenContador: { createMany: jest.fn(), findMany: jest.fn() },
@@ -36,6 +38,16 @@ const ruta = (empresa = 'E1') => `/companies/${empresa}/chat-assistant`;
 beforeEach(() => {
   jest.clearAllMocks();
   olvidarPurgas();
+  // Lo mismo que dice el token de U1: ventas en E1 y administrador en E2.
+  mockPrisma.user.findUnique.mockResolvedValue({
+    isActive: true,
+    isGlobalAdmin: false,
+    passwordHash: 'sal:hash',
+    memberships: [
+      { companyId: 'E1', role: 'ventas' },
+      { companyId: 'E2', role: 'admin' },
+    ],
+  });
   mockPrisma.chatSession.findFirst.mockResolvedValue(null);
   mockPrisma.chatSession.create.mockImplementation(async ({ data }: { data: { titulo: string } }) => ({ id: 'sesion-nueva', titulo: data.titulo, contexto: null, updatedAt: new Date() }));
   mockPrisma.chatSession.updateMany.mockResolvedValue({ count: 1 });

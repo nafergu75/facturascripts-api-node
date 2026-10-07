@@ -309,13 +309,14 @@ describe('cifras exactas con BD', () => {
     const antes = await prisma.modeloImpuesto.count({ where: { companyId: EMPRESA } });
     const servicio = await calendarioFiscalSoloLectura(EMPRESA, HOY);
     const caducados = servicio.filter((m) => m.estado === 'expirado');
-    // 2025: 4 trimestrales x 4 + 390, 347 y 200; 2026: 1T y 2T de los 4 trimestrales, menos el 303 del 2T presentado.
-    expect(caducados).toHaveLength(26);
+    // 2025: 4 trimestrales x 4 + 390, 347, 200 y 190 (anual de retenciones, de nominas);
+    // 2026: 1T y 2T de los 4 trimestrales, menos el 303 del 2T presentado.
+    expect(caducados).toHaveLength(27);
     const r = cifras(await ejecutar('INT-30'));
     expect(r.texto).toMatch(
-      /^Tienes 26 modelos con el plazo ya pasado que en la app no constan como presentados ni omitidos \(el más antiguo, el 111 del 1T de 2025\)\. El próximo es el 111 \(retenciones de trabajo y profesionales\) del 3T de 2026, hasta el 20\/10\/2026 \(quedan 13 días\)\./,
+      /^Tienes 27 modelos con el plazo ya pasado que en la app no constan como presentados ni omitidos \(el más antiguo, el 111 del 1T de 2025\)\. El próximo es el 111 \(retenciones de trabajo y profesionales\) del 3T de 2026, hasta el 20\/10\/2026 \(quedan 13 días\)\./,
     );
-    expect(r.kpis?.[0]).toEqual({ etiqueta: 'Plazo pasado sin presentar', valor: '26' });
+    expect(r.kpis?.[0]).toEqual({ etiqueta: 'Plazo pasado sin presentar', valor: '27' });
     expect(await prisma.modeloImpuesto.count({ where: { companyId: EMPRESA } })).toBe(antes);
   });
 });
