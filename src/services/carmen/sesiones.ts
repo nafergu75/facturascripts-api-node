@@ -8,7 +8,9 @@
  * respuesta tal como se dieron, y el usuario puede borrarlas. Lo caducado no se
  * enseña aunque siga en la BD (las lecturas filtran por fecha) y se borra en
  * lotes de 200: al usar Carmen o abrir su historial (como mucho cada 6 horas
- * por empresa y por instancia) y en la tarea diaria de Vercel Cron.
+ * por empresa y por instancia, hasta 5 lotes) y en la tarea diaria de Vercel
+ * Cron (todos los lotes que quepan en su tiempo; lo que quede, al día
+ * siguiente, y se avisa en el log).
  */
 import { Prisma } from '@prisma/client';
 import { prisma } from '../../config/database';
@@ -17,6 +19,8 @@ import { PERMISO_NOMINAS, PERMISO_NOMINAS_ANTIGUO, tiene } from './contexto';
 import { CONSERVAR_DIAS_DEFECTO, CONSERVAR_DIAS_MAX, CONSERVAR_DIAS_MIN } from './ajustes.service';
 import type { CarmenCtx, ContextoSesion, CuerpoRespuesta } from './tipos';
 import type { TurnoPrevio } from './llm';
+import { purgarContadores } from './presupuesto.service';
+import { logger } from '../../config/logger';
 
 export interface SesionCarmen {
   id: string;
@@ -26,8 +30,13 @@ export interface SesionCarmen {
 }
 
 const LOTE_PURGA = 200;
-/** Lotes por purga: lo que quede se borra en la siguiente. */
+/** Lotes por purga perezosa: lo que quede se borra en la siguiente. */
 const LOTES_POR_PURGA = 5;
+/**
+ * Tiempo de la purga diaria: repite lotes hasta acabar o hasta gastarlo. Por
+ * debajo de los 10 s de una función de Vercel sin configurar.
+ */
+const TIEMPO_PURGA_DIARIA_MS = 8_000;
 const CADA_PURGA_MS = 6 * 3600_000;
 const SESIONES_POR_PAGINA = 20;
 export const TEXTO_OCULTO = 'Respuesta oculta: ya no tienes acceso a este dato.';
@@ -212,20 +221,39 @@ export async function valorarMensaje(ctx: Pick<CarmenCtx, 'companyId' | 'userId'
 
 const ultimaPurga = new Map<string, number>();
 
+/** Hasta dónde puede seguir una purga: un número de lotes (la perezosa) o una hora (la diaria). */
+type Plazo = { lotes: number } | { hasta: number };
+
+interface ResultadoPurga {
+  borrados: number;
+  /** Queda algo por borrar (se acabaron los lotes o el tiempo). */
+  pendiente: boolean;
+}
+
 /**
  * Borra mensajes y conversaciones anteriores a `limite`, en lotes. Sin
  * `companyId`, de todas las empresas (la tarea diaria).
  */
-async function purgarAntesDe(limite: Date, companyId?: string): Promise<number> {
+async function purgarAntesDe(limite: Date, companyId: string | undefined, plazo: Plazo): Promise<ResultadoPurga> {
   const deEmpresa = companyId ? { companyId } : {};
+  const sigue = (lote: number) => ('lotes' in plazo ? lote < plazo.lotes : Date.now() < plazo.hasta);
   let borrados = 0;
-  for (let lote = 0; lote < LOTES_POR_PURGA; lote++) {
+  let pendiente = false;
+  for (let lote = 0; ; lote++) {
+    if (!sigue(lote)) {
+      pendiente = true;
+      break;
+    }
     const viejos = await prisma.chatMessage.findMany({ where: { ...deEmpresa, createdAt: { lt: limite } }, select: { id: true }, take: LOTE_PURGA });
     if (!viejos.length) break;
     borrados += (await prisma.chatMessage.deleteMany({ where: { id: { in: viejos.map((m) => m.id) } } })).count;
     if (viejos.length < LOTE_PURGA) break;
   }
-  for (let lote = 0; lote < LOTES_POR_PURGA; lote++) {
+  for (let lote = 0; ; lote++) {
+    if (!sigue(lote)) {
+      pendiente = true;
+      break;
+    }
     const sesiones = await prisma.chatSession.findMany({ where: { ...deEmpresa, updatedAt: { lt: limite } }, select: { id: true }, take: LOTE_PURGA });
     if (!sesiones.length) break;
     const ids = sesiones.map((s) => s.id);
@@ -233,12 +261,12 @@ async function purgarAntesDe(limite: Date, companyId?: string): Promise<number> 
     await prisma.chatSession.deleteMany({ where: { id: { in: ids } } });
     if (sesiones.length < LOTE_PURGA) break;
   }
-  return borrados;
+  return { borrados, pendiente };
 }
 
 /** Borra los mensajes y las conversaciones de la empresa más antiguos que `conservarDias`. */
 export async function purgarCaducadas(companyId: string, conservarDias: number, ahora: Date = new Date()): Promise<number> {
-  return purgarAntesDe(limiteConservacion(conservarDias, ahora), companyId);
+  return (await purgarAntesDe(limiteConservacion(conservarDias, ahora), companyId, { lotes: LOTES_POR_PURGA })).borrados;
 }
 
 /** Purga perezosa: como mucho una vez cada 6 horas por empresa y por instancia. */
@@ -251,14 +279,24 @@ export async function purgarSiToca(companyId: string, conservarDias: number): Pr
 }
 
 /**
- * Tarea diaria (Vercel Cron): lo de más de 90 días de todas las empresas, y lo
- * de las empresas que guardan menos días según sus ajustes. No depende de que
- * alguien de la empresa vuelva a usar Carmen.
+ * Tarea diaria (Vercel Cron): lo de más de 90 días de todas las empresas, lo
+ * de las empresas que guardan menos días según sus ajustes y los contadores y
+ * la auditoría de la IA viejos (purgarContadores). No depende de que alguien
+ * de la empresa vuelva a usar Carmen. Repite lotes mientras le quede tiempo.
  */
-export async function purgarTodas(ahora: Date = new Date()): Promise<number> {
-  let borrados = await purgarAntesDe(limiteConservacion(CONSERVAR_DIAS_MAX, ahora));
+export async function purgarTodas(ahora: Date = new Date(), tiempoMs: number = TIEMPO_PURGA_DIARIA_MS): Promise<number> {
+  const plazo = { hasta: Date.now() + tiempoMs };
+  const general = await purgarAntesDe(limiteConservacion(CONSERVAR_DIAS_MAX, ahora), undefined, plazo);
+  let borrados = general.borrados;
+  let pendiente = general.pendiente;
   const conMenos = await prisma.carmenAjustes.findMany({ where: { conservarDias: { lt: CONSERVAR_DIAS_MAX } }, select: { companyId: true, conservarDias: true } });
-  for (const a of conMenos) borrados += await purgarCaducadas(a.companyId, Math.max(CONSERVAR_DIAS_MIN, a.conservarDias), ahora);
+  for (const a of conMenos) {
+    const r = await purgarAntesDe(limiteConservacion(Math.max(CONSERVAR_DIAS_MIN, a.conservarDias), ahora), a.companyId, plazo);
+    borrados += r.borrados;
+    pendiente ||= r.pendiente;
+  }
+  pendiente = (await purgarContadores(ahora, plazo.hasta)) || pendiente;
+  if (pendiente) logger.warn('carmen: la purga diaria no ha terminado a tiempo; sigue mañana (o en la purga al usar Carmen).');
   return borrados;
 }
 

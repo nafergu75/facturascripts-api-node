@@ -583,6 +583,7 @@ model ChatMessage {
 /// Claves: 'global:2026-10' (coste del mes), 'empresa:{id}:2026-10-07' y
 /// 'usuario:{id}:2026-10-07' (consultas a la IA y mensajes del dia),
 /// 'empresa:{id}:2026-10' (uso del mes, solo informativo).
+/// La purga diaria borra las diarias a los 40 dias y las mensuales a los 13 meses.
 model CarmenContador {
   clave         String   @id @db.VarChar(120)
   consultasIA   Int      @default(0)
@@ -593,6 +594,7 @@ model CarmenContador {
 }
 
 /// Auditoria de cada llamada a la IA. No guarda el texto de la pregunta.
+/// La purga diaria la borra a los 13 meses.
 model CarmenLlamadaIA {
   id                   String   @id @default(cuid())
   companyId            String

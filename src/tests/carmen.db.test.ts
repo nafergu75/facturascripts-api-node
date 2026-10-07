@@ -211,6 +211,48 @@ describe('caducidad de las conversaciones', () => {
   });
 });
 
+describe('purga diaria: sin tope de 1.000 mensajes, y también contadores y auditoría', () => {
+  it('borra todos los mensajes caducados aunque pasen de 5 lotes de 200, y se para si se acaba el tiempo', async () => {
+    const hace = (dias: number) => new Date(Date.now() - dias * 86_400_000);
+    const sesion = await prisma.chatSession.create({ data: { companyId: OTRA, userId: BEA.userId, titulo: 'muchos mensajes', updatedAt: hace(1) } });
+    const mensajes = (n: number) =>
+      prisma.chatMessage.createMany({
+        data: Array.from({ length: n }, (_, i) => ({ sessionId: sesion.id, companyId: OTRA, userId: BEA.userId, role: 'user', content: `m${i}`, createdAt: hace(120) })),
+      });
+    await mensajes(1100);
+    // Sin tiempo no borra nada (y lo deja para el día siguiente).
+    await purgarTodas(new Date(), 0);
+    expect(await prisma.chatMessage.count({ where: { sessionId: sesion.id } })).toBe(1100);
+    await purgarTodas();
+    expect(await prisma.chatMessage.count({ where: { sessionId: sesion.id } })).toBe(0);
+    await prisma.chatSession.delete({ where: { id: sesion.id } });
+  });
+
+  it('borra los contadores diarios de más de 40 días, los mensuales y la auditoría de más de 13 meses', async () => {
+    const hace = (dias: number) => new Date(Date.now() - dias * 86_400_000);
+    const k = (c: string) => `${c}-${SUF}`;
+    const filas: Array<[string, number]> = [
+      [`usuario:${k('u')}:2026-07-01`, 50], // diario viejo: fuera
+      [`empresa:${k('e')}:2026-07-01`, 50], // diario viejo: fuera
+      [`usuario:${k('u')}:2026-10-01`, 6], // diario reciente: se queda
+      [`empresa:${k('e')}:2026-07`, 50], // mensual de hace 50 días: se queda
+      [`global:${k('g')}:2025-06`, 420], // mensual de hace más de 13 meses: fuera
+    ];
+    for (const [clave, dias] of filas) {
+      await prisma.$executeRaw`INSERT INTO \`CarmenContador\` (\`clave\`, \`consultasIA\`, \`costeUsd\`, \`mensajes\`, \`actualizadoEn\`) VALUES (${clave}, 1, 0, 1, ${hace(dias)})`;
+    }
+    const vieja = await prisma.carmenLlamadaIA.create({ data: { companyId: OTRA, userId: BEA.userId, modelo: 'm', estado: 'ok', createdAt: hace(420) } });
+    const nueva = await prisma.carmenLlamadaIA.create({ data: { companyId: OTRA, userId: BEA.userId, modelo: 'm', estado: 'ok', createdAt: hace(10) } });
+    await purgarTodas();
+    const quedan = (await prisma.carmenContador.findMany({ where: { clave: { in: filas.map(([c]) => c) } }, select: { clave: true } })).map((f) => f.clave).sort();
+    expect(quedan).toEqual([`empresa:${k('e')}:2026-07`, `usuario:${k('u')}:2026-10-01`].sort());
+    expect(await prisma.carmenLlamadaIA.findUnique({ where: { id: vieja.id } })).toBeNull();
+    expect(await prisma.carmenLlamadaIA.findUnique({ where: { id: nueva.id } })).not.toBeNull();
+    await prisma.carmenContador.deleteMany({ where: { clave: { in: quedan } } });
+    await prisma.carmenLlamadaIA.delete({ where: { id: nueva.id } });
+  });
+});
+
 describe('ajustes', () => {
   it('la IA está desactivada por defecto; el tope propio solo puede bajar el general', async () => {
     expect(await leerAjustes(OTRA)).toMatchObject({ iaActiva: false, topeConsultasDia: null, conservarDias: 90 });

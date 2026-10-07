@@ -204,3 +204,35 @@ export function motivoSinIA(
   if (uso.consultasUsuarioHoy >= uso.topeUsuarioDia) return 'tope_usuario';
   return null;
 }
+
+// ---------- Limpieza de contadores y auditoría ----------
+
+/** Contadores diarios ('usuario:{id}:AAAA-MM-DD', 'empresa:{id}:AAAA-MM-DD'): bastan unos días tras el día. */
+export const DIAS_CONTADORES_DIARIOS = 40;
+/** Contadores mensuales ('global:AAAA-MM', 'empresa:{id}:AAAA-MM') y auditoría de la IA: 13 meses. */
+export const DIAS_CONTADORES_MENSUALES = 400;
+const LOTE_CONTADORES = 500;
+
+/**
+ * Borra los contadores y la auditoría de la IA viejos (purga diaria). Son un
+ * registro de qué usuario usó Carmen cada día: no se guardan para siempre.
+ * Por lotes (DELETE ... LIMIT) para no pasar del tamaño de transacción de TiDB.
+ * Devuelve true si se acabó el tiempo con algo pendiente.
+ */
+export async function purgarContadores(ahora: Date, hasta: number): Promise<boolean> {
+  const diarios = new Date(ahora.getTime() - DIAS_CONTADORES_DIARIOS * 86_400_000);
+  const mensuales = new Date(ahora.getTime() - DIAS_CONTADORES_MENSUALES * 86_400_000);
+  const borrar: Array<() => Promise<number>> = [
+    // Claves que acaban en ':AAAA-MM-DD' (en LIKE, '_' es un carácter cualquiera).
+    () => prisma.$executeRaw`DELETE FROM \`CarmenContador\` WHERE \`actualizadoEn\` < ${diarios} AND \`clave\` LIKE '%:____-__-__' LIMIT ${LOTE_CONTADORES}`,
+    () => prisma.$executeRaw`DELETE FROM \`CarmenContador\` WHERE \`actualizadoEn\` < ${mensuales} LIMIT ${LOTE_CONTADORES}`,
+    () => prisma.$executeRaw`DELETE FROM \`CarmenLlamadaIA\` WHERE \`createdAt\` < ${mensuales} LIMIT ${LOTE_CONTADORES}`,
+  ];
+  for (const paso of borrar) {
+    for (;;) {
+      if (Date.now() >= hasta) return true;
+      if ((await paso()) < LOTE_CONTADORES) break;
+    }
+  }
+  return false;
+}
