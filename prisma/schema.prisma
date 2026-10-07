@@ -511,6 +511,8 @@ model VATBook {
   tipoOperacion String?  @db.VarChar(24)
   /// E1..E6 (E2 exportacion y E5 intracomunitaria se derivan del tipo).
   causaExencion String?  @db.VarChar(2)
+  /// Solo RECIBIDAS: numero de la factura del proveedor. null = anterior (el numero es numeroFactura).
+  numeroFacturaEmisor String? @db.VarChar(60)
   createdAt     DateTime @default(now())
 
   // Un apunte por tipo de IVA: una factura 21% + 10% son dos filas.
@@ -692,7 +694,7 @@ model ExpenseInvoice {
   numeroCompleto   String // serie + numero formateado
   fechaEmision     String // YYYY-MM-DD
   fechaVencimiento String // YYYY-MM-DD
-  /// DRAFT | CONFIRMED | ACCOUNTED
+  /// DRAFT (del lector, asiento en borrador) | PENDING | OVERDUE | CONFIRMED (anteriores, sin contabilizar) | ACCOUNTED | ANULADA
   estado           String               @default("DRAFT")
   /// Tipo de gasto PGC: COMPRA | SERVICIO_PROFESIONAL | ALQUILER | SUMINISTROS
   tipoGasto        String               @default("COMPRA")
@@ -709,12 +711,30 @@ model ExpenseInvoice {
   /// Lo recalculan los pagos registrados (InvoicePayment GASTO).
   estadoPago       String               @default("PENDIENTE")
   observaciones    String?              @db.Text
+  /// Numero que puso el PROVEEDOR en su factura ("F2026/0012"). Obligatorio en
+  /// las altas nuevas; null en las anteriores. Va al libro de IVA de recibidas.
+  numeroFacturaProveedor String?  @db.VarChar(60)
+  /// Copia normalizada (mayusculas, sin espacios) mientras la factura NO esta
+  /// anulada; null si esta anulada o es anterior. Solo sirve para el indice
+  /// unico: el mismo numero del mismo proveedor no se registra dos veces, pero
+  /// una factura anulada se puede volver a registrar con su numero.
+  numeroProveedorActivo  String?  @db.VarChar(60)
+  /// Fecha de registro (AAAA-MM-DD): la del asiento, el libro de IVA y los
+  /// modelos si la factura se recibio tarde. null = fechaEmision.
+  fechaRegistro          String?
+  /// Anulacion: fecha (AAAA-MM-DD), motivo y contraasiento (null si se anulo
+  /// marcando el asiento REVERSED con el periodo abierto).
+  anuladaEn              String?
+  motivoAnulacion        String?  @db.Text
+  anulacionAsientoId     String?
   createdAt        DateTime             @default(now())
   updatedAt        DateTime             @updatedAt
   lineas           ExpenseInvoiceLine[]
   supplier         Supplier             @relation(fields: [supplierId], references: [id], onDelete: Restrict)
 
   @@unique([companyId, serie, numero])
+  // El mismo numero del mismo proveedor no se registra dos veces (las anuladas no cuentan: null).
+  @@unique([companyId, supplierId, numeroProveedorActivo])
   // Unico DENTRO de cada empresa: antes era unico en toda la BD, y dos empresas
   // no podian tener cada una su factura 2026-1.
   @@unique([companyId, numeroCompleto])
