@@ -224,10 +224,23 @@ export async function anularDocumentoNominas(companyId: string, id: string): Pro
   if (d.estado === 'activo') await borrarFichero(d.archivoPath);
 }
 
+/**
+ * Tope de lo que se mete en un ZIP. El ZIP se monta en memoria y viaja en una
+ * sola respuesta: en Vercel una funcion no puede devolver mas de unos 4,5 MB, y
+ * los PDF apenas se comprimen.
+ */
+export const ZIP_NOMINAS_MAX_BYTES = 4 * 1024 * 1024;
+
 /** ZIP de los documentos de nominas de un ejercicio, trimestre o mes: <MM>/<nominas|seguros-sociales>/<fichero>. */
 export async function zipDocumentosNominas(companyId: string, filtro: { ejercicio: number; mes?: number; trimestre?: number }): Promise<{ nombre: string; contenido: Buffer }> {
   const docs = await listarDocumentosNominas(companyId, filtro);
   if (!docs.length) throw notFound('No hay documentos de nóminas en ese periodo.');
+  const total = docs.reduce((a, d) => a + (d.archivoTamanio || 0), 0);
+  if (total > ZIP_NOMINAS_MAX_BYTES) {
+    throw badRequest(
+      `Hay demasiados documentos para un solo ZIP (${(total / 1024 / 1024).toFixed(1).replace('.', ',')} MB; el máximo son 4 MB): descárgalos por mes o uno a uno.`,
+    );
+  }
   const filas = await prisma.documentoArchivo.findMany({ where: { id: { in: docs.map((d) => d.id) }, companyId }, select: { id: true, archivoPath: true } });
   const rutas = new Map(filas.map((f) => [f.id, f.archivoPath]));
   const entradas: ZipEntry[] = [];

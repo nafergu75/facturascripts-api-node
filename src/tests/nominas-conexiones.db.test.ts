@@ -398,3 +398,32 @@ describe('empresa no establecida en Espana: Nominas no le pide el 111 (como Impu
     expect((await sugerenciasMovimiento(COMPANY_US, mov.id)).sugerencias).toEqual([]);
   });
 });
+
+describe('ZIP de los PDF de nominas', () => {
+  it('por encima de 4 MB da 400 antes de leer los ficheros (Vercel no devuelve respuestas tan grandes)', async () => {
+    const COMPANY_ZIP = `nomzip-test-${Date.now()}`;
+    await prisma.company.create({ data: { id: COMPANY_ZIP, name: `Empresa ${COMPANY_ZIP}`, fsBaseUrl: 'http://localhost:8080', fsApiKeyEnc: 'k' } });
+    for (const n of [1, 2]) {
+      await prisma.documentoArchivo.create({
+        data: {
+          companyId: COMPANY_ZIP,
+          tipo: 'seguros_sociales',
+          fecha: '2026-03-31',
+          mes: 3,
+          trimestre: 1,
+          anio: 2026,
+          archivoNombre: `rlc${n}.pdf`,
+          archivoTipo: 'application/pdf',
+          archivoTamanio: 3 * 1024 * 1024,
+          archivoPath: `nominas/${COMPANY_ZIP}/no-existe-${n}.pdf`,
+          archivoHash: `hash-${COMPANY_ZIP}-${n}`,
+          observaciones: 'RLC',
+        },
+      });
+    }
+    await expect(zipDocumentosNominas(COMPANY_ZIP, { ejercicio: 2026, mes: 3 })).rejects.toMatchObject({
+      statusCode: 400,
+      message: expect.stringMatching(/descárgalos por mes o uno a uno/),
+    });
+  });
+});
