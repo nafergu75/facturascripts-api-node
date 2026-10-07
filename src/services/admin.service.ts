@@ -1,7 +1,25 @@
 import { Prisma, Role } from '@prisma/client';
 import { prisma } from '../config/database';
-import { hashPassword } from '../utils/password';
-import { AccesoEmpresa, EmpresaAdmin, UsuarioAdmin } from '../domain/admin.model';
+import { generarContrasenaProvisional, hashPassword } from '../utils/password';
+import {
+  AccesoAsignado,
+  AccesoEmpresa,
+  CatalogoPermisos,
+  EmpresaAdmin,
+  UsuarioAdmin,
+  UsuarioConContrasena,
+} from '../domain/admin.model';
+import {
+  AREAS,
+  NIVELES,
+  areasDePerfil,
+  areasDePermisos,
+  canonizarParaGuardar,
+  esquemaAreas,
+  leerPersonalizados,
+  permisosDeAcceso,
+  type Areas,
+} from './rbac.service';
 import { HttpError, badRequest, conflict, notFound } from '../utils/http-errors';
 import { validarNifEspanol } from '../utils/nif';
 import { problemaCodigoPostal } from '../utils/geografia';
@@ -377,8 +395,13 @@ type UsuarioConAccesos = {
   email: string;
   isActive: boolean;
   isGlobalAdmin: boolean;
+  debeCambiarContrasena: boolean;
   createdAt: Date;
-  memberships: Array<{ role: Role; company: { id: string; name: string; codigo: string | null; isActive: boolean } }>;
+  memberships: Array<{
+    role: Role;
+    permisosPersonalizados: Prisma.JsonValue | null;
+    company: { id: string; name: string; codigo: string | null; isActive: boolean };
+  }>;
 };
 
 /** Campos que se leen de un usuario: NUNCA el hash de la contrasena. */
@@ -387,15 +410,34 @@ const SELECT_USUARIO = {
   email: true,
   isActive: true,
   isGlobalAdmin: true,
+  debeCambiarContrasena: true,
   createdAt: true,
-  memberships: { select: { role: true, company: { select: { id: true, name: true, codigo: true, isActive: true } } } },
+  memberships: {
+    select: { role: true, permisosPersonalizados: true, company: { select: { id: true, name: true, codigo: true, isActive: true } } },
+  },
 } as const;
+
+/** ¿Acceso personalizado? Nunca con el perfil Administrador. */
+function esPersonalizado(acceso: { role: unknown; permisosPersonalizados?: unknown }): boolean {
+  return String(acceso.role) !== 'admin' && leerPersonalizados(acceso.permisosPersonalizados) !== null;
+}
+
+/**
+ * Areas que da un acceso por si mismo (sin contar el modo admin global: el
+ * usuario ya trae esAdminGlobal para que el panel lo explique). null con el
+ * perfil Administrador ("todo").
+ */
+function areasDeAcceso(acceso: { role: unknown; permisosPersonalizados?: unknown }): Areas | null {
+  if (String(acceso.role) === 'admin') return null;
+  return areasDePermisos(permisosDeAcceso(acceso, false));
+}
 
 const aUsuarioAdmin = (u: UsuarioConAccesos): UsuarioAdmin => ({
   id: u.id,
   email: u.email,
   activo: u.isActive,
   esAdminGlobal: u.isGlobalAdmin,
+  debeCambiarContrasena: u.debeCambiarContrasena === true,
   creadoEn: u.createdAt.toISOString(),
   empresas: u.memberships
     .map(
@@ -405,10 +447,57 @@ const aUsuarioAdmin = (u: UsuarioConAccesos): UsuarioAdmin => ({
         codigo: m.company.codigo,
         activa: m.company.isActive,
         rol: String(m.role),
+        personalizado: esPersonalizado(m),
+        areas: areasDeAcceso(m),
       }),
     )
     .sort((a, b) => a.nombre.localeCompare(b.nombre, 'es')),
 });
+
+/** Nombres de pantalla de los perfiles, en el orden del selector. */
+const NOMBRE_PERFIL: Record<RolEmpresa, string> = {
+  admin: 'Administrador',
+  contable: 'Contable',
+  ventas: 'Ventas',
+  solo_lectura: 'Solo lectura',
+};
+
+/**
+ * Catalogo de la matriz de permisos para el panel. Las areas de cada perfil se
+ * calculan con areasDePerfil (nunca escritas a mano): si cambia un perfil en
+ * rbac.service, el panel lo ve.
+ */
+export function catalogoPermisos(): CatalogoPermisos {
+  return {
+    areas: AREAS.map(({ clave, nombre, descripcion }) => ({ clave, nombre, descripcion })),
+    niveles: NIVELES,
+    perfiles: ROLES_VALIDOS.map((rol) =>
+      rol === 'admin'
+        ? {
+            rol,
+            nombre: NOMBRE_PERFIL[rol],
+            todo: true,
+            areas: null,
+            descripcion: 'Puede hacer todo en la empresa, también cambiar sus plantillas y los ajustes de Carmen y del lector.',
+          }
+        : { rol, nombre: NOMBRE_PERFIL[rol], todo: false, areas: areasDePerfil(rol) },
+    ),
+  };
+}
+
+/**
+ * Lee el campo `areas` del cuerpo: null si no viene (o viene null = "los del
+ * perfil"); si viene, tienen que ser las 6 areas con un nivel valido cada una.
+ */
+export function leerAreas(valor: unknown): Areas | null {
+  if (valor === undefined || valor === null) return null;
+  const r = esquemaAreas.safeParse(valor);
+  if (!r.success) throw badRequest('Las áreas no son válidas.', { campo: 'areas' });
+  return r.data;
+}
+
+/** Lo que hay en la columna para comparar (null = perfil). */
+const columnaComparable = (valor: unknown): string => JSON.stringify(valor ?? null);
 
 export async function listarUsuarios(): Promise<UsuarioAdmin[]> {
   const usuarios = await prisma.user.findMany({ orderBy: { email: 'asc' }, select: SELECT_USUARIO });
@@ -417,21 +506,37 @@ export async function listarUsuarios(): Promise<UsuarioAdmin[]> {
 
 /**
  * Crea un usuario con su contrasena inicial (hasheada con scrypt, utils/password)
- * y, si se indica, le da acceso a una empresa con un rol (por defecto, solo lectura).
+ * y, si se indica, le da acceso a una empresa con un rol (por defecto, solo
+ * lectura) y, si se quiere, permisos a medida (`areas`).
+ *
+ * La contrasena inicial es siempre PROVISIONAL (debeCambiarContrasena): la
+ * conoce el administrador y el usuario tiene que poner una suya al entrar.
+ * - Con `generarSiFalta` (solo /admin/usuarios): si no viene, la genera el
+ *   servidor y la devuelve UNA vez en `contrasenaProvisional`.
+ * - Sin la opcion (POST /users, que no la devolveria): es obligatoria.
+ * - Si la escribe el administrador, no se devuelve.
  */
-export async function crearUsuario(datos: {
-  email: unknown;
-  password: unknown;
-  esAdminGlobal?: unknown;
-  companyId?: unknown;
-  rol?: unknown;
-}): Promise<UsuarioAdmin> {
+export async function crearUsuario(
+  datos: {
+    email: unknown;
+    password: unknown;
+    esAdminGlobal?: unknown;
+    companyId?: unknown;
+    rol?: unknown;
+    areas?: unknown;
+  },
+  opciones: { generarSiFalta?: boolean } = {},
+): Promise<UsuarioConContrasena> {
   const email = normalizarEmail(datos.email);
-  const password = validarContrasena(datos.password, email);
+  const generar = opciones.generarSiFalta === true && (datos.password === undefined || datos.password === null || datos.password === '');
+  const password = generar ? generarContrasenaProvisional() : validarContrasena(datos.password, email);
   const esAdminGlobal = leerBooleano(datos.esAdminGlobal, 'esAdminGlobal') ?? false;
   const companyId = typeof datos.companyId === 'string' && datos.companyId.trim() ? datos.companyId.trim() : null;
   if (datos.rol !== undefined && datos.rol !== '' && !companyId) throw badRequest('Para dar un rol hay que elegir también la empresa.');
   const rol = companyId ? normalizarRol(datos.rol === undefined || datos.rol === '' ? 'solo_lectura' : datos.rol) : null;
+  const areas = leerAreas(datos.areas);
+  if (areas && !companyId) throw badRequest('Para ajustar permisos hay que elegir también la empresa.', { campo: 'areas' });
+  const personalizados = rol ? canonizarParaGuardar(rol, areas) : null;
 
   if (await prisma.user.findUnique({ where: { email }, select: { id: true } })) {
     throw conflict(`Ya existe un usuario con el email ${email}.`);
@@ -443,26 +548,40 @@ export async function crearUsuario(datos: {
   try {
     const u = await prisma.$transaction(async (tx) => {
       const creado = await tx.user.create({
-        data: { email, passwordHash: hashPassword(password), isActive: true, isGlobalAdmin: esAdminGlobal },
+        data: { email, passwordHash: hashPassword(password), isActive: true, isGlobalAdmin: esAdminGlobal, debeCambiarContrasena: true },
         select: { id: true },
       });
-      if (companyId && rol) await tx.membership.create({ data: { userId: creado.id, companyId, role: rol as Role } });
+      if (companyId && rol) {
+        await tx.membership.create({
+          data: { userId: creado.id, companyId, role: rol as Role, permisosPersonalizados: personalizados ?? Prisma.DbNull },
+        });
+      }
       return tx.user.findUniqueOrThrow({ where: { id: creado.id }, select: SELECT_USUARIO });
     });
-    return aUsuarioAdmin(u);
+    const usuario: UsuarioConContrasena = aUsuarioAdmin(u);
+    if (generar) usuario.contrasenaProvisional = password;
+    return usuario;
   } catch (e) {
     if (esDuplicado(e)) throw conflict(`Ya existe un usuario con el email ${email}.`);
     throw e;
   }
 }
 
-/** Da acceso a una empresa o cambia el rol que ya tenia (upsert de la membresia). */
-export async function asignarRol(
-  userId: string,
-  companyId: string,
-  rolPedido: unknown,
-): Promise<{ rol: RolEmpresa; rolAnterior: string | null }> {
+/**
+ * Da acceso a una empresa o lo cambia: SUSTITUCION COMPLETA del acceso (rol y
+ * permisos a medida). `areas` ausente o null = los del perfil ("Volver al
+ * perfil"); si coinciden con el perfil tambien se guarda NULL. Con el perfil
+ * Administrador la columna queda siempre NULL.
+ *
+ * Leer lo anterior, decidir si hay cambio y escribir van en una transaccion:
+ * si dos administradores guardan a la vez gana el ultimo, y lo que devuelve
+ * cada uno (y su auditoria) es lo que habia justo antes de su escritura. Si no
+ * cambia nada no se escribe (cambiado: false).
+ */
+export async function asignarRol(userId: string, companyId: string, rolPedido: unknown, areasPedidas?: unknown): Promise<AccesoAsignado> {
   const rol = normalizarRol(rolPedido);
+  const areas = leerAreas(areasPedidas);
+  const personalizados = canonizarParaGuardar(rol, areas);
   const [usuario, empresa] = await Promise.all([
     prisma.user.findUnique({ where: { id: userId }, select: { id: true } }),
     prisma.company.findUnique({ where: { id: companyId }, select: { id: true } }),
@@ -470,33 +589,55 @@ export async function asignarRol(
   if (!usuario) throw notFound('Usuario no encontrado.');
   if (!empresa) throw notFound('Empresa no encontrada.');
 
-  const anterior = await prisma.membership.findUnique({
-    where: { userId_companyId: { userId, companyId } },
-    select: { role: true },
+  const nuevo = { role: rol, permisosPersonalizados: personalizados };
+  return prisma.$transaction(async (tx) => {
+    const anterior = await tx.membership.findUnique({
+      where: { userId_companyId: { userId, companyId } },
+      select: { role: true, permisosPersonalizados: true },
+    });
+    // Se compara la columna tal cual: un valor manipulado a mano se limpia al guardar.
+    const cambiado =
+      !anterior || String(anterior.role) !== rol || columnaComparable(anterior.permisosPersonalizados) !== columnaComparable(personalizados);
+    if (cambiado) {
+      const columna = personalizados ?? Prisma.DbNull;
+      await tx.membership.upsert({
+        where: { userId_companyId: { userId, companyId } },
+        update: { role: rol as Role, permisosPersonalizados: columna },
+        create: { userId, companyId, role: rol as Role, permisosPersonalizados: columna },
+      });
+    }
+    return {
+      rol,
+      rolAnterior: anterior ? String(anterior.role) : null,
+      personalizado: esPersonalizado(nuevo),
+      personalizadoAntes: anterior ? esPersonalizado(anterior) : false,
+      areas: areasDeAcceso(nuevo),
+      areasAnteriores: anterior ? areasDeAcceso(anterior) : null,
+      cambiado,
+    };
   });
-  await prisma.membership.upsert({
-    where: { userId_companyId: { userId, companyId } },
-    update: { role: rol as Role },
-    create: { userId, companyId, role: rol as Role },
-  });
-  return { rol, rolAnterior: anterior ? String(anterior.role) : null };
 }
 
 /** Quita el acceso de un usuario a una empresa. Sus datos y los de la empresa no se tocan. */
-export async function quitarAcceso(userId: string, companyId: string): Promise<{ rolAnterior: string }> {
+export async function quitarAcceso(userId: string, companyId: string): Promise<{ rolAnterior: string; personalizadoAntes: boolean }> {
   const m = await prisma.membership.findUnique({
     where: { userId_companyId: { userId, companyId } },
-    select: { id: true, role: true },
+    select: { id: true, role: true, permisosPersonalizados: true },
   });
   if (!m) throw notFound('Ese usuario no tiene acceso a esa empresa.');
   await prisma.membership.delete({ where: { id: m.id } });
-  return { rolAnterior: String(m.role) };
+  return { rolAnterior: String(m.role), personalizadoAntes: esPersonalizado(m) };
 }
 
+/** Lo que cambio en un usuario (para la auditoria). NUNCA la contrasena. */
 export interface CambiosUsuario {
   activo?: boolean;
   esAdminGlobal?: boolean;
   contrasenaRestablecida?: boolean;
+  /** La nueva es provisional (la de OTRO usuario): tendra que cambiarla al entrar. */
+  contrasenaProvisional?: boolean;
+  /** La genero el servidor (restablecerContrasena). */
+  contrasenaGenerada?: boolean;
 }
 
 /**
@@ -504,6 +645,12 @@ export interface CambiosUsuario {
  * contrasena de un usuario. Todo surte efecto en su siguiente peticion
  * (authMiddleware mira la BD): desactivarlo o cambiarle la contrasena cierra
  * las sesiones que tuviera abiertas.
+ *
+ * Contrasena de OTRO usuario: queda provisional (tendra que poner una suya al
+ * entrar). Con `restablecerContrasena: true` la genera el servidor y se
+ * devuelve una vez en `contrasenaProvisional`; con `nuevaContrasena` la escribe
+ * el administrador y no se devuelve. La propia no es provisional, y la
+ * generada no se puede pedir para uno mismo (se cambia en "Cambiar contrasena").
  *
  * Protecciones:
  * - Nadie se desactiva ni se quita el modo administrador a si mismo (se
@@ -516,21 +663,29 @@ export interface CambiosUsuario {
 export async function actualizarUsuario(
   actorId: string,
   userId: string,
-  datos: { activo?: unknown; esAdminGlobal?: unknown; nuevaContrasena?: unknown },
-): Promise<{ usuario: UsuarioAdmin; cambios: CambiosUsuario }> {
+  datos: { activo?: unknown; esAdminGlobal?: unknown; nuevaContrasena?: unknown; restablecerContrasena?: unknown },
+): Promise<{ usuario: UsuarioAdmin; cambios: CambiosUsuario; contrasenaProvisional?: string }> {
   const activo = leerBooleano(datos.activo, 'activo');
   const esAdminGlobal = leerBooleano(datos.esAdminGlobal, 'esAdminGlobal');
+  const restablecer = leerBooleano(datos.restablecerContrasena, 'restablecerContrasena') === true;
   const hayContrasena = datos.nuevaContrasena !== undefined && datos.nuevaContrasena !== '';
-  if (activo === undefined && esAdminGlobal === undefined && !hayContrasena) {
-    throw badRequest('No hay nada que cambiar: envía activo, esAdminGlobal o nuevaContrasena.');
+  if (activo === undefined && esAdminGlobal === undefined && !hayContrasena && !restablecer) {
+    throw badRequest('No hay nada que cambiar: envía activo, esAdminGlobal, nuevaContrasena o restablecerContrasena.');
   }
+  if (restablecer && hayContrasena) {
+    throw badRequest('Elige una de las dos: generar una contraseña provisional o escribirla.');
+  }
+  if (restablecer && userId === actorId) throw badRequest('Tu propia contraseña cámbiala en «Cambiar contraseña».');
   if (userId === actorId && activo === false) throw badRequest('No puedes desactivar tu propio usuario.');
   if (userId === actorId && esAdminGlobal === false) {
     throw badRequest('No puedes quitarte a ti mismo el modo administrador. Pídeselo a otro administrador global.');
   }
-  // Se valida y se hashea fuera de la transaccion (scrypt tarda): no retiene el bloqueo.
-  const nuevaContrasena = hayContrasena ? validarContrasena(datos.nuevaContrasena) : null;
+  // Se genera, se valida y se hashea fuera de la transaccion (scrypt tarda): no retiene el bloqueo.
+  const generada = restablecer ? generarContrasenaProvisional() : null;
+  const nuevaContrasena = hayContrasena ? validarContrasena(datos.nuevaContrasena) : generada;
   const nuevoHash = nuevaContrasena ? hashPassword(nuevaContrasena) : null;
+  // La de otro usuario la conoce quien la pone: provisional. La propia, no.
+  const provisional = userId !== actorId;
 
   return prisma.$transaction(async (tx) => {
     const objetivo = await tx.user.findUnique({
@@ -549,19 +704,22 @@ export async function actualizarUsuario(
       );
     }
 
-    const data: { isActive?: boolean; isGlobalAdmin?: boolean; passwordHash?: string } = {};
+    const data: { isActive?: boolean; isGlobalAdmin?: boolean; passwordHash?: string; debeCambiarContrasena?: boolean } = {};
     const cambios: CambiosUsuario = {};
     if (activo !== undefined && activo !== objetivo.isActive) data.isActive = cambios.activo = activo;
     if (esAdminGlobal !== undefined && esAdminGlobal !== objetivo.isGlobalAdmin) data.isGlobalAdmin = cambios.esAdminGlobal = esAdminGlobal;
     if (nuevaContrasena && nuevoHash) {
       validarContrasena(nuevaContrasena, objetivo.email); // que no sea su propio email
       data.passwordHash = nuevoHash;
+      data.debeCambiarContrasena = provisional;
       cambios.contrasenaRestablecida = true;
+      cambios.contrasenaProvisional = provisional;
+      if (generada) cambios.contrasenaGenerada = true;
     }
 
     const u = Object.keys(data).length
       ? await tx.user.update({ where: { id: userId }, data, select: SELECT_USUARIO })
       : await tx.user.findUniqueOrThrow({ where: { id: userId }, select: SELECT_USUARIO });
-    return { usuario: aUsuarioAdmin(u), cambios };
+    return { usuario: aUsuarioAdmin(u), cambios, ...(generada ? { contrasenaProvisional: generada } : {}) };
   });
 }

@@ -35,6 +35,8 @@ const SUFIJO = `${Date.now()}${randomBytes(3).toString('hex')}`;
 const nuevaContrasena = () => randomBytes(18).toString('base64url');
 const CONTRASENA = nuevaContrasena();
 const NUEVA = nuevaContrasena();
+/** La que pone el propio usuario al cambiar la provisional que le dio el administrador. */
+const NUEVA_PROPIA = nuevaContrasena();
 
 let adminA: { id: string; email: string };
 let tokenA: string;
@@ -278,8 +280,10 @@ describeBd('modo administrador global (BD real)', () => {
         rol: 'contable',
       });
       expect(res.status).toBe(201);
-      expect(res.body.data).toMatchObject({ email: emailUsuario, activo: true, esAdminGlobal: false });
+      expect(res.body.data).toMatchObject({ email: emailUsuario, activo: true, esAdminGlobal: false, debeCambiarContrasena: true });
       expect(res.body.data.empresas).toEqual([expect.objectContaining({ companyId: empresaId, rol: 'contable' })]);
+      // La escribio el administrador: no se repite en la respuesta.
+      expect(res.body.data.contrasenaProvisional).toBeUndefined();
       expect(JSON.stringify(res.body)).not.toMatch(/passwordHash/);
       expect(JSON.stringify(res.body)).not.toContain(CONTRASENA);
       usuarioId = res.body.data.id;
@@ -288,6 +292,8 @@ describeBd('modo administrador global (BD real)', () => {
       // Puede entrar con la contrasena inicial y ve la empresa.
       const login = await authService.login({ email: emailUsuario, password: CONTRASENA });
       expect(login.user.companies).toContain(empresaId);
+      // ...pero es provisional: tendra que poner una suya antes de nada.
+      expect(login.user.debeCambiarContrasena).toBe(true);
     });
 
     it('valida email, contrasena, rol, empresa y duplicados', async () => {
@@ -335,10 +341,17 @@ describeBd('modo administrador global (BD real)', () => {
       expect((await como(tokenA).patch(`/admin/usuarios/${usuarioId}`, { nuevaContrasena: 'corta' })).status).toBe(400);
       expect((await como(tokenA).patch(`/admin/usuarios/${usuarioId}`, { nuevaContrasena: nueva })).status).toBe(200);
       await expect(authService.login({ email: emailUsuario, password: CONTRASENA })).rejects.toMatchObject({ statusCode: 401 });
-      await expect(authService.login({ email: emailUsuario, password: nueva })).resolves.toBeDefined();
+      const conProvisional = await authService.login({ email: emailUsuario, password: nueva });
+      expect(conProvisional.user.debeCambiarContrasena).toBe(true);
+
+      // El usuario pone la suya: el administrador no la conoce.
+      const cambio = await como(conProvisional.token).post('/auth/cambiar-contrasena', { actual: nueva, nueva: NUEVA_PROPIA });
+      expect(cambio.status).toBe(200);
+      expect(cambio.body.data.user.debeCambiarContrasena).toBe(false);
+      await expect(authService.login({ email: emailUsuario, password: nueva })).rejects.toMatchObject({ statusCode: 401 });
 
       expect((await como(tokenA).patch(`/admin/usuarios/${usuarioId}`, { activo: false })).body.data.activo).toBe(false);
-      await expect(authService.login({ email: emailUsuario, password: nueva })).rejects.toMatchObject({ statusCode: 401 });
+      await expect(authService.login({ email: emailUsuario, password: NUEVA_PROPIA })).rejects.toMatchObject({ statusCode: 401 });
       expect((await como(tokenA).patch(`/admin/usuarios/${usuarioId}`, { activo: true })).body.data.activo).toBe(true);
       expect((await como(tokenA).patch(`/admin/usuarios/${usuarioId}`, {})).status).toBe(400);
     });
@@ -349,14 +362,19 @@ describeBd('modo administrador global (BD real)', () => {
       for (const a of ['CREATE_EMPRESA', 'UPDATE_EMPRESA', 'CREATE_USUARIO', 'CAMBIAR_ROL_EMPRESA', 'QUITAR_USUARIO_EMPRESA', 'ASIGNAR_USUARIO_EMPRESA', 'UPDATE_USUARIO']) {
         expect(acciones).toContain(a);
       }
-      expect(JSON.stringify(logs)).not.toContain(CONTRASENA);
-      expect(JSON.stringify(logs)).not.toContain(NUEVA);
+      // El cambio de la propia la registra el propio usuario.
+      const propios = await prisma.auditLog.findMany({ where: { userId: usuarioId } });
+      expect(propios.map((l) => l.action)).toContain('CAMBIAR_CONTRASENA_PROPIA');
+      const todo = JSON.stringify([...logs, ...propios]);
+      expect(todo).not.toContain(CONTRASENA);
+      expect(todo).not.toContain(NUEVA);
+      expect(todo).not.toContain(NUEVA_PROPIA);
     });
   });
 
   describe('Sesiones abiertas: los cambios surten efecto sin esperar a que caduque el token', () => {
     it('quitar el acceso a una empresa se la cierra al momento; darlo, se la abre', async () => {
-      const { token } = await authService.login({ email: emailUsuario, password: NUEVA });
+      const { token } = await authService.login({ email: emailUsuario, password: NUEVA_PROPIA });
       expect((await como(token).get(`/companies/${empresaId}`)).status).toBe(200);
 
       expect((await como(tokenA).delete(`/admin/usuarios/${usuarioId}/empresas/${empresaId}`)).status).toBe(200);
@@ -367,15 +385,22 @@ describeBd('modo administrador global (BD real)', () => {
     });
 
     it('restablecer la contrasena cierra sus sesiones, tambien la renovacion con el refresh token', async () => {
-      const login = await authService.login({ email: emailUsuario, password: NUEVA });
+      const login = await authService.login({ email: emailUsuario, password: NUEVA_PROPIA });
       const otra = nuevaContrasena();
       expect((await como(tokenA).patch(`/admin/usuarios/${usuarioId}`, { nuevaContrasena: otra })).status).toBe(200);
       expect((await como(login.token).get(`/companies/${empresaId}`)).status).toBe(401);
       await expect(authService.refresh(login.refreshToken)).rejects.toMatchObject({ statusCode: 401 });
 
-      // Con la contrasena nueva entra sin problema.
+      // Con la contrasena nueva entra, pero es provisional: hasta poner una suya, nada.
       const otraVez = await authService.login({ email: emailUsuario, password: otra });
-      expect((await como(otraVez.token).get(`/companies/${empresaId}`)).status).toBe(200);
+      const bloqueado = await como(otraVez.token).get(`/companies/${empresaId}`);
+      expect(bloqueado.status).toBe(403);
+      expect(bloqueado.body.details).toEqual({ codigo: 'CAMBIO_CONTRASENA_OBLIGATORIO' });
+
+      const propia = nuevaContrasena();
+      const cambio = await como(otraVez.token).post('/auth/cambiar-contrasena', { actual: otra, nueva: propia });
+      expect(cambio.status).toBe(200);
+      expect((await como(cambio.body.data.token).get(`/companies/${empresaId}`)).status).toBe(200);
     });
 
     it('desactivarlo le echa al momento', async () => {
@@ -401,7 +426,12 @@ describeBd('modo administrador global (BD real)', () => {
       expect(b.status).toBe(201);
       const idB = b.body.data.id as string;
       usuariosCreados.push(idB);
-      const tokenB = tokenDe(idB, b.body.data.email, { esAdminGlobal: true });
+      expect(b.body.data.debeCambiarContrasena).toBe(true);
+      // B nace con contrasena provisional: entra, pone la suya y sigue con el token nuevo.
+      const loginB = await authService.login({ email: b.body.data.email, password: CONTRASENA });
+      const cambioB = await como(loginB.token).post('/auth/cambiar-contrasena', { actual: CONTRASENA, nueva: nuevaContrasena() });
+      expect(cambioB.status).toBe(200);
+      const tokenB = cambioB.body.data.token as string;
       expect((await como(tokenB).get('/admin/empresas')).status).toBe(200);
 
       const quitar = await como(tokenA).patch(`/admin/usuarios/${idB}`, { esAdminGlobal: false });

@@ -1,3 +1,5 @@
+import type { Areas, Nivel } from '../services/rbac.service';
+
 /** Empresa tal como la ve el panel de administracion (sin secretos de FacturaScripts). */
 export interface EmpresaAdmin {
   id: string;
@@ -24,6 +26,10 @@ export interface AccesoEmpresa {
   codigo: string | null;
   activa: boolean;
   rol: string;
+  /** true si sus permisos en esta empresa estan ajustados a medida (nunca con rol admin). */
+  personalizado: boolean;
+  /** Lo que puede en cada area por este acceso; null con el perfil Administrador ("todo"). */
+  areas: Areas | null;
 }
 
 /** Usuario tal como lo ve el panel. Nunca lleva el hash de la contrasena. */
@@ -32,6 +38,33 @@ export interface UsuarioAdmin {
   email: string;
   activo: boolean;
   esAdminGlobal: boolean;
+  /** Contrasena provisional: todavia no ha puesto la suya. */
+  debeCambiarContrasena: boolean;
   creadoEn?: string;
   empresas?: AccesoEmpresa[];
+}
+
+/**
+ * Respuesta del alta (POST /admin/usuarios) y del restablecimiento (PATCH):
+ * la contrasena provisional va SOLO si la genero el servidor, una sola vez.
+ */
+export type UsuarioConContrasena = UsuarioAdmin & { contrasenaProvisional?: string };
+
+/** Respuesta de PUT /admin/usuarios/:userId/empresas/:companyId. */
+export interface AccesoAsignado {
+  rol: string;
+  rolAnterior: string | null;
+  personalizado: boolean;
+  personalizadoAntes: boolean;
+  areas: Areas | null;
+  areasAnteriores: Areas | null;
+  /** false: ya estaba asi; no se escribe ni se audita nada. */
+  cambiado: boolean;
+}
+
+/** Catalogo de la matriz de permisos (GET /admin/permisos/catalogo). */
+export interface CatalogoPermisos {
+  areas: Array<{ clave: string; nombre: string; descripcion: string }>;
+  niveles: readonly Nivel[];
+  perfiles: Array<{ rol: string; nombre: string; todo: boolean; areas: Areas | null; descripcion?: string }>;
 }
