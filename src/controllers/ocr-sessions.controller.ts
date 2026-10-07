@@ -10,6 +10,19 @@ import { prisma } from '../config/database';
 import { logger } from '../config/logger';
 import { empresaDeLaRuta } from '../utils/empresa-de-la-ruta';
 
+/**
+ * Campos de la sesion que no salen por la API: errorMessage puede llevar el
+ * mensaje interno del fallo (Prisma, pdf-parse, rutas del servidor) y los
+ * otros dos son rutas de ficheros del servidor. errorCode si sale: es un
+ * codigo cerrado.
+ */
+const CAMPOS_INTERNOS = ['errorMessage', 'originalFilePath', 'ocrPdfPath'] as const;
+
+function sinDatosInternos<T extends object>(sesion: T): Omit<T, (typeof CAMPOS_INTERNOS)[number]> {
+  const copia = { ...sesion } as Record<string, unknown>;
+  for (const campo of CAMPOS_INTERNOS) delete copia[campo];
+  return copia as Omit<T, (typeof CAMPOS_INTERNOS)[number]>;
+}
 
 class OcrSessionsController {
   /**
@@ -52,7 +65,7 @@ class OcrSessionsController {
 
       return res.status(200).json({
         ok: true,
-        data: sessions,
+        data: sessions.map(sinDatosInternos),
         pagination: {
           total,
           limit: Number(limit),
@@ -92,7 +105,7 @@ class OcrSessionsController {
 
       return res.status(200).json({
         ok: true,
-        data: session,
+        data: sinDatosInternos(session),
       });
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error);
@@ -201,7 +214,7 @@ class OcrSessionsController {
 
       return res.status(200).json({
         ok: true,
-        data: updated,
+        data: sinDatosInternos(updated),
       });
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error);

@@ -21,6 +21,20 @@ const ocrInvoiceSchema = z.object({
   source: z.enum(['email', 'manual', 'api']).optional().default('manual'),
 });
 
+/**
+ * Texto que se guarda en errorMessage de la sesion segun errorCode. El mensaje
+ * real del error (Prisma, pdf-parse, rutas del servidor) va solo al log.
+ */
+const MENSAJE_DE_ERROR: Record<string, string> = {
+  FILE_NOT_FOUND: 'No se encontró el PDF',
+  FILE_TOO_LARGE: 'El PDF es demasiado grande',
+  AUTH_FAILED: 'Fallo de autenticación con el servicio de OCR',
+  INSUFFICIENT_CREDITS: 'Sin créditos en el servicio de OCR',
+  PROCESSING_TIMEOUT: 'El OCR tardó demasiado',
+  INVALID_PDF: 'PDF no válido',
+  UNKNOWN_ERROR: 'Error al procesar el OCR',
+};
+
 interface OCRResponse {
   ok: boolean;
   data?: {
@@ -90,16 +104,15 @@ class OCRController {
       logger.debug(`[OCR] Validando PDF...`);
       const validation = await validatePdfFile(tempUploadPath);
       if (!validation.isValid) {
-        await OCRPersistenceService.markSessionFailed(
-          ocrSessionId,
-          'INVALID_PDF',
-          validation.error || 'Invalid PDF file'
-        );
+        // El motivo (puede llevar rutas del servidor) solo va al log; en la
+        // sesion queda un texto fijo.
+        logger.warn(`[OCR] PDF no valido (sesion ${ocrSessionId}): ${validation.error}`);
+        await OCRPersistenceService.markSessionFailed(ocrSessionId, 'INVALID_PDF', MENSAJE_DE_ERROR.INVALID_PDF);
+        this.borrarSubida(tempUploadPath);
 
         return res.status(400).json({
           ok: false,
           error: 'Invalid PDF file',
-          // El motivo (puede llevar rutas del servidor) queda en la sesion, no en la respuesta.
         });
       }
 
@@ -176,10 +189,11 @@ class OCRController {
       if (ocrSessionId) {
         try {
           const errorCode = this.getErrorCode(errorMsg);
+          // El mensaje interno ya esta en el log; en la sesion, un texto fijo.
           await OCRPersistenceService.markSessionFailed(
             ocrSessionId,
             errorCode,
-            errorMsg
+            MENSAJE_DE_ERROR[errorCode] ?? MENSAJE_DE_ERROR.UNKNOWN_ERROR
           );
         } catch (dbError) {
           logger.error(`[OCR] Error guardando fallo en BD: ${dbError}`);
@@ -187,13 +201,7 @@ class OCRController {
       }
 
       // Limpiar archivo temporal en caso de error
-      if (tempUploadPath && fs.existsSync(tempUploadPath)) {
-        try {
-          fs.unlinkSync(tempUploadPath);
-        } catch (e) {
-          logger.warn(`Failed to cleanup temp file: ${tempUploadPath}`);
-        }
-      }
+      this.borrarSubida(tempUploadPath);
 
       // Mapear errores específicos a códigos HTTP
       if (errorMsg.includes('not found')) {
@@ -361,6 +369,17 @@ class OCRController {
   }
 
   // Privados
+
+  /** Borra el PDF subido cuando la subida no sigue adelante. */
+  private borrarSubida(tempUploadPath: string | null): void {
+    if (tempUploadPath && fs.existsSync(tempUploadPath)) {
+      try {
+        fs.unlinkSync(tempUploadPath);
+      } catch (e) {
+        logger.warn(`Failed to cleanup temp file: ${tempUploadPath}`);
+      }
+    }
+  }
 
   /**
    * Calcula el tamaño de un directorio

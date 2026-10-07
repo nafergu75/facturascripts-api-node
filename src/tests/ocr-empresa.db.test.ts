@@ -16,6 +16,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll, afterEach, jest } from '@jest/globals';
 import { randomBytes } from 'crypto';
+import * as fs from 'fs';
 import request from 'supertest';
 import { app } from '../app';
 import { prisma } from '../config/database';
@@ -24,6 +25,7 @@ import { hashPassword } from '../utils/password';
 import OCRPersistenceService from '../services/ocr-persistence.service';
 import ILovePDFService from '../services/ilovepdf.service';
 import ILovePDFConfig from '../config/ilovepdf.config';
+import * as pdfTextExtractor from '../utils/pdfTextExtractor';
 
 function hostDeLaBd(): string {
   try {
@@ -39,6 +41,10 @@ const SUFIJO = `${Date.now()}${randomBytes(3).toString('hex')}`;
 const EMPRESA_A = `ocr-a-${SUFIJO}`;
 const EMPRESA_B = `ocr-b-${SUFIJO}`;
 const TEXTO_B = `TEXTO SECRETO DE LA EMPRESA B ${SUFIJO}`;
+// Lo que guardaba antes una sesion fallida en errorMessage (las filas ya guardadas lo conservan).
+const MENSAJE_INTERNO = "Error: Cannot find module 'pdf-parse'\nRequire stack:\n- C:\\servidor\\dist\\utils\\pdfTextExtractor.js";
+// Nada de esto puede salir por la API: mensajes internos ni rutas del servidor.
+const DATO_INTERNO = /pdf-parse|Require stack|prisma|ECONNREFUSED|[A-Z]:\\|\/tmp\/|uploads|node_modules|originalFilePath|ocrPdfPath|errorMessage/i;
 
 const usuarios: Record<'a' | 'b' | 'adminA', { id: string; token: string }> = {} as never;
 const ses: Record<'aOk' | 'aFallo' | 'bOk' | 'bFallo', string> = {} as never;
@@ -62,6 +68,8 @@ const crearSesion = (companyId: string, status: string, texto?: string) =>
       ocrTextExtracted: texto,
       processingTimeSeconds: status === 'COMPLETED' ? 4 : null,
       errorCode: status === 'FAILED' ? 'UNKNOWN_ERROR' : null,
+      errorMessage: status === 'FAILED' ? MENSAJE_INTERNO : null,
+      ocrPdfPath: status === 'COMPLETED' ? '/tmp/ocr/processed/x_ocr.pdf' : null,
     },
   });
 
@@ -117,6 +125,20 @@ describeBd('OCR por empresa (app entera, BD real)', () => {
     expect(JSON.stringify(ajena.body)).not.toContain(TEXTO_B);
   });
 
+  it('listado y detalle: sin el mensaje interno del error ni rutas del servidor', async () => {
+    const lista = await como('a').get(`/companies/${EMPRESA_A}/ocr/sessions`);
+    expect(lista.status).toBe(200);
+    expect(lista.body.data).toHaveLength(2);
+    expect(JSON.stringify(lista.body)).not.toMatch(DATO_INTERNO);
+    expect(lista.body.data.find((s: { id: string }) => s.id === ses.aFallo).errorCode).toBe('UNKNOWN_ERROR');
+
+    for (const id of [ses.aOk, ses.aFallo]) {
+      const detalle = await como('a').get(`/companies/${EMPRESA_A}/ocr/sessions/${id}`);
+      expect(detalle.status).toBe(200);
+      expect(JSON.stringify(detalle.body)).not.toMatch(DATO_INTERNO);
+    }
+  });
+
   it('la empresa B por URL: 403 para un usuario sin acceso a ella', async () => {
     expect((await como('a').get(`/companies/${EMPRESA_B}/ocr/sessions`)).status).toBe(403);
     expect((await como('a').get(`/companies/${EMPRESA_B}/ocr/sessions/${ses.bOk}`)).status).toBe(403);
@@ -164,6 +186,7 @@ describeBd('OCR por empresa (app entera, BD real)', () => {
 
     const propia = await como('a').post(`/companies/${EMPRESA_A}/ocr/sessions/${ses.aFallo}/retry`);
     expect(propia.status).toBe(200);
+    expect(JSON.stringify(propia.body)).not.toMatch(DATO_INTERNO);
     expect((await prisma.oCRSession.findUniqueOrThrow({ where: { id: ses.aFallo } })).status).toBe('PENDING');
   });
 
@@ -181,11 +204,42 @@ describeBd('OCR por empresa (app entera, BD real)', () => {
     // Sin pdf-parse ni claves de iLovePDF no llega a leer el PDF, pero la sesion
     // ya no falla al crearse por falta de companyId.
     expect(res.status).toBeGreaterThanOrEqual(400);
-    const creada = await prisma.oCRSession.findFirst({ where: { originalFileName: nombre } });
-    expect(creada).toMatchObject({ companyId: EMPRESA_A, userId: usuarios.a.id });
+    const creada = await prisma.oCRSession.findFirstOrThrow({ where: { originalFileName: nombre } });
+    expect(creada).toMatchObject({ companyId: EMPRESA_A, userId: usuarios.a.id, status: 'FAILED' });
     // Ni rutas del servidor ni trazas en la respuesta.
     expect(res.body.details).toBeUndefined();
-    expect(JSON.stringify(res.body)).not.toMatch(/Require stack|pdf-parse|[A-Z]:\\\\|node_modules/);
+    expect(JSON.stringify(res.body)).not.toMatch(DATO_INTERNO);
+    // Ni en la sesion guardada, ni al pedirla despues por el listado o el detalle.
+    expect(creada.errorMessage ?? '').not.toMatch(DATO_INTERNO);
+    const lista = await como('a').get(`/companies/${EMPRESA_A}/ocr/sessions`);
+    expect(JSON.stringify(lista.body)).not.toMatch(DATO_INTERNO);
+    const detalle = await como('a').get(`/companies/${EMPRESA_A}/ocr/sessions/${creada.id}`);
+    expect(detalle.status).toBe(200);
+    expect(JSON.stringify(detalle.body)).not.toMatch(DATO_INTERNO);
+    // Y el PDF subido no se queda en el servidor.
+    expect(fs.existsSync(creada.originalFilePath)).toBe(false);
+  });
+
+  it('un fallo despues de crear la sesion: ni la respuesta ni la sesion llevan el mensaje interno', async () => {
+    const nombre = `tras-sesion-${SUFIJO}.pdf`;
+    jest.spyOn(pdfTextExtractor, 'validatePdfFile').mockResolvedValue({ isValid: true, pages: 1 });
+    jest
+      .spyOn(ILovePDFService, 'ocrInvoicePdf')
+      .mockRejectedValueOnce(new Error('Invalid `prisma.x.update()` invocation in /var/task/dist/services/ocr.js:12 connect ECONNREFUSED 10.0.3.7:3306'));
+    const res = await request(app)
+      .post(`/companies/${EMPRESA_A}/ocr/invoices`)
+      .set('Authorization', `Bearer ${usuarios.a.token}`)
+      .attach('file', Buffer.from('%PDF-1.4\n%%EOF\n'), nombre);
+    expect(res.status).toBe(500);
+    expect(JSON.stringify(res.body)).not.toMatch(DATO_INTERNO);
+
+    const creada = await prisma.oCRSession.findFirstOrThrow({ where: { originalFileName: nombre } });
+    expect(creada).toMatchObject({ id: res.body.sessionId, status: 'FAILED', errorCode: 'UNKNOWN_ERROR' });
+    expect(creada.errorMessage ?? '').not.toMatch(DATO_INTERNO);
+    const detalle = await como('a').get(`/companies/${EMPRESA_A}/ocr/sessions/${creada.id}`);
+    expect(detalle.status).toBe(200);
+    expect(JSON.stringify(detalle.body)).not.toMatch(DATO_INTERNO);
+    expect(fs.existsSync(creada.originalFilePath)).toBe(false);
   });
 
   it('un 500 en la subida no devuelve el mensaje interno', async () => {
