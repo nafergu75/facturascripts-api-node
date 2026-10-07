@@ -8,7 +8,7 @@
  *
  * Crea un administrador global: solo corre en CI o contra una BD local. Las
  * contraseñas se generan en cada ejecución y al terminar se borra lo creado.
- * Límite de /auth/cambiar-contrasena (10/min por IP): aquí hay 4 llamadas.
+ * Límite de /auth/cambiar-contrasena (10/min por IP): aquí hay 5 llamadas.
  */
 import { describe, it, expect, beforeAll, afterAll, jest } from '@jest/globals';
 import { randomBytes } from 'crypto';
@@ -20,7 +20,7 @@ import { controlCif } from '../utils/nif';
 import { authMiddleware } from '../middleware/auth.middleware';
 import { construirContexto } from '../services/carmen/contexto';
 import { areasDePerfil, permisosDeAreas, type Areas } from '../services/rbac.service';
-import { hashPassword, verifyPassword } from '../utils/password';
+import { DIAS_CONTRASENA_PROVISIONAL, hashPassword, MENSAJE_PROVISIONAL_CADUCADA, verifyPassword } from '../utils/password';
 import type { AuthUser } from '../types/express';
 
 function hostDeLaBd(): string {
@@ -485,6 +485,7 @@ describeBd('permisos a medida y contraseña provisional (BD real)', () => {
       const v = await prisma.user.findUniqueOrThrow({ where: { id: V.id } });
       expect(v.passwordHash).toBe(hashAntes);
       expect(v.debeCambiarContrasena).toBe(true);
+      expect(v.contrasenaProvisionalHasta).toBeNull(); // la suya de siempre no caduca
 
       // Su sesión abierta queda bloqueada (403, no 401) y con su contraseña de siempre entra, provisional.
       const bloqueada = await como(tokenV).get(`/companies/${E}/clientes`);
@@ -509,6 +510,51 @@ describeBd('permisos a medida y contraseña provisional (BD real)', () => {
       const conOtra = await como(tokenG).patch(`/admin/usuarios/${V.id}`, { exigirCambioContrasena: true, restablecerContrasena: true });
       expect(conOtra.status).toBe(400);
       expect((await prisma.user.findUniqueOrThrow({ where: { id: V.id } })).passwordHash).toBe(hashAntes);
+    });
+
+    it('27 ter. la provisional caduca a los 7 días: ni login, ni refresh, ni sesión abierta', async () => {
+      const email = `caduca-${SUFIJO}@test.local`;
+      const antes = Date.now();
+      const alta = await como(tokenG).post('/admin/usuarios', { email, companyId: E, rol: 'contable' });
+      expect(alta.status).toBe(201);
+      const id = alta.body.data.id as string;
+      const provisional = alta.body.data.contrasenaProvisional as string;
+      const dias = (new Date(alta.body.data.contrasenaProvisionalHasta).getTime() - antes) / (24 * 60 * 60 * 1000);
+      expect(dias).toBeGreaterThanOrEqual(DIAS_CONTRASENA_PROVISIONAL - 0.01);
+      expect(dias).toBeLessThan(DIAS_CONTRASENA_PROVISIONAL + 0.01);
+      expect(alta.body.data.contrasenaProvisionalCaducada).toBe(false);
+
+      const login = await authService.login({ email, password: provisional });
+      // Pasa la fecha (se adelanta a mano en la BD).
+      await prisma.user.update({ where: { id }, data: { contrasenaProvisionalHasta: new Date(Date.now() - 1000) } });
+
+      await expect(authService.login({ email, password: provisional })).rejects.toMatchObject({ statusCode: 401, message: MENSAJE_PROVISIONAL_CADUCADA });
+      await expect(authService.login({ email, password: 'no-es-la-buena-123' })).rejects.toMatchObject({ statusCode: 401, message: 'Credenciales invalidas.' });
+      await expect(authService.refresh(login.refreshToken)).rejects.toMatchObject({ statusCode: 401, message: MENSAJE_PROVISIONAL_CADUCADA });
+      const me = await como(login.token).get('/auth/me');
+      expect(`${me.status} ${me.body.message}`).toBe(`401 ${MENSAJE_PROVISIONAL_CADUCADA}`);
+      const cambio = await como(login.token).post('/auth/cambiar-contrasena', { actual: provisional, nueva: nuevaContrasena() });
+      expect(cambio.status).toBe(401);
+      await expect(authService.cambiarContrasena(id, provisional, nuevaContrasena())).rejects.toMatchObject({ statusCode: 401 });
+
+      const fila = (await como(tokenG).get('/admin/usuarios')).body.data.find((u: { id: string }) => u.id === id);
+      expect(fila).toMatchObject({ debeCambiarContrasena: true, contrasenaProvisionalCaducada: true });
+
+      // El administrador le genera otra: vale 7 días más y con ella pone la suya, que ya no caduca.
+      const otra = await como(tokenG).patch(`/admin/usuarios/${id}`, { restablecerContrasena: true });
+      expect(otra.status).toBe(200);
+      expect(otra.body.data.contrasenaProvisionalCaducada).toBe(false);
+      expect(new Date(otra.body.data.contrasenaProvisionalHasta).getTime()).toBeGreaterThan(Date.now());
+      const nueva = otra.body.data.contrasenaProvisional as string;
+      await authService.login({ email, password: nueva });
+      const propia = nuevaContrasena();
+      await authService.cambiarContrasena(id, nueva, propia);
+      const u = await prisma.user.findUniqueOrThrow({ where: { id } });
+      expect(u.debeCambiarContrasena).toBe(false);
+      expect(u.contrasenaProvisionalHasta).toBeNull();
+      expect((await authService.login({ email, password: propia })).user.debeCambiarContrasena).toBe(false);
+      const tras = (await como(tokenG).get('/admin/usuarios')).body.data.find((x: { id: string }) => x.id === id);
+      expect(tras).toMatchObject({ debeCambiarContrasena: false, contrasenaProvisionalHasta: null, contrasenaProvisionalCaducada: false });
     });
 
     it('28. la API antigua /users también deja la contraseña provisional', async () => {

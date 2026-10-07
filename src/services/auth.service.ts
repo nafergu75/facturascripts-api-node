@@ -2,7 +2,7 @@ import jwt from 'jsonwebtoken';
 import { createHmac, randomUUID, timingSafeEqual } from 'crypto';
 import { config } from '../config/env';
 import { prisma } from '../config/database';
-import { hashPassword, verifyPassword } from '../utils/password';
+import { contrasenaProvisionalCaducada, hashPassword, MENSAJE_PROVISIONAL_CADUCADA, verifyPassword } from '../utils/password';
 import { badRequest, conflict, unauthorized } from '../utils/http-errors';
 import { permisosPorEmpresaDe, personalizadoPorEmpresaDe } from './rbac.service';
 import { conCampo, validarContrasena } from './admin.service';
@@ -46,6 +46,8 @@ export interface SesionBd {
   permisosPorEmpresa: Record<string, string[]>;
   /** Contrasena provisional: hasta cambiarla solo puede usar /auth/me y /auth/cambiar-contrasena. */
   debeCambiarContrasena: boolean;
+  /** La provisional ha caducado: ni eso, 401 (tiene que pedir otra al administrador). */
+  provisionalCaducada: boolean;
 }
 
 /**
@@ -62,6 +64,7 @@ export async function sesionDeBd(userId: string): Promise<SesionBd | null> {
       isGlobalAdmin: true,
       passwordHash: true,
       debeCambiarContrasena: true,
+      contrasenaProvisionalHasta: true,
       memberships: { select: { companyId: true, role: true, permisosPersonalizados: true } },
     },
   });
@@ -76,6 +79,7 @@ export async function sesionDeBd(userId: string): Promise<SesionBd | null> {
     permisosPorEmpresa: permisosPorEmpresaDe(u.memberships, u.isGlobalAdmin),
     // `=== true`: un prisma simulado (tests) que no traiga el campo no bloquea.
     debeCambiarContrasena: u.debeCambiarContrasena === true,
+    provisionalCaducada: contrasenaProvisionalCaducada(u),
   };
 }
 
@@ -202,6 +206,8 @@ export const authService = {
     if (!user || !user.isActive || !verifyPassword(input.password ?? '', user.passwordHash)) {
       throw unauthorized('Credenciales invalidas.');
     }
+    // Despues de comprobar la contrasena: solo quien la sabe se entera de que caduco.
+    if (contrasenaProvisionalCaducada(user)) throw unauthorized(MENSAJE_PROVISIONAL_CADUCADA);
 
     // Seccion 5 — empresaCodigo opcional: valida acceso a esa empresa concreta.
     let empresaSeleccionada: string | undefined;
@@ -236,7 +242,8 @@ export const authService = {
    * comprobacion) tampoco valen: obligan una vez a volver a entrar.
    *
    * Con contrasena provisional se puede refrescar, pero el token nuevo sigue
-   * bloqueado en authMiddleware (el bloqueo sale de la BD, no del token).
+   * bloqueado en authMiddleware (el bloqueo sale de la BD, no del token). Con
+   * la provisional caducada, no: 401.
    */
   async refresh(refreshToken: string): Promise<LoginResult> {
     let payload: jwt.JwtPayload;
@@ -266,6 +273,7 @@ export const authService = {
     if (!mismaHuella(payload.pwd, huellaContrasena(user.passwordHash))) {
       throw unauthorized('Tu contraseña ha cambiado o la sesión es antigua. Inicia sesión de nuevo.');
     }
+    if (contrasenaProvisionalCaducada(user)) throw unauthorized(MENSAJE_PROVISIONAL_CADUCADA);
 
     // Limpieza oportunista de revocaciones ya expiradas (evita crecimiento indefinido
     // de la tabla sin necesidad de un cron dedicado).
@@ -385,6 +393,8 @@ export const authService = {
     const incluir = { memberships: { include: { company: true } } } as const;
     const user = await prisma.user.findUnique({ where: { id: userId }, include: incluir });
     if (!user || !user.isActive) throw unauthorized('Usuario inactivo o inexistente.');
+    // authMiddleware ya lo para; esto cubre que caduque justo entre medias.
+    if (contrasenaProvisionalCaducada(user)) throw unauthorized(MENSAJE_PROVISIONAL_CADUCADA);
 
     if (!verifyPassword(actual ?? '', user.passwordHash)) {
       throw badRequest('La contraseña actual no es correcta.', { campo: 'actual' });
@@ -396,7 +406,7 @@ export const authService = {
 
     const r = await prisma.user.updateMany({
       where: { id: userId, passwordHash: user.passwordHash },
-      data: { passwordHash: hashPassword(nueva), debeCambiarContrasena: false },
+      data: { passwordHash: hashPassword(nueva), debeCambiarContrasena: false, contrasenaProvisionalHasta: null },
     });
     if (r.count === 0) throw conflict('Tu contraseña acaba de cambiar desde otro sitio. Vuelve a entrar.');
 

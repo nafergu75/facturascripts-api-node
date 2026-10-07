@@ -27,7 +27,13 @@ import { prisma } from '../config/database';
 import { CODIGO_CAMBIO_CONTRASENA, authMiddleware, authMiddlewarePermitiendoProvisional } from '../middleware/auth.middleware';
 import { authService, huellaContrasena } from '../services/auth.service';
 import { validarContrasena } from '../services/admin.service';
-import { generarContrasenaProvisional } from '../utils/password';
+import {
+  caducidadContrasenaProvisional,
+  contrasenaProvisionalCaducada,
+  DIAS_CONTRASENA_PROVISIONAL,
+  generarContrasenaProvisional,
+  MENSAJE_PROVISIONAL_CADUCADA,
+} from '../utils/password';
 import type { AuthUser } from '../types/express';
 
 const findUnique = prisma.user.findUnique as unknown as jest.Mock;
@@ -121,6 +127,36 @@ describe('bloqueo de la contrasena provisional en authMiddleware', () => {
     const me = await request(app).get('/auth/me').set('Authorization', `Bearer ${t}`);
     expect(me.status).toBe(200);
     expect(me.body.data.user).toMatchObject({ debeCambiarContrasena: true, personalizadoPorEmpresa: { A: false } });
+  });
+});
+
+describe('caducidad de la contrasena provisional', () => {
+  const AYER = new Date(Date.now() - 24 * 60 * 60 * 1000);
+  const MANANA = new Date(Date.now() + 24 * 60 * 60 * 1000);
+
+  it('caduca solo si es provisional y la fecha ya paso; sin fecha no caduca', () => {
+    expect(DIAS_CONTRASENA_PROVISIONAL).toBe(7);
+    const ahora = new Date('2026-10-07T10:00:00Z');
+    expect(caducidadContrasenaProvisional(ahora).toISOString()).toBe('2026-10-14T10:00:00.000Z');
+    expect(contrasenaProvisionalCaducada({ debeCambiarContrasena: true, contrasenaProvisionalHasta: AYER })).toBe(true);
+    expect(contrasenaProvisionalCaducada({ debeCambiarContrasena: true, contrasenaProvisionalHasta: MANANA })).toBe(false);
+    expect(contrasenaProvisionalCaducada({ debeCambiarContrasena: true, contrasenaProvisionalHasta: null })).toBe(false);
+    expect(contrasenaProvisionalCaducada({ debeCambiarContrasena: false, contrasenaProvisionalHasta: AYER })).toBe(false);
+    expect(contrasenaProvisionalCaducada({})).toBe(false);
+  });
+
+  it('authMiddleware da 401 con la caducada, tambien en /auth/me; sin caducar sigue el 403', async () => {
+    enBd({ debeCambiarContrasena: true, contrasenaProvisionalHasta: AYER, memberships: ACCESO });
+    const caducada = { statusCode: 401, message: MENSAJE_PROVISIONAL_CADUCADA };
+    expect((await pasar(authMiddleware, token())).error).toMatchObject(caducada);
+    expect((await pasar(authMiddlewarePermitiendoProvisional, token())).error).toMatchObject(caducada);
+    const me = await request(app).get('/auth/me').set('Authorization', `Bearer ${token()}`);
+    expect(me.status).toBe(401);
+    expect(me.body.message).toBe(MENSAJE_PROVISIONAL_CADUCADA);
+
+    enBd({ debeCambiarContrasena: true, contrasenaProvisionalHasta: MANANA, memberships: ACCESO });
+    expect((await pasar(authMiddleware, token())).error).toMatchObject({ statusCode: 403, details: { codigo: CODIGO_CAMBIO_CONTRASENA } });
+    expect((await pasar(authMiddlewarePermitiendoProvisional, token())).error).toBeUndefined();
   });
 });
 

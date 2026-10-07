@@ -40,6 +40,10 @@ export interface UsuarioAdmin {
   esAdminGlobal: boolean;
   /** Contrasena provisional: todavia no ha puesto la suya. */
   debeCambiarContrasena: boolean;
+  /** Hasta cuando vale su contrasena provisional (ISO); null si no es provisional o no caduca. */
+  contrasenaProvisionalHasta: string | null;
+  /** La provisional ya no vale: hay que generarle otra. */
+  contrasenaProvisionalCaducada: boolean;
   creadoEn?: string;
   empresas?: AccesoEmpresa[];
 }

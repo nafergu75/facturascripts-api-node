@@ -35,3 +35,26 @@ export function generarContrasenaProvisional(longitud = 16): string {
     if (!/^(.)\1*$/.test(c)) return c;
   }
 }
+
+/** Dias que vale la contrasena provisional que pone un administrador. */
+export const DIAS_CONTRASENA_PROVISIONAL = 7;
+
+/** Fecha hasta la que vale una contrasena provisional puesta ahora. */
+export function caducidadContrasenaProvisional(ahora: Date = new Date()): Date {
+  return new Date(ahora.getTime() + DIAS_CONTRASENA_PROVISIONAL * 24 * 60 * 60 * 1000);
+}
+
+/**
+ * ¿La contrasena provisional ya no vale? Solo si tiene que cambiarla y tiene
+ * fecha de caducidad pasada. Sin fecha (NULL) no caduca: la propia, o cuando el
+ * administrador solo pidio que cambiara la que ya tenia.
+ */
+export function contrasenaProvisionalCaducada(
+  u: { debeCambiarContrasena?: boolean | null; contrasenaProvisionalHasta?: Date | null },
+  ahora: Date = new Date(),
+): boolean {
+  return u.debeCambiarContrasena === true && u.contrasenaProvisionalHasta instanceof Date && u.contrasenaProvisionalHasta.getTime() <= ahora.getTime();
+}
+
+/** Mensaje (401) cuando la contrasena provisional ha caducado. */
+export const MENSAJE_PROVISIONAL_CADUCADA = 'Tu contraseña provisional ha caducado. Pide al administrador que te genere otra.';

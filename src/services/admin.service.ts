@@ -1,6 +1,6 @@
 import { Prisma, Role } from '@prisma/client';
 import { prisma } from '../config/database';
-import { generarContrasenaProvisional, hashPassword } from '../utils/password';
+import { caducidadContrasenaProvisional, contrasenaProvisionalCaducada, generarContrasenaProvisional, hashPassword } from '../utils/password';
 import {
   AccesoAsignado,
   AccesoEmpresa,
@@ -396,6 +396,7 @@ type UsuarioConAccesos = {
   isActive: boolean;
   isGlobalAdmin: boolean;
   debeCambiarContrasena: boolean;
+  contrasenaProvisionalHasta: Date | null;
   createdAt: Date;
   memberships: Array<{
     role: Role;
@@ -411,6 +412,7 @@ const SELECT_USUARIO = {
   isActive: true,
   isGlobalAdmin: true,
   debeCambiarContrasena: true,
+  contrasenaProvisionalHasta: true,
   createdAt: true,
   memberships: {
     select: { role: true, permisosPersonalizados: true, company: { select: { id: true, name: true, codigo: true, isActive: true } } },
@@ -438,6 +440,9 @@ const aUsuarioAdmin = (u: UsuarioConAccesos): UsuarioAdmin => ({
   activo: u.isActive,
   esAdminGlobal: u.isGlobalAdmin,
   debeCambiarContrasena: u.debeCambiarContrasena === true,
+  // Solo mientras sea provisional: la fecha de una ya cambiada no dice nada.
+  contrasenaProvisionalHasta: u.debeCambiarContrasena && u.contrasenaProvisionalHasta ? u.contrasenaProvisionalHasta.toISOString() : null,
+  contrasenaProvisionalCaducada: contrasenaProvisionalCaducada(u),
   creadoEn: u.createdAt.toISOString(),
   empresas: u.memberships
     .map(
@@ -511,6 +516,7 @@ export async function listarUsuarios(): Promise<UsuarioAdmin[]> {
  *
  * La contrasena inicial es siempre PROVISIONAL (debeCambiarContrasena): la
  * conoce el administrador y el usuario tiene que poner una suya al entrar.
+ * Caduca a los DIAS_CONTRASENA_PROVISIONAL dias (contrasenaProvisionalHasta).
  * - Con `generarSiFalta` (solo /admin/usuarios): si no viene, la genera el
  *   servidor y la devuelve UNA vez en `contrasenaProvisional`.
  * - Sin la opcion (POST /users, que no la devolveria): es obligatoria.
@@ -548,7 +554,14 @@ export async function crearUsuario(
   try {
     const u = await prisma.$transaction(async (tx) => {
       const creado = await tx.user.create({
-        data: { email, passwordHash: hashPassword(password), isActive: true, isGlobalAdmin: esAdminGlobal, debeCambiarContrasena: true },
+        data: {
+          email,
+          passwordHash: hashPassword(password),
+          isActive: true,
+          isGlobalAdmin: esAdminGlobal,
+          debeCambiarContrasena: true,
+          contrasenaProvisionalHasta: caducidadContrasenaProvisional(),
+        },
         select: { id: true },
       });
       if (companyId && rol) {
@@ -654,8 +667,11 @@ export interface CambiosUsuario {
  * el administrador y no se devuelve. La propia no se cambia aqui de ninguna de
  * las dos formas: se cambia en "Cambiar contrasena", que pide la actual.
  *
+ * La contrasena puesta a otro (generada o escrita) caduca a los
+ * DIAS_CONTRASENA_PROVISIONAL dias si no la cambia (contrasenaProvisionalHasta).
+ *
  * `exigirCambioContrasena: true` (solo para OTRO usuario) le marca la que ya
- * tiene como provisional sin cambiarla: entra con ella y tiene que poner una
+ * tiene como provisional, sin caducidad y sin cambiarla: entra con ella y tiene que poner una
  * suya antes de usar nada mas. Sirve para los usuarios dados de alta antes de
  * existir la contrasena provisional, cuya contrasena puso un administrador.
  * Sus sesiones abiertas quedan bloqueadas en la siguiente peticion (403
@@ -723,7 +739,13 @@ export async function actualizarUsuario(
       );
     }
 
-    const data: { isActive?: boolean; isGlobalAdmin?: boolean; passwordHash?: string; debeCambiarContrasena?: boolean } = {};
+    const data: {
+      isActive?: boolean;
+      isGlobalAdmin?: boolean;
+      passwordHash?: string;
+      debeCambiarContrasena?: boolean;
+      contrasenaProvisionalHasta?: Date | null;
+    } = {};
     const cambios: CambiosUsuario = {};
     if (activo !== undefined && activo !== objetivo.isActive) data.isActive = cambios.activo = activo;
     if (esAdminGlobal !== undefined && esAdminGlobal !== objetivo.isGlobalAdmin) data.isGlobalAdmin = cambios.esAdminGlobal = esAdminGlobal;
@@ -732,6 +754,7 @@ export async function actualizarUsuario(
       data.passwordHash = nuevoHash;
       // Es la de OTRO usuario (la propia no llega aqui): la conoce quien la pone, provisional.
       data.debeCambiarContrasena = true;
+      data.contrasenaProvisionalHasta = caducidadContrasenaProvisional();
       cambios.contrasenaRestablecida = true;
       cambios.contrasenaProvisional = true;
       if (generada) cambios.contrasenaGenerada = true;
@@ -739,6 +762,8 @@ export async function actualizarUsuario(
     // Si ya la tenia que cambiar, no hay nada que hacer (ni que auditar).
     if (exigirCambio && !objetivo.debeCambiarContrasena) {
       data.debeCambiarContrasena = cambios.exigirCambioContrasena = true;
+      // Es la suya de siempre: no caduca (si no entra en dias, no se queda fuera).
+      data.contrasenaProvisionalHasta = null;
     }
 
     const u = Object.keys(data).length

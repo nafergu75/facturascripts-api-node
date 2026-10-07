@@ -2,6 +2,7 @@ import { RequestHandler } from 'express';
 import jwt from 'jsonwebtoken';
 import { config } from '../config/env';
 import { forbidden, unauthorized } from '../utils/http-errors';
+import { MENSAJE_PROVISIONAL_CADUCADA } from '../utils/password';
 import { mismaHuella, sesionDeBd } from '../services/auth.service';
 import type { AuthUser } from '../types/express';
 
@@ -71,7 +72,9 @@ const errorProvisional = () =>
  * - contrasena provisional (la puso un administrador) -> 403 con
  *   details.codigo = CAMBIO_CONTRASENA_OBLIGATORIO en todo salvo GET /auth/me y
  *   POST /auth/cambiar-contrasena. Se comprueba DESPUES de lo anterior: un
- *   token viejo sigue dando 401, no 403.
+ *   token viejo sigue dando 401, no 403;
+ * - contrasena provisional caducada -> 401 en todo, tambien en esas dos: la
+ *   sesion se cierra y al volver a entrar el login explica que pida otra.
  *
  * companyScope y authorize trabajan despues con estos datos frescos.
  */
@@ -103,6 +106,7 @@ function crearAuthMiddleware(permitirProvisional: boolean): RequestHandler {
         if (delToken.huellaContrasena !== undefined && !mismaHuella(delToken.huellaContrasena, bd.huellaContrasena)) {
           return next(unauthorized('Tu contraseña ha cambiado. Inicia sesión de nuevo con la nueva.'));
         }
+        if (bd.provisionalCaducada) return next(unauthorized(MENSAJE_PROVISIONAL_CADUCADA));
         req.user = {
           ...delToken,
           esAdminGlobal: bd.esAdminGlobal,
