@@ -472,6 +472,45 @@ describeBd('permisos a medida y contraseña provisional (BD real)', () => {
       expect(las2.body.message).toBe('Elige una de las dos: generar una contraseña provisional o escribirla.');
     });
 
+    it('27 bis. exigirCambioContrasena: obliga a cambiar la que ya tiene, sin tocarla ni echarle', async () => {
+      const V = await usuarioDePrueba('exigir', { companyId: E, role: 'ventas' });
+      const hashAntes = (await prisma.user.findUniqueOrThrow({ where: { id: V.id } })).passwordHash;
+      const tokenV = (await authService.login({ email: V.email, password: CONTRASENA })).token;
+      expect((await como(tokenV).get(`/companies/${E}/clientes`)).status).toBe(200);
+
+      const res = await como(tokenG).patch(`/admin/usuarios/${V.id}`, { exigirCambioContrasena: true });
+      expect(res.status).toBe(200);
+      expect(res.body.data.debeCambiarContrasena).toBe(true);
+      expect(res.body.data.contrasenaProvisional).toBeUndefined();
+      const v = await prisma.user.findUniqueOrThrow({ where: { id: V.id } });
+      expect(v.passwordHash).toBe(hashAntes);
+      expect(v.debeCambiarContrasena).toBe(true);
+
+      // Su sesión abierta queda bloqueada (403, no 401) y con su contraseña de siempre entra, provisional.
+      const bloqueada = await como(tokenV).get(`/companies/${E}/clientes`);
+      expect(`${bloqueada.status} ${bloqueada.body?.details?.codigo}`).toBe(`403 ${CODIGO}`);
+      expect((await authService.login({ email: V.email, password: CONTRASENA })).user.debeCambiarContrasena).toBe(true);
+
+      const log = await prisma.auditLog.findFirst({ where: { userId: G.id, resourceId: V.id, action: 'UPDATE_USUARIO' } });
+      expect(log?.meta).toEqual({ email: V.email, exigirCambioContrasena: true });
+
+      // Pedirlo otra vez no cambia nada ni deja otra línea en la auditoría.
+      expect((await como(tokenG).patch(`/admin/usuarios/${V.id}`, { exigirCambioContrasena: true })).status).toBe(200);
+      expect(await prisma.auditLog.count({ where: { userId: G.id, resourceId: V.id, action: 'UPDATE_USUARIO' } })).toBe(1);
+
+      // Para uno mismo, quitarlo, o junto con una contraseña nueva: 400.
+      const propio = await como(tokenG).patch(`/admin/usuarios/${G.id}`, { exigirCambioContrasena: true });
+      expect(propio.status).toBe(400);
+      expect(propio.body.message).toBe('Tu propia contraseña cámbiala en «Cambiar contraseña».');
+      expect((await prisma.user.findUniqueOrThrow({ where: { id: G.id } })).debeCambiarContrasena).toBe(false);
+      const quitar = await como(tokenG).patch(`/admin/usuarios/${V.id}`, { exigirCambioContrasena: false });
+      expect(quitar.status).toBe(400);
+      expect((await prisma.user.findUniqueOrThrow({ where: { id: V.id } })).debeCambiarContrasena).toBe(true);
+      const conOtra = await como(tokenG).patch(`/admin/usuarios/${V.id}`, { exigirCambioContrasena: true, restablecerContrasena: true });
+      expect(conOtra.status).toBe(400);
+      expect((await prisma.user.findUniqueOrThrow({ where: { id: V.id } })).passwordHash).toBe(hashAntes);
+    });
+
     it('28. la API antigua /users también deja la contraseña provisional', async () => {
       const email = `users-${SUFIJO}@test.local`;
       const alta = await como(tokenG).post('/users', { email, password: nuevaContrasena() });

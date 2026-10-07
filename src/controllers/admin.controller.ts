@@ -118,12 +118,13 @@ export const adminController = {
   }),
 
   actualizarUsuario: asyncHandler(async (req, res) => {
-    const { activo, esAdminGlobal, nuevaContrasena, restablecerContrasena } = req.body ?? {};
+    const { activo, esAdminGlobal, nuevaContrasena, restablecerContrasena, exigirCambioContrasena } = req.body ?? {};
     const { usuario, cambios, contrasenaProvisional } = await actualizarUsuario(req.user!.userId, req.params.userId, {
       activo,
       esAdminGlobal,
       nuevaContrasena,
       restablecerContrasena,
+      exigirCambioContrasena,
     });
     await auditarCambioUsuario(req.user!.userId, req.params.userId, usuario.email, cambios);
     sinCache(res);

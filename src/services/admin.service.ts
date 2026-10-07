@@ -638,11 +638,13 @@ export interface CambiosUsuario {
   contrasenaProvisional?: boolean;
   /** La genero el servidor (restablecerContrasena). */
   contrasenaGenerada?: boolean;
+  /** Se le obliga a cambiar la que ya tiene (exigirCambioContrasena), sin tocarla. */
+  exigirCambioContrasena?: boolean;
 }
 
 /**
- * Activa/desactiva, da/quita el modo administrador global o restablece la
- * contrasena de un usuario. Todo surte efecto en su siguiente peticion
+ * Activa/desactiva, da/quita el modo administrador global, restablece la
+ * contrasena de un usuario o le obliga a cambiar la que ya tiene. Todo surte efecto en su siguiente peticion
  * (authMiddleware mira la BD): desactivarlo o cambiarle la contrasena cierra
  * las sesiones que tuviera abiertas.
  *
@@ -651,6 +653,13 @@ export interface CambiosUsuario {
  * devuelve una vez en `contrasenaProvisional`; con `nuevaContrasena` la escribe
  * el administrador y no se devuelve. La propia no se cambia aqui de ninguna de
  * las dos formas: se cambia en "Cambiar contrasena", que pide la actual.
+ *
+ * `exigirCambioContrasena: true` (solo para OTRO usuario) le marca la que ya
+ * tiene como provisional sin cambiarla: entra con ella y tiene que poner una
+ * suya antes de usar nada mas. Sirve para los usuarios dados de alta antes de
+ * existir la contrasena provisional, cuya contrasena puso un administrador.
+ * Sus sesiones abiertas quedan bloqueadas en la siguiente peticion (403
+ * CAMBIO_CONTRASENA_OBLIGATORIO), sin echarle.
  *
  * Protecciones:
  * - Nadie se desactiva ni se quita el modo administrador a si mismo (se
@@ -663,14 +672,22 @@ export interface CambiosUsuario {
 export async function actualizarUsuario(
   actorId: string,
   userId: string,
-  datos: { activo?: unknown; esAdminGlobal?: unknown; nuevaContrasena?: unknown; restablecerContrasena?: unknown },
+  datos: { activo?: unknown; esAdminGlobal?: unknown; nuevaContrasena?: unknown; restablecerContrasena?: unknown; exigirCambioContrasena?: unknown },
 ): Promise<{ usuario: UsuarioAdmin; cambios: CambiosUsuario; contrasenaProvisional?: string }> {
   const activo = leerBooleano(datos.activo, 'activo');
   const esAdminGlobal = leerBooleano(datos.esAdminGlobal, 'esAdminGlobal');
   const restablecer = leerBooleano(datos.restablecerContrasena, 'restablecerContrasena') === true;
   const hayContrasena = datos.nuevaContrasena !== undefined && datos.nuevaContrasena !== '';
-  if (activo === undefined && esAdminGlobal === undefined && !hayContrasena && !restablecer) {
-    throw badRequest('No hay nada que cambiar: envía activo, esAdminGlobal, nuevaContrasena o restablecerContrasena.');
+  const exigirCambio = leerBooleano(datos.exigirCambioContrasena, 'exigirCambioContrasena');
+  // Solo true: quitar la obligacion dejaria como definitiva una contrasena que conoce el administrador.
+  if (exigirCambio === false) {
+    throw badRequest('Solo se puede pedir que cambie su contraseña (exigirCambioContrasena: true), no quitarlo.', { campo: 'exigirCambioContrasena' });
+  }
+  if (activo === undefined && esAdminGlobal === undefined && !hayContrasena && !restablecer && !exigirCambio) {
+    throw badRequest('No hay nada que cambiar: envía activo, esAdminGlobal, nuevaContrasena, restablecerContrasena o exigirCambioContrasena.');
+  }
+  if (exigirCambio && (hayContrasena || restablecer)) {
+    throw badRequest('Con una contraseña nueva ya tendrá que cambiarla al entrar: no hace falta pedirlo aparte.');
   }
   if (restablecer && hayContrasena) {
     throw badRequest('Elige una de las dos: generar una contraseña provisional o escribirla.');
@@ -679,7 +696,7 @@ export async function actualizarUsuario(
   // que pide la actual. Si no, quien robe el token de un administrador global
   // podria ponerle una contrasena nueva sin saber la actual y quedarse la cuenta.
   // Cubre PATCH /admin/usuarios y PUT /users (los dos pasan por aqui).
-  if ((restablecer || hayContrasena) && userId === actorId) throw badRequest('Tu propia contraseña cámbiala en «Cambiar contraseña».');
+  if ((restablecer || hayContrasena || exigirCambio) && userId === actorId) throw badRequest('Tu propia contraseña cámbiala en «Cambiar contraseña».');
   if (userId === actorId && activo === false) throw badRequest('No puedes desactivar tu propio usuario.');
   if (userId === actorId && esAdminGlobal === false) {
     throw badRequest('No puedes quitarte a ti mismo el modo administrador. Pídeselo a otro administrador global.');
@@ -692,7 +709,7 @@ export async function actualizarUsuario(
   return prisma.$transaction(async (tx) => {
     const objetivo = await tx.user.findUnique({
       where: { id: userId },
-      select: { email: true, isActive: true, isGlobalAdmin: true },
+      select: { email: true, isActive: true, isGlobalAdmin: true, debeCambiarContrasena: true },
     });
     if (!objetivo) throw notFound('Usuario no encontrado.');
 
@@ -718,6 +735,10 @@ export async function actualizarUsuario(
       cambios.contrasenaRestablecida = true;
       cambios.contrasenaProvisional = true;
       if (generada) cambios.contrasenaGenerada = true;
+    }
+    // Si ya la tenia que cambiar, no hay nada que hacer (ni que auditar).
+    if (exigirCambio && !objetivo.debeCambiarContrasena) {
+      data.debeCambiarContrasena = cambios.exigirCambioContrasena = true;
     }
 
     const u = Object.keys(data).length
