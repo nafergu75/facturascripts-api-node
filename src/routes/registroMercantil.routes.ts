@@ -44,6 +44,7 @@ router.param('id', empresaDelRecurso((id) => annualAccountsService.obtener(id)))
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
 
 // --- Ejercicios contables ---
+// Ya no cierra: responde 409 y remite a Contabilidad > Cierre y traspaso de saldos.
 router.post('/fiscal-years/:fyId/close', authorize('contabilidad:write'), fiscalYearsController.cerrar);
 router.get('/fiscal-years/:fyId/deadlines', fiscalYearsController.deadlines);
 

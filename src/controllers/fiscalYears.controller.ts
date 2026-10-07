@@ -5,6 +5,10 @@ import { booksService } from '../services/booksService';
 import { annualAccountsService } from '../services/annualAccountsService';
 import { assertAccesoEmpresa } from '../services/registroMercantil.helpers';
 import { registrarAuditoria } from '../services/auditoria.service';
+import { conflict } from '../utils/http-errors';
+
+export const MENSAJE_CIERRE_EN_OTRA_PANTALLA =
+  'El ejercicio ya no se cierra desde aquí. Ciérralo en Contabilidad > Cierre y traspaso de saldos: allí se hacen la regularización, el cierre y la apertura del año siguiente, y se puede deshacer.';
 
 const ESTADOS_LIBRO = ['PENDING', 'GENERATED', 'PACKAGE_READY', 'FILED', 'ACCEPTED', 'REJECTED'];
 const ESTADOS_CUENTAS = ['DRAFT', 'READY', 'FILED', 'APROBADO', 'DEFECTOS', 'RECHAZADO'];
@@ -22,12 +26,17 @@ export const fiscalYearsController = {
   }),
 
   // --- Top-level: /fiscal-years/:fyId/... (acceso validado vía la empresa del recurso) ---
-  cerrar: asyncHandler(async (req, res) => {
+  /**
+   * POST /fiscal-years/:fyId/close (Registro Mercantil). Ya no cierra: marcaba el
+   * ejercicio como cerrado sin regularizar, sin asientos de cierre ni apertura, y
+   * despues no se podia deshacer. El cierre se hace siempre en Contabilidad >
+   * Cierre y traspaso de saldos (POST /companies/:id/periodos/cierre), que deja
+   * tambien la fecha de cierre, los plazos y los libros pendientes.
+   */
+  cerrar: asyncHandler(async (req) => {
     const fy = await fiscalYearsService.obtener(req.params.fyId);
     assertAccesoEmpresa(req.user, fy.companyId);
-    const cerrado = await fiscalYearsService.cerrar(fy.id, (req.body ?? {}).closingDate);
-    await registrarAuditoria({ userId: req.user!.userId, companyId: fy.companyId, action: 'CLOSE_FISCAL_YEAR', resourceType: 'FISCAL_YEAR', resourceId: fy.id, meta: { legalizationDeadline: cerrado.legalizationDeadline } });
-    sendOk(res, cerrado);
+    throw conflict(MENSAJE_CIERRE_EN_OTRA_PANTALLA, { enlace: `/dashboard/contabilidad/cierre-ejercicio?ejercicio=${fy.label}` });
   }),
 
   deadlines: asyncHandler(async (req, res) => {

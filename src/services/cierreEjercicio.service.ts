@@ -364,7 +364,7 @@ export async function ejecutarCierreEjercicio(
   };
 }
 
-/** Borradores de los libros obligatorios del ejercicio cerrado (como fiscalYearsService.cerrar). */
+/** Borradores de los libros obligatorios del ejercicio cerrado (PENDING, para Registro Mercantil). */
 async function crearLibrosPendientes(companyId: string, fiscalYearId: string): Promise<void> {
   try {
     const cfg = await legalConfigService.obtener(companyId);
