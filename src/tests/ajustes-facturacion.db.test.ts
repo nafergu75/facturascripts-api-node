@@ -202,11 +202,23 @@ describe('uso en las facturas de venta', () => {
     await guardar({ textoPie: null });
   });
 
-  it('una factura anterior a la copia (null) usa los ajustes de ahora', async () => {
+  it('una factura emitida antes de la copia (null) no cambia con los ajustes: la regla de entonces y sin pie', async () => {
     const f = await incomeInvoicesService.crearIngreso({ companyId: ES, customer: { id: clienteEs }, fechaEmision: '2026-03-05', lineas: [linea] });
     await prisma.incomeInvoice.update({ where: { id: f.id }, data: { ibanCobro: null, textoPie: null } });
-    const datos = (await datosPdfFactura(ES, f.id)).datos;
-    expect(datos.cuenta?.iban).toBe(IBAN_1);
+    const primeraEur = await prisma.bankAccount.findFirstOrThrow({ where: { companyId: ES, activa: true, moneda: 'EUR' }, orderBy: { createdAt: 'asc' } });
+    const antes = (await datosPdfFactura(ES, f.id)).datos;
+    expect([antes.cuenta?.iban, antes.textoPie]).toEqual([primeraEur.iban, null]);
+
+    // Se oculta el IBAN, se elige otra cuenta y se escribe un pie: el PDF de esa factura sigue igual.
+    await guardar({ mostrarIban: false, cuentaBancariaId: cuenta2, textoPie: 'Pie que no llevaba' });
+    const despues = (await datosPdfFactura(ES, f.id)).datos;
+    expect([despues.cuenta?.iban, despues.textoPie]).toEqual([primeraEur.iban, null]);
+
+    // Un borrador sin copia sí usa los ajustes de ahora.
+    const b = await incomeInvoicesService.crearIngreso({ companyId: ES, customer: { id: clienteEs }, fechaEmision: '2026-03-05', lineas: [linea], borrador: true });
+    const borrador = (await datosPdfFactura(ES, b.id)).datos;
+    expect([borrador.cuenta, borrador.textoPie]).toEqual([null, 'Pie que no llevaba']);
+    await guardar({ mostrarIban: true, cuentaBancariaId: null, textoPie: null });
   });
 });
 
@@ -217,8 +229,11 @@ describe('cuentaParaFactura (pura)', () => {
     expect(cuentaParaFactura([eur, usd], { cuentaBancariaId: null, mostrarIban: true }, 'USD')).toBe(usd);
     expect(cuentaParaFactura([eur], { cuentaBancariaId: null, mostrarIban: true }, 'USD')).toBe(eur);
   });
-  it('la elegida si sigue activa; sin IBAN, ninguna', () => {
-    expect(cuentaParaFactura([eur, usd], { cuentaBancariaId: 'b', mostrarIban: true }, 'EUR')).toBe(usd);
+  it('la elegida si sigue activa y es de la moneda de la factura; sin IBAN, ninguna', () => {
+    expect(cuentaParaFactura([eur, usd], { cuentaBancariaId: 'b', mostrarIban: true }, 'USD')).toBe(usd);
+    // Elegida en USD y factura en EUR: la automática en EUR, no la cuenta en otra moneda.
+    expect(cuentaParaFactura([eur, usd], { cuentaBancariaId: 'b', mostrarIban: true }, 'EUR')).toBe(eur);
+    expect(cuentaParaFactura([usd, eur], { cuentaBancariaId: 'a', mostrarIban: true }, 'USD')).toBe(usd);
     expect(cuentaParaFactura([eur], { cuentaBancariaId: 'b', mostrarIban: true }, 'EUR')).toBe(eur);
     expect(cuentaParaFactura([eur], { cuentaBancariaId: null, mostrarIban: false }, 'EUR')).toBeNull();
   });

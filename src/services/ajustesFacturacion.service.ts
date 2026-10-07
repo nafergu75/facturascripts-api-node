@@ -151,9 +151,10 @@ export async function guardarAjustesFacturacion(companyId: string, userId: strin
 
 /**
  * Cuenta que sale en la factura: ninguna si no se muestra el IBAN; la elegida
- * si sigue activa; si no, la primera activa en la moneda de la factura y, si
- * no hay, la primera activa. `cuentas` son las activas, de la más antigua a la
- * más nueva.
+ * si sigue activa y es de la moneda de la factura (a una factura en USD no se
+ * le pone una cuenta en EUR); si no, la primera activa en la moneda de la
+ * factura y, si no hay, la primera activa. `cuentas` son las activas, de la
+ * más antigua a la más nueva.
  */
 export function cuentaParaFactura<C extends { id: string; moneda?: string | null }>(
   cuentas: C[],
@@ -162,7 +163,7 @@ export function cuentaParaFactura<C extends { id: string; moneda?: string | null
 ): C | null {
   if (!ajustes.mostrarIban) return null;
   const elegida = ajustes.cuentaBancariaId ? cuentas.find((c) => c.id === ajustes.cuentaBancariaId) : undefined;
-  if (elegida) return elegida;
+  if (elegida && (elegida.moneda ?? 'EUR') === moneda) return elegida;
   return cuentas.find((c) => (c.moneda ?? 'EUR') === moneda) ?? cuentas[0] ?? null;
 }
 

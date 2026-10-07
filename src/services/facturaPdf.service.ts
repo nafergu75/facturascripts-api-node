@@ -1134,19 +1134,24 @@ export async function datosPdfFactura(companyId: string, id: string): Promise<{ 
   const perfil = perfilDesdeConfig(empresa);
   const moneda = factura.moneda || perfil.monedaCuenta;
   // Factura emitida con copia: el IBAN y el pie de cuando se emitio, aunque los
-  // ajustes hayan cambiado ('' = sin IBAN o sin pie). Sin copia (borradores,
-  // proformas y facturas anteriores): los ajustes de ahora.
+  // ajustes hayan cambiado ('' = sin IBAN o sin pie). Emitida ANTES de la copia
+  // (ibanCobro null): la regla de entonces (la primera cuenta activa en su
+  // moneda, sin pie), para que el PDF de una factura ya enviada no cambie con
+  // los ajustes. Borradores y proformas: los ajustes de ahora.
   const sinEspacios = (t: string) => t.replace(/\s/g, '').toUpperCase();
+  const activas = todasCuentas.filter((c) => c.activa);
+  const emitidaSinCopia = factura.estadoDocumento === 'FINAL' && (factura.ibanCobro === null || factura.ibanCobro === undefined);
   let cuenta: { iban: string; bic: string | null } | null;
   if (factura.ibanCobro !== null && factura.ibanCobro !== undefined) {
     const copiada = factura.ibanCobro;
     const deEsa = copiada ? todasCuentas.find((c) => sinEspacios(c.iban) === sinEspacios(copiada)) : undefined;
     cuenta = copiada ? { iban: copiada, bic: deEsa?.bic ?? null } : null;
   } else {
-    const elegida = cuentaParaFactura(todasCuentas.filter((c) => c.activa), ajustes, moneda);
+    const elegida = emitidaSinCopia ? elegirCuentaCobro(activas, moneda) : cuentaParaFactura(activas, ajustes, moneda);
     cuenta = elegida?.iban ? { iban: elegida.iban, bic: elegida.bic ?? null } : null;
   }
-  const textoPie = factura.textoPie !== null && factura.textoPie !== undefined ? factura.textoPie : ajustes.textoPie;
+  const textoPie =
+    factura.textoPie !== null && factura.textoPie !== undefined ? factura.textoPie : emitidaSinCopia ? null : ajustes.textoPie;
   // Totales y lineas en la moneda de la factura (*Doc; null = igual que la de cuenta).
   const doc = importesDoc({
     moneda,
