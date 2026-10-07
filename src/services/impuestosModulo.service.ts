@@ -51,7 +51,8 @@ import {
   type EntradaCalendario,
   type OpcionesCalendario,
 } from '../domain/calendarioFiscal';
-import { ajustesFiscalesDeFila } from '../domain/ajustes.model';
+import { AJUSTES_FISCALES_POR_DEFECTO, ajustesFiscalesDeFila } from '../domain/ajustes.model';
+import { anioEspana } from '../utils/fechas';
 
 /**
  * Modulo "Impuestos" estilo Quipu:
@@ -136,8 +137,12 @@ const RELLENO_MANUAL = new Set(['130']);
 /**
  * Lo que decide el calendario de la empresa: sus ajustes fiscales
  * (Configuracion > Impuestos; sin fila, los de por defecto) y si es autonomo.
+ *
+ * Con `ejercicio`: a un año anterior al de la ultima vez que se guardaron los
+ * ajustes no se le aplican (se crean con los de por defecto, como antes de
+ * existir esta pantalla): un cambio de regimen no reescribe años pasados.
  */
-export async function opcionesCalendarioEmpresa(companyId: string): Promise<OpcionesCalendario> {
+export async function opcionesCalendarioEmpresa(companyId: string, ejercicio?: number): Promise<OpcionesCalendario> {
   const tabla = (prisma as { ajustesFiscales?: { findUnique?: unknown } }).ajustesFiscales;
   const legal = (prisma as { legalConfig?: { findUnique?: unknown } }).legalConfig;
   const [fila, cfg] = await Promise.all([
@@ -146,7 +151,8 @@ export async function opcionesCalendarioEmpresa(companyId: string): Promise<Opci
       ? prisma.legalConfig.findUnique({ where: { companyId }, select: { tipoSociedad: true } }).catch(() => null)
       : null,
   ]);
-  return { ajustes: ajustesFiscalesDeFila(fila), autonomo: cfg?.tipoSociedad === 'AUTONOMO' };
+  const anterior = ejercicio !== undefined && !!fila?.updatedAt && ejercicio < anioEspana(fila.updatedAt);
+  return { ajustes: anterior ? AJUSTES_FISCALES_POR_DEFECTO : ajustesFiscalesDeFila(fila), autonomo: cfg?.tipoSociedad === 'AUTONOMO' };
 }
 
 const clave = (companyId: string, codigo: string, ejercicio: number, periodo: string): string =>
@@ -158,7 +164,7 @@ const clave = (companyId: string, codigo: string, ejercicio: number, periodo: st
  */
 async function asegurarCalendario(companyId: string, ejercicio: number): Promise<void> {
   if (!(await esEmpresaEspanolaFiscal(companyId))) return;
-  const deseado = calendarioEjercicio(ejercicio, await opcionesCalendarioEmpresa(companyId));
+  const deseado = calendarioEjercicio(ejercicio, await opcionesCalendarioEmpresa(companyId, ejercicio));
   // Solo se anaden las que faltan y no se solapan con otra fila del mismo modelo
   // (p. ej. el 1T trimestral que ya existia cuando se paso a IVA mensual).
   if (dbOk()) {
@@ -179,7 +185,7 @@ async function asegurarCalendario(companyId: string, ejercicio: number): Promise
   }
 }
 
-/** Un modelo del calendario, sin fila en la BD (vista previa de los ajustes fiscales). */
+/** Un modelo del calendario (de la BD o el que se crearia), para Configuracion > Impuestos. */
 export interface ModeloPrevisto {
   codigo: string;
   periodo: string;
@@ -187,24 +193,32 @@ export interface ModeloPrevisto {
   descripcion: string;
   fechaVencimiento: string;
   rellenoManual: boolean;
+  /** vigente/expirado (segun hoy), presentado u omitido. */
+  estado: EstadoModeloImpuesto;
 }
 
-/** Calendario que saldria en el ejercicio con esas opciones (no escribe nada). */
-export function vistaCalendario(ejercicio: number, opciones: OpcionesCalendario): ModeloPrevisto[] {
-  const hoy = `${ejercicio}-01-01`;
+const FILA_VACIA = { id: '', companyId: '', estado: 'vigente', casillas: null, datos: null, origen: null };
+
+function aPrevisto(f: Pick<FilaModelo, 'codigo' | 'ejercicio' | 'periodo' | 'estado'>, hoy: string): ModeloPrevisto {
+  const r = aResumen({ ...FILA_VACIA, ...f }, hoy);
+  return {
+    codigo: f.codigo,
+    periodo: f.periodo,
+    periodoEtiqueta: r.periodoEtiqueta,
+    descripcion: r.descripcion,
+    fechaVencimiento: r.fechaVencimiento,
+    rellenoManual: RELLENO_MANUAL.has(f.codigo),
+    estado: r.estado,
+  };
+}
+
+const porVencimiento = (a: ModeloPrevisto, b: ModeloPrevisto) => a.fechaVencimiento.localeCompare(b.fechaVencimiento) || a.codigo.localeCompare(b.codigo);
+
+/** Calendario teorico del ejercicio con esas opciones, entero (no escribe nada). */
+export function vistaCalendario(ejercicio: number, opciones: OpcionesCalendario, hoy = `${ejercicio}-01-01`): ModeloPrevisto[] {
   return calendarioEjercicio(ejercicio, opciones)
-    .map(({ codigo, periodo }) => {
-      const r = aResumen({ id: '', companyId: '', codigo, ejercicio, periodo, estado: 'vigente', casillas: null, datos: null, origen: null }, hoy);
-      return {
-        codigo,
-        periodo,
-        periodoEtiqueta: r.periodoEtiqueta,
-        descripcion: r.descripcion,
-        fechaVencimiento: r.fechaVencimiento,
-        rellenoManual: RELLENO_MANUAL.has(codigo),
-      };
-    })
-    .sort((a, b) => a.fechaVencimiento.localeCompare(b.fechaVencimiento) || a.codigo.localeCompare(b.codigo));
+    .map(({ codigo, periodo }) => aPrevisto({ codigo, ejercicio, periodo, estado: 'vigente' }, hoy))
+    .sort(porVencimiento);
 }
 
 /** Resultado de aplicar unos ajustes fiscales nuevos al calendario de un ejercicio. */
@@ -214,18 +228,82 @@ export interface CambioCalendario {
   aplicadoDesde: string | null;
   borradas: number;
   creadas: number;
+  /** De las borradas, las de periodos ya vencidos (solo con aplicarDesde hacia atras). */
+  borradasVencidas: number;
+}
+
+type FilaPlan = { id: string; codigo: string; ejercicio: number; periodo: string; estado: string; origen: string | null };
+
+/** El plan del cambio de un ejercicio: desde hoy, o desde `aplicarDesde` en el año en curso. */
+function planDelEjercicio(ejercicio: number, existentes: FilaPlan[], opciones: OpcionesCalendario, hoy: string, aplicarDesde?: string) {
+  const anio = Number(hoy.slice(0, 4));
+  return planCambioCalendario(ejercicio, existentes, calendarioEjercicio(ejercicio, opciones), {
+    hoy,
+    aplicarDesde: ejercicio === anio ? aplicarDesde : undefined,
+  });
+}
+
+const vencidas = (filas: FilaPlan[], ids: string[], hoy: string) => {
+  const set = new Set(ids);
+  return filas.filter((f) => set.has(f.id) && fechaVencimientoModelo(f.codigo, f.ejercicio, f.periodo) < hoy).length;
+};
+
+/**
+ * Calendario de un ejercicio tal como quedaria con esas opciones, a partir de
+ * las filas que ya existen (no escribe nada): las presentadas, omitidas o
+ * editadas a mano y las de periodos ya empezados se quedan como estan; se
+ * quitan y se añaden las que cambiarian (planCambioCalendario). Sin filas, el
+ * calendario entero (se creara asi al abrir el ejercicio). Un año pasado no cambia.
+ */
+export async function calendarioResultante(
+  companyId: string,
+  ejercicio: number,
+  opciones: OpcionesCalendario,
+  hoy: string,
+  aplicarDesde?: string,
+): Promise<{ modelos: ModeloPrevisto[] } & Omit<CambioCalendario, 'ejercicio'>> {
+  const anio = Number(hoy.slice(0, 4));
+  const filas: FilaPlan[] = dbOk()
+    ? await prisma.modeloImpuesto.findMany({
+        where: { companyId, ejercicio },
+        select: { id: true, codigo: true, ejercicio: true, periodo: true, estado: true, origen: true },
+      })
+    : [...memoria.values()].filter((f) => f.companyId === companyId && f.ejercicio === ejercicio);
+  if (!filas.length) {
+    const aplicadoDesde = ejercicio >= anio ? `${ejercicio}-01-01` : null;
+    return { aplicadoDesde, modelos: vistaCalendario(ejercicio, opciones, hoy), borradas: 0, creadas: 0, borradasVencidas: 0 };
+  }
+  const plan = ejercicio >= anio ? planDelEjercicio(ejercicio, filas, opciones, hoy, aplicarDesde) : { aplicadoDesde: null, borrar: [], crear: [] };
+  const borrar = new Set(plan.borrar);
+  const modelos = [
+    ...filas.filter((f) => !borrar.has(f.id)).map((f) => aPrevisto(f, hoy)),
+    ...plan.crear.map(({ codigo, periodo }) => aPrevisto({ codigo, ejercicio, periodo, estado: 'vigente' }, hoy)),
+  ].sort(porVencimiento);
+  return {
+    aplicadoDesde: plan.aplicadoDesde,
+    modelos,
+    borradas: plan.borrar.length,
+    creadas: plan.crear.length,
+    borradasVencidas: vencidas(filas, plan.borrar, hoy),
+  };
 }
 
 /**
  * Aplica las opciones del calendario a los ejercicios del año en curso en
  * adelante que ya tienen filas. Las presentadas, omitidas o editadas a mano no
- * se tocan; el cambio empieza en el primer trimestre libre despues de ellas
+ * se tocan, ni los periodos que ya han empezado (salvo `aplicarDesde`, solo en
+ * el año en curso); el cambio empieza en el primer trimestre libre
  * (domain/calendarioFiscal, planCambioCalendario). Los años pasados no cambian.
  * Devuelve el cambio del año en curso y de los siguientes que tengan filas.
  */
-export async function aplicarCambioCalendario(companyId: string, opciones: OpcionesCalendario, hoy: string): Promise<CambioCalendario[]> {
+export async function aplicarCambioCalendario(
+  companyId: string,
+  opciones: OpcionesCalendario,
+  hoy: string,
+  aplicarDesde?: string,
+): Promise<CambioCalendario[]> {
   const anio = Number(hoy.slice(0, 4));
-  if (!dbOk()) return [{ ejercicio: anio, aplicadoDesde: `${anio}-01-01`, borradas: 0, creadas: 0 }];
+  if (!dbOk()) return [{ ejercicio: anio, aplicadoDesde: `${anio}-01-01`, borradas: 0, creadas: 0, borradasVencidas: 0 }];
   const filas = await prisma.modeloImpuesto.findMany({
     where: { companyId, ejercicio: { gte: anio } },
     select: { id: true, codigo: true, ejercicio: true, periodo: true, estado: true, origen: true },
@@ -236,10 +314,10 @@ export async function aplicarCambioCalendario(companyId: string, opciones: Opcio
     const existentes = filas.filter((f) => f.ejercicio === ejercicio);
     if (!existentes.length) {
       // Sin filas todavia: se crearan con los ajustes nuevos al abrir el ejercicio.
-      out.push({ ejercicio, aplicadoDesde: `${ejercicio}-01-01`, borradas: 0, creadas: 0 });
+      out.push({ ejercicio, aplicadoDesde: `${ejercicio}-01-01`, borradas: 0, creadas: 0, borradasVencidas: 0 });
       continue;
     }
-    const plan = planCambioCalendario(ejercicio, existentes, calendarioEjercicio(ejercicio, opciones));
+    const plan = planDelEjercicio(ejercicio, existentes, opciones, hoy, aplicarDesde);
     if (plan.borrar.length || plan.crear.length) {
       await prisma.$transaction([
         // Solo las que siguen sin presentar, sin omitir y sin editar a mano.
@@ -252,7 +330,13 @@ export async function aplicarCambioCalendario(companyId: string, opciones: Opcio
         }),
       ]);
     }
-    out.push({ ejercicio, aplicadoDesde: plan.aplicadoDesde, borradas: plan.borrar.length, creadas: plan.crear.length });
+    out.push({
+      ejercicio,
+      aplicadoDesde: plan.aplicadoDesde,
+      borradas: plan.borrar.length,
+      creadas: plan.crear.length,
+      borradasVencidas: vencidas(existentes, plan.borrar, hoy),
+    });
   }
   return out;
 }
@@ -796,9 +880,9 @@ export async function calendarioFiscalSoloLectura(companyId: string, hoy: string
   } else {
     filas = [...memoria.values()].filter((f) => f.companyId === companyId && ejercicios.includes(f.ejercicio));
   }
-  const opciones = await opcionesCalendarioEmpresa(companyId);
   const out: ModeloCalendarioLectura[] = [];
   for (const ejercicio of ejercicios) {
+    const opciones = await opcionesCalendarioEmpresa(companyId, ejercicio);
     // Las filas que ya hay y las que se crearian al abrir el ejercicio en la pantalla.
     const delAnio = filas.filter((f) => f.ejercicio === ejercicio);
     for (const fila of delAnio) out.push({ ...aResumen(fila, hoy), guardado: true });

@@ -3,8 +3,9 @@
  *
  *  - Calendario (puro): 303 mensual, 111/115 mensuales de gran empresa, sin
  *    390 ni 347 con SII, 130 en lugar del 200 para autónomos.
- *  - Cambio de ajustes con modelos ya presentados: no se tocan y el cambio
- *    empieza en el primer trimestre libre (con el 1T presentado, desde abril).
+ *  - Cambio de ajustes: no toca lo presentado ni los periodos ya empezados (no
+ *    es retroactivo); con aplicarDesde se adelanta (con el 1T presentado, desde
+ *    abril). La lista de la pantalla sale de los modelos reales del año.
  *  - GET/PUT sobre BD real: reglas, permisos y empresa extranjera (409).
  */
 import { describe, it, expect, beforeAll } from '@jest/globals';
@@ -15,7 +16,8 @@ import ajustesFiscalesRoutes from '../routes/ajustesFiscales.routes';
 import { errorMiddleware } from '../middleware/error.middleware';
 import { calendarioEjercicio, planCambioCalendario, OPCIONES_CALENDARIO_POR_DEFECTO } from '../domain/calendarioFiscal';
 import { AJUSTES_FISCALES_POR_DEFECTO } from '../domain/ajustes.model';
-import { guardarAjustesFiscales, obtenerAjustesFiscales } from '../services/ajustesFiscales.service';
+import { anioEspana } from '../utils/fechas';
+import { guardarAjustesFiscales, obtenerAjustesFiscales, previsualizarAjustesFiscales } from '../services/ajustesFiscales.service';
 import {
   autorrellenarModelo,
   calendarioFiscalSoloLectura,
@@ -29,6 +31,7 @@ const SUFIJO = Date.now();
 const ES = `ajustes-fis-es-${SUFIJO}`;
 const US = `ajustes-fis-us-${SUFIJO}`;
 const AUT = `ajustes-fis-aut-${SUFIJO}`;
+const TARDE = `ajustes-fis-tarde-${SUFIJO}`;
 
 let rol = 'admin';
 const app = express();
@@ -95,6 +98,23 @@ describe('planCambioCalendario (puro)', () => {
     expect(plan.borrar).toHaveLength(3); // 303 2T, 3T y 4T
   });
 
+  it('no es retroactivo: empieza en el primer trimestre que aún no ha empezado', () => {
+    const deseado = calendarioEjercicio(2026, { ajustes: { ...mensual, sii: true }, autonomo: false });
+    expect(planCambioCalendario(2026, filas(), deseado, { hoy: '2026-04-10' }).aplicadoDesde).toBe('2026-07-01');
+    expect(planCambioCalendario(2026, filas(), deseado, { hoy: '2026-07-01' }).aplicadoDesde).toBe('2026-07-01');
+    // En octubre ya no queda ningún trimestre por empezar: desde el año que viene.
+    expect(planCambioCalendario(2026, filas(), deseado, { hoy: '2026-10-07' })).toEqual({ aplicadoDesde: null, borrar: [], crear: [] });
+    // Un año que todavía no ha empezado cambia entero.
+    expect(planCambioCalendario(2026, filas(), deseado, { hoy: '2025-11-20' }).aplicadoDesde).toBe('2026-01-01');
+  });
+
+  it('aplicarDesde adelanta el cambio a un trimestre ya empezado, nunca por encima de lo presentado', () => {
+    const deseado = calendarioEjercicio(2026, { ajustes: { ...mensual, sii: true }, autonomo: false });
+    expect(planCambioCalendario(2026, filas(), deseado, { hoy: '2026-10-07', aplicarDesde: '2026-01-01' }).aplicadoDesde).toBe('2026-01-01');
+    const conT1 = planCambioCalendario(2026, filas({ '303:1T': 'presentado' }), deseado, { hoy: '2026-10-07', aplicarDesde: '2026-01-01' });
+    expect(conT1.aplicadoDesde).toBe('2026-04-01');
+  });
+
   it('con el 4T presentado u omitido: este año ya no cambia', () => {
     const plan = planCambioCalendario(2026, filas({ '111:4T': 'omitido' }), calendarioEjercicio(2026, { ajustes: mensual, autonomo: false }));
     expect(plan).toEqual({ aplicadoDesde: null, borrar: [], crear: [] });
@@ -103,7 +123,7 @@ describe('planCambioCalendario (puro)', () => {
 
 describe('GET/PUT /ajustes-fiscales', () => {
   beforeAll(async () => {
-    for (const [id, name] of [[ES, 'Fiscal SL'], [US, 'Fiscal Inc'], [AUT, 'Autonoma']]) {
+    for (const [id, name] of [[ES, 'Fiscal SL'], [US, 'Fiscal Inc'], [AUT, 'Autonoma'], [TARDE, 'Configura Tarde SL']]) {
       await prisma.company.create({ data: { id, name, fsBaseUrl: 'http://localhost:8080', fsApiKeyEnc: 'k' } });
     }
     await prisma.legalConfig.create({ data: { companyId: US, pais: 'US', monedaCuenta: 'USD' } });
@@ -157,13 +177,31 @@ describe('GET/PUT /ajustes-fiscales', () => {
     }
   });
 
-  it('pasar a mensual a mitad de año con el 1T presentado: desde abril', async () => {
+  it('pasar a mensual a mitad de año con el 1T presentado: la vista previa dice desde cuándo y enseña lo real', async () => {
     await listarModelosImpuesto(ES, 2026); // crea el calendario trimestral
     const t1 = await prisma.modeloImpuesto.findFirstOrThrow({ where: { companyId: ES, codigo: '303', ejercicio: 2026, periodo: '1T' } });
     await prisma.modeloImpuesto.update({ where: { id: t1.id }, data: { estado: 'presentado' } });
 
-    const r = await guardarAjustesFiscales(ES, 'u-admin', { periodicidadIva: 'MENSUAL', redeme: true, sii: true }, '2026-04-10');
-    expect(r.cambiosCalendario.find((c) => c.ejercicio === 2026)).toMatchObject({ aplicadoDesde: '2026-04-01', borradas: 3, creadas: 9 });
+    // El 10 de abril el 2T ya ha empezado: sin más, el cambio vale desde julio.
+    const vista = await previsualizarAjustesFiscales(ES, { periodicidadIva: 'MENSUAL', redeme: true, sii: true }, '2026-04-10');
+    expect(vista.aplicadoDesde).toBe('2026-07-01');
+    expect(vista.aviso).toMatch(/desde el 01\/07\/2026/);
+    const p303 = vista.modelos.filter((m) => m.codigo === '303');
+    expect(p303.map((m) => m.periodo)).toEqual(['1T', '2T', '07', '08', '09', '10', '11', '12']);
+    expect(p303[0]).toMatchObject({ periodo: '1T', estado: 'presentado' });
+    // Nada guardado.
+    expect(await prisma.modeloImpuesto.count({ where: { companyId: ES, codigo: '303', ejercicio: 2026 } })).toBe(4);
+
+    // aplicarDesde tiene que ser el inicio de un trimestre del año en curso.
+    await expect(guardarAjustesFiscales(ES, 'u-admin', { periodicidadIva: 'MENSUAL', redeme: true, sii: true, aplicarDesde: '2026-05-01' }, '2026-04-10')).rejects.toMatchObject({
+      statusCode: 400,
+      details: { campo: 'aplicarDesde' },
+    });
+  });
+
+  it('con aplicarDesde = 1 de abril: desde abril, sin tocar el 1T presentado', async () => {
+    const r = await guardarAjustesFiscales(ES, 'u-admin', { periodicidadIva: 'MENSUAL', redeme: true, sii: true, aplicarDesde: '2026-04-01' }, '2026-04-10');
+    expect(r.cambiosCalendario.find((c) => c.ejercicio === 2026)).toMatchObject({ aplicadoDesde: '2026-04-01', borradas: 3, creadas: 9, borradasVencidas: 0 });
     expect(r.aviso).toMatch(/desde el 01\/04\/2026/);
 
     const p303 = (await prisma.modeloImpuesto.findMany({ where: { companyId: ES, codigo: '303', ejercicio: 2026 } })).map((f) => f.periodo).sort();
@@ -173,6 +211,10 @@ describe('GET/PUT /ajustes-fiscales', () => {
     expect(await prisma.modeloImpuesto.count({ where: { companyId: ES, codigo: '303', ejercicio: 2026 } })).toBe(10);
     // Los anuales siguen (el año no está entero en el régimen nuevo).
     expect(await prisma.modeloImpuesto.count({ where: { companyId: ES, codigo: '390', ejercicio: 2026 } })).toBe(1);
+
+    // La lista de la pantalla es la real: el 1T presentado y de abril en adelante, sin enero a marzo.
+    const leido = await obtenerAjustesFiscales(ES, '2026-04-10');
+    expect(leido.calendario.modelos.filter((m) => m.codigo === '303').map((m) => m.periodo)).toEqual(['1T', '04', '05', '06', '07', '08', '09', '10', '11', '12']);
 
     // El detalle de un 303 mensual funciona.
     const mayo = await prisma.modeloImpuesto.findFirstOrThrow({ where: { companyId: ES, codigo: '303', ejercicio: 2026, periodo: '05' } });
@@ -186,9 +228,36 @@ describe('GET/PUT /ajustes-fiscales', () => {
     expect(de2026).not.toContain('01');
   });
 
+  it('guardar sin cambiar nada no avisa de un calendario nuevo', async () => {
+    const r = await guardarAjustesFiscales(ES, 'u-admin', { periodicidadIva: 'MENSUAL', redeme: true, sii: true }, '2026-04-10');
+    expect(r.cambiosCalendario.find((c) => c.ejercicio === 2026)).toMatchObject({ borradas: 0, creadas: 0 });
+    expect(r.aviso).toBeNull();
+  });
+
+  it('configurar tarde una gran empresa desde enero: quita los vencidos sin presentar y lo avisa', async () => {
+    await listarModelosImpuesto(TARDE, 2026); // calendario trimestral por defecto
+    const r = await guardarAjustesFiscales(
+      TARDE,
+      'u-admin',
+      { periodicidadIva: 'MENSUAL', sii: true, granEmpresa: true, aplicarDesde: '2026-01-01' },
+      '2026-10-07',
+    );
+    // 303 y 111/115 trimestrales fuera; 1T y 2T ya vencidos el 7 de octubre (el 3T vence el 20).
+    expect(r.cambiosCalendario.find((c) => c.ejercicio === 2026)).toMatchObject({ aplicadoDesde: '2026-01-01', borradasVencidas: 6 });
+    expect(r.aviso).toMatch(/Se han quitado 6 modelo\(s\) de periodos ya vencidos/);
+    expect(await prisma.modeloImpuesto.count({ where: { companyId: TARDE, codigo: '303', ejercicio: 2026 } })).toBe(12);
+  });
+
+  it('un año anterior al de los ajustes guardados se crea con los de por defecto', async () => {
+    const filas = await listarModelosImpuesto(TARDE, 2024, 'activos', '2024-01-01');
+    expect(filas.filter((f) => f.codigo === '303').map((f) => f.periodo)).toEqual(['1T', '2T', '3T', '4T']);
+    expect(filas.some((f) => f.codigo === '390')).toBe(true);
+  });
+
   it('un año que se abre después nace entero con los ajustes guardados', async () => {
-    await listarModelosImpuesto(ES, 2027);
-    const p303 = await prisma.modeloImpuesto.findMany({ where: { companyId: ES, codigo: '303', ejercicio: 2027 } });
+    const siguiente = anioEspana() + 1; // posterior al año en que se guardaron (hoy)
+    await listarModelosImpuesto(ES, siguiente);
+    const p303 = await prisma.modeloImpuesto.findMany({ where: { companyId: ES, codigo: '303', ejercicio: siguiente } });
     expect(p303).toHaveLength(12);
   });
 

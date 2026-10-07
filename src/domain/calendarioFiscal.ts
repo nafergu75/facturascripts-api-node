@@ -98,16 +98,42 @@ export interface PlanCambioCalendario {
   crear: EntradaCalendario[];
 }
 
+/** Primer día de cada trimestre del ejercicio (donde coinciden meses y trimestres). */
+export const iniciosTrimestre = (ejercicio: number): string[] => ['01', '04', '07', '10'].map((m) => `${ejercicio}-${m}-01`);
+
+export interface OpcionesPlan {
+  /**
+   * Hoy (AAAA-MM-DD). Un cambio de régimen vale para los periodos que aún no
+   * han empezado: sin `aplicarDesde`, empieza en el primer trimestre que
+   * empieza hoy o después. Sin `hoy`, desde el 1 de enero (sin límite).
+   */
+  hoy?: string;
+  /**
+   * Inicio de trimestre desde el que el cambio vale de verdad, aunque ya haya
+   * pasado (p. ej. una gran empresa desde el 1 de enero que configura la app
+   * tarde). Lo pide la persona y lo confirma en la pantalla.
+   */
+  aplicarDesde?: string;
+}
+
 /**
  * Qué cambia en el calendario de un ejercicio con los ajustes nuevos.
  *
- * No se tocan las filas presentadas, omitidas ni editadas a mano. El cambio
- * empieza en el primer trimestre libre después de la última de ellas (los
- * trimestres y los meses coinciden en esas fechas): con el 1T presentado,
- * desde el 1 de abril. Los modelos anuales solo cambian si el año entero queda
- * libre. Los modelos que no dependen de los ajustes (349, 190) no se tocan.
+ * El cambio empieza en el primer inicio de trimestre (los trimestres y los
+ * meses coinciden en esas fechas) que cumpla las dos cosas:
+ *  - no es anterior a hoy, o a `aplicarDesde` si se indica: los periodos que
+ *    ya han empezado no cambian (un cambio de régimen no es retroactivo);
+ *  - va después de la última fila presentada, omitida o editada a mano, que
+ *    nunca se tocan (con el 1T presentado, como pronto desde abril).
+ * Los modelos anuales solo cambian si el año entero queda libre. Los modelos
+ * que no dependen de los ajustes (349, 190) no se tocan.
  */
-export function planCambioCalendario(ejercicio: number, existentes: FilaCalendario[], deseado: EntradaCalendario[]): PlanCambioCalendario {
+export function planCambioCalendario(
+  ejercicio: number,
+  existentes: FilaCalendario[],
+  deseado: EntradaCalendario[],
+  opciones: OpcionesPlan = {},
+): PlanCambioCalendario {
   const afectadas = existentes.filter((e) => CODIGOS_SEGUN_AJUSTES.includes(e.codigo));
   const fija = (e: FilaCalendario) => e.estado !== 'vigente' || e.origen === 'manual-mixto';
   const finFijas = afectadas
@@ -115,8 +141,9 @@ export function planCambioCalendario(ejercicio: number, existentes: FilaCalendar
     .map((e) => rangoPeriodo(ejercicio, e.periodo)?.fin ?? '')
     .sort()
     .pop();
-  const inicios = ['01', '04', '07', '10'].map((m) => `${ejercicio}-${m}-01`);
-  const desde = inicios.find((q) => !finFijas || q > finFijas) ?? null;
+  const inicios = iniciosTrimestre(ejercicio);
+  const minimo = opciones.aplicarDesde ?? opciones.hoy ?? '';
+  const desde = inicios.find((q) => (!finFijas || q > finFijas) && q >= minimo) ?? null;
   if (!desde) return { aplicadoDesde: null, borrar: [], crear: [] };
 
   const anioEntero = desde === inicios[0];
