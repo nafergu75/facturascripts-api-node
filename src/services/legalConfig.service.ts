@@ -262,13 +262,13 @@ export function monedaCuentaPorPais(pais: string): string {
 
 /**
  * Decide la moneda de cuenta tras guardar la configuracion:
- *  - con facturas o asientos, el pais no pasa de Espana a otro ni al reves: el
+ *  - con facturas, asientos o nominas, el pais no pasa de Espana a otro ni al reves: el
  *    IVA, el idioma y los modelos de lo ya emitido dependen de ello;
  *  - sin cambiar el pais ni la moneda, se deja como esta;
  *  - la indicada o, si cambia el pais, la de su pais (USD fuera de la UE); con
  *    documentos, la que ya habia. Tiene que valer para el pais: Espana y la UE,
  *    EUR; EE. UU. y Hong Kong, USD;
- *  - no cambia si la empresa ya tiene facturas o asientos.
+ *  - no cambia si la empresa ya tiene facturas, asientos o nominas.
  */
 export function decidirMonedaCuenta(opc: {
   indicada?: string;
@@ -282,8 +282,8 @@ export function decidirMonedaCuenta(opc: {
   if (tieneDocumentos && cambiaPais && esPaisEspana(paisAnterior) !== esPaisEspana(paisNuevo)) {
     throw badRequest(
       esPaisEspana(paisAnterior)
-        ? 'La empresa ya tiene facturas o asientos como empresa establecida en España: no se puede cambiar a otro país (sus facturas llevan IVA español y se declaran a la AEAT). Si va a operar desde otro país, dala de alta como empresa nueva.'
-        : 'La empresa ya tiene facturas o asientos como empresa no establecida en España: no se puede cambiar a España. Si tiene establecimiento permanente en España, dala de alta como empresa nueva con país España.',
+        ? 'La empresa ya tiene facturas, asientos o nóminas como empresa establecida en España: no se puede cambiar a otro país (sus facturas llevan IVA español y se declaran a la AEAT). Si va a operar desde otro país, dala de alta como empresa nueva.'
+        : 'La empresa ya tiene facturas, asientos o nóminas como empresa no establecida en España: no se puede cambiar a España. Si tiene establecimiento permanente en España, dala de alta como empresa nueva con país España.',
     );
   }
   if (!cambiaPais && (indicada === undefined || indicada === monedaActual)) return monedaActual;
@@ -291,14 +291,14 @@ export function decidirMonedaCuenta(opc: {
   const nueva = indicada ?? (tieneDocumentos ? monedaActual : monedaCuentaPorPais(paisNuevo));
   if (!monedasCuentaPermitidas(paisNuevo).includes(nueva) && tieneDocumentos && nueva === monedaActual) {
     throw badRequest(
-      `La contabilidad está en ${monedaActual} y la empresa ya tiene facturas o asientos: no se puede cambiar a un país que la lleva en otra moneda.`,
+      `La contabilidad está en ${monedaActual} y la empresa ya tiene facturas, asientos o nóminas: no se puede cambiar a un país que la lleva en otra moneda.`,
     );
   }
   validarMonedaCuenta(nueva, paisNuevo);
   if (nueva === monedaActual) return monedaActual;
   if (tieneDocumentos) {
     throw badRequest(
-      `No se puede cambiar la moneda de la contabilidad (${monedaActual}): la empresa ya tiene facturas o asientos.`,
+      `No se puede cambiar la moneda de la contabilidad (${monedaActual}): la empresa ya tiene facturas, asientos o nóminas.`,
     );
   }
   return nueva;
@@ -322,14 +322,21 @@ function tipoImagen(buf: Buffer): 'image/png' | 'image/jpeg' | null {
   return null;
 }
 
-/** La empresa ya tiene facturas o asientos: su moneda de cuenta no se puede cambiar. */
+/**
+ * La empresa ya tiene facturas, asientos o nominas: ni su pais (Espana u otro)
+ * ni su moneda de cuenta se pueden cambiar. Cuentan tambien las nominas en
+ * borrador (sin asiento todavia) y los seguros sociales guardados: son importes
+ * en euros de la Seguridad Social y del IRPF espanoles.
+ */
 async function tieneDocumentos(companyId: string): Promise<boolean> {
-  const [factura, gasto, asiento] = await Promise.all([
+  const [factura, gasto, asiento, nomina, segurosSociales] = await Promise.all([
     prisma.incomeInvoice.findFirst({ where: { companyId }, select: { id: true } }),
     prisma.expenseInvoice.findFirst({ where: { companyId }, select: { id: true } }),
     prisma.journalEntry.findFirst({ where: { companyId }, select: { id: true } }),
+    prisma.nomina.findFirst({ where: { companyId, estado: { not: 'ANULADA' } }, select: { id: true } }),
+    prisma.liquidacionSS.findFirst({ where: { companyId }, select: { id: true } }),
   ]);
-  return !!(factura || gasto || asiento);
+  return !!(factura || gasto || asiento || nomina || segurosSociales);
 }
 
 export const legalConfigService = {

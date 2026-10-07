@@ -21,6 +21,9 @@ jest.mock('../config/database', () => {
       incomeInvoice: { findFirst: jest.fn(async () => null) },
       expenseInvoice: { findFirst: jest.fn(async () => null) },
       journalEntry: { findFirst: jest.fn(async () => null) },
+      // Nominas y seguros sociales (tieneDocumentos): por defecto, ninguno.
+      nomina: { findFirst: jest.fn(async () => null) },
+      liquidacionSS: { findFirst: jest.fn(async () => null) },
       $transaction: jest.fn(async (fn: (t: typeof tx) => unknown) => fn(tx)),
       __tx: tx,
     },
@@ -29,6 +32,7 @@ jest.mock('../config/database', () => {
   };
 });
 
+import { Prisma } from '@prisma/client';
 import { prisma } from '../config/database';
 import { legalConfigService, librosObligatorios } from '../services/legalConfig.service';
 
@@ -39,6 +43,8 @@ const bd = prisma as unknown as {
   incomeInvoice: { findFirst: Mock };
   expenseInvoice: { findFirst: Mock };
   journalEntry: { findFirst: Mock };
+  nomina: { findFirst: Mock };
+  liquidacionSS: { findFirst: Mock };
   __tx: { $queryRaw: Mock; company: { findFirst: Mock }; bankAccount: { updateMany: Mock } };
 };
 const tx = bd.__tx;
@@ -84,6 +90,8 @@ beforeEach(() => {
   bd.incomeInvoice.findFirst.mockResolvedValue(null);
   bd.expenseInvoice.findFirst.mockResolvedValue(null);
   bd.journalEntry.findFirst.mockResolvedValue(null);
+  bd.nomina.findFirst.mockResolvedValue(null);
+  bd.liquidacionSS.findFirst.mockResolvedValue(null);
 });
 
 describe('librosObligatorios', () => {
@@ -244,6 +252,41 @@ describe('moneda de la contabilidad al editar (divisas-iva)', () => {
     expect(r.status).toBe(400);
     expect(r.mensaje).toMatch(/no se puede cambiar a otro país/);
     expect(bd.legalConfig.upsert).not.toHaveBeenCalled();
+  });
+
+  it('con nominas en borrador (sin asiento), no se puede pasar de Espana a EE. UU.: 400 y no se guarda', async () => {
+    bd.nomina.findFirst.mockResolvedValue({ id: 'N1' });
+    const r = await fallo({ pais: 'US' });
+    expect(r.status).toBe(400);
+    expect(r.mensaje).toMatch(/nóminas/);
+    expect(bd.legalConfig.upsert).not.toHaveBeenCalled();
+    // Las anuladas no cuentan.
+    expect(bd.nomina.findFirst).toHaveBeenCalledWith({ where: { companyId: 'E1', estado: { not: 'ANULADA' } }, select: { id: true } });
+  });
+
+  it('con seguros sociales guardados, la moneda de la contabilidad tampoco cambia', async () => {
+    bd.legalConfig.findUnique.mockResolvedValue({ ...HK, pais: 'PT' });
+    bd.liquidacionSS.findFirst.mockResolvedValue({ id: 'SS1' });
+    expect((await fallo({ pais: 'US', monedaCuenta: 'USD' })).status).toBe(400);
+    expect(tx.bankAccount.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('NIF nuevo y cambio de moneda a la vez: NIF libre, datos y cuentas bancarias en la misma transaccion', async () => {
+    bd.legalConfig.findUnique.mockResolvedValue({ pais: 'PT', tipoSociedad: 'OTRA', nif: 'PT1', codigoPostal: '1100-048', provincia: null, monedaCuenta: 'EUR' });
+    await legalConfigService.actualizar('E1', { pais: 'US', nif: '98-7654321' });
+    expect(bd.$transaction).toHaveBeenCalledTimes(1);
+    expect(tx.$queryRaw).toHaveBeenCalledTimes(1);
+    expect(tx.bankAccount.updateMany).toHaveBeenCalledWith({ where: { companyId: 'E1', moneda: 'EUR' }, data: { moneda: 'USD' } });
+    // Primero se comprueba el NIF; despues se guarda y se pasan las cuentas.
+    expect(tx.$queryRaw.mock.invocationCallOrder[0]).toBeLessThan(bd.legalConfig.upsert.mock.invocationCallOrder[0]);
+    expect(bd.legalConfig.upsert.mock.invocationCallOrder[0]).toBeLessThan(tx.bankAccount.updateMany.mock.invocationCallOrder[0]);
+    expect(guardado()).toMatchObject({ pais: 'US', monedaCuenta: 'USD' });
+  });
+
+  it('NIF nuevo y cambio de moneda: si la transaccion choca con otra (P2034), 409 en el NIF', async () => {
+    bd.legalConfig.findUnique.mockResolvedValue({ pais: 'PT', tipoSociedad: 'OTRA', nif: 'PT1', codigoPostal: '1100-048', provincia: null, monedaCuenta: 'EUR' });
+    bd.$transaction.mockRejectedValueOnce(new Prisma.PrismaClientKnownRequestError('Write conflict', { code: 'P2034', clientVersion: 'test' }));
+    expect(await fallo({ pais: 'US', nif: '98-7654321' })).toMatchObject({ status: 409, campo: 'nif' });
   });
 
   it('las comprobaciones de modo-admin van antes: un pais que no existe da 400 en el pais', async () => {
