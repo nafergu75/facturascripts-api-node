@@ -28,6 +28,11 @@ model User {
   /// OTRO usuario): hasta que el usuario ponga una suya, authMiddleware solo le
   /// deja ver GET /auth/me y usar POST /auth/cambiar-contrasena.
   debeCambiarContrasena Boolean @default(false)
+  /// Hasta cuando vale la contrasena provisional que puso un administrador
+  /// (alta o restablecimiento): pasada esta fecha no deja entrar y hay que
+  /// pedir otra. NULL = no caduca (la propia, o cuando el administrador solo
+  /// pide que cambie la que ya tenia).
+  contrasenaProvisionalHasta DateTime?
   createdAt     DateTime     @default(now())
   memberships   Membership[]
 }
