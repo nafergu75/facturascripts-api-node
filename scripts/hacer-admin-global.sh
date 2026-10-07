@@ -3,7 +3,9 @@
 # produccion. Un administrador global ve y gestiona todas las empresas, tiene
 # todos los permisos y ve la pantalla "Administracion" del panel.
 #
-# Ejecutar desde Git Bash, en conta-app/backend:
+# Ejecutar DESPUES de desplegar en Vercel la version con el modo administrador
+# (con el codigo anterior el permiso sale del token y no basta con recargar),
+# desde Git Bash, en una copia del backend con el esquema nuevo:
 #   bash scripts/hacer-admin-global.sh tu@email.com             (dar)
 #   bash scripts/hacer-admin-global.sh tu@email.com --quitar    (quitar)
 #
@@ -42,7 +44,7 @@ if [[ ! "$EMAIL" =~ $EMAIL_RE ]] || [ "${#EMAIL}" -gt 191 ]; then
   exit 1
 fi
 
-FICHERO=".env.vercel-prod.local"
+FICHERO="${ENV_PROD:-.env.vercel-prod.local}"
 [ -f "$FICHERO" ] || { echo "No existe $FICHERO: ejecuta antes scripts/configurar-vercel-prod.sh."; exit 1; }
 
 DATABASE_URL="$(grep -m1 '^DATABASE_URL=' "$FICHERO" | cut -d= -f2- || true)"
