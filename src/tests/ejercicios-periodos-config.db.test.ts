@@ -178,6 +178,15 @@ describe('periodos', () => {
     expect(a.body.data[0]).toMatchObject({ mes: 1, estado: 'abierto', modelosPresentados: [] });
   });
 
+  it('el año tiene que ser de 1990 al que viene: fuera de eso 400 y no se crea nada', async () => {
+    for (const ej of ['1', '99999', '2000000000', 'abc', '']) {
+      const res = await request(app).get(`${base}/periodos?ejercicio=${ej}`);
+      expect([ej, res.status, res.body.details]).toEqual([ej, 400, { campo: 'ejercicio' }]);
+    }
+    expect((await cambiar(1, 3000, { estado: 'bloqueado' })).status).toBe(400);
+    expect(await prisma.periodo.count({ where: { companyId: EMPRESA, ejercicio: { in: [1, 99999, 2000000000, 3000] } } })).toBe(0);
+  });
+
   it('a mano solo se bloquea o se desbloquea (cerrado: 400)', async () => {
     const res = await cambiar(3, 2024, { estado: 'cerrado' });
     expect([res.status, res.body.details]).toEqual([400, { campo: 'estado' }]);

@@ -4,13 +4,23 @@ import { badRequest } from '../utils/http-errors';
 import { cambiarBloqueoMes, listarPeriodos, modelosPresentadosDelMes, type EstadoMesManual } from '../services/periodos.service';
 import { deshacerCierreEjercicio, ejecutarCierreEjercicio, previsualizarCierre } from '../services/cierreEjercicio.service';
 import { registrarAuditoria } from '../services/auditoria.service';
+import { ANIO_MINIMO_EJERCICIO } from '../services/fiscalYears.service';
+import { anioEspana } from '../utils/fechas';
 
 // A mano solo se bloquea o se desbloquea un mes: 'cerrado' lo pone el cierre del ejercicio.
 const ESTADOS_MANUALES: EstadoMesManual[] = ['abierto', 'bloqueado'];
 
+/**
+ * Año del ejercicio de la consulta: de 1990 al año que viene, como al crear un
+ * ejercicio. Leer los meses los crea si faltan: sin este limite, cualquiera con
+ * permiso de lectura creaba 12 filas por cada año que pidiera (y uno enorme daba 500).
+ */
 function parseEjercicio(raw: unknown): number {
   const e = Number(raw);
-  if (!Number.isInteger(e)) throw badRequest('Parametro "ejercicio" invalido.');
+  const maximo = anioEspana() + 1;
+  if (raw === undefined || raw === '' || !Number.isInteger(e) || e < ANIO_MINIMO_EJERCICIO || e > maximo) {
+    throw badRequest(`Indica el ejercicio con su año, entre ${ANIO_MINIMO_EJERCICIO} y ${maximo}.`, { campo: 'ejercicio' });
+  }
   return e;
 }
 
