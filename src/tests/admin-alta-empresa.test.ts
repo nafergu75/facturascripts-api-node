@@ -294,6 +294,25 @@ describe('POST /admin/empresas con datos', () => {
     expect(codigoMalo.body.details).toEqual({ campo: 'codigo' });
   });
 
+  it('la contabilidad va en EUR en Espana y en USD en una empresa de EE. UU. (divisas-iva)', async () => {
+    expect((await alta({ datos: IFBIO })).status).toBe(201);
+    expect(tx.legalConfig.create.mock.calls[0][0].data).toMatchObject({ pais: 'ES', monedaCuenta: 'EUR' });
+
+    const res = await alta({
+      datos: {
+        denominacion: 'Atlas Trading LLC',
+        tipoSociedad: 'OTRA',
+        pais: 'US',
+        nif: '12-3456789',
+        domicilioSocial: '1 Main St',
+        codigoPostal: '10001',
+        municipio: 'New York',
+      },
+    });
+    expect(res.status).toBe(201);
+    expect(tx.legalConfig.create.mock.calls[1][0].data).toMatchObject({ pais: 'US', monedaCuenta: 'USD' });
+  });
+
   it('sin datos sigue creando solo la empresa, como antes, y la marca como incompleta', async () => {
     const res = await alta({ nombre: 'Solo nombre SL' });
     expect(res.status).toBe(201);

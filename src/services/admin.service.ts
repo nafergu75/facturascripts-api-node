@@ -14,6 +14,7 @@ import {
   esConflictoEscritura,
   librosObligatorios,
   limpiarLegalConfig,
+  monedaCuentaPorPais,
   type LegalConfigInput,
 } from './legalConfig.service';
 
@@ -307,6 +308,11 @@ export async function crearEmpresa(
             // defecto, marca el de socios siempre y el de contratos nunca). Se
             // recalculan si luego cambian la forma o el pais (legalConfigService.actualizar).
             ...librosObligatorios(datos.tipoSociedad, datos.pais),
+            // Moneda de la contabilidad segun el pais, como al cambiarlo en "Datos
+            // de la empresa" (decidirMonedaCuenta): EUR en Espana y la UE, USD
+            // fuera (EE. UU. y Hong Kong solo admiten USD). Sin facturas ni
+            // asientos se puede cambiar despues.
+            monedaCuenta: monedaCuentaPorPais(datos.pais),
           },
         });
       }
