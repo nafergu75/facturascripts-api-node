@@ -7,6 +7,8 @@ import { registrarAuditoria } from '../services/auditoria.service';
 import { accountingHooksService, type ResultadoContabilizacion } from '../services/accounting-hooks.service';
 import { archivarVentaSinRomper } from '../services/archivoFacturas.service';
 import { contextoFiscalEmpresa, sugerirOperacion } from '../services/fiscalidad-venta.service';
+import { resumenCobrosClientes } from '../services/cobrosClientes.service';
+import { anioEspana } from '../utils/fechas';
 
 /** Datos de divisa para la auditoria: total en moneda de cuenta y en la de la factura. */
 function metaDivisa(f: { totalFactura: number; moneda: string; totalFacturaDoc: number; tipoCambio: number; fuenteTipoCambio: string }) {
@@ -316,5 +318,16 @@ export const incomeInvoicesController = {
     );
 
     sendOk(res, { resumen });
+  }),
+
+  /**
+   * GET /stats/cobros?anio=AAAA
+   * Cobros de clientes para el panel: pendiente (de cualquier año) y vencido,
+   * cobrado en el año y las próximas facturas a cobrar.
+   */
+  estadisticasCobros: asyncHandler(async (req, res) => {
+    const anio = req.query.anio === undefined ? anioEspana() : Number(req.query.anio);
+    if (!Number.isInteger(anio) || anio < 1900 || anio > 2999) throw badRequest('El año no es válido (AAAA).');
+    sendOk(res, await resumenCobrosClientes(req.companyId!, anio));
   }),
 };

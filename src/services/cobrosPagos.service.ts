@@ -2,6 +2,7 @@ import { Prisma } from '@prisma/client';
 import { prisma, type TransaccionBD as Tx } from '../config/database';
 import { badRequest, notFound } from '../utils/http-errors';
 import { aCentimos } from '../utils/money';
+import { hoyEspana } from '../utils/fechas';
 import { estadoPeriodoEnFecha } from './periodos.service';
 import {
   calcularCobroDivisa,
@@ -125,7 +126,7 @@ export interface ResumenCobros {
 const CUENTA_CAJA = '570';
 const FECHA_RE = /^\d{4}-\d{2}-\d{2}$/;
 const round2 = (n: number): number => Math.round((n + Number.EPSILON) * 100) / 100;
-const hoyISO = (): string => new Date().toISOString().slice(0, 10);
+const hoyISO = (): string => hoyEspana();
 const hay = (v: unknown): boolean => v !== undefined && v !== null && v !== '';
 
 const TXT = {
@@ -170,10 +171,23 @@ async function cargarFactura(db: Tx | typeof prisma, companyId: string, tipo: Ti
  */
 const cobradaSinCobros = (tipo: TipoDocumento, estado: string, cobrado: number) => tipo === 'INGRESO' && estado === 'PAID' && cobrado === 0;
 
-/** Pendiente de una factura a partir de su total, su estado y lo cobrado. Puro. */
-export function calcularPendiente(tipo: TipoDocumento, totalFactura: number, estado: string, cobrado: number): number {
+/**
+ * Pendiente de una factura a partir de su total, su estado y lo cobrado. Puro.
+ *
+ * `cobradoACorte` es lo cobrado hasta una fecha (por defecto, todo lo cobrado):
+ * el pendiente se calcula con eso, pero lo de "cobrada a mano" se decide con
+ * todos los cobros, para no tomar por cobrada a mano una factura cuyo cobro
+ * tiene fecha posterior al corte.
+ */
+export function calcularPendiente(
+  tipo: TipoDocumento,
+  totalFactura: number,
+  estado: string,
+  cobrado: number,
+  cobradoACorte: number = cobrado,
+): number {
   if (cobradaSinCobros(tipo, estado, cobrado)) return 0;
-  return round2(totalFactura - cobrado);
+  return round2(totalFactura - cobradoACorte);
 }
 
 /** Estado de cobro (venta) o de pago (gasto) segun lo pendiente. Puro. */
@@ -684,6 +698,15 @@ export async function cobradoPorFactura(companyId: string, tipo: TipoDocumento, 
     _sum: { importe: true },
   });
   return new Map(filas.map((r) => [r.invoiceId, round2(Number(r._sum.importe ?? 0))]));
+}
+
+/** Suma de los cobros/pagos activos con fecha entre `desde` y `hasta` (ambas incluidas). */
+export async function totalCobradoEntre(companyId: string, tipo: TipoDocumento, desde: string, hasta: string): Promise<number> {
+  const r = await prisma.invoicePayment.aggregate({
+    where: { companyId, invoiceType: tipo, estado: 'ACTIVO', fecha: { gte: desde, lte: hasta } },
+    _sum: { importe: true },
+  });
+  return round2(Number(r._sum.importe ?? 0));
 }
 
 /** Hay cobros activos en la factura (para no "desmarcar" una factura cobrada con asientos). */
