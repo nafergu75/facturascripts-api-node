@@ -105,6 +105,8 @@ export const ivaDelTrimestre: Ejecutor = async (ctx, h) => {
       entendido,
       texto: `El 303 del ${t}T de ${anio} consta como presentado en la app, pero no puedo leer su resultado. Míralo en Fiscalidad → Modelo 303.`,
       sinCifras: true,
+      // Sin cifras, pero dice el estado del modelo de la empresa.
+      permisoRequerido: 'impuestos:read',
       enlaces,
     };
   } else {

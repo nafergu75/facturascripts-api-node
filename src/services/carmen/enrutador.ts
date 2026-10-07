@@ -371,12 +371,16 @@ async function ejecutarIntencion(
   if (defTercero?.obligatorio && !huecos.terceroId) {
     const roles = defTercero.roles ?? [];
     const nombreRol = roles.includes('proveedor') ? 'proveedor' : 'cliente';
+    // Las aclaraciones enseñan nombres de clientes o proveedores de la BD: con el
+    // permiso de la intención, para que se oculten del historial si se pierde.
+    const permisoRequerido = intencion.permisos.join('|') || undefined;
     if (tercero?.tipo === 'dudas') {
       const candidatos = tercero.candidatos.filter((c) => !roles.length || roles.includes(c.tercero.rol));
       return {
         cuerpo: {
           origen: 'aclaracion',
           intencion: intencion.id,
+          permisoRequerido,
           texto: candidatos.length > 1 ? `¿A qué ${nombreRol} te refieres?` : `¿Te refieres a ${candidatos[0]?.tercero.nombre ?? 'este ' + nombreRol}?`,
           botones: candidatos.map((c) => ({
             texto: c.tercero.nombre,
@@ -391,6 +395,7 @@ async function ejecutarIntencion(
       cuerpo: {
         origen: 'aclaracion',
         intencion: intencion.id,
+        permisoRequerido,
         texto:
           tercero?.tipo === 'ninguno'
             ? `No encuentro a «${mostrarTrozo(tercero.trozo)}» entre tus ${nombreRol}s.${parecidos.length ? ' ¿Es alguno de estos?' : ''}`
@@ -438,6 +443,9 @@ async function ejecutarIntencion(
     ...(r.botones?.length ? { botones: r.botones } : {}),
     ...(avisos.length ? { avisos: avisos.map(moneda) } : {}),
     huecos: entrada,
+    // Una respuesta sin cifras que aun así mira la empresa (el 303 «consta como
+    // presentado») lleva su permiso, para ocultarla del historial si se pierde.
+    ...(r.sinCifras && r.permisoRequerido ? { permisoRequerido: r.permisoRequerido } : {}),
   };
   const contexto: ContextoSesion = { intencion: intencion.id, huecos: entrada, en: new Date().toISOString() };
   if (r.sinCifras) {

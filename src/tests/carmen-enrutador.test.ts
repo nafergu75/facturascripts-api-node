@@ -48,6 +48,7 @@ import { construirMensajes, fijarClienteIA, NOTA_EMPRESA_EXTRANJERA } from '../s
 import { buscarFichas, fichaParaEmpresa, fichaPorId } from '../services/carmen/faq/faq';
 import { enMonedaDeCuenta } from '../services/carmen/plantillas';
 import { olvidarIndices } from '../services/carmen/terceros';
+import { conservaPermiso } from '../services/carmen/sesiones';
 import type { CarmenCtx } from '../services/carmen/tipos';
 import type { AjustesCarmen } from '../services/carmen/ajustes.service';
 
@@ -733,6 +734,10 @@ describe('terceros en la pregunta', () => {
     expect(r.cuerpo.texto).toBe('¿A qué cliente te refieres?');
     expect(r.cuerpo.botones?.map((b) => (b.accion.tipo === 'tercero' ? b.accion.terceroId : '')).sort()).toEqual(['c1', 'c4']);
     expect(r.contexto).toMatchObject({ pendiente: 'INT-01' });
+    // Los botones llevan nombres de clientes: la aclaración se guarda con el permiso de la intención
+    // y, si el usuario lo pierde, se oculta del historial.
+    expect(r.cuerpo.permisoRequerido).toBe('ventas:read|contabilidad:read');
+    expect(conservaPermiso({ ...admin, permisos: new Set(['tesoreria:read']) }, r.cuerpo.permisoRequerido!)).toBe(false);
   });
 });
 

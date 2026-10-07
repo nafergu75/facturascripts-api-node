@@ -590,6 +590,8 @@ describe('contrato de cifras', () => {
     expect(mockCalcular303).not.toHaveBeenCalled();
     expect(!ilegible.sinPermiso && ilegible.sinCifras).toBe(true);
     expect(!ilegible.sinPermiso && ilegible.texto).toMatch(/consta como presentado en la app, pero no puedo leer su resultado/);
+    // Sin cifras, pero dice el estado del modelo: se guarda con su permiso.
+    expect(!ilegible.sinPermiso && ilegible.permisoRequerido).toBe('impuestos:read');
 
     // Guardado sin presentar y sin resultado legible: se calcula, sin decir que no está guardado.
     mockModeloGuardado.mockResolvedValue({ id: 'm4', estado: 'vigente', origen: 'manual', casillas: {} });
