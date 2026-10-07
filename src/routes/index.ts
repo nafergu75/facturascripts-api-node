@@ -51,6 +51,7 @@ import ocrAnalyticsRoutes from './ocr-analytics.routes';
 import taxModelsRoutes from './tax-models.routes';
 import treasuryRoutes from './treasury.routes';
 import tiposCambioRoutes from './tiposCambio.routes';
+import ajustesFacturacionRoutes from './ajustesFacturacion.routes';
 
 const router = Router();
 
@@ -115,6 +116,7 @@ scoped.use('/treasury', treasuryRoutes);
 scoped.use('/chat-assistant', chatAssistantRoutes);
 scoped.use('/legal-config', legalConfigRoutes);
 scoped.use('/fiscal-years', fiscalYearsRoutes);
+scoped.use('/ajustes-facturacion', ajustesFacturacionRoutes);
 scoped.use('/movements', movementsRoutes);
 scoped.use('/archivo', archivoRoutes);
 scoped.use('', ocrRoutes);

@@ -27,7 +27,9 @@ import {
 import { perfilDesdeConfig, perfilEmpresa, type PerfilEmpresa } from './perfilEmpresa.service';
 import { marcarTransaccion, mensajeSinTipo, resolverTipoCambio, type TipoResuelto } from './tiposCambio.service';
 import { resolverFiscalidad } from './fiscalidad-venta.service';
-import { hoyEspana, vencimientoPorDefecto } from '../utils/fechas';
+import { hoyEspana, sumarDiasISO } from '../utils/fechas';
+import { copiaAlEmitir, leerAjustesFacturacion } from './ajustesFacturacion.service';
+import { FORMAS_PAGO, type FormaPago } from '../domain/ajustes.model';
 import { leerPais } from './clientes.service';
 
 /**
@@ -70,9 +72,8 @@ export type EstadoProforma = (typeof ESTADOS_PROFORMA)[number];
 export const TIPOS_FACTURA = ['F1', 'F2', 'R1', 'R2', 'R3', 'R4', 'R5'] as const;
 export type TipoFactura = (typeof TIPOS_FACTURA)[number];
 
-/** Formas de pago que se imprimen en la factura. */
-export const FORMAS_PAGO = ['TRANSFERENCIA', 'GIRO', 'CONTADO'] as const;
-export type FormaPago = (typeof FORMAS_PAGO)[number];
+/** Formas de pago que se imprimen en la factura (viven en domain/ajustes.model). */
+export { FORMAS_PAGO, type FormaPago };
 
 /** Estados de cobro que se pueden poner a mano en una factura final. */
 export const ESTADOS_COBRO = ['PENDING', 'PAID', 'OVERDUE'] as const;
@@ -107,7 +108,7 @@ export interface CrearFacturaIngresoDTO {
    */
   numero?: number;
   fechaEmision?: string; // YYYY-MM-DD, defecto: hoy
-  fechaVencimiento?: string; // YYYY-MM-DD, defecto: fechaEmision + 30 días (DIAS_VENCIMIENTO_POR_DEFECTO)
+  fechaVencimiento?: string; // YYYY-MM-DD, defecto: fechaEmision + los días de Configuración > Facturación (30 si no se han tocado)
   /** Fecha de la operacion (devengo) si es distinta de la de emision: fija el tipo de cambio. */
   fechaOperacion?: string | null;
   lineas: CrearLineaIngresoDTO[];
@@ -118,7 +119,7 @@ export interface CrearFacturaIngresoDTO {
   /** true: factura proforma (serie P, numero al crearla, sin efectos fiscales). */
   proforma?: boolean;
   tipoFactura?: TipoFactura;
-  /** Transferencia bancaria (defecto), giro (recibo domiciliado) o contado. */
+  /** Transferencia bancaria, giro (recibo domiciliado) o contado. Defecto: el de Configuración > Facturación. */
   formaPago?: FormaPago;
   facturaOriginalId?: string; // Si es rectificativa
   tipoRectificativa?: 'S' | 'I';
@@ -629,8 +630,8 @@ function validarTipoFactura(tipo: string | undefined, porDefecto: TipoFactura): 
   return t as TipoFactura;
 }
 
-function validarFormaPago(forma: string | undefined): FormaPago {
-  const f = (forma ?? 'TRANSFERENCIA').toUpperCase();
+function validarFormaPago(forma: string | undefined, porDefecto: FormaPago = 'TRANSFERENCIA'): FormaPago {
+  const f = (forma ?? porDefecto).toUpperCase();
   if (!(FORMAS_PAGO as readonly string[]).includes(f)) {
     throw badRequest(`Forma de pago no válida. Usa: ${FORMAS_PAGO.join(', ')}.`);
   }
@@ -861,7 +862,9 @@ async function crear(dto: CrearFacturaIngresoDTO, opciones: { origen?: OrigenFac
   comprobarMonedaLineas(dto.lineas, moneda, false);
 
   const fechaEmision = validarFecha(dto.fechaEmision ?? hoyISO(), 'fecha de emisión');
-  const fechaVencimiento = validarFecha(dto.fechaVencimiento ?? vencimientoPorDefecto(fechaEmision), 'fecha de vencimiento');
+  // Sin forma de pago o sin vencimiento: los de Configuración > Facturación.
+  const ajustes = await leerAjustesFacturacion(dto.companyId);
+  const fechaVencimiento = validarFecha(dto.fechaVencimiento ?? sumarDiasISO(fechaEmision, ajustes.diasVencimiento), 'fecha de vencimiento');
   if (fechaVencimiento < fechaEmision) throw badRequest('El vencimiento no puede ser anterior a la fecha de emisión.');
   const fechaOperacion = validarFechaOperacion(dto.fechaOperacion, fechaEmision);
   // Una factura emitida (o registrada desde el lector) lleva asiento en su fecha:
@@ -920,7 +923,7 @@ async function crear(dto: CrearFacturaIngresoDTO, opciones: { origen?: OrigenFac
     fechaVencimiento,
     fechaOperacion,
     tipoFactura,
-    formaPago: validarFormaPago(dto.formaPago),
+    formaPago: validarFormaPago(dto.formaPago, ajustes.formaPago),
     ...cabecera(importes),
     moneda,
     ...datosTipo(tipo),
@@ -966,6 +969,9 @@ async function crear(dto: CrearFacturaIngresoDTO, opciones: { origen?: OrigenFac
     return aRespuesta(factura, ctx);
   }
 
+  // Al emitir se copian el IBAN y el pie de ahora: el PDF ya no cambia con los ajustes.
+  const copia = await copiaAlEmitir(dto.companyId, moneda);
+
   // Factura emitida fuera de la app (lector): conserva su numero original.
   if (dto.numero) {
     const existe = await prisma.incomeInvoice.findFirst({ where: { companyId: dto.companyId, serie, numero: dto.numero } });
@@ -973,6 +979,7 @@ async function crear(dto: CrearFacturaIngresoDTO, opciones: { origen?: OrigenFac
     const factura = await prisma.incomeInvoice.create({
       data: {
         ...comunes,
+        ...copia,
         numero: dto.numero,
         numeroCompleto: `${serie}-${dto.numero}`,
         estadoDocumento: ESTADO_FINAL,
@@ -994,6 +1001,7 @@ async function crear(dto: CrearFacturaIngresoDTO, opciones: { origen?: OrigenFac
     return tx.incomeInvoice.create({
       data: {
         ...comunes,
+        ...copia,
         numero,
         numeroCompleto: `${serie}-${numero}`,
         estadoDocumento: ESTADO_FINAL,
@@ -1359,6 +1367,8 @@ export const incomeInvoicesService = {
     const recalcular = normaliza || (!misma && !heredado);
     exigirNoFinal(actual);
     const importes = recalcular ? calcularImportesFactura(lineas, { tipoCambio: tipo.tipoCambio, mismaMoneda: misma }) : null;
+    // IBAN y pie de ahora, copiados en la factura: su PDF ya no cambia con los ajustes.
+    const copia = await copiaAlEmitir(companyId, actual.moneda);
 
     const factura = await transaccion(async (tx) => {
       const numero = await asignarNumero(tx, companyId, actual.serie, fechaEmision);
@@ -1374,6 +1384,7 @@ export const incomeInvoicesService = {
           fechaEmision,
           fechaVencimiento,
           fechaOperacion,
+          ...copia,
           estado: determinarEstado(fechaVencimiento),
           ...datosTipo(tipo),
           tipoOperacion: fiscal.tipoOperacion,
