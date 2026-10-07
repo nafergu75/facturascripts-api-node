@@ -47,7 +47,7 @@ export const esVencida = (f: { estado: string; estadoPago: string; fechaVencimie
   f.estado !== 'ANULADA' && f.estadoPago !== 'PAGADA' && f.fechaVencimiento < hoy;
 
 /** Filtro de "vigentes" para resumenes no fiscales: ni borradores del lector ni anuladas. */
-export const GASTO_VIGENTE = { estado: { notIn: ['DRAFT', 'ANULADA'] } } as const;
+export const GASTO_VIGENTE: { estado: { notIn: string[] } } = { estado: { notIn: ['DRAFT', 'ANULADA'] } };
 
 /** Fecha del asiento, del libro de IVA y de los modelos: la de registro si la hay. */
 export const fechaContableGasto = (f: { fechaEmision: string; fechaRegistro?: string | null }): string => f.fechaRegistro || f.fechaEmision;

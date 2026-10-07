@@ -9,8 +9,9 @@
  *    obligacion de retener nace al pagar): una nomina de diciembre pagada en
  *    enero entra en el 1T del ano siguiente. Cuentan las no anuladas; las que
  *    siguen en borrador tambien, con aviso.
- *  - Profesionales (actividades economicas): facturas de gasto confirmadas con
- *    retencion, por fecha de la factura (como hasta ahora).
+ *  - Profesionales (actividades economicas): facturas de gasto con retencion,
+ *    por su fecha contable y con el criterio fiscal de domain/factura-gasto.model
+ *    (sin borradores ni anuladas). Los alquileres no: van al 115.
  *  - Resumen mensual antiguo (NominaResumen, solo totales): solo para los meses
  *    sin nominas por trabajador, con aviso de que la casilla 01 no es fiable.
  *    No entra en el 190.
@@ -20,6 +21,7 @@ import { prisma } from '../../config/database';
 import type { PeriodoFiscal } from '../../domain/impuestos.model';
 import { badRequest } from '../../utils/http-errors';
 import { aCentimos } from '../../utils/money';
+import { aparicionesEntre, desgloseRetencionGasto, whereGastosFiscales } from '../../domain/factura-gasto.model';
 
 const euros = (centimos: number): number => Math.round(centimos) / 100;
 const mm = (n: number) => String(n).padStart(2, '0');
@@ -342,22 +344,37 @@ export function desgloseActividadesPorTipo(
 }
 
 /**
- * Retenciones a profesionales: facturas de gasto confirmadas (no borrador) con
- * retencion y fecha de la factura en el periodo.
+ * Facturas de gasto de PROFESIONALES con retencion entre dos fechas, una fila
+ * por aparicion fiscal y porcentaje (domain/factura-gasto.model): sin
+ * borradores ni anuladas, una anulada con contraasiento resta en el periodo de
+ * la anulacion, y los alquileres no entran (van al 115). La base es la de las
+ * lineas con retencion.
+ */
+async function retencionesProfesionalesEntre(companyId: string, desde: string, hasta: string) {
+  if (!tablaLista('expenseInvoice')) return [];
+  const facturas = await prisma.expenseInvoice.findMany({
+    where: { AND: [whereGastosFiscales(companyId, desde, hasta), { tipoGasto: { not: 'ALQUILER' }, retencionTotal: { gt: 0 } }] },
+    include: { lineas: true, supplier: { select: { nifCif: true, nombreFiscal: true, cp: true, provincia: true } } },
+  });
+  const filas: Array<{ supplierId: string; signo: 1 | -1; baseTotal: number; retencionTotal: number; tipoRetencion: number; supplier: (typeof facturas)[number]['supplier'] }> = [];
+  for (const f of facturas) {
+    for (const { signo } of aparicionesEntre(f, desde, hasta)) {
+      for (const d of desgloseRetencionGasto(f)) {
+        filas.push({ supplierId: f.supplierId, signo, baseTotal: signo * d.base, retencionTotal: signo * d.cuota, tipoRetencion: d.porcentaje, supplier: f.supplier });
+      }
+    }
+  }
+  return filas;
+}
+
+/**
+ * Retenciones a profesionales [07]-[09]: facturas de gasto con retencion en su
+ * fecha contable (ver retencionesProfesionalesEntre). Los alquileres van al 115.
  */
 export async function retencionesActividades(companyId: string, periodo: PeriodoFiscal): Promise<RetencionesActividades> {
-  if (!tablaLista('expenseInvoice')) return { perceptores: 0, percepciones: 0, retenciones: 0, porTipo: [] };
-  const conIrpf = await prisma.expenseInvoice.findMany({
-    where: {
-      companyId,
-      estado: { not: 'DRAFT' },
-      fechaEmision: { gte: periodo.fechaInicio, lte: periodo.fechaFin },
-      retencionTotal: { gt: 0 },
-    },
-    select: { supplierId: true, retencionTotal: true, baseTotal: true, tipoRetencion: true },
-  });
+  const conIrpf = await retencionesProfesionalesEntre(companyId, periodo.fechaInicio, periodo.fechaFin);
   return {
-    perceptores: new Set(conIrpf.map((f) => f.supplierId)).size,
+    perceptores: new Set(conIrpf.filter((f) => f.signo > 0).map((f) => f.supplierId)).size,
     percepciones: euros(conIrpf.reduce((a, f) => a + aCentimos(Number(f.baseTotal)), 0)),
     retenciones: euros(conIrpf.reduce((a, f) => a + aCentimos(Number(f.retencionTotal)), 0)),
     porTipo: desgloseActividadesPorTipo(conIrpf),
@@ -654,12 +671,8 @@ export async function calcularModelo190(companyId: string, ejercicio: number): P
     );
   }
 
-  const facturas = tablaLista('expenseInvoice')
-    ? await prisma.expenseInvoice.findMany({
-        where: { companyId, estado: { not: 'DRAFT' }, fechaEmision: { gte: anio.fechaInicio, lte: anio.fechaFin }, retencionTotal: { gt: 0 } },
-        select: { supplierId: true, baseTotal: true, retencionTotal: true, tipoRetencion: true, supplier: { select: { nifCif: true, nombreFiscal: true, cp: true, provincia: true } } },
-      })
-    : [];
+  // Clave G: solo profesionales (los alquileres van al 115 y al resumen anual del 115).
+  const facturas = await retencionesProfesionalesEntre(companyId, anio.fechaInicio, anio.fechaFin);
 
   const perceptores = [
     ...perceptoresDeNominas(ejercicio, nominas, empleados),

@@ -17,6 +17,7 @@ import {
   OperacionTercero,
   PeriodoFiscal,
 } from '../domain/impuestos.model';
+import { aparicionesEntre, desgloseRetencionGasto, whereGastosFiscales } from '../domain/factura-gasto.model';
 import {
   esPaisEspana,
   esTipoOperacion,
@@ -457,8 +458,10 @@ export async function obtenerFacturasFiscales(companyId: string, desde: string, 
       where: { companyId, estadoDocumento: 'FINAL', estado: { not: 'DRAFT' }, ...ventasQuePuedenDevengarseEntre(desde, hasta) },
       include: { customer: true, lineas: true },
     }),
+    // Compras: criterio unico de domain/factura-gasto.model (sin borradores del
+    // lector ni anuladas; una anulada con contraasiento resta en su periodo).
     prisma.expenseInvoice.findMany({
-      where: { companyId, estado: { not: 'DRAFT' }, fechaEmision: { gte: desde, lte: hasta } },
+      where: whereGastosFiscales(companyId, desde, hasta),
       include: { supplier: true, lineas: true },
     }),
   ]);
@@ -497,17 +500,21 @@ export async function obtenerFacturasFiscales(companyId: string, desde: string, 
   }
 
   for (const f of compras) {
-    out.push({
-      idFactura: f.numeroCompleto,
-      tipo: 'compra',
-      cifnif: f.supplier?.nifCif ?? '',
-      nombreTercero: f.supplier?.nombreFiscal ?? '',
-      fecha: f.fechaEmision,
-      operacion: clasificarOperacion(f.supplier?.pais, f.supplier?.nifCif),
-      lineas: f.lineas.length
-        ? f.lineas.map((l) => ({ tipoIva: l.tipoIva, base: round2(l.baseLine), cuota: round2(l.ivaImporte) }))
-        : [{ tipoIva: 0, base: round2(f.baseTotal), cuota: 0 }],
-    });
+    // Una aparicion por periodo: la factura en su fecha contable y, si se anulo
+    // con contraasiento, en negativo en la fecha de la anulacion.
+    for (const { fecha, signo } of aparicionesEntre(f, desde, hasta)) {
+      out.push({
+        idFactura: f.numeroFacturaProveedor ?? f.numeroCompleto,
+        tipo: 'compra',
+        cifnif: f.supplier?.nifCif ?? '',
+        nombreTercero: f.supplier?.nombreFiscal ?? '',
+        fecha,
+        operacion: clasificarOperacion(f.supplier?.pais, f.supplier?.nifCif),
+        lineas: f.lineas.length
+          ? f.lineas.map((l) => ({ tipoIva: l.tipoIva, base: signo * round2(l.baseLine), cuota: signo * round2(l.ivaImporte) }))
+          : [{ tipoIva: 0, base: signo * round2(f.baseTotal), cuota: 0 }],
+      });
+    }
   }
 
   return out;
@@ -595,18 +602,47 @@ export async function calcularModelo349(companyId: string, periodo: PeriodoFisca
 }
 
 /**
- * Modelo 115 (retenciones por arrendamiento de inmuebles urbanos). TODO: sumar
- * las retenciones de los pagos/facturas de alquiler con retencion del periodo.
- * Sin un modulo de arrendamientos, devuelve ceros (el fichero se genera valido).
+ * Modelo 115 (retenciones por arrendamiento de inmuebles urbanos): las
+ * facturas de gasto de ALQUILER con retencion, con el criterio fiscal de las
+ * facturas de gasto (sin borradores ni anuladas; una anulada con contraasiento
+ * resta en el periodo de la anulacion). La base es la de las lineas con
+ * retencion. [01] son los arrendadores distintos con facturas en el periodo.
+ * Sin complementarias: [04] = 0 y [05] = [03].
  */
-export async function calcularModelo115(_companyId: string, periodo: PeriodoFiscal): Promise<DatosModelo115> {
+export async function calcularModelo115(companyId: string, periodo: PeriodoFiscal): Promise<DatosModelo115> {
+  const vacio: DatosModelo115 = { periodo, nPerceptores: 0, baseRetenciones: 0, retenciones: 0, resultadoAnteriores: 0, resultadoIngresar: 0, perceptores: [] };
+  if (!dbFacturasListo()) return vacio;
+  const facturas = await prisma.expenseInvoice.findMany({
+    where: { AND: [whereGastosFiscales(companyId, periodo.fechaInicio, periodo.fechaFin), { tipoGasto: 'ALQUILER', retencionTotal: { gt: 0 } }] },
+    include: { lineas: true, supplier: { select: { nifCif: true, nombreFiscal: true } } },
+  });
+  const c = (n: number) => Math.round(n * 100);
+  const porArrendador = new Map<string, { nif: string; nombre: string; base: number; retencion: number; facturas: number; positivas: boolean }>();
+  for (const f of facturas) {
+    for (const { signo } of aparicionesEntre(f, periodo.fechaInicio, periodo.fechaFin)) {
+      const a = porArrendador.get(f.supplierId) ?? { nif: f.supplier.nifCif, nombre: f.supplier.nombreFiscal, base: 0, retencion: 0, facturas: 0, positivas: false };
+      for (const d of desgloseRetencionGasto(f)) {
+        a.base += signo * c(d.base);
+        a.retencion += signo * c(d.cuota);
+      }
+      a.facturas += signo;
+      if (signo > 0) a.positivas = true;
+      porArrendador.set(f.supplierId, a);
+    }
+  }
+  const lista = [...porArrendador.values()];
+  const base = lista.reduce((s, a) => s + a.base, 0);
+  const retenciones = lista.reduce((s, a) => s + a.retencion, 0);
   return {
     periodo,
-    nPerceptores: 0,
-    baseRetenciones: 0,
-    retenciones: 0,
+    nPerceptores: lista.filter((a) => a.positivas).length,
+    baseRetenciones: base / 100,
+    retenciones: retenciones / 100,
     resultadoAnteriores: 0,
-    resultadoIngresar: 0,
+    resultadoIngresar: retenciones / 100,
+    perceptores: lista
+      .map((a) => ({ nif: a.nif, nombre: a.nombre, base: a.base / 100, retencion: a.retencion / 100, facturas: a.facturas }))
+      .sort((x, y) => x.nombre.localeCompare(y.nombre, 'es')),
   };
 }
 

@@ -19,11 +19,14 @@ mockNominas.push({ ...mockNominas[0], empleadoId: 'D', empleado: { nif: '0000000
 // Modelo 111 (retenciones a profesionales) lee facturas de gasto de Prisma
 // `expenseInvoice` (ADR-002 Paso 3, camino de facturas migrado): PRO1 con
 // retención 150 sobre base 1000; PRO2 sin retención no entra (filtro > 0).
+// La factura cuenta en su fecha contable (domain/factura-gasto.model).
 jest.mock('../config/database', () => ({
   prisma: {
     incomeInvoice: { findMany: jest.fn(async () => []) },
     expenseInvoice: {
-      findMany: jest.fn(async () => [{ supplierId: 'PRO1', retencionTotal: 150, baseTotal: 1000 }]),
+      findMany: jest.fn(async () => [
+        { supplierId: 'PRO1', retencionTotal: 150, baseTotal: 1000, tipoRetencion: 15, estado: 'ACCOUNTED', fechaEmision: '2026-05-15', tipoGasto: 'SERVICIO_PROFESIONAL', lineas: [] },
+      ]),
     },
     nomina: {
       findMany: jest.fn(async ({ where }: { where: { estado: { not: string }; fechaPago: { gte: string; lte: string } } }) =>

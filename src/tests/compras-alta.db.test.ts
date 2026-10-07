@@ -241,6 +241,9 @@ describe('fecha de registro', () => {
     expect(libro.observaciones).toBe('Fecha de expedición: 20/03/2026');
     const ret = await prisma.retentionBook.findFirstOrThrow({ where: { companyId: E } });
     expect(ret.mes).toBe(4);
+    // El IVA se deduce en el 2T (el de la fecha de registro), no en el 1T.
+    await esperarCuadre(expect, E, 2026, 2, 210, 1000);
+    await esperarCuadre(expect, E, 2026, 1, 0, 0);
   });
 });
 

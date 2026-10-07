@@ -212,6 +212,8 @@ export interface DatosModelo115 {
   retenciones: number; // [03]
   resultadoAnteriores: number; // [04]
   resultadoIngresar: number; // [05] = [03] - [04]
+  /** Desglose por arrendador (pantalla y resumen anual, el contenido del 180). No va al fichero. */
+  perceptores?: Array<{ nif: string; nombre: string; base: number; retencion: number; facturas: number }>;
 }
 
 /** Modelo 349 — operaciones intracomunitarias. */

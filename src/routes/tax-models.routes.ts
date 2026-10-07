@@ -140,11 +140,11 @@ router.post(
 
 /**
  * GET /tax-models/115
- * Generar modelo 115 (arrendamientos locales)
+ * Modelo 115 (retenciones de alquileres)
  *
  * Query params:
  *   - ejercicio: number (REQUERIDO)
- *   - trimestre: 1-4 (REQUERIDO)
+ *   - trimestre: 1-4. Sin el, el resumen anual por arrendador (los datos del 180), sin guardar nada.
  */
 router.get(
   '/115',

@@ -17,6 +17,7 @@ import { botonIntencion, diasEntre, eur, fechaES, plural, sumar, tabla, unAnioAn
 import { hastaHoy, resolverCodigoPeriodo } from '../huecos/periodo';
 import { indiceTerceros } from '../terceros';
 import type { CarmenCtx, HuecosResueltos, Kpi, RespuestaDatos } from '../tipos';
+import { GASTO_VIGENTE } from '../../../domain/factura-gasto.model';
 
 type Ejecutor = (ctx: CarmenCtx, h: HuecosResueltos) => Promise<RespuestaDatos>;
 
@@ -321,7 +322,7 @@ export const buscarFactura: Ejecutor = async (ctx, h) => {
       : Promise.resolve([]),
     compras
       ? prisma.expenseInvoice.findMany({
-          where: { companyId: ctx.companyId, numero, estado: { not: 'DRAFT' } },
+          where: { companyId: ctx.companyId, numero, ...GASTO_VIGENTE },
           select: { id: true, numeroCompleto: true, fechaEmision: true, fechaVencimiento: true, totalFactura: true, supplier: { select: { nombreFiscal: true } } },
           take: 50,
         })

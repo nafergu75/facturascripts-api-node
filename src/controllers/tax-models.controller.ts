@@ -6,6 +6,7 @@ import { Request, Response } from 'express';
 import { taxModelsService } from '../services/tax-models.service';
 import { asyncHandler } from '../utils/async-handler';
 import { sendOk } from '../utils/response';
+import { badRequest } from '../utils/http-errors';
 
 export class TaxModelsController {
   /**
@@ -223,10 +224,14 @@ export class TaxModelsController {
     const { ejercicio, trimestre } = req.query;
     const userId = (req as any).user?.id || 'SYSTEM';
 
-    if (!ejercicio || !trimestre) {
-      return res.status(400).json({
-        error: 'Parameters "ejercicio" and "trimestre" required',
-      });
+    if (!ejercicio || !/^\d{4}$/.test(String(ejercicio))) {
+      throw badRequest('Indica el ejercicio (año con cuatro cifras).');
+    }
+
+    // Sin trimestre: el resumen anual por arrendador (los datos del 180). No guarda nada.
+    if (!trimestre) {
+      sendOk(res, await taxModelsService.resumenAnual115(companyId, parseInt(ejercicio as string)));
+      return;
     }
 
     const resultado = await taxModelsService.generarModelo115(
