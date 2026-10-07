@@ -47,7 +47,7 @@ const MENSAJE_INTERNO = "Error: Cannot find module 'pdf-parse'\nRequire stack:\n
 // Nada de esto puede salir por la API: mensajes internos ni rutas del servidor.
 const DATO_INTERNO = /pdf-parse|Require stack|prisma|ECONNREFUSED|[A-Z]:\\|\/tmp\/|uploads|node_modules|originalFilePath|ocrPdfPath|errorMessage/i;
 
-const usuarios: Record<'a' | 'b' | 'adminA', { id: string; token: string }> = {} as never;
+const usuarios: Record<'a' | 'b' | 'adminA' | 'global', { id: string; token: string }> = {} as never;
 const ses: Record<'aOk' | 'aFallo' | 'bOk' | 'bFallo', string> = {} as never;
 
 async function crearUsuario(nombre: string, companyId: string, role: 'contable' | 'admin') {
@@ -74,7 +74,7 @@ const crearSesion = (companyId: string, status: string, texto?: string) =>
     },
   });
 
-const como = (quien: 'a' | 'b' | 'adminA') => ({
+const como = (quien: 'a' | 'b' | 'adminA' | 'global') => ({
   get: (ruta: string) => request(app).get(ruta).set('Authorization', `Bearer ${usuarios[quien].token}`),
   post: (ruta: string, body: object = {}) => request(app).post(ruta).set('Authorization', `Bearer ${usuarios[quien].token}`).send(body),
 });
@@ -87,6 +87,11 @@ describeBd('OCR por empresa (app entera, BD real)', () => {
     usuarios.a = await crearUsuario('ocr-a', EMPRESA_A, 'contable');
     usuarios.b = await crearUsuario('ocr-b', EMPRESA_B, 'contable');
     usuarios.adminA = await crearUsuario('ocr-admin-a', EMPRESA_A, 'admin');
+    const emailGlobal = `ocr-global-${SUFIJO}@test.local`;
+    const global = await prisma.user.create({
+      data: { email: emailGlobal, isGlobalAdmin: true, passwordHash: hashPassword(randomBytes(18).toString('base64url')) },
+    });
+    usuarios.global = { id: global.id, token: authService.generateToken({ userId: global.id, email: emailGlobal, roles: [], companies: [] }) };
 
     ses.aOk = (await crearSesion(EMPRESA_A, 'COMPLETED', 'texto de A')).id;
     ses.aFallo = (await crearSesion(EMPRESA_A, 'FAILED')).id;
@@ -179,6 +184,17 @@ describeBd('OCR por empresa (app entera, BD real)', () => {
 
   it('analytics global: solo para el administrador de la plataforma', async () => {
     expect((await como('adminA').get(`/companies/${EMPRESA_A}/analytics/global`)).status).toBe(403);
+
+    // El administrador de la plataforma si: solo recuentos por empresa, sin texto de facturas.
+    const res = await como('global').get(`/companies/${EMPRESA_A}/analytics/global?days=30`);
+    expect(res.status).toBe(200);
+    expect(JSON.stringify(res.body)).not.toContain(TEXTO_B);
+    expect(JSON.stringify(res.body)).not.toContain('texto de A');
+    for (const fila of res.body.data.byCompany) {
+      expect(Object.keys(fila).sort()).toEqual(['companyId', 'completed', 'count', 'failed', 'successRate']);
+    }
+    const deB = res.body.data.byCompany.find((f: { companyId: string }) => f.companyId === EMPRESA_B);
+    expect(deB).toMatchObject({ count: 2, completed: 1, failed: 1 });
   });
 
   it('reintento: no toca la sesion de otra empresa (404) y si la propia', async () => {
