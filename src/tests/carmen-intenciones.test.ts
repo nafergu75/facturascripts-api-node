@@ -165,9 +165,15 @@ beforeEach(() => {
     invoiceId: 'f1',
     tipo: 'INGRESO',
     numeroFactura: 'A-12',
+    // Forma de main (divisas): sin *Cuenta, en la moneda de la factura; con *Cuenta, en la de cuenta.
+    moneda: 'EUR',
+    monedaCuenta: 'EUR',
     totalFactura: 1210,
     importeCobrado: 210,
     importePendiente: 1000,
+    totalFacturaCuenta: 1210,
+    importeCobradoCuenta: 210,
+    importePendienteCuenta: 1000,
     estado: 'OVERDUE',
     cobros: [{ id: 'k1', fecha: '2026-07-15', importe: 210, medio: 'BANCO', estado: 'ACTIVO' }],
   });
