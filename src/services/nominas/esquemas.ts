@@ -205,7 +205,8 @@ export function parsear<S extends ZodTypeAny>(schema: S, datos: unknown): z.infe
     const campo = issue.path.join('.') || 'datos';
     const msg = issue.code === 'unrecognized_keys' ? `campos no admitidos: ${issue.keys.join(', ')}` : issue.message;
     (campos[campo] ??= []).push(msg);
-    partes.push(`${NOMBRES_CAMPOS[campo] ?? campo}: ${msg}`);
+    // Sin el punto final del mensaje: el texto ya cierra con uno (evita "correctos..").
+    partes.push(`${NOMBRES_CAMPOS[campo] ?? campo}: ${msg.replace(/\.+$/, '')}`);
   }
   throw badRequest(`Datos no válidos. ${partes.slice(0, 5).join('; ')}.`, campos);
 }
