@@ -133,6 +133,8 @@ export const nominasConexionesController = {
   /** GET /retenciones/:ejercicio/:periodo — casillas del 111 (misma fuente que Impuestos) y su pago. */
   retenciones: asyncHandler(async (req, res) => {
     const periodo = periodo111De(req);
+    // Una empresa no establecida en Espana no presenta el 111 (como en Impuestos).
+    if (!(await esEmpresaEspanolaFiscal(req.companyId!))) throw badRequest(MENSAJE_SIN_MODELOS);
     const [d, trabajo, pago, aPagar] = await Promise.all([
       calcularModelo111(req.companyId!, periodo),
       retencionesTrabajo(req.companyId!, periodo),
@@ -185,6 +187,7 @@ export const nominasConexionesController = {
   /** GET /190/:ejercicio/perceptores — un registro por perceptor y clave (JSON, o Excel con ?formato=xlsx). */
   perceptores190: asyncHandler(async (req, res) => {
     const ejercicio = ejercicioDe(req);
+    if (!(await esEmpresaEspanolaFiscal(req.companyId!))) throw badRequest(MENSAJE_SIN_MODELOS);
     const m = await calcularModelo190(req.companyId!, ejercicio);
     if (quiereExcel(req)) {
       // Exportacion masiva con los datos de toda la plantilla: queda en la auditoria.

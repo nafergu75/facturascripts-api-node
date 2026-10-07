@@ -352,3 +352,49 @@ describe('modelo 190 por perceptor (ejercicio 2025, diseno de registro verificad
     await expect(Promise.resolve().then(() => generarFicheroModelo190(2026, { nif: 'B98765432', nombre: 'X' }, m.perceptores))).rejects.toMatchObject({ statusCode: 409 });
   });
 });
+
+describe('empresa no establecida en Espana: Nominas no le pide el 111 (como Impuestos)', () => {
+  const COMPANY_US = `nomus-test-${Date.now()}`;
+  let bancoUs: string;
+
+  beforeAll(async () => {
+    await prisma.company.create({ data: { id: COMPANY_US, name: `Empresa ${COMPANY_US}`, fsBaseUrl: 'http://localhost:8080', fsApiKeyEnc: 'k' } });
+    await prisma.legalConfig.create({ data: { companyId: COMPANY_US, denominacion: 'US Test Inc.', nif: '98-7654321', pais: 'US', monedaCuenta: 'USD' } });
+    bancoUs = (await prisma.bankAccount.create({ data: { companyId: COMPANY_US, iban: 'US0000000000000000000099', bancoNombre: 'Bank', subcuentaCodigo: '572001', moneda: 'USD' } })).id;
+    // Un gasto con retencion: con el 111 sin bloquear saldria un pago de 150 en la prevision.
+    const prov = await prisma.supplier.create({ data: { companyId: COMPANY_US, nombreFiscal: 'Asesoria Prueba SL', nifCif: 'B46000001', cp: '46001' } });
+    await prisma.expenseInvoice.create({
+      data: {
+        companyId: COMPANY_US,
+        supplierId: prov.id,
+        serie: 'P',
+        numero: 1,
+        numeroCompleto: 'P-1',
+        fechaEmision: '2026-02-10',
+        fechaVencimiento: '2026-03-10',
+        estado: 'CONFIRMED',
+        tipoGasto: 'SERVICIO_PROFESIONAL',
+        baseTotal: 1000,
+        ivaTotal: 0,
+        retencionTotal: 150,
+        tipoRetencion: 15,
+        totalFactura: 850,
+      },
+    });
+  });
+
+  it('el pago del 111 da 400 y no crea asiento', async () => {
+    await expect(pagarModelo111(COMPANY_US, 2026, '1T', { cuentaBancariaId: bancoUs, fecha: '2026-04-20' })).rejects.toMatchObject({
+      statusCode: 400,
+      message: expect.stringMatching(/no está establecida en España/),
+    });
+    expect(await prisma.journalEntry.count({ where: { companyId: COMPANY_US } })).toBe(0);
+  });
+
+  it('la prevision de pagos y las sugerencias del extracto no llevan el 111', async () => {
+    const p = await previsionPagos(COMPANY_US, '2026-04-01', '2026-04-30');
+    expect(p.pagos.filter((x) => x.tipo === 'modelo111')).toEqual([]);
+    const mov = await prisma.bankMovement.create({ data: { companyId: COMPANY_US, cuentaBancariaId: bancoUs, fecha: '2026-04-20', importe: -150, concepto: 'AEAT 111', origen: 'csv' } });
+    expect((await sugerenciasMovimiento(COMPANY_US, mov.id)).sugerencias).toEqual([]);
+  });
+});

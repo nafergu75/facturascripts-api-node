@@ -30,7 +30,7 @@ import { hoyEspana } from '../../utils/fechas';
 import type { CuentasNominas } from '../../domain/nominas.model';
 import { crearAsientoConApuntes } from '../asientos.service';
 import { comprobarFechaAbierta } from '../cobrosPagos.service';
-import { calcularModelo111 } from '../impuestosCalculo.service';
+import { calcularModelo111, esEmpresaEspanolaFiscal, MENSAJE_SIN_MODELOS } from '../impuestosCalculo.service';
 import { obtenerReglas } from '../reglasContables.service';
 import { nombreCompleto } from '../empleados.service';
 import { NOMBRES_CUENTAS, conceptoSubcuenta465, etiquetaTrabajador, fmtEuros } from './calculo';
@@ -629,6 +629,8 @@ export async function pagarModelo111(
   opciones: MedioPago & { cuentaProfesionales?: string; cuentaResumenAntiguo?: string } = {},
 ) {
   const periodo = periodoFiscal(ejercicio, periodoTxt);
+  // Una empresa no establecida en Espana no presenta el 111 (como en Impuestos).
+  if (!(await esEmpresaEspanolaFiscal(companyId))) throw badRequest(MENSAJE_SIN_MODELOS);
   const ya = await pagoModelo111(companyId, ejercicio, periodo.periodo);
   if (ya) throw conflict(`El 111 de ${periodo.periodo}/${ejercicio} ya está pagado (asiento ${ya.numeroAsiento}).`);
   const imp = await importePago111(companyId, periodo);

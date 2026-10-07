@@ -20,6 +20,7 @@ import { cuadreNomina } from './calculo';
 import { periodoFiscal } from './fiscal';
 import { listarSegurosSociales } from './segurosSociales';
 import { importePago111, pagoModelo111 } from './tesoreria';
+import { esEmpresaEspanolaFiscal } from '../impuestosCalculo.service';
 
 const mm = (n: number) => String(n).padStart(2, '0');
 const euros = (centimos: number): number => Math.round(centimos) / 100;
@@ -268,8 +269,10 @@ export async function previsionPagos(companyId: string, desdeEntrada?: string, h
     }
   }
 
-  // 111: trimestres que vencen en el rango y no estan pagados.
-  for (let ej = Number(desde.slice(0, 4)) - 1; ej <= Number(hasta.slice(0, 4)); ej++) {
+  // 111: trimestres que vencen en el rango y no estan pagados. Una empresa no
+  // establecida en Espana no presenta el 111.
+  const presenta111 = await esEmpresaEspanolaFiscal(companyId);
+  for (let ej = Number(desde.slice(0, 4)) - 1; presenta111 && ej <= Number(hasta.slice(0, 4)); ej++) {
     for (const t of [1, 2, 3, 4]) {
       const vence = vencimiento111(ej, t);
       if (vence < desde || vence > hasta) continue;
@@ -383,7 +386,7 @@ export async function sugerenciasMovimiento(companyId: string, movimientoId: str
   const trimestre = Math.ceil(Number(mov.fecha.slice(5, 7)) / 3) - 1;
   const ej111 = trimestre === 0 ? anio - 1 : anio;
   const per111 = `${trimestre === 0 ? 4 : trimestre}T`;
-  if (!(await pagoModelo111(companyId, ej111, per111))) {
+  if ((await esEmpresaEspanolaFiscal(companyId)) && !(await pagoModelo111(companyId, ej111, per111))) {
     const d = await importePago111(companyId, periodoFiscal(ej111, per111));
     if (aCentimos(d.total) === cargo) {
       sugerencias.push({
