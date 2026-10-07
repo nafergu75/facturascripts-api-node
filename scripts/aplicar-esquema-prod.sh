@@ -55,9 +55,13 @@ if grep -qiE '\b(DROP|MODIFY|CHANGE|RENAME)\b' "$PREVIA"; then
   exit 1
 fi
 
-read -r -p "Escribe SI para aplicarlo: " RESPUESTA
-RESPUESTA="$(printf '%s' "$RESPUESTA" | tr -d '[:space:]' | tr '[:lower:]' '[:upper:]')"
-[ "$RESPUESTA" = "SI" ] || { echo "Cancelado. No se ha cambiado nada."; exit 1; }
+read -r -p "Escribe si (o sí) y pulsa Intro para aplicarlo; cualquier otra cosa cancela: " RESPUESTA
+# Vale si, SI, sí, Sí... (empieza por s); se quitan espacios y el retorno de carro.
+RESPUESTA="$(printf '%s' "$RESPUESTA" | tr -d '[:space:]')"
+case "$RESPUESTA" in
+  [sS]*) ;;
+  *) echo "Cancelado. No se ha cambiado nada."; exit 1 ;;
+esac
 
 # 2) Aplicarlo.
 echo "Aplicando el esquema a la base de datos de produccion..."
