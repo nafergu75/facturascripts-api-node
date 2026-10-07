@@ -17,7 +17,12 @@ export const authController = {
       action: 'LOGIN',
       resourceType: 'AUTH',
       resourceId: tokens.user.id,
-      meta: { email: tokens.user.email, esAdminGlobal: tokens.user.esAdminGlobal, empresaSeleccionada: tokens.empresaSeleccionada },
+      meta: {
+        email: tokens.user.email,
+        esAdminGlobal: tokens.user.esAdminGlobal,
+        empresaSeleccionada: tokens.empresaSeleccionada,
+        debeCambiarContrasena: tokens.user.debeCambiarContrasena,
+      },
     });
     sendOk(res, tokens);
   }),

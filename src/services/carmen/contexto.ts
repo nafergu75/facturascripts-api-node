@@ -1,7 +1,9 @@
 /**
  * Contexto de Carmen en una petición: quién pregunta, en qué empresa y con qué
  * permisos. Los permisos salen de permisosEnEmpresa, la misma función que usa
- * authorize.middleware: Carmen no amplía nunca lo que el usuario ya puede ver.
+ * authorize.middleware, y esta toma los que authMiddleware calcula en la BD con
+ * permisosDeAcceso (también los permisos a medida): Carmen no amplía nunca lo
+ * que el usuario ya puede ver.
  */
 import type { AuthUser } from '../../types/express';
 import { cubrePermisos, permisosEnEmpresa } from '../rbac.service';
