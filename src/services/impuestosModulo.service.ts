@@ -91,6 +91,13 @@ const DESCRIPCIONES: Record<string, string> = {
 export function fechaVencimientoModelo(codigo: string, ejercicio: number, periodo: string): string {
   const TRIM: Record<string, string> = { '1T': `${ejercicio}-04-20`, '2T': `${ejercicio}-07-20`, '3T': `${ejercicio}-10-20` };
   if (periodo in TRIM) return TRIM[periodo];
+  // Mensual: hasta el dia 20 del mes siguiente; el de diciembre, hasta el 30 de
+  // enero (303) o el 20 de enero (111/115).
+  if (/^(0[1-9]|1[0-2])$/.test(periodo)) {
+    const mes = Number(periodo);
+    if (mes === 12) return codigo === '111' || codigo === '115' ? `${ejercicio + 1}-01-20` : `${ejercicio + 1}-01-30`;
+    return `${ejercicio}-${String(mes + 1).padStart(2, '0')}-20`;
+  }
   if (periodo === '4T') {
     // 111/115: 20 de enero; 303/349: 30 de enero
     return codigo === '111' || codigo === '115' ? `${ejercicio + 1}-01-20` : `${ejercicio + 1}-01-30`;
@@ -172,12 +179,14 @@ function aResumen(f: FilaModelo, hoy: string): ModeloImpuestoResumen {
   // estado derivado: 'vigente'/'expirado' se calculan por fecha; omitido/presentado son pegajosos
   let estado = f.estado as EstadoModeloImpuesto;
   if (estado === 'vigente' || estado === 'expirado') estado = dias >= 0 ? 'vigente' : 'expirado';
-  const etiqueta = f.periodo === '0A' ? String(f.ejercicio) : `${f.ejercicio}Q${f.periodo[0]}`;
+  // 2026 (anual), 2026Q1 (trimestre) o 2026-05 (mes).
+  const etiqueta = f.periodo === '0A' ? String(f.ejercicio) : /^\d{2}$/.test(f.periodo) ? `${f.ejercicio}-${f.periodo}` : `${f.ejercicio}Q${f.periodo[0]}`;
   return {
     id: f.id,
     companyId: f.companyId,
     codigo: f.codigo,
-    descripcion: DESCRIPCIONES[f.codigo] ?? `Modelo ${f.codigo}`,
+    descripcion:
+      f.codigo === '303' && /^\d{2}$/.test(f.periodo) ? 'IVA — autoliquidacion mensual' : DESCRIPCIONES[f.codigo] ?? `Modelo ${f.codigo}`,
     ejercicio: f.ejercicio,
     periodo: f.periodo,
     periodoEtiqueta: etiqueta,
@@ -233,14 +242,29 @@ export const marcarModeloNoPresentado = (companyId: string, modeloId: string) =>
 
 // --- 2) Detalle, autorrelleno y guardado manual ---
 
-function periodoFiscalDe(fila: FilaModelo): PeriodoFiscal {
+/**
+ * Periodo fiscal de una fila del calendario: '0A' (anual), '1T'..'4T'
+ * (trimestral) o '01'..'12' (mensual: 303 de quien esta en REDEME o el SII, y
+ * 111/115 de las grandes empresas). Antes solo entendia '0A' y los trimestres:
+ * una fila mensual rompia el detalle del modelo con un 500.
+ */
+export function periodoFiscalDe(fila: Pick<FilaModelo, 'ejercicio' | 'periodo'>): PeriodoFiscal {
   const ej = fila.ejercicio;
-  if (fila.periodo === '0A') {
+  const periodo = String(fila.periodo ?? '').toUpperCase();
+  if (periodo === '0A') {
     return { ejercicio: ej, periodo: '0A', tipo: 'anual', fechaInicio: `${ej}-01-01`, fechaFin: `${ej}-12-31` };
   }
   const T: Record<string, [string, string]> = { '1T': ['01-01', '03-31'], '2T': ['04-01', '06-30'], '3T': ['07-01', '09-30'], '4T': ['10-01', '12-31'] };
-  const [ini, fin] = T[fila.periodo];
-  return { ejercicio: ej, periodo: fila.periodo, tipo: 'trimestral', fechaInicio: `${ej}-${ini}`, fechaFin: `${ej}-${fin}` };
+  if (T[periodo]) {
+    const [ini, fin] = T[periodo];
+    return { ejercicio: ej, periodo, tipo: 'trimestral', fechaInicio: `${ej}-${ini}`, fechaFin: `${ej}-${fin}` };
+  }
+  if (/^(0[1-9]|1[0-2])$/.test(periodo)) {
+    const mes = Number(periodo);
+    const ultimo = new Date(Date.UTC(ej, mes, 0)).getUTCDate(); // dia 0 del mes siguiente = ultimo de este
+    return { ejercicio: ej, periodo, tipo: 'mensual', fechaInicio: `${ej}-${periodo}-01`, fechaFin: `${ej}-${periodo}-${String(ultimo).padStart(2, '0')}` };
+  }
+  throw badRequest(`Periodo no válido: "${fila.periodo}". Usa 0A (anual), 1T a 4T (trimestres) o 01 a 12 (meses).`);
 }
 
 /** Configuracion de la empresa para el autorrelleno (NIF, razon social, IBAN). */
