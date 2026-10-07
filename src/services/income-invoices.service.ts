@@ -3,6 +3,7 @@ import { badRequest, notFound } from '../utils/http-errors';
 import { prisma, type TransaccionBD as Tx } from '../config/database';
 import { obtenerOCrearSerie, obtenerSeriePorDefecto, resolverCodSerieFactura } from './series.service';
 import { listarCobros, registrarCobroFactura, tieneCobrosActivos, type DatosCobro } from './cobrosPagos.service';
+import { comprobarFechaAbierta } from './periodos.service';
 import {
   calcularImportesFactura,
   lineasEspejo,
@@ -840,15 +841,21 @@ async function crear(dto: CrearFacturaIngresoDTO, opciones: { origen?: OrigenFac
   const moneda = original ? original.moneda : validarMoneda(dto.moneda ?? perfil.monedaCuenta, perfil.monedasFactura);
   comprobarMonedaLineas(dto.lineas, moneda, false);
 
-  const cliente = await resolverCliente(dto.companyId, dto.customer);
-  const serie = dto.proforma
-    ? await resolverSerieProforma(dto.companyId, dto.serie)
-    : await resolverSerie(dto.companyId, dto.serie, esRectificativa);
-
   const fechaEmision = validarFecha(dto.fechaEmision ?? hoyISO(), 'fecha de emisión');
   const fechaVencimiento = validarFecha(dto.fechaVencimiento ?? sumarDias(fechaEmision, 15), 'fecha de vencimiento');
   if (fechaVencimiento < fechaEmision) throw badRequest('El vencimiento no puede ser anterior a la fecha de emisión.');
   const fechaOperacion = validarFechaOperacion(dto.fechaOperacion, fechaEmision);
+  // Una factura emitida (o registrada desde el lector) lleva asiento en su fecha:
+  // no puede caer en un mes bloqueado ni en un ejercicio cerrado. Se comprueba
+  // antes de numerarla, para no gastar un numero de la serie.
+  if (!dto.proforma && !dto.borrador) {
+    await comprobarFechaAbierta(dto.companyId, fechaEmision, dto.numero ? 'registrar la factura' : 'emitir la factura');
+  }
+  // Cliente y serie despues de las fechas: una factura rechazada no deja nada creado.
+  const cliente = await resolverCliente(dto.companyId, dto.customer);
+  const serie = dto.proforma
+    ? await resolverSerieProforma(dto.companyId, dto.serie)
+    : await resolverSerie(dto.companyId, dto.serie, esRectificativa);
 
   // Quien revisa la fiscalidad lo decide el servidor, nunca el cuerpo.
   const modo: ModoFiscal = esRectificativa
@@ -1275,6 +1282,8 @@ export const incomeInvoicesService = {
     }
 
     const fechaEmision = validarFecha(opciones.fechaEmision ?? hoyISO(), 'fecha de emisión');
+    // Ni en un mes bloqueado ni en un ejercicio cerrado (antes de numerarla).
+    await comprobarFechaAbierta(companyId, fechaEmision, 'emitir la factura');
     // Se mantienen los dias de plazo que tenia el borrador.
     const fechaVencimiento = sumarDias(fechaEmision, plazoDias(actual));
     const fechaOperacion = actual.fechaOperacion && actual.fechaOperacion !== fechaEmision ? actual.fechaOperacion : null;
