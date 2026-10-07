@@ -35,7 +35,10 @@ import type { PeriodoFiscal } from '../domain/impuestos.model';
 const get = (axios as unknown as { get: jest.Mock }).get;
 const motor = new AccountingEngineController();
 const T1: PeriodoFiscal = { ejercicio: 2026, periodo: '1T', tipo: 'trimestral', fechaInicio: '2026-01-01', fechaFin: '2026-03-31' };
-const T2: PeriodoFiscal = { ejercicio: 2026, periodo: '2T', tipo: 'trimestral', fechaInicio: '2026-04-01', fechaFin: '2026-06-30' };
+// Las pruebas en divisa van en 2024: la cache de tipos del BCE es comun a toda la BD de pruebas
+// y otras suites cuentan con que no haya tipo guardado en sus fechas de 2026.
+const T1_24: PeriodoFiscal = { ejercicio: 2024, periodo: '1T', tipo: 'trimestral', fechaInicio: '2024-01-01', fechaFin: '2024-03-31' };
+const T2_24: PeriodoFiscal = { ejercicio: 2024, periodo: '2T', tipo: 'trimestral', fechaInicio: '2024-04-01', fechaFin: '2024-06-30' };
 
 const CABECERA = 'KEY,FREQ,CURRENCY,CURRENCY_DENOM,EXR_TYPE,EXR_SUFFIX,TIME_PERIOD,OBS_VALUE,OBS_STATUS';
 /** BCE simulado: ultima observacion <= endPeriod de las indicadas, o caido. */
@@ -194,34 +197,34 @@ describe('rectificativa de una factura anterior', () => {
 
 describe('devengo: la operacion de un trimestre facturada en el siguiente', () => {
   it('nacional en USD: tipo, 303 y libro de IVA en el periodo de la operacion', async () => {
-    bce({ 'USD|2026-03-27': 1.1, 'USD|2026-04-02': 1.2 });
+    bce({ 'USD|2024-03-27': 1.1, 'USD|2024-04-02': 1.2 });
     const companyId = await empresa();
     const es = await cliente(companyId, { nifCif: 'B12312312' });
     const b = await incomeInvoicesService.crearIngreso({
       companyId,
       customer: { id: es },
-      fechaEmision: '2026-04-03',
-      fechaOperacion: '2026-03-28',
+      fechaEmision: '2024-04-03',
+      fechaOperacion: '2024-03-27',
       moneda: 'USD',
       tipoOperacion: 'NACIONAL',
       lineas: [usd(11000)],
       borrador: true,
     });
-    const f = await incomeInvoicesService.finalizar(companyId, b.id, { fechaEmision: '2026-04-03' });
-    expect(f).toMatchObject({ fechaOperacion: '2026-03-28', fechaTipoCambio: '2026-03-27', tipoCambio: 1.1, baseTotal: 10000, ivaTotal: 2100 });
+    const f = await incomeInvoicesService.finalizar(companyId, b.id, { fechaEmision: '2024-04-03' });
+    expect(f).toMatchObject({ fechaOperacion: '2024-03-27', fechaTipoCambio: '2024-03-27', tipoCambio: 1.1, baseTotal: 10000, ivaTotal: 2100 });
 
-    expect((await calcularModelo303(companyId, T1)).totalCuotaDevengada).toBe(2100);
-    expect((await calcularModelo303(companyId, T2)).totalCuotaDevengada).toBe(0);
-    const fiscales = await obtenerFacturasFiscales(companyId, '2026-01-01', '2026-03-31');
-    expect(fiscales.map((x) => [x.idFactura, x.fecha])).toEqual([[f.numeroCompleto, '2026-03-28']]);
+    expect((await calcularModelo303(companyId, T1_24)).totalCuotaDevengada).toBe(2100);
+    expect((await calcularModelo303(companyId, T2_24)).totalCuotaDevengada).toBe(0);
+    const fiscales = await obtenerFacturasFiscales(companyId, '2024-01-01', '2024-03-31');
+    expect(fiscales.map((x) => [x.idFactura, x.fecha])).toEqual([[f.numeroCompleto, '2024-03-27']]);
 
     await motor.contabilizarFacturaIngreso(companyId, f.id);
     const libro = await prisma.vATBook.findFirstOrThrow({ where: { companyId, numeroFactura: f.numeroCompleto! } });
-    expect(libro.fechaFactura.toISOString().slice(0, 10)).toBe('2026-03-28');
-    expect(libro.observaciones).toBe('Fecha de expedición: 03/04/2026');
+    expect(libro.fechaFactura.toISOString().slice(0, 10)).toBe('2024-03-27');
+    expect(libro.observaciones).toBe('Fecha de expedición: 03/04/2024');
     // El asiento, con la fecha de emision (como siempre).
     const asiento = await prisma.journalEntry.findFirstOrThrow({ where: { companyId, invoiceId: f.id } });
-    expect(asiento.fecha.toISOString().slice(0, 10)).toBe('2026-04-03');
+    expect(asiento.fecha.toISOString().slice(0, 10)).toBe('2024-04-03');
   });
 
   it('entrega intracomunitaria: se devenga al emitir la factura antes del dia 15 (art. 75.Uno.8.º): 349 de abril', async () => {
@@ -230,25 +233,25 @@ describe('devengo: la operacion de un trimestre facturada en el siguiente', () =
     await incomeInvoicesService.crearIngreso({
       companyId,
       customer: { id: fr },
-      fechaEmision: '2026-04-03',
-      fechaOperacion: '2026-03-28',
+      fechaEmision: '2024-04-03',
+      fechaOperacion: '2024-03-27',
       tipoOperacion: 'INTRACOMUNITARIA',
       lineas: [linea(5000, 0)],
     });
-    expect((await calcularModelo349(companyId, T1)).operaciones).toEqual([]);
-    expect((await calcularModelo349(companyId, T2)).operaciones).toEqual([expect.objectContaining({ cifnif: 'FR12345678901', clave: 'E', base: 5000 })]);
+    expect((await calcularModelo349(companyId, T1_24)).operaciones).toEqual([]);
+    expect((await calcularModelo349(companyId, T2_24)).operaciones).toEqual([expect.objectContaining({ cifnif: 'FR12345678901', clave: 'E', base: 5000 })]);
   });
 });
 
 describe('rectificativa total en divisa guardada como borrador', () => {
   it('al emitirla sigue siendo el espejo exacto: la pareja suma cero en las dos monedas', async () => {
-    bce({ 'USD|2026-05-04': 1.1 });
+    bce({ 'USD|2024-05-06': 1.1 });
     const companyId = await empresa();
     const es = await cliente(companyId, { nifCif: 'B45645645' });
     const f = await incomeInvoicesService.crearIngreso({
       companyId,
       customer: { id: es },
-      fechaEmision: '2026-05-04',
+      fechaEmision: '2024-05-06',
       moneda: 'USD',
       tipoOperacion: 'NACIONAL',
       lineas: [usd(100.125)],
@@ -357,21 +360,21 @@ describe('rectificativa por POST /income-invoices', () => {
 
 describe('tipo de cambio al emitir y avisos', () => {
   it('con tipoCambio null al emitir se deja el manual del borrador y se aplica el del BCE', async () => {
-    bce({ 'USD|2026-06-03': 1.15 });
+    bce({ 'USD|2024-06-05': 1.15 });
     const companyId = await empresa();
     const es = await cliente(companyId, { nifCif: 'B98798798' });
     const b = await incomeInvoicesService.crearIngreso({
       companyId,
       customer: { id: es },
-      fechaEmision: '2026-06-03',
+      fechaEmision: '2024-06-05',
       moneda: 'USD',
       tipoCambio: 1.2,
       lineas: [usd(120)],
       borrador: true,
     });
     expect(b).toMatchObject({ fuenteTipoCambio: 'MANUAL', tipoCambio: 1.2 });
-    const f = await incomeInvoicesService.finalizar(companyId, b.id, { fechaEmision: '2026-06-03', tipoCambio: null });
-    expect(f).toMatchObject({ fuenteTipoCambio: 'BCE', tipoCambio: 1.15, fechaTipoCambio: '2026-06-03' });
+    const f = await incomeInvoicesService.finalizar(companyId, b.id, { fechaEmision: '2024-06-05', tipoCambio: null });
+    expect(f).toMatchObject({ fuenteTipoCambio: 'BCE', tipoCambio: 1.15, fechaTipoCambio: '2024-06-05' });
 
     // Sin aviso de "cuenta en la moneda de la factura": las cuentas van en la moneda de la contabilidad.
     await banco(companyId);
@@ -379,14 +382,14 @@ describe('tipo de cambio al emitir y avisos', () => {
   });
 
   it('lo recibido en el banco se compara con el tipo de referencia del dia del cobro', async () => {
-    bce({ 'USD|2026-06-04': 1.1, 'USD|2026-06-10': 1.1 });
+    bce({ 'USD|2024-06-06': 1.1, 'USD|2024-06-12': 1.1 });
     const companyId = await empresa();
     const es = await cliente(companyId, { nifCif: 'B15915915' });
     const cuenta = await banco(companyId);
     const f = await incomeInvoicesService.crearIngreso({
       companyId,
       customer: { id: es },
-      fechaEmision: '2026-06-04',
+      fechaEmision: '2024-06-06',
       moneda: 'USD',
       tipoOperacion: 'NACIONAL',
       lineas: [usd(1000)],
@@ -394,11 +397,11 @@ describe('tipo de cambio al emitir y avisos', () => {
     await motor.contabilizarFacturaIngreso(companyId, f.id);
     // Una errata (un cero de mas) daria una 768 desorbitada: 400.
     await expect(
-      registrarCobroFactura(companyId, 'INGRESO', f.id, { fecha: '2026-06-10', importeDoc: 1000, importeRecibido: 10000, cuentaBancariaId: cuenta }),
+      registrarCobroFactura(companyId, 'INGRESO', f.id, { fecha: '2024-06-12', importeDoc: 1000, importeRecibido: 10000, cuentaBancariaId: cuenta }),
     ).rejects.toThrow(/Lo recibido en el banco equivale/);
     // Una cifra razonable se acepta.
     const { cobro } = await registrarCobroFactura(companyId, 'INGRESO', f.id, {
-      fecha: '2026-06-10',
+      fecha: '2024-06-12',
       importeDoc: 1000,
       importeRecibido: 905,
       cuentaBancariaId: cuenta,

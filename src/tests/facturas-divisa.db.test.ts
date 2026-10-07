@@ -233,12 +233,23 @@ describe('tipo de operacion', () => {
     ).rejects.toThrow(/no válido/);
   });
 
-  it('sin tipo: con IVA es NACIONAL; mezclada no se emite; `origen` del cuerpo se ignora', async () => {
+  it('sin tipo: con IVA es NACIONAL (tambien con suplidos al 0 %); mezclada a un extranjero no se emite; `origen` del cuerpo se ignora', async () => {
     const companyId = await empresa();
     const esp = await cliente(companyId, { nifCif: 'B77777777' });
     const f = await incomeInvoicesService.crearIngreso({ companyId, customer: { id: esp }, fechaEmision: '2026-09-01', lineas: [linea(100)] });
     expect(f.tipoOperacion).toBe('NACIONAL');
-    const mezclada = { companyId, customer: { id: esp }, fechaEmision: '2026-09-02', lineas: [linea(100), linea(50, 0)], origen: 'lector' };
+    // Con una linea al 0 % (suplido) y cliente espanol: nacional, como siempre, con aviso.
+    const conSuplido = await incomeInvoicesService.crearIngreso({
+      companyId,
+      customer: { id: esp },
+      fechaEmision: '2026-09-02',
+      lineas: [linea(100), linea(50, 0)],
+    });
+    expect(conSuplido.tipoOperacion).toBe('NACIONAL');
+    expect(conSuplido.avisosFiscales?.map((a) => a.codigo)).toContain('LINEAS_AL_0');
+    // Lineas mezcladas a un cliente extranjero: no se deduce el tipo.
+    const extranjero = await cliente(companyId, { nifCif: '98-7654321', pais: 'US' });
+    const mezclada = { companyId, customer: { id: extranjero }, fechaEmision: '2026-09-03', lineas: [linea(100), linea(50, 0)], origen: 'lector' };
     await expect(incomeInvoicesService.crearIngreso(mezclada as never)).rejects.toThrow(/tipo de operación/);
     // Desde el lector (lo decide el servidor) no se rechaza: queda para revisar.
     const leida = await incomeInvoicesService.crearIngreso(mezclada as never, { origen: 'lector' });
