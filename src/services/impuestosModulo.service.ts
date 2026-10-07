@@ -289,7 +289,8 @@ export async function calcularCasillasModelo(
 async function calcularCasillas(companyId: string, fila: FilaModelo): Promise<{ casillas: Casillas; datos: unknown }> {
   const periodo = periodoFiscalDe(fila);
   // Los de IVA (303/349/390/347) lo comprueban por periodo en impuestosCalculo.
-  if (['111', '115', '200'].includes(fila.codigo) && !(await esEmpresaEspanolaFiscal(companyId))) {
+  // El 190 (resumen anual de retenciones, de nominas) tampoco.
+  if (['111', '115', '190', '200'].includes(fila.codigo) && !(await esEmpresaEspanolaFiscal(companyId))) {
     throw badRequest(MENSAJE_SIN_MODELOS);
   }
   switch (fila.codigo) {

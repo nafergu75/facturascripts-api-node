@@ -37,7 +37,7 @@ import {
   calcularModelo349,
   obtenerFacturasFiscales,
 } from '../services/impuestosCalculo.service';
-import { listarModelosImpuesto } from '../services/impuestosModulo.service';
+import { calcularCasillasModelo, listarModelosImpuesto } from '../services/impuestosModulo.service';
 import { generarPaginaModelo303_03 } from '../services/impuestosExport.service';
 import { informeMayorTerceros } from '../services/informesContables.service';
 import { limpiarMemoTiposCambio } from '../services/tiposCambio.service';
@@ -314,6 +314,9 @@ describe('empresa de EE. UU. (sin IVA en la app)', () => {
     await expect(calcularModelo303(companyId, T1)).rejects.toThrow(/no está establecida en España/);
     await expect(calcularModelo347(companyId, 2026)).rejects.toThrow(/no está establecida en España/);
     expect(await listarModelosImpuesto(companyId, 2026)).toEqual([]);
+    // Tampoco las retenciones: ni el 111 ni el 190 que llegan con las nominas.
+    await expect(calcularCasillasModelo(companyId, '111', 2026, '1T')).rejects.toThrow(/no está establecida en España/);
+    await expect(calcularCasillasModelo(companyId, '190', 2026, '0A')).rejects.toThrow(/no está establecida en España/);
     expect(await prisma.modeloImpuesto.count({ where: { companyId } })).toBe(0);
   });
 });

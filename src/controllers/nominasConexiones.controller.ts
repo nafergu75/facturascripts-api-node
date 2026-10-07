@@ -10,7 +10,7 @@ import { sendOk } from '../utils/response';
 import { badRequest } from '../utils/http-errors';
 import { registrarAuditoria } from '../services/auditoria.service';
 import { configuracionEmpresa } from '../services/impuestosModulo.service';
-import { calcularModelo111 } from '../services/impuestosCalculo.service';
+import { calcularModelo111, esEmpresaEspanolaFiscal, MENSAJE_SIN_MODELOS } from '../services/impuestosCalculo.service';
 import {
   anularPago111Schema,
   anularPagoSchema,
@@ -200,6 +200,8 @@ export const nominasConexionesController = {
    */
   fichero190: asyncHandler(async (req, res) => {
     const ejercicio = ejercicioDe(req);
+    // Una empresa no establecida en Espana no presenta modelos de la AEAT (divisas-iva).
+    if (!(await esEmpresaEspanolaFiscal(req.companyId!))) throw badRequest(MENSAJE_SIN_MODELOS);
     comprobarDiseno190(ejercicio);
     const [m, cfg] = await Promise.all([calcularModelo190(req.companyId!, ejercicio), configuracionEmpresa(req.companyId!)]);
     const q = req.query as Record<string, unknown>;
