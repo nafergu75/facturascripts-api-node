@@ -218,10 +218,16 @@ export function comprobarNifSegunForma(tipoSociedad: string, nif: ResultadoNif, 
 /**
  * Ninguna otra empresa puede tener ya ese NIF. LegalConfig.nif no es unico en
  * el esquema, asi que se comprueba aqui, DENTRO de la transaccion que guarda y
- * con FOR UPDATE: la consulta recorre la tabla entera (compara el NIF
- * normalizado, sin indice) y la bloquea hasta el final, de modo que dos altas
- * o ediciones a la vez con el mismo NIF no pasan las dos: la segunda espera y
- * ve la primera (o MySQL aborta una por interbloqueo, ver esConflictoEscritura).
+ * con FOR UPDATE. En MySQL/MariaDB (InnoDB, donde corren los tests) la consulta
+ * recorre la tabla entera (compara el NIF normalizado, sin indice) y bloquea lo
+ * que recorre, huecos incluidos: dos altas o ediciones a la vez con el mismo
+ * NIF no pasan las dos (la segunda espera y ve la primera, o se aborta una por
+ * interbloqueo, ver esConflictoEscritura).
+ * OJO: en TiDB (produccion) no hay bloqueos de hueco y FOR UPDATE solo bloquea
+ * las filas que devuelve; con un NIF nuevo no devuelve ninguna. Dos
+ * operaciones con el mismo NIF en el mismo instante podrian pasar las dos. Para
+ * cerrarlo del todo hace falta un indice unico (p. ej. una columna nifClave
+ * normalizada con @unique), que es un cambio de esquema pendiente.
  * Se compara sin espacios, guiones ni puntos y con o sin el prefijo ES. Los
  * datos legales que hayan quedado de una empresa que ya no existe no cuentan.
  *
