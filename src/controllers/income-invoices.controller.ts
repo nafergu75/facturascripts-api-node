@@ -6,6 +6,8 @@ import { avisosFactura, generarPdfFactura } from '../services/facturaPdf.service
 import { registrarAuditoria } from '../services/auditoria.service';
 import { accountingHooksService } from '../services/accounting-hooks.service';
 import { archivarVentaSinRomper } from '../services/archivoFacturas.service';
+import { resumenCobrosClientes } from '../services/cobrosClientes.service';
+import { anioEspana } from '../utils/fechas';
 
 /**
  * Contabiliza una factura recien emitida y la guarda en el archivo de su
@@ -262,5 +264,16 @@ export const incomeInvoicesController = {
     );
 
     sendOk(res, { resumen });
+  }),
+
+  /**
+   * GET /stats/cobros?anio=AAAA
+   * Cobros de clientes para el panel: pendiente (de cualquier año) y vencido,
+   * cobrado en el año y las próximas facturas a cobrar.
+   */
+  estadisticasCobros: asyncHandler(async (req, res) => {
+    const anio = req.query.anio === undefined ? anioEspana() : Number(req.query.anio);
+    if (!Number.isInteger(anio) || anio < 1900 || anio > 2999) throw badRequest('El año no es válido (AAAA).');
+    sendOk(res, await resumenCobrosClientes(req.companyId!, anio));
   }),
 };
