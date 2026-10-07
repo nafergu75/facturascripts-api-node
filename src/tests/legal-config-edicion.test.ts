@@ -4,16 +4,23 @@
 // - libros obligatorios recalculados al cambiar la forma juridica o el pais;
 // - NIF con su control, coherente con la forma y que no tenga otra empresa;
 // - pais ISO que existe y CP que existe y es de la provincia.
+// Y, de divisas-iva, la moneda de la contabilidad (monedaCuenta): sin facturas
+// ni asientos cambia con el pais (y las cuentas bancarias con ella); con ellos, no.
 jest.mock('../config/database', () => {
   const upsert = jest.fn(async ({ create }: { create: Record<string, unknown> }) => ({ id: 'LC1', ...create }));
   const tx = {
     $queryRaw: jest.fn(async () => [] as Array<{ companyId: string }>),
     company: { findFirst: jest.fn(async () => null as { name: string; isActive: boolean } | null) },
     legalConfig: { upsert },
+    bankAccount: { updateMany: jest.fn(async () => ({ count: 0 })) },
   };
   return {
     prisma: {
       legalConfig: { findUnique: jest.fn(), upsert },
+      // Facturas y asientos de la empresa (tieneDocumentos): por defecto, ninguno.
+      incomeInvoice: { findFirst: jest.fn(async () => null) },
+      expenseInvoice: { findFirst: jest.fn(async () => null) },
+      journalEntry: { findFirst: jest.fn(async () => null) },
       $transaction: jest.fn(async (fn: (t: typeof tx) => unknown) => fn(tx)),
       __tx: tx,
     },
@@ -29,7 +36,10 @@ type Mock = jest.Mock;
 const bd = prisma as unknown as {
   legalConfig: { findUnique: Mock; upsert: Mock };
   $transaction: Mock;
-  __tx: { $queryRaw: Mock; company: { findFirst: Mock } };
+  incomeInvoice: { findFirst: Mock };
+  expenseInvoice: { findFirst: Mock };
+  journalEntry: { findFirst: Mock };
+  __tx: { $queryRaw: Mock; company: { findFirst: Mock }; bankAccount: { updateMany: Mock } };
 };
 const tx = bd.__tx;
 
@@ -71,6 +81,9 @@ beforeEach(() => {
   bd.legalConfig.findUnique.mockResolvedValue({ ...IFBIO });
   tx.$queryRaw.mockResolvedValue([]);
   tx.company.findFirst.mockResolvedValue(null);
+  bd.incomeInvoice.findFirst.mockResolvedValue(null);
+  bd.expenseInvoice.findFirst.mockResolvedValue(null);
+  bd.journalEntry.findFirst.mockResolvedValue(null);
 });
 
 describe('librosObligatorios', () => {
@@ -208,5 +221,39 @@ describe('pais y codigo postal al editar', () => {
     bd.legalConfig.findUnique.mockResolvedValue({ pais: 'PT', tipoSociedad: 'OTRA', nif: 'PT1', codigoPostal: null, provincia: null });
     await legalConfigService.actualizar('E1', { codigoPostal: '1100-048', provincia: 'Lisboa' });
     expect(guardado()).toMatchObject({ codigoPostal: '1100-048' });
+  });
+});
+
+describe('moneda de la contabilidad al editar (divisas-iva)', () => {
+  /** Empresa de Hong Kong sin NIF espanol: lo que se toca es el pais y la moneda. */
+  const HK = { pais: 'HK', tipoSociedad: 'OTRA', nif: 'HK-1234567', codigoPostal: '999077', provincia: null, monedaCuenta: 'EUR' };
+
+  it('sin facturas ni asientos, al pasar a EE. UU. la contabilidad y las cuentas bancarias pasan a USD', async () => {
+    bd.legalConfig.findUnique.mockResolvedValue({ ...HK, pais: 'PT' });
+    const r = await legalConfigService.actualizar('E1', { pais: 'US' });
+    expect(guardado()).toMatchObject({ pais: 'US', monedaCuenta: 'USD' });
+    // Se guarda en una transaccion junto con el cambio de las cuentas bancarias.
+    expect(bd.$transaction).toHaveBeenCalledTimes(1);
+    expect(tx.bankAccount.updateMany).toHaveBeenCalledWith({ where: { companyId: 'E1', moneda: 'EUR' }, data: { moneda: 'USD' } });
+    expect(r).toMatchObject({ monedaCuentaEditable: true });
+  });
+
+  it('con facturas, no se puede pasar de Espana a otro pais: 400 y no se guarda', async () => {
+    bd.incomeInvoice.findFirst.mockResolvedValue({ id: 'F1' });
+    const r = await fallo({ pais: 'US' });
+    expect(r.status).toBe(400);
+    expect(r.mensaje).toMatch(/no se puede cambiar a otro país/);
+    expect(bd.legalConfig.upsert).not.toHaveBeenCalled();
+  });
+
+  it('las comprobaciones de modo-admin van antes: un pais que no existe da 400 en el pais', async () => {
+    expect(await fallo({ pais: 'SP' })).toMatchObject({ status: 400, campo: 'pais' });
+    expect(bd.incomeInvoice.findFirst).not.toHaveBeenCalled();
+  });
+
+  it('sin cambiar pais ni moneda no se toca la moneda ni las cuentas bancarias', async () => {
+    await legalConfigService.actualizar('E1', FORMULARIO);
+    expect(guardado()).not.toHaveProperty('monedaCuenta');
+    expect(tx.bankAccount.updateMany).not.toHaveBeenCalled();
   });
 });
