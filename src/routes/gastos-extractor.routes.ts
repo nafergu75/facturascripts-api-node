@@ -2,21 +2,30 @@
  * Rutas del EXTRACTOR DE GASTOS con IA.
  * Montadas bajo /companies/:companyId/gastos-extractor (ver routes/index.ts).
  *
- *  POST /extraer-ia     extraer datos de un PDF/imagen de comprobante de gasto
- *  POST /confirmar      501: el registro desde el lector aun no esta disponible (alta en Compras)
+ *  POST /extraer-ia     extraer datos de un PDF/imagen de comprobante de gasto (4 MB como mucho)
+ *  POST /confirmar      registrar la factura revisada (factura y asiento en borrador)
  */
 
-import { Router } from 'express';
+import { RequestHandler, Router } from 'express';
 import multer from 'multer';
-import { gastosExtractorController } from '../controllers/gastos-extractor.controller';
+import { gastosExtractorController, MAX_ARCHIVO_LECTOR, MENSAJE_ARCHIVO_GRANDE } from '../controllers/gastos-extractor.controller';
 import { authorize } from '../middleware/authorize.middleware';
+import { badRequest } from '../utils/http-errors';
 
 const router = Router({ mergeParams: true });
 
-// Multipart en memoria, 15 MB máximo
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
+// Multipart en memoria, 4 MB como maximo (el cuerpo de una funcion de Vercel no pasa de 4,5 MB).
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: MAX_ARCHIVO_LECTOR } });
 
-router.post('/extraer-ia', authorize('compras:write'), upload.single('archivo'), gastosExtractorController.extraer);
+/** El archivo demasiado grande da un 400 en castellano (no un 500). */
+const subirArchivo: RequestHandler = (req, res, next) =>
+  upload.single('archivo')(req, res, (err?: unknown) => {
+    if (err instanceof multer.MulterError && err.code === 'LIMIT_FILE_SIZE') return next(badRequest(MENSAJE_ARCHIVO_GRANDE));
+    if (err) return next(badRequest('No se pudo leer el archivo subido.'));
+    next();
+  });
+
+router.post('/extraer-ia', authorize('compras:write'), subirArchivo, gastosExtractorController.extraer);
 router.post('/confirmar', authorize('compras:write'), gastosExtractorController.confirmar);
 
 export default router;

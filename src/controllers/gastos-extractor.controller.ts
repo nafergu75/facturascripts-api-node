@@ -9,9 +9,17 @@
 
 import { Request, Response } from 'express';
 import { asyncHandler } from '../utils/async-handler';
-import { badRequest, notImplemented } from '../utils/http-errors';
+import { badRequest } from '../utils/http-errors';
 import { prisma } from '../config/database';
-import { AVISO_NO_FACTURA, gastosExtractorService, GastoExtraido } from '../services/gastos-extractor.service';
+import { AVISO_NO_FACTURA, gastosExtractorService, GastoExtraido, GastoExtraidoEmpresa } from '../services/gastos-extractor.service';
+import { expenseInvoicesService } from '../services/expense-invoices.service';
+import { normalizarNumeroProveedor } from '../domain/factura-gasto.model';
+import { limpiarNif } from '../domain/tipo-operacion.model';
+import { normalizarNif } from '../utils/nif';
+
+/** Tamano maximo del archivo: el cuerpo de una funcion de Vercel no pasa de 4,5 MB. */
+export const MAX_ARCHIVO_LECTOR = 4 * 1024 * 1024;
+export const MENSAJE_ARCHIVO_GRANDE = 'El archivo pesa más de 4 MB: redúcelo o hazle una foto con menos resolución.';
 
 /**
  * Si la empresa lleva las nominas en la app (tiene trabajadores dados de alta).
@@ -54,6 +62,7 @@ function extraerArchivo(req: Request): { archivo: ArchivoSubido } {
   if (typeof archivoBase64 === 'string' && archivoBase64.length > 0) {
     const buffer = Buffer.from(archivoBase64.replace(/^data:[^;]+;base64,/, ''), 'base64');
     if (buffer.length === 0) throw badRequest('archivoBase64 no contiene datos válidos.');
+    if (buffer.length > MAX_ARCHIVO_LECTOR) throw badRequest(MENSAJE_ARCHIVO_GRANDE);
     return {
       archivo: {
         buffer,
@@ -69,43 +78,69 @@ function extraerArchivo(req: Request): { archivo: ArchivoSubido } {
 export const gastosExtractorController = {
   /**
    * POST /extraer-ia — extraer datos contables de un comprobante de gasto (síncrono).
-   * Retorna GastoExtraido con sugerencia de cuenta contable.
+   * Retorna GastoExtraido con sugerencia de cuenta contable, y el proveedor de
+   * la empresa con ese NIF (si lo hay) y la factura ya registrada con ese
+   * numero (si la hay).
    */
   extraer: asyncHandler(async (req: Request, res: Response) => {
+    const companyId = req.companyId as string;
     const { archivo } = extraerArchivo(req);
     const resultado: GastoExtraido = await gastosExtractorService.extraer(archivo);
-    res.status(201).json({ ok: true, data: resultado });
+
+    let proveedorExistente: GastoExtraidoEmpresa['proveedorExistente'] = null;
+    let duplicada: GastoExtraidoEmpresa['duplicada'] = null;
+    if (resultado.nifProveedor) {
+      const nifs = [...new Set([normalizarNif(resultado.nifProveedor), limpiarNif(resultado.nifProveedor)].filter(Boolean))];
+      proveedorExistente = await prisma.supplier.findFirst({
+        where: { companyId, nifCif: { in: nifs } },
+        select: { id: true, nombreFiscal: true, nifCif: true },
+      });
+    }
+    if (proveedorExistente && resultado.numeroFactura) {
+      const f = await prisma.expenseInvoice.findFirst({
+        where: { companyId, supplierId: proveedorExistente.id, numeroProveedorActivo: normalizarNumeroProveedor(resultado.numeroFactura) },
+        select: { id: true, numeroCompleto: true },
+      });
+      duplicada = f ? { facturaId: f.id, numeroCompleto: f.numeroCompleto } : null;
+    }
+    const data: GastoExtraidoEmpresa = { ...resultado, proveedorExistente, duplicada };
+    res.status(201).json({ ok: true, data });
   }),
 
   /**
-   * POST /confirmar — de momento NO registra nada: responde 501 (ver al final).
-   * Las nominas y los seguros sociales con trabajadores siguen dando 400 (van a Nominas).
-   * Body esperado:
-   * {
-   *   numeroFactura, proveedor, nifProveedor, fecha,
-   *   conceptoGasto, base, iva, total,
-   *   cuentaContableBase (opcional, si quiere override)
-   * }
+   * POST /confirmar — registra la factura revisada en la pantalla. El cuerpo
+   * es el del alta (FacturaGastoSchema) mas tipoDocumento y confianza. La
+   * factura y su asiento quedan en borrador («Pendiente de revisar») hasta que
+   * se apruebe el asiento en el Motor contable. Las nominas y los seguros
+   * sociales de una empresa con trabajadores siguen dando 400 (van a Nominas).
    */
-  confirmar: asyncHandler(async (req: Request, _res: Response) => {
+  confirmar: asyncHandler(async (req: Request, res: Response) => {
     const companyId = req.companyId as string;
-    const { cuentaContableBase, tipoDocumento } = (req.body ?? {}) as Record<string, unknown>;
+    const cuerpo = (req.body ?? {}) as Record<string, unknown>;
+    const { tipoDocumento, confianza } = cuerpo;
+    // La cuenta: la del formulario (cuentaGasto) o la de antes (cuentaContableBase).
+    const cuenta = typeof cuerpo.cuentaGasto === 'string' ? cuerpo.cuentaGasto : typeof cuerpo.cuentaContableBase === 'string' ? cuerpo.cuentaContableBase : null;
 
     // Las nominas y los seguros sociales de una empresa que lleva sus nominas en la
     // app no son facturas de gasto: van a Nominas (antes se guardaban como facturas
     // de la 640/642, sin trabajador ni retenciones). Si el usuario corrige la
     // clasificacion en la pantalla ("Es una factura de gasto"), llega como 'factura'.
-    const conNominas = (tipoDocumento === 'nomina' || tipoDocumento === 'seguros_sociales' || typeof cuentaContableBase === 'string') && (await empresaConNominas(companyId));
+    const conNominas = (tipoDocumento === 'nomina' || tipoDocumento === 'seguros_sociales' || cuenta !== null) && (await empresaConNominas(companyId));
     if (conNominas && (tipoDocumento === 'nomina' || tipoDocumento === 'seguros_sociales')) {
       throw badRequest(AVISO_NO_FACTURA[tipoDocumento]);
     }
-    if (conNominas && typeof cuentaContableBase === 'string' && /^64[012]/.test(cuentaContableBase.trim())) {
+    if (conNominas && cuenta !== null && /^64[012]/.test(cuenta.trim())) {
       throw badRequest('Las cuentas 640, 641 y 642 son de nóminas: con trabajadores dados de alta, se registran en Nóminas, no como facturas de gasto.');
     }
 
-    // Antes devolvia un gasto "confirmado" inventado (gastoId falso) sin guardar
-    // nada, y la pantalla decia «Gasto registrado». Hasta que se conecte con el
-    // alta real de facturas de gasto, no se finge: 501 y no se crea nada.
-    throw notImplemented('El registro desde el lector de gastos aún no está disponible: da de alta la factura en Compras');
+    const pct = typeof confianza === 'number' && Number.isFinite(confianza) ? Math.round(confianza <= 1 ? confianza * 100 : confianza) : null;
+    const prefijo = pct !== null ? `Leída con el lector de gastos (confianza ${pct} %).` : 'Leída con el lector de gastos.';
+    const { cuentaContableBase: _antigua, ...resto } = cuerpo;
+    const r = await expenseInvoicesService.registrarGasto(
+      companyId,
+      { ...resto, ...(cuerpo.cuentaGasto === undefined && cuenta ? { cuentaGasto: cuenta } : {}) },
+      { contabilizar: 'DRAFT', prefijoObservaciones: prefijo, usuarioEmail: req.user?.email, userId: req.user?.userId },
+    );
+    res.status(201).json({ ok: true, data: { factura: r.factura, asientoId: r.asientoId, asientoEstado: 'DRAFT', proveedorCreado: r.proveedorCreado } });
   }),
 };

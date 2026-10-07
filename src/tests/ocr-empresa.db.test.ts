@@ -9,7 +9,8 @@
  * Prisma en details.message.
  *
  * Tambien el confirmar del lector de gastos: ya no finge un alta («Gasto
- * registrado») sin guardar nada; responde 501 y no crea nada.
+ * registrado») sin guardar nada; sin los datos de la factura responde 400 y
+ * no crea nada (el alta de verdad esta en compras-lector.db.test.ts).
  *
  * Necesita MySQL (en GitHub Actions lo levanta el workflow de tests). Crea
  * usuarios, asi que solo corre en CI o contra una BD local.
@@ -306,13 +307,14 @@ describeBd('OCR por empresa (app entera, BD real)', () => {
     expect(JSON.stringify(interno.body)).not.toMatch(/prisma|ruta|interna/i);
   });
 
-  it('lector de gastos: confirmar responde 501 y no crea nada', async () => {
+  it('lector de gastos: confirmar sin los datos de la factura da 400 y no crea nada', async () => {
     const contar = async () => ({
       facturas: await prisma.expenseInvoice.count({ where: { companyId: EMPRESA_A } }),
       proveedores: await prisma.supplier.count({ where: { companyId: EMPRESA_A } }),
       asientos: await prisma.journalEntry.count({ where: { companyId: EMPRESA_A } }),
     });
     const antes = await contar();
+    // El cuerpo de antes (lo leido, sin revisar): ya no se finge el alta ni se responde 501.
     const res = await como('a').post(`/companies/${EMPRESA_A}/gastos-extractor/confirmar`, {
       numeroFactura: 'F-1',
       proveedor: 'Proveedor SL',
@@ -323,8 +325,8 @@ describeBd('OCR por empresa (app entera, BD real)', () => {
       iva: 21,
       total: 121,
     });
-    expect(res.status).toBe(501);
-    expect(res.body.message).toBe('El registro desde el lector de gastos aún no está disponible: da de alta la factura en Compras');
+    expect(res.status).toBe(400);
+    expect(res.body.details?.campo).toBe('proveedor');
     expect(JSON.stringify(res.body)).not.toMatch(/gastoId|CONFIRMADO/);
     expect(await contar()).toEqual(antes);
   });

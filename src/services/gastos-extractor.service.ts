@@ -27,6 +27,9 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { randomUUID as uuid } from 'crypto';
 import { badRequest } from '../utils/http-errors';
+import { validarNifEspanol } from '../utils/nif';
+import { prefijoNifIvaUe } from '../domain/tipo-operacion.model';
+import { tipoGastoDeCuenta, type TipoGasto } from '../domain/factura-gasto.model';
 import { listarCuentasBase } from './planContable.service';
 
 // ---------------------------------------------------------------------------
@@ -41,13 +44,31 @@ export interface GastoExtraido {
   conceptoGasto: string | null; // "servicios", "arrendamiento", "suministros", etc.
   base: number; // sin IVA
   iva: number;
-  total: number; // base + iva
+  total: number; // base + iva - retencion
+  /** Porcentaje de IVA leido (21, 10...), o null si no se ve. */
+  tipoIva: number | null;
+  /** Porcentaje de retencion de IRPF (15, 19...), o null si no lleva. */
+  tipoRetencion: number | null;
+  /** Importe de la retencion (0 si no lleva). */
+  retencion: number;
+  /** Moneda de la factura (ISO 4217), o null si no se ve. */
+  moneda: string | null;
   cuentaContableBase: string | null; // código de 3 dígitos, ej. "629"
   cuentaContableNombre: string | null; // nombre descriptivo
+  /** Tipo de gasto que corresponde a la cuenta sugerida (621 alquiler, 623 profesional, 600 compra; el resto, suministros). */
+  tipoGastoSugerido: TipoGasto;
   confianza: number; // 0.0-1.0
   errores: string[];
   /** 'nomina' o 'seguros_sociales': no es una factura; se registra en Nominas. */
   tipoDocumento: TipoDocumentoGasto;
+}
+
+/** Lo que el controlador anade con los datos de la empresa. */
+export interface GastoExtraidoEmpresa extends GastoExtraido {
+  /** El proveedor dado de alta con ese NIF, o null. */
+  proveedorExistente: { id: string; nombreFiscal: string; nifCif: string } | null;
+  /** La factura ya registrada de ese proveedor con ese numero, o null. */
+  duplicada: { facturaId: string; numeroCompleto: string } | null;
 }
 
 export type TipoDocumentoGasto = 'factura' | 'nomina' | 'seguros_sociales';
@@ -82,6 +103,8 @@ REGLAS CLAVE:
 6. BASE IMPONIBLE: Cantidad sin impuestos.
 7. IVA: Porcentaje y/o cantidad.
 8. TOTAL: Total a pagar.
+RETENCIÓN: si la factura descuenta IRPF, indica porcentaje y cantidad (retencion_porcentaje y retencion_cantidad); el total a pagar ya la descuenta.
+MONEDA: indica la moneda de los importes con su código ISO (EUR, USD, GBP...).
 9. TIPO DE DOCUMENTO: si es una NÓMINA (recibo individual de salarios de un trabajador) indica "nomina"; si es un recibo de liquidación de cotizaciones de la Seguridad Social de los trabajadores de la empresa (RLC, TC1, seguros sociales del Régimen General) indica "seguros_sociales". Una factura de una gestoría o asesoría por llevar las nóminas ES una factura ("factura"). La cuota de autónomos (RETA, Régimen Especial de Trabajadores Autónomos) NO es "seguros_sociales": es un "recibo".
 
 Si algo falta o es ilegible, deja null. NO inventes datos.
@@ -104,7 +127,10 @@ const HERRAMIENTA_EXTRACCION: Anthropic.Tool = {
       base: { type: 'number', description: 'Base imponible (sin IVA)' },
       iva_porcentaje: { type: 'number', description: 'Porcentaje de IVA (21, 10, 4, 0, etc.)' },
       iva_cantidad: { type: 'number', description: 'Cantidad de IVA' },
-      total: { type: 'number', description: 'Total a pagar (base + IVA)' },
+      total: { type: 'number', description: 'Total a pagar (base + IVA - retención)' },
+      retencion_porcentaje: { type: 'number', description: 'Porcentaje de retención de IRPF que descuenta la factura (15, 19, 7...)' },
+      retencion_cantidad: { type: 'number', description: 'Importe de la retención de IRPF' },
+      moneda: { type: 'string', description: 'Moneda de los importes, código ISO 4217 (EUR, USD...)' },
       tipo_documento: {
         type: 'string',
         enum: ['factura', 'ticket', 'recibo', 'nomina', 'seguros_sociales', 'otro'],
@@ -127,20 +153,14 @@ const limpiarNif = (v: unknown): string | null => {
 const redondear = (n: number): number => Math.round(n * 100) / 100;
 
 /**
- * Valida un NIF/CIF español usando el algoritmo de letra de control.
+ * NIF del proveedor que no vale: un NIF-IVA de otro pais de la UE no se mira
+ * (no es español); el resto, con el validador de toda la app (utils/nif.ts).
  */
-function validarNif(nif: string | null): boolean {
-  if (!nif || nif.length < 8 || nif.length > 9) return false;
-  const cleaned = nif.toUpperCase().replace(/[.\s-]/g, '');
-  if (!/^([0-9]{8}[A-Z]|[A-Z][0-9]{7}[A-Z0-9])$/i.test(cleaned)) return false;
-  if (/^[0-9]{8}[A-Z]$/.test(cleaned)) {
-    const num = parseInt(cleaned.slice(0, 8), 10);
-    const letra = cleaned.charAt(8);
-    const letrasValidas = 'TRWAGMYFPDXBNJZSQVHLCKE';
-    const letraCalculada = letrasValidas[num % 23];
-    return letra === letraCalculada;
-  }
-  return true; // Letras iniciales (CIF) aceptadas sin validación adicional
+function nifInvalido(nif: string | null): boolean {
+  if (!nif) return false;
+  const prefijo = prefijoNifIvaUe(nif);
+  if (prefijo && prefijo.pais !== 'ES') return false;
+  return !validarNifEspanol(nif).valido;
 }
 
 /**
@@ -293,6 +313,9 @@ interface LecturaClaude {
   total: number | null;
   raw_text: string | null;
   tipo_documento?: string | null;
+  retencion_porcentaje?: number | null;
+  retencion_cantidad?: number | null;
+  moneda?: string | null;
 }
 
 /**
@@ -362,6 +385,9 @@ async function leerDocumentoConClaude(buffer: Buffer, mimeType: string): Promise
     total: numero(input.total) ?? null,
     raw_text: null,
     tipo_documento: cadena(input.tipo_documento),
+    retencion_porcentaje: numero(input.retencion_porcentaje) ?? null,
+    retencion_cantidad: numero(input.retencion_cantidad) ?? null,
+    moneda: cadena(input.moneda)?.toUpperCase() ?? null,
   };
 }
 
@@ -372,10 +398,13 @@ function construirGastoExtraido(lectura: LecturaClaude): GastoExtraido {
   const errores: string[] = [];
   let confianza = 0.85; // inicio optimista
 
-  // Base e IVA
+  // Base, IVA y retencion
   const base = redondear(lectura.base ?? 0);
   const ivaImporte = redondear(lectura.iva_cantidad ?? 0);
   const total = redondear(lectura.total ?? 0);
+  const pctRet = lectura.retencion_porcentaje ?? null;
+  const retencion = redondear(lectura.retencion_cantidad ?? (pctRet && base ? (base * pctRet) / 100 : 0));
+  const tipoRetencion = pctRet ?? (retencion > 0 && base > 0 ? Math.round((retencion / base) * 100) : null);
 
   // Validaciones
   if (!lectura.numero) {
@@ -391,7 +420,7 @@ function construirGastoExtraido(lectura: LecturaClaude): GastoExtraido {
     confianza -= 0.1;
   }
 
-  if (lectura.nif_proveedor && !validarNif(lectura.nif_proveedor)) {
+  if (lectura.nif_proveedor && nifInvalido(lectura.nif_proveedor)) {
     errores.push(`NIF/CIF inválido: ${lectura.nif_proveedor}`);
     confianza -= 0.05;
   }
@@ -401,13 +430,21 @@ function construirGastoExtraido(lectura: LecturaClaude): GastoExtraido {
     confianza -= 0.2;
   }
 
-  // Validar que total cuadre con base + iva
+  // Validar que total cuadre con base + iva - retencion
   if (base > 0 && total > 0) {
-    const calculado = redondear(base + ivaImporte);
+    const calculado = redondear(base + ivaImporte - retencion);
     if (Math.abs(calculado - total) > 0.01) {
-      errores.push(`Total no cuadra: base (${base}) + IVA (${ivaImporte}) = ${calculado}, pero documento dice ${total}`);
+      const conRet = retencion > 0 ? ` - retención (${retencion})` : '';
+      errores.push(`Total no cuadra: base (${base}) + IVA (${ivaImporte})${conRet} = ${calculado}, pero documento dice ${total}`);
       confianza -= 0.1;
     }
+  }
+
+  // Facturas en otra moneda: aun no se registran.
+  const moneda = lectura.moneda ? lectura.moneda.trim().toUpperCase() : null;
+  if (moneda && moneda !== 'EUR') {
+    errores.push(`La factura está en ${moneda}: las facturas de gasto en otra moneda aún no se pueden registrar. Pasa los importes a euros antes de confirmar.`);
+    confianza -= 0.1;
   }
 
   // Una nomina o un recibo de la Seguridad Social no es una factura: sin cuenta y con aviso.
@@ -428,8 +465,13 @@ function construirGastoExtraido(lectura: LecturaClaude): GastoExtraido {
     base,
     iva: ivaImporte,
     total,
+    tipoIva: lectura.iva_porcentaje ?? null,
+    tipoRetencion,
+    retencion,
+    moneda,
     cuentaContableBase: cuenta?.codigo ?? null,
     cuentaContableNombre: cuenta?.nombre ?? null,
+    tipoGastoSugerido: tipoGastoDeCuenta(cuenta?.codigo),
     confianza,
     errores,
     tipoDocumento,
