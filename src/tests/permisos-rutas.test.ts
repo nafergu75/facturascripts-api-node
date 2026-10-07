@@ -103,6 +103,30 @@ describe('permisos que exigen las rutas', () => {
     }
   });
 
+  it('lecturas de compras: basta con compras:read o contabilidad:read', () => {
+    const { authorize } = jest.requireActual('../middleware/authorize.middleware') as typeof import('../middleware/authorize.middleware');
+    const error = (roles: string[]) => {
+      const next = jest.fn();
+      authorize('compras:read', 'contabilidad:read')({ user: { roles } } as never, {} as never, next);
+      return next.mock.calls[0][0] as { statusCode?: number } | undefined;
+    };
+    expect(error(['ventas'])).toBeUndefined(); // ventas tiene contabilidad:read
+    expect(error(['tesoreria'])).toBeUndefined();
+    expect(error(['solo-lectura'])).toBeUndefined();
+    expect(error(['contable'])).toBeUndefined();
+    expect(error(['admin'])).toBeUndefined();
+    expect(error([])?.statusCode).toBe(403);
+  });
+
+  it('las lecturas de compras, gastos y proveedores piden compras:read o contabilidad:read', () => {
+    for (const fichero of ['expense-invoices.routes.ts', 'compras.routes.ts']) {
+      const codigo = readFileSync(join(DIR_RUTAS, fichero), 'utf-8');
+      for (const m of codigo.matchAll(/\brouter\.get\(\s*'([^']*)'([\s\S]*?)\);/g)) {
+        expect(`${fichero} GET ${m[1]}: ${m[2].includes("authorize('compras:read', 'contabilidad:read')")}`).toBe(`${fichero} GET ${m[1]}: true`);
+      }
+    }
+  });
+
   it('solo-lectura lee compras pero no escribe', () => {
     const lectura = permisosDeRoles(['solo-lectura']);
     expect(usuarioTienePermiso(lectura, 'compras:read')).toBe(true);

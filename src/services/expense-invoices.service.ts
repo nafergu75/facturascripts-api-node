@@ -1,5 +1,34 @@
-import { prisma } from '../config/database';
-import { badRequest, notFound } from '../utils/http-errors';
+import { Prisma } from '@prisma/client';
+import { prisma, type TransaccionBD } from '../config/database';
+import { badRequest, conflict, HttpError, notFound } from '../utils/http-errors';
+import { aCentimos } from '../utils/money';
+import { hoyEspana } from '../utils/fechas';
+import { PGC_BASE } from '../domain/pgc-model';
+import {
+  ESTADOS_SIN_CONTABILIZAR,
+  TIPO_GASTO_INFO,
+  cabeceraTipos,
+  desgloseRetencionGasto,
+  esTipoGasto,
+  esVencida,
+  fechaContableGasto,
+  normalizarNumeroProveedor,
+  textoEstadoGasto,
+  textoEstadoPago,
+  tipoRetencionLibro,
+  type TipoGasto,
+} from '../domain/factura-gasto.model';
+import { validarFacturaGasto, type FacturaGastoBody } from '../schemas/factura-gasto.schemas';
+import { contabilizarFacturaGasto, desgloseIvaPorTipo } from './accounting-engine.service';
+import { asegurarPlanContableEmpresa } from './chart-of-accounts.service';
+// Se importa de cobrosPagos (y con dos argumentos): asi sirve antes y despues de
+// que la rama de configuracion la mueva a periodos.service.
+import { comprobarFechaAbierta, tieneCobrosActivos } from './cobrosPagos.service';
+import { archivarGastoSinRomper } from './archivoFacturas.service';
+import { perfilEmpresa } from './perfilEmpresa.service';
+import { registrarAuditoria } from './auditoria.service';
+import { datosProveedor, type DatosProveedor } from './proveedores.service';
+import { logCreate } from './suppliers/supplierAudit.service';
 
 /**
  * DTOs para creación y manipulación de facturas de gasto
@@ -36,6 +65,9 @@ export interface CrearFacturaGastoDTO {
   tipoGasto?: string; // COMPRA, SERVICIO_PROFESIONAL, ALQUILER, SUMINISTROS
   lineas?: CrearLineaGastoDTO[];
   observaciones?: string;
+  /** Numero que puso el proveedor (opcional en este camino interno). */
+  numeroFacturaProveedor?: string;
+  fechaRegistro?: string;
   // Legacy fields (para compatibilidad con OCR/extractores)
   baseAmount?: number;
   base?: number;
@@ -79,6 +111,76 @@ export interface ExpenseInvoiceResp {
     tipoRetencion: number;
     retencionImporte: number;
   }>;
+}
+
+/** Ficha completa de una factura de gasto (GET /:id y respuesta de alta, edicion y estado). */
+export interface GastoDetalle extends ExpenseInvoiceResp {
+  numeroFacturaProveedor: string | null;
+  fechaRegistro: string | null;
+  estadoTexto: string;
+  estadoPagoTexto: string;
+  vencida: boolean;
+  tipoGastoTexto: string;
+  /** La cuenta de gasto de las lineas si todas tienen la misma. */
+  cuentaGasto: string | null;
+  tipoIva: number;
+  tipoRetencion: number;
+  importePagado: number;
+  importePendiente: number;
+  monedaCuenta: string;
+  supplier: { id: string; nombreFiscal: string; nifCif: string; pais: string };
+  lineas: Array<ExpenseInvoiceResp['lineas'][number] & { accountCode: string | null }>;
+  asiento: { id: string; numeroAsiento: string; estado: string; fecha: string } | null;
+  anulacion: { fecha: string; motivo: string; contraasientoId: string | null } | null;
+  acciones: {
+    editar: { permitido: boolean; motivo?: string };
+    anular: { permitido: boolean; motivo?: string; conContraasiento: boolean };
+    /** Factura anterior sin contabilizar y sin asiento: se contabiliza con el boton. */
+    contabilizar: boolean;
+  };
+}
+
+export interface FiltrosGastos {
+  page?: unknown;
+  limit?: unknown;
+  q?: unknown;
+  estado?: unknown;
+  pago?: unknown;
+  supplierId?: unknown;
+  desde?: unknown;
+  hasta?: unknown;
+}
+
+export interface ListadoGastos {
+  items: Array<{
+    id: string;
+    numeroCompleto: string;
+    numeroFacturaProveedor: string | null;
+    fechaEmision: string;
+    fechaRegistro: string | null;
+    fechaVencimiento: string;
+    supplier: { id: string; nombreFiscal: string; nifCif: string };
+    supplierNombre: string;
+    tipoGasto: string;
+    tipoGastoTexto: string;
+    estado: string;
+    estadoTexto: string;
+    estadoPago: string;
+    estadoPagoTexto: string;
+    vencida: boolean;
+    baseTotal: number;
+    ivaTotal: number;
+    retencionTotal: number;
+    totalFactura: number;
+    importePendiente: number;
+  }>;
+  total: number;
+  page: number;
+  limit: number;
+  paginas: number;
+  contadores: { todas: number; sinContabilizar: number; pendientesRevision: number; contabilizadas: number; anuladas: number; pendientesPago: number; vencidas: number };
+  totales: { base: number; iva: number; retencion: number; total: number; pendiente: number };
+  monedaCuenta: string;
 }
 
 /**
@@ -153,7 +255,7 @@ async function resolverNumeroFactura(companyId: string, serie: string, numeroSug
 /**
  * Calcula totales a partir de las líneas de gasto.
  */
-function calcularTotales(lineas: CrearLineaGastoDTO[]): {
+export function calcularTotales(lineas: CrearLineaGastoDTO[]): {
   baseTotal: number;
   ivaTotal: number;
   retencionTotal: number;
@@ -208,11 +310,391 @@ function determinarEstado(fechaVencimiento: string): string {
   return fechaVencimiento < hoy ? 'OVERDUE' : 'PENDING';
 }
 
-export const expenseInvoicesService = {
-  /**
-   * Crear factura de gasto completa.
-   */
-  async crearGasto(dto: CrearFacturaGastoDTO): Promise<ExpenseInvoiceResp> {
+/** Fecha de la factura (hoy si no viene) y vencimiento (por defecto, 30 dias despues). */
+function resolverFechasGasto(dto: { fechaEmision?: string; fechaVencimiento?: string }): { fechaEmision: string; fechaVencimiento: string } {
+    // 3) Resolver fechas
+    const fechaEmision = (dto.fechaEmision ?? new Date().toISOString().slice(0, 10)).slice(0, 10);
+    const fechaVencimiento = (
+      dto.fechaVencimiento ??
+      (() => {
+        const d = new Date(fechaEmision);
+        d.setDate(d.getDate() + 30);
+        return d.toISOString().slice(0, 10);
+      })()
+    ).slice(0, 10);
+    return { fechaEmision, fechaVencimiento };
+}
+
+// ---------------------------------------------------------------------------
+// Ayudas del alta, la edicion y la anulacion
+// ---------------------------------------------------------------------------
+
+const OPCIONES_TX = { timeout: 60_000, maxWait: 15_000 };
+
+/** Linea guardada (los importes se leen como number: ver config/decimales.ts). */
+interface LineaGuardada {
+  id: string;
+  descripcion: string;
+  cantidad: number;
+  precioUnitario: number;
+  baseLine: number;
+  descuentoPorcentaje: number;
+  descuentoImporte: number;
+  tipoIva: number;
+  ivaImporte: number;
+  tipoRetencion: number;
+  retencionImporte: number;
+  accountCode: string | null;
+}
+/** Lo que el asiento necesita de una factura guardada. */
+interface FacturaConLineas {
+  numeroCompleto: string;
+  numeroFacturaProveedor: string | null;
+  fechaEmision: string;
+  fechaRegistro: string | null;
+  tipoGasto: string;
+  tipoIva: number;
+  tipoRetencion: number;
+  baseTotal: number;
+  ivaTotal: number;
+  retencionTotal: number;
+  totalFactura: number;
+  lineas: LineaGuardada[];
+}
+type ProveedorBasico = { id: string; nombreFiscal: string; nifCif: string; pais: string };
+
+/** Error P2002 (indice unico) cuyo indice menciona `campo`. */
+function esDuplicado(e: unknown, campo: string): boolean {
+  if (!(e instanceof Prisma.PrismaClientKnownRequestError) || e.code !== 'P2002') return false;
+  return String((e.meta as { target?: unknown } | undefined)?.target ?? '').includes(campo);
+}
+
+const ddmmaaaa = (f: string) => `${f.slice(8, 10)}/${f.slice(5, 7)}/${f.slice(0, 4)}`;
+
+/** Asiento vigente de la factura (el ultimo de origen FACTURA_GASTO que no esta REVERSED, sin el contraasiento). */
+async function asientoVigente(db: TransaccionBD | typeof prisma, companyId: string, invoiceId: string, excluir?: string | null) {
+  return db.journalEntry.findFirst({
+    where: { companyId, invoiceId, origen: 'FACTURA_GASTO', estado: { not: 'REVERSED' }, ...(excluir ? { id: { not: excluir } } : {}) },
+    orderBy: { createdAt: 'desc' },
+  });
+}
+
+/** Retencion de la factura para buscar el modelo presentado: 111 (profesionales) o 115 (alquileres). */
+const retencionDe = (f: { retencionTotal: number; tipoGasto: string }) =>
+  aCentimos(Number(f.retencionTotal) || 0) > 0 ? tipoRetencionLibro(f.tipoGasto) : null;
+
+/**
+ * null si se puede tocar la contabilidad de esa fecha; si no, el motivo: el
+ * periodo o el ejercicio estan cerrados (comprobarFechaAbierta) o el 303 del
+ * trimestre (o del mes), o el 111/115 si hay retencion, ya esta presentado.
+ */
+export async function motivoPeriodoBloqueado(
+  companyId: string,
+  fecha: string,
+  retencion: 'PROFESIONAL' | 'ARRENDAMIENTO' | null,
+): Promise<string | null> {
+  try {
+    await comprobarFechaAbierta(companyId, fecha);
+  } catch (e) {
+    if (e instanceof HttpError) return e.message.replace(/: no se pueden añadir asientos con esa fecha\.?$/, '');
+    throw e;
+  }
+  const ejercicio = Number(fecha.slice(0, 4));
+  const mes = fecha.slice(5, 7);
+  const periodos = [`${Math.ceil(Number(mes) / 3)}T`, mes];
+  const codigos = ['303', ...(retencion === 'PROFESIONAL' ? ['111'] : retencion === 'ARRENDAMIENTO' ? ['115'] : [])];
+  const presentado = await prisma.modeloImpuesto.findFirst({
+    where: { companyId, codigo: { in: codigos }, ejercicio, periodo: { in: periodos }, estado: 'presentado' },
+    select: { codigo: true, periodo: true },
+  });
+  if (presentado) return `El ${presentado.codigo} del ${presentado.periodo} de ${ejercicio} ya está presentado`;
+  return null;
+}
+
+/** La cuenta de gasto tiene que estar en el plan de la empresa (activa) o en el plan base. */
+async function comprobarCuentas(companyId: string, cuentas: string[]): Promise<void> {
+  const base = new Set(PGC_BASE.map((n) => n.code));
+  for (const c of [...new Set(cuentas)]) {
+    if (base.has(c)) continue;
+    const enPlan = await prisma.chartOfAccounts.findFirst({ where: { companyId, codigo: c, activo: true }, select: { id: true } });
+    if (!enPlan) throw badRequest(`La cuenta ${c} no existe en tu plan contable`, { campo: 'cuentaGasto' });
+  }
+}
+
+/** 409 si ya hay otra factura vigente del mismo proveedor con ese numero. */
+async function comprobarDuplicado(companyId: string, supplierId: string, numeroActivo: string, excluirId?: string): Promise<void> {
+  const otra = await prisma.expenseInvoice.findFirst({
+    where: { companyId, supplierId, numeroProveedorActivo: numeroActivo, ...(excluirId ? { id: { not: excluirId } } : {}) },
+    include: { supplier: { select: { nombreFiscal: true } } },
+  });
+  if (otra) throw errorDuplicada(otra);
+}
+
+const errorDuplicada = (f: { id: string; numeroCompleto: string; numeroFacturaProveedor: string | null; supplier: { nombreFiscal: string } }) =>
+  conflict(`Esta factura ya está registrada: ${f.supplier.nombreFiscal}, nº ${f.numeroFacturaProveedor} (registro ${f.numeroCompleto}).`, {
+    campo: 'numeroFacturaProveedor',
+    facturaId: f.id,
+  });
+
+/** Busca la factura que choca por el indice unico del numero del proveedor (tras un P2002). */
+async function duplicadaTrasCarrera(companyId: string, supplierId: string | null, numeroActivo: string): Promise<HttpError> {
+  const otra = supplierId
+    ? await prisma.expenseInvoice.findFirst({
+        where: { companyId, supplierId, numeroProveedorActivo: numeroActivo },
+        include: { supplier: { select: { nombreFiscal: true } } },
+      })
+    : null;
+  return otra ? errorDuplicada(otra) : conflict('Esta factura ya está registrada.', { campo: 'numeroFacturaProveedor' });
+}
+
+interface ProveedorPreparado {
+  existente: ProveedorBasico | null;
+  nuevo: (DatosProveedor & { nombreFiscal: string; nifCif: string; pais: string }) | null;
+  pais: string | null;
+}
+
+/**
+ * Proveedor de la factura: el elegido (de esta empresa; si no, 404) o los
+ * datos validados del nuevo (409 si su NIF ya existe en la empresa). Si el
+ * cuerpo no trae proveedor, el esquema dara el error.
+ */
+async function prepararProveedor(companyId: string, proveedor: unknown): Promise<ProveedorPreparado> {
+  const p = (proveedor ?? {}) as { id?: unknown; nuevo?: unknown };
+  if (typeof p.id === 'string' && p.id.trim() && p.nuevo === undefined) {
+    const s = await prisma.supplier.findFirst({
+      where: { id: p.id.trim(), companyId },
+      select: { id: true, nombreFiscal: true, nifCif: true, pais: true },
+    });
+    if (!s) throw notFound('Proveedor no encontrado.');
+    return { existente: s, nuevo: null, pais: s.pais };
+  }
+  if (p.nuevo && typeof p.nuevo === 'object' && p.id === undefined) {
+    let d: DatosProveedor;
+    try {
+      d = datosProveedor(p.nuevo as Record<string, unknown>);
+    } catch (e) {
+      if (e instanceof HttpError && e.statusCode === 400) {
+        const campo = (e.details as { campo?: string } | undefined)?.campo;
+        throw badRequest(e.message, { campo: `proveedor.${campo ?? 'nuevo'}` });
+      }
+      throw e;
+    }
+    const ya = await prisma.supplier.findFirst({ where: { companyId, nifCif: d.nifCif! }, select: { id: true, nombreFiscal: true } });
+    if (ya) throw conflict(`Ya existe un proveedor con ese NIF: ${ya.nombreFiscal}`, { campo: 'proveedor.nifCif', proveedorId: ya.id });
+    const nuevo = { ...d, nombreFiscal: d.nombreFiscal!, nifCif: d.nifCif!, pais: d.pais ?? 'ES' };
+    return { existente: null, nuevo, pais: nuevo.pais };
+  }
+  return { existente: null, nuevo: null, pais: null };
+}
+
+/** Lineas para guardar (con su cuenta: la propia, la de la factura o ninguna) y totales. */
+function lineasParaGuardar(v: FacturaGastoBody) {
+  const calculo = calcularTotales(v.lineas);
+  const lineas = calculo.lineasConTotales.map((l, i) => ({
+    descripcion: l.descripcion,
+    cantidad: l.cantidad,
+    precioUnitario: l.precioUnitario,
+    baseLine: l.baseLine,
+    descuentoPorcentaje: l.descuentoPorcentaje ?? 0,
+    descuentoImporte: l.descuentoImporte,
+    tipoIva: l.tipoIva ?? 21,
+    ivaImporte: l.ivaImporte,
+    tipoRetencion: l.tipoRetencion ?? 0,
+    retencionImporte: l.retencionImporte,
+    accountCode: v.lineas[i].cuenta ?? v.cuentaGasto ?? null,
+  }));
+  return { ...calculo, lineas, cabecera: cabeceraTipos(lineas) };
+}
+
+const NOMBRE_CUENTA = new Map(PGC_BASE.map((n) => [n.code, n.name]));
+
+/** Datos del motor contable a partir de la factura guardada y su proveedor. */
+function datosContablesGasto(
+  f: FacturaConLineas,
+  s: { id: string; nifCif: string; nombreFiscal: string },
+  extra: { estadoAsiento: 'POSTED' | 'DRAFT'; numeroAsiento?: string },
+): Parameters<typeof contabilizarFacturaGasto>[2] {
+  const tipo: TipoGasto = esTipoGasto(f.tipoGasto) ? f.tipoGasto : 'COMPRA';
+  const porCuenta = new Map<string, number>();
+  for (const l of f.lineas) {
+    const c = l.accountCode ?? TIPO_GASTO_INFO[tipo].cuenta;
+    porCuenta.set(c, (porCuenta.get(c) ?? 0) + aCentimos(Number(l.baseLine)));
+  }
+  return {
+    baseTotal: Number(f.baseTotal),
+    ivaTotal: Number(f.ivaTotal),
+    ivaRate: f.tipoIva,
+    retencionTotal: Number(f.retencionTotal),
+    retencionRate: f.tipoRetencion,
+    totalFactura: Number(f.totalFactura),
+    fechaEmision: fechaContableGasto(f),
+    fechaExpedicion: f.fechaEmision,
+    numeroFactura: f.numeroCompleto,
+    numeroFacturaProveedor: f.numeroFacturaProveedor ?? null,
+    proveedorId: s.id,
+    proveedorNif: s.nifCif,
+    proveedorNombre: s.nombreFiscal,
+    tipoGasto: tipo,
+    desgloseIva: f.lineas.length ? desgloseIvaPorTipo(f.lineas.map((l) => ({ tipoIva: l.tipoIva, baseLine: Number(l.baseLine), ivaImporte: Number(l.ivaImporte) }))) : undefined,
+    gastoPorCuenta: f.lineas.length
+      ? [...porCuenta].map(([cuenta, centimos]) => ({ cuenta, nombre: NOMBRE_CUENTA.get(cuenta) ?? 'Gastos', base: centimos / 100 }))
+      : undefined,
+    desgloseRetencion: desgloseRetencionGasto({
+      baseTotal: Number(f.baseTotal),
+      retencionTotal: Number(f.retencionTotal),
+      tipoRetencion: f.tipoRetencion,
+      lineas: f.lineas.map((l) => ({ tipoRetencion: l.tipoRetencion, baseLine: Number(l.baseLine), retencionImporte: Number(l.retencionImporte) })),
+    }),
+    estadoAsiento: extra.estadoAsiento,
+    ...(extra.numeroAsiento ? { numeroAsiento: extra.numeroAsiento } : {}),
+  };
+}
+
+/** Borra el libro de IVA y el de retenciones de un asiento. */
+async function borrarLibrosDeAsiento(tx: TransaccionBD, companyId: string, asientoId: string): Promise<void> {
+  await tx.vATBook.deleteMany({ where: { companyId, asientoId } });
+  await tx.retentionBook.deleteMany({ where: { companyId, asientoId } });
+}
+
+/** Lo pagado (pagos activos) y cuantos pagos activos tiene una factura. */
+async function pagosDe(companyId: string, invoiceId: string): Promise<{ pagado: number; activos: number }> {
+  const r = await prisma.invoicePayment.aggregate({
+    where: { companyId, invoiceType: 'GASTO', invoiceId, estado: 'ACTIVO' },
+    _sum: { importe: true },
+    _count: { _all: true },
+  });
+  return { pagado: round2(Number(r._sum.importe ?? 0)), activos: r._count._all };
+}
+
+/** Lo pagado por factura (pagos activos) de un conjunto de facturas. */
+async function pagadoPorFacturas(companyId: string, ids: string[]): Promise<Map<string, number>> {
+  if (!ids.length) return new Map();
+  const filas = await prisma.invoicePayment.groupBy({
+    by: ['invoiceId'],
+    where: { companyId, invoiceType: 'GASTO', estado: 'ACTIVO', invoiceId: { in: ids } },
+    _sum: { importe: true },
+  });
+  return new Map(filas.map((r) => [r.invoiceId, round2(Number(r._sum.importe ?? 0))]));
+}
+
+const mensajeConPagos = 'La factura tiene pagos registrados: anúlalos antes de modificarla.';
+
+// ---------------------------------------------------------------------------
+// Alta (manual con asiento firme o desde el lector con asiento en borrador)
+// ---------------------------------------------------------------------------
+
+export interface OpcionesAlta {
+  /** POSTED: alta manual (factura ACCOUNTED). DRAFT: lector (factura y asiento en borrador). */
+  contabilizar?: 'POSTED' | 'DRAFT';
+  /** Email del usuario, para el historial del proveedor si se crea. */
+  usuarioEmail?: string;
+  userId?: string;
+  /** Texto que va delante de las observaciones (p. ej. la confianza del lector). */
+  prefijoObservaciones?: string;
+}
+
+export interface ResultadoAlta {
+  factura: GastoDetalle;
+  asientoId: string;
+  proveedorCreado: boolean;
+}
+
+/**
+ * Alta de una factura de gasto con su asiento en la misma transaccion: la
+ * factura, el proveedor nuevo (si lo hay), el asiento, el libro de IVA y el de
+ * retenciones, o nada. Con POSTED la factura queda ACCOUNTED; con DRAFT
+ * (lector) la factura y el asiento quedan en borrador hasta aprobarlo.
+ */
+export async function registrarGasto(companyId: string, cuerpo: unknown, opciones: OpcionesAlta & { contabilizar: 'POSTED' | 'DRAFT' }): Promise<ResultadoAlta> {
+  const bruto = { ...((cuerpo ?? {}) as Record<string, unknown>) };
+  if (bruto.proveedor === undefined && bruto.provider !== undefined) bruto.proveedor = bruto.provider;
+
+  const prov = await prepararProveedor(companyId, bruto.proveedor);
+  const v = validarFacturaGasto(bruto, { paisProveedor: prov.pais, permitirSerie: true });
+  const { lineas, baseTotal, ivaTotal, retencionTotal, totalFactura, cabecera } = lineasParaGuardar(v);
+  await comprobarCuentas(companyId, lineas.map((l) => l.accountCode).filter((c): c is string => !!c));
+
+  const numeroActivo = normalizarNumeroProveedor(v.numeroFacturaProveedor);
+  if (prov.existente) await comprobarDuplicado(companyId, prov.existente.id, numeroActivo);
+
+  const fechaContable = v.fechaRegistro ?? v.fechaEmision;
+  await comprobarFechaAbierta(companyId, fechaContable);
+  await asegurarPlanContableEmpresa(companyId);
+
+  const { fechaEmision, fechaVencimiento } = resolverFechasGasto({ fechaEmision: v.fechaEmision, fechaVencimiento: v.fechaVencimiento });
+  const serie = v.serie ?? 'G';
+  const observaciones = [opciones.prefijoObservaciones, v.observaciones?.trim()].filter(Boolean).join(' ') || null;
+  const estado = opciones.contabilizar === 'POSTED' ? 'ACCOUNTED' : 'DRAFT';
+
+  let resultado: { id: string; asientoId: string; supplierId: string } | null = null;
+  for (let intento = 1; !resultado; intento++) {
+    try {
+      resultado = await prisma.$transaction(async (tx) => {
+        const supplier: ProveedorBasico = prov.existente ?? (await tx.supplier.create({ data: { companyId, ...prov.nuevo! } }));
+        const ultima = await tx.expenseInvoice.findFirst({ where: { companyId, serie }, orderBy: { numero: 'desc' }, select: { numero: true } });
+        const numero = (ultima?.numero ?? 0) + 1;
+        const f = await tx.expenseInvoice.create({
+          data: {
+            companyId,
+            supplierId: supplier.id,
+            serie,
+            numero,
+            numeroCompleto: `${serie}-${numero}`,
+            numeroFacturaProveedor: v.numeroFacturaProveedor,
+            numeroProveedorActivo: numeroActivo,
+            fechaEmision,
+            fechaRegistro: v.fechaRegistro && v.fechaRegistro !== fechaEmision ? v.fechaRegistro : null,
+            fechaVencimiento,
+            estado,
+            estadoPago: 'PENDIENTE',
+            tipoGasto: v.tipoGasto,
+            baseTotal,
+            ivaTotal,
+            tipoIva: cabecera.tipoIva,
+            retencionTotal,
+            tipoRetencion: cabecera.tipoRetencion,
+            totalFactura,
+            observaciones,
+            lineas: { create: lineas },
+          },
+          include: { lineas: true },
+        });
+        const { asientoId } = await contabilizarFacturaGasto(companyId, f.id, datosContablesGasto(f, supplier, { estadoAsiento: opciones.contabilizar }), tx);
+        return { id: f.id, asientoId, supplierId: supplier.id };
+      }, OPCIONES_TX);
+    } catch (e) {
+      if (esDuplicado(e, 'numeroProveedorActivo')) throw await duplicadaTrasCarrera(companyId, prov.existente?.id ?? null, numeroActivo);
+      if (esDuplicado(e, 'nifCif')) {
+        const ya = await prisma.supplier.findFirst({ where: { companyId, nifCif: prov.nuevo?.nifCif ?? '' }, select: { id: true, nombreFiscal: true } });
+        throw conflict(`Ya existe un proveedor con ese NIF: ${ya?.nombreFiscal ?? ''}`.trim(), { campo: 'proveedor.nifCif', proveedorId: ya?.id });
+      }
+      // Dos altas a la vez con el mismo numero interno: se reintenta con el siguiente.
+      const numeroRepetido = esDuplicado(e, 'serie') || esDuplicado(e, 'numeroCompleto');
+      if (!numeroRepetido || intento >= 3) throw e;
+    }
+  }
+
+  const proveedorCreado = !prov.existente;
+  if (proveedorCreado) await logCreate(resultado.supplierId, opciones.usuarioEmail, 'Proveedor creado al registrar una factura de gasto');
+  // Queda registrada en el archivo de su trimestre (sin original). No bloqueante.
+  await archivarGastoSinRomper(companyId, resultado.id);
+  await registrarAuditoria({
+    userId: opciones.userId ?? 'SYSTEM',
+    companyId,
+    action: opciones.contabilizar === 'POSTED' ? 'ALTA_FACTURA_GASTO' : 'ALTA_FACTURA_GASTO_LECTOR',
+    resourceType: 'ExpenseInvoice',
+    resourceId: resultado.id,
+    meta: { asientoId: resultado.asientoId, proveedorCreado },
+  });
+  return { factura: await obtenerDetalle(companyId, resultado.id), asientoId: resultado.asientoId, proveedorCreado };
+}
+
+/**
+ * Alta interna de siempre (sin asiento): la usan los tests de cobros y de
+ * archivo y otros llamadores internos. Guarda ademas la cabecera tipoIva y
+ * tipoRetencion (la de la mayor base) y los campos nuevos si vienen.
+ */
+async function crearGastoSinAsiento(dto: CrearFacturaGastoDTO): Promise<ExpenseInvoiceResp> {
     // En desarrollo, si no hay líneas, crear una automáticamente
     let lineas = dto.lineas;
     if (!lineas || lineas.length === 0) {
@@ -241,18 +723,11 @@ export const expenseInvoicesService = {
     const numeroCompleto = `${dto.serie}-${numero}`;
 
     // 3) Resolver fechas
-    const fechaEmision = (dto.fechaEmision ?? new Date().toISOString().slice(0, 10)).slice(0, 10);
-    const fechaVencimiento = (
-      dto.fechaVencimiento ??
-      (() => {
-        const d = new Date(fechaEmision);
-        d.setDate(d.getDate() + 30);
-        return d.toISOString().slice(0, 10);
-      })()
-    ).slice(0, 10);
+    const { fechaEmision, fechaVencimiento } = resolverFechasGasto(dto);
 
     // 4) Calcular totales
     const { baseTotal, ivaTotal, retencionTotal, totalFactura, lineasConTotales } = calcularTotales(lineas);
+    const cabecera = cabeceraTipos(lineasConTotales.map((l) => ({ tipoIva: l.tipoIva ?? 21, tipoRetencion: l.tipoRetencion ?? 0, baseLine: l.baseLine })));
 
     // 5) Crear factura en BD
     const factura = await prisma.expenseInvoice.create({
@@ -268,9 +743,15 @@ export const expenseInvoicesService = {
         tipoGasto: dto.tipoGasto || 'COMPRA',
         baseTotal,
         ivaTotal,
+        tipoIva: cabecera.tipoIva,
         retencionTotal,
+        tipoRetencion: cabecera.tipoRetencion,
         totalFactura,
         observaciones: dto.observaciones,
+        ...(dto.numeroFacturaProveedor?.trim()
+          ? { numeroFacturaProveedor: dto.numeroFacturaProveedor.trim(), numeroProveedorActivo: normalizarNumeroProveedor(dto.numeroFacturaProveedor) }
+          : {}),
+        ...(dto.fechaRegistro ? { fechaRegistro: dto.fechaRegistro } : {}),
         lineas: {
           create: lineasConTotales.map((l) => ({
             descripcion: l.descripcion,
@@ -323,172 +804,530 @@ export const expenseInvoicesService = {
         retencionImporte: l.retencionImporte,
       })),
     };
-  },
+}
 
-  /**
-   * Listar facturas de gasto con filtros.
-   */
-  async listarGastos(
-    companyId: string,
-    filtros?: {
-      estado?: string;
-      supplierId?: string;
-      desde?: string;
-      hasta?: string;
-      skip?: number;
-      take?: number;
-    },
-  ) {
-    const skip = filtros?.skip ?? 0;
-    const take = filtros?.take ?? 20;
+/**
+ * Crear factura de gasto. Sin `opciones.contabilizar`, el alta interna de
+ * siempre (sin asiento). Con ella (controlador HTTP y lector), el alta
+ * validada con su asiento (ver registrarGasto) y la ficha completa.
+ */
+function crearGasto(dto: CrearFacturaGastoDTO): Promise<ExpenseInvoiceResp>;
+function crearGasto(dto: unknown, opciones: OpcionesAlta & { contabilizar: 'POSTED' | 'DRAFT' }): Promise<GastoDetalle>;
+function crearGasto(dto: unknown, opciones: OpcionesAlta = {}): Promise<ExpenseInvoiceResp | GastoDetalle> {
+  if (opciones.contabilizar) {
+    const companyId = String((dto as { companyId?: unknown })?.companyId ?? '');
+    return registrarGasto(companyId, dto, { ...opciones, contabilizar: opciones.contabilizar }).then((r) => r.factura);
+  }
+  return crearGastoSinAsiento(dto as CrearFacturaGastoDTO);
+}
 
-    const where: Record<string, unknown> = { companyId };
-    if (filtros?.estado) where.estado = filtros.estado;
-    if (filtros?.supplierId) where.supplierId = filtros.supplierId;
-    if (filtros?.desde || filtros?.hasta) {
-      where.fechaEmision = {};
-      if (filtros.desde) (where.fechaEmision as Record<string, unknown>).gte = filtros.desde;
-      if (filtros.hasta) (where.fechaEmision as Record<string, unknown>).lte = filtros.hasta;
+// ---------------------------------------------------------------------------
+// Corregir (PUT) y anular
+// ---------------------------------------------------------------------------
+
+/**
+ * Modifica una factura de gasto. Sin pagos activos y con el periodo abierto:
+ * se rehacen las lineas, la cabecera y su asiento (POSTED: el anterior pasa a
+ * REVERSED y se crea uno nuevo -R{n}; borrador: se rehace con el mismo numero)
+ * con sus libros. Con el periodo cerrado o el modelo presentado: 409, se anula.
+ */
+export async function editarGasto(
+  companyId: string,
+  id: string,
+  cuerpo: unknown,
+  ctx: { userId?: string; usuarioEmail?: string } = {},
+): Promise<GastoDetalle> {
+  const actual = await prisma.expenseInvoice.findFirst({ where: { id, companyId }, include: { lineas: true } });
+  if (!actual) throw notFound('Factura de gasto no encontrada.');
+  if (actual.estado === 'ANULADA') throw conflict('La factura está anulada: no se puede modificar.');
+  if (await tieneCobrosActivos(companyId, 'GASTO', id)) throw conflict(mensajeConPagos);
+
+  const asiento = await asientoVigente(prisma, companyId, id);
+  const bloqueo = (motivo: string) =>
+    conflict(`${motivo}: esta factura ya no se puede modificar. Anúlala (se hará un contraasiento con fecha de hoy) y vuelve a registrarla.`, {
+      accion: 'anular',
+    });
+  if (asiento?.estado === 'POSTED') {
+    const motivo = await motivoPeriodoBloqueado(companyId, fechaContableGasto(actual), retencionDe(actual));
+    if (motivo) throw bloqueo(motivo);
+  }
+
+  const bruto = { ...((cuerpo ?? {}) as Record<string, unknown>) };
+  if (bruto.proveedor === undefined && bruto.provider !== undefined) bruto.proveedor = bruto.provider;
+  const prov = await prepararProveedor(companyId, bruto.proveedor);
+  const v = validarFacturaGasto(bruto, { paisProveedor: prov.pais, permitirSerie: false });
+  const { lineas, baseTotal, ivaTotal, retencionTotal, totalFactura, cabecera } = lineasParaGuardar(v);
+  await comprobarCuentas(companyId, lineas.map((l) => l.accountCode).filter((c): c is string => !!c));
+  const numeroActivo = normalizarNumeroProveedor(v.numeroFacturaProveedor);
+  if (prov.existente) await comprobarDuplicado(companyId, prov.existente.id, numeroActivo, id);
+
+  const fechaNueva = v.fechaRegistro ?? v.fechaEmision;
+  await comprobarFechaAbierta(companyId, fechaNueva);
+  if (asiento?.estado === 'POSTED') {
+    const motivo = await motivoPeriodoBloqueado(companyId, fechaNueva, retencionTotal > 0 ? tipoRetencionLibro(v.tipoGasto) : null);
+    if (motivo) throw bloqueo(motivo);
+  }
+  if (asiento) await asegurarPlanContableEmpresa(companyId);
+
+  const { fechaEmision, fechaVencimiento } = resolverFechasGasto({ fechaEmision: v.fechaEmision, fechaVencimiento: v.fechaVencimiento });
+  const estado = actual.estado === 'PENDING' || actual.estado === 'OVERDUE' ? determinarEstado(fechaVencimiento) : actual.estado;
+
+  let r: { asientoNuevo: string | null; supplierId: string };
+  try {
+    r = await prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM ExpenseInvoice WHERE id = ${id} FOR UPDATE`;
+      const supplier: ProveedorBasico = prov.existente ?? (await tx.supplier.create({ data: { companyId, ...prov.nuevo! } }));
+      await tx.expenseInvoiceLine.deleteMany({ where: { invoiceId: id } });
+      const f = await tx.expenseInvoice.update({
+        where: { id },
+        data: {
+          supplierId: supplier.id,
+          numeroFacturaProveedor: v.numeroFacturaProveedor,
+          numeroProveedorActivo: numeroActivo,
+          fechaEmision,
+          fechaRegistro: v.fechaRegistro && v.fechaRegistro !== fechaEmision ? v.fechaRegistro : null,
+          fechaVencimiento,
+          estado,
+          tipoGasto: v.tipoGasto,
+          baseTotal,
+          ivaTotal,
+          tipoIva: cabecera.tipoIva,
+          retencionTotal,
+          tipoRetencion: cabecera.tipoRetencion,
+          totalFactura,
+          observaciones: v.observaciones?.trim() || null,
+          lineas: { create: lineas },
+        },
+        include: { lineas: true },
+      });
+      if (!asiento) return { asientoNuevo: null, supplierId: supplier.id };
+
+      await borrarLibrosDeAsiento(tx, companyId, asiento.id);
+      if (asiento.estado === 'POSTED') {
+        await tx.journalEntry.update({ where: { id: asiento.id }, data: { estado: 'REVERSED' } });
+        const previos = await tx.journalEntry.count({ where: { companyId, invoiceId: id, origen: 'FACTURA_GASTO' } });
+        const nuevo = await contabilizarFacturaGasto(
+          companyId,
+          id,
+          datosContablesGasto(f, supplier, { estadoAsiento: 'POSTED', numeroAsiento: `FAC-GAST-${f.numeroCompleto}-R${previos}` }),
+          tx,
+        );
+        return { asientoNuevo: nuevo.asientoId, supplierId: supplier.id };
+      }
+      // Borrador (o pendiente de revisar): se rehace con el mismo numero y estado.
+      await tx.journalEntry.delete({ where: { id: asiento.id } });
+      const nuevo = await contabilizarFacturaGasto(
+        companyId,
+        id,
+        datosContablesGasto(f, supplier, { estadoAsiento: 'DRAFT', numeroAsiento: asiento.numeroAsiento }),
+        tx,
+      );
+      if (asiento.estado !== 'DRAFT') await tx.journalEntry.update({ where: { id: nuevo.asientoId }, data: { estado: asiento.estado } });
+      return { asientoNuevo: nuevo.asientoId, supplierId: supplier.id };
+    }, OPCIONES_TX);
+  } catch (e) {
+    if (esDuplicado(e, 'numeroProveedorActivo')) throw await duplicadaTrasCarrera(companyId, prov.existente?.id ?? null, numeroActivo);
+    if (esDuplicado(e, 'nifCif')) throw conflict('Ya existe un proveedor con ese NIF.', { campo: 'proveedor.nifCif' });
+    throw e;
+  }
+
+  if (!prov.existente) await logCreate(r.supplierId, ctx.usuarioEmail, 'Proveedor creado al modificar una factura de gasto');
+  await registrarAuditoria({
+    userId: ctx.userId ?? 'SYSTEM',
+    companyId,
+    action: 'EDITAR_FACTURA_GASTO',
+    resourceType: 'ExpenseInvoice',
+    resourceId: id,
+    meta: { asientoAnterior: asiento?.id ?? null, asientoNuevo: r.asientoNuevo },
+  });
+  return obtenerDetalle(companyId, id);
+}
+
+/**
+ * Anula una factura de gasto. Con el periodo abierto (o el asiento en
+ * borrador) el asiento pasa a REVERSED y se borran sus libros. Con el periodo
+ * cerrado o el modelo presentado, contraasiento POSTED con fecha de hoy (o la
+ * indicada) y filas negativas en el libro de IVA y en el de retenciones: cada
+ * periodo sigue cuadrando con el 303.
+ */
+export async function anularGasto(
+  companyId: string,
+  id: string,
+  datos: { motivo?: unknown; fecha?: unknown },
+  ctx: { userId?: string } = {},
+): Promise<{ factura: GastoDetalle; contraasiento: boolean; asientoAnulacionId: string | null }> {
+  const f = await prisma.expenseInvoice.findFirst({ where: { id, companyId }, include: { supplier: { select: { nombreFiscal: true } } } });
+  if (!f) throw notFound('Factura de gasto no encontrada.');
+  if (f.estado === 'ANULADA') throw conflict('La factura ya está anulada.');
+  if (await tieneCobrosActivos(companyId, 'GASTO', id)) throw conflict('La factura tiene pagos registrados: anúlalos antes de anularla.');
+
+  const motivo = typeof datos.motivo === 'string' ? datos.motivo.trim() : '';
+  if (motivo.length < 3) throw badRequest('Indica el motivo de la anulación.', { campo: 'motivo' });
+  if (motivo.length > 500) throw badRequest('El motivo es demasiado largo (500 caracteres como mucho).', { campo: 'motivo' });
+  if (datos.fecha !== undefined && datos.fecha !== null && datos.fecha !== '') {
+    if (typeof datos.fecha !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(datos.fecha)) throw badRequest('La fecha tiene que ser AAAA-MM-DD.', { campo: 'fecha' });
+  }
+  const fechaPedida = typeof datos.fecha === 'string' && datos.fecha ? datos.fecha : null;
+
+  const asiento = await asientoVigente(prisma, companyId, id);
+  const conContraasiento =
+    asiento?.estado === 'POSTED' && (await motivoPeriodoBloqueado(companyId, fechaContableGasto(f), retencionDe(f))) !== null;
+  const fechaAnulacion = fechaPedida ?? hoyEspana();
+  if (conContraasiento) {
+    await comprobarFechaAbierta(companyId, fechaAnulacion);
+    const m = await motivoPeriodoBloqueado(companyId, fechaAnulacion, retencionDe(f));
+    if (m) throw conflict(`${m}: elige una fecha de anulación de un periodo abierto.`, { campo: 'fecha' });
+  }
+
+  const contraId = await prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT id FROM ExpenseInvoice WHERE id = ${id} FOR UPDATE`;
+    const ahora = await tx.expenseInvoice.findUniqueOrThrow({ where: { id }, select: { estado: true } });
+    if (ahora.estado === 'ANULADA') throw conflict('La factura ya está anulada.');
+
+    let contra: string | null = null;
+    if (asiento && !conContraasiento) {
+      await borrarLibrosDeAsiento(tx, companyId, asiento.id);
+      await tx.journalEntry.update({ where: { id: asiento.id }, data: { estado: 'REVERSED' } });
+    } else if (asiento && conContraasiento) {
+      const original = await tx.journalEntry.findUniqueOrThrow({ where: { id: asiento.id }, include: { lineas: true } });
+      const nfp = f.numeroFacturaProveedor ?? f.numeroCompleto;
+      const c = await tx.journalEntry.create({
+        data: {
+          companyId,
+          fecha: new Date(fechaAnulacion),
+          numeroAsiento: `FAC-GAST-${f.numeroCompleto}-ANUL`,
+          descripcion: `Anulación de la factura ${nfp} (registro ${f.numeroCompleto}): ${motivo}`.slice(0, 190),
+          origen: 'FACTURA_GASTO',
+          estado: 'POSTED',
+          invoiceId: id,
+          invoiceType: 'GASTO',
+        },
+      });
+      for (const l of original.lineas) {
+        await tx.journalEntryLine.create({
+          data: { entryId: c.id, accountCode: l.accountCode, accountName: l.accountName, debe: l.haber, haber: l.debe, referencia: l.referencia, companyId },
+        });
+      }
+      const fechaOriginal = fechaContableGasto(f);
+      for (const v of await tx.vATBook.findMany({ where: { companyId, asientoId: asiento.id } })) {
+        await tx.vATBook.create({
+          data: {
+            companyId,
+            tipoLibro: v.tipoLibro,
+            numeroFactura: `${v.numeroFactura}-ANUL`,
+            numeroFacturaEmisor: v.numeroFacturaEmisor,
+            fechaFactura: new Date(fechaAnulacion),
+            nifTercero: v.nifTercero,
+            nombreTercero: v.nombreTercero,
+            baseImponible: -Number(v.baseImponible),
+            tipoIva: v.tipoIva,
+            cuotaIva: -Number(v.cuotaIva),
+            asientoId: c.id,
+            observaciones: `Anulación de la factura del ${ddmmaaaa(fechaOriginal)}`,
+          },
+        });
+      }
+      for (const rb of await tx.retentionBook.findMany({ where: { companyId, asientoId: asiento.id } })) {
+        await tx.retentionBook.create({
+          data: {
+            companyId,
+            ano: Number(fechaAnulacion.slice(0, 4)),
+            mes: Number(fechaAnulacion.slice(5, 7)),
+            tipoRetencionNombre: rb.tipoRetencionNombre,
+            nifTercero: rb.nifTercero,
+            nombreTercero: rb.nombreTercero,
+            baseImponible: -Number(rb.baseImponible),
+            porcentajeRetencion: rb.porcentajeRetencion,
+            cuotaRetencion: -Number(rb.cuotaRetencion),
+            asientoId: c.id,
+          },
+        });
+      }
+      contra = c.id;
     }
+    await tx.expenseInvoice.update({
+      where: { id },
+      data: {
+        estado: 'ANULADA',
+        numeroProveedorActivo: null,
+        anuladaEn: conContraasiento ? fechaAnulacion : hoyEspana(),
+        motivoAnulacion: motivo,
+        anulacionAsientoId: contra,
+      },
+    });
+    return contra;
+  }, OPCIONES_TX);
 
-    const [items, total] = await Promise.all([
-      prisma.expenseInvoice.findMany({
-        where,
-        include: { lineas: true, supplier: true },
-        orderBy: { fechaEmision: 'desc' },
-        skip,
-        take,
-      }),
-      prisma.expenseInvoice.count({ where }),
-    ]);
+  await registrarAuditoria({
+    userId: ctx.userId ?? 'SYSTEM',
+    companyId,
+    action: 'ANULAR_FACTURA_GASTO',
+    resourceType: 'ExpenseInvoice',
+    resourceId: id,
+    meta: { motivo, asientoAnulado: asiento?.id ?? null, contraasiento: contraId },
+  });
+  return { factura: await obtenerDetalle(companyId, id), contraasiento: !!contraId, asientoAnulacionId: contraId };
+}
 
-    return {
-      items: items.map((f) => ({
+// ---------------------------------------------------------------------------
+// Ficha y listado
+// ---------------------------------------------------------------------------
+
+const lineaResp = (l: LineaGuardada) => ({
+  id: l.id,
+  descripcion: l.descripcion,
+  cantidad: l.cantidad,
+  precioUnitario: l.precioUnitario,
+  baseLine: l.baseLine,
+  descuentoPorcentaje: l.descuentoPorcentaje,
+  descuentoImporte: l.descuentoImporte,
+  tipoIva: l.tipoIva,
+  ivaImporte: l.ivaImporte,
+  tipoRetencion: l.tipoRetencion,
+  retencionImporte: l.retencionImporte,
+  accountCode: l.accountCode ?? null,
+});
+
+/** Ficha completa (GastoDetalle) con lo pagado, el asiento y lo que se puede hacer con ella. */
+async function obtenerDetalle(companyId: string, id: string): Promise<GastoDetalle> {
+  const f = await prisma.expenseInvoice.findFirst({
+    where: { id, companyId },
+    include: { lineas: true, supplier: { select: { id: true, nombreFiscal: true, nifCif: true, pais: true } } },
+  });
+  if (!f) throw notFound('Factura de gasto no encontrada.');
+
+  const [{ pagado, activos }, perfil] = await Promise.all([pagosDe(companyId, id), perfilEmpresa(companyId)]);
+  // En una anulada se ensena el asiento original (aunque este REVERSED); el contraasiento va en `anulacion`.
+  const asiento =
+    f.estado === 'ANULADA'
+      ? await prisma.journalEntry.findFirst({
+          where: { companyId, invoiceId: id, origen: 'FACTURA_GASTO', ...(f.anulacionAsientoId ? { id: { not: f.anulacionAsientoId } } : {}) },
+          orderBy: { createdAt: 'desc' },
+        })
+      : await asientoVigente(prisma, companyId, id);
+
+  const hoy = hoyEspana();
+  const vencida = esVencida(f, hoy);
+  const cuentas = [...new Set(f.lineas.map((l) => l.accountCode ?? ''))];
+  const tipo = esTipoGasto(f.tipoGasto) ? f.tipoGasto : null;
+
+  // Lo que se puede hacer (las mismas reglas que editarGasto y anularGasto, sin lanzar errores).
+  const bloqueo = asiento?.estado === 'POSTED' && f.estado !== 'ANULADA' ? await motivoPeriodoBloqueado(companyId, fechaContableGasto(f), retencionDe(f)) : null;
+  const editar =
+    f.estado === 'ANULADA'
+      ? { permitido: false, motivo: 'La factura está anulada: no se puede modificar.' }
+      : activos > 0
+        ? { permitido: false, motivo: mensajeConPagos }
+        : bloqueo
+          ? { permitido: false, motivo: `${bloqueo}: esta factura ya no se puede modificar. Anúlala (se hará un contraasiento con fecha de hoy) y vuelve a registrarla.` }
+          : { permitido: true };
+  const anular =
+    f.estado === 'ANULADA'
+      ? { permitido: false, motivo: 'La factura ya está anulada.', conContraasiento: false }
+      : activos > 0
+        ? { permitido: false, motivo: 'La factura tiene pagos registrados: anúlalos antes de anularla.', conContraasiento: false }
+        : { permitido: true, conContraasiento: !!bloqueo };
+
+  return {
+    id: f.id,
+    companyId: f.companyId,
+    supplierId: f.supplierId,
+    serie: f.serie,
+    numero: f.numero,
+    numeroCompleto: f.numeroCompleto,
+    numeroFacturaProveedor: f.numeroFacturaProveedor ?? null,
+    fechaEmision: f.fechaEmision,
+    fechaRegistro: f.fechaRegistro ?? null,
+    fechaVencimiento: f.fechaVencimiento,
+    estado: f.estado,
+    estadoTexto: textoEstadoGasto(f.estado),
+    estadoPago: f.estadoPago,
+    estadoPagoTexto: textoEstadoPago(f.estadoPago, vencida),
+    vencida,
+    tipoGasto: f.tipoGasto,
+    tipoGastoTexto: tipo ? TIPO_GASTO_INFO[tipo].texto : f.tipoGasto,
+    cuentaGasto: cuentas.length === 1 && cuentas[0] ? cuentas[0] : null,
+    tipoIva: f.tipoIva,
+    tipoRetencion: f.tipoRetencion,
+    baseTotal: f.baseTotal,
+    ivaTotal: f.ivaTotal,
+    retencionTotal: f.retencionTotal,
+    totalFactura: f.totalFactura,
+    importePagado: pagado,
+    importePendiente: f.estado === 'ANULADA' ? 0 : round2(Number(f.totalFactura) - pagado),
+    observaciones: f.observaciones ?? undefined,
+    monedaCuenta: perfil.monedaCuenta,
+    supplier: { id: f.supplier.id, nombreFiscal: f.supplier.nombreFiscal, nifCif: f.supplier.nifCif, pais: f.supplier.pais },
+    lineas: f.lineas.map(lineaResp),
+    asiento: asiento ? { id: asiento.id, numeroAsiento: asiento.numeroAsiento, estado: asiento.estado, fecha: asiento.fecha.toISOString().slice(0, 10) } : null,
+    anulacion: f.estado === 'ANULADA' ? { fecha: f.anuladaEn ?? '', motivo: f.motivoAnulacion ?? '', contraasientoId: f.anulacionAsientoId ?? null } : null,
+    acciones: {
+      editar,
+      anular,
+      contabilizar: ESTADOS_SIN_CONTABILIZAR.includes(f.estado) && !asiento,
+    },
+    createdAt: f.createdAt,
+    updatedAt: f.updatedAt,
+  };
+}
+
+const ESTADOS_FILTRO: Record<string, Prisma.ExpenseInvoiceWhereInput> = {
+  sin_contabilizar: { estado: { in: ESTADOS_SIN_CONTABILIZAR } },
+  pendiente_revision: { estado: 'DRAFT' },
+  contabilizada: { estado: 'ACCOUNTED' },
+  anulada: { estado: 'ANULADA' },
+};
+
+function filtroPago(pago: string, hoy: string): Prisma.ExpenseInvoiceWhereInput {
+  const noAnulada = { estado: { not: 'ANULADA' } };
+  if (pago === 'pendiente') return { ...noAnulada, estadoPago: 'PENDIENTE' };
+  if (pago === 'parcial') return { ...noAnulada, estadoPago: 'PARCIAL' };
+  if (pago === 'pagada') return { estadoPago: 'PAGADA' };
+  return { ...noAnulada, estadoPago: { not: 'PAGADA' }, fechaVencimiento: { lt: hoy } }; // vencida
+}
+
+const texto = (v: unknown): string => (typeof v === 'string' ? v.trim() : '');
+
+/**
+ * Listado paginado con filtros, contadores (sin el filtro de estado ni el de
+ * pago) y totales del conjunto filtrado completo (sin anuladas).
+ */
+async function listarGastos(companyId: string, filtros: FiltrosGastos = {}): Promise<ListadoGastos> {
+  const page = Math.max(1, Math.floor(Number(filtros.page) || 1));
+  const limit = Math.min(100, Math.max(1, Math.floor(Number(filtros.limit) || 25)));
+  const q = texto(filtros.q);
+  const estado = texto(filtros.estado);
+  const pago = texto(filtros.pago);
+  const supplierId = texto(filtros.supplierId);
+  const desde = texto(filtros.desde);
+  const hasta = texto(filtros.hasta);
+  if (estado && !ESTADOS_FILTRO[estado]) throw badRequest('Estado no válido: usa sin_contabilizar, pendiente_revision, contabilizada o anulada.');
+  if (pago && !['pendiente', 'parcial', 'pagada', 'vencida'].includes(pago)) throw badRequest('Filtro de pago no válido: usa pendiente, parcial, pagada o vencida.');
+  for (const [nombre, f] of [['desde', desde], ['hasta', hasta]] as const) {
+    if (f && !/^\d{4}-\d{2}-\d{2}$/.test(f)) throw badRequest(`La fecha «${nombre}» tiene que ser AAAA-MM-DD.`);
+  }
+
+  const hoy = hoyEspana();
+  const comunes: Prisma.ExpenseInvoiceWhereInput[] = [{ companyId }];
+  if (supplierId) comunes.push({ supplierId });
+  if (q) {
+    comunes.push({
+      OR: [
+        { numeroCompleto: { contains: q } },
+        { numeroFacturaProveedor: { contains: q } },
+        { supplier: { nombreFiscal: { contains: q } } },
+        { supplier: { nifCif: { contains: q } } },
+      ],
+    });
+  }
+  if (desde || hasta) {
+    const rango = { ...(desde ? { gte: desde } : {}), ...(hasta ? { lte: hasta } : {}) };
+    comunes.push({ OR: [{ fechaRegistro: rango }, { fechaRegistro: null, fechaEmision: rango }] });
+  }
+  const whereBase: Prisma.ExpenseInvoiceWhereInput = { AND: comunes };
+  const where: Prisma.ExpenseInvoiceWhereInput = {
+    AND: [...comunes, ...(estado ? [ESTADOS_FILTRO[estado]] : []), ...(pago ? [filtroPago(pago, hoy)] : [])],
+  };
+  const sinAnuladas: Prisma.ExpenseInvoiceWhereInput = { AND: [where, { estado: { not: 'ANULADA' } }] };
+
+  const [items, total, porEstado, pendientesPago, vencidas, suma, idsFiltrados, perfil] = await Promise.all([
+    prisma.expenseInvoice.findMany({
+      where,
+      include: { supplier: { select: { id: true, nombreFiscal: true, nifCif: true } } },
+      orderBy: [{ fechaEmision: 'desc' }, { numero: 'desc' }],
+      skip: (page - 1) * limit,
+      take: limit,
+    }),
+    prisma.expenseInvoice.count({ where }),
+    prisma.expenseInvoice.groupBy({ by: ['estado'], where: whereBase, _count: { _all: true } }),
+    prisma.expenseInvoice.count({ where: { AND: [whereBase, { estado: { not: 'ANULADA' }, estadoPago: { not: 'PAGADA' } }] } }),
+    prisma.expenseInvoice.count({ where: { AND: [whereBase, filtroPago('vencida', hoy)] } }),
+    prisma.expenseInvoice.aggregate({ where: sinAnuladas, _sum: { baseTotal: true, ivaTotal: true, retencionTotal: true, totalFactura: true } }),
+    prisma.expenseInvoice.findMany({ where: sinAnuladas, select: { id: true } }),
+    perfilEmpresa(companyId),
+  ]);
+
+  const pagado = await pagadoPorFacturas(companyId, [...new Set([...items.map((f) => f.id), ...idsFiltrados.map((f) => f.id)])]);
+  const cuenta = (estados: string[]) => porEstado.filter((g) => estados.includes(g.estado)).reduce((a, g) => a + g._count._all, 0);
+  const totalFiltrado = round2(Number(suma._sum.totalFactura ?? 0));
+  const pagadoFiltrado = idsFiltrados.reduce((a, f) => a + aCentimos(pagado.get(f.id) ?? 0), 0) / 100;
+
+  return {
+    items: items.map((f) => {
+      const vencida = esVencida(f, hoy);
+      const tipo = esTipoGasto(f.tipoGasto) ? f.tipoGasto : null;
+      return {
         id: f.id,
-        companyId: f.companyId,
-        supplierId: f.supplierId,
-        supplierNombre: f.supplier.nombreFiscal,
-        serie: f.serie,
-        numero: f.numero,
         numeroCompleto: f.numeroCompleto,
+        numeroFacturaProveedor: f.numeroFacturaProveedor ?? null,
         fechaEmision: f.fechaEmision,
+        fechaRegistro: f.fechaRegistro ?? null,
         fechaVencimiento: f.fechaVencimiento,
-        estado: f.estado,
-        estadoPago: f.estadoPago,
+        supplier: f.supplier,
+        supplierNombre: f.supplier.nombreFiscal,
         tipoGasto: f.tipoGasto,
+        tipoGastoTexto: tipo ? TIPO_GASTO_INFO[tipo].texto : f.tipoGasto,
+        estado: f.estado,
+        estadoTexto: textoEstadoGasto(f.estado),
+        estadoPago: f.estadoPago,
+        estadoPagoTexto: textoEstadoPago(f.estadoPago, vencida),
+        vencida,
         baseTotal: f.baseTotal,
         ivaTotal: f.ivaTotal,
         retencionTotal: f.retencionTotal,
         totalFactura: f.totalFactura,
-        createdAt: f.createdAt,
-        updatedAt: f.updatedAt,
-      })),
-      total,
-      skip,
-      take,
-    };
-  },
+        importePendiente: f.estado === 'ANULADA' ? 0 : round2(Number(f.totalFactura) - (pagado.get(f.id) ?? 0)),
+      };
+    }),
+    total,
+    page,
+    limit,
+    paginas: Math.max(1, Math.ceil(total / limit)),
+    contadores: {
+      todas: cuenta(porEstado.map((g) => g.estado)),
+      sinContabilizar: cuenta(ESTADOS_SIN_CONTABILIZAR),
+      pendientesRevision: cuenta(['DRAFT']),
+      contabilizadas: cuenta(['ACCOUNTED']),
+      anuladas: cuenta(['ANULADA']),
+      pendientesPago,
+      vencidas,
+    },
+    totales: {
+      base: round2(Number(suma._sum.baseTotal ?? 0)),
+      iva: round2(Number(suma._sum.ivaTotal ?? 0)),
+      retencion: round2(Number(suma._sum.retencionTotal ?? 0)),
+      total: totalFiltrado,
+      pendiente: round2(totalFiltrado - pagadoFiltrado),
+    },
+    monedaCuenta: perfil.monedaCuenta,
+  };
+}
 
-  /**
-   * Obtener una factura de gasto por ID.
-   */
-  async obtenerPorId(companyId: string, id: string): Promise<ExpenseInvoiceResp> {
-    const factura = await prisma.expenseInvoice.findFirst({
-      where: { id, companyId },
-      include: { lineas: true, supplier: { select: { id: true, nombreFiscal: true, nifCif: true } } },
-    });
+/**
+ * Cambio de estado a mano: solo entre los estados de las facturas anteriores
+ * sin contabilizar (PENDING, OVERDUE, CONFIRMED). Contabilizar y anular tienen
+ * su propio camino.
+ */
+async function cambiarEstado(companyId: string, id: string, nuevoEstado: unknown): Promise<GastoDetalle> {
+  if (typeof nuevoEstado !== 'string' || !ESTADOS_SIN_CONTABILIZAR.includes(nuevoEstado)) {
+    throw badRequest('Ese estado no se cambia a mano: para contabilizar usa Contabilizar, y para anular, Anular.', { campo: 'nuevoEstado' });
+  }
+  const factura = await prisma.expenseInvoice.findFirst({ where: { id, companyId }, select: { estado: true } });
+  if (!factura) throw notFound('Factura de gasto no encontrada.');
+  if (!ESTADOS_SIN_CONTABILIZAR.includes(factura.estado)) {
+    throw conflict(`La factura está ${textoEstadoGasto(factura.estado).toLowerCase()}: su estado no se cambia a mano.`);
+  }
+  await prisma.expenseInvoice.update({ where: { id }, data: { estado: nuevoEstado } });
+  return obtenerDetalle(companyId, id);
+}
 
-    if (!factura) throw notFound('Factura de gasto no encontrada.');
-
-    return {
-      supplier: factura.supplier,
-      id: factura.id,
-      companyId: factura.companyId,
-      supplierId: factura.supplierId,
-      serie: factura.serie,
-      numero: factura.numero,
-      numeroCompleto: factura.numeroCompleto,
-      fechaEmision: factura.fechaEmision,
-      fechaVencimiento: factura.fechaVencimiento,
-      estado: factura.estado,
-      estadoPago: factura.estadoPago,
-      tipoGasto: factura.tipoGasto,
-      baseTotal: factura.baseTotal,
-      ivaTotal: factura.ivaTotal,
-      retencionTotal: factura.retencionTotal,
-      totalFactura: factura.totalFactura,
-      observaciones: factura.observaciones ?? undefined,
-      createdAt: factura.createdAt,
-      updatedAt: factura.updatedAt,
-      lineas: factura.lineas.map((l) => ({
-        id: l.id,
-        descripcion: l.descripcion,
-        cantidad: l.cantidad,
-        precioUnitario: l.precioUnitario,
-        baseLine: l.baseLine,
-        descuentoPorcentaje: l.descuentoPorcentaje,
-        descuentoImporte: l.descuentoImporte,
-        tipoIva: l.tipoIva,
-        ivaImporte: l.ivaImporte,
-        tipoRetencion: l.tipoRetencion,
-        retencionImporte: l.retencionImporte,
-      })),
-    };
-  },
-
-  /**
-   * Cambiar estado de la factura de gasto.
-   */
-  async cambiarEstado(
-    companyId: string,
-    id: string,
-    nuevoEstado: string,
-  ): Promise<ExpenseInvoiceResp> {
-    const factura = await prisma.expenseInvoice.findFirst({
-      where: { id, companyId },
-      include: { lineas: true },
-    });
-
-    if (!factura) throw notFound('Factura de gasto no encontrada.');
-
-    const actualizada = await prisma.expenseInvoice.update({
-      where: { id },
-      data: { estado: nuevoEstado },
-      include: { lineas: true },
-    });
-
-    return {
-      id: actualizada.id,
-      companyId: actualizada.companyId,
-      supplierId: actualizada.supplierId,
-      serie: actualizada.serie,
-      numero: actualizada.numero,
-      numeroCompleto: actualizada.numeroCompleto,
-      fechaEmision: actualizada.fechaEmision,
-      fechaVencimiento: actualizada.fechaVencimiento,
-      estado: actualizada.estado,
-      estadoPago: actualizada.estadoPago,
-      tipoGasto: actualizada.tipoGasto,
-      baseTotal: actualizada.baseTotal,
-      ivaTotal: actualizada.ivaTotal,
-      retencionTotal: actualizada.retencionTotal,
-      totalFactura: actualizada.totalFactura,
-      observaciones: actualizada.observaciones ?? undefined,
-      createdAt: actualizada.createdAt,
-      updatedAt: actualizada.updatedAt,
-      lineas: actualizada.lineas.map((l) => ({
-        id: l.id,
-        descripcion: l.descripcion,
-        cantidad: l.cantidad,
-        precioUnitario: l.precioUnitario,
-        baseLine: l.baseLine,
-        descuentoPorcentaje: l.descuentoPorcentaje,
-        descuentoImporte: l.descuentoImporte,
-        tipoIva: l.tipoIva,
-        ivaImporte: l.ivaImporte,
-        tipoRetencion: l.tipoRetencion,
-        retencionImporte: l.retencionImporte,
-      })),
-    };
-  },
+export const expenseInvoicesService = {
+  crearGasto,
+  registrarGasto,
+  editarGasto,
+  anularGasto,
+  listarGastos,
+  /** Obtener una factura de gasto por ID (ficha completa). */
+  obtenerPorId: obtenerDetalle,
+  cambiarEstado,
 };

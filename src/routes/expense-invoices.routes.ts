@@ -5,16 +5,23 @@ import { pagosController } from '../controllers/cobrosPagos.controller';
 
 const router = Router({ mergeParams: true });
 
-// GET /companies/:companyId/expense-invoices - Listar gastos (lectura)
-router.get('/', authorize('compras:read'), expenseInvoicesController.list);
+// Lecturas: Compras o Contabilidad (el admin, todo).
+// GET /companies/:companyId/expense-invoices - Listado paginado con contadores
+router.get('/', authorize('compras:read', 'contabilidad:read'), expenseInvoicesController.list);
 
-// POST /companies/:companyId/expense-invoices - Crear gasto (escritura)
+// POST /companies/:companyId/expense-invoices - Alta con su asiento en firme
 router.post('/', authorize('compras:write'), expenseInvoicesController.create);
 
-// GET /companies/:companyId/expense-invoices/:id - Obtener detalle de gasto
-router.get('/:id', authorize('compras:read'), expenseInvoicesController.getById);
+// GET /companies/:companyId/expense-invoices/:id - Ficha de la factura
+router.get('/:id', authorize('compras:read', 'contabilidad:read'), expenseInvoicesController.getById);
 
-// PATCH /companies/:companyId/expense-invoices/:id/estado - Cambiar estado
+// PUT /companies/:companyId/expense-invoices/:id - Corregir (rehace el asiento y los libros)
+router.put('/:id', authorize('compras:write'), expenseInvoicesController.update);
+
+// POST /companies/:companyId/expense-invoices/:id/anular - Anular (REVERSED o contraasiento)
+router.post('/:id/anular', authorize('compras:write'), expenseInvoicesController.anular);
+
+// PATCH /companies/:companyId/expense-invoices/:id/estado - Cambiar estado (solo PENDING/OVERDUE/CONFIRMED)
 router.patch('/:id/estado', authorize('compras:write'), expenseInvoicesController.cambiarEstado);
 
 // Pagos de la factura (parciales o totales), cada uno con su asiento 400/410
