@@ -18,16 +18,16 @@ const subida = multer({
 });
 
 // Rutas fijas antes de /:id.
-router.get('/familias', productosController.listarFamilias);
+router.get('/familias', authorize('ventas:read', 'contabilidad:read'), productosController.listarFamilias);
 router.post('/familias', authorize('ventas:write', 'contabilidad:write'), productosController.crearFamilia);
 router.patch('/familias/:familiaId', authorize('ventas:write', 'contabilidad:write'), productosController.actualizarFamilia);
 router.delete('/familias/:familiaId', authorize('ventas:write', 'contabilidad:write'), productosController.borrarFamilia);
-router.get('/siguiente-codigo', productosController.siguienteCodigo);
+router.get('/siguiente-codigo', authorize('ventas:read', 'contabilidad:read'), productosController.siguienteCodigo);
 // Excel o CSV con el catalogo (campo "archivo"); ?vistaPrevia=1 no guarda.
 router.post('/importar', authorize('ventas:write', 'contabilidad:write'), subida.single('archivo'), productosController.importar);
 
-router.get('/', productosController.list);
-router.get('/:id', productosController.getById);
+router.get('/', authorize('ventas:read', 'contabilidad:read'), productosController.list);
+router.get('/:id', authorize('ventas:read', 'contabilidad:read'), productosController.getById);
 router.post('/', authorize('ventas:write', 'contabilidad:write'), productosController.create);
 router.put('/:id', authorize('ventas:write', 'contabilidad:write'), productosController.update);
 router.delete('/:id', authorize('ventas:write', 'contabilidad:write'), productosController.remove);

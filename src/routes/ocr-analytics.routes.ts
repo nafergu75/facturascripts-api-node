@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import ocrAnalyticsController from '../controllers/ocr-analytics.controller';
+import { authorize } from '../middleware/authorize.middleware';
 
 const router = Router({ mergeParams: true });
 
@@ -8,7 +9,7 @@ const router = Router({ mergeParams: true });
  * Retorna KPIs: PDFs hoy, tiempo promedio, tasa de error
  * Query params: ?days=30
  */
-router.get('/analytics/kpis', ocrAnalyticsController.getKPIs.bind(ocrAnalyticsController));
+router.get('/analytics/kpis', authorize('compras:read', 'ventas:read', 'contabilidad:read'), ocrAnalyticsController.getKPIs.bind(ocrAnalyticsController));
 
 /**
  * GET /companies/:companyId/ocr/analytics/timeline
@@ -17,6 +18,7 @@ router.get('/analytics/kpis', ocrAnalyticsController.getKPIs.bind(ocrAnalyticsCo
  */
 router.get(
   '/analytics/timeline',
+  authorize('compras:read', 'ventas:read', 'contabilidad:read'),
   ocrAnalyticsController.getTimeline.bind(ocrAnalyticsController)
 );
 
@@ -27,6 +29,7 @@ router.get(
  */
 router.get(
   '/analytics/distribution',
+  authorize('compras:read', 'ventas:read', 'contabilidad:read'),
   ocrAnalyticsController.getDistribution.bind(ocrAnalyticsController)
 );
 
@@ -35,6 +38,6 @@ router.get(
  * Retorna estadísticas agregadas de todas las empresas
  * Query params: ?from=2026-06-01&to=2026-07-17 o ?days=30
  */
-router.get('/analytics/global', ocrAnalyticsController.getGlobalStats.bind(ocrAnalyticsController));
+router.get('/analytics/global', authorize('compras:read', 'ventas:read', 'contabilidad:read'), ocrAnalyticsController.getGlobalStats.bind(ocrAnalyticsController));
 
 export default router;

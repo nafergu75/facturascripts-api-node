@@ -14,13 +14,13 @@ router.post('/', authorize('contabilidad:write'), accountingClosureController.cr
  * Listar cierres.
  * GET /api/accounting/closures?estado=CERRADO&desde=2024&hasta=2025
  */
-router.get('/', accountingClosureController.listarCierres);
+router.get('/', authorize('contabilidad:read'), accountingClosureController.listarCierres);
 
 /**
  * Obtener cierre por ejercicio.
  * GET /api/accounting/closures/2024
  */
-router.get('/:ejercicio', accountingClosureController.obtenerCierre);
+router.get('/:ejercicio', authorize('contabilidad:read'), accountingClosureController.obtenerCierre);
 
 /**
  * Cambiar estado de cierre.
@@ -47,7 +47,7 @@ router.post(
  * Listar archivos de cierre.
  * GET /api/accounting/closures/2024/files
  */
-router.get('/:ejercicio/files', accountingClosureController.listarArchivos);
+router.get('/:ejercicio/files', authorize('contabilidad:read'), accountingClosureController.listarArchivos);
 
 /**
  * Guardar datos de ejercicio anterior.
@@ -70,18 +70,18 @@ router.post(
  * Obtener datos de ejercicio anterior.
  * GET /api/accounting/prior-years/2023
  */
-router.get('/prior-years/:ejercicio', accountingClosureController.obtenerDatosAnterior);
+router.get('/prior-years/:ejercicio', authorize('contabilidad:read'), accountingClosureController.obtenerDatosAnterior);
 
 /**
  * Listar ejercicios anteriores.
  * GET /api/accounting/prior-years
  */
-router.get('/prior-years', accountingClosureController.listarEjerciciosAnteriores);
+router.get('/prior-years', authorize('contabilidad:read'), accountingClosureController.listarEjerciciosAnteriores);
 
 /**
  * Obtener comparativa entre dos años.
  * GET /api/accounting/comparativas/2023/2024
  */
-router.get('/comparativas/:ej1/:ej2', accountingClosureController.obtenerComparativa);
+router.get('/comparativas/:ej1/:ej2', authorize('contabilidad:read'), accountingClosureController.obtenerComparativa);
 
 export default router;

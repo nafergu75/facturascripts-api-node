@@ -5,10 +5,10 @@ import { authorize } from '../middleware/authorize.middleware';
 // mergeParams permite leer :companyId del router padre (/companies/:companyId).
 const router = Router({ mergeParams: true });
 
-router.get('/', clientesController.list);
+router.get('/', authorize('ventas:read', 'contabilidad:read'), clientesController.list);
 // Buscador (antes de /:id para que 'buscar' no se interprete como id).
 router.get('/buscar', authorize('ventas:read'), clientesController.buscar);
-router.get('/:id', clientesController.getById);
+router.get('/:id', authorize('ventas:read', 'contabilidad:read'), clientesController.getById);
 router.post('/', authorize('ventas:write'), clientesController.create);
 router.put('/:id', authorize('ventas:write'), clientesController.update);
 router.delete('/:id', authorize('ventas:write'), clientesController.remove);

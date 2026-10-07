@@ -19,7 +19,7 @@ const router = Router({ mergeParams: true });
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
 
 router.post('/extract', authorize('ventas:write'), upload.single('archivo'), invoiceExtractorController.extraer);
-router.get('/:id', invoiceExtractorController.detalle);
+router.get('/:id', authorize('ventas:read', 'contabilidad:read'), invoiceExtractorController.detalle);
 router.put('/:id', authorize('ventas:write'), invoiceExtractorController.corregir);
 router.post('/:id/confirm', authorize('ventas:write'), invoiceExtractorController.confirmar);
 

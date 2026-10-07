@@ -10,16 +10,17 @@ import { authorize } from '../middleware/authorize.middleware';
 const router = Router();
 
 // GET /companies/:companyId/ocr/sessions
-router.get('/ocr/sessions', ocrSessionsController.getSessions.bind(ocrSessionsController));
+router.get('/ocr/sessions', authorize('compras:read', 'ventas:read', 'contabilidad:read'), ocrSessionsController.getSessions.bind(ocrSessionsController));
 
 // GET /companies/:companyId/ocr/sessions/:sessionId
 router.get(
   '/ocr/sessions/:sessionId',
+  authorize('compras:read', 'ventas:read', 'contabilidad:read'),
   ocrSessionsController.getSession.bind(ocrSessionsController)
 );
 
 // GET /companies/:companyId/ocr/stats
-router.get('/ocr/stats', ocrSessionsController.getStats.bind(ocrSessionsController));
+router.get('/ocr/stats', authorize('compras:read', 'ventas:read', 'contabilidad:read'), ocrSessionsController.getStats.bind(ocrSessionsController));
 
 // POST /companies/:companyId/ocr/sessions/:sessionId/retry
 router.post(

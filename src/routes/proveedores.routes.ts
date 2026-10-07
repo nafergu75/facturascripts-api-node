@@ -14,7 +14,7 @@ import { exportSupplierData, getSafeFileName } from '../services/suppliers/suppl
 const c = makeScopedController(proveedoresService, 'Proveedor eliminado');
 const router = Router({ mergeParams: true });
 
-router.get('/', c.list);
+router.get('/', authorize('compras:read', 'contabilidad:read'), c.list);
 // Buscador (antes de /:id) para seleccionar proveedor al registrar gastos.
 router.get(
   '/buscar',
@@ -25,7 +25,7 @@ router.get(
     sendOk(res, await buscarProveedores(req.companyId!, q, limit));
   }),
 );
-router.get('/:id', c.getById);
+router.get('/:id', authorize('compras:read', 'contabilidad:read'), c.getById);
 router.post('/', authorize('compras:write'), c.create);
 router.put('/:id', authorize('compras:write'), c.update);
 // La pestana "Datos" de la ficha guarda con PATCH; la actualizacion ya es parcial.
