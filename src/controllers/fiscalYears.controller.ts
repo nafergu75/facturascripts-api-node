@@ -19,6 +19,20 @@ export const fiscalYearsController = {
     sendOk(res, await fiscalYearsService.listar(req.companyId!));
   }),
 
+  /** POST /companies/:id/fiscal-years/:fyId/reabrir (admin:empresa): solo los CERRADO_SIN_ASIENTOS. */
+  reabrir: asyncHandler(async (req, res) => {
+    const fy = await fiscalYearsService.reabrirSinAsientos(req.companyId!, req.params.fyId);
+    await registrarAuditoria({
+      userId: req.user!.userId,
+      companyId: req.companyId,
+      action: 'REOPEN_FISCAL_YEAR_SIN_ASIENTOS',
+      resourceType: 'FISCAL_YEAR',
+      resourceId: fy.id,
+      meta: { ejercicio: fy.label, librosPendientesBorrados: fy.librosPendientesBorrados },
+    });
+    sendOk(res, fy);
+  }),
+
   crear: asyncHandler(async (req, res) => {
     const fy = await fiscalYearsService.crear(req.companyId!, req.body ?? {});
     await registrarAuditoria({ userId: req.user!.userId, companyId: req.companyId, action: 'CREATE_FISCAL_YEAR', resourceType: 'FISCAL_YEAR', resourceId: fy.id });

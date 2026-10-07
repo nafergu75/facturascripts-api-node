@@ -1,5 +1,5 @@
 import { prisma } from '../config/database';
-import { badRequest } from '../utils/http-errors';
+import { badRequest, conflict } from '../utils/http-errors';
 import { EstadoPeriodo, PeriodoContable } from '../domain/periodos.model';
 
 /**
@@ -121,19 +121,7 @@ export async function comprobarFechaAbierta(companyId: string, fecha: string, ac
     throw badRequest(`El periodo de ${mes} está ${estado}: no se pueden añadir asientos con esa fecha.`);
   }
   const ejercicio = Number(fecha.slice(0, 4));
-  const fy = await prisma.fiscalYear.findFirst({ where: { companyId, label: String(ejercicio) }, select: { estado: true } });
-  const cierre =
-    fy?.estado === 'CLOSED' ||
-    !!(await prisma.journalEntry.findFirst({
-      where: {
-        companyId,
-        estado: 'POSTED',
-        origen: { in: ['REGULARIZACION', 'CIERRE'] },
-        fecha: { gte: new Date(Date.UTC(ejercicio, 0, 1)), lt: new Date(Date.UTC(ejercicio + 1, 0, 1)) },
-      },
-      select: { id: true },
-    }));
-  if (cierre) {
+  if (await ejercicioCerrado(companyId, ejercicio)) {
     if (accion) {
       throw badRequest(
         `No se puede ${accion} con fecha ${ddmmaaaa(fecha)}: el ejercicio ${ejercicio} está cerrado. ` +
@@ -143,4 +131,94 @@ export async function comprobarFechaAbierta(companyId: string, fecha: string, ac
     }
     throw badRequest(`El ejercicio ${ejercicio} está cerrado: no se pueden añadir asientos con esa fecha.`);
   }
+}
+
+/**
+ * ¿Esta cerrado el ejercicio? Si tiene asientos de regularizacion o cierre, o
+ * si esta marcado como cerrado (CLOSED), aunque no los tenga.
+ */
+export async function ejercicioCerrado(companyId: string, ejercicio: number): Promise<boolean> {
+  const fy = await prisma.fiscalYear.findFirst({ where: { companyId, label: String(ejercicio) }, select: { estado: true } });
+  if (fy?.estado === 'CLOSED') return true;
+  return !!(await prisma.journalEntry.findFirst({
+    where: {
+      companyId,
+      estado: 'POSTED',
+      origen: { in: ['REGULARIZACION', 'CIERRE'] },
+      fecha: { gte: new Date(Date.UTC(ejercicio, 0, 1)), lt: new Date(Date.UTC(ejercicio + 1, 0, 1)) },
+    },
+    select: { id: true },
+  }));
+}
+
+/** Modelos que se miran al desbloquear un mes: si estan presentados, hay que confirmar. */
+const MODELOS_AVISO_DESBLOQUEO = ['303', '111'];
+
+/**
+ * 303 y 111 ya presentados que cubren el mes (el del propio mes o el de su
+ * trimestre), p. ej. ['303 2T', '111 05']. Desbloquear el mes deja cambiar
+ * facturas o asientos ya declarados.
+ */
+export async function modelosPresentadosDelMes(companyId: string, ejercicio: number, mes: number): Promise<string[]> {
+  if (typeof (prisma as { modeloImpuesto?: { findMany?: unknown } }).modeloImpuesto?.findMany !== 'function') return [];
+  const periodos = [String(mes).padStart(2, '0'), `${Math.ceil(mes / 3)}T`];
+  const filas = await prisma.modeloImpuesto.findMany({
+    where: { companyId, ejercicio, estado: 'presentado', codigo: { in: MODELOS_AVISO_DESBLOQUEO }, periodo: { in: periodos } },
+    select: { codigo: true, periodo: true },
+    orderBy: [{ codigo: 'asc' }, { periodo: 'asc' }],
+  });
+  return filas.map((f) => `${f.codigo} ${f.periodo}`);
+}
+
+/** Lo que se puede hacer a mano con un mes desde Configuracion. */
+export type EstadoMesManual = 'abierto' | 'bloqueado';
+
+export interface ResultadoCambioMes extends PeriodoContable {
+  /** Al desbloquear con confirmacion un mes con modelos presentados. */
+  aviso?: 'modelo_presentado';
+  modelosPresentados?: string[];
+}
+
+/**
+ * Bloquea o desbloquea un mes (Configuracion > Ejercicios y periodos).
+ *  - Un mes 'cerrado' lo puso el cierre del ejercicio: no se cambia a mano (409).
+ *  - Un mes de un ejercicio cerrado no se desbloquea (409): primero se deshace el cierre.
+ *  - Si el 303 o el 111 del mes o de su trimestre estan presentados, desbloquear
+ *    pide confirmacion: sin `confirmar`, 409 con details.aviso='modelo_presentado';
+ *    con ella, se desbloquea y la respuesta lleva el aviso.
+ */
+export async function cambiarBloqueoMes(
+  companyId: string,
+  ejercicio: number,
+  mes: number,
+  estado: EstadoMesManual,
+  opciones: { confirmar?: boolean } = {},
+): Promise<ResultadoCambioMes> {
+  const periodos = await listarPeriodos(companyId, ejercicio);
+  const actual = periodos.find((p) => p.mes === mes);
+  const nombreMes = `${String(mes).padStart(2, '0')}/${ejercicio}`;
+  if (actual?.estado === 'cerrado') {
+    throw conflict(
+      `El mes ${nombreMes} lo cerró el cierre del ejercicio y no se cambia a mano. Si hay que corregir algo, deshaz el cierre en Contabilidad > Cierre y traspaso de saldos.`,
+      { campo: 'estado', motivo: 'periodo_cerrado' },
+    );
+  }
+  if (estado === 'abierto' && actual?.estado !== 'abierto') {
+    if (await ejercicioCerrado(companyId, ejercicio)) {
+      throw conflict(
+        `El ejercicio ${ejercicio} está cerrado: sus meses no se desbloquean. Si hay que corregir algo, deshaz antes el cierre en Contabilidad > Cierre y traspaso de saldos.`,
+        { campo: 'estado', motivo: 'ejercicio_cerrado', enlace: `/dashboard/contabilidad/cierre-ejercicio?ejercicio=${ejercicio}` },
+      );
+    }
+    const presentados = await modelosPresentadosDelMes(companyId, ejercicio, mes);
+    if (presentados.length && !opciones.confirmar) {
+      throw conflict(
+        `Ya está presentado el modelo ${presentados.join(' y el ')}, que incluye el mes ${nombreMes}. Si cambias facturas o asientos de ese mes, tendrás que presentar una declaración complementaria o rectificativa. ¿Quieres desbloquearlo igualmente?`,
+        { aviso: 'modelo_presentado', modelosPresentados: presentados },
+      );
+    }
+    const p = await cambiarEstadoPeriodo(companyId, ejercicio, mes, 'abierto');
+    return presentados.length ? { ...p, aviso: 'modelo_presentado', modelosPresentados: presentados } : p;
+  }
+  return cambiarEstadoPeriodo(companyId, ejercicio, mes, estado);
 }

@@ -63,9 +63,85 @@ export function anioDelEjercicio(datos: { anio?: unknown; label?: unknown; fecha
 
 const yaExiste = (anio: number) => conflict(`Ya existe el ejercicio ${anio}.`, { campo: 'anio' });
 
+/** Asientos que deja el cierre de verdad (Contabilidad > Cierre y traspaso de saldos). */
+export const ORIGENES_ASIENTOS_CIERRE = ['REGULARIZACION', 'CIERRE'];
+
+/**
+ * Estado del ejercicio para la pantalla, en una sola palabra:
+ *  - CERRADO: tiene asientos de regularizacion o cierre (lo cerro el cierre);
+ *  - CERRADO_SIN_ASIENTOS: marcado como cerrado sin esos asientos (lo cerraba
+ *    el boton de Registro Mercantil): el administrador lo puede reabrir;
+ *  - ABIERTO: el resto.
+ */
+export type EstadoEfectivoEjercicio = 'ABIERTO' | 'CERRADO' | 'CERRADO_SIN_ASIENTOS';
+
+export function estadoEfectivoEjercicio(estado: string, tieneAsientosCierre: boolean): EstadoEfectivoEjercicio {
+  if (tieneAsientosCierre) return 'CERRADO';
+  return estado === 'CLOSED' ? 'CERRADO_SIN_ASIENTOS' : 'ABIERTO';
+}
+
+type FilaEjercicio = { fechaInicio: string; fechaFin: string };
+const dentroDe = (fecha: Date, fy: FilaEjercicio) => {
+  const f = fecha.toISOString().slice(0, 10);
+  return !!fy.fechaInicio && !!fy.fechaFin && f >= fy.fechaInicio && f <= fy.fechaFin;
+};
+
+/** Fechas de los asientos de cierre de la empresa (pocos: dos por ejercicio cerrado). */
+async function fechasAsientosCierre(companyId: string): Promise<Date[]> {
+  const asientos = await prisma.journalEntry.findMany({
+    where: { companyId, estado: 'POSTED', origen: { in: ORIGENES_ASIENTOS_CIERRE } },
+    select: { fecha: true },
+  });
+  return asientos.map((a) => a.fecha);
+}
+
+const MENSAJE_DESHAZ_EN_CIERRE = 'Este ejercicio tiene asientos de cierre: deshaz el cierre desde Contabilidad > Cierre y traspaso de saldos.';
+
 export const fiscalYearsService = {
+  /** Ejercicios de la empresa, con tieneAsientosCierre y el estado unico (estadoEfectivo). */
   async listar(companyId: string) {
-    return prisma.fiscalYear.findMany({ where: { companyId }, orderBy: { label: 'desc' } });
+    const [ejercicios, cierres] = await Promise.all([
+      prisma.fiscalYear.findMany({ where: { companyId }, orderBy: { label: 'desc' } }),
+      fechasAsientosCierre(companyId),
+    ]);
+    return ejercicios.map((fy) => {
+      const tieneAsientosCierre = cierres.some((f) => dentroDe(f, fy));
+      return { ...fy, tieneAsientosCierre, estadoEfectivo: estadoEfectivoEjercicio(fy.estado, tieneAsientosCierre) };
+    });
+  },
+
+  /**
+   * Reabre un ejercicio CERRADO_SIN_ASIENTOS (lo cerro el boton de Registro
+   * Mercantil, que no regularizaba ni cerraba): lo mismo que deshacer el cierre,
+   * sin asientos que anular. Con asientos de cierre, 409: eso se deshace en
+   * Cierre y traspaso de saldos. No toca libros generados, expedientes,
+   * cuentas anuales ni meses.
+   */
+  async reabrirSinAsientos(companyId: string, fyId: string) {
+    const fy = await prisma.fiscalYear.findFirst({ where: { id: fyId, companyId } });
+    if (!fy) throw notFound('Ejercicio contable no encontrado.');
+    const tieneAsientosCierre = (await fechasAsientosCierre(companyId)).some((f) => dentroDe(f, fy));
+    const estado = estadoEfectivoEjercicio(fy.estado, tieneAsientosCierre);
+    if (estado === 'CERRADO') {
+      throw conflict(MENSAJE_DESHAZ_EN_CIERRE, { enlace: `/dashboard/contabilidad/cierre-ejercicio?ejercicio=${fy.label}` });
+    }
+    if (estado === 'ABIERTO') throw conflict(`El ejercicio ${fy.label} ya está abierto.`);
+    const reabierto = await prisma.$transaction(async (tx) => {
+      // Solo si sigue cerrado (dos clics a la vez no hacen nada raro).
+      const r = await tx.fiscalYear.updateMany({
+        where: { id: fy.id, estado: 'CLOSED' },
+        data: { estado: 'OPEN', closingDate: null, legalizationDeadline: null, accountsDepositDeadline: null, asientosBloqueados: false },
+      });
+      if (r.count !== 1) throw conflict(`El ejercicio ${fy.label} ya está abierto.`);
+      const libros = await tx.legalBook.deleteMany({ where: { fiscalYearId: fy.id, status: 'PENDING', filePath: '' } });
+      return { fy: await tx.fiscalYear.findUniqueOrThrow({ where: { id: fy.id } }), librosPendientesBorrados: libros.count };
+    });
+    return {
+      ...reabierto.fy,
+      tieneAsientosCierre: false,
+      estadoEfectivo: 'ABIERTO' as EstadoEfectivoEjercicio,
+      librosPendientesBorrados: reabierto.librosPendientesBorrados,
+    };
   },
 
   /** Carga un ejercicio por id y valida que pertenece a la empresa esperada (si se pasa). */
