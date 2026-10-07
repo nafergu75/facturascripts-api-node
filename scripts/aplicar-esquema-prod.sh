@@ -56,6 +56,7 @@ if grep -qiE '\b(DROP|MODIFY|CHANGE|RENAME)\b' "$PREVIA"; then
 fi
 
 read -r -p "Escribe SI para aplicarlo: " RESPUESTA
+RESPUESTA="$(printf '%s' "$RESPUESTA" | tr -d '[:space:]' | tr '[:lower:]' '[:upper:]')"
 [ "$RESPUESTA" = "SI" ] || { echo "Cancelado. No se ha cambiado nada."; exit 1; }
 
 # 2) Aplicarlo.
