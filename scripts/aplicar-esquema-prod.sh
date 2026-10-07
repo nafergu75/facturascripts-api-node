@@ -17,11 +17,13 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 # Lo minimo que tiene que traer el esquema de esta version (divisas, nominas,
-# modo administrador y Carmen). Si falta, esta copia tiene un esquema viejo:
-# aplicarlo no haria nada y el codigo nuevo fallaria en produccion por tablas o
-# columnas que no existen (con Carmen: CarmenContador, CarmenLlamadaIA,
-# CarmenAjustes y las columnas nuevas de ChatSession y ChatMessage).
-for marca in 'model TipoCambioBce' 'model Nomina ' 'model LiquidacionSS' 'monedaCuenta'   'model CarmenContador' 'model CarmenLlamadaIA' 'model CarmenAjustes' 'permisoRequerido'; do
+# modo administrador, Carmen y Configuracion). Si falta, esta copia tiene un
+# esquema viejo: aplicarlo no haria nada y el codigo nuevo fallaria en
+# produccion por tablas o columnas que no existen (con Carmen: CarmenContador,
+# CarmenLlamadaIA, CarmenAjustes y las columnas nuevas de ChatSession y
+# ChatMessage; con Configuracion: AjustesFacturacion, AjustesFiscales y las
+# copias ibanCobro y textoPie de la factura emitida).
+for marca in 'model TipoCambioBce' 'model Nomina ' 'model LiquidacionSS' 'monedaCuenta'   'model CarmenContador' 'model CarmenLlamadaIA' 'model CarmenAjustes' 'permisoRequerido'   'model AjustesFacturacion' 'model AjustesFiscales' 'ibanCobro'; do
   grep -q "$marca" prisma/schema.prisma || {
     echo "prisma/schema.prisma no tiene '$marca': esta copia no tiene el esquema nuevo."
     echo "Ejecutalo desde la copia que se va a subir a main. Abortado."
