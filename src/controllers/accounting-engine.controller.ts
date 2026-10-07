@@ -192,6 +192,13 @@ export class AccountingEngineController {
           `La factura de gasto está en estado "${factura.estado}" (ya contabilizada) y no puede contabilizarse otra vez.`,
         );
       }
+      if (factura.estado === 'ANULADA' || factura.estado === 'DRAFT') {
+        throw badRequest(
+          factura.estado === 'ANULADA'
+            ? 'La factura está anulada: no se contabiliza.'
+            : 'La factura está pendiente de revisar: su asiento en borrador está en el Motor contable.',
+        );
+      }
 
       // Evitar doble contabilización
       const entryExistente = await prisma.journalEntry.findFirst({
@@ -327,14 +334,23 @@ export class AccountingEngineController {
         }
       }
 
-      // Actualizar estado
+      // Actualizar estado. Si es el borrador de una factura de gasto del lector,
+      // la factura pasa a contabilizada en la misma transaccion.
       const ahora = new Date();
-      const asientoActualizado = await prisma.journalEntry.update({
-        where: { id: journalEntryId },
-        data: {
-          estado: 'POSTED',
-          updatedAt: ahora,
-        },
+      await prisma.$transaction(async (tx) => {
+        await tx.journalEntry.update({
+          where: { id: journalEntryId },
+          data: {
+            estado: 'POSTED',
+            updatedAt: ahora,
+          },
+        });
+        if (asiento.origen === 'FACTURA_GASTO') {
+          await tx.expenseInvoice.updateMany({
+            where: { id: asiento.invoiceId ?? '', companyId, estado: 'DRAFT' },
+            data: { estado: 'ACCOUNTED' },
+          });
+        }
       });
 
       // Auditoría
@@ -461,7 +477,8 @@ export class AccountingEngineController {
           errores,
           advertencias: [],
         },
-        permitidoAprobar: asiento.estado === 'PENDING_REVIEW',
+        // Lo mismo que acepta aprobarAsiento.
+        permitidoAprobar: ['DRAFT', 'PENDING_REVIEW'].includes(asiento.estado),
         permitidoAjustar: ['DRAFT', 'PENDING_REVIEW'].includes(asiento.estado),
       };
     } catch (err) {

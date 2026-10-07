@@ -161,6 +161,10 @@ async function cargarFactura(db: Tx | typeof prisma, companyId: string, tipo: Ti
   }
   const f = await db.expenseInvoice.findFirst({ where: { id, companyId }, include: { supplier: { select: { nombreFiscal: true } } } });
   if (!f) throw notFound('Factura de gasto no encontrada.');
+  if (f.estado === 'ANULADA') throw badRequest('La factura está anulada: no admite pagos.');
+  if (f.estado === 'DRAFT') {
+    throw badRequest('La factura está pendiente de revisar: aprueba su asiento en el Motor contable antes de registrar pagos.');
+  }
   // Gastos en divisa: fuera de alcance. Van en la moneda de cuenta.
   return { ...f, totalDoc: f.totalFactura, moneda: null, tercero: f.supplier.nombreFiscal };
 }
