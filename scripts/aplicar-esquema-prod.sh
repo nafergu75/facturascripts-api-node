@@ -23,7 +23,23 @@ cd "$(dirname "$0")/.."
 # CarmenLlamadaIA, CarmenAjustes y las columnas nuevas de ChatSession y
 # ChatMessage; con Configuracion: AjustesFacturacion, AjustesFiscales y las
 # copias ibanCobro y textoPie de la factura emitida).
-for marca in 'model TipoCambioBce' 'model Nomina ' 'model LiquidacionSS' 'monedaCuenta'   'model CarmenContador' 'model CarmenLlamadaIA' 'model CarmenAjustes' 'permisoRequerido'   'model AjustesFacturacion' 'model AjustesFiscales' 'ibanCobro'; do
+# Una marca por linea: al integrar otra rama que añada las suyas, se añaden
+# lineas y no choca con esta lista (p. ej. permisos-usuarios: 'debeCambiarContrasena',
+# 'contrasenaProvisionalHasta' y 'permisosPersonalizados').
+MARCAS=(
+  'model TipoCambioBce'
+  'model Nomina '
+  'model LiquidacionSS'
+  'monedaCuenta'
+  'model CarmenContador'
+  'model CarmenLlamadaIA'
+  'model CarmenAjustes'
+  'permisoRequerido'
+  'model AjustesFacturacion'
+  'model AjustesFiscales'
+  'ibanCobro'
+)
+for marca in "${MARCAS[@]}"; do
   grep -q "$marca" prisma/schema.prisma || {
     echo "prisma/schema.prisma no tiene '$marca': esta copia no tiene el esquema nuevo."
     echo "Ejecutalo desde la copia que se va a subir a main. Abortado."
