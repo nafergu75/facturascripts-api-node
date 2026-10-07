@@ -59,9 +59,24 @@ const FICHAS: Record<string, FichaModeloImpuesto> = {
     titulo: 'Modelo 111 — Retenciones IRPF',
     textoExplicativo:
       'Ingresa las retenciones de IRPF practicadas en el periodo: nominas de trabajadores (rendimientos del trabajo) y facturas de profesionales con retencion (actividades economicas).',
-    advertencias: ['Las facturas de profesionales con IRPF alimentan este modelo automaticamente: no las dupliques a mano.'],
+    advertencias: [
+      'Las facturas de profesionales con IRPF alimentan este modelo automaticamente: no las dupliques a mano.',
+      'Las nominas cuentan por su fecha de pago: una nomina de diciembre pagada en enero va al 1T del ano siguiente.',
+    ],
     notasConfiguracion: ['Las retenciones de compras se leen del campo IRPF de cada factura de proveedor.'],
     recomendaciones: ['Cuadra el total con el saldo de la subcuenta 4751 antes de presentar.'],
+  },
+  '190': {
+    modeloCodigo: '190',
+    titulo: 'Modelo 190 — Resumen anual de retenciones',
+    textoExplicativo:
+      'Resumen anual de las retenciones e ingresos a cuenta del 111: un registro por perceptor (trabajadores, con sus dietas e indemnizaciones exentas, y profesionales). Se presenta del 1 al 31 de enero.',
+    advertencias: [
+      'Sale de las mismas nominas y facturas que el 111, por fecha de pago: si no cuadra con la suma de los cuatro 111, revisa las nominas en borrador.',
+      'El detalle por perceptor y el fichero estan en Nominas (llevan datos de los trabajadores).',
+    ],
+    notasConfiguracion: ['Cada trabajador necesita provincia y ano de nacimiento en su ficha; los profesionales, codigo postal.'],
+    recomendaciones: ['Antes de presentarlo, entrega a cada trabajador su certificado de retenciones.'],
   },
   '115': {
     modeloCodigo: '115',

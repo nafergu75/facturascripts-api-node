@@ -29,6 +29,7 @@ import {
   calcularModelo390,
 } from './impuestosCalculo.service';
 import { calcularModelo200 } from './impuestoSociedadesCalculo.service';
+import { calcularModelo190 } from './nominas/fiscal';
 import {
   envolverFichero,
   generarFicheroModelo111,
@@ -81,6 +82,7 @@ const DESCRIPCIONES: Record<string, string> = {
   '390': 'IVA — resumen anual',
   '347': 'Operaciones con terceros (> 3.005,06)',
   '200': 'Impuesto sobre Sociedades',
+  '190': 'Retenciones: resumen anual (trabajo y profesionales)',
 };
 
 /** Fecha limite de presentacion del modelo/periodo (plazos generales AEAT). */
@@ -95,6 +97,7 @@ export function fechaVencimientoModelo(codigo: string, ejercicio: number, period
   if (codigo === '390') return `${ejercicio + 1}-01-30`;
   if (codigo === '347') return `${ejercicio + 1}-02-28`;
   if (codigo === '200') return `${ejercicio + 1}-07-25`;
+  if (codigo === '190') return `${ejercicio + 1}-01-31`;
   return `${ejercicio + 1}-01-30`;
 }
 
@@ -104,7 +107,7 @@ function calendarioEjercicio(ejercicio: number): Array<{ codigo: string; periodo
   for (const codigo of ['303', '111', '115', '349']) {
     for (const periodo of ['1T', '2T', '3T', '4T']) out.push({ codigo, periodo });
   }
-  for (const codigo of ['390', '347', '200']) out.push({ codigo, periodo: '0A' });
+  for (const codigo of ['390', '347', '200', '190']) out.push({ codigo, periodo: '0A' });
   void ejercicio;
   return out;
 }
@@ -233,7 +236,7 @@ function periodoFiscalDe(fila: FilaModelo): PeriodoFiscal {
 }
 
 /** Configuracion de la empresa para el autorrelleno (NIF, razon social, IBAN). */
-async function configuracionEmpresa(companyId: string): Promise<Casillas> {
+export async function configuracionEmpresa(companyId: string): Promise<Casillas> {
   const out: Casillas = {};
   // Primero los datos de la sociedad que guarda la app (Registro Mercantil >
   // Datos para la memoria); si faltan, los de FacturaScripts.
@@ -315,6 +318,9 @@ async function calcularCasillas(companyId: string, fila: FilaModelo): Promise<{ 
           '01_perceptores_trabajo': d.nPerceptoresTrabajo,
           '02_percepciones_trabajo': d.percepcionesTrabajo,
           '03_retenciones_trabajo': d.retencionesTrabajo,
+          '04_perceptores_especie': d.nPerceptoresEspecie ?? 0,
+          '05_percepciones_especie': d.percepcionesEspecie ?? 0,
+          '06_ingresos_a_cuenta': d.ingresosACuentaEspecie ?? 0,
           '07_perceptores_actividades': d.nPerceptoresActividades ?? 0,
           '08_percepciones_actividades': d.percepcionesActividades ?? 0,
           '09_retenciones_actividades': d.retencionesActividades ?? 0,
@@ -335,6 +341,22 @@ async function calcularCasillas(companyId: string, fila: FilaModelo): Promise<{ 
           '05_resultado': d.resultadoIngresar,
         },
         datos: d,
+      };
+    }
+    case '190': {
+      // Solo totales: el detalle por perceptor lleva datos de los trabajadores y
+      // se ve en Nominas (nominas:read). Misma fuente que el 111.
+      const m = await calcularModelo190(companyId, fila.ejercicio);
+      return {
+        casillas: {
+          num_percepciones: m.totales.registros,
+          num_perceptores: m.totales.perceptores,
+          importe_percepciones: m.totales.percepciones,
+          retenciones_ingresos_cuenta: m.totales.retenciones,
+          suma_111_del_ano: m.cuadre111.total,
+          cuadra_con_111: m.cuadre111.coincide ? 'si' : 'no',
+        },
+        datos: { ejercicio: m.ejercicio, totales: m.totales, cuadre111: m.cuadre111, avisos: m.avisos },
       };
     }
     case '200': {
@@ -467,6 +489,8 @@ export async function generarTxtModelo(companyId: string, modeloId: string): Pro
       return { nombre, contenido: generarFicheroModelo115(nif, periodo, datos as DatosModelo115, { razonSocial: razon }) };
     case '200':
       return { nombre, contenido: generarFicheroModelo200(nif, refrescada.ejercicio, { razonSocial: razon }) };
+    case '190':
+      throw badRequest('El fichero del 190 lleva los datos de cada trabajador: descárgalo en Nóminas > Modelo 190 (solo administración y contabilidad).');
     default:
       throw badRequest(`TXT no soportado para el modelo ${refrescada.codigo}.`);
   }

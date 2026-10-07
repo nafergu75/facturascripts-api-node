@@ -42,4 +42,47 @@ module.exports = function nominasSwagger(ep, B) {
   ep(B + '/nominas/periodos/{ejercicio}/{mes}/anular', 'post', T, 'Anular: asiento REVERSED con el periodo abierto o contraasiento con fecha de anulacion si esta cerrado; las nominas vuelven a borrador (o quedan anuladas)', {
     body: { nominaIds: [], fecha: '2026-03-01', motivo: 'Importe corregido por la gestoria', dejarAnuladas: false },
   });
+
+  // Tesoreria: pago de los liquidos, seguros sociales y 111.
+  const medio = { fecha: '2026-01-30', cuentaBancariaId: '...', caja: false, movimientoId: '...' };
+  ep(B + '/nominas/periodos/{ejercicio}/{mes}/pago', 'post', T, 'Pagar los liquidos (todas las contabilizadas del mes o nominaIds): asiento NOM-PAG con la 465 de cada trabajador contra 572/570; con movimientoId concilia un cargo del extracto por el mismo importe. Las nominas quedan PAGADAS y su fecha de pago (la del 111) es la del pago', {
+    body: { ...medio, nominaIds: [], incluirEmbargos: false },
+  });
+  ep(B + '/nominas/periodos/{ejercicio}/{mes}/pago/anular', 'post', T, 'Anular el pago (entero): REVERSED con el periodo abierto o contraasiento; el movimiento del banco queda sin conciliar', {
+    body: { nominaIds: [], fecha: '2026-03-01', motivo: '' },
+  });
+  ep(B + '/nominas/seguros-sociales', 'get', T, 'Seguros sociales de los 12 meses: previsto por las nominas, RLC, diferencia y pago', { query: ['ejercicio'] });
+  ep(B + '/nominas/seguros-sociales/{ejercicio}/{mes}', 'get', T, 'Seguros sociales de un mes', { query: ['tipo'] });
+  ep(B + '/nominas/seguros-sociales/{ejercicio}/{mes}', 'put', T, 'Guardar el RLC real, la IT compensada o la fecha de cargo', {
+    body: { tipo: 'NORMAL', totalRlc: 1936.55, compensacionIt: 0, fechaCargoPrevista: '2026-02-28', observaciones: '' },
+  });
+  ep(B + '/nominas/seguros-sociales/{ejercicio}/{mes}/pago', 'post', T, 'Pagar los seguros sociales: 476 (previsto) y la diferencia con el RLC a la 642, IT compensada a la 471, contra 572/570 (asiento SS)', {
+    body: { ...medio, tipo: 'NORMAL', totalRlc: 1936.55, compensacionIt: 0 },
+  });
+  ep(B + '/nominas/seguros-sociales/{ejercicio}/{mes}/pago/anular', 'post', T, 'Anular el pago de los seguros sociales', { body: { tipo: 'NORMAL', fecha: '2026-03-01' } });
+  ep(B + '/nominas/retenciones/{ejercicio}/{periodo}', 'get', T, 'Modelo 111 (1T-4T, 01-12): casillas 01-09, 28 y 30 con la misma fuente que Impuestos (nominas por fecha de pago, perceptores distintos) y su pago');
+  ep(B + '/nominas/retenciones/{ejercicio}/{periodo}/pago', 'post', T, 'Pagar el 111: 4751 de trabajo y de profesionales contra 572/570', { body: { ...medio, cuentaProfesionales: '475100' } });
+  ep(B + '/nominas/retenciones/{ejercicio}/{periodo}/pago/anular', 'post', T, 'Anular el pago del 111', { body: { fecha: '2026-05-01' } });
+  ep(B + '/nominas/190/{ejercicio}/perceptores', 'get', T, 'Modelo 190: un registro por perceptor y clave (A trabajo, L.01 dietas, L.05 indemnizacion exenta, G profesionales), totales y cuadre con los cuatro 111. ?formato=xlsx', {
+    query: ['formato'],
+  });
+  ep(B + '/nominas/190/{ejercicio}/fichero', 'get', T, 'Fichero del 190 (TXT AEAT, ISO-8859-1). 409 si el diseno de registro del ejercicio no esta verificado (hoy, solo el de 2025); 400 si faltan datos', {
+    query: ['telefono', 'contacto', 'email', 'numeroDeclaracion'],
+  });
+  ep(B + '/nominas/conciliacion/sugerencias', 'get', T, 'Pagos de nominas, seguros sociales o 111 pendientes que cuadran con un cargo del extracto', { query: ['movimientoId'] });
+  ep(B + '/nominas/prevision', 'get', T, 'Prevision de pagos: liquidos sin pagar, seguros sociales pendientes y 111 que vence en el rango', { query: ['desde', 'hasta'] });
+
+  // Archivo privado de los PDF de la gestoria (solo nominas:read).
+  ep(B + '/nominas/periodos/{ejercicio}/{mes}/documentos', 'get', T, 'PDF de nominas y seguros sociales del mes');
+  ep(B + '/nominas/periodos/{ejercicio}/{mes}/documentos', 'post', T, 'Subir un PDF (archivo; tipo nomina|rlc|rnt; nominaId si es el recibo de un trabajador). 409 si ya esta (SHA-256)', {
+    multipart: ['archivo', 'tipo', 'nominaId', 'observaciones'],
+  });
+  ep(B + '/nominas/documentos', 'get', T, 'PDF de nominas del ejercicio', { query: ['ejercicio', 'trimestre', 'mes'] });
+  ep(B + '/nominas/documentos/zip', 'get', T, 'ZIP de los PDF de nominas de un ejercicio, trimestre o mes', { query: ['ejercicio', 'trimestre', 'mes'] });
+  ep(B + '/nominas/documentos/{documentoId}/descargar', 'get', T, 'Descargar un PDF de nominas');
+  ep(B + '/nominas/documentos/{documentoId}', 'delete', T, 'Anular un PDF de nominas (sale del archivo)');
+
+  ep(B + '/nominas/informes/coste', 'get', T, 'Coste de personal por mes o por trabajador (bruto, SS empresa, indemnizaciones, coste total). ?formato=xlsx', {
+    query: ['ejercicio', 'agrupar', 'formato'],
+  });
 };

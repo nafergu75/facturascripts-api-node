@@ -138,6 +138,52 @@ export const seleccionSchema = z
   })
   .strict();
 
+// --- Pagos (liquidos, seguros sociales y 111) ---
+
+const id = z.string({ invalid_type_error: 'tiene que ser un texto' }).min(1, 'es obligatorio').max(64, 'no es un identificador válido');
+const medioPago = {
+  /** Fecha del pago; por defecto, hoy (o la del movimiento del banco). */
+  fecha: fecha.optional(),
+  cuentaBancariaId: id.optional(),
+  /** true: en efectivo (570). */
+  caja: z.boolean({ invalid_type_error: 'tiene que ser sí o no' }).optional(),
+  /** Movimiento del extracto (un cargo) que se concilia con el pago. */
+  movimientoId: id.optional(),
+};
+
+export const pagoNominasSchema = z
+  .object({ ...medioPago, nominaIds: z.array(z.string().min(1)).max(5000).optional(), incluirEmbargos: z.boolean().optional() })
+  .strict();
+
+export const anularPagoSchema = z
+  .object({ nominaIds: z.array(z.string().min(1)).max(5000).optional(), fecha: fecha.optional(), motivo: textoOpcional(500) })
+  .strict();
+
+const tipoSS = z.enum(['NORMAL', 'COMPLEMENTARIA'], { errorMap: () => ({ message: 'tiene que ser NORMAL o COMPLEMENTARIA' }) });
+
+export const segurosSocialesSchema = z
+  .object({
+    tipo: tipoSS.optional(),
+    /** Importe a pagar del RLC real (null: se borra y se paga lo previsto). */
+    totalRlc: importe.nullable().optional(),
+    compensacionIt: importe.optional(),
+    fechaCargoPrevista: fecha.optional(),
+    observaciones: textoOpcional(2000),
+  })
+  .strict();
+
+export const pagoSegurosSocialesSchema = z
+  .object({ ...medioPago, tipo: tipoSS.optional(), totalRlc: importe.optional(), compensacionIt: importe.optional() })
+  .strict();
+
+export const anularPagoSegurosSocialesSchema = z.object({ tipo: tipoSS.optional(), fecha: fecha.optional(), motivo: textoOpcional(500) }).strict();
+
+export const pago111Schema = z
+  .object({ ...medioPago, cuentaProfesionales: z.string().regex(/^4751\d{0,6}$/, 'tiene que ser una subcuenta de la 4751').optional() })
+  .strict();
+
+export const anularPago111Schema = z.object({ fecha: fecha.optional(), motivo: textoOpcional(500) }).strict();
+
 const NOMBRES_CAMPOS: Record<string, string> = {
   nif: 'NIF',
   naf: 'Nº de afiliación',

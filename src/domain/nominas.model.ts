@@ -4,7 +4,7 @@
  * trabajador). Ver docs del modulo en services/nominas.service.ts.
  */
 
-/** Resumen mensual (totales). Lo sigue usando el modelo 111. */
+/** Resumen mensual por mes de devengo (GET /nominas/resumen). El 111 y el 190 van por fecha de pago (services/nominas/fiscal.ts). */
 export interface NominaResumen {
   id: string;
   companyId: string;
@@ -24,8 +24,10 @@ export interface NominaResumen {
 export const TIPOS_NOMINA = ['ORDINARIA', 'EXTRA', 'ATRASOS', 'FINIQUITO', 'COMPLEMENTARIA'] as const;
 export type TipoNomina = (typeof TIPOS_NOMINA)[number];
 
-export const ESTADOS_NOMINA = ['BORRADOR', 'CONTABILIZADA', 'ANULADA'] as const;
+export const ESTADOS_NOMINA = ['BORRADOR', 'CONTABILIZADA', 'PAGADA', 'ANULADA'] as const;
 export type EstadoNomina = (typeof ESTADOS_NOMINA)[number];
+/** Estados con asiento de devengo (contabilizada, y ademas pagada o no). */
+export const ESTADOS_CONTABILIZADOS: readonly string[] = ['CONTABILIZADA', 'PAGADA'];
 
 export const TIPOS_CONTRATO = ['INDEFINIDO', 'TEMPORAL', 'FIJO_DISCONTINUO', 'FORMACION', 'OTRO'] as const;
 export type TipoContrato = (typeof TIPOS_CONTRATO)[number];
@@ -128,6 +130,11 @@ export interface NominaDTO extends ImportesNomina {
   asientoNumero?: string | null;
   asientoAnulacionId: string | null;
   anuladaEn: Date | null;
+  /** Asiento del pago del liquido (compartido por las nominas pagadas juntas). */
+  asientoPagoId: string | null;
+  asientoPagoNumero?: string | null;
+  /** Subcuenta de tesoreria del pago (572xxx o 570). */
+  cuentaPago: string | null;
   loteImportacionId: string | null;
   origen: string;
   observaciones: string | null;
@@ -163,4 +170,8 @@ export interface CuentasNominas {
   otrasDeducciones: string;
   /** Dietas exentas: la 640 (por defecto) o la 629. */
   dietas: string;
+  /** 471 Organismos de la SS deudores: IT en pago delegado que compensa el RLC. */
+  ssDeudoraIt: string;
+  /** 570 Caja, para los pagos en efectivo. */
+  caja: string;
 }

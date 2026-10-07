@@ -947,13 +947,18 @@ model Nomina {
   otrasDeducciones          Decimal   @default(0) @db.Decimal(14, 2)
   liquido                   Decimal   @default(0) @db.Decimal(14, 2)
   ssEmpresa                 Decimal   @default(0) @db.Decimal(14, 2)
-  /// BORRADOR | CONTABILIZADA | ANULADA
+  /// BORRADOR | CONTABILIZADA | PAGADA | ANULADA
   estado                    String    @default("BORRADOR")
-  /// Asiento de devengo (JournalEntry) mientras esta CONTABILIZADA.
+  /// Asiento de devengo (JournalEntry) mientras esta CONTABILIZADA o PAGADA.
   asientoId                 String?
   /// Contraasiento, si se anulo con el periodo del asiento ya cerrado.
   asientoAnulacionId        String?
   anuladaEn                 DateTime?
+  /// Asiento del pago del liquido (465 del trabajador contra 572/570). Lo
+  /// comparten las nominas que se pagan juntas (por ejemplo, todas las del mes).
+  asientoPagoId             String?
+  /// Subcuenta de tesoreria del pago (572xxx de la cuenta bancaria o 570 de caja).
+  cuentaPago                String?
   /// Importacion de la que viene (mismo valor para todas las filas de un Excel).
   loteImportacionId         String?
   /// manual | importacion
@@ -967,6 +972,44 @@ model Nomina {
   @@index([companyId, ejercicio, mes])
   @@index([companyId, fechaPago])
   @@index([empleadoId])
+  @@index([companyId, asientoPagoId])
+}
+
+/// Seguros sociales de un mes (recibo de liquidacion de cotizaciones, RLC).
+/// Lo previsto sale de las nominas contabilizadas del mes (SS trabajador + SS
+/// empresa, en la 476). Al pagar se guarda lo que dice el RLC: la diferencia con
+/// lo previsto va a la 642 y la IT compensada (pago delegado) a la 471.
+model LiquidacionSS {
+  id                 String    @id @default(cuid())
+  companyId          String
+  ejercicio          Int
+  mes                Int
+  /// NORMAL | COMPLEMENTARIA
+  tipo               String    @default("NORMAL")
+  /// SS trabajador de las nominas del mes (al pagar, la que se paga).
+  cuotaObrera        Decimal   @default(0) @db.Decimal(14, 2)
+  /// SS empresa de las nominas del mes (al pagar, la que se paga).
+  cuotaPatronal      Decimal   @default(0) @db.Decimal(14, 2)
+  /// Suma de las dos: lo que hay en la 476 por las nominas del mes.
+  totalPrevisto      Decimal   @default(0) @db.Decimal(14, 2)
+  /// Importe a pagar del RLC real (null: se paga lo previsto).
+  totalRlc           Decimal?  @db.Decimal(14, 2)
+  /// Compensacion por IT en pago delegado (descuenta del RLC, va a la 471).
+  compensacionIt     Decimal   @default(0) @db.Decimal(14, 2)
+  /// YYYY-MM-DD; por defecto, el ultimo dia del mes siguiente.
+  fechaCargoPrevista String
+  /// PENDIENTE | PAGADA
+  estado             String    @default("PENDIENTE")
+  /// Asiento del pago (476 y ajustes contra 572/570).
+  asientoPagoId      String?
+  fechaPago          String?
+  cuentaPago         String?
+  observaciones      String?   @db.Text
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  @@unique([companyId, ejercicio, mes, tipo])
+  @@index([companyId, estado])
 }
 
 /// ============================================================================
@@ -1270,7 +1313,7 @@ model SupplierAudit {
 model DocumentoArchivo {
   id               String   @id @default(cuid())
   companyId        String
-  /// "ingreso" | "gasto"
+  /// "ingreso" | "gasto" | "nomina" | "seguros_sociales" (estos dos, solo con nominas:read)
   tipo             String
   numeroFactura    String?
   emisor           String?
@@ -1292,6 +1335,8 @@ model DocumentoArchivo {
   readerDocumentId String? // FK a IncomeReaderDocument
   incomeInvoiceId  String? // FK a IncomeInvoice
   expenseInvoiceId String? // FK a ExpenseInvoice (factura de gasto archivada)
+  /// Nomina a la que corresponde el PDF (tipo "nomina"; null si es el PDF de todo el mes).
+  nominaId         String?
   origen           String? // "manual" | "email" | "api"
   /// "activo" | "reemplazado" | "anulado"
   estado           String   @default("activo")

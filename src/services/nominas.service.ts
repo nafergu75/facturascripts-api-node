@@ -16,6 +16,10 @@
  *    anulacion (como los cobros). La nomina vuelve a BORRADOR (o queda ANULADA).
  *  - El resumen mensual antiguo (NominaResumen, solo totales) ya no se graba:
  *    GET /nominas/resumen se calcula con las nominas por trabajador.
+ *  - Despues: pago de los liquidos (PAGADA), seguros sociales, 111 y 190 por
+ *    fecha de pago, PDF e informes en services/nominas/ (tesoreria.ts,
+ *    segurosSociales.ts, fiscal.ts, modelo190.ts, documentos.ts, informes.ts).
+ *    Ver docs/ADR-004-nominas-fuente-fiscal.md.
  */
 import { randomUUID } from 'crypto';
 import * as XLSX from 'xlsx';
@@ -26,6 +30,7 @@ import { aCentimos } from '../utils/money';
 import { hoyEspana } from '../utils/fechas';
 import {
   CAMPOS_IMPORTE,
+  ESTADOS_CONTABILIZADOS,
   type CuadreNomina,
   type ImportesNomina,
   type NominaDTO,
@@ -93,7 +98,7 @@ function importesDe(n: Record<string, unknown>): ImportesNomina {
   return out;
 }
 
-export function aNominaDTO(n: FilaNominaBD, empleado?: EmpleadoBD | null, asientoNumero?: string | null): NominaDTO {
+export function aNominaDTO(n: FilaNominaBD, empleado?: EmpleadoBD | null, asientoNumero?: string | null, asientoPagoNumero?: string | null): NominaDTO {
   const importes = importesDe(n as unknown as Record<string, unknown>);
   return {
     id: n.id,
@@ -115,6 +120,9 @@ export function aNominaDTO(n: FilaNominaBD, empleado?: EmpleadoBD | null, asient
     ...(asientoNumero !== undefined ? { asientoNumero } : {}),
     asientoAnulacionId: n.asientoAnulacionId,
     anuladaEn: n.anuladaEn,
+    asientoPagoId: n.asientoPagoId,
+    ...(asientoPagoNumero !== undefined ? { asientoPagoNumero } : {}),
+    cuentaPago: n.cuentaPago,
     loteImportacionId: n.loteImportacionId,
     origen: n.origen,
     observaciones: n.observaciones,
@@ -155,15 +163,17 @@ export async function listarNominas(companyId: string, filtro: FiltroNominas = {
     orderBy: [{ ejercicio: 'desc' }, { mes: 'desc' }, { createdAt: 'asc' }],
     take: 5000,
   });
-  const numeros = await numerosAsiento(filas.map((f) => f.asientoId));
-  return filas.map((f) => aNominaDTO(f, f.empleado, f.asientoId ? (numeros.get(f.asientoId) ?? null) : null));
+  const numeros = await numerosAsiento(filas.flatMap((f) => [f.asientoId, f.asientoPagoId]));
+  const num = (id: string | null) => (id ? (numeros.get(id) ?? null) : null);
+  return filas.map((f) => aNominaDTO(f, f.empleado, num(f.asientoId), num(f.asientoPagoId)));
 }
 
 export async function obtenerNomina(companyId: string, id: string): Promise<NominaDTO> {
   const n = await prisma.nomina.findFirst({ where: { id, companyId }, include: { empleado: true } });
   if (!n) throw notFound('Nómina no encontrada.');
-  const numeros = await numerosAsiento([n.asientoId]);
-  return aNominaDTO(n, n.empleado, n.asientoId ? (numeros.get(n.asientoId) ?? null) : null);
+  const numeros = await numerosAsiento([n.asientoId, n.asientoPagoId]);
+  const num = (id: string | null) => (id ? (numeros.get(id) ?? null) : null);
+  return aNominaDTO(n, n.empleado, num(n.asientoId), num(n.asientoPagoId));
 }
 
 export interface TotalesNominas {
@@ -203,8 +213,9 @@ export async function resumenPeriodo(companyId: string, ejercicio: number, mes: 
   nominas.sort((a, b) => (a.empleado?.nombreCompleto ?? '').localeCompare(b.empleado?.nombreCompleto ?? '', 'es'));
   const fechaDevengo = ultimoDiaMes(ejercicio, mes);
   const vivas = nominas.filter((n) => n.estado !== 'ANULADA');
-  const estados = { BORRADOR: 0, CONTABILIZADA: 0, ANULADA: 0 } as Record<string, number>;
+  const estados = { BORRADOR: 0, CONTABILIZADA: 0, PAGADA: 0, ANULADA: 0 } as Record<string, number>;
   for (const n of nominas) estados[n.estado] = (estados[n.estado] ?? 0) + 1;
+  const sinPagar = nominas.filter((n) => n.estado === 'CONTABILIZADA');
   return {
     ejercicio,
     mes,
@@ -214,6 +225,8 @@ export async function resumenPeriodo(companyId: string, ejercicio: number, mes: 
     totales: totalizar(vivas),
     estados,
     cuadran: vivas.every((n) => n.cuadre.cuadra),
+    /** Liquidos contabilizados y aun sin pagar (lo que queda en las 465 de los trabajadores). */
+    pendientePago: { nominas: sinPagar.length, liquido: totalizar(sinPagar).liquido },
   };
 }
 
@@ -286,6 +299,7 @@ export async function crearNomina(companyId: string, body: unknown): Promise<Nom
 }
 
 function soloBorrador(n: { estado: string }, accion: string): void {
+  if (n.estado === 'PAGADA') throw conflict(`La nómina está pagada: anula antes el pago y después la contabilización para ${accion}.`);
   if (n.estado === 'CONTABILIZADA') throw conflict(`La nómina está contabilizada: anúlala antes de ${accion}.`);
   if (n.estado !== 'BORRADOR') throw conflict(`La nómina está ${n.estado.toLowerCase()}: solo se puede ${accion} una nómina en borrador.`);
 }
@@ -332,6 +346,7 @@ export async function actualizarNomina(companyId: string, id: string, body: unkn
 export async function borrarNomina(companyId: string, id: string): Promise<void> {
   const actual = await prisma.nomina.findFirst({ where: { id, companyId } });
   if (!actual) throw notFound('Nómina no encontrada.');
+  if (actual.estado === 'PAGADA') throw conflict('La nómina está pagada: anula antes el pago y después la contabilización.');
   if (actual.estado === 'CONTABILIZADA') throw conflict('La nómina está contabilizada: anúlala antes de borrarla.');
   const r = await prisma.nomina.deleteMany({ where: { id: actual.id, estado: { in: ['BORRADOR', 'ANULADA'] } } });
   if (r.count !== 1) throw conflict('La nómina ha cambiado de estado: vuelve a cargarla.');
@@ -415,10 +430,11 @@ export async function previsualizarImportacion(companyId: string, entrada: Entra
     const previa = e && Number.isInteger(f.mes) ? nominaPorClave.get(clave(e.id, f.ejercicio, f.mes, f.tipo)) : undefined;
     if (previa) {
       nominaExistenteId = previa.id;
-      if (previa.estado === 'CONTABILIZADA') {
+      if (ESTADOS_CONTABILIZADOS.includes(previa.estado)) {
         const num = previa.asientoId ? numeros.get(previa.asientoId) : null;
+        const pagada = previa.estado === 'PAGADA';
         f.errores.push(
-          `La nómina de ${periodoTexto(f.ejercicio, f.mes)} de este trabajador ya está contabilizada${num ? ` (asiento ${num})` : ''}: anúlala antes de volver a importarla.`,
+          `La nómina de ${periodoTexto(f.ejercicio, f.mes)} de este trabajador ya está ${pagada ? 'pagada' : 'contabilizada'}${num ? ` (asiento ${num})` : ''}: ${pagada ? 'anula el pago y la contabilización' : 'anúlala'} antes de volver a importarla.`,
         );
       } else {
         accion = 'sustituir';
@@ -570,7 +586,7 @@ export async function confirmarImportacion(
         };
         const previa = previaPorClave.get(`${empleadoId}|${f.ejercicio}|${f.mes}|${f.tipo}`);
         if (previa) {
-          if (previa.estado === 'CONTABILIZADA') {
+          if (ESTADOS_CONTABILIZADOS.includes(previa.estado)) {
             throw conflict(`La nómina de ${periodoTexto(f.ejercicio, f.mes)} de ${f.nif} se ha contabilizado mientras tanto: anúlala antes de volver a importarla.`);
           }
           const u = await tx.nomina.updateMany({ where: { id: previa.id, estado: { in: ['BORRADOR', 'ANULADA'] } }, data: datos });
@@ -643,7 +659,7 @@ export interface AsientoPrevio {
  */
 export async function previsualizarAsientos(companyId: string, ejercicio: number, mes: number, nominaIds?: string[]): Promise<{ asientos: AsientoPrevio[]; cuadran: boolean }> {
   const nominas = await prisma.nomina.findMany({
-    where: { companyId, ejercicio, mes, estado: { in: ['BORRADOR', 'CONTABILIZADA'] }, ...(nominaIds?.length ? { id: { in: nominaIds } } : {}) },
+    where: { companyId, ejercicio, mes, estado: { in: ['BORRADOR', ...ESTADOS_CONTABILIZADOS] }, ...(nominaIds?.length ? { id: { in: nominaIds } } : {}) },
     include: { empleado: true },
     orderBy: { createdAt: 'asc' },
   });
@@ -660,7 +676,7 @@ export async function previsualizarAsientos(companyId: string, ejercicio: number
     const nombre = nombreCompleto(n.empleado);
     const base = { nominaId: n.id, empleadoId: n.empleadoId, trabajador: nombre, nif: n.empleado.nif, estado: n.estado };
     const real = n.asientoId ? realPorId.get(n.asientoId) : undefined;
-    if (n.estado === 'CONTABILIZADA' && real) {
+    if (ESTADOS_CONTABILIZADOS.includes(n.estado) && real) {
       const lineas = real.lineas.map((l) => ({ cuenta: l.accountCode, nombre: l.accountName, debe: Number(l.debe), haber: Number(l.haber) }));
       const debe = round2(lineas.reduce((a, l) => a + l.debe, 0));
       const haber = round2(lineas.reduce((a, l) => a + l.haber, 0));
@@ -750,7 +766,7 @@ export async function contabilizarNominas(companyId: string, ejercicio: number, 
   }
   const pendientes = nominas.filter((n) => n.estado === 'BORRADOR');
   if (!pendientes.length) {
-    const contabilizadas = nominas.filter((n) => n.estado === 'CONTABILIZADA').length;
+    const contabilizadas = nominas.filter((n) => ESTADOS_CONTABILIZADOS.includes(n.estado)).length;
     throw conflict(
       contabilizadas
         ? `Las nóminas de ${periodoTexto(ejercicio, mes)} ya están contabilizadas.`
@@ -871,6 +887,12 @@ export async function anularNominas(companyId: string, ejercicio: number, mes: n
   if (opciones.nominaIds?.length && nominas.length !== new Set(opciones.nominaIds).size) {
     throw badRequest(`Alguna de las nóminas indicadas no es de ${periodoTexto(ejercicio, mes)} en esta empresa.`);
   }
+  const pagadas = nominas.filter((n) => n.estado === 'PAGADA');
+  if (pagadas.length) {
+    throw conflict(
+      `${pagadas.length} nómina(s) ya están pagadas (${pagadas.map((n) => nombreCompleto(n.empleado)).slice(0, 3).join(', ')}): anula antes el pago (POST .../pago/anular).`,
+    );
+  }
   const contabilizadas = nominas.filter((n) => n.estado === 'CONTABILIZADA');
   const borradores = opciones.dejarAnuladas && opciones.nominaIds?.length ? nominas.filter((n) => n.estado === 'BORRADOR') : [];
   if (!contabilizadas.length && !borradores.length) throw conflict(`No hay nóminas contabilizadas en ${periodoTexto(ejercicio, mes)}.`);
@@ -947,7 +969,7 @@ export async function anularNominas(companyId: string, ejercicio: number, mes: n
 }
 
 // ---------------------------------------------------------------------------
-// Resumen mensual (modelo 111 y compatibilidad)
+// Resumen mensual (GET /nominas/resumen; el 111 ya no lo usa: services/nominas/fiscal.ts)
 // ---------------------------------------------------------------------------
 
 /**

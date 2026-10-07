@@ -153,6 +153,13 @@ export const importesComoNumero = Prisma.defineExtension({
     empleado: {
       porcentajeIrpfActual: { needs: { porcentajeIrpfActual: true }, compute: (r) => aNumero(r.porcentajeIrpfActual) },
     },
+    liquidacionSS: {
+      cuotaObrera: { needs: { cuotaObrera: true }, compute: (r) => aNumero(r.cuotaObrera) },
+      cuotaPatronal: { needs: { cuotaPatronal: true }, compute: (r) => aNumero(r.cuotaPatronal) },
+      totalPrevisto: { needs: { totalPrevisto: true }, compute: (r) => aNumero(r.totalPrevisto) },
+      totalRlc: { needs: { totalRlc: true }, compute: (r) => aNumero(r.totalRlc) },
+      compensacionIt: { needs: { compensacionIt: true }, compute: (r) => aNumero(r.compensacionIt) },
+    },
   },
   query: {
     $allModels: {
@@ -164,11 +171,13 @@ export const importesComoNumero = Prisma.defineExtension({
 });
 
 /**
- * Importes de las nominas (Nomina y Empleado): tambien se leen como number en
+ * Importes de las nominas (Nomina, Empleado y LiquidacionSS): tambien se leen como number en
  * agregados y relaciones anidadas. Se anaden aqui, aparte de la lista general.
  */
 export const CAMPOS_DECIMALES_NOMINAS = [
   'brutoDinerario', 'dietasExentas', 'especieValoracion', 'ingresoACuenta', 'indemnizacionExenta', 'indemnizacionSujeta',
   'ssTrabajador', 'irpf', 'porcentajeIrpf', 'anticipos', 'embargos', 'otrasDeducciones', 'liquido', 'ssEmpresa', 'porcentajeIrpfActual',
+  // Seguros sociales del mes (LiquidacionSS).
+  'cuotaObrera', 'cuotaPatronal', 'totalPrevisto', 'totalRlc', 'compensacionIt',
 ] as const;
 for (const campo of CAMPOS_DECIMALES_NOMINAS) (CAMPOS_DECIMALES as Set<string>).add(campo);

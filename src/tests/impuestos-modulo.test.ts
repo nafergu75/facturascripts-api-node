@@ -30,7 +30,7 @@ const EJ = 2026;
 describe('Modulo Impuestos (estilo Quipu)', () => {
   it('genera el calendario fiscal con dias hasta/desde vencimiento', async () => {
     const lista = await listarModelosImpuesto(CO, EJ, 'activos', '2026-04-10');
-    expect(lista.length).toBe(19); // 4 modelos x 4T + 3 anuales
+    expect(lista.length).toBe(20); // 4 modelos x 4T + 4 anuales (390, 347, 200 y 190)
     const t1 = lista.find((m) => m.codigo === '303' && m.periodo === '1T')!;
     expect(t1.fechaVencimiento).toBe('2026-04-20');
     expect(t1.estado).toBe('vigente'); // verde

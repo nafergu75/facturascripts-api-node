@@ -49,7 +49,15 @@ export async function asegurarCuentasNominas(tx: TransaccionBD, companyId: strin
   for (const k of Object.keys(cuentas) as Array<keyof CuentasNominas>) {
     if (usadas.has(cuentas[k]) && !porCodigo.has(cuentas[k])) porCodigo.set(cuentas[k], NOMBRES_CUENTAS[k]);
   }
-  const pedir = [...porCodigo].map(([codigo, nombre]) => ({ codigo, nombre }));
+  await asegurarCuentas(tx, companyId, [...porCodigo].map(([codigo, nombre]) => ({ codigo, nombre })));
+}
+
+/**
+ * Da de alta en el plan las cuentas pedidas que falten, colgando de su cuenta
+ * del PGC (la de codigo mas largo que sea prefijo suyo). Las que ya estan no se
+ * tocan. Antes, fuera de la transaccion: prepararPlanEmpresa(companyId).
+ */
+export async function asegurarCuentas(tx: TransaccionBD, companyId: string, pedir: Array<{ codigo: string; nombre: string }>): Promise<void> {
   if (!pedir.length) return;
   const prefijos = new Set<string>();
   for (const p of pedir) for (let l = 2; l <= p.codigo.length; l++) prefijos.add(p.codigo.slice(0, l));

@@ -136,6 +136,8 @@ export function cuentasNominasPorDefecto(longitudEntrada: number): CuentasNomina
     anticipos: relleno('460', l),
     otrasDeducciones: `465${'9'.repeat(l - 4)}8`,
     dietas: sueldos,
+    ssDeudoraIt: relleno('471', l),
+    caja: relleno('570', l),
   };
 }
 
@@ -190,6 +192,8 @@ export const NOMBRES_CUENTAS: Record<keyof CuentasNominas, string> = {
   anticipos: 'Anticipos de remuneraciones',
   otrasDeducciones: 'Otras deducciones de nóminas',
   dietas: 'Dietas',
+  ssDeudoraIt: 'Organismos de la Seguridad Social, deudores',
+  caja: 'Caja, euros',
 };
 
 // ---------------------------------------------------------------------------

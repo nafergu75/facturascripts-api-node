@@ -17,14 +17,53 @@ import { reportsService } from './reports.service';
 import { registrarAuditoria } from './auditoria.service';
 import {
   generarCasillas303,
-  generarCasillas111,
   generarCasillas200,
   generarCasillas347,
   generarCasillas115,
   generarCasillas390,
-  generarCasillas190,
   ModeloFiscalAuditoria,
 } from '../utils/aeat-models';
+import type { DatosModelo111 } from '../domain/impuestos.model';
+import { calcularCasillasModelo } from './impuestosModulo.service';
+import { calcularModelo111 } from './impuestosCalculo.service';
+import { periodoFiscal } from './nominas/fiscal';
+
+type CasillasGuardadas = Record<string, unknown>;
+
+/**
+ * Casillas del 111 para la pantalla de modelos fiscales a partir de las
+ * oficiales (las que guarda el modulo Impuestos y usa el TXT): claves '01'..'30'
+ * con su importe y el desglose por tipo de rendimiento.
+ */
+function casillasPantalla111(oficiales: CasillasGuardadas) {
+  const v = (k: string) => Number(oficiales[k] ?? 0) || 0;
+  const tasa = (cuota: number, base: number) => (base ? Math.round((cuota / base) * 10000) / 100 : 0);
+  const retenciones = [
+    { tipo: 'Trabajo (nóminas)', base: v('02_percepciones_trabajo'), cuota: v('03_retenciones_trabajo'), operaciones: v('01_perceptores_trabajo') },
+    { tipo: 'Trabajo en especie (ingresos a cuenta)', base: v('05_percepciones_especie'), cuota: v('06_ingresos_a_cuenta'), operaciones: v('04_perceptores_especie') },
+    { tipo: 'Profesionales', base: v('08_percepciones_actividades'), cuota: v('09_retenciones_actividades'), operaciones: v('07_perceptores_actividades') },
+  ]
+    .filter((r) => r.base || r.cuota || r.operaciones)
+    .map((r) => ({ ...r, porcentaje: tasa(r.cuota, r.base) }));
+  return {
+    casillas: {
+      '01': v('01_perceptores_trabajo'),
+      '02': v('02_percepciones_trabajo'),
+      '03': v('03_retenciones_trabajo'),
+      '04': v('04_perceptores_especie'),
+      '05': v('05_percepciones_especie'),
+      '06': v('06_ingresos_a_cuenta'),
+      '07': v('07_perceptores_actividades'),
+      '08': v('08_percepciones_actividades'),
+      '09': v('09_retenciones_actividades'),
+      '28': v('28_total_retenciones'),
+      '30': v('30_resultado'),
+      retenciones,
+    },
+    totalBase: Math.round((v('02_percepciones_trabajo') + v('05_percepciones_especie') + v('08_percepciones_actividades')) * 100) / 100,
+    totalRetenido: v('28_total_retenciones'),
+  };
+}
 
 export class TaxModelsService {
   /**
@@ -174,10 +213,12 @@ export class TaxModelsService {
   /**
    * MODELO 111: RETENCIONES E INGRESOS A CUENTA
    *
-   * Genera modelo 111 a partir de:
-   * - Retenciones practicadas en facturas de ingreso (IRPF de clientes)
-   * - Retenciones practicadas en facturas de gasto (IRPF a proveedores)
-   * - Casillas completas AEAT 111
+   * Solo adapta a la pantalla el calculo del modulo Impuestos (fuente unica,
+   * services/nominas/fiscal.ts): trabajo [01]-[06] con las nominas por fecha de
+   * pago y perceptores distintos, y profesionales [07]-[09]. Guarda en
+   * ModeloImpuesto lo mismo que "Recalcular importes" (casillas oficiales y
+   * datos del TXT), para que las dos pantallas no se pisen. Un modelo presentado,
+   * omitido o editado a mano no se recalcula.
    */
   async generarModelo111(
     companyId: string,
@@ -188,81 +229,21 @@ export class TaxModelsService {
     ejercicio: number;
     trimestre: number;
     casillas: any;
+    casillasOficiales: CasillasGuardadas;
     totalBase: number;
     totalRetenido: number;
     estado: string;
+    origen: string | null;
+    avisos: string[];
     id: string;
   }> {
-    // Validar trimestre
     if (trimestre < 1 || trimestre > 4) {
       throw badRequest('Trimestre debe estar entre 1 y 4');
     }
-
-    // Obtener retenciones del período
-    // Calcular meses del trimestre (Q1: 1-3, Q2: 4-6, Q3: 7-9, Q4: 10-12)
-    const startMonth = (trimestre - 1) * 3 + 1;
-    const endMonth = trimestre * 3;
-
-    const retenciones = await prisma.retentionBook.findMany({
-      where: {
-        companyId,
-        ano: ejercicio,
-        mes: { gte: startMonth, lte: endMonth },
-      },
-      orderBy: { mes: 'asc' },
-    });
-
-    // Agrupar por tipo y porcentaje de retención
-    const casillasMap = new Map<string, {
-      tipo: string;
-      porcentaje: number;
-      base: number;
-      cuota: number;
-      count: number;
-    }>();
-
-    let totalBase = 0;
-    let totalRetenido = 0;
-
-    for (const ret of retenciones) {
-      const key = `${ret.tipoRetencionNombre}-${ret.porcentajeRetencion}`;
-
-      if (!casillasMap.has(key)) {
-        casillasMap.set(key, {
-          tipo: ret.tipoRetencionNombre || 'IRPF',
-          porcentaje: ret.porcentajeRetencion,
-          base: 0,
-          cuota: 0,
-          count: 0,
-        });
-      }
-
-      const entrada = casillasMap.get(key)!;
-      entrada.base += ret.baseImponible || 0;
-      entrada.cuota += ret.cuotaRetencion || 0;
-      entrada.count += 1;
-
-      totalBase += ret.baseImponible || 0;
-      totalRetenido += ret.cuotaRetencion || 0;
-    }
-
-    // Convertir a array de casillas
-    const retencionesProcesadas = Array.from(casillasMap.values()).map((c) => ({
-      tipo: c.tipo,
-      porcentaje: c.porcentaje,
-      base: c.base,
-      cuota: c.cuota,
-      operaciones: c.count,
-    }));
-
-    // Generar casillas AEAT completas
-    const casillas = generarCasillas111({
-      retenciones: retencionesProcesadas,
-      totalBase,
-      totalRetenido,
-    });
-
-    // Auditoría
+    const periodo = `${trimestre}T`;
+    const calculo = await calcularCasillasModelo(companyId, '111', ejercicio, periodo);
+    const oficiales = calculo.casillas as CasillasGuardadas;
+    const datos = calculo.datos as DatosModelo111;
     const auditoria: ModeloFiscalAuditoria = {
       generadoPor: userId || 'SYSTEM',
       generadoEn: new Date().toISOString(),
@@ -270,58 +251,29 @@ export class TaxModelsService {
       version: `${ejercicio}.Q${trimestre}`,
     };
 
-    // Buscar modelo existente
-    let modelo = await prisma.modeloImpuesto.findUnique({
-      where: {
-        companyId_codigo_ejercicio_periodo: {
-          companyId,
-          codigo: '111',
-          ejercicio,
-          periodo: `${trimestre}T`,
-        },
-      },
-    });
-
-    // Crear o actualizar modelo
+    const clave = { companyId_codigo_ejercicio_periodo: { companyId, codigo: '111', ejercicio, periodo } };
+    let modelo = await prisma.modeloImpuesto.findUnique({ where: clave });
     if (!modelo) {
       modelo = await prisma.modeloImpuesto.create({
-        data: {
-          companyId,
-          codigo: '111',
-          ejercicio,
-          periodo: `${trimestre}T`,
-          estado: 'vigente',
-          casillas,
-          datos: {
-            totalBase,
-            totalRetenido,
-            periodoDescription: `Q${trimestre}-${ejercicio}`,
-            retenciones: retencionesProcesadas,
-            auditoria,
-          },
-          origen: 'autorrelleno',
-        },
+        data: { companyId, codigo: '111', ejercicio, periodo, estado: 'vigente', casillas: oficiales as never, datos: { ...datos, auditoria } as never, origen: 'autorrelleno' },
       });
-    } else if (modelo.estado !== 'presentado' && modelo.estado !== 'omitido') {
-      // Un modelo presentado u omitido no se recalcula: lo guardado tiene que
-      // seguir siendo lo que se presento, aunque luego cambie una factura.
+    } else if (modelo.estado !== 'presentado' && modelo.estado !== 'omitido' && modelo.origen !== 'manual-mixto') {
+      // Se conservan los datos de la empresa (config_*) que guarda el modulo Impuestos.
+      const previas = (modelo.casillas as CasillasGuardadas | null) ?? {};
+      const config = Object.fromEntries(Object.entries(previas).filter(([k]) => k.startsWith('config_')));
       modelo = await prisma.modeloImpuesto.update({
         where: { id: modelo.id },
-        data: {
-          casillas,
-          datos: {
-            totalBase,
-            totalRetenido,
-            periodoDescription: `Q${trimestre}-${ejercicio}`,
-            retenciones: retencionesProcesadas,
-            auditoria,
-          },
-          origen: 'autorrelleno',
-        },
+        data: { casillas: { ...oficiales, ...config } as never, datos: { ...datos, auditoria } as never, origen: 'autorrelleno' },
       });
     }
 
-    // Registrar auditoría
+    // Lo guardado manda (presentado o editado a mano); si es de antes (otro formato), el calculo.
+    const guardadas = (modelo.casillas as CasillasGuardadas | null) ?? {};
+    const base = '28_total_retenciones' in guardadas ? guardadas : oficiales;
+    const pantalla = casillasPantalla111(base);
+    const avisos = [...(datos.avisos ?? [])];
+    if (modelo.origen === 'manual-mixto') avisos.push('Casillas editadas a mano en Impuestos: se muestran tal como se guardaron.');
+
     await registrarAuditoria({
       userId: userId || 'SYSTEM',
       companyId,
@@ -334,10 +286,13 @@ export class TaxModelsService {
       id: modelo.id,
       ejercicio,
       trimestre,
-      casillas,
-      totalBase,
-      totalRetenido,
+      casillas: pantalla.casillas,
+      casillasOficiales: base,
+      totalBase: pantalla.totalBase,
+      totalRetenido: pantalla.totalRetenido,
       estado: modelo.estado,
+      origen: modelo.origen,
+      avisos,
     };
   }
 
@@ -1042,9 +997,12 @@ export class TaxModelsService {
   /**
    * MODELO 190: RESUMEN ANUAL DE RETENCIONES
    *
-   * Genera modelo 190 a partir de:
-   * - Agregación de 4 trimestres de modelo 111
-   * - Totales anuales de bases y retenciones
+   * Totales del 190 con la misma fuente que el 111 (services/nominas/fiscal.ts):
+   * un registro por perceptor (nominas por fecha de pago y profesionales), y el
+   * desglose de los cuatro 111 del ano. Guarda en ModeloImpuesto lo mismo que el
+   * modulo Impuestos (solo totales: el detalle por perceptor lleva datos de los
+   * trabajadores y esta en /nominas/190, con nominas:read). Un modelo
+   * presentado, omitido o editado a mano no se recalcula.
    */
   async generarModelo190(
     companyId: string,
@@ -1057,114 +1015,69 @@ export class TaxModelsService {
     estado: string;
     casillas: any;
     desgloseTrimestral: any[];
+    avisos: string[];
+    cuadre111: { total: number; coincide: boolean };
     id: string;
   }> {
-    // Obtener los 4 trimestres de modelo 111
-    const modelos111 = await prisma.modeloImpuesto.findMany({
-      where: {
-        companyId,
-        codigo: '111',
-        ejercicio,
-      },
-      orderBy: { periodo: 'asc' },
-    });
+    const calculo = await calcularCasillasModelo(companyId, '190', ejercicio, '0A');
+    const oficiales = calculo.casillas as CasillasGuardadas;
+    const datos = calculo.datos as { avisos: string[]; cuadre111: { total: number; coincide: boolean } };
 
-    if (modelos111.length === 0) {
-      throw badRequest('No se encontraron modelos 111 para este ejercicio. Genera primero los trimestres.');
+    const desgloseTrimestral = [];
+    for (const numero of [1, 2, 3, 4]) {
+      const d = await calcularModelo111(companyId, periodoFiscal(ejercicio, `${numero}T`));
+      const p = casillasPantalla111({
+        '01_perceptores_trabajo': d.nPerceptoresTrabajo,
+        '02_percepciones_trabajo': d.percepcionesTrabajo,
+        '03_retenciones_trabajo': d.retencionesTrabajo,
+        '04_perceptores_especie': d.nPerceptoresEspecie ?? 0,
+        '05_percepciones_especie': d.percepcionesEspecie ?? 0,
+        '06_ingresos_a_cuenta': d.ingresosACuentaEspecie ?? 0,
+        '07_perceptores_actividades': d.nPerceptoresActividades ?? 0,
+        '08_percepciones_actividades': d.percepcionesActividades ?? 0,
+        '09_retenciones_actividades': d.retencionesActividades ?? 0,
+        '28_total_retenciones': d.totalRetenciones,
+      });
+      desgloseTrimestral.push({ numero, retenciones: p.casillas.retenciones, base: p.totalBase, cuota: p.totalRetenido });
     }
 
-    // Agregar datos de los 4 trimestres
-    let totalBase = 0;
-    let totalRetenido = 0;
-
-    const trimestres = modelos111
-      .filter((m) => m.periodo.match(/^\d+T$/))
-      .slice(0, 4)
-      .map((modelo) => {
-        const datos = (modelo.datos as any) || {};
-        const base = datos.totalBase || 0;
-        const retenido = datos.totalRetenido || 0;
-        const retenciones = datos.retenciones || [];
-
-        totalBase += base;
-        totalRetenido += retenido;
-
-        const trimestre = parseInt(modelo.periodo.charAt(0));
-        return {
-          numero: trimestre,
-          retenciones,
-          base,
-          cuota: retenido,
-        };
-      });
-
-    // Generar casillas AEAT 190
-    const casillas = generarCasillas190({
-      trimestres,
-      totalBase,
-      totalRetenido,
-    });
-
-    // Auditoría
     const auditoria: ModeloFiscalAuditoria = {
       generadoPor: userId || 'SYSTEM',
       generadoEn: new Date().toISOString(),
       origen: 'autorrelleno',
       version: `${ejercicio}.0A`,
     };
-
-    // Buscar modelo existente
-    let modelo = await prisma.modeloImpuesto.findUnique({
-      where: {
-        companyId_codigo_ejercicio_periodo: {
-          companyId,
-          codigo: '190',
-          ejercicio,
-          periodo: '0A',
-        },
-      },
-    });
-
-    // Crear o actualizar modelo
+    const clave = { companyId_codigo_ejercicio_periodo: { companyId, codigo: '190', ejercicio, periodo: '0A' } };
+    let modelo = await prisma.modeloImpuesto.findUnique({ where: clave });
     if (!modelo) {
       modelo = await prisma.modeloImpuesto.create({
-        data: {
-          companyId,
-          codigo: '190',
-          ejercicio,
-          periodo: '0A',
-          estado: 'vigente',
-          casillas,
-          datos: {
-            totalBase,
-            totalRetenido,
-            periodoDescription: `${ejercicio}`,
-            desgloseTrimestral: trimestres,
-            auditoria,
-          },
-          origen: 'autorrelleno',
-        },
+        data: { companyId, codigo: '190', ejercicio, periodo: '0A', estado: 'vigente', casillas: oficiales as never, datos: { ...datos, auditoria } as never, origen: 'autorrelleno' },
       });
-    } else if (modelo.estado !== 'presentado' && modelo.estado !== 'omitido') {
-      // Un modelo presentado u omitido no se recalcula: lo guardado tiene que
-      // seguir siendo lo que se presento, aunque luego cambie una factura.
+    } else if (modelo.estado !== 'presentado' && modelo.estado !== 'omitido' && modelo.origen !== 'manual-mixto') {
+      const previas = (modelo.casillas as CasillasGuardadas | null) ?? {};
+      const config = Object.fromEntries(Object.entries(previas).filter(([k]) => k.startsWith('config_')));
       modelo = await prisma.modeloImpuesto.update({
         where: { id: modelo.id },
-        data: {
-          casillas,
-          datos: {
-            totalBase,
-            totalRetenido,
-            periodoDescription: `${ejercicio}`,
-            desgloseTrimestral: trimestres,
-            auditoria,
-          },
-          origen: 'autorrelleno',
-        },
+        data: { casillas: { ...oficiales, ...config } as never, datos: { ...datos, auditoria } as never, origen: 'autorrelleno' },
       });
     }
 
-    // Registrar auditoría
+    // Lo guardado manda (presentado o editado a mano); si es de antes (otro formato), el calculo.
+    const guardadas = (modelo.casillas as CasillasGuardadas | null) ?? {};
+    const base = 'retenciones_ingresos_cuenta' in guardadas ? guardadas : oficiales;
+    const v = (k: string) => Number(base[k] ?? 0) || 0;
+    const casillas = {
+      '01': v('num_percepciones'),
+      '02': v('importe_percepciones'),
+      '03': v('retenciones_ingresos_cuenta'),
+      resumen: {
+        numeroPercepciones: v('num_percepciones'),
+        perceptores: v('num_perceptores'),
+        importePercepciones: v('importe_percepciones'),
+        importeRetenciones: v('retenciones_ingresos_cuenta'),
+      },
+    };
+
     await registrarAuditoria({
       userId: userId || 'SYSTEM',
       companyId,
@@ -1176,11 +1089,13 @@ export class TaxModelsService {
     return {
       id: modelo.id,
       ejercicio,
-      totalBase,
-      totalRetenido,
+      totalBase: v('importe_percepciones'),
+      totalRetenido: v('retenciones_ingresos_cuenta'),
       estado: modelo.estado,
       casillas,
-      desgloseTrimestral: trimestres,
+      desgloseTrimestral,
+      avisos: datos.avisos ?? [],
+      cuadre111: { total: datos.cuadre111.total, coincide: datos.cuadre111.coincide },
     };
   }
 

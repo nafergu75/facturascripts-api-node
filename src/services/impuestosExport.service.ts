@@ -401,6 +401,10 @@ export function generarFicheroModelo390(nif: string, ejercicio: number, datos: D
  * Pagina: tag '<T11101000>', NIF@14, denominacion@23(60), ejercicio@103, periodo@107,
  * rendim. trabajo nº perceptores@109/percepciones@117/retenciones@134, total
  * suma retenciones [casilla 28]@487, resultado a ingresar [30]@521, cierre @989.
+ * De [01] a [27] van en grupos de tres (nº perceptores 8 + importe 17 + importe
+ * 17 = 42 posiciones) seguidos desde la 109: trabajo en especie [04]-[06]@151,
+ * actividades economicas dinerarias [07]-[09]@193 (sin ellas la casilla 28 no
+ * cuadraria con el detalle).
  */
 export function generarFicheroModelo111(
   nif: string,
@@ -433,6 +437,12 @@ export function generarFicheroModelo111(
   escribir(p, 109, numero(datos.nPerceptoresTrabajo, 8)); // nº perceptores trabajo dinerario
   escribir(p, 117, numero(cents(datos.percepcionesTrabajo), 17)); // importe percepciones
   escribir(p, 134, numero(cents(datos.retencionesTrabajo), 17)); // importe retenciones
+  escribir(p, 151, numero(datos.nPerceptoresEspecie ?? 0, 8)); // [04] perceptores trabajo en especie
+  escribir(p, 159, numero(cents(datos.percepcionesEspecie ?? 0), 17)); // [05] valor percepciones en especie
+  escribir(p, 176, numero(cents(datos.ingresosACuentaEspecie ?? 0), 17)); // [06] ingresos a cuenta
+  escribir(p, 193, numero(datos.nPerceptoresActividades ?? 0, 8)); // [07] perceptores actividades economicas
+  escribir(p, 201, numero(cents(datos.percepcionesActividades ?? 0), 17)); // [08] percepciones
+  escribir(p, 218, numero(cents(datos.retencionesActividades ?? 0), 17)); // [09] retenciones
   escribir(p, 487, numero(cents(datos.totalRetenciones), 17)); // [28] suma retenciones e ingresos a cuenta
   escribir(p, 521, numero(cents(datos.resultadoIngresar), 17)); // [30] resultado a ingresar
   escribir(p, 989, '</T11101000>');

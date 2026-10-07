@@ -126,18 +126,28 @@ export interface OperacionIntracomunitaria {
   base: number;
 }
 
-/** Modelo 111 — retenciones IRPF (rendimientos del trabajo, etc.). */
+/**
+ * Modelo 111 — retenciones IRPF (rendimientos del trabajo y de actividades
+ * economicas). Lo calcula impuestosCalculo.calcularModelo111 con la fuente unica
+ * de services/nominas/fiscal.ts (trabajo por fecha de pago).
+ */
 export interface DatosModelo111 {
   periodo: PeriodoFiscal;
-  nPerceptoresTrabajo: number;
-  percepcionesTrabajo: number; // base
-  retencionesTrabajo: number;
-  /** Rendimientos de actividades economicas (profesionales con retencion, Alta 5). */
+  nPerceptoresTrabajo: number; // [01] perceptores distintos (por NIF)
+  percepcionesTrabajo: number; // [02] base dineraria
+  retencionesTrabajo: number; // [03]
+  /** Rendimientos del trabajo en especie. */
+  nPerceptoresEspecie?: number; // [04]
+  percepcionesEspecie?: number; // [05]
+  ingresosACuentaEspecie?: number; // [06]
+  /** Rendimientos de actividades economicas (profesionales con retencion). */
   nPerceptoresActividades?: number; // [07]
   percepcionesActividades?: number; // [08]
-  retencionesActividades?: number; // [09] TODO: posicion exacta en fichero BOE
+  retencionesActividades?: number; // [09]
   totalRetenciones: number; // suma retenciones e ingresos a cuenta [casilla 28]
   resultadoIngresar: number; // [casilla 30]
+  /** Avisos del calculo (nominas en borrador, meses solo con el resumen antiguo...). */
+  avisos?: string[];
 }
 
 /** Modelo 115 — retenciones por arrendamiento de inmuebles urbanos. */
