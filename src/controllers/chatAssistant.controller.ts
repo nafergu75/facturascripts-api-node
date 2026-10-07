@@ -25,6 +25,9 @@ const esquemaHuecos = z
     importeMinimo: z.number().positive().max(1e10).optional(),
     diasMinimos: z.number().int().positive().max(3650).optional(),
     ibanFinal: z.string().regex(/^\d{4}$/).optional(),
+    numeroFactura: z.string().regex(/^[A-Za-z0-9/-]{1,30}$/).optional(),
+    soloVencidas: z.boolean().optional(),
+    foco: z.enum(['ventas', 'gastos']).optional(),
   })
   .strict();
 

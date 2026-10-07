@@ -656,6 +656,37 @@ describe('huecos de las intenciones nuevas', () => {
   });
 });
 
+describe('botón «Actualizar» de las respuestas de datos', () => {
+  const { EJECUTORES } = jest.requireMock('../services/carmen/intenciones/datos') as { EJECUTORES: Record<string, jest.Mock> };
+
+  it('lleva la misma intención y los mismos huecos, y al pulsarlo se repite la consulta', async () => {
+    const r = await preguntar('facturas de proveedores vencidas');
+    expect(r.cuerpo).toMatchObject({ origen: 'datos', actualizar: { tipo: 'intencion', id: 'INT-06', huecos: { soloVencidas: true } } });
+    EJECUTORES.deudaConProveedores.mockClear();
+    const otra = await responder(admin, { accion: r.cuerpo.actualizar }, null, iaActiva);
+    expect(otra.cuerpo).toMatchObject({ origen: 'datos', intencion: 'INT-06', huecos: r.cuerpo.huecos });
+    expect(EJECUTORES.deudaConProveedores).toHaveBeenCalledTimes(1);
+    expect(EJECUTORES.deudaConProveedores.mock.calls[0][1]).toMatchObject({ soloVencidas: true });
+  });
+
+  it('con el cliente ya resuelto, el botón lleva su id y no su nombre', async () => {
+    const r = await preguntar('¿cuánto me debe Construcciones Pérez?');
+    expect(r.cuerpo.actualizar).toEqual({ tipo: 'intencion', id: 'INT-01', huecos: { terceroId: 'c1', rol: 'cliente' } });
+    expect(JSON.stringify(r.cuerpo.actualizar)).not.toMatch(/p[eé]rez/i);
+  });
+
+  it('una búsqueda por texto en los movimientos no se ofrece (el texto no viaja en los botones)', async () => {
+    const r = await preguntar('cargos de repsol');
+    expect(r.cuerpo.intencion).toBe('INT-25');
+    expect(r.cuerpo.actualizar).toBeUndefined();
+  });
+
+  it('las respuestas que no son de datos no lo llevan', async () => {
+    expect((await preguntar('¿cómo hago una factura?')).cuerpo.actualizar).toBeUndefined();
+    expect((await preguntar('hola')).cuerpo.actualizar).toBeUndefined();
+  });
+});
+
 describe('terceros en la pregunta', () => {
   it('«cargos de repsol» busca el nombre en el concepto de los movimientos', async () => {
     const r = await preguntar('cargos de repsol');

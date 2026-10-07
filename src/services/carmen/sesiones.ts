@@ -50,7 +50,7 @@ export async function crearSesion(ctx: Pick<CarmenCtx, 'companyId' | 'userId'>, 
 /** Bloques de la respuesta que se guardan para repintar el historial. */
 function datosParaGuardar(c: CuerpoRespuesta): Prisma.InputJsonValue | undefined {
   const datos: Record<string, unknown> = {};
-  for (const k of ['entendido', 'kpis', 'tabla', 'enlaces', 'descargas', 'botones', 'avisos', 'fuente', 'etiquetaIA'] as const) {
+  for (const k of ['entendido', 'kpis', 'tabla', 'enlaces', 'descargas', 'botones', 'avisos', 'fuente', 'etiquetaIA', 'actualizar'] as const) {
     if (c[k] !== undefined) datos[k] = c[k];
   }
   return Object.keys(datos).length ? (datos as Prisma.InputJsonValue) : undefined;

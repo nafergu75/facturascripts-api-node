@@ -22,7 +22,9 @@ import request from 'supertest';
 import jwt from 'jsonwebtoken';
 import { config } from '../config/env';
 import { createApp } from '../app';
-import { olvidarPurgas } from '../services/carmen/sesiones';
+import { guardarTurno, olvidarPurgas } from '../services/carmen/sesiones';
+import { esquemaChat } from '../controllers/chatAssistant.controller';
+import type { HuecosEntrada } from '../services/carmen/tipos';
 
 const app = createApp();
 const token = (roles: Record<string, string[]>, userId = 'U1') =>
@@ -106,6 +108,12 @@ describe('aislamiento de conversaciones', () => {
     expect(JSON.stringify(res.body)).not.toContain('1.000,00');
   });
 
+  it('el botón «Actualizar» se guarda con la respuesta, para repintarlo en el historial', async () => {
+    const actualizar = { tipo: 'intencion' as const, id: 'INT-24' };
+    await guardarTurno({ companyId: 'E1', userId: 'U1' }, 's1', '¿cuánto tengo en el banco?', { origen: 'datos', texto: 'Saldo', actualizar }, undefined);
+    expect(mockPrisma.chatMessage.create.mock.calls[1][0].data).toMatchObject({ role: 'assistant', datos: { actualizar } });
+  });
+
   it('el listado de conversaciones es solo del usuario en esa empresa', async () => {
     const res = await request(app).get(`${ruta()}/sesiones?pagina=2`).set('Authorization', U1);
     expect(res.status).toBe(200);
@@ -156,6 +164,39 @@ describe('entrada', () => {
     const res = await request(app).post(ruta()).set('Authorization', U1).send({ message: 'hola' });
     expect(res.status).toBe(429);
     expect(mockPrisma.chatMessage.create).not.toHaveBeenCalled();
+  });
+
+  it('la ruta acepta todos los huecos que pueden llevar los botones (también los de la etapa 2)', async () => {
+    // Required<>: si se añade un hueco a HuecosEntrada y no aquí, este test no compila.
+    const todos: Required<HuecosEntrada> = {
+      periodo: 'este-trimestre',
+      sentido: 'pagos',
+      modelo: '303',
+      terceroId: 'p1',
+      rol: 'proveedor',
+      importeMinimo: 1000,
+      diasMinimos: 60,
+      ibanFinal: '1234',
+      numeroFactura: 'A-0012',
+      soloVencidas: true,
+      foco: 'gastos',
+    };
+    expect(esquemaChat.safeParse({ accion: { tipo: 'intencion', id: 'INT-06', huecos: todos } }).success).toBe(true);
+    for (const [k, v] of Object.entries(todos)) {
+      expect({ k, ok: esquemaChat.safeParse({ accion: { tipo: 'intencion', id: 'INT-06', huecos: { [k]: v } } }).success }).toEqual({ k, ok: true });
+    }
+    // Lo que no es un hueco, o un valor que no toca, sigue dando 400.
+    expect(esquemaChat.safeParse({ accion: { tipo: 'intencion', id: 'INT-06', huecos: { nombre: 'PÉREZ' } } }).success).toBe(false);
+    expect(esquemaChat.safeParse({ accion: { tipo: 'intencion', id: 'INT-09', huecos: { foco: 'nominas' } } }).success).toBe(false);
+    expect(esquemaChat.safeParse({ accion: { tipo: 'intencion', id: 'INT-13', huecos: { numeroFactura: 'A 12; drop' } } }).success).toBe(false);
+
+    // Por HTTP (INT-28 sin permiso de impuestos: no se llama a ningún servicio): 200, no 400.
+    const res = await request(app)
+      .post(ruta())
+      .set('Authorization', U1)
+      .send({ accion: { tipo: 'intencion', id: 'INT-28', huecos: { soloVencidas: true, foco: 'ventas', numeroFactura: 'A-0012' } } });
+    expect(res.status).toBe(200);
+    expect(res.body.data.origen).toBe('sistema');
   });
 
   it('un botón con una intención inexistente responde con aclaración, no con un 500', async () => {

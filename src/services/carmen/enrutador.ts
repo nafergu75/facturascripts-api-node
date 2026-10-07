@@ -370,8 +370,20 @@ async function ejecutarIntencion(
       intencion.id === 'INT-30' ? { ...comunes, origen: 'faq', fuente: FUENTE_CALENDARIO } : { ...comunes, origen: 'sistema' };
     return { cuerpo, contexto };
   }
+  // «Actualizar» repite la consulta con los mismos huecos. Un filtro por texto
+  // («cargos de Repsol», INT-25) no viaja en los botones, así que esa no se ofrece.
+  const filtraPorTexto = !!huecos.texto && intencion.huecos.some((d) => d.nombre === 'texto');
+  const actualizar: Accion | undefined = filtraPorTexto
+    ? undefined
+    : { tipo: 'intencion', id: intencion.id, ...(Object.keys(entrada).length ? { huecos: entrada } : {}) };
   return {
-    cuerpo: { ...comunes, origen: 'datos', permisoRequerido: r.permisoRequerido, calculadoEn: new Date().toISOString() },
+    cuerpo: {
+      ...comunes,
+      origen: 'datos',
+      permisoRequerido: r.permisoRequerido,
+      calculadoEn: new Date().toISOString(),
+      ...(actualizar ? { actualizar } : {}),
+    },
     contexto,
   };
 }

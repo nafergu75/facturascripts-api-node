@@ -93,6 +93,11 @@ export interface RespuestaCarmen {
   calculadoEn?: string;
   /** Solo en respuestas de IA: «Respuesta orientativa generada por IA...». */
   etiquetaIA?: string;
+  /**
+   * Solo en respuestas de datos: la acción que repite la consulta con cifras
+   * de ahora (botón «Actualizar»). Lleva códigos e ids, nunca nombres.
+   */
+  actualizar?: Accion;
 }
 
 /** Cuerpo de la respuesta antes de guardarla (sin sessionId ni mensajeId). */
