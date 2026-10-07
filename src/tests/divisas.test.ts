@@ -209,11 +209,23 @@ describe('calcularCobroDivisa', () => {
     expect(r.tipoCambio).toBe(redondear8(1000 / 952.38));
   });
 
+  it('con el tipo del dia y comision: el banco recibe lo cobrado menos la comision', () => {
+    // 1.000 USD a 1,05 = 952,38 EUR; el banco abona 952,38 - 7,38 = 945,00.
+    const r = calcularCobroDivisa({ ...factura, importeDoc: 1000, tipoCambio: 1.05, comisionBancaria: 7.38 });
+    expect(apunte(r, 'TESORERIA')).toMatchObject({ debe: 945 });
+    expect(apunte(r, 'COMISION')).toMatchObject({ debe: 7.38 });
+    expect(apunte(r, 'TERCERO')).toMatchObject({ haber: 909.09 });
+    // La diferencia de cambio es la misma que sin comision.
+    expect(r.diferenciaCambio).toBe(43.29);
+    expect(() => calcularCobroDivisa({ ...factura, importeDoc: 10, tipoCambio: 1.05, comisionBancaria: 20 })).toThrow(/comisión/);
+  });
+
   it('cada cobro cuadra: debe = haber', () => {
     for (const r of [
       calcularCobroDivisa({ ...factura, importeDoc: 1000, tipoCambio: 1.05 }),
       calcularCobroDivisa({ ...factura, importeDoc: 1000, tipoCambio: 1.2 }),
       calcularCobroDivisa({ ...factura, importeDoc: 1000, importeRecibido: 945, comisionBancaria: 7.38 }),
+      calcularCobroDivisa({ ...factura, importeDoc: 1000, tipoCambio: 1.05, comisionBancaria: 7.38 }),
       calcularCobroDivisa({ ...factura, tipo: 'GASTO', importeDoc: 1000, tipoCambio: 1.05 }),
       calcularCobroDivisa({ ...factura, tipo: 'GASTO', importeDoc: 1000, tipoCambio: 1.2, comisionBancaria: 3 }),
     ]) {

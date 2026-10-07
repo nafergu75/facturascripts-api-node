@@ -502,7 +502,10 @@ export function calcularCobroDivisa(e: EntradaCobroDivisa): ResultadoCobroDivisa
         throw badRequest(`Indica el tipo de cambio del día del cobro o lo recibido en el banco en ${e.monedaCuenta}.`);
       }
       tipoCambio = e.tipoCambio;
-      importeTesoreria = aCuenta(importeDoc, tipoCambio);
+      // Cobro: el banco abona lo cobrado al tipo del dia menos su comision (la
+      // diferencia de cambio no la absorbe). Pago: sale lo pagado y, aparte, la comision.
+      importeTesoreria = e.tipo === 'INGRESO' ? redondear2(aCuenta(importeDoc, tipoCambio) - comision) : aCuenta(importeDoc, tipoCambio);
+      if (!(importeTesoreria > 0)) throw badRequest('La comisión no puede ser mayor que lo cobrado.');
       fuente = e.fuenteTipoCambio ?? 'MANUAL';
     }
   } else if (e.monedaTesoreria === e.moneda) {
