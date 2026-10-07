@@ -240,9 +240,13 @@ export function envolverFichero(
 }
 
 /**
- * Modelo 303 — PAGINA 3 (DP30303, diseno oficial): informacion adicional +
- * resultado final. Longitud 1017, tag <T30303000>, cierre </T30303000>@1006.
- * Casillas: [59]@12 entregas intracom, [60]@29 exportaciones, [64]@199 suma,
+ * Modelo 303 — PAGINA 3 (DP30303, diseno oficial v1.01 para 2026): informacion
+ * adicional + resultado final. Longitud 1017, tag <T30303000>, cierre
+ * </T30303000>@1006. Casillas: [59]@12 entregas intracomunitarias de bienes y
+ * servicios (con los servicios de clave S), [60]@29 exportaciones y
+ * asimiladas, [120]@46 no sujetas por reglas de localizacion, [122]@63
+ * operaciones con inversion del sujeto pasivo (todas de 17, tipo N: posiciones
+ * comprobadas en la hoja DP30303 del diseno de registro), [64]@199 suma,
  * [65]@216 %estado (100,00), [66]@221 atribuible, [110]@255 a compensar
  * pendientes, [78]@272 a compensar aplicadas, [87]@289 pendientes futuras,
  * [69]@340 resultado autoliquidacion, [71]@408 RESULTADO FINAL.
@@ -263,6 +267,8 @@ export function generarPaginaModelo303_03(datos: DatosModelo303): string {
 
   put(12, importe(datos.entregasIntracomunitarias ?? 0, 17)); // [59]
   put(29, importe(datos.exportaciones ?? 0, 17)); // [60]
+  put(46, importe(datos.noSujetasLocalizacion ?? 0, 17)); // [120]
+  put(63, importe(datos.inversionSujetoPasivo ?? 0, 17)); // [122]
   put(182, importe(0, 17)); // [76]
   put(199, importe(datos.resultado, 17)); // [64] = [46]+[58]+[76]
   put(216, numero(10000, 5)); // [65] % Estado = 100,00
@@ -350,7 +356,9 @@ function rellenarCeros(buf: string[], desde: number, hasta: number): void {
 /**
  * Modelo 390 (resumen anual IVA) — diseno OFICIAL v1.02. Genera los registros
  * de las paginas clave: identificacion (01000), resultado regimen general
- * (04000, [65]) y resultado anual + volumen (06000, [84]/[86]/[99]/[108]).
+ * (04000, [65]) y resultado anual + volumen (06000, [84]/[86]/[99]/[103]/
+ * [104]/[105]/[110]/[125]/[108]; posiciones de la hoja "Pag. 6" del diseno).
+ * [108] es la suma real del volumen; sin desglose (datos antiguos), [99].
  *
  * PENDIENTE para fichero 100% importable: paginas de desglose (02000, 02B00,
  * 03000, 05000) y la cabecera/envoltura del fichero. Cada pagina tiene su
@@ -385,8 +393,14 @@ export function generarFicheroModelo390(nif: string, ejercicio: number, datos: D
   escribir(pag06, 11, '>');
   escribir(pag06, 30, importe(datos.resultadoAnual, 17)); // [84] suma de resultados
   escribir(pag06, 81, importe(datos.resultadoAnual, 17)); // [86] resultado de la liquidacion
+  const v = datos.volumen;
   escribir(pag06, 361, importe(datos.volumenOperaciones, 17)); // [99] operaciones regimen general
-  escribir(pag06, 650, importe(datos.volumenOperaciones, 17)); // [108] total volumen de operaciones
+  escribir(pag06, 395, importe(v?.intracomunitarias ?? 0, 17)); // [103] entregas intracomunitarias de bienes y servicios
+  escribir(pag06, 412, importe(v?.exportacionesYExentasConDeduccion ?? 0, 17)); // [104] exportaciones y exentas con derecho a deduccion
+  escribir(pag06, 429, importe(v?.exentasSinDeduccion ?? 0, 17)); // [105] exentas sin derecho a deduccion
+  escribir(pag06, 446, importe(v?.noSujetas ?? 0, 17)); // [110] no sujetas por reglas de localizacion
+  escribir(pag06, 463, importe(v?.isp ?? 0, 17)); // [125] sujetas con inversion del sujeto pasivo
+  escribir(pag06, 650, importe(v?.total ?? datos.volumenOperaciones, 17)); // [108] total volumen de operaciones
   escribir(pag06, 817, '</T39006000>');
 
   return [pag01.join(''), pag04.join(''), pag06.join('')].join('\r\n') + '\r\n';
@@ -585,8 +599,12 @@ export function generarFicheroModelo347(
  * Importes SIN signo (regla 349), centimos. Mayusculas sin acentos, ISO-8859-1.
  *
  * Mapeo: T1 periodo@136, nº operadores@138, importe operaciones@147(15);
- * T2 NIF operador comunitario@76(17), nombre@93, clave operacion@133,
- * base imponible@134(13).
+ * T2 NIF operador comunitario@76(17), nombre@93, clave operacion@133
+ * (E entregas, S servicios, A adquisiciones), base imponible@134(13).
+ *
+ * Un registro por operador y clave con el neto del periodo (ya agrupado en
+ * agregar349). Un neto negativo no se puede escribir sin signo (seria otro
+ * importe): error claro en vez de un fichero con el valor absoluto.
  */
 export function generarFicheroModelo349(
   nif: string,
@@ -596,6 +614,12 @@ export function generarFicheroModelo349(
 ): string {
   const sinAcentos = (s: string): string => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase();
   const cents = (v: number): number => Math.round(Math.abs(v) * 100);
+  const negativos = datos.operaciones.filter((o) => o.base < 0);
+  if (negativos.length) {
+    throw badRequest(
+      `No se puede generar el fichero del 349: ${negativos.map((o) => `${o.cifnif} (clave ${o.clave})`).join(', ')} queda en negativo en el periodo. Las rectificaciones de periodos anteriores van en su propio registro: revísalo con tu asesor.`,
+    );
+  }
 
   // --- Tipo 1: declarante ---
   const t1 = new Array(500).fill(' ') as string[];

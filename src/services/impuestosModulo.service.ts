@@ -27,6 +27,8 @@ import {
   calcularModelo347,
   calcularModelo349,
   calcularModelo390,
+  esEmpresaEspanolaFiscal,
+  MENSAJE_SIN_MODELOS,
 } from './impuestosCalculo.service';
 import { calcularModelo200 } from './impuestoSociedadesCalculo.service';
 import {
@@ -112,8 +114,12 @@ function calendarioEjercicio(ejercicio: number): Array<{ codigo: string; periodo
 const clave = (companyId: string, codigo: string, ejercicio: number, periodo: string): string =>
   `${companyId}:${codigo}:${ejercicio}:${periodo}`;
 
-/** Crea (si faltan) las filas del calendario del ejercicio. */
+/**
+ * Crea (si faltan) las filas del calendario del ejercicio. Una empresa no
+ * establecida en Espana no presenta modelos de la AEAT: no se le crea nada.
+ */
 async function asegurarCalendario(companyId: string, ejercicio: number): Promise<void> {
+  if (!(await esEmpresaEspanolaFiscal(companyId))) return;
   for (const { codigo, periodo } of calendarioEjercicio(ejercicio)) {
     if (dbOk()) {
       await prisma.modeloImpuesto.upsert({
@@ -189,6 +195,8 @@ export async function listarModelosImpuesto(
   tab: 'activos' | 'omitidos' | 'presentados' = 'activos',
   hoy: string = new Date().toISOString().slice(0, 10),
 ): Promise<ModeloImpuestoResumen[]> {
+  // Empresa no establecida en Espana: sin modelos de la AEAT ni calendario.
+  if (!(await esEmpresaEspanolaFiscal(companyId))) return [];
   await asegurarCalendario(companyId, ejercicio);
   let filas: FilaModelo[];
   if (dbOk()) {
@@ -277,19 +285,42 @@ export async function calcularCasillasModelo(
 /** Mapea el calculo de cada modelo a casillas planas + guarda los datos para el TXT. */
 async function calcularCasillas(companyId: string, fila: FilaModelo): Promise<{ casillas: Casillas; datos: unknown }> {
   const periodo = periodoFiscalDe(fila);
+  // Los de IVA (303/349/390/347) lo comprueban por periodo en impuestosCalculo.
+  if (['111', '115', '200'].includes(fila.codigo) && !(await esEmpresaEspanolaFiscal(companyId))) {
+    throw badRequest(MENSAJE_SIN_MODELOS);
+  }
   switch (fila.codigo) {
     case '303': {
       const d = await calcularModelo303(companyId, periodo);
-      return { casillas: { ...d.casillas }, datos: d };
+      return {
+        casillas: {
+          ...d.casillas,
+          // Informacion adicional (pagina 3): por tipo de operacion.
+          '59_entregas_intracomunitarias': d.entregasIntracomunitarias ?? 0,
+          '60_exportaciones': d.exportaciones ?? 0,
+          '120_no_sujetas_localizacion': d.noSujetasLocalizacion ?? 0,
+          '122_inversion_sujeto_pasivo': d.inversionSujetoPasivo ?? 0,
+          ...(d.advertencias?.length ? { advertencias: d.advertencias.join(' · ') } : {}),
+        },
+        datos: d,
+      };
     }
     case '390': {
       const d = await calcularModelo390(companyId, fila.ejercicio);
+      const v = d.volumen;
       return {
         casillas: {
           cuota_devengada: d.totalCuotaDevengada,
           cuota_deducible: d.totalCuotaDeducible,
           resultado_anual: d.resultadoAnual,
           volumen_operaciones: d.volumenOperaciones,
+          '103_entregas_intracomunitarias': v?.intracomunitarias ?? 0,
+          '104_exportaciones_exentas_con_deduccion': v?.exportacionesYExentasConDeduccion ?? 0,
+          '105_exentas_sin_deduccion': v?.exentasSinDeduccion ?? 0,
+          '110_no_sujetas_localizacion': v?.noSujetas ?? 0,
+          '125_inversion_sujeto_pasivo': v?.isp ?? 0,
+          '108_total_volumen': v?.total ?? d.volumenOperaciones,
+          ...(d.advertencias?.length ? { advertencias: d.advertencias.join(' · ') } : {}),
         },
         datos: d,
       };
@@ -306,7 +337,14 @@ async function calcularCasillas(companyId: string, fila: FilaModelo): Promise<{ 
     }
     case '349': {
       const d = await calcularModelo349(companyId, periodo);
-      return { casillas: { num_operadores: d.operaciones.length, total_base: d.totalBase }, datos: d };
+      return {
+        casillas: {
+          num_operadores: d.operaciones.length,
+          total_base: d.totalBase,
+          ...(d.advertencias?.length ? { advertencias: d.advertencias.join(' · ') } : {}),
+        },
+        datos: d,
+      };
     }
     case '111': {
       const d = await calcularModelo111(companyId, periodo);

@@ -3,6 +3,7 @@ import { sendOk } from '../utils/response';
 import { badRequest } from '../utils/http-errors';
 import { prisma } from '../config/database';
 import { Decimal } from '@prisma/client/runtime/library';
+import { perfilEmpresa } from '../services/perfilEmpresa.service';
 
 export const movementsController = {
   // POST /companies/:companyId/movements
@@ -79,6 +80,8 @@ export const movementsController = {
    * Resumen fiscal del periodo a partir de las FACTURAS (no de los movimientos):
    * ventas emitidas e IVA repercutido, gastos e IVA soportado, y retenciones.
    * Mismo criterio que el 303: ventas FINAL y ni ventas ni gastos en borrador.
+   * Importes SIEMPRE en la moneda de cuenta (las columnas de siempre), tambien
+   * de las facturas emitidas en otra moneda; `monedaCuenta` dice cual es.
    */
   getResumenFiscal: asyncHandler(async (req, res) => {
     const companyId = req.companyId ?? req.params.companyId;
@@ -108,9 +111,13 @@ export const movementsController = {
     const n = (v: unknown) => Math.round(Number(v ?? 0) * 100) / 100;
     const ivaRepercutido = n(ventas._sum.ivaTotal);
     const ivaSoportado = n(gastos._sum.ivaTotal);
+    const perfil = await perfilEmpresa(companyId);
 
     sendOk(res, {
       periodo: { anio, trimestre, desde, hasta },
+      monedaCuenta: perfil.monedaCuenta,
+      // Una empresa no establecida en Espana no lleva IVA ni modelos de la AEAT.
+      empresaEspanola: perfil.espanola,
       ventas: {
         facturas: ventas._count,
         base: n(ventas._sum.baseTotal),

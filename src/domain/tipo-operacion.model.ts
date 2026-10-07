@@ -194,8 +194,9 @@ export function fueraDelTai(pais: string | null | undefined, cp: string | null |
 // Clasificacion de las facturas anteriores (tipoOperacion null)
 // ---------------------------------------------------------------------------
 
-// Las tablas de siempre (impuestosCalculo.clasificarOperacion): paises UE en
-// ISO-3 sin ESP y prefijos de NIF-IVA. Se copian tal cual a proposito.
+// Las tablas de siempre (las de impuestosCalculo.clasificarOperacion antes de
+// que entendiera ISO-2): paises UE en ISO-3 sin ESP y prefijos de NIF-IVA. Se
+// copian tal cual a proposito: es la clasificacion congelada de las ventas sin tipo.
 const LEGACY_UE_ISO3 = new Set([
   'DEU', 'FRA', 'ITA', 'PRT', 'BEL', 'NLD', 'LUX', 'IRL', 'AUT', 'FIN', 'SWE', 'DNK', 'GRC',
   'POL', 'CZE', 'SVK', 'SVN', 'HUN', 'ROU', 'BGR', 'HRV', 'EST', 'LVA', 'LTU', 'CYP', 'MLT',
@@ -207,8 +208,9 @@ const LEGACY_PREFIJOS = new Set([
 
 /**
  * Tipo de una factura anterior a esta funcion: EXACTAMENTE la clasificacion de
- * siempre (clasificarOperacion: interior / intracomunitaria / exportacion por
- * el pais de la ficha o, sin pais, por el prefijo del NIF), para que las
+ * siempre (la clasificarOperacion anterior: interior / intracomunitaria /
+ * exportacion por el pais de la ficha o, sin pais, por el prefijo del NIF;
+ * hoy clasificarOperacion ya entiende ISO-2 y solo se usa con compras), para que las
  * cifras ya declaradas no cambien. Ojo: la tabla de siempre esta en ISO-3, asi
  * que un pais guardado en ISO-2 distinto de ES ('FR') sale como exportacion;
  * se mantiene a proposito y se corrige solo en las facturas nuevas.

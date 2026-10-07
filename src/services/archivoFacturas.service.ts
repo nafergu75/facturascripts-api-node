@@ -22,6 +22,7 @@ import { putObject, getObject } from '../utils/storage';
 import { nombreSeguro } from '../utils/nombre-seguro';
 import { crearZip, ZipEntry } from '../utils/zip';
 import { generarPdfFactura } from './facturaPdf.service';
+import { perfilEmpresa } from './perfilEmpresa.service';
 
 export type CarpetaArchivo = 'ventas' | 'gastos';
 
@@ -74,6 +75,14 @@ export interface ElementoTrimestre {
   descargable: boolean;
   /** 'emitida' | 'digitalizada' | 'registrada' | 'manual' ... */
   origen: string | null;
+  /**
+   * Moneda de la factura. base, iva y total van SIEMPRE en la moneda de
+   * cuenta; si la factura se emitio en otra, `totalDivisa` es su total en esa
+   * moneda y `tipoCambio`, el aplicado (unidades por 1 de la moneda de cuenta).
+   */
+  moneda?: string;
+  totalDivisa?: number | null;
+  tipoCambio?: number | null;
 }
 
 export interface ListadoTrimestre {
@@ -232,6 +241,14 @@ export async function archivarFacturaVenta(companyId: string, incomeInvoiceId: s
   const periodo = periodoDeFecha(factura.fechaEmision);
   const numero = factura.numeroCompleto ?? factura.id;
   const nombre = nombreArchivoFactura(factura.fechaEmision, numero, factura.customer?.nombreFiscal, extensionDe(original ? nombreOriginal : undefined, mime));
+  // base, iva y total en moneda de cuenta; en divisa, ademas el total del documento y el tipo.
+  const { monedaCuenta } = await perfilEmpresa(companyId);
+  const enDivisa = factura.moneda !== monedaCuenta;
+  const divisa = {
+    moneda: factura.moneda,
+    totalDivisa: enDivisa ? num(factura.totalFacturaDoc) : null, // moneda-doc: dato secundario del archivo, no se suma
+    tipoCambio: enDivisa ? factura.tipoCambio : null,
+  };
   const archivoPath = contenido ? await guardarSinRomper(rutaArchivoFactura(companyId, periodo, 'ventas', nombre), contenido, mime) : '';
 
   const datos = {
@@ -262,6 +279,7 @@ export async function archivarFacturaVenta(companyId: string, incomeInvoiceId: s
       iva: num(factura.ivaTotal),
       retencion: num(factura.retencionTotal),
       total: num(factura.totalFactura),
+      ...divisa,
       ...datos,
       incomeInvoiceId,
       readerDocumentId: factura.readerDocument?.id ?? null,
@@ -483,6 +501,7 @@ export async function listarTrimestre(companyId: string, anio: number, trimestre
   const { desde, hasta } = rangoTrimestre(anio, trimestre);
   const enRango = { fechaEmision: { gte: desde, lte: hasta } };
 
+  const { monedaCuenta } = await perfilEmpresa(companyId);
   const [ventas, gastos, docs] = await Promise.all([
     prisma.incomeInvoice.findMany({
       where: { companyId, estadoDocumento: 'FINAL', ...enRango },
@@ -531,6 +550,9 @@ export async function listarTrimestre(companyId: string, anio: number, trimestre
       tieneArchivo: !!d?.archivoPath,
       descargable: true,
       origen: d?.origen ?? 'emitida',
+      moneda: v.moneda,
+      totalDivisa: v.moneda !== monedaCuenta ? num(v.totalFacturaDoc) : null, // moneda-doc: dato secundario del listado, no se suma
+      tipoCambio: v.moneda !== monedaCuenta ? v.tipoCambio : null,
     };
   });
   const lGastos: ElementoTrimestre[] = gastos.map((g) => {
@@ -549,6 +571,10 @@ export async function listarTrimestre(companyId: string, anio: number, trimestre
       tieneArchivo: !!d?.archivoPath,
       descargable: !!d?.archivoPath,
       origen: d?.origen ?? 'registrada',
+      // Gastos en divisa: fuera de alcance; van en la moneda de cuenta.
+      moneda: monedaCuenta,
+      totalDivisa: null,
+      tipoCambio: null,
     };
   });
 
@@ -568,6 +594,9 @@ export async function listarTrimestre(companyId: string, anio: number, trimestre
       tieneArchivo: !!d.archivoPath,
       descargable: !!d.archivoPath,
       origen: d.origen ?? 'manual',
+      moneda: d.moneda,
+      totalDivisa: d.totalDivisa === null ? null : num(d.totalDivisa),
+      tipoCambio: d.tipoCambio === null ? null : Number(d.tipoCambio),
     };
     (d.tipo === 'ingreso' ? lVentas : lGastos).push(el);
   }
@@ -611,16 +640,28 @@ function campoCsv(v: string | null | undefined): string {
   return /[;"\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
-/** resumen.csv: separador ';', coma decimal y BOM UTF-8 para que Excel lo abra bien. */
+/**
+ * resumen.csv: separador ';', coma decimal y BOM UTF-8 para que Excel lo abra
+ * bien. Base, IVA y Total en la moneda de cuenta. Si alguna factura del
+ * trimestre va en otra moneda, se anaden AL FINAL 'Moneda', 'Total divisa' y
+ * 'Tipo de cambio' (las 9 columnas de siempre no cambian).
+ */
 export function resumenCsv(filas: Array<ElementoTrimestre & { tipo: 'Venta' | 'Gasto'; archivo: string }>): Buffer {
+  const conDivisa = filas.some((f) => f.totalDivisa !== null && f.totalDivisa !== undefined);
   const cabecera = ['Tipo', 'Fecha', 'Número', 'Tercero', 'NIF', 'Base', 'IVA', 'Total', 'Archivo'];
+  if (conDivisa) cabecera.push('Moneda', 'Total divisa', 'Tipo de cambio');
   const lineas = [cabecera.join(';')];
   for (const f of filas) {
-    lineas.push(
-      [f.tipo, f.fecha, f.numero, f.tercero, f.nif, importeCsv(f.base), importeCsv(f.iva), importeCsv(f.total), f.archivo]
-        .map((c) => campoCsv(c))
-        .join(';'),
-    );
+    const celdas = [f.tipo, f.fecha, f.numero, f.tercero, f.nif, importeCsv(f.base), importeCsv(f.iva), importeCsv(f.total), f.archivo];
+    if (conDivisa) {
+      const enDivisa = f.totalDivisa !== null && f.totalDivisa !== undefined;
+      celdas.push(
+        f.moneda ?? '',
+        enDivisa ? importeCsv(f.totalDivisa as number) : '',
+        enDivisa && f.tipoCambio ? String(f.tipoCambio).replace('.', ',') : '',
+      );
+    }
+    lineas.push(celdas.map((c) => campoCsv(c)).join(';'));
   }
   return Buffer.from('﻿' + lineas.join('\r\n') + '\r\n', 'utf8');
 }

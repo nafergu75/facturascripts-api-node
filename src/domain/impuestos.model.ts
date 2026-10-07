@@ -1,3 +1,5 @@
+import type { TipoOperacionVenta } from './tipo-operacion.model';
+
 /** Periodo fiscal de una declaracion. */
 export interface PeriodoFiscal {
   ejercicio: number;
@@ -19,6 +21,20 @@ export interface FacturaFiscal {
   nombreTercero: string;
   fecha: string; // yyyy-mm-dd
   operacion: 'interior' | 'intracomunitaria' | 'exportacion';
+  /**
+   * Tipo de operacion de IVA de una venta (domain/tipo-operacion.model.ts). Si
+   * falta (facturas anteriores a esta funcion y compras), los modelos usan
+   * `operacion` exactamente como siempre.
+   */
+  tipoOperacion?: TipoOperacionVenta | null;
+  /** E1 | E3 | E4 | E6, solo con EXENTA. */
+  causaExencion?: string | null;
+  /** Clave del 349 (E entregas, S servicios, A adquisiciones); null = no va en el 349. */
+  clave349?: 'E' | 'S' | 'A' | 'I' | null;
+  /** Tercero residente en Espana (347). */
+  residente?: boolean;
+  /** Pais del tercero (ISO-2). */
+  paisTercero?: string;
   /**
    * Deducibilidad del gasto (solo compras). Por defecto true; si es false, su
    * IVA NO entra en el bloque deducible del 303 (estilo Quipu "IVA no
@@ -58,9 +74,15 @@ export interface DatosModelo303 {
   cuotasPendientesPosteriores?: number;
   /** Resultado final = resultado - cuotas aplicadas [71]. */
   resultadoFinal?: number;
-  /** Informacion adicional pag.3: entregas intracomunitarias [59] y exportaciones [60]. */
+  /** Informacion adicional pag.3: entregas intracomunitarias de bienes y servicios [59] y exportaciones [60]. */
   entregasIntracomunitarias?: number;
   exportaciones?: number;
+  /** [120] operaciones no sujetas por reglas de localizacion (servicios a clientes de fuera de la UE...). */
+  noSujetasLocalizacion?: number;
+  /** [122] operaciones sujetas con inversion del sujeto pasivo (art. 84.Uno.2.º LIVA). */
+  inversionSujetoPasivo?: number;
+  /** Base de las exentas sin derecho a deduccion (E1/E6): sin casilla trimestral (390 [105]); avisa de la prorrata. */
+  exentasSinDeduccion?: number;
   /** Importes pre-calculados por casilla (para UI tipo formulario AEAT). */
   casillas: Record<string, number>;
   /** Avisos que hay que revisar antes de presentar (tipos de IVA sin casilla...). */
@@ -98,7 +120,33 @@ export interface DatosModelo390 {
   totalCuotaDevengada: number;
   totalCuotaDeducible: number;
   resultadoAnual: number;
+  /** [99] operaciones en regimen general (las ventas con IVA): lo de siempre. */
   volumenOperaciones: number;
+  /**
+   * Volumen de operaciones por grupos (pagina 6). Las ventas sin tipo de
+   * operacion (anteriores a esta funcion) solo cuentan en [99], como siempre.
+   */
+  volumen?: VolumenOperaciones390;
+  /** Avisos que hay que revisar antes de presentar. */
+  advertencias?: string[];
+}
+
+/** Volumen de operaciones del 390 (casillas de la pagina 6). */
+export interface VolumenOperaciones390 {
+  /** [99] */
+  regimenGeneral: number;
+  /** [103] entregas intracomunitarias de bienes y servicios */
+  intracomunitarias: number;
+  /** [104] exportaciones y otras exentas con derecho a deduccion */
+  exportacionesYExentasConDeduccion: number;
+  /** [105] exentas sin derecho a deduccion */
+  exentasSinDeduccion: number;
+  /** [110] no sujetas por reglas de localizacion */
+  noSujetas: number;
+  /** [125] sujetas con inversion del sujeto pasivo */
+  isp: number;
+  /** [108] total volumen de operaciones */
+  total: number;
 }
 
 /** Operacion con un tercero para el Modelo 347. */
@@ -121,8 +169,8 @@ export interface DatosModelo347 {
 export interface OperacionIntracomunitaria {
   cifnif: string;
   nombre: string;
-  /** Clave de operacion (E: entregas, A: adquisiciones...). */
-  clave: 'E' | 'A';
+  /** Clave de operacion (E: entregas, S: servicios prestados, A: adquisiciones, I: servicios adquiridos). */
+  clave: 'E' | 'S' | 'A' | 'I';
   base: number;
 }
 
@@ -153,6 +201,9 @@ export interface DatosModelo115 {
 /** Modelo 349 — operaciones intracomunitarias. */
 export interface DatosModelo349 {
   periodo: PeriodoFiscal;
+  /** Una por operador y clave, con el importe neto del periodo (las rectificativas restan). */
   operaciones: OperacionIntracomunitaria[];
   totalBase: number;
+  /** Avisos (operadores con saldo negativo en el periodo...). */
+  advertencias?: string[];
 }

@@ -16,6 +16,14 @@ import { invoiceArchivingService } from './invoice-archiving.service';
 import { prisma } from '../config/database';
 import { asegurarPlanContableEmpresa } from './chart-of-accounts.service';
 
+/** Resultado de contabilizar una factura recien emitida (no rompe la emision si falla). */
+export interface ResultadoContabilizacion {
+  contabilizada: boolean;
+  journalEntryId?: string;
+  /** Por que no se ha contabilizado (sin plan, sin tipo de cambio...). */
+  motivo?: string;
+}
+
 export class AccountingHooksService {
   private controller = new AccountingEngineController();
 
@@ -44,8 +52,10 @@ export class AccountingHooksService {
       throw badRequest('Factura sin líneas. No se puede contabilizar.');
     }
 
-    if (!factura.baseTotal || factura.baseTotal <= 0) {
-      throw badRequest('Factura con base 0 o negativa. No se puede contabilizar.');
+    // Una rectificativa (base negativa) tambien se contabiliza: si no, la pareja
+    // factura + rectificativa no deja la 430, la 700 y la 477 a cero.
+    if (!factura.baseTotal) {
+      throw badRequest('Factura con base 0. No se puede contabilizar.');
     }
 
     if (!factura.fechaEmision) {
@@ -68,7 +78,9 @@ export class AccountingHooksService {
    * - Registra auditoría
    * - Fail-safe: no falla la confirmación si hay error en contabilización
    */
-  async onIncomeInvoiceConfirmed(companyId: string, invoiceId: string): Promise<void> {
+  async onIncomeInvoiceConfirmed(companyId: string, invoiceId: string): Promise<ResultadoContabilizacion> {
+    // Si el asiento ya se ha creado, un fallo despues (archivo, auditoria) no lo deshace.
+    let journalEntryId: string | undefined;
     try {
       // Obtener datos de la factura para archivado
       const factura = await prisma.incomeInvoice.findUnique({
@@ -88,6 +100,7 @@ export class AccountingHooksService {
         invoiceId,
         'AUTO'
       );
+      journalEntryId = resultado.journalEntryId;
 
       // 📁 Archivar factura automáticamente (no-crítico)
       await invoiceArchivingService.archivarFacturaIngreso(
@@ -118,6 +131,7 @@ export class AccountingHooksService {
           resultado.advertencias
         );
       }
+      return { contabilizada: true, journalEntryId: resultado.journalEntryId };
     } catch (err) {
       // FAIL-SAFE: No falla la confirmación si hay error en contabilización
       const errorMsg = err instanceof Error ? err.message : String(err);
@@ -143,8 +157,10 @@ export class AccountingHooksService {
         console.error('Error registrando auditoría del error:', auditErr);
       }
 
-      // NO relanzamos el error - la confirmación de factura es exitosa
-      // El usuario ve la factura confirmada, pero debe revisar si hay alerta de contabilización
+      // NO relanzamos el error - la confirmación de factura es exitosa. La
+      // respuesta de emitir lo dice (contabilizada: false) para que la ficha
+      // muestre "Emitida sin asiento".
+      return journalEntryId ? { contabilizada: true, journalEntryId } : { contabilizada: false, motivo: errorMsg };
     }
   }
 

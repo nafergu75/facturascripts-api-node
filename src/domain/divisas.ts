@@ -323,6 +323,51 @@ export function importesDoc(f: CabeceraConDoc): {
   };
 }
 
+/** Datos del tipo de cambio de una factura (para contabilizarla). */
+export interface TipoDeFactura extends CabeceraConDoc {
+  fuenteTipoCambio?: string | null;
+  fechaTipoCambio?: string | null;
+}
+
+/**
+ * Por que una factura NO se puede contabilizar todavia por su tipo de cambio
+ * (null si se puede). Una factura en otra moneda que la de cuenta necesita el
+ * tipo fijado (BCE, MANUAL o HEREDADO), mayor que cero, y sus importes en las
+ * dos monedas: si no, sus columnas de cuenta no son de fiar.
+ */
+export function motivoSinTipoFijado(f: TipoDeFactura, monedaCuenta: string): string | null {
+  const moneda = normalizarMoneda(f.moneda) || monedaCuenta;
+  if (moneda === monedaCuenta) return null;
+  const faltaDoc = [f.baseTotalDoc, f.ivaTotalDoc, f.retencionTotalDoc, f.totalFacturaDoc].some((v) => v === null || v === undefined);
+  const fijada = (FUENTES_FIJADAS as readonly string[]).includes(String(f.fuenteTipoCambio ?? ''));
+  if (!fijada || faltaDoc || !(Number(f.tipoCambio ?? 0) > 0)) return `Factura en ${moneda} sin tipo de cambio: no se contabiliza.`;
+  return null;
+}
+
+const ddmmaaaa = (f: string): string => `${f.slice(8, 10)}/${f.slice(5, 7)}/${f.slice(0, 4)}`;
+
+/**
+ * Nota de divisa para la descripcion del asiento de la factura:
+ * " (1.319,99 USD; 1 EUR = 1,1490 USD, BCE 21/09/2026)". Vacia si la factura
+ * va en la moneda de cuenta (el asiento de siempre no cambia).
+ */
+export function notaDivisa(f: TipoDeFactura, monedaCuenta: string): string {
+  const moneda = normalizarMoneda(f.moneda) || monedaCuenta;
+  if (moneda === monedaCuenta) return '';
+  const tc = Number(f.tipoCambio ?? 0);
+  if (!(tc > 0)) return '';
+  const total = f.totalFacturaDoc ?? f.totalFactura;
+  const fuente =
+    f.fuenteTipoCambio === 'BCE'
+      ? `BCE${f.fechaTipoCambio ? ` ${ddmmaaaa(f.fechaTipoCambio)}` : ''}`
+      : f.fuenteTipoCambio === 'MANUAL'
+        ? 'tipo indicado a mano'
+        : f.fuenteTipoCambio === 'HEREDADO'
+          ? 'tipo de la factura rectificada'
+          : String(f.fuenteTipoCambio ?? '');
+  return ` (${importeConMoneda(total, moneda)}; ${textoTipo(monedaCuenta, moneda, tc)}${fuente ? `, ${fuente}` : ''})`;
+}
+
 // ---------------------------------------------------------------------------
 // Cobro (o pago) de una factura en divisa
 // ---------------------------------------------------------------------------

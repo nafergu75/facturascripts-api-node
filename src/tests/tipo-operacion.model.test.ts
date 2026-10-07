@@ -143,8 +143,29 @@ describe('paises y NIF-IVA', () => {
   });
 });
 
+/**
+ * Copia LITERAL de impuestosCalculo.clasificarOperacion antes de que entendiera
+ * ISO-2 (la que dio las cifras ya calculadas de las facturas sin tipo).
+ */
+function clasificarOperacionDeSiempre(codpais?: string, cifnif?: string): 'interior' | 'intracomunitaria' | 'exportacion' {
+  const PAISES_UE = new Set([
+    'DEU', 'FRA', 'ITA', 'PRT', 'BEL', 'NLD', 'LUX', 'IRL', 'AUT', 'FIN', 'SWE', 'DNK', 'GRC',
+    'POL', 'CZE', 'SVK', 'SVN', 'HUN', 'ROU', 'BGR', 'HRV', 'EST', 'LVA', 'LTU', 'CYP', 'MLT',
+  ]);
+  const PREFIJOS_NIF_UE = new Set([
+    'DE', 'FR', 'IT', 'PT', 'BE', 'NL', 'LU', 'IE', 'AT', 'FI', 'SE', 'DK', 'EL', 'PL', 'CZ',
+    'SK', 'SI', 'HU', 'RO', 'BG', 'HR', 'EE', 'LV', 'LT', 'CY', 'MT', 'XI',
+  ]);
+  const pais = (codpais ?? '').trim().toUpperCase();
+  if (pais === 'ESP' || pais === 'ES') return 'interior';
+  if (pais) return PAISES_UE.has(pais) ? 'intracomunitaria' : 'exportacion';
+  const pref = (cifnif ?? '').trim().slice(0, 2).toUpperCase();
+  if (PREFIJOS_NIF_UE.has(pref)) return 'intracomunitaria';
+  return 'interior';
+}
+
 describe('facturas anteriores (tipoOperacion null): la clasificacion de siempre', () => {
-  it('coincide con clasificarOperacion para cualquier pais y NIF', () => {
+  it('coincide con la clasificarOperacion de siempre para cualquier pais y NIF', () => {
     const casos: Array<[string | undefined, string | undefined]> = [
       ['ES', 'B12345678'],
       ['ESP', 'B1'],
@@ -159,8 +180,27 @@ describe('facturas anteriores (tipoOperacion null): la clasificacion de siempre'
     ];
     const mapa = { interior: 'NACIONAL', intracomunitaria: 'INTRACOMUNITARIA', exportacion: 'EXPORTACION' } as const;
     for (const [pais, nif] of casos) {
-      expect(tipoOperacionLegacy(pais, nif)).toBe(mapa[clasificarOperacion(pais, nif)]);
+      expect(tipoOperacionLegacy(pais, nif)).toBe(mapa[clasificarOperacionDeSiempre(pais, nif)]);
     }
+  });
+
+  it('clasificarOperacion (compras) ya entiende ISO-2; con ISO-3 y por NIF da lo de siempre', () => {
+    expect(clasificarOperacion('FR', 'FR12345678901')).toBe('intracomunitaria');
+    expect(clasificarOperacion('EL', 'EL123456789')).toBe('intracomunitaria');
+    expect(clasificarOperacion('US', '1')).toBe('exportacion');
+    expect(clasificarOperacion('es', 'B1')).toBe('interior');
+    const casos: Array<[string | undefined, string | undefined]> = [
+      ['ES', 'B12345678'],
+      ['ESP', 'B1'],
+      ['FRA', 'FR1'],
+      ['USA', '1'],
+      ['', 'DE123'],
+      ['', 'B12345678'],
+      [undefined, 'EL123'],
+      [undefined, 'ESB12345678'],
+      [undefined, undefined],
+    ];
+    for (const [pais, nif] of casos) expect(clasificarOperacion(pais, nif)).toBe(clasificarOperacionDeSiempre(pais, nif));
   });
 
   it('operacionEfectiva: el tipo guardado manda; sin el, el de siempre', () => {

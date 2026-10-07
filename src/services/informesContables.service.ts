@@ -53,6 +53,17 @@ export async function datosEmpresa(companyId: string): Promise<{ nombre: string;
   return { nombre: legal?.denominacion || empresa?.name || '', nif: legal?.nif ?? '' };
 }
 
+/**
+ * Simbolo de la moneda de cuenta para los textos de los informes ('€' en las
+ * empresas espanolas; el codigo, p. ej. 'USD', en las demas). Los importes de
+ * los informes salen siempre de los asientos, en la moneda de cuenta.
+ */
+async function simboloCuenta(companyId: string): Promise<string> {
+  const cfg = await prisma.legalConfig.findUnique({ where: { companyId }, select: { monedaCuenta: true } }).catch(() => null);
+  const moneda = cfg?.monedaCuenta || 'EUR';
+  return moneda === 'EUR' ? '€' : moneda;
+}
+
 /** Asientos POSTED hasta una fecha (incluida), con sus lineas. */
 export async function cargarAsientos(companyId: string, hasta: string): Promise<AsientoInforme[]> {
   const [y, m, d] = hasta.split('-').map(Number);
@@ -214,7 +225,9 @@ export async function informeBalance(companyId: string, periodo: Periodo) {
   ];
 
   const notas: string[] = ['Modelo de balance del PGC de PYMES. No incluye los asientos de regularización ni de cierre.'];
-  if (balance.descuadre) notas.push(`Atención: el balance no cuadra (diferencia de ${num(balance.descuadre)} €). Revisa los asientos.`);
+  if (balance.descuadre) {
+    notas.push(`Atención: el balance no cuadra (diferencia de ${num(balance.descuadre)} ${await simboloCuenta(companyId)}). Revisa los asientos.`);
+  }
 
   const tabla: TablaInforme = {
     titulo: 'Balance de situación',
@@ -579,7 +592,7 @@ export async function informeDetalleTercero(companyId: string, tipo: TipoTercero
     const de = tipo === 'clientes' ? 'cobro' : 'pago';
     notas.push(
       facturasPendientes.length
-        ? `Según facturación, ${facturasPendientes.length} factura(s) pendiente(s) de ${de} por ${num(totalPendiente)} €: ${facturasPendientes.map((f) => f.numeroCompleto ?? '').filter(Boolean).join(', ')}.`
+        ? `Según facturación, ${facturasPendientes.length} factura(s) pendiente(s) de ${de} por ${num(totalPendiente)} ${await simboloCuenta(companyId)}: ${facturasPendientes.map((f) => f.numeroCompleto ?? '').filter(Boolean).join(', ')}.`
         : `Según facturación, no tiene facturas pendientes de ${de}.`,
     );
   }

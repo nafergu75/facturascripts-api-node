@@ -4,7 +4,7 @@ import { badRequest, notImplemented } from '../utils/http-errors';
 import { incomeInvoicesService, CrearFacturaIngresoDTO, ESTADOS_COBRO } from '../services/income-invoices.service';
 import { avisosFactura, generarPdfFactura } from '../services/facturaPdf.service';
 import { registrarAuditoria } from '../services/auditoria.service';
-import { accountingHooksService } from '../services/accounting-hooks.service';
+import { accountingHooksService, type ResultadoContabilizacion } from '../services/accounting-hooks.service';
 import { archivarVentaSinRomper } from '../services/archivoFacturas.service';
 import { contextoFiscalEmpresa, sugerirOperacion } from '../services/fiscalidad-venta.service';
 
@@ -19,16 +19,25 @@ function metaDivisa(f: { totalFactura: number; moneda: string; totalFacturaDoc: 
  * almacenamiento), la factura queda emitida y se puede contabilizar o archivar
  * a mano (Archivo > Completar historial).
  */
-async function contabilizar(companyId: string, invoiceId: string): Promise<void> {
+async function contabilizar(companyId: string, invoiceId: string): Promise<ResultadoContabilizacion> {
+  let r: ResultadoContabilizacion;
   try {
-    await accountingHooksService.onIncomeInvoiceConfirmed(companyId, invoiceId);
+    r = await accountingHooksService.onIncomeInvoiceConfirmed(companyId, invoiceId);
   } catch (err) {
-    console.error(
-      `Aviso: no se pudo contabilizar automáticamente la factura ${invoiceId}:`,
-      err instanceof Error ? err.message : String(err),
-    );
+    const motivo = err instanceof Error ? err.message : String(err);
+    console.error(`Aviso: no se pudo contabilizar automáticamente la factura ${invoiceId}:`, motivo);
+    r = { contabilizada: false, motivo };
   }
   await archivarVentaSinRomper(companyId, invoiceId);
+  return r;
+}
+
+/**
+ * La factura emitida con lo que ha pasado al contabilizarla: `contabilizada:
+ * false` y el motivo si no tiene asiento (la ficha muestra "Emitida sin asiento").
+ */
+function conContabilidad<T extends object>(factura: T, r: ResultadoContabilizacion) {
+  return { ...factura, contabilizada: r.contabilizada, ...(r.contabilizada ? {} : { motivoSinAsiento: r.motivo ?? null }) };
 }
 
 export const incomeInvoicesController = {
@@ -59,7 +68,10 @@ export const incomeInvoicesController = {
     });
 
     // Si se ha emitido directamente (no borrador), se contabiliza como al finalizar.
-    if (factura.estadoDocumento === 'FINAL') await contabilizar(req.companyId!, factura.id);
+    if (factura.estadoDocumento === 'FINAL') {
+      sendOk(res, { invoice: conContabilidad(factura, await contabilizar(req.companyId!, factura.id)) }, undefined, 201);
+      return;
+    }
 
     sendOk(res, { invoice: factura }, undefined, 201);
   }),
@@ -131,8 +143,7 @@ export const incomeInvoicesController = {
       resourceId: factura.id,
       meta: { numeroCompleto: factura.numeroCompleto, ...metaDivisa(factura), tipoOperacion: factura.tipoOperacion ?? null },
     });
-    await contabilizar(req.companyId!, factura.id);
-    sendOk(res, { invoice: factura });
+    sendOk(res, { invoice: conContabilidad(factura, await contabilizar(req.companyId!, factura.id)) });
   }),
 
   /** POST /:id/duplicar — copia la factura en un borrador nuevo. */
@@ -194,12 +205,17 @@ export const incomeInvoicesController = {
     }
 
     const b = req.body ?? {};
+    const vacio = (v: unknown) => v === undefined || v === null || v === '';
     const factura = await incomeInvoicesService.cambiarEstado(req.companyId!, req.params.id, nuevoEstado, {
       fecha: b.fecha,
       cuentaBancariaId: b.cuentaBancariaId,
       caja: b.caja === true || b.caja === 'true',
       nota: b.nota,
       userId: req.user?.userId,
+      // Cobro en divisa: tipo del dia, lo recibido en el banco y la comision.
+      tipoCambio: vacio(b.tipoCambio) ? undefined : b.tipoCambio,
+      importeRecibido: vacio(b.importeRecibido) ? undefined : Number(b.importeRecibido),
+      comisionBancaria: vacio(b.comisionBancaria) ? undefined : Number(b.comisionBancaria),
     });
 
     await registrarAuditoria({
@@ -232,7 +248,7 @@ export const incomeInvoicesController = {
       tipoCambio: b.tipoCambio,
       tipoOperacion: b.tipoOperacion,
     });
-    if (factura.estadoDocumento === 'FINAL') await contabilizar(req.companyId!, factura.id);
+    const contable = factura.estadoDocumento === 'FINAL' ? await contabilizar(req.companyId!, factura.id) : null;
 
     await registrarAuditoria({
       userId: req.user?.userId || 'unknown',
@@ -240,10 +256,10 @@ export const incomeInvoicesController = {
       action: 'CREAR_FACTURA_RECTIFICATIVA',
       resourceType: 'INCOME_INVOICE',
       resourceId: factura.id,
-      meta: { original: req.params.id, numeroCompleto: factura.numeroCompleto },
+      meta: { original: req.params.id, numeroCompleto: factura.numeroCompleto, ...metaDivisa(factura) },
     });
 
-    sendOk(res, { invoice: factura }, undefined, 201);
+    sendOk(res, { invoice: contable ? conContabilidad(factura, contable) : factura }, undefined, 201);
   }),
 
   /**

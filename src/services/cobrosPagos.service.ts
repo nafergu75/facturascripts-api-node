@@ -3,6 +3,18 @@ import { prisma, type TransaccionBD as Tx } from '../config/database';
 import { badRequest, notFound } from '../utils/http-errors';
 import { aCentimos } from '../utils/money';
 import { estadoPeriodoEnFecha } from './periodos.service';
+import {
+  calcularCobroDivisa,
+  comprobarTipoManual,
+  importeConMoneda,
+  textoTipo,
+  validarFormatoTipoCambio,
+  type ApunteCobro,
+} from '../domain/divisas';
+import { CONTABLE_RULES } from './accounting-engine.service';
+import { perfilEmpresa } from './perfilEmpresa.service';
+import { tipoReferencia } from './tiposCambio.service';
+import { asegurarPlanContableEmpresa } from './chart-of-accounts.service';
 
 /**
  * Cobros de facturas de venta y pagos de facturas de gasto, con su asiento.
@@ -20,24 +32,64 @@ import { estadoPeriodoEnFecha } from './periodos.service';
  * Se permiten cobros parciales, pero nunca por encima de lo pendiente. Anular
  * no borra nada: el cobro queda ANULADO y su asiento REVERSED; si el periodo del
  * cobro ya esta cerrado, se hace un contraasiento con la fecha de anulacion.
+ *
+ * DIVISAS (facturas de venta en otra moneda que la de cuenta): lo pendiente y
+ * el estado de cobro van en la moneda de la factura. La 430 se salda al tipo de
+ * la factura (en proporcion; el ultimo cobro salda el resto exacto), en el
+ * banco entra lo recibido al tipo del dia del cobro y la diferencia va a la
+ * 768 (ganancia) o a la 668 (perdida); la comision del banco, a la 626. Ver
+ * calcularCobroDivisa en domain/divisas.ts. `importe` de cada cobro es SIEMPRE
+ * lo aplicado a la 430/400 en moneda de cuenta, asi que lo cobrado segun las
+ * facturas sigue cuadrando con el mayor.
  */
 
 export type TipoDocumento = 'INGRESO' | 'GASTO';
 
 export interface DatosCobro {
   fecha?: string;
+  /**
+   * Importe cobrado/pagado. En una factura en la moneda de cuenta es lo de
+   * siempre; en una factura en divisa hay que usar `importeDoc`.
+   */
   importe?: number;
+  /** Lo que se cobra, en la moneda de la factura. Sin el (ni `importe`), todo lo pendiente. */
+  importeDoc?: number;
   cuentaBancariaId?: string;
   /** true: cobro/pago en efectivo (570 Caja). */
   caja?: boolean;
   nota?: string;
   userId?: string;
+  /** Solo en divisa: lo que ha llegado al banco, en la moneda de cuenta (ya sin la comision). */
+  importeRecibido?: number;
+  /**
+   * Solo en divisa: tipo del dia del cobro (unidades de la moneda de la factura
+   * por 1 de la de cuenta, "1 EUR = 1,0500 USD" -> 1.05). Sin el ni
+   * `importeRecibido`, el de referencia del BCE de la fecha del cobro.
+   */
+  tipoCambio?: number | string;
+  /** Solo en divisa: comision del banco en la moneda de cuenta (cuenta 626). */
+  comisionBancaria?: number;
 }
 
 export interface CobroResp {
   id: string;
   fecha: string;
+  /** En la moneda de cuenta: lo aplicado a la cuenta del cliente/proveedor (430/400), al tipo de la factura. */
   importe: number;
+  /** Moneda de la factura. */
+  moneda: string;
+  /** En la moneda de la factura (lo que reduce lo pendiente). */
+  importeDoc: number;
+  /** En la moneda de cuenta: lo que entro (o salio) del banco o la caja. */
+  importeTesoreria: number;
+  /** Unidades de la moneda de la factura por 1 de la de cuenta, al cobrar (1 si es la misma). */
+  tipoCambio: number;
+  /** PAR | BCE | MANUAL | BANCO */
+  fuenteTipoCambio: string;
+  /** En la moneda de cuenta: > 0 ganancia (768), < 0 perdida (668) en los cobros. */
+  diferenciaCambio: number;
+  /** En la moneda de cuenta (626). */
+  comisionBancaria: number;
   cuentaTesoreria: string;
   cuentaBancariaId: string | null;
   medio: 'BANCO' | 'CAJA';
@@ -53,10 +105,18 @@ export interface ResumenCobros {
   invoiceId: string;
   tipo: TipoDocumento;
   numeroFactura: string | null;
+  /** Moneda de la factura y de la contabilidad. */
+  moneda: string;
+  monedaCuenta: string;
+  /** Total, cobrado y pendiente en la MONEDA DE LA FACTURA. */
   totalFactura: number;
   /** Suma de cobros/pagos activos. */
   importeCobrado: number;
   importePendiente: number;
+  /** Lo mismo en la moneda de cuenta (cuadra con el saldo de la 430/400). */
+  totalFacturaCuenta: number;
+  importeCobradoCuenta: number;
+  importePendienteCuenta: number;
   /** INGRESO: PENDING | OVERDUE | PAID. GASTO: PENDIENTE | PARCIAL | PAGADA. */
   estado: string;
   cobros: CobroResp[];
@@ -66,6 +126,7 @@ const CUENTA_CAJA = '570';
 const FECHA_RE = /^\d{4}-\d{2}-\d{2}$/;
 const round2 = (n: number): number => Math.round((n + Number.EPSILON) * 100) / 100;
 const hoyISO = (): string => new Date().toISOString().slice(0, 10);
+const hay = (v: unknown): boolean => v !== undefined && v !== null && v !== '';
 
 const TXT = {
   INGRESO: { cobro: 'cobro', Cobro: 'Cobro', prefijo: 'COBRO', cobrado: 'cobrada' },
@@ -78,7 +139,12 @@ interface FacturaBase {
   numeroCompleto: string | null;
   fechaEmision: string;
   fechaVencimiento: string;
+  /** En la moneda de cuenta. */
   totalFactura: number;
+  /** En la moneda de la factura (igual que totalFactura si es la misma). */
+  totalDoc: number;
+  /** Moneda de la factura; null = la de cuenta (las de gasto no tienen moneda propia). */
+  moneda: string | null;
   estado: string;
   tercero: string;
 }
@@ -89,11 +155,13 @@ async function cargarFactura(db: Tx | typeof prisma, companyId: string, tipo: Ti
     if (!f) throw notFound('Factura no encontrada.');
     if (f.estadoDocumento === 'PROFORMA') throw badRequest('Una proforma no admite cobros: pásala a factura y emítela antes.');
     if (f.estadoDocumento !== 'FINAL') throw badRequest('La factura está en borrador: emítela antes de registrar cobros.');
-    return { ...f, tercero: f.customer.nombreFiscal };
+    // Lo pendiente se lleva en la moneda de la factura (null = igual que la de cuenta).
+    return { ...f, totalDoc: f.totalFacturaDoc ?? f.totalFactura, moneda: f.moneda, tercero: f.customer.nombreFiscal };
   }
   const f = await db.expenseInvoice.findFirst({ where: { id, companyId }, include: { supplier: { select: { nombreFiscal: true } } } });
   if (!f) throw notFound('Factura de gasto no encontrada.');
-  return { ...f, tercero: f.supplier.nombreFiscal };
+  // Gastos en divisa: fuera de alcance. Van en la moneda de cuenta.
+  return { ...f, totalDoc: f.totalFactura, moneda: null, tercero: f.supplier.nombreFiscal };
 }
 
 /**
@@ -124,18 +192,31 @@ export function estadoTrasCobros(
   return aCentimos(cobrado) > 0 ? 'PARCIAL' : 'PENDIENTE';
 }
 
-async function sumaActivos(db: Tx | typeof prisma, companyId: string, tipo: TipoDocumento, invoiceId: string): Promise<number> {
-  const r = await db.invoicePayment.aggregate({
+/**
+ * Lo cobrado (cobros activos) en la moneda de la factura (`doc`) y en la de
+ * cuenta (`cuenta`, lo aplicado a la 430/400). Los cobros anteriores a las
+ * divisas no tienen importeDoc: es su `importe`.
+ */
+async function sumaActivos(
+  db: Tx | typeof prisma,
+  companyId: string,
+  tipo: TipoDocumento,
+  invoiceId: string,
+): Promise<{ doc: number; cuenta: number }> {
+  const filas = await db.invoicePayment.findMany({
     where: { companyId, invoiceType: tipo, invoiceId, estado: 'ACTIVO' },
-    _sum: { importe: true },
+    select: { importe: true, importeDoc: true },
   });
-  return round2(Number(r._sum.importe ?? 0));
+  return {
+    doc: round2(filas.reduce((s, p) => s + Number(p.importeDoc ?? p.importe), 0)),
+    cuenta: round2(filas.reduce((s, p) => s + Number(p.importe), 0)),
+  };
 }
 
-/** Guarda el estado de cobro/pago de la factura segun sus cobros activos. */
+/** Guarda el estado de cobro/pago de la factura segun sus cobros activos (en la moneda de la factura). */
 async function actualizarEstadoFactura(tx: Tx, f: FacturaBase, tipo: TipoDocumento): Promise<string> {
   const cobrado = await sumaActivos(tx, f.companyId, tipo, f.id);
-  const estado = estadoTrasCobros(tipo, f, cobrado);
+  const estado = estadoTrasCobros(tipo, { totalFactura: f.totalDoc, fechaVencimiento: f.fechaVencimiento }, cobrado.doc);
   if (tipo === 'INGRESO') await tx.incomeInvoice.update({ where: { id: f.id }, data: { estado } });
   else await tx.expenseInvoice.update({ where: { id: f.id }, data: { estadoPago: estado } });
   return estado;
@@ -182,18 +263,22 @@ export async function comprobarFechaAbierta(companyId: string, fecha: string): P
   if (cierre) throw badRequest(`El ejercicio ${ejercicio} está cerrado: no se pueden añadir asientos con esa fecha.`);
 }
 
-/** Cuenta de tesoreria: la de la cuenta bancaria indicada, caja, o la primera cuenta bancaria activa. */
+/**
+ * Cuenta de tesoreria: la de la cuenta bancaria indicada, caja, o la primera
+ * cuenta bancaria activa. `moneda` es la de la cuenta bancaria (null en caja:
+ * la de cuenta).
+ */
 async function resolverTesoreria(
   companyId: string,
   datos: DatosCobro,
   tipo: TipoDocumento,
-): Promise<{ cuenta: string; bankAccountId: string | null; nombre: string }> {
-  if (datos.caja) return { cuenta: CUENTA_CAJA, bankAccountId: null, nombre: 'Caja' };
+): Promise<{ cuenta: string; bankAccountId: string | null; nombre: string; moneda: string | null }> {
+  if (datos.caja) return { cuenta: CUENTA_CAJA, bankAccountId: null, nombre: 'Caja', moneda: null };
   if (datos.cuentaBancariaId) {
     const c = await prisma.bankAccount.findFirst({ where: { id: datos.cuentaBancariaId, companyId } });
     if (!c) throw badRequest('La cuenta bancaria no existe en esta empresa.');
     if (!c.activa) throw badRequest('La cuenta bancaria está desactivada.');
-    return { cuenta: c.subcuentaCodigo, bankAccountId: c.id, nombre: c.bancoNombre || c.iban };
+    return { cuenta: c.subcuentaCodigo, bankAccountId: c.id, nombre: c.bancoNombre || c.iban, moneda: c.moneda };
   }
   const c = await prisma.bankAccount.findFirst({ where: { companyId, activa: true }, orderBy: { createdAt: 'asc' } });
   if (!c) {
@@ -201,7 +286,7 @@ async function resolverTesoreria(
       `No hay ninguna cuenta bancaria activa para apuntar el ${TXT[tipo].cobro}. Créala en Tesorería > Cuentas bancarias (con su subcuenta 572), o indica que es en efectivo (caja).`,
     );
   }
-  return { cuenta: c.subcuentaCodigo, bankAccountId: c.id, nombre: c.bancoNombre || c.iban };
+  return { cuenta: c.subcuentaCodigo, bankAccountId: c.id, nombre: c.bancoNombre || c.iban, moneda: c.moneda };
 }
 
 function validarFecha(fecha: string | undefined): string {
@@ -281,6 +366,25 @@ async function bloquearFactura(tx: Tx, tipo: TipoDocumento, id: string): Promise
   else await tx.$queryRaw`SELECT id FROM ExpenseInvoice WHERE id = ${id} FOR UPDATE`;
 }
 
+/**
+ * Apuntes del asiento de un cobro/pago a partir del calculo (puro): tesoreria,
+ * tercero, comision (626) y diferencias de cambio (768/668), con las cuentas
+ * de CONTABLE_RULES.
+ */
+export function apuntesDeCobro(
+  apuntes: ApunteCobro[],
+  cuentas: { tesoreria: { cuenta: string; nombre: string }; tercero: { cuenta: string; nombre: string } },
+): Apunte[] {
+  const de: Record<ApunteCobro['cuenta'], { cuenta: string; nombre: string }> = {
+    TESORERIA: cuentas.tesoreria,
+    TERCERO: cuentas.tercero,
+    COMISION: { cuenta: CONTABLE_RULES.COMISION_BANCARIA.cuenta, nombre: 'Servicios bancarios y similares' },
+    DIF_POSITIVA: { cuenta: CONTABLE_RULES.DIFERENCIAS_CAMBIO.positiva, nombre: 'Diferencias positivas de cambio' },
+    DIF_NEGATIVA: { cuenta: CONTABLE_RULES.DIFERENCIAS_CAMBIO.negativa, nombre: 'Diferencias negativas de cambio' },
+  };
+  return apuntes.map((a) => ({ ...de[a.cuenta], debe: a.debe, haber: a.haber }));
+}
+
 type FilaPago = Awaited<ReturnType<typeof prisma.invoicePayment.findMany>>[number];
 
 function aCobroResp(p: FilaPago, numeros: Map<string, string>): CobroResp {
@@ -288,6 +392,14 @@ function aCobroResp(p: FilaPago, numeros: Map<string, string>): CobroResp {
     id: p.id,
     fecha: p.fecha,
     importe: p.importe,
+    moneda: p.moneda,
+    // Cobros anteriores a las divisas: sin importeDoc ni importeTesoreria (= importe).
+    importeDoc: p.importeDoc ?? p.importe,
+    importeTesoreria: p.importeTesoreria ?? p.importe,
+    tipoCambio: p.tipoCambio,
+    fuenteTipoCambio: p.fuenteTipoCambio,
+    diferenciaCambio: p.diferenciaCambio,
+    comisionBancaria: p.comisionBancaria,
     cuentaTesoreria: p.cuentaTesoreria,
     cuentaBancariaId: p.bankAccountId,
     medio: p.bankAccountId ? 'BANCO' : 'CAJA',
@@ -300,9 +412,10 @@ function aCobroResp(p: FilaPago, numeros: Map<string, string>): CobroResp {
   };
 }
 
-/** Cobros (o pagos) de una factura, con lo cobrado y lo pendiente. */
+/** Cobros (o pagos) de una factura, con lo cobrado y lo pendiente (en la moneda de la factura y en la de cuenta). */
 export async function listarCobros(companyId: string, tipo: TipoDocumento, invoiceId: string): Promise<ResumenCobros> {
   const f = await cargarFactura(prisma, companyId, tipo, invoiceId);
+  const { monedaCuenta } = await perfilEmpresa(companyId);
   const filas = await prisma.invoicePayment.findMany({
     where: { companyId, invoiceType: tipo, invoiceId },
     orderBy: [{ fecha: 'asc' }, { createdAt: 'asc' }],
@@ -312,23 +425,58 @@ export async function listarCobros(companyId: string, tipo: TipoDocumento, invoi
     ? await prisma.journalEntry.findMany({ where: { id: { in: ids } }, select: { id: true, numeroAsiento: true } })
     : [];
   const numeros = new Map(asientos.map((a) => [a.id, a.numeroAsiento]));
-  const cobrado = round2(filas.filter((p) => p.estado === 'ACTIVO').reduce((s, p) => s + p.importe, 0));
+  const activos = filas.filter((p) => p.estado === 'ACTIVO');
+  const cobrado = round2(activos.reduce((s, p) => s + (p.importeDoc ?? p.importe), 0));
+  const cobradoCuenta = round2(activos.reduce((s, p) => s + p.importe, 0));
+  const enDoc = { totalFactura: f.totalDoc, fechaVencimiento: f.fechaVencimiento };
   const estado =
     tipo === 'INGRESO'
       ? cobradaSinCobros(tipo, f.estado, cobrado)
         ? 'PAID'
-        : estadoTrasCobros(tipo, f, cobrado)
-      : estadoTrasCobros(tipo, f, cobrado);
+        : estadoTrasCobros(tipo, enDoc, cobrado)
+      : estadoTrasCobros(tipo, enDoc, cobrado);
   return {
     invoiceId: f.id,
     tipo,
     numeroFactura: f.numeroCompleto,
-    totalFactura: f.totalFactura,
+    moneda: f.moneda ?? monedaCuenta,
+    monedaCuenta,
+    totalFactura: f.totalDoc,
     importeCobrado: cobrado,
-    importePendiente: calcularPendiente(tipo, f.totalFactura, f.estado, cobrado),
+    importePendiente: calcularPendiente(tipo, f.totalDoc, f.estado, cobrado),
+    totalFacturaCuenta: f.totalFactura,
+    importeCobradoCuenta: cobradoCuenta,
+    importePendienteCuenta: calcularPendiente(tipo, f.totalFactura, f.estado, cobradoCuenta),
     estado,
     cobros: filas.map((p) => aCobroResp(p, numeros)),
   };
+}
+
+/**
+ * Tipo del dia para un cobro en divisa (fuera de cualquier transaccion): el
+ * indicado a mano (comprobado contra el del BCE si se conoce: invertido o muy
+ * lejos -> 400) o, si no, el de referencia del BCE de la fecha del cobro. Sin
+ * BCE y sin tipo, 400: se pide el tipo o lo recibido en el banco.
+ */
+async function tipoDelCobro(
+  monedaCuenta: string,
+  moneda: string,
+  fecha: string,
+  manual: unknown,
+): Promise<{ tipoCambio: number; fuente: 'BCE' | 'MANUAL' }> {
+  if (hay(manual)) {
+    const tipoCambio = validarFormatoTipoCambio(manual);
+    const ref = await tipoReferencia(monedaCuenta, moneda, fecha, { permitirVieja: true }).catch(() => null);
+    comprobarTipoManual(tipoCambio, ref?.tipoCambio ?? null, monedaCuenta, moneda);
+    return { tipoCambio, fuente: 'MANUAL' };
+  }
+  const ref = await tipoReferencia(monedaCuenta, moneda, fecha, { permitirVieja: false }).catch(() => null);
+  if (!ref) {
+    throw badRequest(
+      `No se ha podido obtener el tipo del BCE para ${moneda} a ${fecha.slice(8, 10)}/${fecha.slice(5, 7)}/${fecha.slice(0, 4)}: indica el tipo de cambio del día o lo recibido en el banco.`,
+    );
+  }
+  return { tipoCambio: ref.tipoCambio, fuente: 'BCE' };
 }
 
 /**
@@ -348,40 +496,79 @@ export async function registrarCobroFactura(
   }
   const fecha = validarFecha(datos.fecha);
   if (fecha < f.fechaEmision) throw badRequest(`La fecha del ${t.cobro} no puede ser anterior a la de la factura (${f.fechaEmision}).`);
-  if (datos.importe !== undefined && datos.importe !== null && !Number.isFinite(Number(datos.importe))) {
-    throw badRequest('El importe no es un número.');
+  for (const [campo, valor] of [
+    ['importe', datos.importe],
+    ['importe', datos.importeDoc],
+    ['importe recibido', datos.importeRecibido],
+    ['comisión', datos.comisionBancaria],
+  ] as const) {
+    if (hay(valor) && !Number.isFinite(Number(valor))) throw badRequest(`El ${campo} no es un número.`);
   }
+
+  const { monedaCuenta } = await perfilEmpresa(companyId);
+  const moneda = f.moneda ?? monedaCuenta;
+  const enDivisa = moneda !== monedaCuenta;
+  if (!enDivisa && (hay(datos.tipoCambio) || hay(datos.importeRecibido) || hay(datos.comisionBancaria))) {
+    throw badRequest('El tipo de cambio, lo recibido en el banco y la comisión solo se indican en cobros de facturas en otra moneda.');
+  }
+  // En divisa, el importe tiene que decir en que moneda va: importeDoc (moneda de la factura).
+  if (enDivisa && hay(datos.importe) && !hay(datos.importeDoc)) {
+    throw badRequest(`La factura está en ${moneda}: indica el importe cobrado en ${moneda} (importeDoc).`);
+  }
+  const solicitado = hay(datos.importeDoc) ? Number(datos.importeDoc) : hay(datos.importe) ? Number(datos.importe) : undefined;
+
   await comprobarFechaAbierta(companyId, fecha);
   const tesoreria = await resolverTesoreria(companyId, datos, tipo);
   const cuentaTercero = await cuentaTerceroDeFactura(companyId, tipo, invoiceId);
   const nota = datos.nota?.trim() ? datos.nota.trim().slice(0, 1000) : null;
   const numero = f.numeroCompleto ?? f.id;
 
+  // El tipo del dia se resuelve ANTES de la transaccion (puede consultar al BCE).
+  const delDia = enDivisa && !hay(datos.importeRecibido) ? await tipoDelCobro(monedaCuenta, moneda, fecha, datos.tipoCambio) : null;
+  // 768, 668 y 626 en el plan de las empresas que ya existian.
+  if (enDivisa) await asegurarPlanContableEmpresa(companyId);
+
   const id = await conReintento(() =>
     prisma.$transaction(async (tx) => {
       await bloquearFactura(tx, tipo, invoiceId);
       const actual = await cargarFactura(tx, companyId, tipo, invoiceId);
       const cobrado = await sumaActivos(tx, companyId, tipo, invoiceId);
-      const pendiente = calcularPendiente(tipo, actual.totalFactura, actual.estado, cobrado);
+      const pendiente = calcularPendiente(tipo, actual.totalDoc, actual.estado, cobrado.doc);
       if (aCentimos(pendiente) <= 0) throw badRequest(`La factura ${numero} ya está ${t.cobrado}: no queda nada pendiente.`);
-      const importe = datos.importe === undefined || datos.importe === null ? pendiente : round2(Number(datos.importe));
-      if (aCentimos(importe) <= 0) throw badRequest('El importe tiene que ser mayor que cero.');
-      if (aCentimos(importe) > aCentimos(pendiente)) {
-        throw badRequest(`El importe (${importe.toFixed(2)} €) supera lo pendiente de la factura (${pendiente.toFixed(2)} €).`);
+      const importeDoc = solicitado === undefined ? pendiente : round2(solicitado);
+      if (aCentimos(importeDoc) <= 0) throw badRequest('El importe tiene que ser mayor que cero.');
+      if (aCentimos(importeDoc) > aCentimos(pendiente)) {
+        const simbolo = moneda === 'EUR' ? '€' : moneda;
+        throw badRequest(
+          `El importe (${importeDoc.toFixed(2)} ${simbolo}) supera lo pendiente de la factura (${pendiente.toFixed(2)} ${simbolo}).`,
+        );
       }
 
-      const descripcion = `${t.Cobro} factura ${numero} - ${actual.tercero}${nota ? ` (${nota})` : ''}`;
+      const calculo = calcularCobroDivisa({
+        tipo,
+        moneda,
+        monedaCuenta,
+        monedaTesoreria: tesoreria.moneda ?? monedaCuenta,
+        totalCuenta: actual.totalFactura,
+        totalDoc: actual.totalDoc,
+        cobradoCuenta: cobrado.cuenta,
+        cobradoDoc: cobrado.doc,
+        importeDoc,
+        importeRecibido: hay(datos.importeRecibido) ? Number(datos.importeRecibido) : null,
+        tipoCambio: delDia?.tipoCambio ?? null,
+        fuenteTipoCambio: delDia?.fuente ?? null,
+        comisionBancaria: hay(datos.comisionBancaria) ? Number(datos.comisionBancaria) : null,
+      });
+
+      const divisa = enDivisa
+        ? ` [${importeConMoneda(calculo.importeDoc, moneda)}; ${textoTipo(monedaCuenta, moneda, calculo.tipoCambio)}]`
+        : '';
+      const descripcion = `${t.Cobro} factura ${numero} - ${actual.tercero}${divisa}${nota ? ` (${nota})` : ''}`;
       const nombreTercero = tipo === 'INGRESO' ? `Clientes · ${actual.tercero}` : `Proveedores · ${actual.tercero}`;
-      const apuntes: Apunte[] =
-        tipo === 'INGRESO'
-          ? [
-              { cuenta: tesoreria.cuenta, nombre: tesoreria.nombre, debe: importe, haber: 0 },
-              { cuenta: cuentaTercero, nombre: nombreTercero, debe: 0, haber: importe },
-            ]
-          : [
-              { cuenta: cuentaTercero, nombre: nombreTercero, debe: importe, haber: 0 },
-              { cuenta: tesoreria.cuenta, nombre: tesoreria.nombre, debe: 0, haber: importe },
-            ];
+      const apuntes = apuntesDeCobro(calculo.apuntes, {
+        tesoreria: { cuenta: tesoreria.cuenta, nombre: tesoreria.nombre },
+        tercero: { cuenta: cuentaTercero, nombre: nombreTercero },
+      });
       const asiento = await crearAsiento(tx, companyId, {
         prefijo: t.prefijo,
         fecha,
@@ -397,7 +584,14 @@ export async function registrarCobroFactura(
           invoiceType: tipo,
           invoiceId,
           fecha,
-          importe,
+          importe: calculo.importe,
+          moneda,
+          importeDoc: calculo.importeDoc,
+          importeTesoreria: calculo.importeTesoreria,
+          tipoCambio: calculo.tipoCambio,
+          fuenteTipoCambio: calculo.fuenteTipoCambio,
+          diferenciaCambio: calculo.diferenciaCambio,
+          comisionBancaria: calculo.comisionBancaria,
           cuentaTesoreria: tesoreria.cuenta,
           bankAccountId: tesoreria.bankAccountId,
           nota,
@@ -418,7 +612,9 @@ export async function registrarCobroFactura(
 /**
  * Anula un cobro/pago. Si su fecha esta en un periodo abierto, el asiento pasa
  * a REVERSED (deja de contar). Si no, se crea un contraasiento con la fecha de
- * anulacion (por defecto hoy), que tiene que caer en un periodo abierto.
+ * anulacion (por defecto hoy), que tiene que caer en un periodo abierto. En
+ * divisa se invierten todas sus lineas (tambien la 626, la 668 y la 768) y el
+ * estado se recalcula en la moneda de la factura.
  */
 export async function anularCobroFactura(
   companyId: string,
@@ -477,7 +673,10 @@ export async function anularCobroFactura(
   return { resumen: await listarCobros(companyId, tipo, invoiceId), contraasiento: !periodoAbierto };
 }
 
-/** Cobrado/pagado (cobros activos con fecha <= hasta) por factura, para cruces. */
+/**
+ * Cobrado/pagado (cobros activos con fecha <= hasta) por factura, para cruces.
+ * En la moneda de cuenta: lo aplicado a la 430/400 (cuadra con el mayor).
+ */
 export async function cobradoPorFactura(companyId: string, tipo: TipoDocumento, hasta?: string): Promise<Map<string, number>> {
   const filas = await prisma.invoicePayment.groupBy({
     by: ['invoiceId'],
