@@ -91,16 +91,20 @@ router.post('/:id/reject', authorize('ventas:write'), incomeReaderController.rec
  * POST /api/companies/:companyId/income-reader/:id/reintent-ocr
  * Solo permitido si status = 'ERROR'
  */
-router.post('/:id/reintent-ocr', authorize('ventas:write'), authMiddleware, async (req, res) => {
+router.post('/:id/reintent-ocr', authorize('ventas:write'), authMiddleware, async (req, res, next) => {
   try {
     const companyId = req.companyId as string;
     const { id } = req.params;
     const documento = await incomeReaderService.reintentarOCR(companyId, id);
     res.json({ ok: true, data: documento });
   } catch (err) {
-    const statusCode = err instanceof HttpError ? err.statusCode : 400;
-    const message = err instanceof Error ? err.message : String(err);
-    res.status(statusCode).json({ error: message });
+    if (err instanceof HttpError) {
+      res.status(err.statusCode).json({ error: err.message });
+      return;
+    }
+    // Cualquier otro error (Prisma, OCR...) lo convierte errorMiddleware en un
+    // 500 generico: su mensaje no llega al cliente.
+    next(err);
   }
 });
 

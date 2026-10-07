@@ -26,6 +26,7 @@ import OCRPersistenceService from '../services/ocr-persistence.service';
 import ILovePDFService from '../services/ilovepdf.service';
 import ILovePDFConfig from '../config/ilovepdf.config';
 import * as pdfTextExtractor from '../utils/pdfTextExtractor';
+import { incomeReaderService } from '../services/income-reader.service';
 
 function hostDeLaBd(): string {
   try {
@@ -100,6 +101,7 @@ describeBd('OCR por empresa (app entera, BD real)', () => {
 
   afterAll(async () => {
     const empresas = [EMPRESA_A, EMPRESA_B];
+    await prisma.incomeReaderDocument.deleteMany({ where: { companyId: { in: empresas } } });
     await prisma.oCRDocument.deleteMany({ where: { companyId: { in: empresas } } });
     await prisma.oCRSession.deleteMany({ where: { companyId: { in: empresas } } });
     await prisma.user.deleteMany({ where: { email: { endsWith: `-${SUFIJO}@test.local` } } }); // accesos en cascada
@@ -258,6 +260,34 @@ describeBd('OCR por empresa (app entera, BD real)', () => {
   it('limpieza de temporales: es de toda la plataforma, no la lanza el administrador de una empresa', async () => {
     const res = await como('adminA').post(`/companies/${EMPRESA_A}/ocr/cleanup`, { daysOld: 36500 });
     expect(res.status).toBe(403);
+  });
+
+  it('reintento OCR del lector de ingresos: sin el error interno del fichero ni rutas', async () => {
+    const doc = await prisma.incomeReaderDocument.create({
+      data: {
+        companyId: EMPRESA_A,
+        sourceType: 'WEB_UPLOAD',
+        originalFileName: 'f.pdf',
+        mimeType: 'application/pdf',
+        fileSize: 10,
+        storagePath: `no-existe-${SUFIJO}.pdf`,
+        status: 'ERROR',
+      },
+    });
+    const ruta = `/companies/${EMPRESA_A}/income-reader/${doc.id}/reintent-ocr`;
+
+    const sinFichero = await como('adminA').post(ruta);
+    expect(sinFichero.status).toBe(400);
+    expect(sinFichero.body.error).toBe('No se pudo leer el archivo almacenado.');
+    expect(JSON.stringify(sinFichero.body)).not.toMatch(/ENOENT|no-existe|uploads|[A-Z]:\\/i);
+
+    // Un error que no es HttpError (Prisma, OCR...) da un 500 generico, no un 400 con su mensaje.
+    jest
+      .spyOn(incomeReaderService, 'reintentarOCR')
+      .mockRejectedValueOnce(new Error('Invalid `prisma.incomeReaderDocument.update()` invocation in C:\\ruta\\interna.ts'));
+    const interno = await como('adminA').post(ruta);
+    expect(interno.status).toBe(500);
+    expect(JSON.stringify(interno.body)).not.toMatch(/prisma|ruta|interna/i);
   });
 
   it('lector de gastos: confirmar responde 501 y no crea nada', async () => {

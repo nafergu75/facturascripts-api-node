@@ -34,6 +34,7 @@ import { badRequest, notFound } from '../utils/http-errors';
 import { randomUUID as uuid } from 'crypto';
 import Anthropic from '@anthropic-ai/sdk';
 import { prisma } from '../config/database';
+import { logger } from '../config/logger';
 import { config } from '../config/env';
 import { putObject, getObject } from '../utils/storage';
 import { archivarVentaSinRomper } from './archivoFacturas.service';
@@ -888,7 +889,9 @@ export const incomeReaderService = {
     try {
       buffer = await leerArchivoAlmacenado(documento.storagePath);
     } catch (err) {
-      throw badRequest(`No se pudo leer el archivo almacenado: ${String(err)}`);
+      // El error del almacenamiento lleva rutas o URLs del servidor: solo al log.
+      logger.error(`[income-reader] No se pudo leer ${documento.storagePath} (documento ${documentId}): ${String(err)}`);
+      throw badRequest('No se pudo leer el archivo almacenado.');
     }
 
     // Procesar OCR (usa la misma lógica que background)
