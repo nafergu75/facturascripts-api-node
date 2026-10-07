@@ -134,6 +134,25 @@ export const importesComoNumero = Prisma.defineExtension({
       totalIRPF: { needs: { totalIRPF: true }, compute: (r) => aNumero(r.totalIRPF) },
       totalLiquido: { needs: { totalLiquido: true }, compute: (r) => aNumero(r.totalLiquido) },
     },
+    nomina: {
+      brutoDinerario: { needs: { brutoDinerario: true }, compute: (r) => aNumero(r.brutoDinerario) },
+      dietasExentas: { needs: { dietasExentas: true }, compute: (r) => aNumero(r.dietasExentas) },
+      especieValoracion: { needs: { especieValoracion: true }, compute: (r) => aNumero(r.especieValoracion) },
+      ingresoACuenta: { needs: { ingresoACuenta: true }, compute: (r) => aNumero(r.ingresoACuenta) },
+      indemnizacionExenta: { needs: { indemnizacionExenta: true }, compute: (r) => aNumero(r.indemnizacionExenta) },
+      indemnizacionSujeta: { needs: { indemnizacionSujeta: true }, compute: (r) => aNumero(r.indemnizacionSujeta) },
+      ssTrabajador: { needs: { ssTrabajador: true }, compute: (r) => aNumero(r.ssTrabajador) },
+      irpf: { needs: { irpf: true }, compute: (r) => aNumero(r.irpf) },
+      porcentajeIrpf: { needs: { porcentajeIrpf: true }, compute: (r) => aNumero(r.porcentajeIrpf) },
+      anticipos: { needs: { anticipos: true }, compute: (r) => aNumero(r.anticipos) },
+      embargos: { needs: { embargos: true }, compute: (r) => aNumero(r.embargos) },
+      otrasDeducciones: { needs: { otrasDeducciones: true }, compute: (r) => aNumero(r.otrasDeducciones) },
+      liquido: { needs: { liquido: true }, compute: (r) => aNumero(r.liquido) },
+      ssEmpresa: { needs: { ssEmpresa: true }, compute: (r) => aNumero(r.ssEmpresa) },
+    },
+    empleado: {
+      porcentajeIrpfActual: { needs: { porcentajeIrpfActual: true }, compute: (r) => aNumero(r.porcentajeIrpfActual) },
+    },
   },
   query: {
     $allModels: {
@@ -143,3 +162,13 @@ export const importesComoNumero = Prisma.defineExtension({
     },
   },
 });
+
+/**
+ * Importes de las nominas (Nomina y Empleado): tambien se leen como number en
+ * agregados y relaciones anidadas. Se anaden aqui, aparte de la lista general.
+ */
+export const CAMPOS_DECIMALES_NOMINAS = [
+  'brutoDinerario', 'dietasExentas', 'especieValoracion', 'ingresoACuenta', 'indemnizacionExenta', 'indemnizacionSujeta',
+  'ssTrabajador', 'irpf', 'porcentajeIrpf', 'anticipos', 'embargos', 'otrasDeducciones', 'liquido', 'ssEmpresa', 'porcentajeIrpfActual',
+] as const;
+for (const campo of CAMPOS_DECIMALES_NOMINAS) (CAMPOS_DECIMALES as Set<string>).add(campo);

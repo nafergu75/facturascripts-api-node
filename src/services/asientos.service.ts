@@ -1,5 +1,6 @@
 import { getFsClientForCompany, FsClient } from './facturascripts-client';
-import { prisma } from '../config/database';
+import { prisma, type TransaccionBD } from '../config/database';
+import { aCentimos } from '../utils/money';
 import { ReglasContablesEmpresa } from '../domain/reglas-contables.model';
 import { obtenerReglas } from './reglasContables.service';
 import { FacturaContable, LineaFacturaContable } from '../domain/factura.model';
@@ -8,7 +9,7 @@ import {
   generarAsientoVentaDesdeFactura,
   generarAsientoCompraDesdeFactura,
 } from './contabilidadReglas.service';
-import { notFound } from '../utils/http-errors';
+import { badRequest, notFound } from '../utils/http-errors';
 import { crearVencimientos, generarVencimientosDesdeFactura } from './vencimientos.service';
 
 const round2 = (n: number): number => Math.round((n + Number.EPSILON) * 100) / 100;
@@ -315,7 +316,45 @@ const PREFIJO_ORIGEN: Record<string, string> = {
   REGULARIZACION: 'REGUL',
   APERTURA: 'APERT',
   AJUSTE_MANUAL: 'AJUSTE',
+  NOMINA: 'NOM',
+  NOMINA_PAGO: 'NOM-PAG',
+  SEG_SOCIAL: 'SS',
 };
+
+/** Origenes en los que se exige que debe = haber al centimo (de momento, nominas). */
+const ORIGENES_CON_CUADRE = new Set(['NOMINA', 'NOMINA_PAGO', 'SEG_SOCIAL']);
+
+/**
+ * Siguiente numero de un prefijo dentro de una transaccion: el mayor existente
+ * + 1 (no el recuento, que repite numeros si se borra alguno). Se recuerda por
+ * transaccion para no releer todos los numeros en cada asiento de un lote.
+ * "NOM-PAG-00001" no cuenta para "NOM": su resto no es un numero.
+ */
+const contadoresTx = new WeakMap<object, Map<string, number>>();
+async function siguienteNumeroEnTx(tx: TransaccionBD, companyId: string, prefijo: string): Promise<string> {
+  let porPrefijo = contadoresTx.get(tx);
+  if (!porPrefijo) {
+    porPrefijo = new Map();
+    contadoresTx.set(tx, porPrefijo);
+  }
+  const clave = `${companyId}|${prefijo}`;
+  let siguiente = porPrefijo.get(clave);
+  if (siguiente === undefined) {
+    const existentes = await tx.journalEntry.findMany({
+      where: { companyId, numeroAsiento: { startsWith: `${prefijo}-` } },
+      select: { numeroAsiento: true },
+    });
+    let max = 0;
+    for (const e of existentes) {
+      const resto = e.numeroAsiento.slice(prefijo.length + 1);
+      const n = /^\d+$/.test(resto) ? Number(resto) : NaN;
+      if (Number.isInteger(n) && n < 10_000_000 && n > max) max = n;
+    }
+    siguiente = max + 1;
+  }
+  porPrefijo.set(clave, siguiente + 1);
+  return `${prefijo}-${String(siguiente).padStart(5, '0')}`;
+}
 
 /**
  * Genera un numeroAsiento unico por empresa (secuencial por prefijo de origen).
@@ -349,6 +388,15 @@ export async function crearAsientoConApuntes(
     origen?: string;
     invoiceId?: string;
     invoiceType?: string;
+    /** Referencia de los apuntes (por defecto, invoiceId). */
+    referencia?: string;
+    /**
+     * Transaccion en curso: el asiento se crea dentro de ella (y se deshace si
+     * falla otra cosa), con numero = mayor existente + 1.
+     */
+    tx?: TransaccionBD;
+    /** Rechazar el asiento si debe != haber (por defecto, solo en los origenes de nominas). */
+    exigirCuadre?: boolean;
     // codejercicio/idempresa: ya no se usan (eran de FS); se aceptan por compat.
     codejercicio?: string;
     idempresa?: unknown;
@@ -356,6 +404,57 @@ export async function crearAsientoConApuntes(
 ): Promise<{ asiento: Record<string, unknown>; partidas: unknown[] }> {
   const origen = params.origen ?? 'AJUSTE_MANUAL';
   const importe = round2(params.apuntes.reduce((a, ap) => a + ap.debe, 0));
+  if (params.exigirCuadre ?? ORIGENES_CON_CUADRE.has(origen)) {
+    const debe = params.apuntes.reduce((a, ap) => a + aCentimos(ap.debe), 0);
+    const haber = params.apuntes.reduce((a, ap) => a + aCentimos(ap.haber), 0);
+    if (params.apuntes.length === 0 || debe === 0) throw badRequest(`El asiento "${params.concepto}" no tiene importes.`);
+    if (debe !== haber) {
+      throw badRequest(`El asiento "${params.concepto}" no cuadra: Debe ${(debe / 100).toFixed(2)} y Haber ${(haber / 100).toFixed(2)}.`);
+    }
+  }
+
+  if (params.tx) {
+    const tx = params.tx;
+    const fecha = /^\d{4}-\d{2}-\d{2}$/.test(params.fecha) ? new Date(`${params.fecha}T00:00:00.000Z`) : new Date(params.fecha);
+    const creado = await tx.journalEntry.create({
+      data: {
+        companyId,
+        fecha,
+        numeroAsiento: await siguienteNumeroEnTx(tx, companyId, PREFIJO_ORIGEN[origen] ?? 'AS'),
+        descripcion: params.concepto.slice(0, 190),
+        origen,
+        estado: 'POSTED',
+        invoiceId: params.invoiceId,
+        invoiceType: params.invoiceType,
+        lineas: {
+          createMany: {
+            data: params.apuntes.map((ap) => ({
+              accountCode: ap.subcuenta,
+              accountName: (ap.concepto || `Subcuenta ${ap.subcuenta}`).slice(0, 190),
+              debe: round2(ap.debe),
+              haber: round2(ap.haber),
+              referencia: (params.referencia ?? params.invoiceId ?? null)?.slice(0, 190) ?? null,
+              companyId,
+            })),
+          },
+        },
+      },
+      include: { lineas: true },
+    });
+    return {
+      asiento: {
+        idasiento: creado.id,
+        numero: creado.numeroAsiento,
+        concepto: creado.descripcion,
+        fecha: params.fecha,
+        importe,
+        estado: creado.estado,
+        origen: creado.origen,
+      },
+      partidas: creado.lineas,
+    };
+  }
+
   const numeroAsiento = await siguienteNumeroAsiento(companyId, PREFIJO_ORIGEN[origen] ?? 'AS');
 
   const entry = await prisma.journalEntry.create({
@@ -381,7 +480,7 @@ export async function crearAsientoConApuntes(
           accountName: ap.concepto || `Subcuenta ${ap.subcuenta}`,
           debe: ap.debe,
           haber: ap.haber,
-          referencia: params.invoiceId,
+          referencia: params.referencia ?? params.invoiceId,
           companyId,
         },
       }),

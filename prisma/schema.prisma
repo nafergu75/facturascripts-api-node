@@ -852,12 +852,10 @@ model RevokedToken {
 /// NOMINAS (sustituye almacenamiento en memoria de nominas.service.ts)
 /// ============================================================================
 
-/// Resumen de nomina mensual importado (sustituye storage en memoria).
-/// PENDIENTE BLOQUEADO: el asiento contable de esta nomina (640/642/476/4751/465)
-/// se calcula en nominas.service.ts:generarAsientoNomina() pero NO se contabiliza
-/// automaticamente — requiere decidir como se integra con asientos.service.ts
-/// (FacturaScripts) antes de activarlo, para no crear asientos incorrectos en una
-/// instancia FS real sin pruebas. Ver comentario en el servicio.
+/// Resumen de nominas por mes (solo totales), de antes de que existieran las
+/// nominas por trabajador. Ya no se crean filas nuevas (POST /nominas/resumen
+/// responde 400): se leen solo para los meses sin nominas por trabajador, y si
+/// un mes tiene varias se usa la ultima (ver nominas.service.ts).
 model NominaResumen {
   id                             String   @id @default(cuid())
   companyId                      String
@@ -872,6 +870,103 @@ model NominaResumen {
 
   @@index([companyId])
   @@index([companyId, ejercicio])
+}
+
+/// Trabajador de la empresa, para registrar sus nominas. Lo ven y editan solo
+/// los usuarios con nominas:read / nominas:write (admin y contable).
+/// `discapacidad` es un dato de salud (art. 9 RGPD): opcional y solo para el 190.
+model Empleado {
+  id                   String   @id @default(cuid())
+  companyId            String
+  /// NIF o NIE en mayusculas, sin espacios ni guiones (con letra de control valida).
+  nif                  String
+  nombre               String
+  apellidos            String   @default("")
+  /// Numero de afiliacion a la Seguridad Social (12 digitos, con control).
+  naf                  String?
+  fechaAlta            String? // YYYY-MM-DD
+  fechaBaja            String? // YYYY-MM-DD
+  /// INDEFINIDO | TEMPORAL | FIJO_DISCONTINUO | FORMACION | OTRO
+  tipoContrato         String   @default("INDEFINIDO")
+  jornadaParcial       Boolean  @default(false)
+  grupoCotizacion      Int?
+  /// Informativo: el que cuenta es el de cada nomina.
+  porcentajeIrpfActual Decimal? @db.Decimal(5, 2)
+  clave190             String   @default("A")
+  subclave190          String?
+  /// Codigo de provincia (2 digitos) para el 190.
+  provincia            String?
+  anioNacimiento       Int?
+  situacionFamiliar    Int? // 1 | 2 | 3
+  nifConyuge           String?
+  discapacidad         Int? // 0 | 1 | 2 | 3
+  movilidadGeografica  Boolean?
+  /// Subcuenta 465 propia (remuneraciones pendientes de pago). Se crea en el
+  /// plan de la empresa al contabilizar su primera nomina.
+  subcuenta465         String?
+  activo               Boolean  @default(true)
+  observaciones        String?  @db.Text
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+  nominas              Nomina[]
+
+  @@unique([companyId, nif])
+  @@index([companyId, activo])
+}
+
+/// Nomina de un trabajador en un mes (una por trabajador, mes y tipo). La
+/// calcula la gestoria; aqui se registra, se valida su cuadre y se contabiliza
+/// con un asiento propio (origen NOMINA, invoiceId = id de la nomina).
+model Nomina {
+  id                        String    @id @default(cuid())
+  companyId                 String
+  empleadoId                String
+  ejercicio                 Int
+  /// Mes de devengo (1-12).
+  mes                       Int
+  /// ORDINARIA | EXTRA | ATRASOS | FINIQUITO | COMPLEMENTARIA
+  tipo                      String    @default("ORDINARIA")
+  /// Ejercicio al que corresponden los atrasos, si es otro (190).
+  ejercicioDevengo          Int?
+  /// Ultimo dia del mes de devengo: fecha del asiento (YYYY-MM-DD).
+  fechaDevengo              String
+  /// Fecha de pago (YYYY-MM-DD); por defecto, la de devengo.
+  fechaPago                 String
+  brutoDinerario            Decimal   @default(0) @db.Decimal(14, 2)
+  dietasExentas             Decimal   @default(0) @db.Decimal(14, 2)
+  especieValoracion         Decimal   @default(0) @db.Decimal(14, 2)
+  ingresoACuenta            Decimal   @default(0) @db.Decimal(14, 2)
+  ingresoACuentaRepercutido Boolean   @default(false)
+  indemnizacionExenta       Decimal   @default(0) @db.Decimal(14, 2)
+  indemnizacionSujeta       Decimal   @default(0) @db.Decimal(14, 2)
+  ssTrabajador              Decimal   @default(0) @db.Decimal(14, 2)
+  irpf                      Decimal   @default(0) @db.Decimal(14, 2)
+  porcentajeIrpf            Decimal?  @db.Decimal(5, 2)
+  anticipos                 Decimal   @default(0) @db.Decimal(14, 2)
+  embargos                  Decimal   @default(0) @db.Decimal(14, 2)
+  otrasDeducciones          Decimal   @default(0) @db.Decimal(14, 2)
+  liquido                   Decimal   @default(0) @db.Decimal(14, 2)
+  ssEmpresa                 Decimal   @default(0) @db.Decimal(14, 2)
+  /// BORRADOR | CONTABILIZADA | ANULADA
+  estado                    String    @default("BORRADOR")
+  /// Asiento de devengo (JournalEntry) mientras esta CONTABILIZADA.
+  asientoId                 String?
+  /// Contraasiento, si se anulo con el periodo del asiento ya cerrado.
+  asientoAnulacionId        String?
+  anuladaEn                 DateTime?
+  /// Importacion de la que viene (mismo valor para todas las filas de un Excel).
+  loteImportacionId         String?
+  /// manual | importacion
+  origen                    String    @default("manual")
+  observaciones             String?   @db.Text
+  createdAt                 DateTime  @default(now())
+  updatedAt                 DateTime  @updatedAt
+  empleado                  Empleado  @relation(fields: [empleadoId], references: [id], onDelete: Restrict)
+
+  @@unique([companyId, empleadoId, ejercicio, mes, tipo])
+  @@index([companyId, ejercicio, mes])
+  @@index([companyId, fechaPago])
+  @@index([empleadoId])
 }
 
 /// ============================================================================

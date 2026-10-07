@@ -84,6 +84,23 @@ describe('permisos que exigen las rutas', () => {
     expect(permisosDeRoles(['solo_lectura'])).toContain('tesoreria:read');
   });
 
+  it('nominas: solo admin y contable (datos salariales y personales)', () => {
+    for (const p of ['nominas:read', 'nominas:write']) {
+      expect(usuarioTienePermiso(permisosDeRoles(['admin']), p)).toBe(true);
+      expect(usuarioTienePermiso(permisosDeRoles(['contable']), p)).toBe(true);
+      for (const rol of ['ventas', 'tesoreria', 'solo-lectura', 'solo_lectura']) expect(usuarioTienePermiso(permisosDeRoles([rol]), p)).toBe(false);
+    }
+  });
+
+  it('toda ruta de nominas y trabajadores pide un permiso de nominas', () => {
+    for (const fichero of ['nominas.routes.ts', 'empleados.routes.ts']) {
+      const codigo = readFileSync(join(DIR_RUTAS, fichero), 'utf-8');
+      const rutas = [...codigo.matchAll(/\brouter\.(get|post|put|patch|delete)\(\s*'([^']*)'([\s\S]*?)\);/g)];
+      expect(rutas.length).toBeGreaterThan(0);
+      for (const m of rutas) expect(`${m[1]} ${m[2]}: ${/authorize\('nominas:(read|write)'\)/.test(m[3])}`).toBe(`${m[1]} ${m[2]}: true`);
+    }
+  });
+
   it('solo-lectura lee compras pero no escribe', () => {
     const lectura = permisosDeRoles(['solo-lectura']);
     expect(usuarioTienePermiso(lectura, 'compras:read')).toBe(true);

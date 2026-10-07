@@ -152,7 +152,7 @@ ep(B + '/cuadre-bancos/config', 'put', 'Cierre', 'Actualizar config de cierre');
 ep(B + '/periodos', 'get', 'Cierre', 'Periodos del ejercicio (persistidos en BD)', { query: ['ejercicio'] });
 ep(B + '/periodos/{mes}/estado', 'put', 'Cierre', 'Cambiar estado del periodo', { body: { estado: 'cerrado' } });
 ep(B + '/periodos/cierre', 'post', 'Cierre', 'CIERRE REAL: regularizacion+cierre+apertura. 409 si bancos descuadran', { query: ['ejercicio'] });
-ep(B + '/nominas', 'get', 'Nominas', 'Resumenes de nominas');
+require('./swagger-nominas')(ep, B); // nominas y trabajadores
 ep(B + '/compliance/alertas', 'get', 'Compliance', 'Alertas IVA/347', { query: ['ejercicio'] });
 
 // --- Asistente "Carmen" (chat contable con RAG) ---

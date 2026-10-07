@@ -1,3 +1,5 @@
+import type { CuentasNominas } from './nominas.model';
+
 /**
  * Reglas contables configurables por empresa.
  *
@@ -38,6 +40,12 @@ export interface ReglasContablesEmpresa {
   cuentaRetencionesProfesionales: string;
   /** HP deudora por retenciones IRPF soportadas en nuestras ventas (si aplica). */
   cuentaRetencionesSoportadas: string;
+  /**
+   * Subcuentas de las nominas (640, 642, 476, 4751 de trabajo...). Las que no
+   * se indiquen se generan con la longitud de codigo del plan de la empresa
+   * (ver services/nominas/calculo.ts, cuentasNominasPorDefecto).
+   */
+  nominas?: Partial<CuentasNominas>;
 }
 
 /**
