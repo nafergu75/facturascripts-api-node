@@ -27,16 +27,18 @@ import {
 import { redondear2, redondear4, redondear8 } from '../utils/money';
 
 describe('catalogo de monedas', () => {
-  it('todas las del catalogo tienen 2 decimales y estan activas (no solo el dolar)', () => {
-    expect(MONEDAS_FACTURA_ACTIVAS).toEqual(expect.arrayContaining(['EUR', 'USD', 'GBP', 'CHF', 'HKD']));
-    expect(MONEDAS_FACTURA_ACTIVAS.length).toBe(Object.keys(MONEDAS_FACTURA).length);
+  it('solo estan activas EUR y USD; todas las del catalogo tienen 2 decimales', () => {
+    expect(MONEDAS_FACTURA_ACTIVAS).toEqual(['EUR', 'USD']);
+    for (const c of MONEDAS_FACTURA_ACTIVAS) expect(MONEDAS_FACTURA[c]).toBeDefined();
     for (const m of Object.values(MONEDAS_FACTURA)) expect(m.decimales).toBe(2);
     expect(MONEDAS_CUENTA_HABILITADAS).toEqual(['EUR', 'USD']);
   });
 
   it('validarMoneda normaliza y rechaza las que no estan', () => {
     expect(validarMoneda('usd ')).toBe('USD');
-    expect(validarMoneda(' gbp')).toBe('GBP');
+    // En el catalogo pero desactivadas: no se puede facturar en ellas.
+    expect(() => validarMoneda(' gbp')).toThrow(/GBP no está habilitada/);
+    expect(() => validarMoneda('HKD')).toThrow(/Usa: EUR, USD/);
     expect(() => validarMoneda('JPY')).toThrow(/JPY no está disponible/);
     expect(() => validarMoneda('XX')).toThrow(/tres letras/);
     expect(() => validarMoneda('GBP', ['USD'])).toThrow(/GBP no está habilitada/);

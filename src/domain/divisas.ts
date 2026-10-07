@@ -49,11 +49,12 @@ export const MONEDAS_FACTURA: Readonly<Record<string, InfoMoneda>> = Object.free
 });
 
 /**
- * Monedas en las que una empresa ESPANOLA puede emitir facturas. El usuario
- * pidio no limitarlo al dolar: estan activas todas las del catalogo (todas con
- * tipo diario del BCE y 2 decimales). Para desactivar una, quitarla de aqui.
+ * Monedas en las que una empresa ESPANOLA puede emitir facturas: SOLO euro y
+ * dolar estadounidense (decision del usuario). El resto del catalogo queda
+ * desactivado; para activar una, anadirla aqui (todas tienen tipo diario del
+ * BCE y 2 decimales).
  */
-export const MONEDAS_FACTURA_ACTIVAS: readonly string[] = Object.freeze(Object.keys(MONEDAS_FACTURA));
+export const MONEDAS_FACTURA_ACTIVAS: readonly string[] = Object.freeze(['EUR', 'USD']);
 
 /**
  * Monedas que puede tener la contabilidad de una empresa. EUR obligatoria en
