@@ -37,6 +37,17 @@ describe('leerPais', () => {
     expect(() => leerPais('Francia')).toThrow(/dos letras/);
   });
 
+  it('un codigo que no es un pais (SP pensando en Espana) o el nombre (España) da 400: el cliente no pasa por extranjero', () => {
+    for (const p of ['SP', 'sp', 'EU', 'XX']) expect(() => leerPais(p)).toThrow(expect.objectContaining({ statusCode: 400, message: expect.stringMatching(/no existe/) }));
+    expect(() => leerPais('España')).toThrow(expect.objectContaining({ statusCode: 400 }));
+    expect(() => leerPais('SP', 'B46123456')).toThrow(/no existe/);
+  });
+
+  it('una ficha antigua con SP se puede guardar sin tocar el pais', () => {
+    expect(paisTrasModificar({ pais: 'SP', nifCif: 'B46123456' }, 'SP', undefined)).toBeUndefined();
+    expect(paisTrasModificar({ pais: 'SP', nifCif: 'B46123456' }, 'ES', undefined)).toBe('ES');
+  });
+
   it('sin pais (o ES) y con NIF-IVA de otro Estado de la UE, el del prefijo', () => {
     expect(leerPais(undefined, 'FR40303265045')).toBe('FR');
     expect(leerPais('ES', 'DE123456789')).toBe('DE');

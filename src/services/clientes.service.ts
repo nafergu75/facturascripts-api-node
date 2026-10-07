@@ -11,6 +11,7 @@ import { parsePagination } from '../utils/pagination';
 import { badRequest, notFound } from '../utils/http-errors';
 import { normalizarPais, prefijoNifIvaUe } from '../domain/tipo-operacion.model';
 import { MONEDAS_FACTURA_ACTIVAS, normalizarMoneda } from '../domain/divisas';
+import { esCodigoPais } from '../utils/geografia';
 
 /** Cliente en formato ligero para el selector/buscador al facturar. */
 export interface ClienteResumen {
@@ -60,7 +61,8 @@ const textoONull = (v: unknown): string | null => (v === undefined || v === null
 /**
  * Pais del cliente en ISO-2 (ES, FR, US...). Sin pais (o 'ES') y con un NIF-IVA
  * de otro Estado de la UE, el del prefijo (EL se guarda como GR). Un valor que
- * no es un codigo de dos letras da 400.
+ * no es un codigo de dos letras, o que no es un pais ISO que exista ('SP'
+ * pensando en Espana), da 400: el pais decide el tipo de operacion de IVA.
  */
 export function leerPais(valor: unknown, nif?: string): string | undefined {
   const crudo = textoONull(valor);
@@ -68,6 +70,9 @@ export function leerPais(valor: unknown, nif?: string): string | undefined {
   if (crudo === null) return prefijo && prefijo.pais !== 'ES' ? prefijo.pais : undefined;
   const pais = normalizarPais(crudo);
   if (!/^[A-Z]{2}$/.test(pais)) throw badRequest('El país del cliente tiene que ser un código de dos letras (ES, FR, US...).');
+  if (!esCodigoPais(pais)) {
+    throw badRequest(`El país del cliente «${pais}» no existe: usa su código de dos letras (ES para España, FR, US...).`);
+  }
   if (pais === 'ES' && prefijo && prefijo.pais !== 'ES') return prefijo.pais;
   return pais;
 }

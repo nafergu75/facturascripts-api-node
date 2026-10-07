@@ -16,9 +16,7 @@ import {
   fechaDevengoVenta,
   inferirTipoOperacion,
   mencionFiscal,
-  normalizarPais,
   operacionEfectiva,
-  paisDelCliente,
   type AvisoFiscal,
   type ClienteFiscal,
   type Mencion,
@@ -29,6 +27,7 @@ import { perfilDesdeConfig, perfilEmpresa, type PerfilEmpresa } from './perfilEm
 import { marcarTransaccion, mensajeSinTipo, resolverTipoCambio, type TipoResuelto } from './tiposCambio.service';
 import { resolverFiscalidad } from './fiscalidad-venta.service';
 import { hoyEspana } from '../utils/fechas';
+import { leerPais } from './clientes.service';
 
 /**
  * Facturas de venta.
@@ -381,10 +380,14 @@ function aRespuesta(f: FacturaConLineas, ctx: ContextoRespuesta): IncomeInvoiceR
   };
 }
 
-/** Pais del cliente nuevo: ISO-2, o el del prefijo de su NIF-IVA si viene vacio o ES. */
+/**
+ * Pais del cliente nuevo, con la misma regla que la ficha de clientes
+ * (leerPais): ISO-2 que exista, o el del prefijo de su NIF-IVA si viene vacio o
+ * ES. 'SP' o 'Espana' dan 400: guardados tal cual, el cliente pasaba por
+ * extranjero y sus facturas al 0 % por exportaciones.
+ */
 function paisClienteNuevo(pais: string | undefined, nifCif: string): string {
-  const p = paisDelCliente({ pais: normalizarPais(pais), nifCif });
-  return /^[A-Z]{2}$/.test(p) ? p : pais || 'ES';
+  return leerPais(pais, nifCif) ?? 'ES';
 }
 
 /**
