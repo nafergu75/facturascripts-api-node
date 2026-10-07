@@ -11,7 +11,8 @@
 
 import { badRequest, notFound, notImplemented } from '../utils/http-errors';
 import { prisma, type ClienteBD, type TransaccionBD } from '../config/database';
-import { cuadraEnCentimos } from '../utils/money';
+import { aCentimos, cuadraEnCentimos } from '../utils/money';
+import { esTipoOperacion, REGLA_OPERACION, type TipoOperacionVenta } from '../domain/tipo-operacion.model';
 
 // Cliente compartido o el de una transaccion (los importes se leen como number).
 type DbClient = ClienteBD | TransaccionBD;
@@ -59,7 +60,10 @@ function apuntesLibroIva(d: { desgloseIva?: DesgloseIva[]; ivaRate: number; base
  * Determina qué cuentas contables usar según tipo de operación, IVA, IRPF
  */
 export const CONTABLE_RULES = {
-  // FACTURAS DE INGRESO (VENTAS)
+  // FACTURAS DE INGRESO (VENTAS). La cuenta de ingreso es la 700 en todos los
+  // tipos de operacion: el tipo decide el IVA (477), el libro de IVA y los
+  // modelos, no la cuenta (701, 702 y 705 son productos terminados,
+  // semiterminados y servicios en el PGC, no "ventas al extranjero").
   VENTA_NACIONAL: {
     ingreso: '700', // Ventas de mercaderías
     clienteDeudor: '430', // Clientes
@@ -69,21 +73,39 @@ export const CONTABLE_RULES = {
     irpfRetenido: '473',
   },
   VENTA_INTRACOMUNITARIA: {
-    ingreso: '701', // Ventas intracomunitarias
+    ingreso: '700', // Entrega intracomunitaria exenta: sin 477
     clienteDeudor: '430',
-    ivaRepercutido: '477', // 0% IVA
+    ivaRepercutido: '477',
     irpfRetenido: '473',
   },
   VENTA_EXPORTACION: {
-    ingreso: '702', // Ventas exportación
+    ingreso: '700', // Exportacion exenta: sin 477
     clienteDeudor: '430',
-    ivaRepercutido: '477', // 0% IVA
+    ivaRepercutido: '477',
+    irpfRetenido: '473',
+  },
+  VENTA_SERVICIOS_EXTRANJERO: {
+    ingreso: '700', // No sujeta por reglas de localizacion: sin 477
+    clienteDeudor: '430',
+    ivaRepercutido: '477',
     irpfRetenido: '473',
   },
   VENTA_EXENTA: {
-    ingreso: '705', // Ventas exentas
+    ingreso: '700', // Exenta (art. 20 LIVA y otros): sin 477
     clienteDeudor: '430',
-    ivaRepercutido: '477', // Sin IVA repercutido (0%)
+    ivaRepercutido: '477',
+    irpfRetenido: '473',
+  },
+  VENTA_ISP_NACIONAL: {
+    ingreso: '700', // Inversion del sujeto pasivo: la cuota la declara el cliente
+    clienteDeudor: '430',
+    ivaRepercutido: '477',
+    irpfRetenido: '473',
+  },
+  VENTA_EMPRESA_EXTRANJERA: {
+    ingreso: '700', // Empresa no establecida en Espana: sin IVA ni libro de IVA
+    clienteDeudor: '430',
+    ivaRepercutido: '477',
     irpfRetenido: '473',
   },
 
@@ -121,6 +143,16 @@ export const CONTABLE_RULES = {
   CAJA: {
     cuenta: '570', // Caja
   },
+
+  // COBROS Y PAGOS EN DIVISA: diferencia entre el tipo de la factura y el del cobro.
+  DIFERENCIAS_CAMBIO: {
+    positiva: '768', // Diferencias positivas de cambio (ingreso)
+    negativa: '668', // Diferencias negativas de cambio (gasto)
+  },
+  // Comision que el banco descuenta de un cobro en divisa.
+  COMISION_BANCARIA: {
+    cuenta: '626', // Servicios bancarios y similares
+  },
 };
 
 // ============================================================================
@@ -134,6 +166,18 @@ export const CONTABLE_RULES = {
  * - Asiento de ingresos + IVA repercutido
  * - Cuentas de clientes deudores
  * - Registra en libro de facturas emitidas
+ *
+ * Los importes son SIEMPRE los de la moneda de cuenta de la empresa (las
+ * columnas de siempre de la factura), nunca los de la moneda del documento.
+ *
+ * Tipo de operacion (domain/tipo-operacion.model.ts):
+ *  - Sin tipo (facturas anteriores a esta funcion): igual que siempre, como
+ *    NACIONAL y con el libro de IVA sin tipo.
+ *  - Con tipo: los que no llevan cuota no admiten IVA (400) y no tienen 477;
+ *    el libro de IVA guarda el tipo y la causa de exencion (E2 exportacion, E5
+ *    intracomunitaria...), y la empresa extranjera no escribe libro de IVA.
+ *  - Las cuotas y retenciones negativas (rectificativas) van con su signo en
+ *    la misma columna, como la 430 y la 700.
  */
 export async function contabilizarFacturaIngreso(
   companyId: string,
@@ -146,23 +190,48 @@ export async function contabilizarFacturaIngreso(
     retencionRate: number; // 0, 7, 15, 19
     totalFactura: number;
     fechaEmision: string;
+    /**
+     * Fecha de devengo del IVA (domain/tipo-operacion.model.ts fechaDevengoVenta)
+     * si es distinta de la de emision: con ella se anota en el libro de IVA, para
+     * que el 303 la lleve al periodo de la operacion. El asiento va con la de emision.
+     */
+    fechaDevengo?: string | null;
     numeroFactura: string;
     clienteId: string;
     clienteNif: string;
     clienteNombre: string;
-    tipoOperacion?: 'NACIONAL' | 'INTRACOMUNITARIA' | 'EXPORTACION' | 'EXENTA'; // default: NACIONAL
+    /** Sin el: factura anterior a los tipos de operacion (como NACIONAL, libro de IVA sin tipo). */
+    tipoOperacion?: TipoOperacionVenta;
+    /** Solo con EXENTA: E1, E3, E4 o E6. */
+    causaExencion?: string | null;
+    /** Pais del cliente (para la casilla de los servicios a extranjeros). */
+    clientePais?: string | null;
     /** Base y cuota por tipo de IVA. Sin el, se registra todo al tipo `ivaRate`. */
     desgloseIva?: DesgloseIva[];
+    /** Texto que se anade a la descripcion (p. ej. la nota de divisa). */
+    notaDescripcion?: string;
     /** POSTED (por defecto): la factura emitida es definitiva. DRAFT: pendiente de revisar (OCR). */
     estadoAsiento?: 'POSTED' | 'DRAFT';
   },
   tx?: TransaccionBD,
 ): Promise<{ asientoId: string; lineas: any[] }> {
   const db: DbClient = tx ?? prisma;
-  const tipoOp = invoiceData.tipoOperacion || 'NACIONAL';
+  const tipoOp = invoiceData.tipoOperacion ?? 'NACIONAL';
+  if (!esTipoOperacion(tipoOp)) throw badRequest(`Tipo de operación desconocido: ${tipoOp}`);
   const regla = CONTABLE_RULES[`VENTA_${tipoOp}`];
+  const reglaIva = REGLA_OPERACION[tipoOp];
 
-  if (!regla) throw badRequest(`Tipo de operación desconocido: ${tipoOp}`);
+  // Un tipo sin cuota (exenta, intracomunitaria, exportacion, ISP...) con IVA es
+  // una contradiccion: el asiento llevaria una 477 que el libro de IVA no tiene.
+  if (invoiceData.tipoOperacion && !reglaIva.llevaCuota && aCentimos(invoiceData.ivaTotal) !== 0) {
+    throw badRequest(
+      `Una factura de tipo "${reglaIva.etiqueta.es}" no lleva IVA y esta tiene ${invoiceData.ivaTotal} de cuota: revísala.`,
+    );
+  }
+
+  // La descripcion cabe en 190 caracteres: se recorta el nombre, nunca la nota.
+  const nota = invoiceData.notaDescripcion ?? '';
+  const descripcion = `Factura de ingreso #${invoiceData.numeroFactura} - ${invoiceData.clienteNombre}`.slice(0, 190 - nota.length) + nota;
 
   // Crear asiento
   const asiento = await db.journalEntry.create({
@@ -170,7 +239,7 @@ export async function contabilizarFacturaIngreso(
       companyId,
       fecha: new Date(invoiceData.fechaEmision),
       numeroAsiento: `FAC-ING-${invoiceData.numeroFactura}`,
-      descripcion: `Factura de ingreso #${invoiceData.numeroFactura} - ${invoiceData.clienteNombre}`,
+      descripcion,
       origen: 'FACTURA_INGRESO',
       estado: invoiceData.estadoAsiento ?? 'POSTED',
       invoiceId,
@@ -187,7 +256,7 @@ export async function contabilizarFacturaIngreso(
   const lineaCliente = await db.journalEntryLine.create({
     data: {
       entryId: asiento.id,
-      accountCode: regla.clienteDeudor!,
+      accountCode: regla.clienteDeudor,
       accountName: 'Clientes',
       debe: invoiceData.totalFactura,
       haber: 0,
@@ -213,12 +282,13 @@ export async function contabilizarFacturaIngreso(
   lineas.push(lineaIngreso);
   totalHaber += invoiceData.baseTotal;
 
-  // Línea 3: IVA repercutido (HABER) - si aplica
-  if (invoiceData.ivaTotal > 0) {
+  // Línea 3: IVA repercutido (HABER), si hay cuota. Una rectificativa la lleva
+  // negativa, como la 430 y la 700 (antes no se apuntaba y el asiento no cuadraba).
+  if (aCentimos(invoiceData.ivaTotal) !== 0) {
     const lineaIva = await db.journalEntryLine.create({
       data: {
         entryId: asiento.id,
-        accountCode: regla.ivaRepercutido!,
+        accountCode: regla.ivaRepercutido,
         accountName: 'IVA repercutido',
         debe: 0,
         haber: invoiceData.ivaTotal,
@@ -233,11 +303,11 @@ export async function contabilizarFacturaIngreso(
   // Línea 4: Retención IRPF (DEBE, cuenta 473 HP retenciones — ACTIVO).
   // El cliente nos retiene parte del pago y lo ingresa a Hacienda en nuestro nombre.
   // 473 = crédito frente a AEAT (nos lo devolverán o compensarán con el IS).
-  if (invoiceData.retencionTotal > 0) {
+  if (aCentimos(invoiceData.retencionTotal) !== 0) {
     const lineaIrpf = await db.journalEntryLine.create({
       data: {
         entryId: asiento.id,
-        accountCode: regla.irpfRetenido!,
+        accountCode: regla.irpfRetenido,
         accountName: 'HP retenciones y pagos a cuenta',
         debe: invoiceData.retencionTotal,
         haber: 0,
@@ -258,22 +328,36 @@ export async function contabilizarFacturaIngreso(
 
   // VATBook: un apunte por tipo de IVA, vinculado al asiento. Las exentas tambien
   // se registran (libro de facturas expedidas). Los informes filtran por asientos
-  // POSTED, asi que no aparecen hasta que el asiento se aprueba.
-  for (const apunte of apuntesLibroIva(invoiceData)) {
-    await db.vATBook.create({
-      data: {
-        companyId,
-        tipoLibro: 'EMITIDAS',
-        numeroFactura: invoiceData.numeroFactura,
-        fechaFactura: new Date(invoiceData.fechaEmision),
-        nifTercero: invoiceData.clienteNif,
-        nombreTercero: invoiceData.clienteNombre,
-        baseImponible: apunte.base,
-        tipoIva: apunte.tipoIva,
-        cuotaIva: apunte.cuota,
-        asientoId: asiento.id,
-      },
-    });
+  // POSTED, asi que no aparecen hasta que el asiento se aprueba. Una empresa no
+  // establecida en Espana no lleva libro de IVA.
+  if (!invoiceData.tipoOperacion || reglaIva.enLibroIva) {
+    const ctx = {
+      cliente: { pais: invoiceData.clientePais ?? null, nifCif: invoiceData.clienteNif },
+      causaExencion: invoiceData.causaExencion ?? null,
+    };
+    // Facturas anteriores: el libro sin tipo, como siempre.
+    const tipoLibro = invoiceData.tipoOperacion ? { tipoOperacion: tipoOp, causaExencion: reglaIva.causaLibro(ctx) } : {};
+    // Devengo distinto de la emision: el libro (y el 303) en el periodo del devengo, con la fecha de expedicion anotada.
+    const devengo = invoiceData.fechaDevengo && invoiceData.fechaDevengo !== invoiceData.fechaEmision ? invoiceData.fechaDevengo : null;
+    const fechaExpedicion = `${invoiceData.fechaEmision.slice(8, 10)}/${invoiceData.fechaEmision.slice(5, 7)}/${invoiceData.fechaEmision.slice(0, 4)}`;
+    for (const apunte of apuntesLibroIva(invoiceData)) {
+      await db.vATBook.create({
+        data: {
+          companyId,
+          tipoLibro: 'EMITIDAS',
+          numeroFactura: invoiceData.numeroFactura,
+          fechaFactura: new Date(devengo ?? invoiceData.fechaEmision),
+          ...(devengo ? { observaciones: `Fecha de expedición: ${fechaExpedicion}` } : {}),
+          nifTercero: invoiceData.clienteNif,
+          nombreTercero: invoiceData.clienteNombre,
+          baseImponible: apunte.base,
+          tipoIva: apunte.tipoIva,
+          cuotaIva: apunte.cuota,
+          asientoId: asiento.id,
+          ...tipoLibro,
+        },
+      });
+    }
   }
 
   return { asientoId: asiento.id, lineas };

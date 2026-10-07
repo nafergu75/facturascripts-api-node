@@ -4,11 +4,13 @@
  * ingreso (income-invoices), consolidando el doble-almacén anterior. Mantiene
  * los endpoints /companies/:companyId/clientes (el frontend Chakra no cambia).
  */
-import { prisma } from '../config/database';
+import { prisma, type TransaccionBD } from '../config/database';
 import { CompanyScopedService, ID, Paginated } from '../domain/common.types';
 import { Cliente } from '../domain/cliente.model';
 import { parsePagination } from '../utils/pagination';
-import { notFound } from '../utils/http-errors';
+import { badRequest, notFound } from '../utils/http-errors';
+import { normalizarPais, prefijoNifIvaUe } from '../domain/tipo-operacion.model';
+import { MONEDAS_FACTURA_ACTIVAS, normalizarMoneda } from '../domain/divisas';
 
 /** Cliente en formato ligero para el selector/buscador al facturar. */
 export interface ClienteResumen {
@@ -28,6 +30,10 @@ type CustomerRow = {
   activo: boolean;
   direccion?: string | null;
   pais?: string | null;
+  cp?: string | null;
+  municipio?: string | null;
+  provincia?: string | null;
+  monedaPreferida?: string | null;
 };
 
 /** Customer (Prisma) -> forma de respuesta del recurso clientes. */
@@ -39,7 +45,95 @@ function aCliente(c: CustomerRow): Record<string, unknown> {
     email: c.email ?? '',
     telefono: c.telefono ?? '',
     activo: c.activo,
+    // Pais (ISO-2) y direccion: deciden el tipo de operacion de IVA que se sugiere y salen en la factura.
+    pais: c.pais ?? 'ES',
+    direccion: c.direccion ?? '',
+    cp: c.cp ?? '',
+    municipio: c.municipio ?? '',
+    provincia: c.provincia ?? '',
+    monedaPreferida: c.monedaPreferida ?? null,
   };
+}
+
+const textoONull = (v: unknown): string | null => (v === undefined || v === null || String(v).trim() === '' ? null : String(v).trim());
+
+/**
+ * Pais del cliente en ISO-2 (ES, FR, US...). Sin pais (o 'ES') y con un NIF-IVA
+ * de otro Estado de la UE, el del prefijo (EL se guarda como GR). Un valor que
+ * no es un codigo de dos letras da 400.
+ */
+export function leerPais(valor: unknown, nif?: string): string | undefined {
+  const crudo = textoONull(valor);
+  const prefijo = prefijoNifIvaUe(nif);
+  if (crudo === null) return prefijo && prefijo.pais !== 'ES' ? prefijo.pais : undefined;
+  const pais = normalizarPais(crudo);
+  if (!/^[A-Z]{2}$/.test(pais)) throw badRequest('El país del cliente tiene que ser un código de dos letras (ES, FR, US...).');
+  if (pais === 'ES' && prefijo && prefijo.pais !== 'ES') return prefijo.pais;
+  return pais;
+}
+
+/**
+ * Pais que queda en la ficha al modificar un cliente, o undefined si no cambia.
+ * Si el pais que llega es el mismo que ya tenia (aunque este escrito de otra
+ * forma, 'FRA' y 'FR') y el NIF no cambia, se deja tal cual: guardar la ficha
+ * sin tocar el pais no lo reescribe. Si no llega pais pero cambia el NIF, se
+ * revisa con el prefijo del NIF nuevo.
+ */
+export function paisTrasModificar(
+  existe: { pais: string | null; nifCif: string },
+  paisRecibido: unknown,
+  nifRecibido: string | undefined,
+): string | undefined {
+  const cambiaNif = nifRecibido !== undefined && nifRecibido !== existe.nifCif;
+  let nuevo: string | undefined;
+  if (paisRecibido !== undefined) {
+    const mismoPais = textoONull(paisRecibido) !== null && normalizarPais(String(paisRecibido)) === normalizarPais(existe.pais);
+    if (mismoPais && !cambiaNif) return undefined;
+    nuevo = leerPais(paisRecibido, nifRecibido ?? existe.nifCif);
+  } else if (cambiaNif) {
+    nuevo = leerPais(existe.pais, nifRecibido);
+  }
+  if (nuevo === undefined || normalizarPais(nuevo) === normalizarPais(existe.pais)) return undefined;
+  return nuevo;
+}
+
+/**
+ * Las facturas emitidas SIN tipo de operacion (anteriores a esa funcion) se
+ * clasifican en los modelos por el pais de la ficha del cliente. Antes de
+ * cambiarlo, se congela en ellas el que tenian: asi un 303, 347, 349 o 390 ya
+ * presentado no cambia al editar la ficha.
+ */
+export async function congelarPaisFacturasAnteriores(
+  db: Pick<TransaccionBD, 'incomeInvoice'>,
+  companyId: string,
+  customerId: string,
+  paisAnterior: string | null,
+): Promise<number> {
+  const r = await db.incomeInvoice.updateMany({
+    where: { companyId, customerId, tipoOperacion: null, paisClienteLegacy: null, estadoDocumento: { not: 'PROFORMA' } },
+    data: { paisClienteLegacy: paisAnterior ?? '' },
+  });
+  return r.count;
+}
+
+/** Moneda en la que se le suele facturar: una de las activas, o null (la de la contabilidad). */
+export function leerMonedaPreferida(valor: unknown): string | null {
+  const crudo = textoONull(valor);
+  if (crudo === null) return null;
+  const codigo = normalizarMoneda(crudo);
+  if (!MONEDAS_FACTURA_ACTIVAS.includes(codigo)) {
+    throw badRequest(`La moneda preferida tiene que ser una de estas: ${MONEDAS_FACTURA_ACTIVAS.join(', ')}.`);
+  }
+  return codigo;
+}
+
+/** Direccion, CP, municipio y provincia que llegan en el cuerpo (solo los presentes). */
+function leerDireccion(data: Record<string, unknown>) {
+  const out: Record<string, string | null> = {};
+  for (const k of ['direccion', 'cp', 'municipio', 'provincia'] as const) {
+    if (data[k] !== undefined) out[k] = textoONull(data[k]);
+  }
+  return out;
 }
 
 /** Lee nombre/nif/teléfono del payload aceptando alias FS y Prisma. */
@@ -101,8 +195,9 @@ export const clientesService: CompanyScopedService<Cliente> = {
         nifCif: d.nifCif,
         email: d.email,
         telefono: d.telefono,
-        direccion: d.direccion,
-        pais: data.pais != null ? String(data.pais) : 'ES',
+        ...leerDireccion(data),
+        pais: leerPais(data.pais, d.nifCif) ?? 'ES',
+        monedaPreferida: leerMonedaPreferida(data.monedaPreferida),
       },
     })) as CustomerRow;
     return aCliente(c) as unknown as Cliente;
@@ -112,14 +207,21 @@ export const clientesService: CompanyScopedService<Cliente> = {
     const existe = await prisma.customer.findFirst({ where: { id: String(id), companyId: String(companyId) } });
     if (!existe) throw notFound('Cliente no encontrado.');
     const d = leerDatos(data);
-    const c = (await prisma.customer.update({
-      where: { id: String(id) },
-      data: {
-        ...(d.nombreFiscal !== undefined ? { nombreFiscal: d.nombreFiscal } : {}),
-        ...(d.nifCif !== undefined ? { nifCif: d.nifCif } : {}),
-        ...(data.email !== undefined ? { email: d.email } : {}),
-        ...(data.telefono !== undefined || data.telefono1 !== undefined ? { telefono: d.telefono } : {}),
-      },
+    // El pais se puede cambiar; si no llega, se revisa con el NIF nuevo (prefijo UE).
+    const pais = paisTrasModificar(existe, data.pais, d.nifCif);
+    const cambios = {
+      ...(d.nombreFiscal !== undefined ? { nombreFiscal: d.nombreFiscal } : {}),
+      ...(d.nifCif !== undefined ? { nifCif: d.nifCif } : {}),
+      ...(data.email !== undefined ? { email: d.email } : {}),
+      ...(data.telefono !== undefined || data.telefono1 !== undefined ? { telefono: d.telefono } : {}),
+      ...leerDireccion(data),
+      ...(pais !== undefined ? { pais } : {}),
+      ...(data.monedaPreferida !== undefined ? { monedaPreferida: leerMonedaPreferida(data.monedaPreferida) } : {}),
+    };
+    const c = (await prisma.$transaction(async (tx) => {
+      // Las facturas anteriores conservan la clasificacion con el pais de antes.
+      if (pais !== undefined) await congelarPaisFacturasAnteriores(tx, String(companyId), String(id), existe.pais);
+      return tx.customer.update({ where: { id: String(id) }, data: cambios });
     })) as CustomerRow;
     return aCliente(c) as unknown as Cliente;
   },

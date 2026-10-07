@@ -4,6 +4,7 @@ import { aCentimos } from '../utils/money';
 import { incomeInvoicesService, type CrearLineaIngresoDTO } from './income-invoices.service';
 import { invoiceExtractorService, type InvoiceExtraction } from './invoice-extractor.service';
 import { archivarVentaSinRomper } from './archivoFacturas.service';
+import { paisDelCliente } from '../domain/tipo-operacion.model';
 
 /**
  * Lector de facturas de INGRESO (pantalla "Lector de ingresos").
@@ -163,18 +164,31 @@ export const ingresosExtractorService = {
     const existente = await prisma.customer.findFirst({ where: { companyId, nifCif: nif } });
     const customer = existente
       ? { id: existente.id }
-      : { nuevo: { nombreFiscal: e.customer.name || `Cliente ${nif}`, nifCif: nif, direccion: e.customer.address ?? undefined, pais: 'ES' } };
+      : {
+          nuevo: {
+            nombreFiscal: e.customer.name || `Cliente ${nif}`,
+            nifCif: nif,
+            direccion: e.customer.address ?? undefined,
+            // ES salvo que el NIF lleve el prefijo de otro Estado de la UE (FR..., DE...; EL = Grecia).
+            pais: paisDelCliente({ pais: 'ES', nifCif: nif }),
+          },
+        };
 
-    const factura = await incomeInvoicesService.crearIngreso({
-      companyId,
-      customer,
-      serie,
-      numero,
-      fechaEmision: e.invoice.issue_date ?? undefined,
-      fechaVencimiento: e.invoice.due_date ?? undefined,
-      lineas,
-      observaciones: `Digitalizada desde ${doc.originalFileName}`,
-    });
+    // Origen lector: la fiscalidad avisa en vez de rechazar (y en una empresa no
+    // espanola quita el IVA que el OCR pone por defecto).
+    const factura = await incomeInvoicesService.crearIngreso(
+      {
+        companyId,
+        customer,
+        serie,
+        numero,
+        fechaEmision: e.invoice.issue_date ?? undefined,
+        fechaVencimiento: e.invoice.due_date ?? undefined,
+        lineas,
+        observaciones: `Digitalizada desde ${doc.originalFileName}`,
+      },
+      { origen: 'lector' },
+    );
 
     // Archivar el PDF en su carpeta definitiva. No es critico: si falla, la
     // factura ya esta creada y el documento queda enlazado igualmente.

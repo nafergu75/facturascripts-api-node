@@ -23,13 +23,19 @@ export function aNumero<T>(valor: T): T extends Prisma.Decimal ? number : T {
 }
 
 /** Nombres de los campos migrados a Decimal (en cualquier modelo). */
-export const CAMPOS_DECIMALES: ReadonlySet<string> = new Set(["baseImponible", "baseLine", "baseTotal", "beneficio", "cuotaIva", "cuotaRetencion", "debe", "descuentoImporte", "gasto", "haber", "importe", "ingresos", "irpfRetenido", "ivaDevengado", "ivaPorcentaje", "ivaImporte", "ivaRepercutido", "ivaTotal", "precio", "precioCompra", "precioUnitario", "retencionImporte", "retencionTotal", "saldoInicial", "totalBruto", "totalFactura", "totalIRPF", "totalLiquido", "totalSeguridadSocialEmpresa", "totalSeguridadSocialTrabajador"]);
+export const CAMPOS_DECIMALES: ReadonlySet<string> = new Set([
+  "baseImponible", "baseLine", "baseTotal", "beneficio", "cuotaIva", "cuotaRetencion", "debe", "descuentoImporte", "gasto", "haber", "importe", "ingresos", "irpfRetenido", "ivaDevengado", "ivaPorcentaje", "ivaImporte", "ivaRepercutido", "ivaTotal", "precio", "precioCompra", "precioUnitario", "retencionImporte", "retencionTotal", "saldoInicial", "totalBruto", "totalFactura", "totalIRPF", "totalLiquido", "totalSeguridadSocialEmpresa", "totalSeguridadSocialTrabajador",
+  // Divisas: importes en la moneda del documento, tipos de cambio y cobros en divisa.
+  "baseTotalDoc", "ivaTotalDoc", "retencionTotalDoc", "totalFacturaDoc", "precioUnitarioDoc", "baseLineDoc", "descuentoImporteDoc", "ivaImporteDoc", "retencionImporteDoc", "importeDoc", "importeTesoreria", "tipoCambio", "diferenciaCambio", "comisionBancaria", "unidadesPorEur", "totalDivisa",
+]);
 
 /**
  * Recorre un resultado de Prisma y convierte a number los Decimal de los campos
  * migrados. Cubre lo que la extension de resultado no alcanza: agregados
  * (_sum, _avg... de aggregate y groupBy). Otros Decimal (Movement.amount,
- * DocumentoArchivo) se dejan como Decimal: su codigo ya opera con ellos.
+ * DocumentoArchivo base/iva/total) se dejan como Decimal: su codigo ya opera
+ * con ellos. Ojo: la conversion es por NOMBRE, asi que DocumentoArchivo.tipoCambio
+ * y totalDivisa SI llegan como number.
  */
 export function decimalesANumero(valor: unknown, campo?: string): unknown {
   if (valor instanceof Prisma.Decimal) return campo && CAMPOS_DECIMALES.has(campo) ? valor.toNumber() : valor;
@@ -57,12 +63,22 @@ export const importesComoNumero = Prisma.defineExtension({
     },
     invoicePayment: {
       importe: { needs: { importe: true }, compute: (r) => aNumero(r.importe) },
+      importeDoc: { needs: { importeDoc: true }, compute: (r) => aNumero(r.importeDoc) },
+      importeTesoreria: { needs: { importeTesoreria: true }, compute: (r) => aNumero(r.importeTesoreria) },
+      tipoCambio: { needs: { tipoCambio: true }, compute: (r) => aNumero(r.tipoCambio) },
+      diferenciaCambio: { needs: { diferenciaCambio: true }, compute: (r) => aNumero(r.diferenciaCambio) },
+      comisionBancaria: { needs: { comisionBancaria: true }, compute: (r) => aNumero(r.comisionBancaria) },
     },
     incomeInvoice: {
       baseTotal: { needs: { baseTotal: true }, compute: (r) => aNumero(r.baseTotal) },
       ivaTotal: { needs: { ivaTotal: true }, compute: (r) => aNumero(r.ivaTotal) },
       retencionTotal: { needs: { retencionTotal: true }, compute: (r) => aNumero(r.retencionTotal) },
       totalFactura: { needs: { totalFactura: true }, compute: (r) => aNumero(r.totalFactura) },
+      baseTotalDoc: { needs: { baseTotalDoc: true }, compute: (r) => aNumero(r.baseTotalDoc) },
+      ivaTotalDoc: { needs: { ivaTotalDoc: true }, compute: (r) => aNumero(r.ivaTotalDoc) },
+      retencionTotalDoc: { needs: { retencionTotalDoc: true }, compute: (r) => aNumero(r.retencionTotalDoc) },
+      totalFacturaDoc: { needs: { totalFacturaDoc: true }, compute: (r) => aNumero(r.totalFacturaDoc) },
+      tipoCambio: { needs: { tipoCambio: true }, compute: (r) => aNumero(r.tipoCambio) },
     },
     incomeInvoiceLine: {
       precioUnitario: { needs: { precioUnitario: true }, compute: (r) => aNumero(r.precioUnitario) },
@@ -70,6 +86,14 @@ export const importesComoNumero = Prisma.defineExtension({
       descuentoImporte: { needs: { descuentoImporte: true }, compute: (r) => aNumero(r.descuentoImporte) },
       ivaImporte: { needs: { ivaImporte: true }, compute: (r) => aNumero(r.ivaImporte) },
       retencionImporte: { needs: { retencionImporte: true }, compute: (r) => aNumero(r.retencionImporte) },
+      precioUnitarioDoc: { needs: { precioUnitarioDoc: true }, compute: (r) => aNumero(r.precioUnitarioDoc) },
+      baseLineDoc: { needs: { baseLineDoc: true }, compute: (r) => aNumero(r.baseLineDoc) },
+      descuentoImporteDoc: { needs: { descuentoImporteDoc: true }, compute: (r) => aNumero(r.descuentoImporteDoc) },
+      ivaImporteDoc: { needs: { ivaImporteDoc: true }, compute: (r) => aNumero(r.ivaImporteDoc) },
+      retencionImporteDoc: { needs: { retencionImporteDoc: true }, compute: (r) => aNumero(r.retencionImporteDoc) },
+    },
+    tipoCambioBce: {
+      unidadesPorEur: { needs: { unidadesPorEur: true }, compute: (r) => aNumero(r.unidadesPorEur) },
     },
     priorYearData: {
       baseImponible: { needs: { baseImponible: true }, compute: (r) => aNumero(r.baseImponible) },

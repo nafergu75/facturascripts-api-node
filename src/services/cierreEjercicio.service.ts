@@ -135,6 +135,28 @@ export interface VistaCierre {
   motivoNoDeshacer: string | null;
 }
 
+/**
+ * Facturas de venta en otra moneda que la de cuenta, emitidas hasta el 31/12 y
+ * sin cobrar del todo. La NRV 11.ª del PGC (13.ª en PYMES) pide valorar esos
+ * saldos al tipo de cierre; la app todavia no hace ese ajuste: solo se avisa.
+ */
+async function facturasEnDivisaPendientes(companyId: string, ejercicio: number): Promise<string[]> {
+  const cfg = await prisma.legalConfig.findUnique({ where: { companyId }, select: { monedaCuenta: true } }).catch(() => null);
+  const facturas = await prisma.incomeInvoice.findMany({
+    where: {
+      companyId,
+      estadoDocumento: 'FINAL',
+      fechaEmision: { lte: `${ejercicio}-12-31` },
+      moneda: { not: cfg?.monedaCuenta || 'EUR' },
+      estado: { not: 'PAID' },
+      totalFactura: { gt: 0 },
+    },
+    select: { numeroCompleto: true, moneda: true },
+    orderBy: { fechaEmision: 'asc' },
+  });
+  return facturas.map((f) => `${f.numeroCompleto ?? '?'} (${f.moneda})`);
+}
+
 async function asientosDeCierre(companyId: string, ejercicio: number) {
   return prisma.journalEntry.findMany({
     where: { companyId, estado: 'POSTED', origen: { in: ['REGULARIZACION', 'CIERRE'] }, fecha: rangoEjercicio(ejercicio) },
@@ -208,6 +230,13 @@ export async function previsualizarCierre(companyId: string, ejercicio: number, 
       );
     }
     if (periodosAbiertos > 0) avisos.push(`${periodosAbiertos} mes(es) del ${ejercicio} siguen abiertos: al cerrar se bloquearán.`);
+    const enDivisa = await facturasEnDivisaPendientes(companyId, ejercicio);
+    if (enDivisa.length) {
+      const lista = enDivisa.length > 10 ? `${enDivisa.slice(0, 10).join(', ')} y ${enDivisa.length - 10} más` : enDivisa.join(', ');
+      avisos.push(
+        `Hay ${enDivisa.length} factura(s) en otra moneda pendientes de cobro a 31/12/${ejercicio}: ${lista}. El PGC (NRV 11.ª; 13.ª en PYMES) pide valorar esos saldos al tipo de cambio de cierre. La aplicación todavía no hace ese ajuste: si procede, regístralo con un asiento manual (430 contra 768 o 668) y revísalo con tu asesor.`,
+      );
+    }
     if (siguiente.apertura) {
       const txt = `El ejercicio ${ejercicio + 1} ya tiene un asiento de apertura (${siguiente.apertura.numero}), seguramente importado.`;
       if (opciones.reemplazarApertura) avisos.push(`${txt} Se anulará y se sustituirá por el del cierre.`);

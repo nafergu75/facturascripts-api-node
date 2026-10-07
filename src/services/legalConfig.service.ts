@@ -3,6 +3,12 @@ import { prisma, type TransaccionBD } from '../config/database';
 import { badRequest, conflict } from '../utils/http-errors';
 import { normalizarNif, validarNifEspanol, type ResultadoNif } from '../utils/nif';
 import { esCodigoPais, problemaCodigoPostal } from '../utils/geografia';
+import { esPaisEspana } from '../domain/perfil-empresa.model';
+import { esPaisUe } from '../domain/tipo-operacion.model';
+import { monedasCuentaPermitidas, validarMonedaCuenta } from '../domain/divisas';
+
+export { esPaisEspana };
+export { esEmpresaEspanola, monedaDeCuenta, perfilEmpresa } from './perfilEmpresa.service';
 
 export interface LegalConfigInput {
   tipoSociedad?: string;
@@ -29,6 +35,8 @@ export interface LegalConfigInput {
   email?: string | null;
   web?: string | null;
   pais?: string;
+  /** Moneda de la contabilidad (EUR o USD). Ver actualizar(). */
+  monedaCuenta?: string;
 }
 
 const TEXTOS = [
@@ -61,7 +69,7 @@ export const TEXTO_MAX = 191;
 /** Campos que faltan para que la empresa pueda facturar con todos los datos. */
 export function camposPendientesEmpresa(cfg: Record<string, unknown> | null): string[] {
   const vacio = (k: string) => !String(cfg?.[k] ?? '').trim();
-  const espana = String(cfg?.pais ?? 'ES').toUpperCase() === 'ES';
+  const espana = esPaisEspana(cfg?.pais as string | null | undefined);
   const faltan: string[] = [];
   for (const [k, nombre] of [
     ['denominacion', 'Denominación o nombre'],
@@ -167,6 +175,9 @@ export function limpiarLegalConfig(datos: Record<string, unknown>, paisActual = 
   if (typeof limpio.fechaConstitucion === 'string' && !/^\d{4}-\d{2}-\d{2}$/.test(limpio.fechaConstitucion as string)) {
     throw badRequest('fechaConstitucion tiene que tener el formato AAAA-MM-DD.', { campo: 'fechaConstitucion' });
   }
+  if (datos.monedaCuenta !== undefined && datos.monedaCuenta !== null && datos.monedaCuenta !== '') {
+    limpio.monedaCuenta = validarMonedaCuenta(datos.monedaCuenta, String(limpio.pais ?? paisActual));
+  }
   return limpio as LegalConfigInput;
 }
 
@@ -241,6 +252,58 @@ export async function comprobarNifLibre(tx: TransaccionBD, nif: string, excluirC
 /** Conflicto de escritura o interbloqueo en una transaccion (MySQL lo resuelve abortando una). */
 export const esConflictoEscritura = (e: unknown) => e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2034';
 
+/**
+ * Moneda de cuenta por defecto segun el pais: euros en Espana y en la UE; en el
+ * resto (EE. UU., Hong Kong...), dolares.
+ */
+export function monedaCuentaPorPais(pais: string): string {
+  return esPaisEspana(pais) || esPaisUe(pais) ? 'EUR' : 'USD';
+}
+
+/**
+ * Decide la moneda de cuenta tras guardar la configuracion:
+ *  - con facturas o asientos, el pais no pasa de Espana a otro ni al reves: el
+ *    IVA, el idioma y los modelos de lo ya emitido dependen de ello;
+ *  - sin cambiar el pais ni la moneda, se deja como esta;
+ *  - la indicada o, si cambia el pais, la de su pais (USD fuera de la UE); con
+ *    documentos, la que ya habia. Tiene que valer para el pais: Espana y la UE,
+ *    EUR; EE. UU. y Hong Kong, USD;
+ *  - no cambia si la empresa ya tiene facturas o asientos.
+ */
+export function decidirMonedaCuenta(opc: {
+  indicada?: string;
+  paisAnterior: string;
+  paisNuevo: string;
+  monedaActual: string;
+  tieneDocumentos: boolean;
+}): string {
+  const { indicada, paisAnterior, paisNuevo, monedaActual, tieneDocumentos } = opc;
+  const cambiaPais = paisNuevo !== paisAnterior;
+  if (tieneDocumentos && cambiaPais && esPaisEspana(paisAnterior) !== esPaisEspana(paisNuevo)) {
+    throw badRequest(
+      esPaisEspana(paisAnterior)
+        ? 'La empresa ya tiene facturas o asientos como empresa establecida en España: no se puede cambiar a otro país (sus facturas llevan IVA español y se declaran a la AEAT). Si va a operar desde otro país, dala de alta como empresa nueva.'
+        : 'La empresa ya tiene facturas o asientos como empresa no establecida en España: no se puede cambiar a España. Si tiene establecimiento permanente en España, dala de alta como empresa nueva con país España.',
+    );
+  }
+  if (!cambiaPais && (indicada === undefined || indicada === monedaActual)) return monedaActual;
+  // Sin indicarla: un cambio de pais no reescribe una contabilidad con documentos.
+  const nueva = indicada ?? (tieneDocumentos ? monedaActual : monedaCuentaPorPais(paisNuevo));
+  if (!monedasCuentaPermitidas(paisNuevo).includes(nueva) && tieneDocumentos && nueva === monedaActual) {
+    throw badRequest(
+      `La contabilidad está en ${monedaActual} y la empresa ya tiene facturas o asientos: no se puede cambiar a un país que la lleva en otra moneda.`,
+    );
+  }
+  validarMonedaCuenta(nueva, paisNuevo);
+  if (nueva === monedaActual) return monedaActual;
+  if (tieneDocumentos) {
+    throw badRequest(
+      `No se puede cambiar la moneda de la contabilidad (${monedaActual}): la empresa ya tiene facturas o asientos.`,
+    );
+  }
+  return nueva;
+}
+
 /** La config sin los bytes del logo (no viajan en el JSON): solo si hay logo. */
 function sinLogo<T extends { logo?: unknown; logoMime?: string | null }>(cfg: T) {
   const { logo, logoMime, ...resto } = cfg;
@@ -259,12 +322,26 @@ function tipoImagen(buf: Buffer): 'image/png' | 'image/jpeg' | null {
   return null;
 }
 
+/** La empresa ya tiene facturas o asientos: su moneda de cuenta no se puede cambiar. */
+async function tieneDocumentos(companyId: string): Promise<boolean> {
+  const [factura, gasto, asiento] = await Promise.all([
+    prisma.incomeInvoice.findFirst({ where: { companyId }, select: { id: true } }),
+    prisma.expenseInvoice.findFirst({ where: { companyId }, select: { id: true } }),
+    prisma.journalEntry.findFirst({ where: { companyId }, select: { id: true } }),
+  ]);
+  return !!(factura || gasto || asiento);
+}
+
 export const legalConfigService = {
-  /** Devuelve la config legal de la empresa, creándola con valores por defecto si no existe. */
+  /**
+   * Devuelve la config legal de la empresa, creándola con valores por defecto si
+   * no existe. `monedaCuentaEditable`: false si ya hay facturas o asientos (la
+   * moneda de la contabilidad ya no se puede cambiar).
+   */
   async obtener(companyId: string) {
-    const existente = await prisma.legalConfig.findUnique({ where: { companyId } });
-    if (existente) return sinLogo(existente);
-    return sinLogo(await prisma.legalConfig.create({ data: { companyId } }));
+    const existente =
+      (await prisma.legalConfig.findUnique({ where: { companyId } })) ?? (await prisma.legalConfig.create({ data: { companyId } }));
+    return { ...sinLogo(existente), monedaCuentaEditable: !(await tieneDocumentos(companyId)) };
   },
 
   /**
@@ -277,13 +354,16 @@ export const legalConfigService = {
    * - NIF o forma juridica en Espana: que cuadren (S.A. con A, S.L. con B...);
    * - codigo postal, provincia o pais en Espana: que el CP exista y sea de esa
    *   provincia.
+   * - moneda de la contabilidad (EUR o USD): ver decidirMonedaCuenta; con
+   *   facturas o asientos no cambia, y si cambia, las cuentas bancarias pasan
+   *   a la nueva en la misma transaccion.
    * Lo que ya estaba guardado y no se toca no se vuelve a comprobar: una
    * empresa antigua puede seguir guardando el resto de sus datos.
    */
   async actualizar(companyId: string, datos: Record<string, unknown>) {
     const actual = await prisma.legalConfig.findUnique({
       where: { companyId },
-      select: { pais: true, tipoSociedad: true, nif: true, codigoPostal: true, provincia: true },
+      select: { pais: true, tipoSociedad: true, nif: true, codigoPostal: true, provincia: true, monedaCuenta: true },
     });
     // Sin fila todavia: los valores por defecto del esquema.
     const antes = {
@@ -293,6 +373,7 @@ export const legalConfigService = {
       codigoPostal: actual?.codigoPostal ?? null,
       provincia: actual?.provincia ?? null,
     };
+    const monedaActual = actual?.monedaCuenta ?? 'EUR';
     const limpio = limpiarLegalConfig(datos ?? {}, antes.pais);
     delete (limpio as Record<string, unknown>).logo;
     delete (limpio as Record<string, unknown>).logoMime;
@@ -339,17 +420,44 @@ export const legalConfigService = {
       }
     }
 
-    const guardar = (db: TransaccionBD) =>
-      db.legalConfig.upsert({
+    // Moneda de la contabilidad (divisas): solo se decide si se indica o cambia el
+    // pais; con facturas o asientos no se puede cambiar (ver decidirMonedaCuenta).
+    if (limpio.monedaCuenta !== undefined || cambiaPais) {
+      limpio.monedaCuenta = decidirMonedaCuenta({
+        indicada: limpio.monedaCuenta,
+        paisAnterior: antes.pais,
+        paisNuevo: despues.pais,
+        monedaActual,
+        tieneDocumentos: await tieneDocumentos(companyId),
+      });
+    }
+    const cambiaMoneda = limpio.monedaCuenta !== undefined && limpio.monedaCuenta !== monedaActual;
+
+    const guardar = async (db: TransaccionBD) => {
+      const cfg = await db.legalConfig.upsert({
         where: { companyId },
         update: limpio,
         create: { companyId, ...limpio },
       });
-    if (!cambiaNif || !limpio.nif) return sinLogo(await guardar(prisma));
+      // Sin facturas ni asientos se puede cambiar la moneda de la contabilidad: las
+      // cuentas bancarias, que se dieron de alta en la anterior, pasan a la nueva.
+      if (cambiaMoneda) {
+        await db.bankAccount.updateMany({ where: { companyId, moneda: monedaActual }, data: { moneda: limpio.monedaCuenta } });
+      }
+      return cfg;
+    };
+    const conMoneda = async <T extends { logo?: unknown; logoMime?: string | null }>(cfg: T) => ({
+      ...sinLogo(cfg),
+      monedaCuentaEditable: !(await tieneDocumentos(companyId)),
+    });
+    if (!cambiaNif || !limpio.nif) {
+      // Sin NIF nuevo: una transaccion solo si tambien hay que pasar las cuentas bancarias de moneda.
+      return conMoneda(cambiaMoneda ? await prisma.$transaction((tx) => guardar(tx)) : await guardar(prisma));
+    }
     // NIF nuevo: se comprueba que este libre y se guarda en la misma transaccion.
     const nifNuevo = limpio.nif;
     try {
-      return sinLogo(
+      return conMoneda(
         await prisma.$transaction(async (tx) => {
           await comprobarNifLibre(tx, nifNuevo, companyId);
           return guardar(tx);

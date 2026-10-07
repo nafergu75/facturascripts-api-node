@@ -7,6 +7,8 @@ jest.mock('../config/database', () => ({
   prisma: {
     bankAccount: { findFirst: jest.fn(), findMany: jest.fn(), create: jest.fn() },
     bankMovement: { findMany: jest.fn(), count: jest.fn(), groupBy: jest.fn() },
+    // Empresa de EE. UU.: sus cuentas van en USD (la moneda de su contabilidad).
+    legalConfig: { findUnique: jest.fn(async () => ({ pais: 'US', monedaCuenta: 'USD' })) },
   },
   connectDatabase: jest.fn(),
   disconnectDatabase: jest.fn(),
@@ -90,8 +92,10 @@ describe('tesoreria', () => {
     expect(db.bankAccount.create.mock.calls[0][0].data).toMatchObject({
       iban: 'ES9121000418450200051332',
       saldoInicial: 250.5,
+      moneda: 'USD',
     });
     expect(res.estado).toBe('activa');
+    expect(res.moneda).toBe('USD');
   });
 
   it('no crea dos cuentas con el mismo IBAN', async () => {

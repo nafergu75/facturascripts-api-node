@@ -15,6 +15,8 @@ import { prisma } from '../config/database';
 import { taxDocumentsService } from './tax-documents.service';
 import { reportsService } from './reports.service';
 import { registrarAuditoria } from './auditoria.service';
+import { esEmpresaEspanolaFiscal, MENSAJE_SIN_MODELOS, ventasQuePuedenDevengarseEntre } from './impuestosCalculo.service';
+import { esTipoOperacion, fechaDevengoVenta, paisLegacy } from '../domain/tipo-operacion.model';
 import {
   generarCasillas303,
   generarCasillas111,
@@ -25,6 +27,11 @@ import {
   generarCasillas190,
   ModeloFiscalAuditoria,
 } from '../utils/aeat-models';
+
+/** 400 si la empresa no esta establecida en Espana (no presenta modelos de la AEAT). */
+async function exigirEmpresaEspanola(companyId: string): Promise<void> {
+  if (!(await esEmpresaEspanolaFiscal(companyId))) throw badRequest(MENSAJE_SIN_MODELOS);
+}
 
 export class TaxModelsService {
   /**
@@ -50,6 +57,8 @@ export class TaxModelsService {
     casillas: any;
     id: string;
   }> {
+    // Una empresa no establecida en Espana no presenta modelos de la AEAT.
+    await exigirEmpresaEspanola(companyId);
     // Validar trimestre
     if (trimestre < 1 || trimestre > 4) {
       throw badRequest('Trimestre debe estar entre 1 y 4');
@@ -67,19 +76,33 @@ export class TaxModelsService {
       period
     );
 
-    // Calcular totales
+    // Calcular totales. La base repercutida es la de las ventas que devengan IVA:
+    // las del libro sin tipo de operacion (anteriores) como siempre y las
+    // NACIONAL; las exentas, intracomunitarias, exportaciones, no sujetas e ISP
+    // van a la informacion adicional ([59], [60], [120], [122]).
     const ivaRepercutido = emitidas.totalCuotas;
     const ivaSoportado = recibidas.totalCuotas;
     const resultado = ivaRepercutido - ivaSoportado;
+    const baseRepercutido = emitidas.baseDevengada;
 
     // Generar casillas AEAT completas
-    const casillas = generarCasillas303({
-      baseRepercutido: emitidas.totalBases,
+    const casillas: Record<string, any> = generarCasillas303({
+      baseRepercutido,
       cuotaRepercutido: ivaRepercutido,
       baseSoportado: recibidas.totalBases,
       cuotaSoportado: ivaSoportado,
       resultado,
     });
+    const DESCRIPCION_INFORMATIVA: Record<keyof typeof emitidas.informativas, string> = {
+      '59': 'Entregas intracomunitarias de bienes y servicios',
+      '60': 'Exportaciones y operaciones asimiladas',
+      '120': 'Operaciones no sujetas por reglas de localización',
+      '122': 'Operaciones sujetas con inversión del sujeto pasivo',
+    };
+    for (const [numero, valor] of Object.entries(emitidas.informativas) as Array<[keyof typeof emitidas.informativas, number]>) {
+      // Solo si hay importe: los libros anteriores (sin tipo) no cambian.
+      if (valor !== 0) casillas[numero] = { numero, descripcion: DESCRIPCION_INFORMATIVA[numero], valor, tipo: 'informativa' };
+    }
 
     // Auditoría
     const auditoria: ModeloFiscalAuditoria = {
@@ -116,7 +139,7 @@ export class TaxModelsService {
             ivaSoportado,
             resultado,
             periodoDescription: `Q${trimestre}-${ejercicio}`,
-            baseRepercutido: emitidas.totalBases,
+            baseRepercutido,
             baseSoportado: recibidas.totalBases,
             auditoria,
           },
@@ -135,7 +158,7 @@ export class TaxModelsService {
             ivaSoportado,
             resultado,
             periodoDescription: `Q${trimestre}-${ejercicio}`,
-            baseRepercutido: emitidas.totalBases,
+            baseRepercutido,
             baseSoportado: recibidas.totalBases,
             auditoria,
           },
@@ -193,6 +216,8 @@ export class TaxModelsService {
     estado: string;
     id: string;
   }> {
+    // Una empresa no establecida en Espana no presenta modelos de la AEAT.
+    await exigirEmpresaEspanola(companyId);
     // Validar trimestre
     if (trimestre < 1 || trimestre > 4) {
       throw badRequest('Trimestre debe estar entre 1 y 4');
@@ -367,6 +392,8 @@ export class TaxModelsService {
     casillas: any;
     id: string;
   }> {
+    // Una empresa no establecida en Espana no presenta modelos de la AEAT.
+    await exigirEmpresaEspanola(companyId);
     // Obtener resultado contable del P&L anual
     const from = `${ejercicio}-01-01`;
     const to = `${ejercicio}-12-31`;
@@ -500,20 +527,22 @@ export class TaxModelsService {
     casillas: any;
     id: string;
   }> {
+    // Una empresa no establecida en Espana no presenta modelos de la AEAT.
+    await exigirEmpresaEspanola(companyId);
     // Obtener clientes (facturas de ingreso)
-    const clientesFacturas = await prisma.incomeInvoice.findMany({
-      where: {
-        companyId,
-        estadoDocumento: 'FINAL',
-        fechaEmision: {
-          gte: `${ejercicio}-01-01`,
-          lte: `${ejercicio}-12-31`,
+    // Ventas por fecha de devengo (art. 75 LIVA; las anteriores, por la de emision como siempre).
+    const clientesFacturas = (
+      await prisma.incomeInvoice.findMany({
+        where: {
+          companyId,
+          estadoDocumento: 'FINAL',
+          ...ventasQuePuedenDevengarseEntre(`${ejercicio}-01-01`, `${ejercicio}-12-31`),
         },
-      },
-      include: {
-        customer: true,
-      },
-    });
+        include: {
+          customer: true,
+        },
+      })
+    ).filter((f) => fechaDevengoVenta(f).startsWith(`${ejercicio}-`));
 
     // Obtener proveedores (facturas de gasto)
     const proveedoresFacturas = await prisma.expenseInvoice.findMany({
@@ -546,9 +575,16 @@ export class TaxModelsService {
     // Las operaciones con el extranjero no van en el 347 (las intracomunitarias, en el 349).
     const espanol = (pais: string | null | undefined) => !pais || pais.toUpperCase() === 'ES';
 
-    // Procesar clientes
+    // Solo las ventas interiores: las facturas con tipo de operacion fuera del 347
+    // (intracomunitarias, exportaciones, servicios a extranjeros, empresa
+    // extranjera) no entran; las anteriores (sin tipo), como siempre.
+    const TIPOS_347 = ['NACIONAL', 'EXENTA', 'ISP_NACIONAL'];
+    const declarable = (tipo: string | null) => !esTipoOperacion(tipo) || TIPOS_347.includes(tipo);
+
+    // Procesar clientes. Las facturas sin tipo, con el pais del cliente congelado en ellas (si se cambio la ficha).
     for (const factura of clientesFacturas) {
-      if (!factura.customer.nifCif || !espanol(factura.customer.pais)) continue;
+      const pais = esTipoOperacion(factura.tipoOperacion) ? factura.customer.pais : paisLegacy(factura, factura.customer);
+      if (!factura.customer.nifCif || !espanol(pais) || !declarable(factura.tipoOperacion)) continue;
 
       const key = `cliente-${factura.customer.nifCif}`;
       if (!tercerosMapa.has(key)) {
@@ -723,6 +759,8 @@ export class TaxModelsService {
     casillas: any;
     id: string;
   }> {
+    // Una empresa no establecida en Espana no presenta modelos de la AEAT.
+    await exigirEmpresaEspanola(companyId);
     // Validar trimestre
     if (trimestre < 1 || trimestre > 4) {
       throw badRequest('Trimestre debe estar entre 1 y 4');
@@ -898,6 +936,8 @@ export class TaxModelsService {
     desgloseTrimestral: any[];
     id: string;
   }> {
+    // Una empresa no establecida en Espana no presenta modelos de la AEAT.
+    await exigirEmpresaEspanola(companyId);
     // Obtener los 4 trimestres de modelo 303
     const modelos303 = await prisma.modeloImpuesto.findMany({
       where: {
@@ -1059,6 +1099,8 @@ export class TaxModelsService {
     desgloseTrimestral: any[];
     id: string;
   }> {
+    // Una empresa no establecida en Espana no presenta modelos de la AEAT.
+    await exigirEmpresaEspanola(companyId);
     // Obtener los 4 trimestres de modelo 111
     const modelos111 = await prisma.modeloImpuesto.findMany({
       where: {

@@ -4,10 +4,16 @@ import { badRequest, notImplemented } from '../utils/http-errors';
 import { incomeInvoicesService, CrearFacturaIngresoDTO, ESTADOS_COBRO } from '../services/income-invoices.service';
 import { avisosFactura, generarPdfFactura } from '../services/facturaPdf.service';
 import { registrarAuditoria } from '../services/auditoria.service';
-import { accountingHooksService } from '../services/accounting-hooks.service';
+import { accountingHooksService, type ResultadoContabilizacion } from '../services/accounting-hooks.service';
 import { archivarVentaSinRomper } from '../services/archivoFacturas.service';
+import { contextoFiscalEmpresa, sugerirOperacion } from '../services/fiscalidad-venta.service';
 import { resumenCobrosClientes } from '../services/cobrosClientes.service';
 import { anioEspana } from '../utils/fechas';
+
+/** Datos de divisa para la auditoria: total en moneda de cuenta y en la de la factura. */
+function metaDivisa(f: { totalFactura: number; moneda: string; totalFacturaDoc: number; tipoCambio: number; fuenteTipoCambio: string }) {
+  return { total: f.totalFactura, moneda: f.moneda, totalDoc: f.totalFacturaDoc, tipoCambio: f.tipoCambio, fuente: f.fuenteTipoCambio };
+}
 
 /**
  * Contabiliza una factura recien emitida y la guarda en el archivo de su
@@ -15,16 +21,25 @@ import { anioEspana } from '../utils/fechas';
  * almacenamiento), la factura queda emitida y se puede contabilizar o archivar
  * a mano (Archivo > Completar historial).
  */
-async function contabilizar(companyId: string, invoiceId: string): Promise<void> {
+async function contabilizar(companyId: string, invoiceId: string): Promise<ResultadoContabilizacion> {
+  let r: ResultadoContabilizacion;
   try {
-    await accountingHooksService.onIncomeInvoiceConfirmed(companyId, invoiceId);
+    r = await accountingHooksService.onIncomeInvoiceConfirmed(companyId, invoiceId);
   } catch (err) {
-    console.error(
-      `Aviso: no se pudo contabilizar automáticamente la factura ${invoiceId}:`,
-      err instanceof Error ? err.message : String(err),
-    );
+    const motivo = err instanceof Error ? err.message : String(err);
+    console.error(`Aviso: no se pudo contabilizar automáticamente la factura ${invoiceId}:`, motivo);
+    r = { contabilizada: false, motivo };
   }
   await archivarVentaSinRomper(companyId, invoiceId);
+  return r;
+}
+
+/**
+ * La factura emitida con lo que ha pasado al contabilizarla: `contabilizada:
+ * false` y el motivo si no tiene asiento (la ficha muestra "Emitida sin asiento").
+ */
+function conContabilidad<T extends object>(factura: T, r: ResultadoContabilizacion) {
+  return { ...factura, contabilizada: r.contabilizada, ...(r.contabilizada ? {} : { motivoSinAsiento: r.motivo ?? null }) };
 }
 
 export const incomeInvoicesController = {
@@ -48,13 +63,17 @@ export const incomeInvoicesController = {
       resourceId: factura.id,
       meta: {
         numeroCompleto: factura.numeroCompleto,
-        total: factura.totalFactura,
+        ...metaDivisa(factura),
         cliente: factura.customerId,
+        tipoOperacion: factura.tipoOperacion ?? null,
       },
     });
 
     // Si se ha emitido directamente (no borrador), se contabiliza como al finalizar.
-    if (factura.estadoDocumento === 'FINAL') await contabilizar(req.companyId!, factura.id);
+    if (factura.estadoDocumento === 'FINAL') {
+      sendOk(res, { invoice: conContabilidad(factura, await contabilizar(req.companyId!, factura.id)) }, undefined, 201);
+      return;
+    }
 
     sendOk(res, { invoice: factura }, undefined, 201);
   }),
@@ -116,6 +135,7 @@ export const incomeInvoicesController = {
   finalizar: asyncHandler(async (req, res) => {
     const factura = await incomeInvoicesService.finalizar(req.companyId!, req.params.id, {
       fechaEmision: req.body?.fechaEmision,
+      tipoCambio: req.body?.tipoCambio,
     });
     await registrarAuditoria({
       userId: req.user?.userId || 'unknown',
@@ -123,10 +143,9 @@ export const incomeInvoicesController = {
       action: 'EMITIR_FACTURA_INGRESO',
       resourceType: 'INCOME_INVOICE',
       resourceId: factura.id,
-      meta: { numeroCompleto: factura.numeroCompleto, total: factura.totalFactura },
+      meta: { numeroCompleto: factura.numeroCompleto, ...metaDivisa(factura), tipoOperacion: factura.tipoOperacion ?? null },
     });
-    await contabilizar(req.companyId!, factura.id);
-    sendOk(res, { invoice: factura });
+    sendOk(res, { invoice: conContabilidad(factura, await contabilizar(req.companyId!, factura.id)) });
   }),
 
   /** POST /:id/duplicar — copia la factura en un borrador nuevo. */
@@ -159,6 +178,8 @@ export const incomeInvoicesController = {
       customerId: req.query.customerId as string | undefined,
       desde: req.query.desde as string | undefined,
       hasta: req.query.hasta as string | undefined,
+      tipoOperacion: req.query.tipoOperacion as string | undefined,
+      moneda: req.query.moneda as string | undefined,
       skip: req.query.skip ? Number(req.query.skip) : 0,
       take: req.query.take ? Number(req.query.take) : 20,
     });
@@ -186,12 +207,17 @@ export const incomeInvoicesController = {
     }
 
     const b = req.body ?? {};
+    const vacio = (v: unknown) => v === undefined || v === null || v === '';
     const factura = await incomeInvoicesService.cambiarEstado(req.companyId!, req.params.id, nuevoEstado, {
       fecha: b.fecha,
       cuentaBancariaId: b.cuentaBancariaId,
       caja: b.caja === true || b.caja === 'true',
       nota: b.nota,
       userId: req.user?.userId,
+      // Cobro en divisa: tipo del dia, lo recibido en el banco y la comision.
+      tipoCambio: vacio(b.tipoCambio) ? undefined : b.tipoCambio,
+      importeRecibido: vacio(b.importeRecibido) ? undefined : Number(b.importeRecibido),
+      comisionBancaria: vacio(b.comisionBancaria) ? undefined : Number(b.comisionBancaria),
     });
 
     await registrarAuditoria({
@@ -219,8 +245,12 @@ export const incomeInvoicesController = {
       tipoRectificativa: b.tipoRectificativa,
       serie: b.serie,
       borrador: b.borrador,
+      // Se heredan de la original: solo sirven para rechazar otra moneda, otro tipo u otra operacion.
+      moneda: b.moneda,
+      tipoCambio: b.tipoCambio,
+      tipoOperacion: b.tipoOperacion,
     });
-    if (factura.estadoDocumento === 'FINAL') await contabilizar(req.companyId!, factura.id);
+    const contable = factura.estadoDocumento === 'FINAL' ? await contabilizar(req.companyId!, factura.id) : null;
 
     await registrarAuditoria({
       userId: req.user?.userId || 'unknown',
@@ -228,10 +258,10 @@ export const incomeInvoicesController = {
       action: 'CREAR_FACTURA_RECTIFICATIVA',
       resourceType: 'INCOME_INVOICE',
       resourceId: factura.id,
-      meta: { original: req.params.id, numeroCompleto: factura.numeroCompleto },
+      meta: { original: req.params.id, numeroCompleto: factura.numeroCompleto, ...metaDivisa(factura) },
     });
 
-    sendOk(res, { invoice: factura }, undefined, 201);
+    sendOk(res, { invoice: contable ? conContabilidad(factura, contable) : factura }, undefined, 201);
   }),
 
   /**
@@ -250,6 +280,30 @@ export const incomeInvoicesController = {
   hacerRecurrente: asyncHandler(async (req) => {
     void req;
     throw notImplemented('Facturas periódicas pendientes. Requiere job scheduler + persistencia de patrón de recurrencia.');
+  }),
+
+  /** GET /tipos-operacion?customerId= — contexto fiscal del formulario de factura. */
+  tiposOperacion: asyncHandler(async (req, res) => {
+    const customerId = typeof req.query.customerId === 'string' && req.query.customerId ? req.query.customerId : undefined;
+    sendOk(res, await contextoFiscalEmpresa(req.companyId!, customerId));
+  }),
+
+  /** POST /sugerir-operacion — sugerencia y revision fiscal sin guardar nada. */
+  sugerirOperacion: asyncHandler(async (req, res) => {
+    const b = req.body ?? {};
+    sendOk(
+      res,
+      await sugerirOperacion(req.companyId!, {
+        customerId: typeof b.customerId === 'string' ? b.customerId : undefined,
+        cliente: b.cliente,
+        lineas: b.lineas,
+        tipoOperacion: b.tipoOperacion,
+        causaExencion: b.causaExencion,
+        referenciaLegal: b.referenciaLegal,
+        tipoFactura: b.tipoFactura,
+        modo: b.modo,
+      }),
+    );
   }),
 
   /**

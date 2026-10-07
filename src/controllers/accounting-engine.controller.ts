@@ -15,6 +15,9 @@ import { accountingEngineService, desgloseIvaPorTipo } from '../services/account
 import { prisma } from '../config/database';
 import { cuadraEnCentimos } from '../utils/money';
 import { asegurarPlanContableEmpresa } from '../services/chart-of-accounts.service';
+import { perfilEmpresa } from '../services/perfilEmpresa.service';
+import { motivoSinTipoFijado, notaDivisa } from '../domain/divisas';
+import { esTipoOperacion, fechaDevengoVenta } from '../domain/tipo-operacion.model';
 
 export class AccountingEngineController {
   /**
@@ -64,6 +67,11 @@ export class AccountingEngineController {
       if (factura.estadoDocumento !== 'FINAL') {
         throw badRequest('La factura está en borrador: emítela antes de contabilizarla.');
       }
+      // En otra moneda solo con el tipo de cambio fijado: si no, sus importes en
+      // la moneda de cuenta no son de fiar y no se llevan a la contabilidad.
+      const { monedaCuenta } = await perfilEmpresa(companyId);
+      const sinTipo = motivoSinTipoFijado(factura, monedaCuenta);
+      if (sinTipo) throw badRequest(sinTipo);
 
       // Validar que no esté ya contabilizada
       // Los asientos de cobro (TESORERIA) tambien llevan invoiceId: no cuentan.
@@ -93,11 +101,16 @@ export class AccountingEngineController {
             desgloseIva: desgloseIvaPorTipo(factura.lineas),
             totalFactura: factura.totalFactura,
             fechaEmision: factura.fechaEmision,
+            fechaDevengo: fechaDevengoVenta(factura),
             numeroFactura: factura.numeroCompleto ?? '',
             clienteId: factura.customerId,
             clienteNif: factura.customer.nifCif,
             clienteNombre: factura.customer.nombreFiscal,
-            tipoOperacion: 'NACIONAL',
+            clientePais: factura.customer.pais,
+            // El tipo guardado; las facturas anteriores (sin tipo) se contabilizan como siempre.
+            tipoOperacion: esTipoOperacion(factura.tipoOperacion) ? factura.tipoOperacion : undefined,
+            causaExencion: factura.causaExencion,
+            notaDescripcion: notaDivisa(factura, monedaCuenta),
             estadoAsiento: desdeOcr ? 'DRAFT' : 'POSTED',
           },
           tx,

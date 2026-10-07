@@ -11,6 +11,7 @@
  */
 
 import { prisma } from '../config/database';
+import { perfilEmpresa } from './perfilEmpresa.service';
 
 /**
  * Filtro Prisma (sobre JournalEntry) que deja fuera los asientos de
@@ -390,6 +391,14 @@ function groupByDayMonth(rows: Array<{ fecha: Date; importe: number }>): {
 }
 
 export class FinancialReportsService {
+  /**
+   * Moneda de los importes de los informes: la de cuenta de la empresa (la de
+   * los asientos y los libros), EUR en las espanolas.
+   */
+  private async monedaCuenta(companyId: string): Promise<string> {
+    return (await perfilEmpresa(companyId)).monedaCuenta;
+  }
+
   // Helper: obtiene IDs de asientos POSTED para filtrar libros fiscales.
   // VATBook y RetentionBook no tienen relación directa con JournalEntry en el schema,
   // por lo que filtramos via asientoId IN (postedIds).
@@ -403,26 +412,43 @@ export class FinancialReportsService {
 
   // ── Ingresos ───────────────────────────────────────────────────────────────
   async getIncomeReport(companyId: string, fromDate: Date, toDate: Date) {
-    const postedIds = await this.postedAsientoIds(companyId);
-    const rows = await prisma.vATBook.findMany({
-      where: {
-        companyId,
-        tipoLibro: 'EMITIDAS',
-        fechaFactura: { gte: fromDate, lte: toDate },
-        // Solo incluir entradas de asientos ya aprobados (POSTED)
-        ...(postedIds.length > 0 && { asientoId: { in: postedIds } }),
-      },
-      orderBy: { fechaFactura: 'asc' },
-    });
+    const perfil = await perfilEmpresa(companyId);
+    let items: Array<{ fecha: Date; importe: number }>;
+    if (perfil.espanola) {
+      const postedIds = await this.postedAsientoIds(companyId);
+      const rows = await prisma.vATBook.findMany({
+        where: {
+          companyId,
+          tipoLibro: 'EMITIDAS',
+          fechaFactura: { gte: fromDate, lte: toDate },
+          // Solo incluir entradas de asientos ya aprobados (POSTED)
+          ...(postedIds.length > 0 && { asientoId: { in: postedIds } }),
+        },
+        orderBy: { fechaFactura: 'asc' },
+      });
+      items = rows.map((r) => ({ fecha: r.fechaFactura, importe: r.baseImponible }));
+    } else {
+      // Una empresa no establecida en Espana no lleva libro de IVA: los ingresos
+      // salen de las cuentas de ventas (7) de los asientos POSTED de sus facturas.
+      const lineas = await prisma.journalEntryLine.findMany({
+        where: {
+          companyId,
+          accountCode: { startsWith: '7' },
+          entry: { estado: 'POSTED', origen: 'FACTURA_INGRESO', fecha: { gte: fromDate, lte: toDate } },
+        },
+        include: { entry: { select: { fecha: true } } },
+        orderBy: { entry: { fecha: 'asc' } },
+      });
+      items = lineas.map((l) => ({ fecha: l.entry.fecha, importe: (l.haber || 0) - (l.debe || 0) }));
+    }
 
-    const items = rows.map((r) => ({ fecha: r.fechaFactura, importe: r.baseImponible }));
     const { byDay, byMonth } = groupByDayMonth(items);
     const totalIncome = r2(items.reduce((s, r) => s + r.importe, 0));
 
     return {
       companyId,
       period: { from: isoDay(fromDate), to: isoDay(toDate) },
-      summary: { totalIncome, currency: 'EUR' },
+      summary: { totalIncome, currency: perfil.monedaCuenta },
       byDay,
       byMonth,
     };
@@ -430,6 +456,7 @@ export class FinancialReportsService {
 
   // ── Gastos ─────────────────────────────────────────────────────────────────
   async getExpensesReport(companyId: string, fromDate: Date, toDate: Date) {
+    const moneda = await this.monedaCuenta(companyId);
     const postedIds = await this.postedAsientoIds(companyId);
     const rows = await prisma.vATBook.findMany({
       where: {
@@ -448,7 +475,7 @@ export class FinancialReportsService {
     return {
       companyId,
       period: { from: isoDay(fromDate), to: isoDay(toDate) },
-      summary: { totalExpenses, currency: 'EUR' },
+      summary: { totalExpenses, currency: moneda },
       byDay,
       byMonth,
     };
@@ -492,7 +519,7 @@ export class FinancialReportsService {
         totalIncome,
         totalExpenses,
         result: r2(totalIncome - totalExpenses),
-        currency: 'EUR',
+        currency: income.summary.currency,
       },
       byMonth,
     };
@@ -500,6 +527,7 @@ export class FinancialReportsService {
 
   // ── IVA ────────────────────────────────────────────────────────────────────
   async getVatReport(companyId: string, fromDate: Date, toDate: Date) {
+    const moneda = await this.monedaCuenta(companyId);
     const postedIds = await this.postedAsientoIds(companyId);
     const vatWhere = (tipo: string) => ({
       companyId,
@@ -551,7 +579,7 @@ export class FinancialReportsService {
         vatOutput,
         vatInput,
         vatPayable: r2(vatOutput - vatInput),
-        currency: 'EUR',
+        currency: moneda,
       },
       byMonth,
     };
@@ -559,6 +587,7 @@ export class FinancialReportsService {
 
   // ── Retenciones ────────────────────────────────────────────────────────────
   async getRetentionReport(companyId: string, fromDate: Date, toDate: Date) {
+    const moneda = await this.monedaCuenta(companyId);
     // RetentionBook no tiene fechaFactura: usa el campo `ano` (año del ejercicio fiscal
     // derivado de la fecha de emisión de la factura, no de la fecha de creación del registro).
     // Filtramos también por asientos POSTED para excluir datos de borradores/reversados.
@@ -618,7 +647,7 @@ export class FinancialReportsService {
     return {
       companyId,
       period: { from: isoDay(fromDate), to: isoDay(toDate) },
-      summary: { totalRetentions, currency: 'EUR' },
+      summary: { totalRetentions, currency: moneda },
       byMonth,
       byProvider,
     };
@@ -628,6 +657,7 @@ export class FinancialReportsService {
   // Lee líneas de asientos POSTED en cuentas 57x (Tesorería: Caja 570, Bancos 572).
   // DEBE = entrada de dinero, HABER = salida.
   async getTreasuryReport(companyId: string, fromDate: Date, toDate: Date) {
+    const moneda = await this.monedaCuenta(companyId);
     // Saldo de apertura: todo lo POSTED en 57x antes del periodo
     const beforeLines = await prisma.journalEntryLine.findMany({
       where: {
@@ -678,7 +708,7 @@ export class FinancialReportsService {
         closingBalance: r2(openingBalance + totalIn - totalOut),
         totalIn,
         totalOut,
-        currency: 'EUR',
+        currency: moneda,
       },
       movements,
     };

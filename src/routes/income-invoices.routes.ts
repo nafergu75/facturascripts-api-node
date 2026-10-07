@@ -26,6 +26,16 @@ router.get('/', incomeInvoicesController.listar);
 router.get('/resumen/periodo', incomeInvoicesController.resumenPeriodo);
 
 /**
+ * Tipo de operacion de IVA (van ANTES de '/:id'):
+ * GET  /tipos-operacion?customerId=  -> empresa espanola o no, tipos, supuestos,
+ *                                       monedas y la sugerencia para el cliente.
+ * POST /sugerir-operacion            -> sugerencia, mencion del PDF y revision
+ *                                       (errores y avisos) sin guardar nada.
+ */
+router.get('/tipos-operacion', authorize('ventas:read', 'contabilidad:read'), incomeInvoicesController.tiposOperacion);
+router.post('/sugerir-operacion', authorize('ventas:read'), incomeInvoicesController.sugerirOperacion);
+
+/**
  * Cobros de clientes para el panel: pendiente de cobro (todas las facturas
  * emitidas, de cualquier año) y vencido, cobrado en el año y las proximas
  * facturas a cobrar. Va antes de '/:id' para que "stats" no se tome por un id.
@@ -43,7 +53,7 @@ router.get('/:id', incomeInvoicesController.obtenerPorId);
 router.put('/:id', authorize('ventas:write'), incomeInvoicesController.actualizar);
 router.delete('/:id', authorize('ventas:write'), incomeInvoicesController.eliminar);
 
-/** Emitir un borrador: numero de la serie, sin huecos. */
+/** Emitir un borrador: numero de la serie, sin huecos. Cuerpo: { fechaEmision?, tipoCambio? } (tipo manual). */
 router.post('/:id/finalizar', authorize('ventas:write'), incomeInvoicesController.finalizar);
 
 /** Copiar una factura en un borrador nuevo (una proforma, en otra proforma). */

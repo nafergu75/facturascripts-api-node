@@ -978,6 +978,8 @@ const PGC_AMPLIACION: PgcNode[] = [
   cuenta('752', 'Ingresos por arrendamientos', 'ingreso'),
   cuenta('759', 'Ingresos por servicios diversos', 'ingreso'),
   cuenta('762', 'Ingresos de créditos', 'ingreso'),
+  // Cobros de facturas en divisa a un tipo mejor que el de la factura (la 668 es la perdida).
+  cuenta('768', 'Diferencias positivas de cambio', 'ingreso'),
   subgrupo('77', 'Beneficios procedentes de activos no corrientes e ingresos excepcionales', 'ingreso'),
   cuenta('778', 'Ingresos excepcionales', 'ingreso'),
 ];

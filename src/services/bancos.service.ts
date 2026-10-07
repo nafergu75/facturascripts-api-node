@@ -4,14 +4,24 @@ import { prisma } from '../config/database';
 import { logger } from '../config/logger';
 import { leerExtracto } from './extractoBancario.service';
 import { aplicarReglas } from './tesoreriaCategorias.service';
+import { monedaDeCuenta } from './perfilEmpresa.service';
 
-const aCuenta = (c: { id: string; companyId: string; iban: string; bancoNombre: string | null; subcuentaCodigo: string; activa: boolean }): CuentaBancariaEmpresa => ({
+const aCuenta = (c: {
+  id: string;
+  companyId: string;
+  iban: string;
+  bancoNombre: string | null;
+  subcuentaCodigo: string;
+  activa: boolean;
+  moneda?: string | null;
+}): CuentaBancariaEmpresa => ({
   id: c.id,
   companyId: c.companyId,
   iban: c.iban,
   bancoNombre: c.bancoNombre ?? undefined,
   subcuentaCodigo: c.subcuentaCodigo,
   activa: c.activa,
+  moneda: c.moneda ?? 'EUR',
 });
 
 const aMovimiento = (m: {
@@ -47,6 +57,8 @@ export async function crearCuentaBancaria(
       bancoNombre: data.bancoNombre,
       subcuentaCodigo: data.subcuentaCodigo,
       activa: data.activa,
+      // En la moneda de la contabilidad de la empresa.
+      moneda: await monedaDeCuenta(companyId),
     },
   });
   return aCuenta(cuenta);

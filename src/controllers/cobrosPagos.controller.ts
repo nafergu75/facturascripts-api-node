@@ -22,9 +22,16 @@ function controlador(tipo: TipoDocumento) {
 
     registrar: asyncHandler(async (req, res) => {
       const b = req.body ?? {};
+      const numero = (v: unknown) => (v === undefined || v === '' || v === null ? undefined : Number(v));
       const r = await registrarCobroFactura(req.companyId!, tipo, req.params.id, {
         fecha: b.fecha,
-        importe: b.importe === undefined || b.importe === '' || b.importe === null ? undefined : Number(b.importe),
+        importe: numero(b.importe),
+        // Cobro de una factura en divisa: importe en la moneda de la factura y, si
+        // se sabe, el tipo del dia o lo recibido en el banco y la comision.
+        importeDoc: numero(b.importeDoc),
+        importeRecibido: numero(b.importeRecibido),
+        tipoCambio: b.tipoCambio === '' || b.tipoCambio === null ? undefined : b.tipoCambio,
+        comisionBancaria: numero(b.comisionBancaria),
         cuentaBancariaId: b.cuentaBancariaId || undefined,
         caja: b.caja === true || b.caja === 'true',
         nota: b.nota,
@@ -36,7 +43,17 @@ function controlador(tipo: TipoDocumento) {
         action: `REGISTRAR_${accion}_FACTURA`,
         resourceType: recurso,
         resourceId: req.params.id,
-        meta: { cobroId: r.cobro.id, importe: r.cobro.importe, fecha: r.cobro.fecha, asiento: r.cobro.asientoNumero },
+        meta: {
+          cobroId: r.cobro.id,
+          importe: r.cobro.importe,
+          moneda: r.cobro.moneda,
+          importeDoc: r.cobro.importeDoc,
+          tipoCambio: r.cobro.tipoCambio,
+          fuente: r.cobro.fuenteTipoCambio,
+          diferenciaCambio: r.cobro.diferenciaCambio,
+          fecha: r.cobro.fecha,
+          asiento: r.cobro.asientoNumero,
+        },
       });
       sendOk(res, r, undefined, 201);
     }),

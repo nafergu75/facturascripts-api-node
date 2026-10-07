@@ -10,6 +10,45 @@
 
 import { badRequest } from '../utils/http-errors';
 import { prisma } from '../config/database';
+import { esTipoOperacion, REGLA_OPERACION } from '../domain/tipo-operacion.model';
+
+/** Casillas de informacion adicional del 303 que salen del libro de emitidas. */
+export interface InformativasLibro303 {
+  /** [59] entregas intracomunitarias de bienes y servicios */
+  '59': number;
+  /** [60] exportaciones y asimiladas */
+  '60': number;
+  /** [120] no sujetas por reglas de localizacion */
+  '120': number;
+  /** [122] inversion del sujeto pasivo */
+  '122': number;
+}
+
+const round2 = (n: number): number => Math.round((n + Number.EPSILON) * 100) / 100;
+
+/**
+ * Reparto de los apuntes del libro de emitidas para el 303: la base que
+ * devenga IVA (las filas sin tipo, anteriores a esta funcion, como siempre, y
+ * las NACIONAL) y las bases de las casillas [59], [60], [120] y [122] segun el
+ * tipo de operacion guardado en el libro. Puro.
+ */
+export function repartoLibroEmitidas(
+  filas: Array<{ baseImponible: number; tipoOperacion?: string | null; causaExencion?: string | null; nifTercero: string }>,
+): { baseDevengada: number; informativas: InformativasLibro303 } {
+  let baseDevengada = 0;
+  const informativas: InformativasLibro303 = { '59': 0, '60': 0, '120': 0, '122': 0 };
+  for (const f of filas) {
+    const tipo = esTipoOperacion(f.tipoOperacion) ? f.tipoOperacion : null;
+    if (!tipo || tipo === 'NACIONAL') {
+      baseDevengada += f.baseImponible || 0;
+      continue;
+    }
+    // El libro no guarda el pais: sale del prefijo del NIF-IVA (FR..., DE...).
+    const c = REGLA_OPERACION[tipo].casilla303({ cliente: { pais: null, nifCif: f.nifTercero }, causaExencion: f.causaExencion });
+    if (c === '59' || c === '60' || c === '120' || c === '122') informativas[c] = round2(informativas[c] + (f.baseImponible || 0));
+  }
+  return { baseDevengada, informativas };
+}
 
 export class TaxDocumentsService {
   /**
@@ -25,6 +64,10 @@ export class TaxDocumentsService {
     facturas: any[];
     totalBases: number;
     totalCuotas: number;
+    /** Base de las filas que devengan IVA (sin tipo, como siempre, o NACIONAL). */
+    baseDevengada: number;
+    /** Bases de [59], [60], [120] y [122] por el tipo de operacion de cada fila. */
+    informativas: InformativasLibro303;
   }> {
     // Parse period: Q1-2026, Q2-2026, etc.
     const match = period.match(/^Q(\d)-(\d{4})$/);
@@ -58,6 +101,7 @@ export class TaxDocumentsService {
       0
     );
     const totalCuotas = facturas.reduce((s, f) => s + (f.cuotaIva || 0), 0);
+    const { baseDevengada, informativas } = repartoLibroEmitidas(facturas);
 
     return {
       periodo: period,
@@ -69,9 +113,14 @@ export class TaxDocumentsService {
         base: f.baseImponible,
         tipoIva: f.tipoIva,
         cuota: f.cuotaIva,
+        // Tipo de operacion y causa de exencion (null en los apuntes anteriores).
+        tipoOperacion: f.tipoOperacion ?? null,
+        causaExencion: f.causaExencion ?? null,
       })),
       totalBases,
       totalCuotas,
+      baseDevengada,
+      informativas,
     };
   }
 

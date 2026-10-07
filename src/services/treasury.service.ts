@@ -2,6 +2,7 @@ import { prisma } from '../config/database';
 import { badRequest, notFound } from '../utils/http-errors';
 import { importarMovimientosDesdeCSV } from './bancos.service';
 import { conciliarMovimientoConFactura } from './conciliacionConfirmar.service';
+import { monedaDeCuenta } from './perfilEmpresa.service';
 
 /**
  * Tesoreria: la API que usa la pantalla de tesoreria del frontend.
@@ -46,9 +47,12 @@ const aCuenta = (c: {
   saldoInicial: number;
   activa: boolean;
   createdAt: Date;
+  moneda?: string | null;
 }) => ({
   id: c.id,
   iban: c.iban,
+  /** Moneda de la cuenta: la de la contabilidad de la empresa al darla de alta. */
+  moneda: c.moneda ?? 'EUR',
   bic: c.bic ?? undefined,
   bancoNombre: c.bancoNombre ?? undefined,
   subcuentaCodigo: c.subcuentaCodigo,
@@ -85,6 +89,8 @@ export async function crearCuentaBancaria(
       bancoNombre: datos.bancoNombre || null,
       subcuentaCodigo: datos.subcuentaCodigo,
       saldoInicial,
+      // Las cuentas van en la moneda de la contabilidad (cuentas en otra moneda: fuera de alcance).
+      moneda: await monedaDeCuenta(companyId),
     },
   });
   return aCuenta(cuenta);
