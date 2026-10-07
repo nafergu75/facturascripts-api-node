@@ -4,6 +4,7 @@
  */
 import { describe, it, expect } from '@jest/globals';
 import { resumirCobrosClientes, type FacturaVentaCobro } from '../services/cobrosClientes.service';
+import { anioEspana, hoyEspana } from '../utils/fechas';
 
 const HOY = '2026-10-07';
 
@@ -112,13 +113,39 @@ describe('rectificativas', () => {
     expect(resumir([original, rect], { [original.id]: 500 }).pendientes.numero).toBe(0);
   });
 
-  it('sobre una factura ya cobrada no cuenta (el abono se debe al cliente)', () => {
+  it('sobre una factura ya cobrada no es pendiente (el abono se debe al cliente); si la anula entera, tampoco es cobrada', () => {
     const original = factura({ totalFactura: 1210, estado: 'PAID' });
     const otra = factura({ totalFactura: 100 });
     const rect = factura({ totalFactura: -1210, facturaOriginalId: original.id });
     const r = resumir([original, otra, rect], { [original.id]: 1210 });
     expect(r.pendientes).toEqual({ numero: 1, importe: 100 });
-    expect(r.cobradas).toEqual({ numero: 1, importe: 1210 });
+    expect(r.cobradas).toEqual({ numero: 0, importe: 0 });
+  });
+
+  it('cobrada y luego rectificada en parte: cobrada por lo neto', () => {
+    const original = factura({ totalFactura: 1000, estado: 'PAID' });
+    const rect = factura({ totalFactura: -200, facturaOriginalId: original.id });
+    const r = resumir([original, rect], { [original.id]: 1000 });
+    expect(r.pendientes.numero).toBe(0);
+    expect(r.cobradas).toEqual({ numero: 1, importe: 800 });
+  });
+
+  it('rectificada en parte y cobrado el resto: cobrada por lo neto', () => {
+    const original = factura({ totalFactura: 1000 });
+    const rect = factura({ totalFactura: -200, facturaOriginalId: original.id });
+    const r = resumir([original, rect], { [original.id]: 800 });
+    expect(r.pendientes).toEqual({ numero: 0, importe: 0 });
+    expect(r.parcialmenteCobradas.numero).toBe(0);
+    expect(r.cobradas).toEqual({ numero: 1, importe: 800 });
+  });
+
+  it('con un cobro parcial y una rectificativa, la fila cuadra: total - cobrado - abonado = pendiente', () => {
+    const original = factura({ totalFactura: 1000 });
+    const rect = factura({ totalFactura: -200, facturaOriginalId: original.id });
+    const r = resumir([original, rect], { [original.id]: 300 });
+    expect(r.proximas).toHaveLength(1);
+    expect(r.proximas[0]).toMatchObject({ total: 1000, cobrado: 300, abonado: 200, pendiente: 500 });
+    expect(resumir([factura({ totalFactura: 50 })]).proximas[0].abonado).toBe(0);
   });
 
   it('una rectificativa sin factura original no resta de nadie', () => {
@@ -129,8 +156,96 @@ describe('rectificativas', () => {
 
   it('una rectificativa en positivo se cobra como una factura mas', () => {
     const original = factura({ totalFactura: 100, estado: 'PAID' });
-    const masImporte = factura({ totalFactura: 21, facturaOriginalId: original.id });
+    const masImporte = factura({ totalFactura: 21, facturaOriginalId: original.id, tipoRectificativa: 'I' });
     expect(resumir([original, masImporte], { [original.id]: 100 }).pendientes).toEqual({ numero: 1, importe: 21 });
+  });
+});
+
+describe('rectificativas por sustitucion (S)', () => {
+  it('la sustituta ocupa el lugar de la original: no se suman las dos', () => {
+    const original = factura({ totalFactura: 1000 });
+    const sustituta = factura({ totalFactura: 1100, facturaOriginalId: original.id, tipoRectificativa: 'S' });
+    const r = resumir([original, sustituta]);
+    expect(r.pendientes).toEqual({ numero: 1, importe: 1100 });
+    expect(r.proximas.map((f) => f.id)).toEqual([sustituta.id]);
+  });
+
+  it('lo cobrado a la original se descuenta de la sustituta', () => {
+    const original = factura({ totalFactura: 1000 });
+    const sustituta = factura({ totalFactura: 1100, facturaOriginalId: original.id, tipoRectificativa: 'S' });
+    const r = resumir([original, sustituta], { [original.id]: 300 });
+    expect(r.pendientes).toEqual({ numero: 1, importe: 800 });
+    expect(r.proximas[0]).toMatchObject({ id: sustituta.id, total: 1100, cobrado: 300, abonado: 0, pendiente: 800 });
+    expect(r.parcialmenteCobradas.numero).toBe(1);
+  });
+
+  it('una original cobrada a mano cuenta como cobrada para la sustituta', () => {
+    const original = factura({ totalFactura: 1000, estado: 'PAID' });
+    const sustituta = factura({ totalFactura: 1100, facturaOriginalId: original.id, tipoRectificativa: 'S' });
+    expect(resumir([original, sustituta]).pendientes).toEqual({ numero: 1, importe: 100 });
+  });
+
+  it('si lo cobrado a la original ya la cubre, la cobrada es la sustituta (la original no cuenta)', () => {
+    const original = factura({ totalFactura: 1000 });
+    const sustituta = factura({ totalFactura: 900, facturaOriginalId: original.id, tipoRectificativa: 'S' });
+    const r = resumir([original, sustituta], { [original.id]: 1000 });
+    expect(r.pendientes.numero).toBe(0);
+    expect(r.cobradas).toEqual({ numero: 1, importe: 900 });
+  });
+
+  it('en una cadena de sustituciones solo cuenta la ultima', () => {
+    const f1 = factura({ totalFactura: 1000 });
+    const s1 = factura({ totalFactura: 1100, facturaOriginalId: f1.id, tipoRectificativa: 'S', fechaEmision: '2026-03-02' });
+    const s2 = factura({ totalFactura: 1200, facturaOriginalId: s1.id, tipoRectificativa: 'S', fechaEmision: '2026-03-03' });
+    const r = resumir([f1, s1, s2], { [f1.id]: 200 });
+    expect(r.pendientes).toEqual({ numero: 1, importe: 1000 });
+    expect(r.proximas[0]).toMatchObject({ id: s2.id, cobrado: 200 });
+  });
+});
+
+describe('cobros con fecha posterior a hoy', () => {
+  it('no restan de lo pendiente hasta su fecha, aunque la factura figure como cobrada', () => {
+    const remesa = factura({ totalFactura: 1000, estado: 'PAID', fechaVencimiento: '2026-11-30' });
+    const r = resumirCobrosClientes([remesa], new Map([[remesa.id, 1000]]), {
+      anio: 2026,
+      hoy: HOY,
+      cobradoEnElAnio: 0,
+      cobradoHastaHoy: new Map(),
+    });
+    expect(r.pendientes).toEqual({ numero: 1, importe: 1000 });
+    expect(r.proximas[0]).toMatchObject({ cobrado: 0, pendiente: 1000 });
+    expect(r.cobradas.numero).toBe(0);
+  });
+
+  it('una cobrada a mano (sin ningun cobro) sigue contando como cobrada', () => {
+    const aMano = factura({ totalFactura: 50, estado: 'PAID' });
+    const r = resumirCobrosClientes([aMano], new Map(), { anio: 2026, hoy: HOY, cobradoEnElAnio: 0, cobradoHastaHoy: new Map() });
+    expect(r.pendientes.numero).toBe(0);
+    expect(r.cobradas).toEqual({ numero: 1, importe: 50 });
+  });
+
+  it('un cobro con fecha de hoy o anterior si resta', () => {
+    const f = factura({ totalFactura: 1000 });
+    const r = resumirCobrosClientes([f], new Map([[f.id, 1000]]), {
+      anio: 2026,
+      hoy: HOY,
+      cobradoEnElAnio: 0,
+      cobradoHastaHoy: new Map([[f.id, 400]]),
+    });
+    expect(r.proximas[0]).toMatchObject({ cobrado: 400, pendiente: 600 });
+  });
+});
+
+describe('hoy en hora peninsular', () => {
+  it('entre las 00:00 y las 02:00 de verano ya es el dia siguiente', () => {
+    expect(hoyEspana(new Date('2026-10-14T23:00:00Z'))).toBe('2026-10-15'); // 01:00 del 15/10 en Madrid
+    expect(hoyEspana(new Date('2026-10-14T21:59:00Z'))).toBe('2026-10-14');
+  });
+
+  it('el año cambia a medianoche peninsular, no a la de UTC', () => {
+    expect(hoyEspana(new Date('2026-12-31T23:30:00Z'))).toBe('2027-01-01'); // 00:30 del 01/01 en Madrid
+    expect(anioEspana(new Date('2026-12-31T23:30:00Z'))).toBe(2027);
+    expect(anioEspana(new Date('2026-12-31T22:59:00Z'))).toBe(2026);
   });
 });
 

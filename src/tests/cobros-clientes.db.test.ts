@@ -53,6 +53,9 @@ beforeAll(async () => {
   ).id;
   ids.aMano = (await emitir(10, '2026-06-01')).id; // 12,10, marcada cobrada antes de existir los cobros
   await prisma.incomeInvoice.update({ where: { id: ids.aMano }, data: { estado: 'PAID' } });
+  // Borrador de antes de estadoDocumento: estado DRAFT, y estadoDocumento quedo en FINAL por defecto.
+  ids.borradorAntiguo = (await emitir(2500, '2026-06-15', '2026-08-15')).id;
+  await prisma.incomeInvoice.update({ where: { id: ids.borradorAntiguo }, data: { estado: 'DRAFT' } });
 
   ids.borrador = (
     await incomeInvoicesService.crearIngreso({ companyId: COMPANY_ID, customer: { id: customerId }, fechaEmision: '2026-07-01', lineas: [linea(9000)], borrador: true })
@@ -85,15 +88,17 @@ describe('resumen de cobros de clientes', () => {
     expect(proximas.map((f) => f.id)).toEqual([ids.vieja, ids.vencida, ids.parcial, ids.conAbono]);
     expect(proximas[0]).toMatchObject({ cliente: 'Cliente Panel SL', total: 121, pendiente: 121, vencida: true, diasRetraso: 291 });
     expect(proximas[1]).toMatchObject({ fechaVencimiento: '2026-09-27', vencida: true, diasRetraso: 10 });
-    expect(proximas[2]).toMatchObject({ total: 605, cobrado: 205, pendiente: 400, vencida: false, diasRetraso: 0 });
-    expect(proximas[3]).toMatchObject({ total: 1210, pendiente: 1089 });
+    expect(proximas[2]).toMatchObject({ total: 605, cobrado: 205, abonado: 0, pendiente: 400, vencida: false, diasRetraso: 0 });
+    expect(proximas[3]).toMatchObject({ total: 1210, cobrado: 0, abonado: 121, pendiente: 1089 });
     expect(proximas[0].numeroCompleto).toMatch(/^A-\d+$/);
   });
 
-  it('fuera: borradores, proformas, rectificativas y la factura anulada', async () => {
+  it('fuera: borradores (tambien los antiguos con estado DRAFT), proformas, rectificativas y la factura anulada', async () => {
     const { proximas } = await resumenCobrosClientes(COMPANY_ID, 2026, HOY);
-    const fuera = [ids.borrador, ids.proforma, ids.rectAnulada, ids.rectParcial, ids.anulada, ids.cobrada, ids.aMano];
+    const fuera = [ids.borrador, ids.borradorAntiguo, ids.proforma, ids.rectAnulada, ids.rectParcial, ids.anulada, ids.cobrada, ids.aMano];
     expect(proximas.filter((f) => fuera.includes(f.id))).toEqual([]);
+    const antiguo = await prisma.incomeInvoice.findUniqueOrThrow({ where: { id: ids.borradorAntiguo } });
+    expect(antiguo).toMatchObject({ estadoDocumento: 'FINAL', estado: 'DRAFT' });
   });
 
   it('cobrar lo que queda de la parcial la pasa a cobradas', async () => {

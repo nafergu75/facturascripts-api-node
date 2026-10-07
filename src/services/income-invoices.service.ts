@@ -3,6 +3,7 @@ import { badRequest, notFound } from '../utils/http-errors';
 import { prisma, type TransaccionBD as Tx } from '../config/database';
 import { obtenerOCrearSerie, obtenerSeriePorDefecto, resolverCodSerieFactura } from './series.service';
 import { listarCobros, registrarCobroFactura, tieneCobrosActivos, type DatosCobro } from './cobrosPagos.service';
+import { hoyEspana } from '../utils/fechas';
 
 /**
  * Facturas de venta.
@@ -161,7 +162,8 @@ export interface LineaIngresoResp {
 }
 
 const round2 = (n: number): number => Math.round((n + Number.EPSILON) * 100) / 100;
-const hoyISO = (): string => new Date().toISOString().slice(0, 10);
+/** Hoy en hora peninsular: el vencimiento y la fecha de emisión por defecto no dependen de la zona del servidor. */
+const hoyISO = (): string => hoyEspana();
 const FECHA_RE = /^\d{4}-\d{2}-\d{2}$/;
 const TIPOS_IVA = [0, 4, 5, 10, 21];
 
