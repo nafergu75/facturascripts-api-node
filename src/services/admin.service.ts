@@ -344,7 +344,7 @@ export async function crearEmpresa(
 }
 
 /** Ejecuta una validacion y, si falla con un 400, le anade el campo al que se refiere. */
-function conCampo<T>(campo: string, fn: () => T): T {
+export function conCampo<T>(campo: string, fn: () => T): T {
   try {
     return fn();
   } catch (e) {

@@ -2,9 +2,10 @@ import jwt from 'jsonwebtoken';
 import { createHmac, randomUUID, timingSafeEqual } from 'crypto';
 import { config } from '../config/env';
 import { prisma } from '../config/database';
-import { verifyPassword } from '../utils/password';
-import { unauthorized } from '../utils/http-errors';
+import { hashPassword, verifyPassword } from '../utils/password';
+import { badRequest, conflict, unauthorized } from '../utils/http-errors';
 import { permisosPorEmpresaDe, personalizadoPorEmpresaDe } from './rbac.service';
+import { conCampo, validarContrasena } from './admin.service';
 
 /** Agrupa las membresias del usuario: { companyId: [roles] }. */
 export function rolesPorEmpresaDe(memberships: Array<{ companyId: string; role: unknown }>): Record<string, string[]> {
@@ -368,5 +369,46 @@ export const authService = {
     if (!user || !user.isActive) throw unauthorized('Usuario inactivo o inexistente.');
     const r = resultadoDeSesion(user);
     return { user: r.user, empresas: r.empresas };
+  },
+
+  /**
+   * El usuario cambia SU contrasena (POST /auth/cambiar-contrasena): la
+   * provisional obligatoria y, mas adelante, desde Configuracion. Pide la
+   * actual. Los errores de datos son 400 (nunca 401: el frontend cierra la
+   * sesion con cualquier 401) y llevan `details.campo`.
+   *
+   * La escritura es condicional al hash leido: si un administrador la
+   * restablece justo a la vez, no se pisa (409). Devuelve tokens NUEVOS con la
+   * huella nueva; los anteriores, de acceso y de refresco, dejan de valer solos.
+   */
+  async cambiarContrasena(userId: string, actual: string, nueva: string): Promise<LoginResult & { eraProvisional: boolean }> {
+    const incluir = { memberships: { include: { company: true } } } as const;
+    const user = await prisma.user.findUnique({ where: { id: userId }, include: incluir });
+    if (!user || !user.isActive) throw unauthorized('Usuario inactivo o inexistente.');
+
+    if (!verifyPassword(actual ?? '', user.passwordHash)) {
+      throw badRequest('La contraseña actual no es correcta.', { campo: 'actual' });
+    }
+    conCampo('nueva', () => validarContrasena(nueva, user.email));
+    if (verifyPassword(nueva, user.passwordHash)) {
+      throw badRequest('La nueva contraseña tiene que ser distinta de la actual.', { campo: 'nueva' });
+    }
+
+    const r = await prisma.user.updateMany({
+      where: { id: userId, passwordHash: user.passwordHash },
+      data: { passwordHash: hashPassword(nueva), debeCambiarContrasena: false },
+    });
+    if (r.count === 0) throw conflict('Tu contraseña acaba de cambiar desde otro sitio. Vuelve a entrar.');
+
+    const ahora = await prisma.user.findUnique({ where: { id: userId }, include: incluir });
+    if (!ahora || !ahora.isActive) throw unauthorized('Usuario inactivo o inexistente.');
+    const s = resultadoDeSesion(ahora);
+    return {
+      token: this.generateToken(s.claims),
+      refreshToken: this.signRefreshToken(ahora.id, ahora.passwordHash),
+      user: s.user,
+      empresas: s.empresas,
+      eraProvisional: user.debeCambiarContrasena === true,
+    };
   },
 };
