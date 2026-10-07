@@ -92,7 +92,7 @@ describe('detalle y fichero de un 303 mensual', () => {
       periodo: '05',
       ejercicio: 2026,
       periodoEtiqueta: '2026-05',
-      descripcion: 'IVA — autoliquidacion mensual',
+      descripcion: 'IVA — autoliquidación mensual',
       fechaVencimiento: '2026-06-30',
     });
     const calculado = await autorrellenarModelo(COMPANY_ID, fila.id);

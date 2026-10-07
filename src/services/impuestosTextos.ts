@@ -89,14 +89,16 @@ const FICHAS: Record<string, FichaModeloImpuesto> = {
   },
   '130': {
     modeloCodigo: '130',
-    titulo: 'Modelo 130 — Pago fraccionado del IRPF (estimacion directa)',
+    titulo: 'Modelo 130 — Pago fraccionado del IRPF (estimación directa)',
     textoExplicativo:
-      'Lo presentan cada trimestre los autonomos en estimacion directa: el 20 % del rendimiento neto acumulado desde enero, menos las retenciones soportadas y los pagos de los trimestres anteriores.',
+      'Lo presentan cada trimestre los autónomos en estimación directa: el 20 % del rendimiento neto acumulado desde enero, menos las retenciones soportadas y los pagos de los trimestres anteriores.',
     advertencias: [
-      'La app todavia no calcula el 130: rellena sus casillas a mano y guardalo.',
-      'Si mas del 70 % de tus ingresos llevan retencion, puede que no estes obligado a presentarlo: consultalo con tu asesor.',
+      'La app todavía no calcula el 130: rellena sus casillas a mano y guárdalo.',
+      'Si más del 70 % de tus ingresos llevan retención, puede que no estés obligado a presentarlo: consúltalo con tu asesor.',
     ],
-    notasConfiguracion: ['Sale en el calendario cuando la forma juridica de la empresa es Autonomo (Registro Mercantil > Datos para la memoria).'],
+    notasConfiguracion: [
+      'Sale en el calendario cuando la forma jurídica de la empresa es Autónomo. Se cambia en Registro Mercantil > Datos para la memoria (en el menú lateral), que es donde se guarda la forma jurídica.',
+    ],
     recomendaciones: ['Revisa los ingresos y gastos del año hasta el final del trimestre antes de rellenarlo.'],
   },
   '200': {

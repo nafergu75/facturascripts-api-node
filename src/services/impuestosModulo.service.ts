@@ -86,14 +86,14 @@ const dbOk = (): boolean =>
 // --- Calendario fiscal (plazos AEAT) ---
 
 const DESCRIPCIONES: Record<string, string> = {
-  '303': 'IVA — autoliquidacion trimestral',
+  '303': 'IVA — autoliquidación trimestral',
   '111': 'Retenciones IRPF (trabajo y profesionales)',
   '115': 'Retenciones por alquileres',
   '349': 'Operaciones intracomunitarias',
   '390': 'IVA — resumen anual',
   '347': 'Operaciones con terceros (> 3.005,06)',
   '200': 'Impuesto sobre Sociedades',
-  '130': 'Pago fraccionado del IRPF (autonomos)',
+  '130': 'Pago fraccionado del IRPF (autónomos)',
   '190': 'Retenciones: resumen anual (trabajo y profesionales)',
 };
 
@@ -381,7 +381,7 @@ function aResumen(f: FilaModelo, hoy: string): ModeloImpuestoResumen {
     companyId: f.companyId,
     codigo: f.codigo,
     descripcion:
-      f.codigo === '303' && /^\d{2}$/.test(f.periodo) ? 'IVA — autoliquidacion mensual' : DESCRIPCIONES[f.codigo] ?? `Modelo ${f.codigo}`,
+      f.codigo === '303' && /^\d{2}$/.test(f.periodo) ? 'IVA — autoliquidación mensual' : DESCRIPCIONES[f.codigo] ?? `Modelo ${f.codigo}`,
     ejercicio: f.ejercicio,
     periodo: f.periodo,
     periodoEtiqueta: etiqueta,
