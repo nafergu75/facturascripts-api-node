@@ -1,6 +1,7 @@
 /**
- * Panel de chat de Carmen: mensajes, fuentes citadas, sugerencias e input.
- * Componentes hijos inline para mantener el modulo compacto.
+ * Panel de chat de Carmen: mensajes, fuente de las fichas, avisos, botones e
+ * input. Componentes hijos inline para mantener el modulo compacto. Las tablas
+ * y cifras completas solo se ven en la ventana de frontend/web.
  */
 
 import React, { useEffect, useRef, useState } from 'react';
@@ -10,6 +11,7 @@ import {
   Button,
   HStack,
   Input,
+  Link,
   Spinner,
   Text,
   VStack,
@@ -17,7 +19,10 @@ import {
   WrapItem,
 } from '@chakra-ui/react';
 import { useCarmenChat, ChatMessage } from '../../hooks/useCarmenChat';
-import { ChatSource } from '../../api/carmenApi';
+import { BotonCarmen } from '../../api/carmenApi';
+
+const fechaES = (iso: string): string =>
+  /^\d{4}-\d{2}-\d{2}/.test(iso) ? `${iso.slice(8, 10)}/${iso.slice(5, 7)}/${iso.slice(0, 4)}` : iso;
 
 function MessageBubble({ message }: { message: ChatMessage }): React.ReactElement {
   const isUser = message.role === 'user';
@@ -34,48 +39,67 @@ function MessageBubble({ message }: { message: ChatMessage }): React.ReactElemen
         whiteSpace="pre-wrap"
         fontSize="sm"
       >
+        {message.entendido && (
+          <Text fontSize="xs" color="gray.500" mb={1}>
+            He entendido: {message.entendido}
+          </Text>
+        )}
         {message.content}
       </Box>
     </HStack>
   );
 }
 
-function Sources({ sources }: { sources: ChatSource[] }): React.ReactElement {
+/** Etiqueta de origen, la fuente de la ficha y los avisos de una respuesta. */
+function Detalles({ message }: { message: ChatMessage }): React.ReactElement | null {
+  const origen =
+    message.origen === 'datos'
+      ? 'Tus datos'
+      : message.origen === 'faq'
+        ? 'Pregunta frecuente'
+        : message.origen === 'ia'
+          ? 'Respuesta orientativa de IA: no ha visto tus datos'
+          : null;
+  if (!origen && !message.avisos?.length && !message.fuente) return null;
   return (
-    <Box w="100%" pl={10}>
-      <Text fontSize="xs" fontWeight="bold" color="gray.500" mb={1}>
-        📚 Fuentes
-      </Text>
-      <VStack align="flex-start" spacing={1}>
-        {sources.map((s, i) => (
-          <Box key={`${s.source}-${i}`} fontSize="xs" color="gray.600">
-            <Text as="span" fontWeight="semibold" color="blue.600">
-              {s.title}
-            </Text>{' '}
-            <Text as="span" color="gray.400">
-              ({s.source})
-            </Text>
-          </Box>
-        ))}
-      </VStack>
-    </Box>
+    <VStack w="100%" pl={10} align="flex-start" spacing={1} fontSize="xs" color="gray.600">
+      {origen && (
+        <Text fontWeight="semibold" color={message.origen === 'ia' ? 'orange.600' : message.origen === 'datos' ? 'green.700' : 'gray.600'}>
+          {origen}
+        </Text>
+      )}
+      {message.fuente && (
+        <Text>
+          Fuente:{' '}
+          <Link href={message.fuente.url} isExternal color="blue.600">
+            {message.fuente.titulo}
+          </Link>{' '}
+          · verificada {fechaES(message.fuente.verificadaEl)}
+        </Text>
+      )}
+      {message.avisos?.map((a, i) => (
+        <Text key={i} bg="gray.50" px={2} py={1} borderRadius="md">
+          {a}
+        </Text>
+      ))}
+    </VStack>
   );
 }
 
 function Suggestions({
-  suggestions,
+  botones,
   onPick,
 }: {
-  suggestions: string[];
-  onPick: (s: string) => void;
+  botones: BotonCarmen[];
+  onPick: (b: BotonCarmen) => void;
 }): React.ReactElement {
   return (
     <Box w="100%" pl={10}>
       <Wrap spacing={2}>
-        {suggestions.map((s, i) => (
+        {botones.map((b, i) => (
           <WrapItem key={i}>
-            <Button size="xs" variant="outline" colorScheme="blue" onClick={() => onPick(s)}>
-              {s}
+            <Button size="xs" variant="outline" colorScheme="blue" onClick={() => onPick(b)}>
+              {b.texto}
             </Button>
           </WrapItem>
         ))}
@@ -85,7 +109,7 @@ function Suggestions({
 }
 
 export function CarmenChat(): React.ReactElement {
-  const { messages, loading, error, sendMessage, clearHistory } = useCarmenChat();
+  const { messages, loading, error, sendMessage, sendBoton, clearHistory } = useCarmenChat();
   const [input, setInput] = useState('');
   const endRef = useRef<HTMLDivElement | null>(null);
 
@@ -105,7 +129,7 @@ export function CarmenChat(): React.ReactElement {
   return (
     <VStack h="100%" spacing={0} align="stretch">
       <HStack px={4} py={2} borderBottomWidth="1px" justify="space-between">
-        <Text fontWeight="bold">👩‍💼 Carmen · Asistente contable</Text>
+        <Text fontWeight="bold">Carmen · Asistente contable</Text>
         <Button size="xs" variant="ghost" onClick={clearHistory} isDisabled={messages.length === 0}>
           Limpiar
         </Button>
@@ -114,25 +138,25 @@ export function CarmenChat(): React.ReactElement {
       <VStack flex={1} overflowY="auto" spacing={3} p={4} align="stretch">
         {messages.length === 0 && (
           <Box textAlign="center" color="gray.400" py={8} fontSize="sm">
-            Hola, soy Carmen 👋 Pregúntame sobre IVA, IRPF, asientos, facturas o los modelos de Hacienda.
+            Hola, soy Carmen. Pregúntame por tus cobros, bancos o asientos, o por cómo se hace algo en la app.
           </Box>
         )}
 
         {messages.map((m) => (
           <React.Fragment key={m.id}>
             <MessageBubble message={m} />
-            {m.role === 'assistant' && m.sources && m.sources.length > 0 && <Sources sources={m.sources} />}
+            {m.role === 'assistant' && <Detalles message={m} />}
           </React.Fragment>
         ))}
 
-        {!loading && last?.role === 'assistant' && last.suggestions && last.suggestions.length > 0 && (
-          <Suggestions suggestions={last.suggestions} onPick={(s) => void sendMessage(s)} />
+        {!loading && last?.role === 'assistant' && last.botones && last.botones.length > 0 && (
+          <Suggestions botones={last.botones} onPick={(b) => void sendBoton(b)} />
         )}
 
         {loading && (
           <HStack color="gray.500" fontSize="sm" pl={10}>
             <Spinner size="sm" />
-            <Text>Carmen está pensando…</Text>
+            <Text>Carmen está buscando…</Text>
           </HStack>
         )}
 
@@ -151,6 +175,8 @@ export function CarmenChat(): React.ReactElement {
             placeholder="Escribe tu pregunta…"
             value={input}
             onChange={(e) => setInput(e.target.value)}
+            maxLength={500}
+            aria-label="Tu pregunta para Carmen"
             isDisabled={loading}
             size="sm"
           />
@@ -158,6 +184,9 @@ export function CarmenChat(): React.ReactElement {
             Enviar
           </Button>
         </HStack>
+        <Text fontSize="xs" color="gray.500" mt={2}>
+          Carmen es un asistente automático. Las cifras salen de tu contabilidad; la IA solo responde dudas generales y no ve tus datos.
+        </Text>
       </Box>
     </VStack>
   );
