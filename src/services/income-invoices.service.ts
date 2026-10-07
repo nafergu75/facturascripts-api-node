@@ -1,7 +1,7 @@
 import type { Prisma } from '@prisma/client';
 import { badRequest, notFound } from '../utils/http-errors';
 import { prisma, type TransaccionBD as Tx } from '../config/database';
-import { obtenerOCrearSerie, obtenerSeriePorDefecto, resolverCodSerieFactura } from './series.service';
+import { buscarSeriePorCodigo, obtenerOCrearSerieHistorica, obtenerSeriePorDefecto, resolverCodSerieFactura } from './series.service';
 import { listarCobros, registrarCobroFactura, tieneCobrosActivos, type DatosCobro } from './cobrosPagos.service';
 import { comprobarFechaAbierta } from './periodos.service';
 import {
@@ -637,16 +637,34 @@ function validarFormaPago(forma: string | undefined): FormaPago {
   return f as FormaPago;
 }
 
-/** Serie elegida en el DTO (o la por defecto), creandola si es un codigo antiguo. */
-async function resolverSerie(companyId: string, codigo: string | undefined, esRectificativa: boolean): Promise<string> {
+/** Serie que no existe: ya no se crea sola (una errata creaba una serie nueva y activa). */
+const serieNoExiste = (codigo: string) =>
+  badRequest(`La serie ${String(codigo).trim()} no existe. Elige una de las series de la empresa o créala antes en Configuración > Series.`, {
+    campo: 'serie',
+  });
+
+/**
+ * Serie elegida en el DTO (o la por defecto). Desde la pantalla o la API tiene
+ * que existir y estar activa. Solo una factura del lector, que trae su numero
+ * original, puede crear su serie (desactivada: guarda la numeracion de otro
+ * programa, pero no sale para emitir facturas nuevas).
+ */
+async function resolverSerie(
+  companyId: string,
+  codigo: string | undefined,
+  esRectificativa: boolean,
+  origen: OrigenFactura = 'pantalla',
+): Promise<string> {
   if (esRectificativa && !codigo) {
     const r = await obtenerSeriePorDefecto(companyId, 'RECTIFICATIVA');
     if (!r) throw badRequest('No hay serie de rectificativas configurada.');
     return r.codigo;
   }
   if (!codigo) return resolverCodSerieFactura(companyId, {});
-  const serie = await obtenerOCrearSerie(companyId, String(codigo).trim());
-  if (!serie.activa) throw badRequest(`La serie ${serie.codigo} está desactivada.`);
+  const lector = origen === 'lector';
+  const serie = lector ? await obtenerOCrearSerieHistorica(companyId, String(codigo)) : await buscarSeriePorCodigo(companyId, String(codigo));
+  if (!serie) throw serieNoExiste(String(codigo));
+  if (!serie.activa && !lector) throw badRequest(`La serie ${serie.codigo} está desactivada.`, { campo: 'serie' });
   if (esRectificativa && serie.tipoDocumento !== 'RECTIFICATIVA') {
     throw badRequest('Las rectificativas van en una serie propia de rectificativas, no en la de facturas.');
   }
@@ -666,8 +684,9 @@ async function resolverSerieProforma(companyId: string, codigo: string | undefin
     if (!p) throw badRequest('No hay serie de proformas configurada.');
     return p.codigo;
   }
-  const serie = await obtenerOCrearSerie(companyId, String(codigo).trim(), 'PROFORMA');
-  if (!serie.activa) throw badRequest(`La serie ${serie.codigo} está desactivada.`);
+  const serie = await buscarSeriePorCodigo(companyId, String(codigo));
+  if (!serie) throw serieNoExiste(String(codigo));
+  if (!serie.activa) throw badRequest(`La serie ${serie.codigo} está desactivada.`, { campo: 'serie' });
   if (serie.tipoDocumento !== 'PROFORMA') throw badRequest(`La serie ${serie.codigo} no es de proformas.`);
   return serie.codigo;
 }
@@ -855,7 +874,7 @@ async function crear(dto: CrearFacturaIngresoDTO, opciones: { origen?: OrigenFac
   const cliente = await resolverCliente(dto.companyId, dto.customer);
   const serie = dto.proforma
     ? await resolverSerieProforma(dto.companyId, dto.serie)
-    : await resolverSerie(dto.companyId, dto.serie, esRectificativa);
+    : await resolverSerie(dto.companyId, dto.serie, esRectificativa, origen);
 
   // Quien revisa la fiscalidad lo decide el servidor, nunca el cuerpo.
   const modo: ModoFiscal = esRectificativa
