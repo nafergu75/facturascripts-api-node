@@ -260,6 +260,54 @@ describe('cifras exactas con BD', () => {
     expect(!antiguo.sinPermiso && antiguo.sinCifras).toBe(true);
   });
 
+  it('INT-13: una venta en dólares sale en moneda de cuenta (total − cobrado = pendiente) y con su importe en USD aparte', async () => {
+    // 1.391,50 USD a 1,15 = 1.210 €; cobrados 695,75 USD = 605 €. Se borra al acabar para no tocar las demás cifras.
+    const f = await prisma.incomeInvoice.create({
+      data: {
+        companyId: EMPRESA,
+        customerId: ids.perez,
+        serie: 'X',
+        numero: 77,
+        numeroCompleto: 'X-77',
+        estadoDocumento: 'FINAL',
+        fechaEmision: '2026-09-01',
+        fechaVencimiento: '2026-12-01',
+        estado: 'PENDING',
+        moneda: 'USD',
+        tipoCambio: 1.15,
+        fuenteTipoCambio: 'MANUAL',
+        baseTotal: 1000,
+        ivaTotal: 210,
+        totalFactura: 1210,
+        baseTotalDoc: 1150,
+        ivaTotalDoc: 241.5,
+        totalFacturaDoc: 1391.5,
+      },
+    });
+    const p = await prisma.invoicePayment.create({
+      data: { companyId: EMPRESA, invoiceType: 'INGRESO', invoiceId: f.id, fecha: '2026-09-20', importe: 605, moneda: 'USD', importeDoc: 695.75, tipoCambio: 1.15, cuentaTesoreria: '570', estado: 'ACTIVO' },
+    });
+    try {
+      const r = cifras(await ejecutar('INT-13', { numeroFactura: 'X-77' }));
+      expect(r.texto).toBe(
+        'La factura X-77 emitida a Construcciones Pérez SL, del 01/09/2026, es de 1.210,00 €. Lleva 605,00 € cobrados y quedan 605,00 € pendientes de cobro. Vence el 01/12/2026.',
+      );
+      expect(r.kpis?.map((k) => [k.etiqueta, k.valor])).toEqual([
+        ['Total', '1.210,00 €'],
+        ['Cobrado', '605,00 €'],
+        ['Pendiente', '605,00 €'],
+      ]);
+      expect(r.kpis?.[0].detalle).toBe('1.391,50 USD');
+      expect(r.avisos).toEqual([
+        'La factura está en USD: 1.391,50 USD, con 695,75 USD cobrados y 695,75 USD pendientes. Las cifras de arriba van en la moneda de la contabilidad, al tipo de cambio de la factura.',
+      ]);
+      expect(r.tabla?.filas.map((x) => x.celdas[2])).toEqual([605]);
+    } finally {
+      await prisma.invoicePayment.delete({ where: { id: p.id } });
+      await prisma.incomeInvoice.delete({ where: { id: f.id } });
+    }
+  });
+
   it('INT-18: el resultado es el de informePerdidasGanancias, hasta hoy y sin borradores', async () => {
     const servicio = await informePerdidasGanancias(EMPRESA_PYG, { desde: '2026-01-01', hasta: HOY, ejercicio: 2026 });
     expect(servicio.actual.resultadoEjercicio).toBe(5000);

@@ -430,8 +430,13 @@ export const buscarFactura: Ejecutor = async (ctx, h) => {
     };
   }
 
+  // Todo en moneda de cuenta, como el resto de Carmen y como facturasPorCobrar:
+  // listarCobros da totalFactura/importeCobrado/importePendiente en la moneda
+  // de la factura y las mismas cifras en la de cuenta en los campos *Cuenta.
   const r = await listarCobros(ctx.companyId, f.tipo, f.id);
-  let pendiente = r.importePendiente;
+  const total = r.totalFacturaCuenta;
+  const cobrado = r.importeCobradoCuenta;
+  let pendiente = r.importePendienteCuenta;
   let abonado = 0;
   if (emitida) {
     // Lo pendiente, con las mismas reglas que el panel: rectificativas, cobros con fecha futura y cobradas a mano.
@@ -443,21 +448,31 @@ export const buscarFactura: Ejecutor = async (ctx, h) => {
   const retraso = diasEntre(f.vence, ctx.hoy);
   let estado: string;
   if (pendiente <= 0) {
-    estado = !emitida ? 'Está pagada.' : abonos.length && r.importeCobrado < r.totalFactura ? `No queda nada pendiente de cobro: la rectificativa ${abonos.join(', ')} la abona.` : 'Está cobrada.';
+    estado = !emitida ? 'Está pagada.' : abonos.length && cobrado < total ? `No queda nada pendiente de cobro: la rectificativa ${abonos.join(', ')} la abona.` : 'Está cobrada.';
   } else {
     const vencida = retraso > 0 ? ` Venció el ${fechaES(f.vence)} (hace ${plural(retraso, 'día')}).` : ` Vence el ${fechaES(f.vence)}.`;
     const conAbono = abonado > 0 ? `${abonos.length ? ` La rectificativa ${abonos.join(', ')} le resta ${eur(abonado)}.` : ''}` : '';
-    estado = `${r.importeCobrado > 0 ? `Lleva ${eur(r.importeCobrado)} ${emitida ? 'cobrados' : 'pagados'} y quedan` : 'Quedan'} ${eur(pendiente)} pendientes de ${de}.${conAbono}${vencida}`;
+    estado = `${cobrado > 0 ? `Lleva ${eur(cobrado)} ${emitida ? 'cobrados' : 'pagados'} y quedan` : 'Quedan'} ${eur(pendiente)} pendientes de ${de}.${conAbono}${vencida}`;
   }
   const sustituye = emitida && f.tipoRectificativa === 'S' && f.facturaOriginalId ? ` Sustituye a la factura ${await numeroDe(f.facturaOriginalId)}.` : '';
   const activos = r.cobros.filter((c) => c.estado === 'ACTIVO');
+  // Factura en otra moneda: las cifras del documento van aparte, con su código
+  // ISO (no con «€», para que enMonedaDeCuenta no las toque).
+  const enDivisa = r.moneda !== r.monedaCuenta;
+  const enDoc = (n: number) => eur(n).replace(/ €$/, ` ${r.moneda}`);
+  const avisos = enDivisa
+    ? [
+        `La factura está en ${r.moneda}: ${enDoc(r.totalFactura)}, con ${enDoc(r.importeCobrado)} ${emitida ? 'cobrados' : 'pagados'}` +
+          `${abonado > 0 ? '' : ` y ${enDoc(r.importePendiente)} pendientes`}. Las cifras de arriba van en la moneda de la contabilidad, al tipo de cambio de la factura.`,
+      ]
+    : [];
   return {
     entendido,
-    texto: `La factura ${f.numero} ${emitida ? 'emitida' : 'recibida'} ${quien}, del ${fechaES(f.fecha)}, es de ${eur(r.totalFactura)}.${sustituye} ${estado}`,
+    texto: `La factura ${f.numero} ${emitida ? 'emitida' : 'recibida'} ${quien}, del ${fechaES(f.fecha)}, es de ${eur(total)}.${sustituye} ${estado}`,
     permisoRequerido,
     kpis: [
-      { etiqueta: 'Total', valor: eur(r.totalFactura) },
-      { etiqueta: emitida ? 'Cobrado' : 'Pagado', valor: eur(r.importeCobrado), detalle: plural(activos.length, de) },
+      { etiqueta: 'Total', valor: eur(total), ...(enDivisa ? { detalle: enDoc(r.totalFactura) } : {}) },
+      { etiqueta: emitida ? 'Cobrado' : 'Pagado', valor: eur(cobrado), detalle: plural(activos.length, de) },
       ...(abonado > 0 ? [{ etiqueta: 'Abonado por rectificativa', valor: eur(abonado) }] : []),
       { etiqueta: 'Pendiente', valor: eur(pendiente) },
     ],
@@ -475,6 +490,7 @@ export const buscarFactura: Ejecutor = async (ctx, h) => {
           ),
         }
       : {}),
+    ...(avisos.length ? { avisos } : {}),
     enlaces,
   };
 };
