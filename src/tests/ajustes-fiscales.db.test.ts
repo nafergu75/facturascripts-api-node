@@ -175,7 +175,7 @@ describe('GET/PUT /ajustes-fiscales', () => {
     // El detalle de un 303 mensual funciona.
     const mayo = await prisma.modeloImpuesto.findFirstOrThrow({ where: { companyId: ES, codigo: '303', ejercicio: 2026, periodo: '05' } });
     const detalle = await obtenerDetalleModelo(ES, mayo.id);
-    expect(detalle.resumen).toMatchObject({ periodoEtiqueta: '2026-05', fechaVencimiento: '2026-06-20' });
+    expect(detalle.resumen).toMatchObject({ periodoEtiqueta: '2026-05', fechaVencimiento: '2026-06-30' });
 
     // Carmen ve lo mismo, sin escribir nada.
     const lectura = await calendarioFiscalSoloLectura(ES, '2026-04-10');

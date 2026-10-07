@@ -100,12 +100,22 @@ const DESCRIPCIONES: Record<string, string> = {
 export function fechaVencimientoModelo(codigo: string, ejercicio: number, periodo: string): string {
   const TRIM: Record<string, string> = { '1T': `${ejercicio}-04-20`, '2T': `${ejercicio}-07-20`, '3T': `${ejercicio}-10-20` };
   if (periodo in TRIM) return TRIM[periodo];
-  // Mensual: hasta el dia 20 del mes siguiente; el de diciembre, hasta el 30 de
-  // enero (303) o el 20 de enero (111/115).
   if (/^(0[1-9]|1[0-2])$/.test(periodo)) {
     const mes = Number(periodo);
-    if (mes === 12) return codigo === '111' || codigo === '115' ? `${ejercicio + 1}-01-20` : `${ejercicio + 1}-01-30`;
-    return `${ejercicio}-${String(mes + 1).padStart(2, '0')}-20`;
+    const siguiente = String(mes + 1).padStart(2, '0');
+    if (codigo === '303') {
+      // IVA mensual: solo lo presentan las empresas en el SII (gran empresa,
+      // REDEME o SII voluntario), que tienen los 30 primeros dias naturales del
+      // mes siguiente (art. 71.4 RIVA); el de enero, hasta el ultimo dia de
+      // febrero, y el de diciembre, hasta el 30 de enero.
+      if (mes === 1) return `${ejercicio}-02-${String(new Date(Date.UTC(ejercicio, 2, 0)).getUTCDate()).padStart(2, '0')}`;
+      if (mes === 12) return `${ejercicio + 1}-01-30`;
+      return `${ejercicio}-${siguiente}-30`;
+    }
+    // 111 y 115 mensuales (gran empresa): hasta el dia 20 del mes siguiente;
+    // el de diciembre, hasta el 20 de enero.
+    if (mes === 12) return `${ejercicio + 1}-01-20`;
+    return `${ejercicio}-${siguiente}-20`;
   }
   if (periodo === '4T') {
     // 111/115: 20 de enero; 303/349: 30 de enero

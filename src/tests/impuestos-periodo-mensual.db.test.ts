@@ -17,7 +17,14 @@ jest.mock('../services/facturascripts-client', () => ({
 
 import { describe, it, expect, beforeAll } from '@jest/globals';
 import { prisma } from '../config/database';
-import { autorrellenarModelo, fechaVencimientoModelo, generarTxtModelo, obtenerDetalleModelo, periodoFiscalDe } from '../services/impuestosModulo.service';
+import {
+  autorrellenarModelo,
+  fechaVencimientoModelo,
+  generarTxtModelo,
+  listarModelosImpuesto,
+  obtenerDetalleModelo,
+  periodoFiscalDe,
+} from '../services/impuestosModulo.service';
 import { mesesDePeriodo } from '../services/impuestosCalculo.service';
 
 const COMPANY_ID = `imp-mensual-${Date.now()}`;
@@ -55,10 +62,19 @@ describe('periodoFiscalDe', () => {
 });
 
 describe('plazos de los periodos mensuales', () => {
-  it('303: dia 20 del mes siguiente; diciembre, 30 de enero', () => {
-    expect(fechaVencimientoModelo('303', 2026, '05')).toBe('2026-06-20');
-    expect(fechaVencimientoModelo('303', 2026, '11')).toBe('2026-12-20');
+  it('303 mensual (SII): 30 dias naturales del mes siguiente; enero, hasta fin de febrero; diciembre, 30 de enero', () => {
+    expect(fechaVencimientoModelo('303', 2026, '05')).toBe('2026-06-30');
+    expect(fechaVencimientoModelo('303', 2026, '02')).toBe('2026-03-30');
+    expect(fechaVencimientoModelo('303', 2026, '11')).toBe('2026-12-30');
     expect(fechaVencimientoModelo('303', 2026, '12')).toBe('2027-01-30');
+    expect(fechaVencimientoModelo('303', 2026, '01')).toBe('2026-02-28');
+    expect(fechaVencimientoModelo('303', 2028, '01')).toBe('2028-02-29'); // bisiesto
+  });
+
+  it('el 303 de mayo sigue en plazo el 21 de junio', async () => {
+    const fila = await prisma.modeloImpuesto.create({ data: { companyId: COMPANY_ID, codigo: '303', ejercicio: 2027, periodo: '05' } });
+    const lista = await listarModelosImpuesto(COMPANY_ID, 2027, 'activos', '2027-06-21');
+    expect(lista.find((m) => m.id === fila.id)).toMatchObject({ estado: 'vigente', fechaVencimiento: '2027-06-30', diasHastaVencimiento: 9 });
   });
 
   it('111 y 115 mensuales: diciembre, 20 de enero', () => {
@@ -77,7 +93,7 @@ describe('detalle y fichero de un 303 mensual', () => {
       ejercicio: 2026,
       periodoEtiqueta: '2026-05',
       descripcion: 'IVA — autoliquidacion mensual',
-      fechaVencimiento: '2026-06-20',
+      fechaVencimiento: '2026-06-30',
     });
     const calculado = await autorrellenarModelo(COMPANY_ID, fila.id);
     expect(calculado.resumen.tieneBorrador).toBe(true);
