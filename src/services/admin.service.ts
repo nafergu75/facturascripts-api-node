@@ -1,8 +1,16 @@
 import { Prisma, Role } from '@prisma/client';
-import { prisma } from '../config/database';
+import { prisma, type TransaccionBD } from '../config/database';
 import { hashPassword } from '../utils/password';
 import { AccesoEmpresa, EmpresaAdmin, UsuarioAdmin } from '../domain/admin.model';
-import { badRequest, conflict, notFound } from '../utils/http-errors';
+import { HttpError, badRequest, conflict, notFound } from '../utils/http-errors';
+import { validarNifEspanol, type ResultadoNif } from '../utils/nif';
+import {
+  INSCRIBIBLES,
+  TEXTO_MAX,
+  camposPendientesEmpresa,
+  limpiarLegalConfig,
+  type LegalConfigInput,
+} from './legalConfig.service';
 
 /**
  * Administracion de la plataforma (modo administrador global): empresas,
@@ -91,7 +99,186 @@ export function comprobarQuedaAdminGlobal(adminsActivos: string[], objetivoId: s
   }
 }
 
+// --- DATOS DE LA EMPRESA EN EL ALTA (funciones puras, probadas en admin-alta-empresa.test.ts) ---
+
+/**
+ * Campos de LegalConfig que se piden al dar de alta una empresa: los que salen
+ * en las facturas. El resto (ejercicio, CNAE, logo...) se completa despues
+ * desde "Datos de la empresa".
+ */
+export const CAMPOS_ALTA_EMPRESA = [
+  'denominacion',
+  'tipoSociedad',
+  'pais',
+  'nif',
+  'domicilioSocial',
+  'codigoPostal',
+  'municipio',
+  'provincia',
+  'telefono',
+  'email',
+  'web',
+  'registroMercantilProvincia',
+  'registroTomo',
+  'registroFolio',
+  'registroHoja',
+  'registroInscripcion',
+  'datosRegistrales',
+] as const;
+
+const CAMPOS_REGISTRO = ['registroMercantilProvincia', 'registroTomo', 'registroFolio', 'registroHoja', 'registroInscripcion'] as const;
+
+const NOMBRE_CAMPO: Record<(typeof CAMPOS_ALTA_EMPRESA)[number], string> = {
+  denominacion: 'La denominación',
+  tipoSociedad: 'La forma jurídica',
+  pais: 'El país',
+  nif: 'El NIF',
+  domicilioSocial: 'El domicilio',
+  codigoPostal: 'El código postal',
+  municipio: 'El municipio',
+  provincia: 'La provincia',
+  telefono: 'El teléfono',
+  email: 'El email',
+  web: 'La web',
+  registroMercantilProvincia: 'El Registro Mercantil',
+  registroTomo: 'El tomo',
+  registroFolio: 'El folio',
+  registroHoja: 'La hoja',
+  registroInscripcion: 'La inscripción',
+  datosRegistrales: 'Los datos registrales',
+};
+
+/** Datos de la empresa ya validados, listos para guardar en LegalConfig. */
+export type DatosAltaEmpresa = LegalConfigInput & {
+  denominacion: string;
+  tipoSociedad: string;
+  pais: string;
+  nif: string;
+};
+
+/**
+ * El NIF tiene que cuadrar con la forma juridica: las S.A. llevan A, las S.L.
+ * (tambien las unipersonales) llevan B, y un autonomo usa su NIF personal.
+ * Asi no se cuela una empresa con la forma o el NIF cambiados.
+ */
+function comprobarNifSegunForma(tipoSociedad: string, nif: ResultadoNif): void {
+  const inicial = nif.normalizado[0];
+  if (tipoSociedad === 'SA' && inicial !== 'A') {
+    throw badRequest(`El NIF de una sociedad anónima empieza por A y ${nif.normalizado} no. Revisa el NIF o la forma jurídica.`, { campo: 'nif' });
+  }
+  if ((tipoSociedad === 'SL' || tipoSociedad === 'SLU') && inicial !== 'B') {
+    throw badRequest(`El NIF de una sociedad limitada empieza por B y ${nif.normalizado} no. Revisa el NIF o la forma jurídica.`, { campo: 'nif' });
+  }
+  if (tipoSociedad === 'AUTONOMO' && nif.tipo === 'CIF') {
+    throw badRequest('Un autónomo factura con su NIF personal (DNI o NIE), no con un CIF de sociedad. Revisa el NIF o la forma jurídica.', {
+      campo: 'nif',
+    });
+  }
+}
+
+/**
+ * Valida los datos de la empresa que llegan con el alta (POST /admin/empresas,
+ * campo `datos`). Usa las mismas reglas que la pantalla "Datos de la empresa"
+ * (limpiarLegalConfig) y ademas:
+ * - exige denominacion, forma juridica, NIF, domicilio, CP, municipio y, en
+ *   Espana, provincia (lo minimo para facturar);
+ * - en Espana comprueba el NIF con su caracter de control (DNI, NIE o CIF) y
+ *   que cuadre con la forma juridica;
+ * - el Registro Mercantil es opcional en el alta (la app lo pide despues) y
+ *   solo se guarda en sociedades espanolas que se inscriben (SA, SL, SLU).
+ * Cada error lleva `details.campo` para senalar el campo en el formulario.
+ */
+export function validarDatosAltaEmpresa(entrada: unknown): DatosAltaEmpresa {
+  if (typeof entrada !== 'object' || entrada === null || Array.isArray(entrada)) {
+    throw badRequest('Los datos de la empresa no son válidos.');
+  }
+  const bruto = entrada as Record<string, unknown>;
+  // Solo los campos del alta: nada de companyId, logo, ejercicio...
+  const solo: Record<string, string> = {};
+  for (const campo of CAMPOS_ALTA_EMPRESA) {
+    const v = bruto[campo];
+    if (v === undefined || v === null) continue;
+    if (typeof v !== 'string') throw badRequest(`${NOMBRE_CAMPO[campo]} tiene que ser un texto.`, { campo });
+    if (v.trim().length > TEXTO_MAX) {
+      throw badRequest(`${NOMBRE_CAMPO[campo]} no puede pasar de ${TEXTO_MAX} caracteres.`, { campo });
+    }
+    solo[campo] = v;
+  }
+  if (solo.pais === undefined) solo.pais = 'ES';
+  if (!solo.tipoSociedad?.trim()) throw badRequest('Elige la forma jurídica.', { campo: 'tipoSociedad' });
+
+  const limpio = limpiarLegalConfig(solo, 'ES') as Record<string, string | null | undefined>;
+  const espana = limpio.pais === 'ES';
+  const exigir = (campo: string, texto: string) => {
+    if (!limpio[campo]) throw badRequest(`Falta ${texto}.`, { campo });
+  };
+  exigir('denominacion', 'la denominación o nombre completo');
+  exigir('nif', espana ? 'el NIF' : 'la identificación fiscal');
+  exigir('domicilioSocial', 'el domicilio');
+  exigir('codigoPostal', 'el código postal');
+  exigir('municipio', 'el municipio');
+  if (espana) exigir('provincia', 'la provincia');
+
+  if (espana) {
+    const nif = validarNifEspanol(limpio.nif);
+    if (!nif.valido) throw badRequest(nif.motivo ?? 'El NIF no es válido.', { campo: 'nif' });
+    comprobarNifSegunForma(String(limpio.tipoSociedad), nif);
+    limpio.nif = nif.normalizado;
+  }
+
+  const telefono = limpio.telefono;
+  if (telefono && (!/^[+\d\s().-]+$/.test(telefono) ||(telefono.match(/\d/g) ?? []).length < 6)) {
+    throw badRequest('El teléfono solo puede llevar cifras, espacios, guiones, paréntesis y el + del prefijo.', { campo: 'telefono' });
+  }
+  if (limpio.web && !/^(https?:\/\/)?[^\s/]+\.[^\s]+$/i.test(limpio.web)) {
+    throw badRequest('La web no parece una dirección válida (por ejemplo, www.empresa.es).', { campo: 'web' });
+  }
+
+  // Registro Mercantil espanol: solo SA, SL y SLU espanolas. Fuera de Espana,
+  // el texto libre de datos registrales (lo que pida la factura de ese pais).
+  const inscribible = espana && INSCRIBIBLES.includes(String(limpio.tipoSociedad));
+  if (!inscribible) for (const campo of CAMPOS_REGISTRO) delete limpio[campo];
+  if (espana) delete limpio.datosRegistrales;
+  return limpio as unknown as DatosAltaEmpresa;
+}
+
+/** Nombre corto de la empresa en la app a partir de su denominacion (hasta 120 caracteres). */
+function nombreDesdeDenominacion(denominacion: string): string {
+  const limpio = denominacion.trim().replace(/\s+/g, ' ');
+  return limpio.length <= 120 ? limpio : limpio.slice(0, 120).trim();
+}
+
 const esDuplicado = (e: unknown) => e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002';
+/** Conflicto de escritura o interbloqueo en una transaccion (MySQL lo resuelve abortando una). */
+const esConflictoEscritura = (e: unknown) => e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2034';
+
+/**
+ * Ninguna otra empresa puede tener ya ese NIF. LegalConfig.nif no es unico en
+ * el esquema, asi que se comprueba aqui, DENTRO de la transaccion del alta y
+ * con FOR UPDATE: la consulta recorre la tabla entera (compara el NIF
+ * normalizado, sin indice) y la bloquea hasta el final, de modo que dos altas
+ * a la vez con el mismo NIF no pasan las dos: la segunda espera y ve la
+ * primera (o MySQL aborta una por interbloqueo, ver esConflictoEscritura).
+ * Se compara sin espacios, guiones ni puntos y con o sin el prefijo ES. Los
+ * datos legales que hayan quedado de una empresa que ya no existe no cuentan.
+ */
+async function comprobarNifLibre(tx: TransaccionBD, nif: string): Promise<void> {
+  const clave = nif.toUpperCase().replace(/[\s.-]/g, '');
+  const filas = await tx.$queryRaw<Array<{ companyId: string }>>`
+    SELECT companyId FROM LegalConfig
+    WHERE UPPER(REPLACE(REPLACE(REPLACE(nif, ' ', ''), '-', ''), '.', '')) IN (${clave}, ${`ES${clave}`})
+    FOR UPDATE`;
+  if (!filas.length) return;
+  const otra = await tx.company.findFirst({
+    where: { id: { in: filas.map((f) => f.companyId) } },
+    select: { name: true, isActive: true },
+  });
+  if (!otra) return;
+  throw conflict(
+    `Ya existe una empresa con el NIF ${nif}: «${otra.name}»${otra.isActive ? '' : ' (desactivada)'}. Si es la misma, entra en ella desde la lista en lugar de darla de alta otra vez.`,
+    { campo: 'nif' },
+  );
+}
 
 // --- EMPRESAS ---
 
@@ -132,34 +319,75 @@ export async function listarEmpresas(): Promise<EmpresaAdmin[]> {
  * Vacios no son ningun secreto, y si algo intentara hablar con FacturaScripts
  * para esta empresa fallaria al descifrar en vez de usar credenciales ajenas.
  */
-export async function crearEmpresa(datos: { nombre: unknown; codigo?: unknown }, creadorId: string): Promise<EmpresaAdmin> {
-  const nombre = normalizarNombreEmpresa(datos.nombre);
-  const codigo = normalizarCodigoEmpresa(datos.codigo);
+export async function crearEmpresa(
+  entrada: { nombre?: unknown; codigo?: unknown; datos?: unknown },
+  creadorId: string,
+): Promise<EmpresaAdmin> {
+  const datos = entrada.datos === undefined || entrada.datos === null ? null : validarDatosAltaEmpresa(entrada.datos);
+  const nombrePedido = typeof entrada.nombre === 'string' && entrada.nombre.trim() ? entrada.nombre : undefined;
+  const nombre = conCampo('nombre', () =>
+    normalizarNombreEmpresa(nombrePedido ?? (datos ? nombreDesdeDenominacion(datos.denominacion) : entrada.nombre)),
+  );
+  const codigo = conCampo('codigo', () => normalizarCodigoEmpresa(entrada.codigo));
   if (codigo && (await prisma.company.findUnique({ where: { codigo }, select: { id: true } }))) {
-    throw conflict(`Ya existe una empresa con el código '${codigo}'.`);
+    throw conflict(`Ya existe una empresa con el código '${codigo}'.`, { campo: 'codigo' });
   }
   try {
-    const c = await prisma.$transaction(async (tx) => {
+    const { empresa: c, conCreador } = await prisma.$transaction(async (tx) => {
+      if (datos) await comprobarNifLibre(tx, datos.nif);
       const empresa = await tx.company.create({
         data: { name: nombre, codigo, fsBaseUrl: '', fsApiKeyEnc: '', isActive: true },
       });
       const creador = await tx.user.findUnique({ where: { id: creadorId }, select: { id: true } });
       if (creador) await tx.membership.create({ data: { userId: creadorId, companyId: empresa.id, role: Role.admin } });
-      return empresa;
+      if (datos) {
+        const espana = datos.pais === 'ES';
+        await tx.legalConfig.create({
+          data: {
+            ...datos,
+            companyId: empresa.id,
+            // Libros que se legalizan en el Registro Mercantil: el de socios en
+            // las sociedades de capital espanolas y el de contratos con el socio
+            // unico en las unipersonales (el esquema, por defecto, marca el de
+            // socios siempre y el de contratos nunca).
+            obligaLibroSocios: espana && INSCRIBIBLES.includes(datos.tipoSociedad),
+            obligaLibroContratos: espana && datos.tipoSociedad === 'SLU',
+          },
+        });
+      }
+      return { empresa, conCreador: !!creador };
     });
+    const pendientes = camposPendientesEmpresa(datos as Record<string, unknown> | null);
     return {
       id: c.id,
       codigo: c.codigo,
       nombre: c.name,
       activa: c.isActive,
       creadoEn: c.createdAt.toISOString(),
-      denominacion: null,
-      nif: null,
-      pais: null,
-      usuarios: 1,
+      denominacion: datos?.denominacion ?? null,
+      nif: datos?.nif ?? null,
+      pais: datos?.pais ?? null,
+      usuarios: conCreador ? 1 : 0,
+      completo: pendientes.length === 0,
+      pendientes,
     };
   } catch (e) {
-    if (esDuplicado(e)) throw conflict(`Ya existe una empresa con el código '${codigo}'.`);
+    if (esDuplicado(e)) throw conflict(`Ya existe una empresa con el código '${codigo}'.`, { campo: 'codigo' });
+    if (esConflictoEscritura(e)) {
+      throw conflict('Se estaba dando de alta a la vez otra empresa con el mismo NIF. Vuelve a intentarlo en unos segundos.', {
+        campo: 'nif',
+      });
+    }
+    throw e;
+  }
+}
+
+/** Ejecuta una validacion y, si falla con un 400, le anade el campo al que se refiere. */
+function conCampo<T>(campo: string, fn: () => T): T {
+  try {
+    return fn();
+  } catch (e) {
+    if (e instanceof HttpError && e.statusCode === 400 && e.details === undefined) throw badRequest(e.message, { campo });
     throw e;
   }
 }

@@ -46,15 +46,24 @@ export const adminController = {
   }),
 
   crearEmpresa: asyncHandler(async (req, res) => {
-    const { nombre, codigo } = req.body ?? {};
-    const empresa = await crearEmpresa({ nombre, codigo }, req.user!.userId);
+    // `datos`: los de la empresa (LegalConfig). Opcional para no romper a quien
+    // solo envie nombre y codigo; el panel los manda siempre.
+    const { nombre, codigo, datos } = req.body ?? {};
+    const empresa = await crearEmpresa({ nombre, codigo, datos }, req.user!.userId);
     await registrarAuditoria({
       userId: req.user!.userId,
       companyId: empresa.id,
       action: 'CREATE_EMPRESA',
       resourceType: 'EMPRESA',
       resourceId: empresa.id,
-      after: { nombre: empresa.nombre, codigo: empresa.codigo },
+      after: {
+        nombre: empresa.nombre,
+        codigo: empresa.codigo,
+        denominacion: empresa.denominacion,
+        nif: empresa.nif,
+        pais: empresa.pais,
+        pendientes: empresa.pendientes,
+      },
     });
     sendOk(res, empresa, undefined, 201);
   }),

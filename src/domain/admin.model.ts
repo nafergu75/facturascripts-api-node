@@ -12,6 +12,9 @@ export interface EmpresaAdmin {
   pais?: string | null;
   /** Usuarios con acceso (membresias). */
   usuarios?: number;
+  /** Solo en el alta: si ya tiene todos los datos para facturar y, si no, cuales faltan. */
+  completo?: boolean;
+  pendientes?: string[];
 }
 
 /** Acceso de un usuario a una empresa. */

@@ -18,6 +18,7 @@ import { prisma } from '../config/database';
 import { authService } from '../services/auth.service';
 import { actualizarUsuario } from '../services/admin.service';
 import { hashPassword } from '../utils/password';
+import { controlCif } from '../utils/nif';
 
 function hostDeLaBd(): string {
   try {
@@ -41,6 +42,13 @@ let empresaId: string;
 let usuarioId: string;
 let emailUsuario: string;
 const usuariosCreados: string[] = [];
+const empresasCreadas: string[] = [];
+
+/** CIF valido y distinto en cada ejecucion: la BD local puede tener ya empresas reales. */
+function cifDePrueba(letra: 'A' | 'B'): string {
+  const siete = String(randomBytes(4).readUInt32BE(0) % 10_000_000).padStart(7, '0');
+  return `${letra}${siete}${controlCif(siete).cifra}`;
+}
 
 const tokenDe = (userId: string, email: string, extra: Partial<Parameters<typeof authService.generateToken>[0]> = {}) =>
   authService.generateToken({ userId, email, roles: [], companies: [], ...extra });
@@ -70,9 +78,10 @@ describeBd('modo administrador global (BD real)', () => {
     await prisma.user.updateMany({ where: { id: { in: ids } }, data: { isActive: false, isGlobalAdmin: false } });
     await prisma.auditLog.deleteMany({ where: { userId: { in: ids } } });
     await prisma.user.deleteMany({ where: { id: { in: ids } } }); // sus accesos se borran en cascada
-    if (empresaId) {
-      await prisma.legalConfig.deleteMany({ where: { companyId: empresaId } });
-      await prisma.company.deleteMany({ where: { id: empresaId } });
+    const empresas = [...(empresaId ? [empresaId] : []), ...empresasCreadas];
+    if (empresas.length) {
+      await prisma.legalConfig.deleteMany({ where: { companyId: { in: empresas } } });
+      await prisma.company.deleteMany({ where: { id: { in: empresas } } });
     }
   });
 
@@ -119,6 +128,116 @@ describeBd('modo administrador global (BD real)', () => {
       expect((await como(tokenA).patch(`/admin/empresas/${empresaId}`, {})).status).toBe(400);
       expect((await como(tokenA).patch(`/admin/empresas/${empresaId}`, { activa: 'no' })).status).toBe(400);
       expect((await como(tokenA).patch('/admin/empresas/no-existe', { activa: true })).status).toBe(404);
+    });
+  });
+
+  describe('Alta con los datos de la empresa', () => {
+    const NIF_SA = cifDePrueba('A');
+    const DENOMINACION = `Biosoluciones Test ${SUFIJO}, S.A.`;
+    const DATOS_SA = {
+      denominacion: DENOMINACION,
+      tipoSociedad: 'SA',
+      pais: 'ES',
+      nif: NIF_SA,
+      domicilioSocial: 'Paseo Sierra de Espadán 6',
+      codigoPostal: '46120',
+      municipio: 'Alboraya',
+      provincia: 'Valencia',
+      telefono: '+34 960 00 00 00',
+      email: 'administracion@ejemplo.es',
+      web: 'www.ejemplo.es',
+    };
+    const REGISTRO = ['Registro Mercantil (provincia)', 'Tomo', 'Folio', 'Hoja', 'Inscripción'];
+    let idSa: string;
+
+    it('crea la empresa, el acceso de administrador y sus datos legales; sin Registro Mercantil queda pendiente', async () => {
+      // El NIF escrito en minusculas y con guion: se guarda normalizado.
+      const res = await como(tokenA).post('/admin/empresas', { datos: { ...DATOS_SA, nif: `${NIF_SA[0].toLowerCase()}-${NIF_SA.slice(1)}` } });
+      expect(res.status).toBe(201);
+      idSa = res.body.data.id;
+      empresasCreadas.push(idSa);
+      expect(res.body.data).toMatchObject({ nombre: DENOMINACION, denominacion: DENOMINACION, nif: NIF_SA, pais: 'ES', usuarios: 1, completo: false });
+      expect(res.body.data.pendientes).toEqual(REGISTRO);
+
+      const legal = await prisma.legalConfig.findUniqueOrThrow({ where: { companyId: idSa } });
+      expect(legal).toMatchObject({
+        ...DATOS_SA,
+        nif: NIF_SA,
+        registroMercantilProvincia: null,
+        registroTomo: null,
+        obligaLibroSocios: true,
+        obligaLibroContratos: false,
+      });
+      const m = await prisma.membership.findUnique({ where: { userId_companyId: { userId: adminA.id, companyId: idSa } } });
+      expect(String(m?.role)).toBe('admin');
+
+      // Al entrar en la empresa, la app ve lo que falta y lo pide.
+      const cfg = await como(tokenA).get(`/companies/${idSa}/legal-config`);
+      expect(cfg.status).toBe(200);
+      expect(cfg.body.data).toMatchObject({ completo: false, pendientes: REGISTRO });
+    });
+
+    it('no deja dar de alta otra empresa con el mismo NIF, aunque se escriba distinto, y no deja nada a medias', async () => {
+      const copia = `Copia ${SUFIJO}, S.A.`;
+      const res = await como(tokenA).post('/admin/empresas', { datos: { ...DATOS_SA, denominacion: copia, nif: `ES ${NIF_SA}` } });
+      expect(res.status).toBe(409);
+      expect(res.body.details).toEqual({ campo: 'nif' });
+      expect(res.body.message).toContain(DENOMINACION);
+      expect(await prisma.company.count({ where: { name: copia } })).toBe(0);
+      expect(await prisma.legalConfig.count({ where: { denominacion: copia } })).toBe(0);
+    });
+
+    it('un CIF con el digito de control mal se rechaza sin crear nada', async () => {
+      const malo = `${NIF_SA.slice(0, 8)}${(Number(NIF_SA[8]) + 1) % 10}`;
+      const nombre = `Control malo ${SUFIJO}, S.A.`;
+      const res = await como(tokenA).post('/admin/empresas', { datos: { ...DATOS_SA, denominacion: nombre, nif: malo } });
+      expect(res.status).toBe(400);
+      expect(res.body.details).toEqual({ campo: 'nif' });
+      expect(await prisma.company.count({ where: { name: nombre } })).toBe(0);
+    });
+
+    it('con el Registro Mercantil y nombre corto propio queda completa; la unipersonal lleva libro de contratos', async () => {
+      const res = await como(tokenA).post('/admin/empresas', {
+        nombre: `Center ${SUFIJO}`,
+        datos: {
+          denominacion: `Center Test ${SUFIJO}, S.L.U.`,
+          tipoSociedad: 'SLU',
+          nif: cifDePrueba('B'),
+          domicilioSocial: 'Calle de Ejemplo 1',
+          codigoPostal: '46001',
+          municipio: 'Valencia',
+          provincia: 'Valencia',
+          registroMercantilProvincia: 'Valencia',
+          registroTomo: '1234',
+          registroFolio: '56',
+          registroHoja: 'V-78901',
+          registroInscripcion: '1ª',
+        },
+      });
+      expect(res.status).toBe(201);
+      empresasCreadas.push(res.body.data.id);
+      expect(res.body.data).toMatchObject({ nombre: `Center ${SUFIJO}`, pais: 'ES', completo: true, pendientes: [] });
+      const legal = await prisma.legalConfig.findUniqueOrThrow({ where: { companyId: res.body.data.id } });
+      expect(legal).toMatchObject({ registroHoja: 'V-78901', obligaLibroSocios: true, obligaLibroContratos: true });
+    });
+
+    it('una empresa extranjera no necesita provincia ni Registro Mercantil', async () => {
+      const res = await como(tokenA).post('/admin/empresas', {
+        datos: {
+          denominacion: `Lisboa Test ${SUFIJO}, Lda.`,
+          tipoSociedad: 'OTRA',
+          pais: 'PT',
+          nif: `PT${SUFIJO}`,
+          domicilioSocial: 'Rua Augusta 1',
+          codigoPostal: '1100-048',
+          municipio: 'Lisboa',
+        },
+      });
+      expect(res.status).toBe(201);
+      empresasCreadas.push(res.body.data.id);
+      expect(res.body.data).toMatchObject({ pais: 'PT', completo: true });
+      const legal = await prisma.legalConfig.findUniqueOrThrow({ where: { companyId: res.body.data.id } });
+      expect(legal).toMatchObject({ pais: 'PT', provincia: null, obligaLibroSocios: false, obligaLibroContratos: false });
     });
   });
 
