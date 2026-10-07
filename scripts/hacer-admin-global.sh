@@ -111,8 +111,10 @@ else
 fi
 
 read -rp "$PREGUNTA" RESPUESTA
+# Vale s, si, SI, sí... (empieza por s); se quitan espacios y el retorno de carro.
+RESPUESTA="$(printf '%s' "$RESPUESTA" | tr -d '[:space:]')"
 case "$RESPUESTA" in
-  s | S | si | SI | Si) ;;
+  [sS]*) ;;
   *) echo "Cancelado. No se ha cambiado nada."; exit 0 ;;
 esac
 
