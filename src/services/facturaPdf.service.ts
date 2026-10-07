@@ -1282,7 +1282,10 @@ export async function avisosFactura(companyId: string, id: string): Promise<stri
   if (!empresa?.logoMime) avisos.push('EMISOR_LOGO');
   const c = factura.customer;
   if (!c.direccion?.trim() || !(c.cp?.trim() || c.municipio?.trim())) avisos.push('CLIENTE_DIRECCION');
-  if (factura.formaPago === 'TRANSFERENCIA' && cuentas.length === 0) avisos.push('CUENTA_BANCARIA');
+  // Sin cuenta solo falta algo si el IBAN se muestra (Configuracion > Facturacion).
+  if (factura.formaPago === 'TRANSFERENCIA' && cuentas.length === 0 && (await leerAjustesFacturacion(companyId)).mostrarIban) {
+    avisos.push('CUENTA_BANCARIA');
+  }
 
   const moneda = factura.moneda || perfil.monedaCuenta;
   // Sin aviso de cuenta en la moneda de la factura: las cuentas bancarias van en
