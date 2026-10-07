@@ -458,7 +458,7 @@
         "tags": [
           "Admin"
         ],
-        "summary": "Listar todas las empresas (admin global)",
+        "summary": "Listar todas las empresas con NIF, pais y numero de usuarios (admin global)",
         "security": [
           {
             "bearerAuth": []
@@ -467,6 +467,12 @@
         "responses": {
           "200": {
             "description": "OK"
+          },
+          "400": {
+            "description": "Datos no validos"
+          },
+          "403": {
+            "description": "Solo administrador global"
           }
         }
       },
@@ -474,15 +480,21 @@
         "tags": [
           "Admin"
         ],
-        "summary": "Crear empresa/instancia FS (admin global)",
+        "summary": "Crear empresa; quien la crea queda como admin de ella (admin global)",
         "security": [
           {
             "bearerAuth": []
           }
         ],
         "responses": {
-          "200": {
+          "201": {
             "description": "OK"
+          },
+          "400": {
+            "description": "Datos no validos"
+          },
+          "403": {
+            "description": "Solo administrador global"
           }
         },
         "requestBody": {
@@ -492,9 +504,7 @@
                 "type": "object",
                 "example": {
                   "nombre": "Mi SL",
-                  "codigo": "MISL",
-                  "fsBaseUrl": "http://host/api/3",
-                  "fsApiKey": "***"
+                  "codigo": "MISL"
                 }
               }
             }
@@ -502,12 +512,12 @@
         }
       }
     },
-    "/admin/usuarios": {
-      "post": {
+    "/admin/empresas/{id}": {
+      "patch": {
         "tags": [
           "Admin"
         ],
-        "summary": "Crear usuario, opcional esAdminGlobal (admin global)",
+        "summary": "Renombrar o activar/desactivar una empresa, sin borrar datos (admin global)",
         "security": [
           {
             "bearerAuth": []
@@ -516,6 +526,81 @@
         "responses": {
           "200": {
             "description": "OK"
+          },
+          "400": {
+            "description": "Datos no validos"
+          },
+          "403": {
+            "description": "Solo administrador global"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "example": {
+                  "nombre": "Mi SL",
+                  "activa": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/usuarios": {
+      "get": {
+        "tags": [
+          "Admin"
+        ],
+        "summary": "Listar usuarios con sus empresas y rol (admin global)",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "400": {
+            "description": "Datos no validos"
+          },
+          "403": {
+            "description": "Solo administrador global"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Admin"
+        ],
+        "summary": "Crear usuario con contrasena inicial (min. 12) y, opcional, empresa y rol (admin global)",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "OK"
+          },
+          "400": {
+            "description": "Datos no validos"
+          },
+          "403": {
+            "description": "Solo administrador global"
           }
         },
         "requestBody": {
@@ -526,7 +611,8 @@
                 "example": {
                   "email": "x@y.com",
                   "password": "***",
-                  "esAdminGlobal": false
+                  "companyId": "<id>",
+                  "rol": "contable"
                 }
               }
             }
@@ -534,12 +620,12 @@
         }
       }
     },
-    "/admin/usuarios/{userId}/empresas/{companyId}": {
-      "post": {
+    "/admin/usuarios/{userId}": {
+      "patch": {
         "tags": [
           "Admin"
         ],
-        "summary": "Asignar usuario a empresa con rol",
+        "summary": "Activar/desactivar, dar/quitar admin global o restablecer contrasena (admin global)",
         "security": [
           {
             "bearerAuth": []
@@ -548,6 +634,60 @@
         "responses": {
           "200": {
             "description": "OK"
+          },
+          "400": {
+            "description": "Datos no validos"
+          },
+          "403": {
+            "description": "Solo administrador global"
+          }
+        },
+        "parameters": [
+          {
+            "name": "userId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "example": {
+                  "activo": true,
+                  "esAdminGlobal": false,
+                  "nuevaContrasena": "***"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/usuarios/{userId}/empresas/{companyId}": {
+      "put": {
+        "tags": [
+          "Admin"
+        ],
+        "summary": "Dar acceso a una empresa o cambiar el rol: admin | contable | ventas | solo_lectura",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "400": {
+            "description": "Datos no validos"
+          },
+          "403": {
+            "description": "Solo administrador global"
           }
         },
         "parameters": [
@@ -574,7 +714,99 @@
               "schema": {
                 "type": "object",
                 "example": {
-                  "role": "contable"
+                  "rol": "contable"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Admin"
+        ],
+        "summary": "Quitar el acceso de un usuario a una empresa",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "400": {
+            "description": "Datos no validos"
+          },
+          "403": {
+            "description": "Solo administrador global"
+          }
+        },
+        "parameters": [
+          {
+            "name": "userId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "companyId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "Admin"
+        ],
+        "summary": "(Compatibilidad) Igual que PUT",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "400": {
+            "description": "Datos no validos"
+          },
+          "403": {
+            "description": "Solo administrador global"
+          }
+        },
+        "parameters": [
+          {
+            "name": "userId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "companyId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "example": {
+                  "rol": "contable"
                 }
               }
             }

@@ -5,7 +5,24 @@
 //   authorize la aplicaba a cualquier empresa: admin en A + solo-lectura en B
 //   daba permisos de admin en B.
 // - Un refresh token (7 dias) se aceptaba como token de acceso.
-jest.mock('../config/database', () => ({ prisma: {} }));
+//
+// Los roles por empresa se leen de la BD en cada peticion (authMiddleware): la
+// BD de estos tests es un mock con las membresias del usuario.
+jest.mock('../config/database', () => ({
+  prisma: {
+    user: {
+      findUnique: jest.fn(async () => ({
+        isActive: true,
+        isGlobalAdmin: false,
+        passwordHash: 'sal:hash',
+        memberships: [
+          { companyId: 'A', role: 'admin' },
+          { companyId: 'B', role: 'solo_lectura' },
+        ],
+      })),
+    },
+  },
+}));
 
 import jwt from 'jsonwebtoken';
 import { config } from '../config/env';
@@ -21,10 +38,13 @@ function ejecutar(mw: (req: never, res: never, next: never) => void, req: Record
   return next.mock.calls[0]?.[0];
 }
 
-function autenticar(token: string): { req: Record<string, unknown>; error: unknown } {
+/** authMiddleware consulta la BD: se espera a que llame a next. */
+function autenticar(token: string): Promise<{ req: Record<string, unknown>; error: unknown }> {
   const headers: Record<string, string> = { authorization: `Bearer ${token}` };
   const req: Record<string, unknown> = { headers, header: (n: string) => headers[n.toLowerCase()] };
-  return { req, error: ejecutar(authMiddleware as never, req) };
+  return new Promise((resolve) => {
+    authMiddleware(req as never, {} as never, ((error?: unknown) => resolve({ req, error })) as never);
+  });
 }
 
 const firmar = (payload: Record<string, unknown>) => jwt.sign(payload, config.jwtSecret, { expiresIn: '1h' });
@@ -37,23 +57,24 @@ describe('roles por empresa', () => {
     rolesPorEmpresa: { A: ['admin'], B: ['solo-lectura'] },
   });
 
-  it('admin en A puede escribir en A', () => {
-    const { req } = autenticar(token);
+  it('admin en A puede escribir en A', async () => {
+    const { req } = await autenticar(token);
     req.companyId = 'A';
     expect(ejecutar(authorize('contabilidad:write') as never, req)).toBeUndefined();
   });
 
-  it('solo-lectura en B NO puede escribir en B aunque sea admin en A', () => {
-    const { req } = autenticar(token);
+  it('solo-lectura en B NO puede escribir en B aunque sea admin en A', async () => {
+    const { req } = await autenticar(token);
     req.companyId = 'B';
     expect(ejecutar(authorize('contabilidad:write') as never, req)).toMatchObject({ statusCode: 403 });
     expect(ejecutar(authorize('contabilidad:read') as never, req)).toBeUndefined();
   });
 
-  it('tokens antiguos sin rolesPorEmpresa siguen usando la lista de roles', () => {
-    const { req } = autenticar(firmar({ sub: 'u1', roles: ['contable'], companies: ['A'] }));
-    req.companyId = 'A';
-    expect(ejecutar(authorize('contabilidad:write') as never, req)).toBeUndefined();
+  it('cuentan los roles de la BD, no los que dice el token', async () => {
+    // Token antiguo que dice "contable en B": en la BD es solo lectura.
+    const { req } = await autenticar(firmar({ sub: 'u1', roles: ['contable'], companies: ['B'], rolesPorEmpresa: { B: ['contable'] } }));
+    req.companyId = 'B';
+    expect(ejecutar(authorize('contabilidad:write') as never, req)).toMatchObject({ statusCode: 403 });
   });
 
   it('rolesPorEmpresaDe agrupa las membresias', () => {
@@ -68,13 +89,13 @@ describe('roles por empresa', () => {
 });
 
 describe('tipo de token', () => {
-  it('rechaza un refresh token usado como token de acceso', () => {
-    const { error } = autenticar(firmar({ sub: 'u1', type: 'refresh', jti: 'x' }));
+  it('rechaza un refresh token usado como token de acceso', async () => {
+    const { error } = await autenticar(firmar({ sub: 'u1', type: 'refresh', jti: 'x' }));
     expect(error).toMatchObject({ statusCode: 401 });
   });
 
-  it('rechaza tokens firmados con otro algoritmo', () => {
+  it('rechaza tokens firmados con otro algoritmo', async () => {
     const hs512 = jwt.sign({ sub: 'u1', roles: [] }, config.jwtSecret, { algorithm: 'HS512' });
-    expect(autenticar(hs512).error).toMatchObject({ statusCode: 401 });
+    expect((await autenticar(hs512)).error).toMatchObject({ statusCode: 401 });
   });
 });

@@ -2,7 +2,18 @@
 const findUnique = jest.fn();
 const upsert = jest.fn();
 jest.mock('../config/database', () => ({
-  prisma: { reglasContables: { findUnique, upsert } },
+  prisma: {
+    reglasContables: { findUnique, upsert },
+    // authMiddleware lee el usuario de la BD en cada peticion: admin de la empresa 1.
+    user: {
+      findUnique: jest.fn(async () => ({
+        isActive: true,
+        isGlobalAdmin: false,
+        passwordHash: 'sal:hash',
+        memberships: [{ companyId: '1', role: 'admin' }],
+      })),
+    },
+  },
   connectDatabase: jest.fn(),
   disconnectDatabase: jest.fn(),
 }));

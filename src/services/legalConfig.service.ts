@@ -1,5 +1,8 @@
-import { prisma } from '../config/database';
-import { badRequest } from '../utils/http-errors';
+import { Prisma } from '@prisma/client';
+import { prisma, type TransaccionBD } from '../config/database';
+import { badRequest, conflict } from '../utils/http-errors';
+import { normalizarNif, validarNifEspanol, type ResultadoNif } from '../utils/nif';
+import { esCodigoPais, problemaCodigoPostal } from '../utils/geografia';
 
 export interface LegalConfigInput {
   tipoSociedad?: string;
@@ -51,7 +54,9 @@ const TEXTOS = [
 // AUTONOMO: empresario individual (no se inscribe en el Registro Mercantil).
 const TIPOS_SOCIEDAD = ['SA', 'SL', 'SLU', 'SCP', 'AUTONOMO', 'OTRA'];
 /** Formas que se inscriben en el Registro Mercantil (deben llevar los datos registrales). */
-const INSCRIBIBLES = ['SA', 'SL', 'SLU'];
+export const INSCRIBIBLES = ['SA', 'SL', 'SLU'];
+/** Largo maximo de los campos de texto corto (VARCHAR(191) en MySQL). */
+export const TEXTO_MAX = 191;
 
 /** Campos que faltan para que la empresa pueda facturar con todos los datos. */
 export function camposPendientesEmpresa(cfg: Record<string, unknown> | null): string[] {
@@ -110,17 +115,21 @@ export function limpiarLegalConfig(datos: Record<string, unknown>, paisActual = 
   for (const campo of TEXTOS) {
     if (datos[campo] === undefined) continue;
     const v = datos[campo] === null ? '' : String(datos[campo]).trim();
-    limpio[campo] = v === '' ? null : v.slice(0, campo === 'actividad' ? 2000 : 300);
+    // Las columnas de texto son VARCHAR(191) (lo que Prisma pone por defecto en
+    // MySQL); antes se cortaba a 300 y un texto largo acababa en un error 500.
+    limpio[campo] = v === '' ? null : v.slice(0, campo === 'actividad' ? 2000 : TEXTO_MAX);
   }
   if (datos.tipoSociedad !== undefined) {
     const t = String(datos.tipoSociedad).toUpperCase();
-    if (!TIPOS_SOCIEDAD.includes(t)) throw badRequest(`tipoSociedad debe ser uno de: ${TIPOS_SOCIEDAD.join(', ')}.`);
+    if (!TIPOS_SOCIEDAD.includes(t)) {
+      throw badRequest(`tipoSociedad debe ser uno de: ${TIPOS_SOCIEDAD.join(', ')}.`, { campo: 'tipoSociedad' });
+    }
     limpio.tipoSociedad = t;
   }
   for (const campo of ['ejercicioInicio', 'ejercicioFin'] as const) {
     if (datos[campo] === undefined) continue;
     const v = String(datos[campo]);
-    if (!/^\d{2}-\d{2}$/.test(v)) throw badRequest(`${campo} tiene que tener el formato MM-DD.`);
+    if (!/^\d{2}-\d{2}$/.test(v)) throw badRequest(`${campo} tiene que tener el formato MM-DD.`, { campo });
     limpio[campo] = v;
   }
   for (const campo of ['obligaLibroSocios', 'obligaLibroContratos'] as const) {
@@ -130,27 +139,107 @@ export function limpiarLegalConfig(datos: Record<string, unknown>, paisActual = 
   // 4 cifras, con o sin punto (47.11 o 4711). Se guarda sin punto.
   if (typeof limpio.cnae === 'string') {
     const cnae = (limpio.cnae as string).replace(/\./g, '');
-    if (!/^\d{2,4}$/.test(cnae)) throw badRequest('El CNAE tiene que ser un código CNAE-2025 de 2 a 4 cifras (por ejemplo 4711).');
+    if (!/^\d{2,4}$/.test(cnae)) {
+      throw badRequest('El CNAE tiene que ser un código CNAE-2025 de 2 a 4 cifras (por ejemplo 4711).', { campo: 'cnae' });
+    }
     limpio.cnae = cnae;
   }
   if (typeof limpio.email === 'string' && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(limpio.email as string)) {
-    throw badRequest('El email de la empresa no es válido.');
+    throw badRequest('El email de la empresa no es válido.', { campo: 'email' });
   }
   if (datos.pais !== undefined) {
     const pais = String(datos.pais).trim().toUpperCase();
-    if (!/^[A-Z]{2}$/.test(pais)) throw badRequest('El país tiene que ser un código de dos letras (ES, MA, US...).');
+    if (!/^[A-Z]{2}$/.test(pais)) throw badRequest('El país tiene que ser un código de dos letras (ES, MA, US...).', { campo: 'pais' });
+    // Solo codigos ISO que existen: un "SP" pensando en Espana convertia la
+    // empresa en extranjera (sin comprobar el NIF ni pedir provincia).
+    if (!esCodigoPais(pais)) {
+      throw badRequest(`«${pais}» no es un código de país. Usa el código ISO de dos letras (por ejemplo ES para España, BE para Bélgica o GB para el Reino Unido).`, {
+        campo: 'pais',
+      });
+    }
     limpio.pais = pais;
   }
   const espana = (limpio.pais ?? paisActual) === 'ES';
   if (espana && typeof limpio.codigoPostal === 'string' && !/^\d{5}$/.test(limpio.codigoPostal as string)) {
-    throw badRequest('El código postal tiene que tener 5 cifras.');
+    throw badRequest('El código postal tiene que tener 5 cifras.', { campo: 'codigoPostal' });
   }
   if (typeof limpio.nif === 'string') limpio.nif = (limpio.nif as string).toUpperCase().replace(/[\s-]/g, '');
   if (typeof limpio.fechaConstitucion === 'string' && !/^\d{4}-\d{2}-\d{2}$/.test(limpio.fechaConstitucion as string)) {
-    throw badRequest('fechaConstitucion tiene que tener el formato AAAA-MM-DD.');
+    throw badRequest('fechaConstitucion tiene que tener el formato AAAA-MM-DD.', { campo: 'fechaConstitucion' });
   }
   return limpio as LegalConfigInput;
 }
+
+/**
+ * Libros que se legalizan en el Registro Mercantil segun la forma juridica: el
+ * registro de socios (o de acciones nominativas) en las sociedades de capital
+ * espanolas y el de contratos con el socio unico en las unipersonales. Se usa
+ * en el alta y cada vez que cambian la forma o el pais en "Datos de la
+ * empresa" (lo leen el cierre del ejercicio y la legalizacion de libros).
+ */
+export function librosObligatorios(tipoSociedad: string, pais: string): { obligaLibroSocios: boolean; obligaLibroContratos: boolean } {
+  const espana = String(pais ?? 'ES').toUpperCase() === 'ES';
+  const tipo = String(tipoSociedad ?? '').toUpperCase();
+  return { obligaLibroSocios: espana && INSCRIBIBLES.includes(tipo), obligaLibroContratos: espana && tipo === 'SLU' };
+}
+
+/**
+ * El NIF espanol tiene que cuadrar con la forma juridica: las S.A. llevan A,
+ * las S.L. (tambien las unipersonales) llevan B, y un autonomo usa su NIF
+ * personal. Asi no se cuela una empresa con la forma o el NIF cambiados.
+ * `campo` es el que se senala en el formulario (el que se acaba de cambiar).
+ */
+export function comprobarNifSegunForma(tipoSociedad: string, nif: ResultadoNif, campo: 'nif' | 'tipoSociedad' = 'nif'): void {
+  const inicial = nif.normalizado[0];
+  if (tipoSociedad === 'SA' && inicial !== 'A') {
+    throw badRequest(`El NIF de una sociedad anónima empieza por A y ${nif.normalizado} no. Revisa el NIF o la forma jurídica.`, { campo });
+  }
+  if ((tipoSociedad === 'SL' || tipoSociedad === 'SLU') && inicial !== 'B') {
+    throw badRequest(`El NIF de una sociedad limitada empieza por B y ${nif.normalizado} no. Revisa el NIF o la forma jurídica.`, { campo });
+  }
+  if (tipoSociedad === 'AUTONOMO' && nif.tipo === 'CIF') {
+    throw badRequest('Un autónomo factura con su NIF personal (DNI o NIE), no con un CIF de sociedad. Revisa el NIF o la forma jurídica.', {
+      campo,
+    });
+  }
+}
+
+/**
+ * Ninguna otra empresa puede tener ya ese NIF. LegalConfig.nif no es unico en
+ * el esquema, asi que se comprueba aqui, DENTRO de la transaccion que guarda y
+ * con FOR UPDATE: la consulta recorre la tabla entera (compara el NIF
+ * normalizado, sin indice) y la bloquea hasta el final, de modo que dos altas
+ * o ediciones a la vez con el mismo NIF no pasan las dos: la segunda espera y
+ * ve la primera (o MySQL aborta una por interbloqueo, ver esConflictoEscritura).
+ * Se compara sin espacios, guiones ni puntos y con o sin el prefijo ES. Los
+ * datos legales que hayan quedado de una empresa que ya no existe no cuentan.
+ *
+ * `excluirCompanyId`: al editar los datos de una empresa, ella misma no cuenta.
+ */
+export async function comprobarNifLibre(tx: TransaccionBD, nif: string, excluirCompanyId?: string): Promise<void> {
+  const clave = nif.toUpperCase().replace(/[\s.-]/g, '');
+  const filas = await tx.$queryRaw<Array<{ companyId: string }>>`
+    SELECT companyId FROM LegalConfig
+    WHERE UPPER(REPLACE(REPLACE(REPLACE(nif, ' ', ''), '-', ''), '.', '')) IN (${clave}, ${`ES${clave}`})
+    FOR UPDATE`;
+  const otras = filas.map((f) => f.companyId).filter((id) => id !== excluirCompanyId);
+  if (!otras.length) return;
+  const otra = await tx.company.findFirst({
+    where: { id: { in: otras } },
+    select: { name: true, isActive: true },
+  });
+  if (!otra) return;
+  const quien = `«${otra.name}»${otra.isActive ? '' : ' (desactivada)'}`;
+  throw conflict(
+    excluirCompanyId
+      ? `Otra empresa ya tiene el NIF ${nif}: ${quien}. Revisa el NIF: dos empresas no pueden facturar con el mismo.`
+      : `Ya existe una empresa con el NIF ${nif}: ${quien}. Si es la misma, entra en ella desde la lista en lugar de darla de alta otra vez.`,
+    { campo: 'nif' },
+  );
+}
+
+/** Conflicto de escritura o interbloqueo en una transaccion (MySQL lo resuelve abortando una). */
+export const esConflictoEscritura = (e: unknown) => e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2034';
 
 /** La config sin los bytes del logo (no viajan en el JSON): solo si hay logo. */
 function sinLogo<T extends { logo?: unknown; logoMime?: string | null }>(cfg: T) {
@@ -178,18 +267,102 @@ export const legalConfigService = {
     return sinLogo(await prisma.legalConfig.create({ data: { companyId } }));
   },
 
+  /**
+   * Guarda los datos de la empresa ("Datos de la empresa"). Ademas de
+   * limpiarLegalConfig, cuando cambia lo que les afecta:
+   * - forma juridica o pais: se recalculan los libros obligatorios (salvo que
+   *   el cuerpo los traiga), igual que en el alta;
+   * - NIF (o el pais pasa a Espana): en Espana, su caracter de control; y
+   *   ninguna otra empresa puede tenerlo ya (409, como en el alta);
+   * - NIF o forma juridica en Espana: que cuadren (S.A. con A, S.L. con B...);
+   * - codigo postal, provincia o pais en Espana: que el CP exista y sea de esa
+   *   provincia.
+   * Lo que ya estaba guardado y no se toca no se vuelve a comprobar: una
+   * empresa antigua puede seguir guardando el resto de sus datos.
+   */
   async actualizar(companyId: string, datos: Record<string, unknown>) {
-    const actual = await prisma.legalConfig.findUnique({ where: { companyId }, select: { pais: true } });
-    const limpio = limpiarLegalConfig(datos ?? {}, actual?.pais ?? 'ES');
+    const actual = await prisma.legalConfig.findUnique({
+      where: { companyId },
+      select: { pais: true, tipoSociedad: true, nif: true, codigoPostal: true, provincia: true },
+    });
+    // Sin fila todavia: los valores por defecto del esquema.
+    const antes = {
+      pais: actual?.pais ?? 'ES',
+      tipoSociedad: actual?.tipoSociedad ?? 'SL',
+      nif: actual?.nif ?? null,
+      codigoPostal: actual?.codigoPostal ?? null,
+      provincia: actual?.provincia ?? null,
+    };
+    const limpio = limpiarLegalConfig(datos ?? {}, antes.pais);
     delete (limpio as Record<string, unknown>).logo;
     delete (limpio as Record<string, unknown>).logoMime;
-    return sinLogo(
-      await prisma.legalConfig.upsert({
+
+    const despues = {
+      pais: limpio.pais ?? antes.pais,
+      tipoSociedad: limpio.tipoSociedad ?? antes.tipoSociedad,
+      nif: limpio.nif !== undefined ? limpio.nif : antes.nif,
+      codigoPostal: limpio.codigoPostal !== undefined ? limpio.codigoPostal : antes.codigoPostal,
+      provincia: limpio.provincia !== undefined ? limpio.provincia : antes.provincia,
+    };
+    const cambiaPais = despues.pais !== antes.pais;
+    const cambiaForma = despues.tipoSociedad !== antes.tipoSociedad;
+    const cambiaNif = normalizarNif(despues.nif) !== normalizarNif(antes.nif);
+    const cambiaCp = (despues.codigoPostal ?? '') !== (antes.codigoPostal ?? '');
+    const cambiaProvincia = (despues.provincia ?? '') !== (antes.provincia ?? '');
+    const espana = despues.pais === 'ES';
+
+    if (cambiaPais || cambiaForma) {
+      const libros = librosObligatorios(despues.tipoSociedad, despues.pais);
+      if (limpio.obligaLibroSocios === undefined) limpio.obligaLibroSocios = libros.obligaLibroSocios;
+      if (limpio.obligaLibroContratos === undefined) limpio.obligaLibroContratos = libros.obligaLibroContratos;
+    }
+
+    if (espana && despues.nif && (cambiaNif || cambiaPais || cambiaForma)) {
+      const nif = validarNifEspanol(despues.nif);
+      if (cambiaNif || cambiaPais) {
+        if (!nif.valido) throw badRequest(nif.motivo ?? 'El NIF no es válido.', { campo: 'nif' });
+        limpio.nif = nif.normalizado;
+      }
+      comprobarNifSegunForma(despues.tipoSociedad, nif, cambiaNif ? 'nif' : 'tipoSociedad');
+    }
+    // Un NIF espanol valido se guarda siempre igual (sin puntos ni prefijo ES), como en el alta.
+    if (espana && typeof limpio.nif === 'string') {
+      const nif = validarNifEspanol(limpio.nif);
+      if (nif.valido) limpio.nif = nif.normalizado;
+    }
+
+    if (espana && despues.codigoPostal && (cambiaCp || cambiaProvincia || cambiaPais)) {
+      const problema = problemaCodigoPostal(despues.codigoPostal, despues.provincia);
+      if (problema) {
+        const campo = problema.tipo === 'provincia' && !cambiaCp ? 'provincia' : 'codigoPostal';
+        throw badRequest(problema.mensaje, { campo });
+      }
+    }
+
+    const guardar = (db: TransaccionBD) =>
+      db.legalConfig.upsert({
         where: { companyId },
         update: limpio,
         create: { companyId, ...limpio },
-      }),
-    );
+      });
+    if (!cambiaNif || !limpio.nif) return sinLogo(await guardar(prisma));
+    // NIF nuevo: se comprueba que este libre y se guarda en la misma transaccion.
+    const nifNuevo = limpio.nif;
+    try {
+      return sinLogo(
+        await prisma.$transaction(async (tx) => {
+          await comprobarNifLibre(tx, nifNuevo, companyId);
+          return guardar(tx);
+        }),
+      );
+    } catch (e) {
+      if (esConflictoEscritura(e)) {
+        throw conflict('Se estaban guardando a la vez los datos de otra empresa con el mismo NIF. Vuelve a intentarlo en unos segundos.', {
+          campo: 'nif',
+        });
+      }
+      throw e;
+    }
   },
 
   /** Guarda el logo de la empresa (PNG o JPG, hasta 1 MB). */

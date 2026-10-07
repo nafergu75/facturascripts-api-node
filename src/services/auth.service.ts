@@ -1,5 +1,5 @@
 import jwt from 'jsonwebtoken';
-import { randomUUID } from 'crypto';
+import { createHmac, randomUUID, timingSafeEqual } from 'crypto';
 import { config } from '../config/env';
 import { prisma } from '../config/database';
 import { verifyPassword } from '../utils/password';
@@ -20,6 +20,53 @@ export function rolesPorEmpresaDe(memberships: Array<{ companyId: string; role: 
     if (!roles.includes(rol)) roles.push(rol);
   }
   return mapa;
+}
+
+/**
+ * Huella de la contrasena que viaja en los tokens (claim `pwd`): 16 caracteres
+ * de un HMAC del hash guardado, con el secreto de los JWT. No revela nada de la
+ * contrasena, pero cambia en cuanto se cambia: asi, restablecer la contrasena
+ * deja sin valor los tokens emitidos antes (los de acceso y los de refresco).
+ */
+export function huellaContrasena(passwordHash: string): string {
+  return createHmac('sha256', config.jwtSecret).update(passwordHash).digest('hex').slice(0, 16);
+}
+
+/** Compara dos huellas sin dar pistas por el tiempo que tarda. */
+export function mismaHuella(a: unknown, b: string): boolean {
+  if (typeof a !== 'string' || a.length !== b.length) return false;
+  return timingSafeEqual(Buffer.from(a), Buffer.from(b));
+}
+
+/** Estado ACTUAL del usuario en la BD: con esto se decide cada peticion, no con el token. */
+export interface SesionBd {
+  activo: boolean;
+  esAdminGlobal: boolean;
+  huellaContrasena: string;
+  companies: string[];
+  roles: string[];
+  rolesPorEmpresa: Record<string, string[]>;
+}
+
+/**
+ * Lee de la BD lo que el token solo "recuerda" del momento del login: si el
+ * usuario sigue activo, si es administrador global, sus empresas con su rol y
+ * la huella de su contrasena. null si el usuario no existe.
+ */
+export async function sesionDeBd(userId: string): Promise<SesionBd | null> {
+  const u = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { isActive: true, isGlobalAdmin: true, passwordHash: true, memberships: { select: { companyId: true, role: true } } },
+  });
+  if (!u) return null;
+  return {
+    activo: u.isActive,
+    esAdminGlobal: u.isGlobalAdmin,
+    huellaContrasena: huellaContrasena(u.passwordHash),
+    companies: u.memberships.map((m) => m.companyId),
+    roles: Array.from(new Set(u.memberships.map((m) => String(m.role)))),
+    rolesPorEmpresa: rolesPorEmpresaDe(u.memberships),
+  };
 }
 
 /** Permisos por empresa, para que el frontend sepa que puede hacer en cada una. */
@@ -48,6 +95,8 @@ export interface AuthClaims {
   esAdminGlobal?: boolean;
   /** Empresa seleccionada en el login (si se envio empresaCodigo). */
   empresaSeleccionada?: string;
+  /** Huella de la contrasena (huellaContrasena): el token deja de valer si se cambia. */
+  huellaContrasena?: string;
 }
 
 export interface EmpresaLogin {
@@ -73,6 +122,8 @@ export interface LoginResult {
     permisos: string[];
     /** Permisos efectivos en cada empresa del usuario. */
     permisosPorEmpresa: Record<string, string[]>;
+    /** Roles en cada empresa (para mostrar "Contable", "Ventas"... en el menu). */
+    rolesPorEmpresa: Record<string, string[]>;
   };
   empresas: EmpresaLogin[];
   empresaSeleccionada?: string;
@@ -112,8 +163,18 @@ export const authService = {
     }
 
     const rolesPorEmpresa = rolesPorEmpresaDe(user.memberships);
-    const token = this.generateToken({ userId: user.id, email: user.email, roles, rolesPorEmpresa, companies, esAdminGlobal, empresaSeleccionada });
-    const refreshToken = this.signRefreshToken(user.id);
+    const huella = huellaContrasena(user.passwordHash);
+    const token = this.generateToken({
+      userId: user.id,
+      email: user.email,
+      roles,
+      rolesPorEmpresa,
+      companies,
+      esAdminGlobal,
+      empresaSeleccionada,
+      huellaContrasena: huella,
+    });
+    const refreshToken = this.signRefreshToken(user.id, user.passwordHash);
 
     return {
       token,
@@ -127,6 +188,7 @@ export const authService = {
         // Permisos en la empresa activa (la seleccionada o la primera), no la union.
         permisos: permisosEfectivos(rolesPorEmpresa[empresaSeleccionada ?? companies[0]] ?? [], esAdminGlobal),
         permisosPorEmpresa: permisosPorEmpresaDe(rolesPorEmpresa, esAdminGlobal),
+        rolesPorEmpresa,
       },
       empresas,
       empresaSeleccionada,
@@ -139,6 +201,11 @@ export const authService = {
    * Rotacion + revocacion por jti: cada refresh consume el jti anterior (se marca
    * revocado) y emite uno nuevo. Si el mismo refresh token se reutiliza (robado +
    * original), la segunda llamada falla porque su jti ya esta en RevokedToken.
+   *
+   * Tambien se rechaza si la contrasena ha cambiado desde que se emitio (huella
+   * `pwd`): restablecer la contrasena echa a quien la estuviera usando, aunque
+   * tuviera un refresh token. Los refresh tokens sin huella (anteriores a esta
+   * comprobacion) tampoco valen: obligan una vez a volver a entrar.
    */
   async refresh(refreshToken: string): Promise<LoginResult> {
     let payload: jwt.JwtPayload;
@@ -165,6 +232,11 @@ export const authService = {
       throw unauthorized('Tu email ha cambiado. Inicia sesión de nuevo.');
     }
 
+    const huella = huellaContrasena(user.passwordHash);
+    if (!mismaHuella(payload.pwd, huella)) {
+      throw unauthorized('Tu contraseña ha cambiado o la sesión es antigua. Inicia sesión de nuevo.');
+    }
+
     const esAdminGlobal = user.isGlobalAdmin;
     const companies = user.memberships.map((m) => m.companyId);
     const roles = Array.from(new Set(user.memberships.map((m) => String(m.role))));
@@ -182,8 +254,8 @@ export const authService = {
     }
 
     const rolesPorEmpresa = rolesPorEmpresaDe(user.memberships);
-    const token = this.generateToken({ userId: user.id, email: user.email, roles, rolesPorEmpresa, companies, esAdminGlobal });
-    const nuevoRefresh = this.signRefreshToken(user.id);
+    const token = this.generateToken({ userId: user.id, email: user.email, roles, rolesPorEmpresa, companies, esAdminGlobal, huellaContrasena: huella });
+    const nuevoRefresh = this.signRefreshToken(user.id, user.passwordHash);
     return {
       token,
       refreshToken: nuevoRefresh,
@@ -195,6 +267,7 @@ export const authService = {
         esAdminGlobal,
         permisos: permisosEfectivos(rolesPorEmpresa[companies[0]] ?? [], esAdminGlobal),
         permisosPorEmpresa: permisosPorEmpresaDe(rolesPorEmpresa, esAdminGlobal),
+        rolesPorEmpresa,
       },
       empresas,
     };
@@ -217,9 +290,14 @@ export const authService = {
     });
   },
 
-  /** Firma un refresh token con jti unico (necesario para poder revocarlo individualmente). */
-  signRefreshToken(userId: string): string {
-    return jwt.sign({ sub: userId, type: 'refresh', jti: randomUUID() }, config.jwtSecret, { expiresIn: '7d' });
+  /**
+   * Firma un refresh token con jti unico (necesario para poder revocarlo
+   * individualmente) y la huella de la contrasena actual. Sin passwordHash no
+   * lleva huella y refresh() lo rechaza: solo sirve para cerrar sesion.
+   */
+  signRefreshToken(userId: string, passwordHash?: string): string {
+    const pwd = passwordHash ? huellaContrasena(passwordHash) : undefined;
+    return jwt.sign({ sub: userId, type: 'refresh', jti: randomUUID(), pwd }, config.jwtSecret, { expiresIn: '7d' });
   },
 
   /** Emite un access token firmado con los claims del usuario. */
@@ -233,6 +311,7 @@ export const authService = {
         companies: user.companies,
         esAdminGlobal: user.esAdminGlobal ?? false,
         empresaSeleccionada: user.empresaSeleccionada,
+        pwd: user.huellaContrasena,
       },
       config.jwtSecret,
       { expiresIn: expiresIn as jwt.SignOptions['expiresIn'] },
@@ -261,8 +340,17 @@ export const authService = {
     const empresaSeleccionada = empresas[0]?.companyId;
 
     const rolesPorEmpresa = rolesPorEmpresaDe(user.memberships);
-    const token = this.generateToken({ userId: user.id, email: user.email, roles, rolesPorEmpresa, companies, esAdminGlobal, empresaSeleccionada });
-    const refreshToken = this.signRefreshToken(user.id);
+    const token = this.generateToken({
+      userId: user.id,
+      email: user.email,
+      roles,
+      rolesPorEmpresa,
+      companies,
+      esAdminGlobal,
+      empresaSeleccionada,
+      huellaContrasena: huellaContrasena(user.passwordHash),
+    });
+    const refreshToken = this.signRefreshToken(user.id, user.passwordHash);
 
     return {
       token,
@@ -276,6 +364,7 @@ export const authService = {
         // Permisos en la empresa activa (la seleccionada o la primera), no la union.
         permisos: permisosEfectivos(rolesPorEmpresa[empresaSeleccionada ?? companies[0]] ?? [], esAdminGlobal),
         permisosPorEmpresa: permisosPorEmpresaDe(rolesPorEmpresa, esAdminGlobal),
+        rolesPorEmpresa,
       },
       empresas,
       empresaSeleccionada,
@@ -307,6 +396,7 @@ export const authService = {
         esAdminGlobal,
         permisos: permisosEfectivos(rolesPorEmpresa[companies[0]] ?? [], esAdminGlobal),
         permisosPorEmpresa: permisosPorEmpresaDe(rolesPorEmpresa, esAdminGlobal),
+        rolesPorEmpresa,
       },
       empresas,
     };

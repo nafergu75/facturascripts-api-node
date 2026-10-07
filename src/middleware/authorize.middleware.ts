@@ -4,7 +4,8 @@ import { permisosDeRoles, usuarioTienePermiso } from '../services/rbac.service';
 
 /**
  * Middleware de autorizacion por permiso. Deriva los permisos de los roles del
- * usuario (que viajan en el JWT) y exige el permiso indicado.
+ * usuario y exige el permiso indicado. Los roles y el modo administrador son
+ * los ACTUALES de la BD: authMiddleware sustituye con ellos lo que traia el JWT.
  *
  * Uso: router.post('/', authorize('contabilidad:write'), handler)
  * Con varios permisos basta con tener UNO: authorize('compras:write', 'ventas:write').
@@ -19,7 +20,7 @@ export function authorize(...permisosNecesarios: string[]): RequestHandler {
     // de una empresa). El comodin de rol no lo concede.
     if (permisosNecesarios.length === 1 && permisosNecesarios[0] === 'admin:global') {
       if (req.user.esAdminGlobal) return next();
-      return next(forbidden('Requiere admin global de plataforma.'));
+      return next(forbidden('Esto solo lo puede hacer un administrador global de la plataforma.'));
     }
 
     // El admin global tiene acceso a todo lo demas.
