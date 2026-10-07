@@ -4,6 +4,18 @@
  * retenciones (nominas + profesional). Verifica matematicamente las casillas
  * oficiales del 303 y del 111.
  */
+// Nominas por trabajador (fuente unica del 111, services/nominas/fiscal.ts): el
+// mock aplica el filtro de fecha de pago y estado que pide el servicio.
+const mockNominas = [
+  ...[4, 5].flatMap((mes) => [
+    { empleadoId: 'A', empleado: { nif: '00000001R' }, mes, brutoDinerario: 800, irpf: 120 },
+    { empleadoId: 'B', empleado: { nif: '00000002W' }, mes, brutoDinerario: 700, irpf: 105 },
+    { empleadoId: 'C', empleado: { nif: '00000003A' }, mes, brutoDinerario: 500, irpf: 75 },
+  ]),
+].map((n) => ({ ...n, ejercicio: 2026, ejercicioDevengo: null, fechaPago: `2026-0${n.mes}-28`, estado: 'CONTABILIZADA' }));
+// Devengada en junio y pagada en julio: va al 3T. Y una anulada del 2T: no cuenta.
+mockNominas.push({ ...mockNominas[0], mes: 6, fechaPago: '2026-07-02', brutoDinerario: 9999, irpf: 999 });
+mockNominas.push({ ...mockNominas[0], empleadoId: 'D', empleado: { nif: '00000004G' }, estado: 'ANULADA', brutoDinerario: 5000, irpf: 500 });
 // Modelo 111 (retenciones a profesionales) lee facturas de gasto de Prisma
 // `expenseInvoice` (ADR-002 Paso 3, camino de facturas migrado): PRO1 con
 // retención 150 sobre base 1000; PRO2 sin retención no entra (filtro > 0).
@@ -13,6 +25,12 @@ jest.mock('../config/database', () => ({
     expenseInvoice: {
       findMany: jest.fn(async () => [{ supplierId: 'PRO1', retencionTotal: 150, baseTotal: 1000 }]),
     },
+    nomina: {
+      findMany: jest.fn(async ({ where }: { where: { estado: { not: string }; fechaPago: { gte: string; lte: string } } }) =>
+        mockNominas.filter((n) => n.estado !== where.estado.not && n.fechaPago >= where.fechaPago.gte && n.fechaPago <= where.fechaPago.lte),
+      ),
+    },
+    nominaResumen: { findMany: jest.fn(async () => []) },
   },
   connectDatabase: jest.fn(),
   disconnectDatabase: jest.fn(),
@@ -26,13 +44,6 @@ const fsClientMock = {
 };
 jest.mock('../services/facturascripts-client', () => ({
   getFsClientForCompany: jest.fn().mockResolvedValue(fsClientMock),
-}));
-jest.mock('../services/nominas.service', () => ({
-  listarResumenesNominas: jest.fn().mockResolvedValue([
-    { mes: 4, totalBruto: 2000, totalIRPF: 300 },
-    { mes: 5, totalBruto: 2000, totalIRPF: 300 },
-    { mes: 12, totalBruto: 9999, totalIRPF: 999 }, // fuera del 2T: no debe sumar
-  ]),
 }));
 
 import { agregar303, calcularModelo111 } from '../services/impuestosCalculo.service';
@@ -139,8 +150,10 @@ describe('Modelo 111 — trabajo + profesionales', () => {
     });
 
     const d = await calcularModelo111('co-111', periodo2T);
-    // Trabajo (nominas abril+mayo): [01] 2 perceptores, [02] 4000, [03] 600
-    expect(d.nPerceptoresTrabajo).toBe(2);
+    // Trabajo (nominas pagadas en abril y mayo): [01] 3 perceptores distintos
+    // (no 6 nominas ni 2 meses), [02] 4000, [03] 600. La de junio pagada en
+    // julio y la anulada no cuentan.
+    expect(d.nPerceptoresTrabajo).toBe(3);
     expect(d.percepcionesTrabajo).toBe(4000);
     expect(d.retencionesTrabajo).toBe(600);
     // Profesionales: [07] 1 perceptor, [08] 1000, [09] 150

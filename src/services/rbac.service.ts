@@ -19,12 +19,15 @@ export const PERMISOS: Permiso[] = [
   // Facturas de gasto y lector de gastos.
   { id: 'p13', code: 'compras:read' },
   { id: 'p14', code: 'compras:write' },
+  // Nominas y trabajadores (datos personales y salariales): solo admin y contable.
+  { id: 'p15', code: 'nominas:read' },
+  { id: 'p16', code: 'nominas:write' },
 ];
 
 /** Permisos por rol (admin = comodin total). */
 const ROL_PERMISOS: Record<NombreRol, string[]> = {
   admin: ['*'],
-  contable: ['contabilidad:read', 'contabilidad:write', 'aeat:read', 'tesoreria:read', 'impuestos:read', 'impuestos:write', 'compras:read', 'compras:write'],
+  contable: ['contabilidad:read', 'contabilidad:write', 'aeat:read', 'tesoreria:read', 'impuestos:read', 'impuestos:write', 'compras:read', 'compras:write', 'nominas:read', 'nominas:write'],
   tesoreria: ['tesoreria:read', 'tesoreria:write', 'contabilidad:read'],
   ventas: ['ventas:read', 'ventas:write', 'contabilidad:read'],
   'solo-lectura': ['contabilidad:read', 'tesoreria:read', 'aeat:read', 'ventas:read', 'impuestos:read', 'compras:read'],

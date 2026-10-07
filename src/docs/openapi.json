@@ -4845,12 +4845,12 @@
         ]
       }
     },
-    "/companies/{companyId}/nominas": {
+    "/companies/{companyId}/empleados": {
       "get": {
         "tags": [
-          "Nominas"
+          "Trabajadores"
         ],
-        "summary": "Resumenes de nominas",
+        "summary": "Trabajadores de la empresa (nominas:read)",
         "security": [
           {
             "bearerAuth": []
@@ -4866,6 +4866,2080 @@
             "name": "companyId",
             "in": "path",
             "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "activos",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "Trabajadores"
+        ],
+        "summary": "Alta de trabajador: NIF/NIE con letra de control, NAF con digitos de control (nominas:write)",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "parameters": [
+          {
+            "name": "companyId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "example": {
+                  "nif": "00000000T",
+                  "nombre": "Nombre",
+                  "apellidos": "Apellidos",
+                  "naf": "280000000091",
+                  "fechaAlta": "2026-01-01",
+                  "tipoContrato": "INDEFINIDO"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/companies/{companyId}/empleados/{id}": {
+      "get": {
+        "tags": [
+          "Trabajadores"
+        ],
+        "summary": "Ficha del trabajador, con el numero de nominas",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "parameters": [
+          {
+            "name": "companyId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "Trabajadores"
+        ],
+        "summary": "Editar trabajador (el NIF solo si no tiene nominas)",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "parameters": [
+          {
+            "name": "companyId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "Trabajadores"
+        ],
+        "summary": "Borrar trabajador (solo sin nominas; si tiene, baja)",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "parameters": [
+          {
+            "name": "companyId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/companies/{companyId}/empleados/{id}/baja": {
+      "post": {
+        "tags": [
+          "Trabajadores"
+        ],
+        "summary": "Baja del trabajador",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "parameters": [
+          {
+            "name": "companyId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "example": {
+                  "fechaBaja": "2026-06-30"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/companies/{companyId}/nominas": {
+      "get": {
+        "tags": [
+          "Nominas"
+        ],
+        "summary": "Nominas por trabajador (nominas:read)",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "parameters": [
+          {
+            "name": "companyId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "ejercicio",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "mes",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "empleadoId",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "estado",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "Nominas"
+        ],
+        "summary": "Alta manual de una nomina en borrador; 400 si no cuadra (liquido = devengado - deducciones), 409 si ya existe",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "parameters": [
+          {
+            "name": "companyId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "example": {
+                  "empleadoId": "...",
+                  "ejercicio": 2026,
+                  "mes": 1,
+                  "tipo": "ORDINARIA",
+                  "brutoDinerario": 2000,
+                  "ssTrabajador": 127,
+                  "irpf": 300,
+                  "liquido": 1573,
+                  "ssEmpresa": 600
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/companies/{companyId}/nominas/{id}": {
+      "get": {
+        "tags": [
+          "Nominas"
+        ],
+        "summary": "Detalle de una nomina, con su cuadre",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "parameters": [
+          {
+            "name": "companyId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "Nominas"
+        ],
+        "summary": "Editar una nomina en borrador (409 si esta contabilizada)",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "parameters": [
+          {
+            "name": "companyId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "Nominas"
+        ],
+        "summary": "Borrar una nomina en borrador o anulada",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "parameters": [
+          {
+            "name": "companyId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/companies/{companyId}/nominas/plantilla": {
+      "get": {
+        "tags": [
+          "Nominas"
+        ],
+        "summary": "Plantilla Excel con las columnas que reconoce el importador",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "parameters": [
+          {
+            "name": "companyId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/companies/{companyId}/nominas/resumen": {
+      "get": {
+        "tags": [
+          "Nominas"
+        ],
+        "summary": "Totales por mes del ejercicio (calculados con las nominas por trabajador)",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "parameters": [
+          {
+            "name": "companyId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "ejercicio",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "Nominas"
+        ],
+        "summary": "OBSOLETO: responde 400 (usar POST /nominas/importar o POST /nominas)",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "parameters": [
+          {
+            "name": "companyId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/companies/{companyId}/nominas/importar/subidas": {
+      "post": {
+        "tags": [
+          "Nominas"
+        ],
+        "summary": "Trozo de un Excel grande (campo trozo + indice, total; el primero con nombre y tamano)",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "parameters": [
+          {
+            "name": "companyId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "trozo": {
+                    "type": "string"
+                  },
+                  "subidaId": {
+                    "type": "string"
+                  },
+                  "indice": {
+                    "type": "string"
+                  },
+                  "total": {
+                    "type": "string"
+                  },
+                  "nombre": {
+                    "type": "string"
+                  },
+                  "tamano": {
+                    "type": "string"
+                  },
+                  "hash": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/companies/{companyId}/nominas/importar/subidas/{subidaId}": {
+      "delete": {
+        "tags": [
+          "Nominas"
+        ],
+        "summary": "Descartar una subida por trozos",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "parameters": [
+          {
+            "name": "companyId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "subidaId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/companies/{companyId}/nominas/importar/vista-previa": {
+      "post": {
+        "tags": [
+          "Nominas"
+        ],
+        "summary": "Vista previa del Excel de la gestoria: cuadre por trabajador, errores, trabajadores nuevos. No guarda nada. Si no reconoce las columnas devuelve necesitaMapeo",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "parameters": [
+          {
+            "name": "companyId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "archivo": {
+                    "type": "string",
+                    "format": "binary"
+                  },
+                  "subidaId": {
+                    "type": "string"
+                  },
+                  "filas": {
+                    "type": "string"
+                  },
+                  "mapeo": {
+                    "type": "string"
+                  },
+                  "filaCabecera": {
+                    "type": "string"
+                  },
+                  "separadorDecimal": {
+                    "type": "string"
+                  },
+                  "ejercicio": {
+                    "type": "string"
+                  },
+                  "mes": {
+                    "type": "string"
+                  },
+                  "brutoIncluyeEspecie": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/companies/{companyId}/nominas/importar": {
+      "post": {
+        "tags": [
+          "Nominas"
+        ],
+        "summary": "Confirmar la importacion (fichero o filas revisadas): alta de trabajadores nuevos y nominas en borrador; contabilizar=true las contabiliza",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "parameters": [
+          {
+            "name": "companyId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "archivo": {
+                    "type": "string",
+                    "format": "binary"
+                  },
+                  "subidaId": {
+                    "type": "string"
+                  },
+                  "filas": {
+                    "type": "string"
+                  },
+                  "mapeo": {
+                    "type": "string"
+                  },
+                  "filaCabecera": {
+                    "type": "string"
+                  },
+                  "separadorDecimal": {
+                    "type": "string"
+                  },
+                  "ejercicio": {
+                    "type": "string"
+                  },
+                  "mes": {
+                    "type": "string"
+                  },
+                  "brutoIncluyeEspecie": {
+                    "type": "string"
+                  },
+                  "contabilizar": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/companies/{companyId}/nominas/periodos/{ejercicio}/{mes}": {
+      "get": {
+        "tags": [
+          "Nominas"
+        ],
+        "summary": "Mes de nominas: trabajadores, estado, cuadre y totales",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "parameters": [
+          {
+            "name": "companyId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "ejercicio",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "mes",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/companies/{companyId}/nominas/periodos/{ejercicio}/{mes}/asiento-preview": {
+      "get": {
+        "tags": [
+          "Nominas"
+        ],
+        "summary": "Asientos del mes: los contabilizados y los que se generarian (uno por trabajador)",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "parameters": [
+          {
+            "name": "companyId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "ejercicio",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "mes",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "nominaIds",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/companies/{companyId}/nominas/periodos/{ejercicio}/{mes}/contabilizar": {
+      "post": {
+        "tags": [
+          "Nominas"
+        ],
+        "summary": "Contabilizar las nominas en borrador: un asiento NOM-xxxxx por trabajador con su subcuenta 465. 409 si ya estan contabilizadas, 400 si el periodo esta cerrado",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "parameters": [
+          {
+            "name": "companyId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "ejercicio",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "mes",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "example": {
+                  "nominaIds": []
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/companies/{companyId}/nominas/periodos/{ejercicio}/{mes}/anular": {
+      "post": {
+        "tags": [
+          "Nominas"
+        ],
+        "summary": "Anular: asiento REVERSED con el periodo abierto o contraasiento con fecha de anulacion si esta cerrado; las nominas vuelven a borrador (o quedan anuladas)",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "parameters": [
+          {
+            "name": "companyId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "ejercicio",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "mes",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "example": {
+                  "nominaIds": [],
+                  "fecha": "2026-03-01",
+                  "motivo": "Importe corregido por la gestoria",
+                  "dejarAnuladas": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/companies/{companyId}/nominas/periodos/{ejercicio}/{mes}/pago": {
+      "post": {
+        "tags": [
+          "Nominas"
+        ],
+        "summary": "Pagar los liquidos (todas las contabilizadas del mes o nominaIds): asiento NOM-PAG con la 465 de cada trabajador contra 572/570; con movimientoId concilia un cargo del extracto por el mismo importe. Las nominas quedan PAGADAS y su fecha de pago (la del 111) es la del pago",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "parameters": [
+          {
+            "name": "companyId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "ejercicio",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "mes",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "example": {
+                  "fecha": "2026-01-30",
+                  "cuentaBancariaId": "...",
+                  "caja": false,
+                  "movimientoId": "...",
+                  "nominaIds": [],
+                  "incluirEmbargos": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/companies/{companyId}/nominas/periodos/{ejercicio}/{mes}/pago/anular": {
+      "post": {
+        "tags": [
+          "Nominas"
+        ],
+        "summary": "Anular el pago (entero): REVERSED con el periodo abierto o contraasiento; el movimiento del banco queda sin conciliar",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "parameters": [
+          {
+            "name": "companyId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "ejercicio",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "mes",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "example": {
+                  "nominaIds": [],
+                  "fecha": "2026-03-01",
+                  "motivo": ""
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/companies/{companyId}/nominas/seguros-sociales": {
+      "get": {
+        "tags": [
+          "Nominas"
+        ],
+        "summary": "Seguros sociales de los 12 meses: previsto por las nominas, RLC, diferencia y pago",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "parameters": [
+          {
+            "name": "companyId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "ejercicio",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/companies/{companyId}/nominas/seguros-sociales/{ejercicio}/{mes}": {
+      "get": {
+        "tags": [
+          "Nominas"
+        ],
+        "summary": "Seguros sociales de un mes",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "parameters": [
+          {
+            "name": "companyId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "ejercicio",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "mes",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "tipo",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "Nominas"
+        ],
+        "summary": "Guardar el RLC real, la IT compensada o la fecha de cargo",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "parameters": [
+          {
+            "name": "companyId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "ejercicio",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "mes",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "example": {
+                  "tipo": "NORMAL",
+                  "totalRlc": 1936.55,
+                  "compensacionIt": 0,
+                  "fechaCargoPrevista": "2026-02-28",
+                  "observaciones": ""
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/companies/{companyId}/nominas/seguros-sociales/{ejercicio}/{mes}/pago": {
+      "post": {
+        "tags": [
+          "Nominas"
+        ],
+        "summary": "Pagar los seguros sociales: 476 (previsto) y la diferencia con el RLC a la 642, IT compensada a la 471, contra 572/570 (asiento SS)",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "parameters": [
+          {
+            "name": "companyId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "ejercicio",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "mes",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "example": {
+                  "fecha": "2026-01-30",
+                  "cuentaBancariaId": "...",
+                  "caja": false,
+                  "movimientoId": "...",
+                  "tipo": "NORMAL",
+                  "totalRlc": 1936.55,
+                  "compensacionIt": 0
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/companies/{companyId}/nominas/seguros-sociales/{ejercicio}/{mes}/pago/anular": {
+      "post": {
+        "tags": [
+          "Nominas"
+        ],
+        "summary": "Anular el pago de los seguros sociales",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "parameters": [
+          {
+            "name": "companyId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "ejercicio",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "mes",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "example": {
+                  "tipo": "NORMAL",
+                  "fecha": "2026-03-01"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/companies/{companyId}/nominas/retenciones/{ejercicio}/{periodo}": {
+      "get": {
+        "tags": [
+          "Nominas"
+        ],
+        "summary": "Modelo 111 (1T-4T, 01-12): casillas 01-09, 28 y 30 con la misma fuente que Impuestos (nominas por fecha de pago, perceptores distintos), su pago y lo que se paga (aPagar: lo presentado o editado en Impuestos manda sobre el calculo)",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "parameters": [
+          {
+            "name": "companyId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "ejercicio",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "periodo",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/companies/{companyId}/nominas/retenciones/{ejercicio}/{periodo}/pago": {
+      "post": {
+        "tags": [
+          "Nominas"
+        ],
+        "summary": "Pagar el 111 (lo presentado o, si no, lo calculado): 4751 de trabajo, la del IRPF del resumen antiguo y la de profesionales contra 572/570. 409 si hay nominas del periodo en borrador",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "parameters": [
+          {
+            "name": "companyId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "ejercicio",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "periodo",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "example": {
+                  "fecha": "2026-01-30",
+                  "cuentaBancariaId": "...",
+                  "caja": false,
+                  "movimientoId": "...",
+                  "cuentaProfesionales": "475100",
+                  "cuentaResumenAntiguo": "475100"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/companies/{companyId}/nominas/retenciones/{ejercicio}/{periodo}/pago/anular": {
+      "post": {
+        "tags": [
+          "Nominas"
+        ],
+        "summary": "Anular el pago del 111",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "parameters": [
+          {
+            "name": "companyId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "ejercicio",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "periodo",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "example": {
+                  "fecha": "2026-05-01"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/companies/{companyId}/nominas/190/{ejercicio}/perceptores": {
+      "get": {
+        "tags": [
+          "Nominas"
+        ],
+        "summary": "Modelo 190: un registro por perceptor y clave (A trabajo, L.01 dietas, L.05 indemnizacion exenta, G profesionales), totales y cuadre con los cuatro 111. ?formato=xlsx",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "parameters": [
+          {
+            "name": "companyId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "ejercicio",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "formato",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/companies/{companyId}/nominas/190/{ejercicio}/fichero": {
+      "get": {
+        "tags": [
+          "Nominas"
+        ],
+        "summary": "Fichero del 190 (TXT AEAT, ISO-8859-1). 409 si el diseno de registro del ejercicio no esta verificado (hoy, solo el de 2025); 400 si faltan datos",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "parameters": [
+          {
+            "name": "companyId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "ejercicio",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "telefono",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "contacto",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "email",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "numeroDeclaracion",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/companies/{companyId}/nominas/conciliacion/sugerencias": {
+      "get": {
+        "tags": [
+          "Nominas"
+        ],
+        "summary": "Pagos de nominas, seguros sociales o 111 pendientes que cuadran con un cargo del extracto",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "parameters": [
+          {
+            "name": "companyId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "movimientoId",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/companies/{companyId}/nominas/conciliacion/cargos": {
+      "get": {
+        "tags": [
+          "Nominas"
+        ],
+        "summary": "Cargos del extracto sin conciliar por un importe exacto (para pagar eligiendo el cargo, que queda conciliado)",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "parameters": [
+          {
+            "name": "companyId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "importe",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "fecha",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/companies/{companyId}/nominas/prevision": {
+      "get": {
+        "tags": [
+          "Nominas"
+        ],
+        "summary": "Prevision de pagos: liquidos sin pagar, seguros sociales pendientes y 111 que vence en el rango",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "parameters": [
+          {
+            "name": "companyId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "desde",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "hasta",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/companies/{companyId}/nominas/periodos/{ejercicio}/{mes}/documentos": {
+      "get": {
+        "tags": [
+          "Nominas"
+        ],
+        "summary": "PDF de nominas y seguros sociales del mes",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "parameters": [
+          {
+            "name": "companyId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "ejercicio",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "mes",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "Nominas"
+        ],
+        "summary": "Subir un PDF (archivo; tipo nomina|rlc|rnt; nominaId si es el recibo de un trabajador). 409 si ya esta (SHA-256)",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "parameters": [
+          {
+            "name": "companyId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "ejercicio",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "mes",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "archivo": {
+                    "type": "string",
+                    "format": "binary"
+                  },
+                  "tipo": {
+                    "type": "string"
+                  },
+                  "nominaId": {
+                    "type": "string"
+                  },
+                  "observaciones": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/companies/{companyId}/nominas/documentos": {
+      "get": {
+        "tags": [
+          "Nominas"
+        ],
+        "summary": "PDF de nominas del ejercicio",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "parameters": [
+          {
+            "name": "companyId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "ejercicio",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "trimestre",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "mes",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/companies/{companyId}/nominas/documentos/zip": {
+      "get": {
+        "tags": [
+          "Nominas"
+        ],
+        "summary": "ZIP de los PDF de nominas de un ejercicio, trimestre o mes",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "parameters": [
+          {
+            "name": "companyId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "ejercicio",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "trimestre",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "mes",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/companies/{companyId}/nominas/documentos/{documentoId}/descargar": {
+      "get": {
+        "tags": [
+          "Nominas"
+        ],
+        "summary": "Descargar un PDF de nominas",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "parameters": [
+          {
+            "name": "companyId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "documentoId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/companies/{companyId}/nominas/documentos/{documentoId}": {
+      "delete": {
+        "tags": [
+          "Nominas"
+        ],
+        "summary": "Anular un PDF de nominas (sale del archivo)",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "parameters": [
+          {
+            "name": "companyId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "documentoId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/companies/{companyId}/nominas/informes/coste": {
+      "get": {
+        "tags": [
+          "Nominas"
+        ],
+        "summary": "Coste de personal por mes o por trabajador (bruto, SS empresa, indemnizaciones, coste total). ?formato=xlsx",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "parameters": [
+          {
+            "name": "companyId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "ejercicio",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "agrupar",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "formato",
+            "in": "query",
+            "required": false,
             "schema": {
               "type": "string"
             }
@@ -7492,70 +9566,6 @@
             }
           }
         ],
-        "security": [
-          {
-            "bearerAuth": []
-          }
-        ]
-      }
-    },
-    "/resumen": {
-      "post": {
-        "tags": [
-          "📌 nominas"
-        ],
-        "summary": "[AUTO] POST /resumen",
-        "responses": {
-          "200": {
-            "description": "Success",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "ok": {
-                      "type": "boolean"
-                    },
-                    "data": {
-                      "type": "object"
-                    }
-                  }
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "bearerAuth": []
-          }
-        ]
-      },
-      "get": {
-        "tags": [
-          "📌 nominas"
-        ],
-        "summary": "[AUTO] GET /resumen",
-        "responses": {
-          "200": {
-            "description": "Success",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "ok": {
-                      "type": "boolean"
-                    },
-                    "data": {
-                      "type": "object"
-                    }
-                  }
-                }
-              }
-            }
-          }
-        },
         "security": [
           {
             "bearerAuth": []

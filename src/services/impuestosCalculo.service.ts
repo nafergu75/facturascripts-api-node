@@ -1,7 +1,7 @@
 import type { Prisma } from '@prisma/client';
 import { prisma } from '../config/database';
 import { badRequest } from '../utils/http-errors';
-import { listarResumenesNominas } from './nominas.service';
+import { retencionesActividades, retencionesTrabajo } from './nominas/fiscal';
 import { obtenerAsientosEjercicio, calcularSaldosPorSubcuenta } from './contabilidadDatos.service';
 import {
   DatosModelo111,
@@ -621,51 +621,36 @@ export function mesesDePeriodo(periodo: PeriodoFiscal): number[] {
 }
 
 /**
- * Modelo 111 (retenciones IRPF):
- *  - Rendimientos del TRABAJO: resumenes de nominas del periodo.
- *  - Rendimientos de ACTIVIDADES ECONOMICAS (Alta 5): retenciones practicadas en
- *    facturas de PROVEEDORES profesionales (cabecera FS `totalirpf`, campo
- *    verificado en Core/Model/Base/BusinessDocument.php).
+ * Modelo 111 (retenciones IRPF). Fuente unica (services/nominas/fiscal.ts):
+ *  - Rendimientos del TRABAJO [01]-[06]: las nominas por trabajador no anuladas
+ *    cuya FECHA DE PAGO cae en el periodo (art. 78.1 RIRPF); [01] y [04] son
+ *    perceptores distintos por NIF, no meses ni nominas.
+ *  - ACTIVIDADES ECONOMICAS [07]-[09]: facturas de gasto confirmadas con retencion.
  * TODO: premios, imputaciones de rentas.
  */
 export async function calcularModelo111(companyId: string, periodo: PeriodoFiscal): Promise<DatosModelo111> {
-  const nominas = await listarResumenesNominas(companyId, periodo.ejercicio);
-  const meses = mesesDePeriodo(periodo);
-  const delPeriodo = nominas.filter((n) => meses.includes(n.mes));
-
-  const percepcionesTrabajo = round2(delPeriodo.reduce((a, n) => a + n.totalBruto, 0));
-  const retencionesTrabajo = round2(delPeriodo.reduce((a, n) => a + n.totalIRPF, 0));
-
-  // Alta 5 — retenciones a profesionales (facturas de gasto con IRPF), desde Prisma.
-  let retencionesActividades = 0;
-  let percepcionesActividades = 0;
-  let perceptoresActividades = 0;
-  if (dbFacturasListo()) {
-    const conIrpf = await prisma.expenseInvoice.findMany({
-      where: {
-        companyId,
-        estado: { not: 'DRAFT' },
-        fechaEmision: { gte: periodo.fechaInicio, lte: periodo.fechaFin },
-        retencionTotal: { gt: 0 },
-      },
-      select: { supplierId: true, retencionTotal: true, baseTotal: true },
-    });
-    retencionesActividades = round2(conIrpf.reduce((a, f) => a + f.retencionTotal, 0));
-    percepcionesActividades = round2(conIrpf.reduce((a, f) => a + f.baseTotal, 0));
-    perceptoresActividades = new Set(conIrpf.map((f) => f.supplierId)).size;
-  }
-
-  const totalRetenciones = round2(retencionesTrabajo + retencionesActividades);
+  const [trabajo, actividades] = await Promise.all([retencionesTrabajo(companyId, periodo), retencionesActividades(companyId, periodo)]);
+  const t = trabajo.casillas;
+  // [28] = [03] + [06] + [09] (y las demas claves, hoy a cero), en centimos.
+  const c = (v: number) => Math.round(v * 100);
+  const totalRetenciones = (c(t.retencionesDinerarias) + c(t.ingresosACuenta) + c(actividades.retenciones)) / 100;
 
   return {
     periodo,
-    nPerceptoresTrabajo: delPeriodo.length, // TODO: nº real de perceptores distintos
-    percepcionesTrabajo,
-    retencionesTrabajo,
-    nPerceptoresActividades: perceptoresActividades,
-    percepcionesActividades,
-    retencionesActividades,
+    nPerceptoresTrabajo: t.perceptoresDinerarios,
+    percepcionesTrabajo: t.percepcionesDinerarias,
+    retencionesTrabajo: t.retencionesDinerarias,
+    nPerceptoresEspecie: t.perceptoresEspecie,
+    percepcionesEspecie: t.percepcionesEspecie,
+    ingresosACuentaEspecie: t.ingresosACuenta,
+    nPerceptoresActividades: actividades.perceptores,
+    percepcionesActividades: actividades.percepciones,
+    retencionesActividades: actividades.retenciones,
+    actividadesPorTipo: actividades.porTipo,
+    resumenAntiguo: trabajo.resumenAntiguo,
+    borradores: trabajo.borradores,
     totalRetenciones,
-    resultadoIngresar: totalRetenciones, // [30] = retenciones - resultados anteriores (0)
+    resultadoIngresar: totalRetenciones, // [30] = [28] - resultados anteriores [29] (0)
+    avisos: trabajo.avisos,
   };
 }

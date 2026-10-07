@@ -11,7 +11,24 @@ import { Request, Response } from 'express';
 import { asyncHandler } from '../utils/async-handler';
 import { badRequest } from '../utils/http-errors';
 import { sendOk } from '../utils/response';
-import { gastosExtractorService, GastoExtraido } from '../services/gastos-extractor.service';
+import { prisma } from '../config/database';
+import { AVISO_NO_FACTURA, gastosExtractorService, GastoExtraido } from '../services/gastos-extractor.service';
+
+/**
+ * Si la empresa lleva las nominas en la app (tiene trabajadores dados de alta).
+ * Solo entonces una nomina, un RLC o una cuenta 640-642 tienen que ir por
+ * Nominas: una empresa sin trabajadores (p. ej. una SL cuyo administrador paga
+ * su cuota de autonomos) registra el recibo de la Seguridad Social como gasto.
+ */
+async function empresaConNominas(companyId: string): Promise<boolean> {
+  const db = prisma as unknown as { empleado?: { count?: unknown } };
+  if (typeof db.empleado?.count !== 'function') return false;
+  try {
+    return (await prisma.empleado.count({ where: { companyId } })) > 0;
+  } catch {
+    return false; // sin la tabla de nominas (esquema sin aplicar): como antes de existir
+  }
+}
 
 interface ArchivoSubido {
   buffer: Buffer;
@@ -84,7 +101,20 @@ export const gastosExtractorController = {
       iva,
       total,
       cuentaContableBase,
+      tipoDocumento,
     } = (req.body ?? {}) as Record<string, unknown>;
+
+    // Las nominas y los seguros sociales de una empresa que lleva sus nominas en la
+    // app no son facturas de gasto: van a Nominas (antes se guardaban como facturas
+    // de la 640/642, sin trabajador ni retenciones). Si el usuario corrige la
+    // clasificacion en la pantalla ("Es una factura de gasto"), llega como 'factura'.
+    const conNominas = (tipoDocumento === 'nomina' || tipoDocumento === 'seguros_sociales' || typeof cuentaContableBase === 'string') && (await empresaConNominas(companyId));
+    if (conNominas && (tipoDocumento === 'nomina' || tipoDocumento === 'seguros_sociales')) {
+      throw badRequest(AVISO_NO_FACTURA[tipoDocumento]);
+    }
+    if (conNominas && typeof cuentaContableBase === 'string' && /^64[012]/.test(cuentaContableBase.trim())) {
+      throw badRequest('Las cuentas 640, 641 y 642 son de nóminas: con trabajadores dados de alta, se registran en Nóminas, no como facturas de gasto.');
+    }
 
     // Validaciones básicas
     if (!numeroFactura || typeof numeroFactura !== 'string') {

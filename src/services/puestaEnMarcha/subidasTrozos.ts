@@ -13,8 +13,11 @@ import { deleteObjects, getObjectByKey, listObjects, putObject } from '../../uti
  * reciben `subidaId` en vez del fichero, lo reensamblan y lo procesan igual.
  *
  * La clave lleva la empresa: una subida solo se puede usar desde la empresa que
- * la hizo. Los trozos se borran al confirmar; las subidas abandonadas, al
- * empezar otra en la misma empresa pasadas 24 horas.
+ * la hizo. Los trozos se borran al confirmar o al descartar. Las abandonadas
+ * (mas de 24 horas) se borran, de TODAS las empresas, cada vez que alguien
+ * empieza una subida, pide una vista previa o importa: un Excel de nominas
+ * (NIF, nombres e importes de la plantilla) no se queda guardado sin limite
+ * porque su empresa no vuelva a subir nada.
  */
 
 export const TAM_MAX_SUBIDA = 50 * 1024 * 1024;
@@ -31,7 +34,8 @@ interface MetaSubida {
   creada: string;
 }
 
-const prefijoEmpresa = (companyId: string) => `puesta-en-marcha/subidas/${companyId}/`;
+const PREFIJO_SUBIDAS = 'puesta-en-marcha/subidas/';
+const prefijoEmpresa = (companyId: string) => `${PREFIJO_SUBIDAS}${companyId}/`;
 const prefijoSubida = (companyId: string, subidaId: string) => `${prefijoEmpresa(companyId)}${subidaId}/`;
 const claveMeta = (companyId: string, subidaId: string) => `${prefijoSubida(companyId, subidaId)}meta.json`;
 const claveTrozo = (companyId: string, subidaId: string, i: number) => `${prefijoSubida(companyId, subidaId)}trozo-${String(i).padStart(4, '0')}`;
@@ -54,11 +58,22 @@ async function leerMeta(companyId: string, subidaId: string): Promise<MetaSubida
   return JSON.parse(raw.toString('utf-8')) as MetaSubida;
 }
 
-/** Borra las subidas de la empresa de hace mas de 24 horas (sin fallar si no puede). */
-async function limpiarCaducadas(companyId: string): Promise<void> {
+let ultimaLimpiezaGeneral = 0;
+
+/**
+ * Borra las subidas de hace mas de 24 horas (sin fallar si no puede): las de
+ * todas las empresas, o solo las de una si se indica.
+ */
+export async function limpiarSubidasCaducadas(companyId?: string): Promise<void> {
+  // La de todas las empresas, como mucho una vez cada 10 minutos por instancia
+  // (la vista previa se pide con cada cambio de opciones).
+  if (!companyId) {
+    if (Date.now() - ultimaLimpiezaGeneral < 10 * 60 * 1000) return;
+    ultimaLimpiezaGeneral = Date.now();
+  }
   try {
     const limite = Date.now() - CADUCIDAD_MS;
-    const viejas = (await listObjects(prefijoEmpresa(companyId))).filter((o) => o.fecha.getTime() < limite).map((o) => o.key);
+    const viejas = (await listObjects(companyId ? prefijoEmpresa(companyId) : PREFIJO_SUBIDAS)).filter((o) => o.fecha.getTime() < limite).map((o) => o.key);
     await deleteObjects(viejas);
   } catch {
     // Limpieza oportunista: si falla, ya se intentara en la siguiente subida.
@@ -102,7 +117,7 @@ export async function recibirTrozo(
     const tamano = entero(datos.tamano, 'tamano');
     if (tamano === 0) throw badRequest('El fichero está vacío.');
     if (tamano > TAM_MAX_SUBIDA) throw badRequest(`El fichero pesa demasiado (máximo ${TAM_MAX_SUBIDA / 1024 / 1024} MB).`);
-    await limpiarCaducadas(companyId);
+    await limpiarSubidasCaducadas();
     subidaId = randomUUID();
     const meta: MetaSubida = { nombre: nombre.slice(0, 200), tamano, total, creada: new Date().toISOString() };
     await putObject(claveMeta(companyId, subidaId), Buffer.from(JSON.stringify(meta)), 'application/json');

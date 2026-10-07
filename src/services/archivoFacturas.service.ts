@@ -26,6 +26,13 @@ import { perfilEmpresa } from './perfilEmpresa.service';
 
 export type CarpetaArchivo = 'ventas' | 'gastos';
 
+/**
+ * Tipos de DocumentoArchivo que no son facturas y solo se ven con nominas:read
+ * (los PDF de nominas y de seguros sociales, ver services/nominas/documentos.ts).
+ * El archivo de facturas (contabilidad:read) no los lista ni los descarga.
+ */
+export const TIPOS_DOCUMENTO_PRIVADOS = ['nomina', 'seguros_sociales'];
+
 export interface FicheroArchivo {
   buffer: Buffer;
   nombre: string;
@@ -448,7 +455,7 @@ export async function arbolArchivo(companyId: string): Promise<AnioArbol[]> {
       select: { fechaEmision: true, totalFactura: true },
     }),
     prisma.documentoArchivo.findMany({
-      where: { companyId, estado: 'activo', incomeInvoiceId: null, expenseInvoiceId: null },
+      where: { companyId, estado: 'activo', incomeInvoiceId: null, expenseInvoiceId: null, tipo: { notIn: TIPOS_DOCUMENTO_PRIVADOS } },
       select: { anio: true, trimestre: true, tipo: true, total: true },
     }),
   ]);
@@ -515,7 +522,7 @@ export async function listarTrimestre(companyId: string, anio: number, trimestre
     }),
     prisma.documentoArchivo.findMany({
       // Subidas sueltas (sin factura enlazada) de este trimestre.
-      where: { companyId, estado: 'activo', anio, trimestre, incomeInvoiceId: null, expenseInvoiceId: null },
+      where: { companyId, estado: 'activo', anio, trimestre, incomeInvoiceId: null, expenseInvoiceId: null, tipo: { notIn: TIPOS_DOCUMENTO_PRIVADOS } },
       orderBy: { fecha: 'asc' },
     }),
   ]);

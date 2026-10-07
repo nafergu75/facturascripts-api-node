@@ -9,7 +9,14 @@ import {
   rutaArchivoFactura,
   extensionDe,
   pdfFacturaVenta,
+  TIPOS_DOCUMENTO_PRIVADOS,
 } from './archivoFacturas.service';
+
+/** Filtro de tipo del archivo de facturas: nunca los documentos de nominas (solo con nominas:read). */
+function filtroTipo(tipo?: string): string | { notIn: string[] } {
+  if (tipo && TIPOS_DOCUMENTO_PRIVADOS.includes(tipo)) throw badRequest('Tipo de documento no válido: los de nóminas están en Nóminas.');
+  return tipo ? tipo : { notIn: TIPOS_DOCUMENTO_PRIVADOS };
+}
 
 export interface DocumentoArchivoDTO {
   id: string;
@@ -199,9 +206,7 @@ export async function listarDocumentosPorPeriodo(
     where.trimestre = trimestre;
   }
 
-  if (tipo) {
-    where.tipo = tipo;
-  }
+  where.tipo = filtroTipo(tipo);
 
   if (estado) {
     where.estado = estado;
@@ -236,7 +241,8 @@ export async function obtenerDocumento(
     where: { id: documentoId },
   });
 
-  if (!documento || documento.companyId !== companyId) {
+  // Los PDF de nominas y seguros sociales solo se ven por /nominas (nominas:read).
+  if (!documento || documento.companyId !== companyId || TIPOS_DOCUMENTO_PRIVADOS.includes(documento.tipo)) {
     throw notFound('Documento no encontrado');
   }
 
@@ -327,7 +333,7 @@ export async function obtenerEstadisticasPeriodo(
   totalRetencion: number;
   desglosePorTipo: { ingreso: number; gasto: number };
 }> {
-  const where: any = { companyId, anio, estado: 'activo' };
+  const where: any = { companyId, anio, estado: 'activo', tipo: filtroTipo() };
 
   if (mes) {
     where.mes = mes;
@@ -383,9 +389,7 @@ export async function buscarDocumentos(
     ],
   };
 
-  if (tipo) {
-    where.tipo = tipo;
-  }
+  where.tipo = filtroTipo(tipo);
 
   const documentos = await prisma.documentoArchivo.findMany({
     where,
