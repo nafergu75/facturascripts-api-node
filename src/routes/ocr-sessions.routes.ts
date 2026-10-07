@@ -7,7 +7,8 @@ import express, { Router } from 'express';
 import ocrSessionsController from '../controllers/ocr-sessions.controller';
 import { authorize } from '../middleware/authorize.middleware';
 
-const router = Router();
+// mergeParams: sin el, req.params.companyId llega undefined (montado bajo /companies/:companyId).
+const router = Router({ mergeParams: true });
 
 // GET /companies/:companyId/ocr/sessions
 router.get('/ocr/sessions', ocrSessionsController.getSessions.bind(ocrSessionsController));

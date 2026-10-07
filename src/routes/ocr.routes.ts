@@ -11,7 +11,8 @@ import ocrController from '../controllers/ocr.controller';
 import ILovePDFConfig from '../config/ilovepdf.config';
 import { authorize } from '../middleware/authorize.middleware';
 
-const router = Router();
+// mergeParams: sin el, req.params.companyId llega undefined (montado bajo /companies/:companyId).
+const router = Router({ mergeParams: true });
 
 // Configurar multer para uploads de PDFs
 const uploadsDir = ILovePDFConfig.paths.tempUpload;
@@ -118,7 +119,8 @@ router.get('/ocr/status', ocrController.getOCRStatus.bind(ocrController));
  */
 router.post(
   '/ocr/cleanup',
-  authorize('admin:empresa'),
+  // Borra temporales de TODAS las empresas: solo el administrador de la plataforma.
+  authorize('admin:global'),
   ocrController.cleanupTemporaryFiles.bind(ocrController)
 );
 

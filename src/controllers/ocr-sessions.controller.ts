@@ -8,6 +8,7 @@ import { Request, Response } from 'express';
 // un cliente por modulo agota las conexiones de la BD).
 import { prisma } from '../config/database';
 import { logger } from '../config/logger';
+import { empresaDeLaRuta } from '../utils/empresa-de-la-ruta';
 
 
 class OcrSessionsController {
@@ -17,7 +18,7 @@ class OcrSessionsController {
    */
   async getSessions(req: Request, res: Response) {
     try {
-      const { companyId } = req.params;
+      const companyId = empresaDeLaRuta(req);
       const { status, invoiceType, dateRange, limit = '50', offset = '0' } = req.query;
 
       // Construir where clause con filtros
@@ -74,7 +75,8 @@ class OcrSessionsController {
    */
   async getSession(req: Request, res: Response) {
     try {
-      const { companyId, sessionId } = req.params;
+      const companyId = empresaDeLaRuta(req);
+      const { sessionId } = req.params;
 
       const session = await prisma.oCRSession.findFirst({
         where: { id: sessionId, companyId },
@@ -108,7 +110,7 @@ class OcrSessionsController {
    */
   async getStats(req: Request, res: Response) {
     try {
-      const { companyId } = req.params;
+      const companyId = empresaDeLaRuta(req);
 
       const total = await prisma.oCRSession.count({ where: { companyId } });
       const completed = await prisma.oCRSession.count({
@@ -162,7 +164,8 @@ class OcrSessionsController {
    */
   async retrySesion(req: Request, res: Response) {
     try {
-      const { companyId, sessionId } = req.params;
+      const companyId = empresaDeLaRuta(req);
+      const { sessionId } = req.params;
 
       const session = await prisma.oCRSession.findFirst({
         where: { id: sessionId, companyId },
@@ -216,7 +219,8 @@ class OcrSessionsController {
    */
   async sendToReader(req: Request, res: Response) {
     try {
-      const { companyId, sessionId } = req.params;
+      const companyId = empresaDeLaRuta(req);
+      const { sessionId } = req.params;
       const { readerType } = req.body; // 'expense' o 'income'
 
       const session = await prisma.oCRSession.findFirst({

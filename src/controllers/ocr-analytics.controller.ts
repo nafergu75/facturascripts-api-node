@@ -2,13 +2,15 @@ import { Request, Response } from 'express';
 // Cliente compartido: un pool de conexiones para toda la app (en serverless,
 // un cliente por modulo agota las conexiones de la BD).
 import { prisma } from '../config/database';
+import { logger } from '../config/logger';
+import { empresaDeLaRuta } from '../utils/empresa-de-la-ruta';
 
 
 class OCRAnalyticsController {
   // KPIs: Estadísticas generales de los últimos N días
   async getKPIs(req: Request, res: Response) {
     try {
-      const { companyId } = req.params;
+      const companyId = empresaDeLaRuta(req);
       const { days = '30' } = req.query;
       const daysNum = parseInt(String(days), 10);
 
@@ -66,9 +68,10 @@ class OCRAnalyticsController {
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
+      logger.error(`[OCR Analytics] ${message}`);
       return res.status(500).json({
         ok: false,
-        error: `Failed to fetch KPIs: ${message}`,
+        error: 'Failed to fetch KPIs',
       });
     }
   }
@@ -76,7 +79,7 @@ class OCRAnalyticsController {
   // Timeline: PDFs procesados por día (últimos N días)
   async getTimeline(req: Request, res: Response) {
     try {
-      const { companyId } = req.params;
+      const companyId = empresaDeLaRuta(req);
       const { from, to, days = '30' } = req.query;
 
       let fromDate: Date;
@@ -135,9 +138,10 @@ class OCRAnalyticsController {
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
+      logger.error(`[OCR Analytics] ${message}`);
       return res.status(500).json({
         ok: false,
-        error: `Failed to fetch timeline: ${message}`,
+        error: 'Failed to fetch timeline',
       });
     }
   }
@@ -145,7 +149,7 @@ class OCRAnalyticsController {
   // Distribution: Reparto de PDFs por tipo (expense/income) y empresa
   async getDistribution(req: Request, res: Response) {
     try {
-      const { companyId } = req.params;
+      const companyId = empresaDeLaRuta(req);
       const { from, to, days = '30' } = req.query;
 
       let fromDate: Date;
@@ -207,9 +211,10 @@ class OCRAnalyticsController {
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
+      logger.error(`[OCR Analytics] ${message}`);
       return res.status(500).json({
         ok: false,
-        error: `Failed to fetch distribution: ${message}`,
+        error: 'Failed to fetch distribution',
       });
     }
   }
@@ -217,13 +222,9 @@ class OCRAnalyticsController {
   // Global stats: Agregado de todas las empresas (solo superadmin)
   async getGlobalStats(req: Request, res: Response) {
     try {
-      // Verificar que es admin
-      const userId = (req as any).userId;
-      const user = await prisma.user.findUnique({
-        where: { id: userId },
-      });
-
-      if (!user?.isGlobalAdmin) {
+      // Solo el administrador de la plataforma (dato de la BD, que authMiddleware
+      // refresca en cada peticion). Antes leia req.userId, que no existe.
+      if (req.user?.esAdminGlobal !== true) {
         return res.status(403).json({
           ok: false,
           error: 'Only global admins can access global stats',
@@ -303,9 +304,10 @@ class OCRAnalyticsController {
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
+      logger.error(`[OCR Analytics] ${message}`);
       return res.status(500).json({
         ok: false,
-        error: `Failed to fetch global stats: ${message}`,
+        error: 'Failed to fetch global stats',
       });
     }
   }

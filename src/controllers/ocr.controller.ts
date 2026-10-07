@@ -12,6 +12,7 @@ import { extractTextFromPdf, validatePdfFile } from '../utils/pdfTextExtractor';
 import { logger } from '../config/logger';
 import ILovePDFConfig from '../config/ilovepdf.config';
 import OCRPersistenceService from '../services/ocr-persistence.service';
+import { empresaDeLaRuta } from '../utils/empresa-de-la-ruta';
 
 // Schemas de validación
 const ocrInvoiceSchema = z.object({
@@ -62,8 +63,8 @@ class OCRController {
 
       tempUploadPath = req.file.path;
       const fileName = req.file.originalname;
-      const companyId = req.params.companyId;
-      const userId = (req as any).user?.id;
+      const companyId = empresaDeLaRuta(req);
+      const userId = req.user?.userId;
 
       logger.info(
         `[OCR] Iniciando OCR para: ${fileName} (Empresa: ${companyId}, Tipo: ${bodyParsed.invoiceType})`
@@ -98,7 +99,7 @@ class OCRController {
         return res.status(400).json({
           ok: false,
           error: 'Invalid PDF file',
-          details: { validationError: validation.error },
+          // El motivo (puede llevar rutas del servidor) queda en la sesion, no en la respuesta.
         });
       }
 
@@ -240,7 +241,7 @@ class OCRController {
       return res.status(500).json({
         ok: false,
         error: 'Failed to process invoice OCR',
-        details: { message: errorMsg },
+        // El mensaje interno (Prisma, rutas del servidor) solo va al log, nunca al cliente.
         sessionId: ocrSessionId ?? undefined,
       });
     }
@@ -252,7 +253,7 @@ class OCRController {
    */
   async getOCRStatus(req: Request, res: Response) {
     try {
-      const companyId = req.params.companyId;
+      const companyId = empresaDeLaRuta(req);
       const { limit = 10, offset = 0 } = req.query;
 
       // Verificar que iLovePDF esté configurado
