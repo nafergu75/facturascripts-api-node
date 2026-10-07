@@ -1,5 +1,5 @@
 // Validador del NIF espanol (DNI, NIE y CIF) con su caracter de control. Sin BD.
-import { controlCif, esNifEspanolValido, letraDni, normalizarNif, validarNifEspanol } from '../utils/nif';
+import { controlCif, errorNifPersona, esNifEspanolValido, letraDni, letraNif, normalizarNif, validarNifEspanol } from '../utils/nif';
 
 describe('normalizarNif', () => {
   it('quita espacios, guiones, puntos y barras y pasa a mayusculas', () => {
@@ -85,5 +85,34 @@ describe('formatos que no son un NIF', () => {
       expect(r.valido).toBe(false);
       expect(r.motivo).toBeTruthy();
     }
+  });
+});
+
+// Tras unir el validador de modo-admin (empresas) y el de nominas (trabajadores).
+describe('un solo validador para empresas y trabajadores', () => {
+  it('normalizarNif repone los ceros que Excel quita en DNI y NIE y cualquier signo', () => {
+    expect(normalizarNif('1234567L')).toBe('01234567L');
+    expect(normalizarNif('ES1234567L')).toBe('01234567L');
+    expect(normalizarNif('x-1234567-l')).toBe('X1234567L');
+    expect(normalizarNif('X123456L')).toBe('X0123456L');
+    expect(normalizarNif('a_10952364')).toBe('A10952364');
+    // Un DNI sin el cero se valida como el DNI completo.
+    expect(validarNifEspanol('1234567L')).toEqual({ valido: true, normalizado: '01234567L', tipo: 'DNI' });
+  });
+
+  it('letraNif (numero) y letraDni (texto) dan la misma letra', () => {
+    for (const n of [0, 1234567, 12345678, 99999999]) expect(letraNif(n)).toBe(letraDni(String(n)));
+  });
+
+  it('errorNifPersona usa el mismo control pero no admite un CIF', () => {
+    expect(errorNifPersona('12345678Z')).toBeNull();
+    expect(errorNifPersona('X1234567L')).toBeNull();
+    expect(errorNifPersona('K1234567L')).toBeNull();
+    expect(errorNifPersona('12345678A')).toMatch(/letra/);
+    expect(errorNifPersona('X1234567T')).toMatch(/letra/);
+    expect(errorNifPersona('A10952364')).toMatch(/sociedad/);
+    expect(errorNifPersona('B12345678')).toMatch(/sociedad/);
+    expect(errorNifPersona('1234')).toMatch(/formato/);
+    expect(errorNifPersona('')).toBe('Falta el NIF.');
   });
 });
