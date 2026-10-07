@@ -74,6 +74,9 @@ export async function obtenerCierre(
   return cierre;
 }
 
+/** Estados del documento de cierre (no son el estado del ejercicio). */
+export const ESTADOS_CIERRE = ['ABIERTO', 'EN_CIERRE', 'CERRADO', 'REABIERTO'] as const;
+
 /**
  * Cambiar estado de un cierre.
  */
@@ -83,6 +86,12 @@ export async function cambiarEstadoCierre(
   nuevoEstado: string,
   datos?: any,
 ): Promise<any> {
+  // Antes aceptaba cualquier texto como estado.
+  const estado = String(nuevoEstado ?? '').trim().toUpperCase();
+  if (!(ESTADOS_CIERRE as readonly string[]).includes(estado)) {
+    throw badRequest(`Estado no válido: "${nuevoEstado}". Usa ${ESTADOS_CIERRE.join(', ')}.`, { campo: 'estado' });
+  }
+  nuevoEstado = estado;
   const cierre = await obtenerCierre(companyId, ejercicio);
 
   const actualizado = await prisma.accountingClosure.update({
