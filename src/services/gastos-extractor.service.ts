@@ -11,9 +11,13 @@
  *  - fecha (YYYY-MM-DD)
  *  - conceptoGasto (descripción)
  *  - base, iva, total
- *  - Sugerencia de cuentaContable (grupo 6: 600, 602, 621, 622, 626, 627, 628, 629, 640, 642)
+ *  - Sugerencia de cuentaContable (grupo 6: 600, 602, 621, 622, 626, 627, 628, 629)
  *  - confianza (0.0-1.0)
  *  - errores (array de validaciones)
+ *  - tipoDocumento: 'factura' o, si es una nomina o un recibo de la Seguridad
+ *    Social, 'nomina' / 'seguros_sociales'. Esos NO son facturas de gasto: no
+ *    llevan cuenta sugerida (antes se convertian en facturas de la 640/642) y
+ *    hay que llevarlos a Nominas.
  *
  * La sugerencia de cuenta se basa en el concepto del gasto y SIEMPRE se valida
  * contra `listarCuentasBase()` para NO inventar cuentas.
@@ -42,7 +46,17 @@ export interface GastoExtraido {
   cuentaContableNombre: string | null; // nombre descriptivo
   confianza: number; // 0.0-1.0
   errores: string[];
+  /** 'nomina' o 'seguros_sociales': no es una factura; se registra en Nominas. */
+  tipoDocumento: TipoDocumentoGasto;
 }
+
+export type TipoDocumentoGasto = 'factura' | 'nomina' | 'seguros_sociales';
+
+/** Aviso para documentos que no son facturas de gasto. */
+export const AVISO_NO_FACTURA: Record<Exclude<TipoDocumentoGasto, 'factura'>, string> = {
+  nomina: 'Es una nómina, no una factura de gasto: no se registra aquí. Llévala a Nóminas (importa el Excel de la gestoría o da de alta la nómina).',
+  seguros_sociales: 'Es un recibo de la Seguridad Social (seguros sociales), no una factura de gasto: no se registra aquí. Va con las nóminas del mes.',
+};
 
 // ---------------------------------------------------------------------------
 // Configuración
@@ -68,6 +82,7 @@ REGLAS CLAVE:
 6. BASE IMPONIBLE: Cantidad sin impuestos.
 7. IVA: Porcentaje y/o cantidad.
 8. TOTAL: Total a pagar.
+9. TIPO DE DOCUMENTO: si es una NÓMINA (recibo individual de salarios de un trabajador) indica "nomina"; si es un recibo de liquidación de cotizaciones de la Seguridad Social (RLC, TC1, seguros sociales) indica "seguros_sociales". Una factura de una gestoría o asesoría por llevar las nóminas ES una factura ("factura").
 
 Si algo falta o es ilegible, deja null. NO inventes datos.
 Formatos: fechas YYYY-MM-DD; importes sin símbolo; NIF sin "ES" ni separadores.`;
@@ -90,6 +105,11 @@ const HERRAMIENTA_EXTRACCION: Anthropic.Tool = {
       iva_porcentaje: { type: 'number', description: 'Porcentaje de IVA (21, 10, 4, 0, etc.)' },
       iva_cantidad: { type: 'number', description: 'Cantidad de IVA' },
       total: { type: 'number', description: 'Total a pagar (base + IVA)' },
+      tipo_documento: {
+        type: 'string',
+        enum: ['factura', 'ticket', 'recibo', 'nomina', 'seguros_sociales', 'otro'],
+        description: 'nomina = recibo de salarios de un trabajador; seguros_sociales = RLC/TC1 de la Seguridad Social; factura/ticket/recibo = gasto de un proveedor.',
+      },
     },
   },
 };
@@ -149,8 +169,7 @@ function sugerirCuentaParaGasto(concepto: string | null): { codigo: string; nomb
     { patrones: ['banco', 'servicio bancario', 'comisión', 'interés'], codigo: '626' },
     { patrones: ['publicidad', 'publicidad y propaganda', 'marketing', 'propaganda', 'relaciones públicas'], codigo: '627' },
     { patrones: ['suministro', 'suministros', 'material', 'materiales', 'electricidad', 'agua', 'gas', 'combustible'], codigo: '628' },
-    { patrones: ['salario', 'salarios', 'sueldo', 'sueldos', 'nómina', 'remuneración'], codigo: '640' },
-    { patrones: ['seguridad social', 'seguro social', 'cotización', 'aportación patronal'], codigo: '642' },
+    // Sin 640/642: los sueldos y la Seguridad Social no llegan por factura (ver clasificarDocumentoGasto).
     { patrones: ['compra', 'compras', 'mercancía', 'mercaderías', 'aprovisionamiento'], codigo: '600' },
   ];
 
@@ -169,6 +188,24 @@ function sugerirCuentaParaGasto(concepto: string | null): { codigo: string; nomb
     codigo: default629?.codigo ?? '629',
     nombre: default629?.nombre ?? 'Otros servicios',
   };
+}
+
+/**
+ * ¿Factura, nómina o recibo de la Seguridad Social? Manda lo que diga la
+ * lectura (tipo_documento). Si no lo dice, solo se toma por nómina un concepto
+ * que sea exactamente "nómina"/"salario"/"sueldo" sin IVA: una factura de la
+ * gestoría "por gestión de nóminas" lleva IVA y otro concepto.
+ */
+export function clasificarDocumentoGasto(lectura: { tipo_documento?: string | null; concepto: string | null; iva_cantidad: number | null; iva_porcentaje: number | null }): TipoDocumentoGasto {
+  const tipo = (lectura.tipo_documento ?? '').toLowerCase();
+  if (tipo === 'nomina') return 'nomina';
+  if (tipo === 'seguros_sociales') return 'seguros_sociales';
+  if (tipo) return 'factura';
+  const concepto = (lectura.concepto ?? '').trim().toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+  const sinIva = !lectura.iva_cantidad && !lectura.iva_porcentaje;
+  if (sinIva && /^(nomina|nominas|salario|salarios|sueldo|sueldos|recibo de salarios|finiquito)$/.test(concepto)) return 'nomina';
+  if (sinIva && /^(seguridad social|seguros sociales|cotizaciones|cotizacion|rlc|tc1|recibo de liquidacion de cotizaciones)$/.test(concepto)) return 'seguros_sociales';
+  return 'factura';
 }
 
 /**
@@ -253,6 +290,7 @@ interface LecturaClaude {
   iva_cantidad: number | null;
   total: number | null;
   raw_text: string | null;
+  tipo_documento?: string | null;
 }
 
 /**
@@ -321,6 +359,7 @@ async function leerDocumentoConClaude(buffer: Buffer, mimeType: string): Promise
     iva_cantidad: numero(input.iva_cantidad) ?? null,
     total: numero(input.total) ?? null,
     raw_text: null,
+    tipo_documento: cadena(input.tipo_documento),
   };
 }
 
@@ -369,8 +408,12 @@ function construirGastoExtraido(lectura: LecturaClaude): GastoExtraido {
     }
   }
 
+  // Una nomina o un recibo de la Seguridad Social no es una factura: sin cuenta y con aviso.
+  const tipoDocumento = clasificarDocumentoGasto(lectura);
+  if (tipoDocumento !== 'factura') errores.unshift(AVISO_NO_FACTURA[tipoDocumento]);
+
   // Sugerir cuenta
-  const { codigo: cuentaCodigo, nombre: cuentaNombre } = sugerirCuentaParaGasto(lectura.concepto);
+  const cuenta = tipoDocumento === 'factura' ? sugerirCuentaParaGasto(lectura.concepto) : null;
 
   confianza = Math.max(Math.min(confianza, 1.0), 0.0);
 
@@ -383,12 +426,17 @@ function construirGastoExtraido(lectura: LecturaClaude): GastoExtraido {
     base,
     iva: ivaImporte,
     total,
-    cuentaContableBase: cuentaCodigo,
-    cuentaContableNombre: cuentaNombre,
+    cuentaContableBase: cuenta?.codigo ?? null,
+    cuentaContableNombre: cuenta?.nombre ?? null,
     confianza,
     errores,
+    tipoDocumento,
   };
 }
+
+/** Solo para los tests: construye la salida a partir de una lectura ya hecha. */
+export const _construirGastoExtraido = construirGastoExtraido;
+export type { LecturaClaude };
 
 // ---------------------------------------------------------------------------
 // Servicio público

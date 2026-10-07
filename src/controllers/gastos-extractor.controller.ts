@@ -11,7 +11,7 @@ import { Request, Response } from 'express';
 import { asyncHandler } from '../utils/async-handler';
 import { badRequest } from '../utils/http-errors';
 import { sendOk } from '../utils/response';
-import { gastosExtractorService, GastoExtraido } from '../services/gastos-extractor.service';
+import { AVISO_NO_FACTURA, gastosExtractorService, GastoExtraido } from '../services/gastos-extractor.service';
 
 interface ArchivoSubido {
   buffer: Buffer;
@@ -84,7 +84,17 @@ export const gastosExtractorController = {
       iva,
       total,
       cuentaContableBase,
+      tipoDocumento,
     } = (req.body ?? {}) as Record<string, unknown>;
+
+    // Las nominas y los seguros sociales no son facturas de gasto: van a Nominas
+    // (antes se guardaban como facturas de la 640/642, sin trabajador ni retenciones).
+    if (tipoDocumento === 'nomina' || tipoDocumento === 'seguros_sociales') {
+      throw badRequest(AVISO_NO_FACTURA[tipoDocumento]);
+    }
+    if (typeof cuentaContableBase === 'string' && /^64[012]/.test(cuentaContableBase.trim())) {
+      throw badRequest('Las cuentas 640, 641 y 642 son de nóminas: no se usan en facturas de gasto. Registra la nómina en Nóminas.');
+    }
 
     // Validaciones básicas
     if (!numeroFactura || typeof numeroFactura !== 'string') {
