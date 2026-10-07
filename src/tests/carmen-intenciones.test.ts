@@ -23,7 +23,9 @@ const lecturas: Record<string, (...a: unknown[]) => unknown> = {
     { id: 'p2', nombreFiscal: 'REPSOL COMERCIAL SA', nifCif: 'A55555555' },
   ],
   'bankAccount.findMany': async () => [{ id: 'b1', bancoNombre: 'Banco Sabadell', iban: 'ES0000000000000000001234' }],
-  'incomeInvoice.findMany': async () => [
+  // Las rectificativas de una factura (where.facturaOriginalId) salen de `rectificativas`.
+  'incomeInvoice.findMany': async (args: unknown) =>
+    (args as { where?: { facturaOriginalId?: string } })?.where?.facturaOriginalId !== undefined ? rectificativas : [
     { id: 'f1', numeroCompleto: 'A-12', estadoDocumento: 'FINAL', fechaEmision: '2026-06-01', fechaVencimiento: '2026-07-01', totalFactura: 1210, customer: { nombreFiscal: 'CONSTRUCCIONES PÉREZ SL' } },
     { id: 'f9', numeroCompleto: 'B-12', estadoDocumento: 'FINAL', fechaEmision: '2026-06-02', fechaVencimiento: '2026-07-02', totalFactura: 50, customer: { nombreFiscal: 'OTRO SL' } },
   ],
@@ -31,6 +33,10 @@ const lecturas: Record<string, (...a: unknown[]) => unknown> = {
     { id: 'g12', numeroCompleto: 'A-12', fechaEmision: '2026-05-10', fechaVencimiento: '2026-06-10', totalFactura: 99, supplier: { nombreFiscal: 'IBERDROLA CLIENTES SAU' } },
   ],
 };
+/** Rectificativas que devuelve el Prisma simulado al buscar las de una factura. */
+let rectificativas: Array<Record<string, unknown>> = [];
+/** Últimos argumentos de cada lectura (para mirar los filtros). */
+const argumentos: Record<string, unknown[][]> = {};
 /** Prisma que apunta cada llamada y solo sabe leer lo que hay en `lecturas`. */
 const mockPrisma = new Proxy(
   {},
@@ -46,6 +52,7 @@ const mockPrisma = new Proxy(
             {
               get: (_m, metodo: string) => (...a: unknown[]) => {
                 llamadas.push(`${modelo}.${metodo}`);
+                (argumentos[`${modelo}.${metodo}`] ??= []).push(a);
                 const f = lecturas[`${modelo}.${metodo}`];
                 return f ? f(...a) : Promise.resolve(null);
               },
@@ -133,6 +140,8 @@ const PYG_FILAS = [
 
 beforeEach(() => {
   llamadas.length = 0;
+  rectificativas = [];
+  for (const k of Object.keys(argumentos)) delete argumentos[k];
   olvidarIndices();
   mockFacturasPorCobrar.mockReset().mockResolvedValue(FACTURAS);
   mockTotalCobradoEntre.mockReset().mockResolvedValue(2345.6);
@@ -262,6 +271,14 @@ describe('matriz de permisos', () => {
     if (contable.sinPermiso) throw new Error('sin permiso');
     expect(contable.tabla?.filas.map((f) => f.celdas[0])).toContain('6. Gastos de personal');
     expect(contable.descargas?.map((d) => d.formato)).toEqual(['pdf', 'xlsx']);
+    // Con los gastos de personal, el historial pide también el acceso a nóminas.
+    expect(contable.permisoRequerido).toBe('contabilidad:read;nominas');
+    expect(lectura.permisoRequerido).toBe('contabilidad:read');
+    expect(conservaPermiso(construirContexto(ROLES.contable, 'E1', HOY), contable.permisoRequerido!)).toBe(true);
+    // Si pasa a tesorería o solo lectura (siguen con contabilidad:read, pero sin nóminas), se oculta.
+    expect(conservaPermiso(construirContexto(ROLES.tesoreria, 'E1', HOY), contable.permisoRequerido!)).toBe(false);
+    expect(conservaPermiso(construirContexto(ROLES['solo-lectura'], 'E1', HOY), contable.permisoRequerido!)).toBe(false);
+    expect(conservaPermiso(construirContexto(ROLES['solo-lectura'], 'E1', HOY), lectura.permisoRequerido!)).toBe(true);
   });
 
   it('el resumen (INT-39) solo enseña los bloques permitidos', async () => {
@@ -366,7 +383,7 @@ describe('contrato de cifras', () => {
   it('INT-05: el total es el de totalCobradoEntre, hasta hoy', async () => {
     const r = await ejecutar('INT-05', 'admin');
     if (!conCifras(r) || r.sinPermiso) throw new Error('sin cifras');
-    expect(mockTotalCobradoEntre).toHaveBeenCalledWith('E1', 'INGRESO', '2026-10-01', HOY);
+    expect(mockTotalCobradoEntre).toHaveBeenCalledWith('E1', 'INGRESO', '2026-10-01', HOY, undefined);
     expect(r.kpis?.[0]).toEqual({ etiqueta: 'Total cobrado', valor: '2.345,60 €', detalle: '4 cobros' });
     expect(r.texto).toMatch(/^En octubre de 2026 \(hasta hoy\) has cobrado 2\.345,60 € en 4 cobros registrados\./);
   });
@@ -395,8 +412,8 @@ describe('contrato de cifras', () => {
   it('INT-09: lo facturado y lo gastado son los de resumenFiscalPeriodo, frente al mismo periodo del año anterior', async () => {
     const r = await ejecutar('INT-09', 'admin', { periodo: resolverCodigoPeriodo('este-trimestre', HOY)! });
     if (!conCifras(r) || r.sinPermiso) throw new Error('sin cifras');
-    expect(mockResumenFiscal).toHaveBeenCalledWith('E1', '2026-10-01', HOY);
-    expect(mockResumenFiscal).toHaveBeenCalledWith('E1', '2025-10-01', '2025-10-07');
+    expect(mockResumenFiscal).toHaveBeenCalledWith('E1', '2026-10-01', HOY, undefined);
+    expect(mockResumenFiscal).toHaveBeenCalledWith('E1', '2025-10-01', '2025-10-07', undefined);
     expect(r.texto).toMatch(
       /^En este trimestre \(4T de 2026\), hasta hoy, has facturado 10\.000,00 € en 5 facturas; en el mismo periodo de 2025, 8\.000,00 € \(\+25,0 %\)\. Has gastado 4\.000,00 € en 8 facturas; en el mismo periodo de 2025 no hay facturas\./,
     );
@@ -408,6 +425,8 @@ describe('contrato de cifras', () => {
   it('INT-13: busca sin ceros a la izquierda y da el estado de cobro de listarCobros', async () => {
     expect(claveNumeroFactura('2026-0045')).toBe(claveNumeroFactura('2026-45'));
     expect(claveNumeroFactura('a-012')).toBe('A12');
+    // Lo pendiente de una emitida es el de facturasPorCobrar (el mismo que el panel).
+    mockFacturasPorCobrar.mockResolvedValue({ ...FACTURAS, facturas: [{ ...FACTURAS.facturas[0], numeroCompleto: 'A-12', cobrado: 210, pendiente: 1000 }] });
     const r = await ejecutar('INT-13', 'ventas');
     if (!conCifras(r) || r.sinPermiso) throw new Error('sin cifras');
     expect(mockListarCobros).toHaveBeenCalledWith('E1', 'INGRESO', 'f1');
@@ -417,6 +436,68 @@ describe('contrato de cifras', () => {
     expect(r.enlaces).toEqual([{ texto: 'Abrir la factura A-12', href: '/dashboard/facturas/f1' }]);
     const ninguna = await ejecutar('INT-13', 'ventas', { numeroFactura: 'Z-9' });
     expect(!ninguna.sinPermiso && ninguna.sinCifras).toBe(true);
+  });
+
+  it('INT-13: sin borradores antiguos (estado DRAFT), y con las rectificativas como en el panel de cobros', async () => {
+    await ejecutar('INT-13', 'ventas');
+    // La búsqueda de emitidas deja fuera los borradores antiguos (estado DRAFT con documento FINAL).
+    const busqueda = (argumentos['incomeInvoice.findMany'] as Array<[{ where: Record<string, unknown> }]>).find(([a]) => 'numero' in a.where)!;
+    expect(busqueda[0].where).toMatchObject({ companyId: 'E1', numero: 12, estado: { not: 'DRAFT' } });
+
+    // A-12 de 1.210 € con una rectificativa por diferencias de -1.210 €: facturasPorCobrar ya no la lista.
+    rectificativas = [{ id: 'r1', numeroCompleto: 'R-1', tipoRectificativa: 'I', totalFactura: -1210, fechaEmision: '2026-07-10' }];
+    mockFacturasPorCobrar.mockResolvedValue({ ...FACTURAS, facturas: FACTURAS.facturas.filter((f) => f.id !== 'f1') });
+    const abonada = await ejecutar('INT-13', 'ventas');
+    if (!conCifras(abonada) || abonada.sinPermiso) throw new Error('sin cifras');
+    expect(abonada.texto).toContain('No queda nada pendiente de cobro: la rectificativa R-1 la abona.');
+    expect(abonada.kpis?.find((k) => k.etiqueta === 'Pendiente')?.valor).toBe('0,00 €');
+
+    // Sustituida por una rectificativa de tipo S: remite a la nueva.
+    rectificativas = [{ id: 'r2', numeroCompleto: 'R-2', tipoRectificativa: 'S', totalFactura: 1000, fechaEmision: '2026-07-10' }];
+    const sustituida = await ejecutar('INT-13', 'ventas');
+    expect(!sustituida.sinPermiso && sustituida.texto).toMatch(/está sustituida por la rectificativa R-2 \(por sustitución\): ya no cuenta/);
+    // La sustituida no mira sus cobros: solo la búsqueda inicial y la abonada.
+    expect(mockListarCobros).toHaveBeenCalledTimes(2);
+  });
+
+  it('INT-13: una rectificativa en negativo se describe como abono de la original, no como «cobrada»', async () => {
+    lecturas['incomeInvoice.findFirst'] = async () => ({ numeroCompleto: 'A-7' });
+    const original = lecturas['incomeInvoice.findMany'];
+    lecturas['incomeInvoice.findMany'] = async (args: unknown) =>
+      (args as { where?: { facturaOriginalId?: string } })?.where?.facturaOriginalId !== undefined
+        ? []
+        : [{ id: 'r9', numeroCompleto: 'R-12', estadoDocumento: 'FINAL', fechaEmision: '2026-08-01', fechaVencimiento: '2026-08-01', totalFactura: -1210, facturaOriginalId: 'f7', tipoRectificativa: 'I', customer: { nombreFiscal: 'CONSTRUCCIONES PÉREZ SL' } }];
+    try {
+      const r = await ejecutar('INT-13', 'ventas', { numeroFactura: 'R-12' });
+      if (r.sinPermiso) throw new Error('sin permiso');
+      expect(r.texto).toMatch(/^La factura R-12 es una rectificativa en negativo \(un abono\) de la factura A-7/);
+      expect(r.texto).not.toMatch(/Está cobrada/);
+      expect(mockListarCobros).not.toHaveBeenCalled();
+    } finally {
+      lecturas['incomeInvoice.findMany'] = original;
+      delete lecturas['incomeInvoice.findFirst'];
+    }
+  });
+
+  it('INT-09 e INT-05 con un cliente o un proveedor: solo sus facturas, y la respuesta lo nombra', async () => {
+    const facturado = await ejecutar('INT-09', 'admin', { periodo: resolverCodigoPeriodo('este-anio', HOY)!, foco: 'ventas', terceroId: 'c1', rol: 'cliente' });
+    if (!conCifras(facturado) || facturado.sinPermiso) throw new Error('sin cifras');
+    expect(mockResumenFiscal).toHaveBeenCalledWith('E1', '2026-01-01', HOY, { customerId: 'c1' });
+    expect(facturado.entendido).toMatch(/^Facturado a CONSTRUCCIONES PÉREZ SL en lo que va de 2026/);
+    expect(facturado.texto).toMatch(/^En lo que va de 2026 le has facturado a CONSTRUCCIONES PÉREZ SL 10\.000,00 €/);
+    expect(facturado.botones?.[0].accion).toMatchObject({ huecos: { terceroId: 'c1', rol: 'cliente' } });
+
+    const gastos = await ejecutar('INT-09', 'admin', { periodo: resolverCodigoPeriodo('este-anio', HOY)!, foco: 'gastos', terceroId: 'p1', rol: 'proveedor' });
+    if (!conCifras(gastos) || gastos.sinPermiso) throw new Error('sin cifras');
+    expect(mockResumenFiscal).toHaveBeenCalledWith('E1', '2026-01-01', HOY, { supplierId: 'p1' });
+    expect(gastos.entendido).toMatch(/^Gastado con IBERDROLA CLIENTES SAU/);
+
+    const cobrado = await ejecutar('INT-05', 'admin', { periodo: resolverCodigoPeriodo('este-mes', HOY)!, sentido: 'cobros', terceroId: 'c1', rol: 'cliente' });
+    if (!conCifras(cobrado) || cobrado.sinPermiso) throw new Error('sin cifras');
+    // Solo los cobros de las facturas de ese cliente.
+    expect(mockTotalCobradoEntre).toHaveBeenCalledWith('E1', 'INGRESO', '2026-10-01', HOY, ['f1', 'f9']);
+    expect((argumentos['incomeInvoice.findMany'] as Array<[{ where: Record<string, unknown> }]>)[0][0].where).toEqual({ companyId: 'E1', customerId: 'c1' });
+    expect(cobrado.texto).toMatch(/^En octubre de 2026 \(hasta hoy\) CONSTRUCCIONES PÉREZ SL te ha pagado 2\.345,60 €/);
   });
 
   it('INT-18: el resultado es el de informePerdidasGanancias, hasta hoy, con el aviso de los asientos sin aprobar', async () => {
@@ -452,6 +533,43 @@ describe('contrato de cifras', () => {
     );
   });
 
+  it('INT-28: «este trimestre» en plazo del anterior es el que toca presentar; el que está en curso, en un botón', async () => {
+    const r = await ejecutar('INT-28', 'contable', { periodo: resolverCodigoPeriodo('este-trimestre', HOY)! });
+    if (!conCifras(r) || r.sinPermiso) throw new Error('sin cifras');
+    expect(r.entendido).toBe('IVA del 3T de 2026 (modelo 303)');
+    expect(mockModeloGuardado).toHaveBeenCalledWith('E1', '303', 2026, '3T');
+    expect(r.avisos?.[0]).toMatch(/^Te enseño el 3T de 2026, que es el que toca presentar \(hasta el 20\/10\/2026\)\. El 4T acaba de empezar/);
+    expect(r.botones).toEqual([{ texto: 'Ver el 4T, en curso', accion: { tipo: 'intencion', id: 'INT-28', huecos: { periodo: '2026-4T' } } }]);
+    // El botón pide el 4T con su código: no vuelve al 3T.
+    const cuarto = await ejecutar('INT-28', 'contable', { periodo: resolverCodigoPeriodo('2026-4T', HOY)! });
+    expect(!cuarto.sinPermiso && cuarto.entendido).toBe('IVA del 4T de 2026 (modelo 303)');
+    // Pasado el 20 de octubre, «este trimestre» ya es el 4T.
+    const tarde = await intencionPorId('INT-28')!.ejecutar(construirContexto(ROLES.contable, 'E1', '2026-10-25'), { periodo: resolverCodigoPeriodo('este-trimestre', '2026-10-25')! });
+    expect(!tarde.sinPermiso && tarde.entendido).toBe('IVA del 4T de 2026 (modelo 303)');
+  });
+
+  it('INT-28: lee también el 303 guardado por la pantalla Modelo 303 y no recalcula uno presentado', async () => {
+    // Formato de tax-models: casillas '02' (repercutido) y '06' (soportado) con { valor }.
+    mockModeloGuardado.mockResolvedValue({ id: 'm2', estado: 'presentado', origen: 'autorrelleno', casillas: { '02': { numero: '02', valor: 2100 }, '06': { numero: '06', valor: 840 }, '13': { valor: 1260 } } });
+    const r = await ejecutar('INT-28', 'contable');
+    if (!conCifras(r) || r.sinPermiso) throw new Error('sin cifras');
+    expect(mockCalcular303).not.toHaveBeenCalled();
+    expect(r.texto).toBe('El 303 del 3T de 2026 sale a ingresar 1.260,00 €. Es el importe del modelo guardado en Fiscalidad → Modelo 303. En la app consta como presentado.');
+    expect(r.texto).not.toMatch(/no lo tienes guardado/);
+
+    // Presentado pero sin resultado legible: no se recalcula con las facturas de hoy.
+    mockModeloGuardado.mockResolvedValue({ id: 'm3', estado: 'presentado', origen: 'manual', casillas: { otra: 'cosa' } });
+    const ilegible = await ejecutar('INT-28', 'contable');
+    expect(mockCalcular303).not.toHaveBeenCalled();
+    expect(!ilegible.sinPermiso && ilegible.sinCifras).toBe(true);
+    expect(!ilegible.sinPermiso && ilegible.texto).toMatch(/consta como presentado en la app, pero no puedo leer su resultado/);
+
+    // Guardado sin presentar y sin resultado legible: se calcula, sin decir que no está guardado.
+    mockModeloGuardado.mockResolvedValue({ id: 'm4', estado: 'vigente', origen: 'manual', casillas: {} });
+    const borrador = await ejecutar('INT-28', 'contable');
+    expect(!borrador.sinPermiso && borrador.texto).toMatch(/Lo tienes guardado en la app, pero no puedo leer su resultado: lo calculo/);
+  });
+
   it('INT-30: con permiso, el estado de los modelos de la empresa sin crear nada', async () => {
     const r = await ejecutar('INT-30', 'contable');
     if (!conCifras(r) || r.sinPermiso) throw new Error('sin cifras');
@@ -470,6 +588,11 @@ describe('contrato de cifras', () => {
     expect(!una.sinPermiso && una.texto).toBe('El saldo de BBVA …5678 es 5.000,00 €, según los extractos importados hasta el 05/10/2026.');
     // El IBAN completo no sale nunca: solo los 4 últimos dígitos.
     expect(JSON.stringify(r)).not.toMatch(/ES00 0000/);
+  });
+
+  it('INT-24: con un banco de la pregunta, solo esa cuenta', async () => {
+    const r = await ejecutar('INT-24', 'tesoreria', { terceroId: 'b2', rol: 'banco' });
+    expect(!r.sinPermiso && r.texto).toBe('El saldo de BBVA …5678 es 5.000,00 €, según los extractos importados hasta el 05/10/2026.');
   });
 
   it('INT-25: filtra por texto e importe en memoria', async () => {

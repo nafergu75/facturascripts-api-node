@@ -8,6 +8,13 @@ import { cubrePermisos, permisosEnEmpresa } from '../rbac.service';
 import { hoyEspana } from '../../utils/fechas';
 import type { CarmenCtx } from './tipos';
 
+/**
+ * Grupo de permiso de las respuestas con datos de nóminas (gastos de personal).
+ * En main no hay permiso propio: vale `puedeNominas` (admin o contable). Al
+ * fusionar la rama de nóminas pasará a ser 'nominas:read'.
+ */
+export const PERMISO_NOMINAS = 'nominas';
+
 export function construirContexto(user: AuthUser, companyId: string, hoy: string = hoyEspana()): CarmenCtx {
   const permisos = permisosEnEmpresa(user, companyId);
   const roles = user.rolesPorEmpresa ? (user.rolesPorEmpresa[companyId] ?? []) : (user.roles ?? []);

@@ -12,7 +12,7 @@ jest.mock('../config/database', () => ({ prisma: mockPrisma }));
 import { normalizar, distanciaEdicion } from '../services/carmen/normalizar';
 import { extraerPeriodo, resolverCodigoPeriodo } from '../services/carmen/huecos/periodo';
 import { extraerFoco, extraerImporteMinimo, extraerModelo, extraerNif, extraerNumeroFactura, extraerSentido } from '../services/carmen/huecos/otros';
-import { buscarEnIndice, buscarTercero, olvidarIndices, tokensNombre, type Tercero } from '../services/carmen/terceros';
+import { buscarEnIndice, buscarTercero, olvidarIndices, tokensBanco, tokensNombre, type Tercero } from '../services/carmen/terceros';
 import { sinTildes } from '../utils/texto';
 
 const HOY = '2026-10-07';
@@ -191,5 +191,86 @@ describe('terceros', () => {
     ]);
     expect(await buscarTercero('E1', normalizar('cuanto me debe hermanos ruiz').base)).toMatchObject({ tipo: 'unico', tercero: { id: 'c9' } });
     reloj.mockRestore();
+  });
+});
+
+// ---------------- Correcciones de la revisión (07-10-2026) ----------------
+
+describe('revisión: periodos (hoy = 07/10/2026)', () => {
+  const p = (t: string, hoy = HOY) => extraerPeriodo(normalizar(t).texto, hoy)?.periodo;
+
+  it('«del año pasado», «del ejercicio anterior» y «de este año» detrás de un trimestre o de un mes', () => {
+    expect(p('el 303 del primer trimestre del año pasado')).toMatchObject({ desde: '2025-01-01', hasta: '2025-03-31', codigo: '2025-1T' });
+    expect(p('beneficio del cuarto trimestre del año pasado')).toMatchObject({ desde: '2025-10-01', hasta: '2025-12-31' });
+    expect(p('el tercer trimestre del ejercicio anterior')).toMatchObject({ desde: '2025-07-01' });
+    expect(p('el cuarto trimestre de este año')).toMatchObject({ desde: '2026-10-01', hasta: '2026-12-31' });
+    expect(p('cuanto facture en marzo del año pasado')).toMatchObject({ desde: '2025-03-01', hasta: '2025-03-31', codigo: '2025-03' });
+    expect(p('ventas de noviembre de este año')).toMatchObject({ desde: '2026-11-01' });
+    // Lo de antes sigue igual.
+    expect(p('el 3T de 2025')).toMatchObject({ desde: '2025-07-01' });
+    expect(p('marzo 2024')).toMatchObject({ desde: '2024-03-01' });
+    expect(p('en noviembre')).toMatchObject({ desde: '2025-11-01' });
+  });
+
+  it('un rango sin año empieza en la fecha más reciente que ya ha llegado; el final, en el mismo año', () => {
+    expect(p('del 1/10 al 31/10')).toMatchObject({ desde: '2026-10-01', hasta: '2026-10-31' });
+    expect(p('del 1/10 al 15/10')).toMatchObject({ desde: '2026-10-01', hasta: '2026-10-15' });
+    expect(p('del 15 de septiembre al 15 de octubre')).toMatchObject({ desde: '2026-09-15', hasta: '2026-10-15' });
+    expect(p('del 1/3 al 15/3')).toMatchObject({ desde: '2026-03-01', hasta: '2026-03-15' });
+    // El que empieza después de hoy es del año pasado; si el final queda antes, del siguiente.
+    expect(p('del 15/12 al 15/01')).toMatchObject({ desde: '2025-12-15', hasta: '2026-01-15', ejercicios: [2025, 2026] });
+    expect(p('del 1/11 al 30/11')).toMatchObject({ desde: '2025-11-01', hasta: '2025-11-30' });
+    // Con un solo año, el otro extremo va con él.
+    expect(p('del 1/12/2025 al 31/1')).toMatchObject({ desde: '2025-12-01', hasta: '2026-01-31' });
+    expect(p('del 1/12 al 31/1/2026')).toMatchObject({ desde: '2025-12-01', hasta: '2026-01-31' });
+    expect(p('del 30/2 al 3/3')).toBeUndefined();
+  });
+
+  it('semestres', () => {
+    expect(p('resultado del primer semestre')).toMatchObject({ desde: '2026-01-01', hasta: '2026-06-30', codigo: '2026-1S' });
+    expect(p('el segundo semestre')).toMatchObject({ desde: '2026-07-01', hasta: '2026-12-31' });
+    expect(p('el segundo semestre', '2026-03-10')).toMatchObject({ desde: '2025-07-01', hasta: '2025-12-31' });
+    expect(p('el primer semestre del año pasado')).toMatchObject({ desde: '2025-01-01', hasta: '2025-06-30' });
+    expect(p('el 1er semestre de 2024')).toMatchObject({ desde: '2024-01-01', hasta: '2024-06-30' });
+    expect(p('este semestre')).toMatchObject({ desde: '2026-07-01', hasta: '2026-12-31', codigo: 'este-semestre' });
+    expect(p('el semestre pasado')).toMatchObject({ desde: '2026-01-01', hasta: '2026-06-30', codigo: 'semestre-pasado' });
+    expect(resolverCodigoPeriodo('semestre-pasado', '2026-03-10')).toMatchObject({ desde: '2025-07-01', hasta: '2025-12-31' });
+    expect(resolverCodigoPeriodo('2026-2S', HOY)).toMatchObject({ desde: '2026-07-01', hasta: '2026-12-31' });
+    expect(resolverCodigoPeriodo('2026-3S', HOY)).toBeNull();
+  });
+});
+
+describe('revisión: terceros', () => {
+  const t = (id: string, rol: Tercero['rol'], nombre: string, nif?: string): Tercero => ({
+    id,
+    rol,
+    nombre,
+    tokens: rol === 'banco' ? tokensBanco(nombre) : tokensNombre(nombre),
+    nif,
+  });
+
+  it('una palabra que está entera en el nombre de dos clientes: se pregunta, aunque uno empiece por ella', () => {
+    const indice = [t('c2', 'cliente', 'Talleres Martínez SA'), t('c6', 'cliente', 'MARTINEZ HERMANOS SL'), t('p1', 'proveedor', 'Martínez Suministros SL')];
+    const r = buscarEnIndice(normalizar('cuanto me debe martinez').base, indice, ['cliente']);
+    expect(r?.tipo).toBe('dudas');
+    expect(r && r.tipo === 'dudas' ? r.candidatos.map((c) => c.tercero.id).sort() : []).toEqual(['c2', 'c6']);
+    // Con el nombre completo, sin dudas.
+    expect(buscarEnIndice(normalizar('cuanto me debe martinez hermanos').base, indice, ['cliente'])).toMatchObject({ tipo: 'unico', tercero: { id: 'c6' } });
+    // Un solo cliente con esa palabra: solo él (como antes, se confirma con un botón).
+    const solo = buscarEnIndice(normalizar('cuanto me debe martinez').base, [indice[0]]);
+    expect(solo && solo.tipo === 'dudas' ? solo.candidatos.map((c) => c.tercero.id) : []).toEqual(['c2']);
+  });
+
+  it('el nombre del banco cuenta si la pregunta habla del banco', () => {
+    const indice = [t('b1', 'banco', 'Banco Sabadell'), t('b2', 'banco', 'BBVA'), t('b3', 'banco', 'Caja Rural'), t('c1', 'cliente', 'Construcciones Pérez SL')];
+    expect(buscarEnIndice(normalizar('cuanto tengo en el sabadell').base, indice)).toMatchObject({ tipo: 'unico', tercero: { id: 'b1' } });
+    expect(buscarEnIndice(normalizar('saldo del bbva').base, indice)).toMatchObject({ tipo: 'unico', tercero: { id: 'b2' } });
+    expect(buscarEnIndice(normalizar('saldo de caja rural').base, indice)).toMatchObject({ tipo: 'unico', tercero: { id: 'b3' } });
+  });
+
+  it('un NIF que no es de nadie se dice tal cual', () => {
+    const indice = [t('c1', 'cliente', 'Construcciones Pérez SL', 'B11111111')];
+    expect(buscarEnIndice(normalizar('B99999999').base, indice)).toEqual({ tipo: 'ninguno', trozo: 'B99999999', parecidos: [] });
+    expect(buscarEnIndice(normalizar('cuanto me debe construcciones perez b99999999').base, indice)).toMatchObject({ tipo: 'unico', tercero: { id: 'c1' } });
   });
 });

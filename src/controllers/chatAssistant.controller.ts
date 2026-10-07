@@ -1,3 +1,4 @@
+import { timingSafeEqual } from 'crypto';
 import { z } from 'zod';
 import { asyncHandler } from '../utils/async-handler';
 import { sendOk } from '../utils/response';
@@ -5,7 +6,9 @@ import { badRequest, notFound } from '../utils/http-errors';
 import { config } from '../config/env';
 import { construirContexto } from '../services/carmen/contexto';
 import { atender, catalogoParaPagina } from '../services/carmen/enrutador';
-import { borrarSesion, listarSesiones, mensajesDeSesion, valorarMensaje } from '../services/carmen/sesiones';
+import { borrarSesion, listarSesiones, mensajesDeSesion, purgarSiToca, purgarTodas, valorarMensaje } from '../services/carmen/sesiones';
+import { HttpError } from '../utils/http-errors';
+import { logger } from '../config/logger';
 import { guardarAjustes, leerAjustes, topeEmpresaDia } from '../services/carmen/ajustes.service';
 import { leerUso, motivoConfiguracion, motivoSinIA, TEXTO_MOTIVO } from '../services/carmen/presupuesto.service';
 import type { Request } from 'express';
@@ -37,6 +40,8 @@ const esquemaAccion = z.discriminatedUnion('tipo', [
   z.object({ tipo: z.literal('tercero'), terceroId: z.string().regex(ID), rol: z.enum(['cliente', 'proveedor', 'banco']), intencion: z.string().max(40).optional() }).strict(),
   z.object({ tipo: z.literal('ia') }).strict(),
   z.object({ tipo: z.literal('catalogo') }).strict(),
+  // «No era esto»: la pregunta original va en message; la intención descartada no se vuelve a ofrecer.
+  z.object({ tipo: z.literal('noEraEsto'), intencion: z.string().max(40).optional() }).strict(),
 ]);
 
 export const esquemaChat = z
@@ -45,6 +50,8 @@ export const esquemaChat = z
     accion: esquemaAccion.optional(),
     sessionId: z.string().regex(ID, 'sessionId no válido.').optional(),
     currentPage: z.string().max(200).regex(/^\//).optional(),
+    // Texto del botón que ha pulsado el usuario: es lo que se guarda como su pregunta en el historial.
+    textoBoton: z.string().trim().min(1).max(120).optional(),
   })
   .refine((b) => b.message !== undefined || b.accion !== undefined, { message: 'Hace falta "message" o "accion".' });
 
@@ -67,12 +74,23 @@ export const chatAssistantController = {
 
   // GET /companies/:companyId/chat-assistant/sesiones?pagina=
   sesiones: asyncHandler(async (req, res) => {
-    sendOk(res, await listarSesiones(contexto(req), Number(req.query.pagina ?? 1)));
+    const ctx = contexto(req);
+    const ajustes = await leerAjustes(ctx.companyId);
+    const lista = await listarSesiones(ctx, Number(req.query.pagina ?? 1), ajustes.conservarDias);
+    // Lo caducado ya no se lista; además se borra (sin esperar a que alguien pregunte).
+    await purgarSiToca(ctx.companyId, ajustes.conservarDias);
+    sendOk(res, lista);
   }),
 
   // GET /companies/:companyId/chat-assistant/:sessionId/messages
   getHistory: asyncHandler(async (req, res) => {
-    sendOk(res, await mensajesDeSesion(contexto(req), idDeRuta(req.params.sessionId, 'Conversación')));
+    const ctx = contexto(req);
+    const sessionId = idDeRuta(req.params.sessionId, 'Conversación');
+    const ajustes = await leerAjustes(ctx.companyId);
+    // Primero la conversación (una ajena o caducada da 404 sin leer nada); después la purga.
+    const mensajes = await mensajesDeSesion(ctx, sessionId, ajustes.conservarDias);
+    await purgarSiToca(ctx.companyId, ajustes.conservarDias);
+    sendOk(res, mensajes);
   }),
 
   // DELETE /companies/:companyId/chat-assistant/:sessionId
@@ -92,13 +110,14 @@ export const chatAssistantController = {
   // GET /companies/:companyId/chat-assistant/catalogo?pagina=
   catalogo: asyncHandler(async (req, res) => {
     const pagina = typeof req.query.pagina === 'string' && req.query.pagina.startsWith('/') ? req.query.pagina.slice(0, 200) : undefined;
-    sendOk(res, catalogoParaPagina(contexto(req), pagina));
+    sendOk(res, await catalogoParaPagina(contexto(req), pagina));
   }),
 
   // GET /companies/:companyId/chat-assistant/estado
   estado: asyncHandler(async (req, res) => {
     const ctx = contexto(req);
     const ajustes = await leerAjustes(ctx.companyId);
+    await purgarSiToca(ctx.companyId, ajustes.conservarDias);
     const tope = topeEmpresaDia(ajustes);
     const previo = motivoConfiguracion(ajustes.iaActiva);
     const uso = previo && !ctx.esAdminEmpresa ? null : await leerUso(ctx.companyId, ctx.userId, ctx.hoy, tope);
@@ -150,5 +169,17 @@ export const chatAssistantController = {
       porcentajeTopeGlobal: uso.porcentajeMes,
       avisoTope: uso.avisoTope,
     });
+  }),
+
+  // GET /cron/carmen-purga (Vercel Cron, una vez al día): borra lo caducado de todas las empresas.
+  cronPurga: asyncHandler(async (req, res) => {
+    const secreto = config.cronSecret;
+    if (!secreto) throw new HttpError(503, 'La tarea programada no está configurada (CRON_SECRET).');
+    const recibido = Buffer.from(req.get('authorization') ?? '');
+    const esperado = Buffer.from(`Bearer ${secreto}`);
+    if (recibido.length !== esperado.length || !timingSafeEqual(recibido, esperado)) throw new HttpError(401, 'No autorizado.');
+    const borrados = await purgarTodas();
+    logger.info(`carmen: purga diaria, ${borrados} mensajes caducados borrados`);
+    sendOk(res, { borrados });
   }),
 };

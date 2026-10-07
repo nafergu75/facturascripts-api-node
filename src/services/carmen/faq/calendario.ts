@@ -133,7 +133,7 @@ export function diasHasta(hoy: string, fecha: string): number {
 export function frasePlazo(p: Plazo, hoy: string): string {
   const dias = diasHasta(hoy, p.fecha);
   const cuanto = dias === 0 ? 'vence hoy' : dias === 1 ? 'queda 1 día' : `quedan ${dias} días`;
-  return `El modelo ${p.modelo} (${p.nombre}) de ${etiquetaPeriodo(p).replace(/^el /, '')} se presenta hasta el ${fechaES(p.fecha)} (${cuanto}).`;
+  return `El modelo ${p.modelo} (${p.nombre}) ${etiquetaPeriodo(p).replace(/^el /, 'del ')} se presenta hasta el ${fechaES(p.fecha)} (${cuanto}).`;
 }
 
 /** ¿Es una pregunta de plazos? («¿cuándo vence el 303?», «plazo del 111», «hasta cuándo tengo para el IVA»). */

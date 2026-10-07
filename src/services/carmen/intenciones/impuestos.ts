@@ -23,14 +23,59 @@ const numero = (v: unknown): number | null => {
   return Number.isFinite(n) ? n : null;
 };
 
+/**
+ * Resultado de un 303 guardado, en cualquiera de los dos formatos de la app:
+ *  - el de Modelos Fiscales (impuestosModulo): '71_resultado', '27_total_devengado'...;
+ *  - el de la pantalla Modelo 303 (tax-models): casillas '02' (IVA repercutido)
+ *    y '06' (IVA soportado) con { valor }.
+ * null si no hay un resultado que se pueda leer.
+ */
+export function leerResultado303(c: Record<string, unknown> | null): { resultado: number; devengado: number | null; deducible: number | null } | null {
+  if (!c) return null;
+  const r71 = numero(c['71_resultado']);
+  if (r71 !== null) {
+    return { resultado: r71, devengado: numero(c['27_total_devengado']), deducible: numero(c['45_total_deducir']) ?? numero(c['29_cuota_deducible']) };
+  }
+  const valor = (k: string) => {
+    const v = c[k];
+    return v && typeof v === 'object' ? numero((v as { valor?: unknown }).valor) : null;
+  };
+  const devengado = valor('02');
+  const deducible = valor('06');
+  if (devengado === null || deducible === null) return null;
+  return { resultado: Math.round((devengado - deducible) * 100) / 100, devengado, deducible };
+}
+
+/** El 303 del trimestre anterior todavía está en plazo (del 1 al 20 de abril, julio y octubre, o hasta el 30 de enero)? */
+function anteriorEnPlazo(hoy: string): { anio: number; t: number; fecha: string } | null {
+  const anterior = resolverCodigoPeriodo('trimestre-pasado', hoy)!;
+  const anio = Number(anterior.desde.slice(0, 4));
+  const t = trimestreDe(anterior.desde);
+  const plazo = plazosDelEjercicio(anio).find((p) => p.modelo === '303' && p.periodo === `${t}T`);
+  return plazo && plazo.fecha >= hoy ? { anio, t, fecha: plazo.fecha } : null;
+}
+
 export const ivaDelTrimestre: Ejecutor = async (ctx, h) => {
   if (!tiene(ctx, 'impuestos:read')) return { sinPermiso: true, area: 'impuestos' };
+  const anioHoy = Number(ctx.hoy.slice(0, 4));
+  const tHoy = trimestreDe(ctx.hoy);
+  const avisos: string[] = [];
   // Por defecto, el último trimestre cerrado, que es el que toca presentar.
-  const pedido = h.periodo ?? resolverCodigoPeriodo('trimestre-pasado', ctx.hoy)!;
+  let pedido = h.periodo ?? resolverCodigoPeriodo('trimestre-pasado', ctx.hoy)!;
+  // «¿Cuánto IVA pago este trimestre?» mientras está en plazo el anterior: el que toca
+  // presentar (el mismo que abre la pantalla Modelo 303), y el que está en curso en un botón.
+  let enCursoAparte = false;
+  const enPlazo = pedido.codigo === 'este-trimestre' ? anteriorEnPlazo(ctx.hoy) : null;
+  if (enPlazo) {
+    pedido = periodoTrimestre(enPlazo.anio, enPlazo.t);
+    enCursoAparte = true;
+    avisos.push(
+      `Te enseño el ${enPlazo.t}T de ${enPlazo.anio}, que es el que toca presentar (hasta el ${fechaES(enPlazo.fecha)}). El ${tHoy}T acaba de empezar: lo tienes en el botón «Ver el ${tHoy}T, en curso».`,
+    );
+  }
   const anio = Number(pedido.desde.slice(0, 4));
   const t = trimestreDe(pedido.desde);
   const trimestre = periodoTrimestre(anio, t);
-  const avisos: string[] = [];
   if (pedido.desde !== trimestre.desde || pedido.hasta !== trimestre.hasta) {
     avisos.push(`El 303 es trimestral: te enseño el ${t}T de ${anio}, que es el trimestre de ${pedido.etiqueta}.`);
   }
@@ -40,28 +85,36 @@ export const ivaDelTrimestre: Ejecutor = async (ctx, h) => {
   }
   const periodo = `${t}T`;
   const guardado = await modeloGuardadoSoloLectura(ctx.companyId, '303', anio, periodo);
-  const c = guardado?.casillas ?? null;
-  const resultadoGuardado = c ? numero(c['71_resultado']) : null;
+  const leido = leerResultado303(guardado?.casillas ?? null);
+  const presentado = guardado?.estado === 'presentado';
+  const enlaces = [{ texto: 'Ir al modelo 303', href: '/dashboard/fiscal/modelo-303' }];
 
   let resultado: number;
   let devengado: number | null;
   let deducible: number | null;
   let origen: string;
-  if (resultadoGuardado !== null) {
-    resultado = resultadoGuardado;
-    devengado = numero(c!['27_total_devengado']);
-    deducible = numero(c!['45_total_deducir']) ?? numero(c!['29_cuota_deducible']);
+  if (leido) {
+    ({ resultado, devengado, deducible } = leido);
     origen =
       guardado!.origen === 'manual-mixto'
         ? 'Es el importe del modelo guardado en Fiscalidad → Modelo 303, con cambios hechos a mano.'
         : 'Es el importe del modelo guardado en Fiscalidad → Modelo 303.';
+  } else if (presentado) {
+    // Presentado, pero sin un resultado que se pueda leer: no se recalcula (la cifra que vale es la presentada).
+    return {
+      entendido,
+      texto: `El 303 del ${t}T de ${anio} consta como presentado en la app, pero no puedo leer su resultado. Míralo en Fiscalidad → Modelo 303.`,
+      sinCifras: true,
+      enlaces,
+    };
   } else {
     const d = await calcularModelo303(ctx.companyId, { ejercicio: anio, periodo, tipo: 'trimestral', fechaInicio: trimestre.desde, fechaFin: trimestre.hasta });
     resultado = d.resultadoFinal ?? d.resultado;
     devengado = d.totalCuotaDevengada;
     deducible = d.totalCuotaDeducible;
-    origen =
-      'Todavía no lo tienes guardado en la app: lo calculo con las facturas del trimestre (sin borradores) y sin restar cuotas a compensar de trimestres anteriores.';
+    origen = guardado
+      ? 'Lo tienes guardado en la app, pero no puedo leer su resultado: lo calculo con las facturas del trimestre (sin borradores) y sin restar cuotas a compensar de trimestres anteriores.'
+      : 'Todavía no lo tienes guardado en la app: lo calculo con las facturas del trimestre (sin borradores) y sin restar cuotas a compensar de trimestres anteriores.';
     if (d.advertencias?.length) avisos.push(...d.advertencias);
   }
   const enCurso = trimestre.hasta >= ctx.hoy;
@@ -76,7 +129,6 @@ export const ivaDelTrimestre: Ejecutor = async (ctx, h) => {
           : `sale negativo, ${eur(-resultado)}, que se compensa en los trimestres siguientes`
         : 'sale a cero';
   const plazo = plazosDelEjercicio(anio).find((p) => p.modelo === '303' && p.periodo === periodo)!;
-  const presentado = guardado?.estado === 'presentado';
   const textoPlazo =
     presentado
       ? ' En la app consta como presentado.'
@@ -95,12 +147,14 @@ export const ivaDelTrimestre: Ejecutor = async (ctx, h) => {
     texto: `El 303 del ${t}T de ${anio} ${sale}. ${origen}${textoPlazo}`,
     permisoRequerido: 'impuestos:read',
     kpis,
-    enlaces: [{ texto: 'Ir al modelo 303', href: '/dashboard/fiscal/modelo-303' }],
+    enlaces,
     ...(avisos.length ? { avisos } : {}),
-    botones:
-      t === trimestreDe(ctx.hoy) && anio === Number(ctx.hoy.slice(0, 4))
+    // El trimestre en curso va con su código (2026-4T): «este-trimestre» volvería al que toca presentar.
+    botones: enCursoAparte
+      ? [botonIntencion(`Ver el ${tHoy}T, en curso`, 'INT-28', { periodo: `${anioHoy}-${tHoy}T` })]
+      : t === tHoy && anio === anioHoy
         ? [botonIntencion('¿Y el trimestre pasado?', 'INT-28', { periodo: 'trimestre-pasado' })]
-        : [botonIntencion('¿Y este trimestre?', 'INT-28', { periodo: 'este-trimestre' })],
+        : [botonIntencion('¿Y este trimestre?', 'INT-28', { periodo: `${anioHoy}-${tHoy}T` })],
   };
 };
 

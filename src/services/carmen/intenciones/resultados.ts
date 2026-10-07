@@ -11,7 +11,7 @@
  */
 import { prisma } from '../../../config/database';
 import { informePerdidasGanancias } from '../../informesContables.service';
-import { tiene } from '../contexto';
+import { PERMISO_NOMINAS, tiene } from '../contexto';
 import { botonIntencion, eur, fechaES, plural, tabla } from '../plantillas';
 import { hastaHoy, resolverCodigoPeriodo } from '../huecos/periodo';
 import type { CarmenCtx, HuecosResueltos, Kpi, RespuestaDatos } from '../tipos';
@@ -72,6 +72,9 @@ export const cuentaDeResultados: Ejecutor = async (ctx, h) => {
     filas = filas.filter((f) => !String(f.celdas[0] ?? '').startsWith(`${PARTIDA_PERSONAL}. `));
     avisos.push('No te enseño los gastos de personal: hace falta acceso a nóminas en esta empresa.');
   }
+  // Con la fila de personal (o la descarga del informe completo), el historial la oculta si se pierde el acceso a nóminas.
+  const conPersonal = ctx.puedeNominas;
+  const permisoRequerido = conPersonal ? `contabilidad:read;${PERMISO_NOMINAS}` : 'contabilidad:read';
   const kpis: Kpi[] = [
     { etiqueta: 'Cifra de negocios', valor: eur(cifra) },
     { etiqueta: 'Resultado', valor: eur(r), detalle: `${fechaES(periodo.desde)} a ${fechaES(hasta)}` },
@@ -81,7 +84,7 @@ export const cuentaDeResultados: Ejecutor = async (ctx, h) => {
   return {
     entendido,
     texto: `En ${periodo.etiqueta}${recorte} ${situacion}, con una cifra de negocios de ${eur(cifra)}.${comparacion} ${CRITERIO_PYG}`,
-    permisoRequerido: 'contabilidad:read',
+    permisoRequerido,
     kpis,
     tabla: tabla(
       'Pérdidas y ganancias',

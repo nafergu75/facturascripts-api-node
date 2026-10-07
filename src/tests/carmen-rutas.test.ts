@@ -7,7 +7,7 @@ const mockPrisma = {
   chatSession: { findFirst: jest.fn(), create: jest.fn(), updateMany: jest.fn(), findMany: jest.fn(), count: jest.fn(), deleteMany: jest.fn() },
   chatMessage: { create: jest.fn(), findMany: jest.fn(), updateMany: jest.fn(), deleteMany: jest.fn() },
   carmenContador: { createMany: jest.fn(), findMany: jest.fn() },
-  carmenAjustes: { findUnique: jest.fn(), upsert: jest.fn() },
+  carmenAjustes: { findUnique: jest.fn(), upsert: jest.fn(), findMany: jest.fn() },
   carmenLlamadaIA: { create: jest.fn() },
   customer: { findMany: jest.fn() },
   supplier: { findMany: jest.fn() },
@@ -50,6 +50,7 @@ beforeEach(() => {
   mockPrisma.carmenContador.findMany.mockResolvedValue([]);
   mockPrisma.carmenAjustes.findUnique.mockResolvedValue(null);
   mockPrisma.carmenAjustes.upsert.mockResolvedValue({});
+  mockPrisma.carmenAjustes.findMany.mockResolvedValue([]);
   mockPrisma.customer.findMany.mockResolvedValue([]);
   mockPrisma.supplier.findMany.mockResolvedValue([]);
   mockPrisma.bankAccount.findMany.mockResolvedValue([]);
@@ -61,7 +62,9 @@ describe('aislamiento de conversaciones', () => {
   it('POST con una conversación ajena (o inventada): 404 sin leer ni guardar nada', async () => {
     const res = await request(app).post(ruta()).set('Authorization', U1).send({ message: '¿Cómo hago una factura?', sessionId: 'de-otro-usuario' });
     expect(res.status).toBe(404);
-    expect(mockPrisma.chatSession.findFirst).toHaveBeenCalledWith(expect.objectContaining({ where: { id: 'de-otro-usuario', companyId: 'E1', userId: 'U1' } }));
+    expect(mockPrisma.chatSession.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ id: 'de-otro-usuario', companyId: 'E1', userId: 'U1' }) }),
+    );
     expect(mockPrisma.chatMessage.findMany).not.toHaveBeenCalled();
     expect(mockPrisma.chatMessage.create).not.toHaveBeenCalled();
     expect(mockPrisma.chatSession.create).not.toHaveBeenCalled();
@@ -101,7 +104,7 @@ describe('aislamiento de conversaciones', () => {
     ]);
     const res = await request(app).get(`${ruta()}/s1/messages`).set('Authorization', U1);
     expect(res.status).toBe(200);
-    expect(mockPrisma.chatMessage.findMany.mock.calls[0][0].where).toEqual({ sessionId: 's1', companyId: 'E1', userId: 'U1' });
+    expect(mockPrisma.chatMessage.findMany.mock.calls[0][0].where).toEqual({ sessionId: 's1', companyId: 'E1', userId: 'U1', createdAt: { gte: expect.any(Date) } });
     const [pregunta, respuesta] = res.body.data.mensajes;
     expect(pregunta.oculto).toBe(false);
     expect(respuesta).toMatchObject({ oculto: true, datos: null, content: 'Respuesta oculta: ya no tienes acceso a este dato.' });
@@ -118,6 +121,51 @@ describe('aislamiento de conversaciones', () => {
     const res = await request(app).get(`${ruta()}/sesiones?pagina=2`).set('Authorization', U1);
     expect(res.status).toBe(200);
     expect(mockPrisma.chatSession.findMany.mock.calls[0][0]).toMatchObject({ where: { companyId: 'E1', userId: 'U1' }, skip: 20, take: 20 });
+  });
+
+  it('lo de hace más de 90 días no se lista ni se lee aunque siga en la BD, y abrir el historial lo purga', async () => {
+    const ahora = Date.now();
+    const hace = (d: Date) => Math.round((ahora - d.getTime()) / 86_400_000);
+    await request(app).get(`${ruta()}/sesiones`).set('Authorization', U1);
+    const listado = mockPrisma.chatSession.findMany.mock.calls[0][0];
+    expect(hace(listado.where.updatedAt.gte)).toBe(90);
+    expect(hace(mockPrisma.chatSession.count.mock.calls[0][0].where.updatedAt.gte)).toBe(90);
+    // La purga va después de leer: borra lo de antes del límite sin que nadie pregunte.
+    const purga = mockPrisma.chatMessage.findMany.mock.calls.find(([a]: [{ where: { createdAt?: { lt?: Date } } }]) => a.where.createdAt?.lt);
+    expect(purga && hace(purga[0].where.createdAt.lt)).toBe(90);
+
+    // Una conversación caducada da 404 (la sesión se busca con su fecha).
+    jest.clearAllMocks();
+    mockPrisma.chatSession.findFirst.mockResolvedValue(null);
+    const vieja = await request(app).get(`${ruta()}/s-vieja/messages`).set('Authorization', U1);
+    expect(vieja.status).toBe(404);
+    expect(hace(mockPrisma.chatSession.findFirst.mock.calls[0][0].where.updatedAt.gte)).toBe(90);
+
+    // Con 30 días en los ajustes, el límite es de 30.
+    jest.clearAllMocks();
+    mockPrisma.carmenAjustes.findUnique.mockResolvedValue({ companyId: 'E1', iaActiva: false, topeConsultasDia: null, conservarDias: 30, actualizadoPor: null, actualizadoEn: new Date() });
+    mockPrisma.chatSession.findMany.mockResolvedValue([]);
+    mockPrisma.chatSession.count.mockResolvedValue(0);
+    await request(app).get(`${ruta()}/sesiones`).set('Authorization', U1);
+    expect(hace(mockPrisma.chatSession.findMany.mock.calls[0][0].where.updatedAt.gte)).toBe(30);
+  });
+
+  it('con un botón, se guarda como pregunta el texto del botón que vio el usuario', async () => {
+    const res = await request(app)
+      .post(ruta())
+      .set('Authorization', U1)
+      .send({ accion: { tipo: 'intencion', id: 'INT-28', huecos: { periodo: 'trimestre-pasado' } }, textoBoton: '¿Y el trimestre pasado?' });
+    expect(res.status).toBe(200);
+    expect(mockPrisma.chatMessage.create.mock.calls[0][0].data).toMatchObject({ role: 'user', content: '¿Y el trimestre pasado?' });
+    // Un texto de botón de más de 120 caracteres no se acepta.
+    expect(esquemaChat.safeParse({ accion: { tipo: 'catalogo' }, textoBoton: 'x'.repeat(121) }).success).toBe(false);
+  });
+
+  it('al elegir un cliente en «¿A qué cliente te refieres?», se guarda su nombre y no «Elijo una opción»', async () => {
+    mockPrisma.customer.findMany.mockResolvedValue([{ id: 'c1', nombreFiscal: 'CONSTRUCCIONES PÉREZ SL', nifCif: 'B11111111' }]);
+    const res = await request(app).post(ruta()).set('Authorization', U1).send({ accion: { tipo: 'tercero', terceroId: 'c1', rol: 'cliente', intencion: 'INT-28' } });
+    expect(res.status).toBe(200);
+    expect(mockPrisma.chatMessage.create.mock.calls[0][0].data).toMatchObject({ role: 'user', content: 'CONSTRUCCIONES PÉREZ SL' });
   });
 
   it('valorar una respuesta ajena: 404', async () => {
@@ -249,6 +297,44 @@ describe('ajustes y estado de la IA', () => {
     expect(res.body.data.chips[0].accion).toMatchObject({ tipo: 'intencion' });
     expect(res.body.data.chips.length).toBeLessThanOrEqual(4);
     expect(res.body.data.fichas.map((f: { id: string }) => f.id)).toContain('app-factura-nueva');
+  });
+
+  it('en la ficha de un cliente, el primer chip ya lleva ese cliente (por su id) y su nombre', async () => {
+    mockPrisma.customer.findMany.mockResolvedValue([{ id: 'c1', nombreFiscal: 'CONSTRUCCIONES PÉREZ SL', nifCif: 'B11111111' }]);
+    const res = await request(app).get(`${ruta('E1')}/catalogo?pagina=/dashboard/clientes/c1`).set('Authorization', U1);
+    expect(res.status).toBe(200);
+    expect(res.body.data.chips[0]).toEqual({
+      texto: '¿Cuánto me debe CONSTRUCCIONES PÉREZ SL?',
+      accion: { tipo: 'intencion', id: 'INT-01', huecos: { terceroId: 'c1', rol: 'cliente' } },
+    });
+    // El chip genérico «¿Cuánto me debe un cliente?» ya no sale.
+    expect(res.body.data.chips.filter((c: { accion: { id?: string } }) => c.accion.id === 'INT-01')).toHaveLength(1);
+    // Un id que no es un cliente de la empresa: los chips de siempre.
+    const ajeno = await request(app).get(`${ruta('E1')}/catalogo?pagina=/dashboard/clientes/otro`).set('Authorization', U1);
+    expect(ajeno.body.data.chips[0].texto).toBe('¿Cuánto me debe un cliente?');
+  });
+
+  it('la purga diaria (Vercel Cron) pide CRON_SECRET y borra lo caducado de todas las empresas', async () => {
+    const cfgCron = config as unknown as { cronSecret?: string };
+    const antes = cfgCron.cronSecret;
+    try {
+      cfgCron.cronSecret = undefined;
+      expect((await request(app).get('/cron/carmen-purga')).status).toBe(503);
+      cfgCron.cronSecret = 'secreto-de-prueba-largo';
+      expect((await request(app).get('/cron/carmen-purga')).status).toBe(401);
+      expect((await request(app).get('/cron/carmen-purga').set('Authorization', 'Bearer otro-secreto-cualquiera')).status).toBe(401);
+      expect(mockPrisma.chatMessage.findMany).not.toHaveBeenCalled();
+      mockPrisma.carmenAjustes.findMany.mockResolvedValue([{ companyId: 'E9', conservarDias: 30 }]);
+      const ok = await request(app).get('/cron/carmen-purga').set('Authorization', 'Bearer secreto-de-prueba-largo');
+      expect(ok.status).toBe(200);
+      const limites = mockPrisma.chatMessage.findMany.mock.calls.map(([a]: [{ where: { companyId?: string; createdAt: { lt: Date } } }]) => ({
+        empresa: a.where.companyId ?? 'todas',
+        dias: Math.round((Date.now() - a.where.createdAt.lt.getTime()) / 86_400_000),
+      }));
+      expect(limites).toEqual([{ empresa: 'todas', dias: 90 }, { empresa: 'E9', dias: 30 }]);
+    } finally {
+      cfgCron.cronSecret = antes;
+    }
   });
 
   it('/health dice si la IA de Carmen está encendida, sin importes', async () => {

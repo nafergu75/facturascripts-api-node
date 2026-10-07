@@ -29,21 +29,39 @@ export interface ResumenFiscalPeriodo {
 
 const n = (v: unknown) => Math.round(Number(v ?? 0) * 100) / 100;
 
-/** Fechas AAAA-MM-DD incluidas (las de factura son texto, se comparan como tal). */
-export async function resumenFiscalPeriodo(companyId: string, desde: string, hasta: string): Promise<ResumenFiscalPeriodo> {
+/** Solo las facturas de un cliente (ventas) o de un proveedor (gastos). */
+export interface FiltroTercero {
+  customerId?: string;
+  supplierId?: string;
+}
+
+/**
+ * Fechas AAAA-MM-DD incluidas (las de factura son texto, se comparan como tal).
+ * Con `filtro`, las ventas son solo las del cliente y los gastos solo los del
+ * proveedor (si se filtra por uno solo, el otro lado sale a cero).
+ */
+export async function resumenFiscalPeriodo(companyId: string, desde: string, hasta: string, filtro?: FiltroTercero): Promise<ResumenFiscalPeriodo> {
   const fechas = { gte: desde, lte: hasta };
   const suma = { baseTotal: true, ivaTotal: true, retencionTotal: true, totalFactura: true } as const;
+  // Con un filtro por cliente no hay gastos que mirar (ni ventas con uno por proveedor).
+  const sinVentas = !!filtro && !filtro.customerId;
+  const sinGastos = !!filtro && !filtro.supplierId;
+  const vacio = { _sum: { baseTotal: 0, ivaTotal: 0, retencionTotal: 0, totalFactura: 0 }, _count: 0 };
   const [ventas, gastos] = await Promise.all([
-    prisma.incomeInvoice.aggregate({
-      where: { companyId, estadoDocumento: 'FINAL', estado: { not: 'DRAFT' }, fechaEmision: fechas },
-      _sum: suma,
-      _count: true,
-    }),
-    prisma.expenseInvoice.aggregate({
-      where: { companyId, estado: { not: 'DRAFT' }, fechaEmision: fechas },
-      _sum: suma,
-      _count: true,
-    }),
+    sinVentas
+      ? Promise.resolve(vacio)
+      : prisma.incomeInvoice.aggregate({
+          where: { companyId, estadoDocumento: 'FINAL', estado: { not: 'DRAFT' }, fechaEmision: fechas, ...(filtro?.customerId ? { customerId: filtro.customerId } : {}) },
+          _sum: suma,
+          _count: true,
+        }),
+    sinGastos
+      ? Promise.resolve(vacio)
+      : prisma.expenseInvoice.aggregate({
+          where: { companyId, estado: { not: 'DRAFT' }, fechaEmision: fechas, ...(filtro?.supplierId ? { supplierId: filtro.supplierId } : {}) },
+          _sum: suma,
+          _count: true,
+        }),
   ]);
   const totales = (a: typeof ventas): TotalesFacturas => ({
     facturas: a._count,

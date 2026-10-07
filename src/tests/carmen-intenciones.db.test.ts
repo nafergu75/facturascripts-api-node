@@ -56,7 +56,18 @@ const ids: Record<string, string> = {};
 
 async function venta(
   clave: string,
-  datos: { customerId: string; serie: string; numero: number | null; fecha: string; vence: string; base: number; estado?: string; estadoDocumento?: string },
+  datos: {
+    customerId: string;
+    serie: string;
+    numero: number | null;
+    fecha: string;
+    vence: string;
+    base: number;
+    estado?: string;
+    estadoDocumento?: string;
+    facturaOriginalId?: string;
+    tipoRectificativa?: string;
+  },
 ) {
   const iva = Math.round(datos.base * 21) / 100;
   const f = await prisma.incomeInvoice.create({
@@ -70,6 +81,7 @@ async function venta(
       fechaEmision: datos.fecha,
       fechaVencimiento: datos.vence,
       estado: datos.estado ?? 'PENDING',
+      ...(datos.facturaOriginalId ? { facturaOriginalId: datos.facturaOriginalId, tipoRectificativa: datos.tipoRectificativa ?? 'I' } : {}),
       baseTotal: datos.base,
       ivaTotal: iva,
       totalFactura: datos.base + iva,
@@ -139,6 +151,11 @@ beforeAll(async () => {
   await venta('v3', { customerId: ruiz.id, serie: '2026', numero: 4, fecha: '2026-09-15', vence: '2026-11-15', base: 500 });
   await venta('borrador', { customerId: ruiz.id, serie: '2026', numero: null, fecha: '2026-09-20', vence: '2026-10-20', base: 999, estadoDocumento: 'BORRADOR', estado: 'DRAFT' });
   await cobro('INGRESO', ids.v2, '2026-09-20', 420);
+  // 2024 (fuera de los periodos de las demás cifras): la 2024-8 abonada entera por la rectificativa
+  // R24-1 y un borrador antiguo (estado DRAFT con documento FINAL), que no es una factura emitida.
+  await venta('v6', { customerId: ruiz.id, serie: '2024', numero: 8, fecha: '2024-03-01', vence: '2024-03-31', base: 1000 });
+  await venta('r1', { customerId: ruiz.id, serie: 'R24', numero: 1, fecha: '2024-03-10', vence: '2024-03-10', base: -1000, facturaOriginalId: ids.v6 });
+  await venta('antiguo', { customerId: ruiz.id, serie: '2024', numero: 31, fecha: '2024-05-01', vence: '2024-05-31', base: 300, estado: 'DRAFT' });
 
   // Compras: G1 (vencida, pagada en parte), G2 (vence esta semana) y G3 en borrador (no cuenta).
   await compra('g1', { supplierId: iberdrola.id, serie: 'IB', numero: 1, fecha: '2026-09-01', vence: '2026-09-30', base: 250, estadoPago: 'PARCIAL' });
@@ -149,6 +166,19 @@ beforeAll(async () => {
   // 303 del 2T guardado y presentado (con un cambio a mano).
   await prisma.modeloImpuesto.create({
     data: { companyId: EMPRESA, codigo: '303', ejercicio: 2026, periodo: '2T', estado: 'presentado', origen: 'manual-mixto', casillas: { '71_resultado': 250.75, '27_total_devengado': 300, '45_total_deducir': 49.25 } },
+  });
+
+  // 303 del 4T de 2024 guardado por la pantalla Modelo 303 (formato de tax-models) y presentado.
+  await prisma.modeloImpuesto.create({
+    data: {
+      companyId: EMPRESA,
+      codigo: '303',
+      ejercicio: 2024,
+      periodo: '4T',
+      estado: 'presentado',
+      origen: 'autorrelleno',
+      casillas: { '01': { numero: '01', valor: 1500 }, '02': { numero: '02', valor: 315 }, '05': { numero: '05', valor: 400 }, '06': { numero: '06', valor: 84 }, '13': { numero: '13', valor: 231 } },
+    },
   });
 
   // Banco con un movimiento (para que INT-24/25 lean algo).
@@ -218,6 +248,18 @@ describe('cifras exactas con BD', () => {
     expect(!borrador.sinPermiso && borrador.sinCifras).toBe(true);
   });
 
+  it('INT-13: una factura abonada por su rectificativa no queda pendiente; un borrador antiguo no se encuentra', async () => {
+    const abonada = cifras(await ejecutar('INT-13', { numeroFactura: '2024-8' }));
+    expect(abonada.texto).toBe(
+      'La factura 2024-8 emitida a Hermanos Ruiz SL, del 01/03/2024, es de 1.210,00 €. No queda nada pendiente de cobro: la rectificativa R24-1 la abona.',
+    );
+    expect(abonada.kpis?.find((k) => k.etiqueta === 'Pendiente')?.valor).toBe('0,00 €');
+    const rectificativa = cifras(await ejecutar('INT-13', { numeroFactura: 'R24-1' }));
+    expect(rectificativa.texto).toMatch(/^La factura R24-1 es una rectificativa en negativo \(un abono\) de la factura 2024-8, del 10\/03\/2024, por -1\.210,00 €\./);
+    const antiguo = await ejecutar('INT-13', { numeroFactura: '2024-31' });
+    expect(!antiguo.sinPermiso && antiguo.sinCifras).toBe(true);
+  });
+
   it('INT-18: el resultado es el de informePerdidasGanancias, hasta hoy y sin borradores', async () => {
     const servicio = await informePerdidasGanancias(EMPRESA_PYG, { desde: '2026-01-01', hasta: HOY, ejercicio: 2026 });
     expect(servicio.actual.resultadoEjercicio).toBe(5000);
@@ -247,6 +289,20 @@ describe('cifras exactas con BD', () => {
     expect(segundo.texto).toBe(
       'El 303 del 2T de 2026 sale a ingresar 250,75 €. Es el importe del modelo guardado en Fiscalidad → Modelo 303, con cambios hechos a mano. En la app consta como presentado.',
     );
+  });
+
+  it('INT-28: lee el 303 que guarda la pantalla Modelo 303 (casillas 02 y 06) y no lo recalcula', async () => {
+    const r = cifras(await ejecutar('INT-28', { periodo: resolverCodigoPeriodo('2024-4T', HOY)! }));
+    expect(r.texto).toBe('El 303 del 4T de 2024 sale a ingresar 231,00 €. Es el importe del modelo guardado en Fiscalidad → Modelo 303. En la app consta como presentado.');
+    expect(r.kpis?.map((k) => k.valor)).toEqual(['315,00 €', '84,00 €', '231,00 €']);
+  });
+
+  it('INT-24 e INT-39: el saldo es el saldo inicial más los movimientos (1.000 - 60,50 = 939,50)', async () => {
+    const saldo = cifras(await ejecutar('INT-24'));
+    expect(saldo.kpis?.[0].valor).toBe('939,50 €');
+    expect(saldo.texto).toMatch(/^El saldo de Banco Sabadell …4321 es 939,50 €, según los extractos importados hasta el 02\/10\/2026\.$/);
+    const resumen = cifras(await ejecutar('INT-39'));
+    expect(resumen.kpis?.find((k) => k.etiqueta === 'Saldo en bancos')?.valor).toBe('939,50 €');
   });
 
   it('INT-30: el estado de los modelos de la empresa, sin crear las filas del calendario', async () => {

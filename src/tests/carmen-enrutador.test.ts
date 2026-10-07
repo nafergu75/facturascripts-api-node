@@ -753,3 +753,200 @@ describe('paso 4: seguimiento', () => {
     expect(r.cuerpo.intencion).not.toBe('INT-05');
   });
 });
+
+// ---------------- Correcciones de la revisión (07-10-2026) ----------------
+
+describe('revisión: datos de la empresa que no llegan a la IA', () => {
+  const cuerpoIA = () => JSON.stringify(crearMensaje.mock.calls.at(-1)?.[0] ?? {});
+
+  it('un nombre a medias en una pregunta de concepto se tapa antes de ir a la IA', async () => {
+    mockPrisma.customer.findMany.mockResolvedValue([
+      { id: 'c1', nombreFiscal: 'Construcciones Pérez Martínez SL', nifCif: 'B11111111' },
+      { id: 'c5', nombreFiscal: 'María José Fernández Ruiz', nifCif: '12345678Z' },
+    ]);
+    for (const q of [
+      '¿Qué es el concurso de acreedores y cómo afecta si Pérez Martínez entra en él?',
+      '¿Qué es la prorrata del IVA en el caso de Fernández Ruiz que es autónoma?',
+    ]) {
+      crearMensaje.mockClear();
+      await preguntar(q);
+      expect(cuerpoIA()).not.toMatch(/p[eé]rez|mart[ií]nez|fern[aá]ndez|ruiz/i);
+    }
+    // Y también con el botón «Ninguna: preguntar a la IA».
+    crearMensaje.mockClear();
+    await responder(admin, { message: '¿Qué significa el recargo de equivalencia para Pérez Martínez?', accion: { tipo: 'ia' } }, null, iaActiva);
+    expect(cuerpoIA()).not.toMatch(/p[eé]rez|mart[ií]nez/i);
+  });
+
+  it('un turno de ficha con el estado de los modelos de la empresa no se manda a la IA', async () => {
+    const sesion = { id: 's1', titulo: null, updatedAt: new Date(), contexto: null };
+    mockPrisma.chatMessage.findMany.mockResolvedValue([
+      // Más reciente primero (orderBy createdAt desc).
+      { role: 'assistant', content: 'El criterio de caja retrasa el IVA hasta el cobro.', origen: 'faq', permisoRequerido: null, calculadoEn: null, createdAt: new Date() },
+      { role: 'user', content: '¿Qué es el criterio de caja?', origen: 'faq', permisoRequerido: null, calculadoEn: null, createdAt: new Date() },
+      { role: 'assistant', content: 'El 303 del 3T vence el 20/10/2026. En la app todavía no consta como presentado.', origen: 'faq', permisoRequerido: 'impuestos:read', calculadoEn: new Date(), createdAt: new Date() },
+      { role: 'user', content: '¿cuándo vence el 303?', origen: 'faq', permisoRequerido: null, calculadoEn: null, createdAt: new Date() },
+    ]);
+    await responder(admin, { message: '¿Cuánto cuesta contratar a un abogado?' }, sesion, iaActiva);
+    expect(crearMensaje).toHaveBeenCalledTimes(1);
+    const mensajes = crearMensaje.mock.calls[0][0].messages as Array<{ content: string }>;
+    expect(JSON.stringify(mensajes)).not.toMatch(/consta como presentado|cuándo vence el 303/);
+    // El turno de ficha sin datos de la empresa sí va.
+    expect(mensajes[0].content).toBe('¿Qué es el criterio de caja?');
+    // Y lo caducado no se lee: la consulta filtra por fecha.
+    expect(mockPrisma.chatMessage.findMany.mock.calls[0][0].where.createdAt.gte).toBeInstanceOf(Date);
+  });
+});
+
+describe('revisión: respuesta a «¿De qué cliente?»', () => {
+  const pendiente = () => ({ id: 's1', titulo: null, updatedAt: new Date(), contexto: { pendiente: 'INT-01', huecos: {}, en: new Date().toISOString() } });
+
+  it('un nombre que no es de ningún cliente: «No encuentro a…», sin IA', async () => {
+    for (const ajustes of [{ ...iaActiva, iaActiva: false }, iaActiva]) {
+      const r = await responder(admin, { message: 'Gómez Lozano' }, pendiente(), ajustes);
+      expect(r.cuerpo).toMatchObject({ origen: 'aclaracion', intencion: 'INT-01' });
+      expect(r.cuerpo.texto).toMatch(/^No encuentro a «Gomez Lozano» entre tus clientes./);
+      expect(r.contexto).toMatchObject({ pendiente: 'INT-01' });
+    }
+    const r = await responder(admin, { message: 'el cliente se llama Antonio Gómez Lozano' }, pendiente(), iaActiva);
+    expect(r.cuerpo.texto).toMatch(/^No encuentro a «Antonio Gomez Lozano» entre tus clientes/);
+    expect(crearMensaje).not.toHaveBeenCalled();
+  });
+
+  it('un NIF que no es de nadie: «No encuentro a B99999999»', async () => {
+    const r = await responder(admin, { message: 'B99999999' }, pendiente(), iaActiva);
+    expect(r.cuerpo.texto).toBe('No encuentro a «B99999999» entre tus clientes.');
+    expect(crearMensaje).not.toHaveBeenCalled();
+  });
+
+  it('un nombre parecido a uno de alta ofrece ese cliente', async () => {
+    const r = await responder(admin, { message: 'Talleres Martines' }, pendiente(), iaActiva);
+    expect(r.cuerpo.intencion).toBe('INT-01');
+    expect(crearMensaje).not.toHaveBeenCalled();
+  });
+
+  it('otra pregunta clara no se toma por la respuesta', async () => {
+    const r = await responder(admin, { message: '¿qué facturas están vencidas?' }, pendiente(), iaActiva);
+    expect(r.cuerpo.intencion).toBe('INT-03');
+  });
+});
+
+describe('revisión: terceros y bancos', () => {
+  const { EJECUTORES } = jest.requireMock('../services/carmen/intenciones/datos') as { EJECUTORES: Record<string, jest.Mock> };
+  const ultimos = (nombre: string) => EJECUTORES[nombre].mock.calls.at(-1)?.[1];
+
+  it('el banco por su nombre: cada cuenta la suya', async () => {
+    mockPrisma.bankAccount.findMany.mockResolvedValue([
+      { id: 'b1', bancoNombre: 'Banco Sabadell', iban: 'ES0000000000000000001234' },
+      { id: 'b2', bancoNombre: 'BBVA', iban: 'ES0000000000000000005678' },
+      { id: 'b3', bancoNombre: 'Caja Rural', iban: 'ES0000000000000000009999' },
+    ]);
+    for (const [q, id] of [
+      ['¿cuánto tengo en el Sabadell?', 'b1'],
+      ['saldo del BBVA', 'b2'],
+      ['saldo de Caja Rural', 'b3'],
+    ] as const) {
+      const r = await preguntar(q);
+      expect({ q, intencion: r.cuerpo.intencion, huecos: r.cuerpo.huecos }).toEqual({ q, intencion: 'INT-24', huecos: { terceroId: id, rol: 'banco' } });
+    }
+    await preguntar('movimientos del BBVA de este mes');
+    expect(ultimos('ultimosMovimientos')).toMatchObject({ terceroId: 'b2', rol: 'banco' });
+    expect(ultimos('ultimosMovimientos').texto).toBeUndefined();
+    // Sin hablar del banco, «rural» no es la cuenta de Caja Rural.
+    const turismo = await preguntar('¿Qué ayudas hay para el turismo rural?');
+    expect(turismo.cuerpo.intencion).toBeUndefined();
+    expect(turismo.cuerpo.huecos).toBeUndefined();
+  });
+
+  it('«Martínez» con dos clientes que lo llevan entero: se pregunta cuál', async () => {
+    mockPrisma.customer.findMany.mockResolvedValue([
+      { id: 'c2', nombreFiscal: 'Talleres Martínez SA', nifCif: 'A22222222' },
+      { id: 'c6', nombreFiscal: 'MARTINEZ HERMANOS SL', nifCif: 'B66666666' },
+    ]);
+    const r = await preguntar('cuánto me debe Martínez');
+    expect(r.cuerpo.texto).toBe('¿A qué cliente te refieres?');
+    expect(r.cuerpo.botones?.map((b) => (b.accion.tipo === 'tercero' ? b.accion.terceroId : '')).sort()).toEqual(['c2', 'c6']);
+    expect(EJECUTORES.deudaDeCliente).not.toHaveBeenCalled();
+    // Con el nombre completo, sin dudas.
+    const completo = await preguntar('cuánto me debe Talleres Martínez');
+    expect(completo.cuerpo.huecos).toMatchObject({ terceroId: 'c2' });
+  });
+
+  it('lo facturado a un cliente y lo cobrado de un cliente en un periodo llevan ese cliente', async () => {
+    await preguntar('¿cuánto le he facturado a Hermanos Ruiz este año?');
+    expect(ultimos('facturadoEnPeriodo')).toMatchObject({ terceroId: 'c3', rol: 'cliente', periodo: { codigo: 'este-anio' } });
+    await preguntar('gastos de Iberdrola este año');
+    expect(ultimos('facturadoEnPeriodo')).toMatchObject({ terceroId: 'p1', rol: 'proveedor' });
+    const r = await preguntar('cuánto he cobrado de Construcciones Pérez este mes');
+    expect(r.cuerpo.intencion).toBe('INT-05');
+    expect(ultimos('cobradoEnPeriodo')).toMatchObject({ terceroId: 'c1', rol: 'cliente', periodo: { codigo: 'este-mes' } });
+    // Sin periodo sigue siendo lo que debe.
+    expect((await preguntar('¿Hermanos Ruiz me ha pagado ya?')).cuerpo.intencion).toBe('INT-01');
+  });
+
+  it('el concepto de los movimientos solo se filtra con un nombre detrás de «de», «con»...', async () => {
+    for (const q of ['enséñame los últimos movimientos', 'movimientos grandes de este mes', 'qué cargos me han hecho esta semana', 'dime los movimientos de hoy porfa']) {
+      await preguntar(q);
+      expect({ q, texto: ultimos('ultimosMovimientos')?.texto }).toEqual({ q, texto: undefined });
+    }
+    await preguntar('cargos de netflix este mes');
+    expect(ultimos('ultimosMovimientos')).toMatchObject({ texto: 'netflix' });
+  });
+});
+
+describe('revisión: periodos', () => {
+  const { EJECUTORES } = jest.requireMock('../services/carmen/intenciones/datos') as { EJECUTORES: Record<string, jest.Mock> };
+  const periodo = (nombre: string) => EJECUTORES[nombre].mock.calls.at(-1)?.[1]?.periodo;
+
+  it('«del año pasado» detrás de un trimestre o de un mes', async () => {
+    await preguntar('el 303 del primer trimestre del año pasado');
+    expect(periodo('ivaDelTrimestre')).toMatchObject({ desde: '2025-01-01', hasta: '2025-03-31' });
+    await preguntar('cuánto facturé en marzo del año pasado');
+    expect(periodo('facturadoEnPeriodo')).toMatchObject({ desde: '2025-03-01', hasta: '2025-03-31' });
+    await preguntar('beneficio del cuarto trimestre del año pasado');
+    expect(periodo('cuentaDeResultados')).toMatchObject({ desde: '2025-10-01', hasta: '2025-12-31' });
+  });
+
+  it('un rango que empieza este mes es de este año aunque acabe en el futuro', async () => {
+    await preguntar('cuánto he cobrado del 1/10 al 31/10');
+    expect(periodo('cobradoEnPeriodo')).toMatchObject({ desde: '2026-10-01', hasta: '2026-10-31' });
+    await preguntar('qué tengo que pagar del 1/10 al 15/10');
+    expect(periodo('deudaConProveedores')).toMatchObject({ desde: '2026-10-01', hasta: '2026-10-15' });
+  });
+
+  it('semestres, y un periodo que no se entiende se pregunta', async () => {
+    await preguntar('resultado del primer semestre');
+    expect(periodo('cuentaDeResultados')).toMatchObject({ desde: '2026-01-01', hasta: '2026-06-30' });
+    EJECUTORES.cuentaDeResultados.mockClear();
+    const r = await preguntar('resultado por semestres');
+    expect(r.cuerpo).toMatchObject({ origen: 'aclaracion', intencion: 'INT-18' });
+    expect(r.cuerpo.texto).toMatch(/^No he entendido el periodo/);
+    expect(r.cuerpo.botones?.map((b) => (b.accion.tipo === 'intencion' ? b.accion.huecos?.periodo : ''))).toEqual(['este-trimestre', 'trimestre-pasado', 'este-anio', 'anio-pasado']);
+    expect(EJECUTORES.cuentaDeResultados).not.toHaveBeenCalled();
+  });
+});
+
+describe('revisión: «No era esto»', () => {
+  it('vuelve a mirar la pregunta sin la intención descartada: fichas y otras consultas, no el catálogo', async () => {
+    const r = await responder(admin, { message: 'cuánto tengo que pagar de autónomos', accion: { tipo: 'noEraEsto', intencion: 'INT-06' } }, null, iaActiva);
+    expect(r.cuerpo.origen).toBe('aclaracion');
+    expect(r.cuerpo.texto).toMatch(/^Perdona/);
+    const botones = r.cuerpo.botones ?? [];
+    expect(botones.some((b) => b.accion.tipo === 'intencion' && b.accion.id === 'INT-06')).toBe(false);
+    expect(botones.some((b) => b.accion.tipo === 'faq')).toBe(true);
+    // Es una pregunta sobre sus datos («tengo que pagar»): sin botón de IA.
+    expect(botones.some((b) => b.accion.tipo === 'ia')).toBe(false);
+    expect(crearMensaje).not.toHaveBeenCalled();
+  });
+
+  it('una pregunta general sin datos ofrece también preguntar a la IA', async () => {
+    const r = await responder(admin, { message: '¿Qué diferencia hay entre una sociedad limitada y una cooperativa?', accion: { tipo: 'noEraEsto' } }, null, iaActiva);
+    expect(r.cuerpo.botones?.some((b) => b.accion.tipo === 'ia')).toBe(true);
+    expect(crearMensaje).not.toHaveBeenCalled();
+  });
+
+  it('sin pregunta escrita (la respuesta venía de un botón), el catálogo', async () => {
+    const r = await responder(admin, { accion: { tipo: 'noEraEsto', intencion: 'INT-02' } }, null, iaActiva);
+    expect(r.cuerpo.origen).toBe('sistema');
+  });
+});

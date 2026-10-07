@@ -25,6 +25,7 @@ import { normalizar, type TextoNormalizado } from './normalizar';
 import { extraerPeriodo, resolverCodigoPeriodo } from './huecos/periodo';
 import { extraerFoco, extraerImporteMinimo, extraerModelo, extraerNumeroFactura, extraerSentido } from './huecos/otros';
 import { buscarTercero, indiceTerceros, trozosCandidatos, UMBRAL_USAR, type ResultadoTercero, type Tercero } from './terceros';
+import { RE_NIF } from './huecos/otros';
 import { clasificar, decidir, textoParaClasificar, UMBRAL_DATOS, type Puntuacion } from './clasificador';
 import { INTENCIONES, intencionPorId, type Intencion } from './intenciones/catalogo';
 import { peticionDeAccion, tieneMarcadoresPropios, tipoDeCharla } from './charla';
@@ -53,6 +54,8 @@ export interface EntradaCarmen {
   accion?: Accion;
   sessionId?: string;
   currentPage?: string;
+  /** Texto del botón pulsado: se guarda como pregunta del usuario. */
+  textoBoton?: string;
 }
 
 /** Lo que decide el enrutador: la respuesta y, si cambia, el contexto del diálogo. */
@@ -105,12 +108,14 @@ export function intencionesDePagina(ctx: Pick<CarmenCtx, 'permisos' | 'puedeNomi
 function aclaracion(
   ctx: CarmenCtx,
   texto: string,
-  opciones: { ranking?: Puntuacion[]; fichas?: FichaPuntuada[]; huecos?: HuecosEntrada; avisos?: string[]; botonIA?: boolean; pagina?: string } = {},
+  opciones: { ranking?: Puntuacion[]; fichas?: FichaPuntuada[]; huecos?: HuecosEntrada; avisos?: string[]; botonIA?: boolean; pagina?: string; excluir?: string } = {},
 ): CuerpoRespuesta {
   const candidatas = (opciones.ranking ?? [])
     .filter((p) => p.puntuacion > 0.15 && intencionPermitida(ctx, p.intencion))
     .map((p) => p.intencion);
-  const intenciones = (candidatas.length ? candidatas : intencionesDePagina(ctx, opciones.pagina)).slice(0, 3);
+  const intenciones = (candidatas.length ? candidatas : intencionesDePagina(ctx, opciones.pagina))
+    .filter((i) => i.id !== opciones.excluir)
+    .slice(0, 3);
   const botones: Boton[] = [
     ...intenciones.map((i) => botonIntencion(i, opciones.huecos)),
     ...(opciones.fichas ?? []).slice(0, 2).map((f) => botonFicha(f.ficha)),
@@ -154,6 +159,9 @@ async function extraerHuecos(ctx: CarmenCtx, n: TextoNormalizado): Promise<Hueco
     // El nombre del tercero se busca sin el periodo («septiembre» no es un cliente).
     const pb = extraerPeriodo(base, ctx.hoy);
     if (pb) base = pb.resto;
+  } else if (PERIODO_SIN_ENTENDER.test(n.texto)) {
+    // «por semestres», «el último bimestre»: hay un periodo que no se entiende; se pregunta antes que usar el de por defecto.
+    senales.add('__periodoDudoso');
   }
   const modelo = extraerModelo(texto);
   if (modelo) {
@@ -198,12 +206,51 @@ async function extraerHuecos(ctx: CarmenCtx, n: TextoNormalizado): Promise<Hueco
     if (!roles.includes('banco')) resueltos.texto = tercero.trozo;
     texto = texto.replace(new RegExp(`(^| )${tercero.trozo.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}( |$)`), ' ');
   } else {
-    // Sin tercero conocido, lo que no es del dominio sirve para buscar en los conceptos del banco.
+    // Sin tercero conocido, un nombre detrás de «de», «con», «concepto»... sirve para buscar en los
+    // conceptos del banco («cargos de Netflix»). Las demás palabras («enséñame», «grandes») no filtran.
     const trozo = trozosCandidatos(base)[0];
-    if (trozo) resueltos.texto = trozo.join(' ');
+    if (trozo && vaDetrasDeMarcador(n.base, trozo)) resueltos.texto = trozo.join(' ');
   }
 
   return { resueltos, tercero, senales, textoClasificar: texto.replace(/\s+/g, ' ').trim() };
+}
+
+/** Palabras de periodo que extraerPeriodo no ha sabido resolver. */
+const PERIODO_SIN_ENTENDER = /\b(semestres?|semestral|bimestres?|cuatrimestres?|quincenas?)\b/;
+
+/** Verbo de cobro o pago en pasado: lo cobrado o pagado, no lo pendiente. */
+const COBRADO_O_PAGADO = /\b(cobrad[oa]s?|he cobrado|hemos cobrado|cobre|cobramos|me ha pagado|me han pagado|nos ha pagado|nos han pagado|le he pagado|les he pagado|he pagado|hemos pagado|pague|pagamos|ingresad[oa]s?)\b/;
+
+/** «Resultado por semestres»: el periodo no se entiende; se pregunta con botones de la misma intención. */
+function periodoNoEntendido(intencion: Intencion, h: HuecosResueltos): CuerpoRespuesta {
+  const resto = huecosEntradaDe(h);
+  const opciones: Array<[string, string]> = [
+    ['Este trimestre', 'este-trimestre'],
+    ['El trimestre pasado', 'trimestre-pasado'],
+    ['Este año', 'este-anio'],
+    ['El año pasado', 'anio-pasado'],
+  ];
+  return {
+    origen: 'aclaracion',
+    intencion: intencion.id,
+    texto: 'No he entendido el periodo. Elige uno o escríbelo con un mes, un trimestre, un semestre («el primer semestre»), un año o unas fechas («del 1/7 al 30/9»).',
+    botones: opciones.map(([texto, periodo]) => ({ texto, accion: { tipo: 'intencion' as const, id: intencion.id, huecos: { ...resto, periodo } } })),
+  };
+}
+
+const MARCADORES_CONCEPTO = new Set(['de', 'del', 'con', 'concepto', 'a', 'al', 'desde', 'por']);
+const ARTICULOS = new Set(['el', 'la', 'los', 'las', 'un', 'una']);
+
+/** ¿El trozo va detrás de «de», «con», «concepto»... (saltando artículos)? «cargos de la luz» sí; «movimientos grandes» no. */
+function vaDetrasDeMarcador(textoBase: string, trozo: string[]): boolean {
+  const palabras = textoBase.split(' ');
+  for (let i = 0; i + trozo.length <= palabras.length; i++) {
+    if (!trozo.every((t, k) => palabras[i + k] === t)) continue;
+    let j = i - 1;
+    while (j >= 0 && ARTICULOS.has(palabras[j])) j--;
+    return j >= 0 && MARCADORES_CONCEPTO.has(palabras[j]);
+  }
+  return false;
 }
 
 /** «¿Qué es…?», «¿Cómo se…?», «¿Cuánto cuesta…?»: preguntas de concepto, no sobre los datos de la empresa. */
@@ -260,6 +307,12 @@ function resolverEntrada(e: HuecosEntrada | undefined, hoy: string): HuecosResue
 }
 
 // ---------------- Ejecución de intenciones ----------------
+
+/** Lo que escribió el usuario como nombre, para enseñarlo: «gomez lozano» → «Gomez Lozano»; un NIF, en mayúsculas. */
+function mostrarTrozo(trozo: string): string {
+  if (RE_NIF.test(trozo)) return trozo.toUpperCase();
+  return trozo.replace(/(^|\s)(\p{L})/gu, (_m, esp: string, letra: string) => esp + letra.toUpperCase());
+}
 
 async function ejecutarIntencion(
   ctx: CarmenCtx,
@@ -318,7 +371,7 @@ async function ejecutarIntencion(
         intencion: intencion.id,
         texto:
           tercero?.tipo === 'ninguno'
-            ? `No encuentro a «${tercero.trozo}» entre tus ${nombreRol}s.${parecidos.length ? ' ¿Es alguno de estos?' : ''}`
+            ? `No encuentro a «${mostrarTrozo(tercero.trozo)}» entre tus ${nombreRol}s.${parecidos.length ? ' ¿Es alguno de estos?' : ''}`
             : `¿De qué ${nombreRol}? Escribe su nombre o su NIF.`,
         botones: [
           ...parecidos.map((c) => ({
@@ -349,7 +402,7 @@ async function ejecutarIntencion(
   }
   const avisos = [...(r.avisos ?? [])];
   if (tercero?.tipo === 'ninguno' && ['INT-02', 'INT-03', 'INT-06'].includes(intencion.id)) {
-    avisos.push(`No encuentro a «${tercero.trozo}» entre tus clientes ni tus proveedores; te enseño el total.`);
+    avisos.push(`No encuentro a «${mostrarTrozo(tercero.trozo)}» entre tus clientes ni tus proveedores; te enseño el total.`);
   }
   const comunes = {
     intencion: intencion.id,
@@ -440,11 +493,12 @@ async function responderConIA(
   sesion: SesionCarmen | null,
   topeEmpresa: number,
   fichas: FichaPuntuada[],
+  conservarDias: number,
 ): Promise<Resultado> {
   const terceros: Tercero[] = await indiceTerceros(ctx.companyId);
   const pregunta = depurarParaIA(mensaje, terceros);
   const turnos = sesion
-    ? (await turnosParaIA(ctx, sesion.id)).map((t) => ({ pregunta: depurarParaIA(t.pregunta, terceros), respuesta: t.respuesta }))
+    ? (await turnosParaIA(ctx, sesion.id, conservarDias)).map((t) => ({ pregunta: depurarParaIA(t.pregunta, terceros), respuesta: depurarParaIA(t.respuesta, terceros) }))
     : [];
   const r = await preguntarIA({ companyId: ctx.companyId, userId: ctx.userId, hoy: ctx.hoy, topeEmpresa, pregunta, fichas: fichas.map((f) => f.ficha), turnos });
   const botonesFichas = fichas.slice(0, 3).map((f) => botonFicha(f.ficha));
@@ -466,12 +520,36 @@ async function responderConIA(
 // ---------------- Seguimiento ----------------
 
 const EMPIEZA_SEGUIMIENTO = /^(y|tambien|ahora|solo|solamente|entonces|y si|vale y|ok y)\b/;
+/** Mensajes de hasta tantas palabras pueden ser la respuesta a «¿De qué cliente?». */
+const PALABRAS_RESPUESTA_NOMBRE = 8;
+
+/** ¿Hay una pregunta de Carmen pendiente de un dato (de qué cliente...) de hace menos de 30 minutos? */
+function pendienteReciente(contexto: ContextoSesion | null | undefined): boolean {
+  return !!contexto?.pendiente && !!contexto.en && Date.now() - Date.parse(contexto.en) <= SEGUIMIENTO_MS;
+}
+
+/**
+ * Tras «¿De qué cliente? Escribe su nombre o su NIF», un mensaje corto con un
+ * nombre que no está dado de alta («Gómez Lozano», «el cliente se llama
+ * Antonio Gómez») o un NIF que no es de nadie es la respuesta, no una pregunta
+ * nueva: se contesta con «No encuentro a…». Una pregunta de concepto o de otra
+ * consulta clara no cuenta.
+ */
+function respondeConUnNombre(ctx: CarmenCtx, n: TextoNormalizado, h: HuecosTexto, pendiente: string): boolean {
+  if (!h.tercero || h.tercero.tipo !== 'ninguno') return false;
+  if (RE_NIF.test(h.tercero.trozo)) return true;
+  if (n.tokens.length > PALABRAS_RESPUESTA_NOMBRE || PREGUNTA_DE_CONCEPTO.test(n.texto)) return false;
+  if (trozosCandidatos(n.base).length !== 1) return false;
+  const d = decidir(clasificar(h.textoClasificar, h.senales, undefined, ctx.hoy));
+  return d.tipo !== 'ejecutar' || d.mejor.intencion.id === pendiente;
+}
 
 async function intentarSeguimiento(ctx: CarmenCtx, n: TextoNormalizado, h: HuecosTexto, contexto: ContextoSesion | null): Promise<Resultado | null> {
   if (!contexto?.en || Date.now() - Date.parse(contexto.en) > SEGUIMIENTO_MS) return null;
 
-  // Intención pendiente de un hueco (por ejemplo, de qué cliente): basta con el nombre.
-  if (contexto.pendiente && h.tercero && h.tercero.tipo !== 'ninguno') {
+  // Intención pendiente de un hueco (por ejemplo, de qué cliente): basta con el nombre o el NIF,
+  // también si no es de nadie («No encuentro a X entre tus clientes. ¿Es alguno de estos?»).
+  if (contexto.pendiente && h.tercero && (h.tercero.tipo !== 'ninguno' || respondeConUnNombre(ctx, n, h, contexto.pendiente))) {
     const pendiente = intencionPorId(contexto.pendiente);
     if (pendiente) return ejecutarIntencion(ctx, pendiente, { ...resolverEntrada(contexto.huecos, ctx.hoy), ...h.resueltos }, h.tercero);
   }
@@ -521,6 +599,29 @@ async function intentarSeguimiento(ctx: CarmenCtx, n: TextoNormalizado, h: Hueco
 
 // ---------------- Acciones (botones) ----------------
 
+/**
+ * «No era esto»: se vuelve a mirar la pregunta original sin la intención que
+ * se descartó, como en una aclaración: fichas parecidas, otras consultas de
+ * datos y, si la pregunta no es de datos y hay IA, «preguntar a la IA». Sin
+ * pregunta escrita (la respuesta venía de un botón), el catálogo.
+ */
+async function noEraEsto(ctx: CarmenCtx, entrada: EntradaCarmen, descartada: string | undefined, ajustes: AjustesCarmen): Promise<Resultado> {
+  if (!entrada.message) return { cuerpo: catalogo(ctx) };
+  const n = normalizar(entrada.message);
+  const h = await extraerHuecos(ctx, n);
+  const ranking = clasificar(h.textoClasificar, h.senales, entrada.currentPage, ctx.hoy).filter((p) => p.intencion.id !== descartada);
+  const fichas = buscarFichas(entrada.message, ctx.hoy, 3);
+  const deDatos = (ranking[0]?.puntuacion ?? 0) >= UMBRAL_DATOS || tieneMarcadoresPropios(n.texto) || nombraTercero(h, n.texto);
+  const disp = deDatos || contarPalabras(entrada.message) < PALABRAS_MIN_IA ? null : await disponibilidadIA(ctx, ajustes);
+  const texto = fichas.length || ranking.some((p) => p.puntuacion > 0.15)
+    ? 'Perdona. ¿Es alguna de estas? Si no, consúltalo con tu asesor.'
+    : 'Perdona, no tengo otra respuesta para eso. Consúltalo con tu asesor o mira lo que puedo consultar.';
+  return {
+    cuerpo: aclaracion(ctx, texto, { ranking, fichas, huecos: huecosEntradaDe(h.resueltos), botonIA: !!disp && !disp.motivo, pagina: entrada.currentPage, excluir: descartada }),
+    contexto: null,
+  };
+}
+
 async function responderAccion(ctx: CarmenCtx, entrada: EntradaCarmen, sesion: SesionCarmen | null, ajustes: AjustesCarmen): Promise<Resultado> {
   const accion = entrada.accion!;
   switch (accion.tipo) {
@@ -545,6 +646,8 @@ async function responderAccion(ctx: CarmenCtx, entrada: EntradaCarmen, sesion: S
     }
     case 'catalogo':
       return { cuerpo: catalogo(ctx) };
+    case 'noEraEsto':
+      return noEraEsto(ctx, entrada, accion.intencion, ajustes);
     case 'ia': {
       if (!entrada.message) throw new HttpError(400, 'Para preguntar a la IA hace falta la pregunta (message).');
       const n = normalizar(entrada.message);
@@ -557,7 +660,7 @@ async function responderAccion(ctx: CarmenCtx, entrada: EntradaCarmen, sesion: S
       }
       const disp = await disponibilidadIA(ctx, ajustes);
       if (disp.motivo) return { cuerpo: aclaracion(ctx, TEXTO_SIN_RESPUESTA, { fichas, avisos: [TEXTO_MOTIVO[disp.motivo]], pagina: entrada.currentPage }) };
-      return responderConIA(ctx, entrada.message, sesion, disp.topeEmpresa, fichas);
+      return responderConIA(ctx, entrada.message, sesion, disp.topeEmpresa, fichas, ajustes.conservarDias);
     }
   }
 }
@@ -608,7 +711,19 @@ export async function responder(ctx: CarmenCtx, entrada: EntradaCarmen, sesion: 
   // 5b. Clasificador de datos.
   const ranking = clasificar(h.textoClasificar, h.senales, pagina, ctx.hoy);
   const decision = decidir(ranking);
-  if (decision.tipo === 'ejecutar') return ejecutarIntencion(ctx, decision.mejor.intencion, h.resueltos, h.tercero);
+  // «¿Cuánto he cobrado de X este mes?», «¿cuánto le he pagado a Y este año?»: con un
+  // periodo y el verbo en pasado es lo cobrado o pagado en ese periodo (INT-05), no lo pendiente.
+  const cobradoDeTercero = !!h.resueltos.terceroId && !!h.resueltos.periodo && COBRADO_O_PAGADO.test(n.texto);
+  if (cobradoDeTercero && decision.tipo !== 'nada' && ['INT-01', 'INT-02', 'INT-03', 'INT-05', 'INT-06'].includes(ranking[0].intencion.id)) {
+    return ejecutarIntencion(ctx, intencionPorId('INT-05')!, h.resueltos, h.tercero);
+  }
+  if (decision.tipo === 'ejecutar') {
+    const intencion = decision.mejor.intencion;
+    if (h.senales.has('__periodoDudoso') && intencion.huecos.some((d) => d.nombre === 'periodo') && intencionPermitida(ctx, intencion)) {
+      return { cuerpo: periodoNoEntendido(intencion, h.resueltos) };
+    }
+    return ejecutarIntencion(ctx, intencion, h.resueltos, h.tercero);
+  }
   const fichas = buscarFichas(mensaje, ctx.hoy, 3);
   const [f1, f2] = fichas;
   const fichaClara = !!f1 && f1.puntuacion >= UMBRAL_FAQ && f1.puntuacion - (f2?.puntuacion ?? 0) >= MARGEN_FAQ;
@@ -623,8 +738,10 @@ export async function responder(ctx: CarmenCtx, entrada: EntradaCarmen, sesion: 
     return { cuerpo: aclaracion(ctx, '¿Qué quieres ver?', { ranking, fichas, huecos: huecosEntradaDe(h.resueltos), pagina }) };
   }
 
-  // 6. Guarda de datos propios: estas preguntas nunca llegan a la IA.
-  const propia = tieneMarcadoresPropios(n.texto) || nombraTercero(h, n.texto);
+  // 6. Guarda de datos propios: estas preguntas nunca llegan a la IA. Tampoco la respuesta
+  // corta a una pregunta de Carmen pendiente de un dato («¿De qué cliente?»).
+  const respuestaAPendiente = pendienteReciente(sesion?.contexto) && n.tokens.length <= PALABRAS_RESPUESTA_NOMBRE;
+  const propia = tieneMarcadoresPropios(n.texto) || nombraTercero(h, n.texto) || respuestaAPendiente;
 
   // 7. Fichas.
   if (fichaClara) return { cuerpo: respuestaFicha(f1.ficha), contexto: null };
@@ -637,7 +754,7 @@ export async function responder(ctx: CarmenCtx, entrada: EntradaCarmen, sesion: 
   if (f1 && f1.puntuacion >= UMBRAL_FAQ_DUDA) {
     return { cuerpo: aclaracion(ctx, '¿Es alguna de estas?', { fichas, ranking, botonIA: !disp.motivo, pagina }) };
   }
-  if (!disp.motivo && contarPalabras(mensaje) >= PALABRAS_MIN_IA) return responderConIA(ctx, mensaje, sesion, disp.topeEmpresa, fichas);
+  if (!disp.motivo && contarPalabras(mensaje) >= PALABRAS_MIN_IA) return responderConIA(ctx, mensaje, sesion, disp.topeEmpresa, fichas, ajustes.conservarDias);
   const avisos = disp.motivo && disp.motivo.startsWith('tope') ? [TEXTO_MOTIVO[disp.motivo]] : [];
   return { cuerpo: aclaracion(ctx, TEXTO_SIN_RESPUESTA, { ranking, fichas, avisos, pagina }) };
 }
@@ -645,22 +762,30 @@ export async function responder(ctx: CarmenCtx, entrada: EntradaCarmen, sesion: 
 // ---------------- Petición completa ----------------
 
 /** Título de la conversación: las primeras palabras de la primera pregunta. */
-function tituloDe(entrada: EntradaCarmen): string {
-  if (entrada.message) return entrada.message.replace(/\s+/g, ' ').trim().slice(0, 80);
+function tituloDe(entrada: EntradaCarmen, pregunta: string): string {
+  if (entrada.message && !entrada.accion) return entrada.message.replace(/\s+/g, ' ').trim().slice(0, 80);
   const a = entrada.accion;
-  if (a?.tipo === 'intencion') return intencionPorId(a.id)?.titulo ?? 'Consulta';
-  if (a?.tipo === 'faq') return FICHAS.find((f) => f.id === a.id)?.pregunta ?? 'Consulta';
-  return 'Consulta';
+  if (a?.tipo === 'intencion' && !entrada.textoBoton) return intencionPorId(a.id)?.titulo ?? 'Consulta';
+  return pregunta.replace(/\s+/g, ' ').trim().slice(0, 80) || 'Consulta';
 }
 
-/** Texto que se guarda como pregunta del usuario cuando llega un botón. */
-function textoDePregunta(entrada: EntradaCarmen): string {
-  if (entrada.message) return entrada.message;
-  const a = entrada.accion!;
+/**
+ * Texto que se guarda como pregunta del usuario: lo que escribió o, si pulsó un
+ * botón, el texto del botón tal como lo vio («¿Y el trimestre pasado?», el
+ * nombre del cliente que eligió). Sin él, uno equivalente.
+ */
+async function textoDePregunta(ctx: CarmenCtx, entrada: EntradaCarmen): Promise<string> {
+  const a = entrada.accion;
+  if (!a) return entrada.message ?? '';
+  if (entrada.textoBoton) return entrada.textoBoton;
   if (a.tipo === 'intencion') return intencionPorId(a.id)?.pregunta ?? 'Consulta';
   if (a.tipo === 'faq') return FICHAS.find((f) => f.id === a.id)?.pregunta ?? 'Pregunta frecuente';
-  if (a.tipo === 'tercero') return 'Elijo una opción';
+  if (a.tipo === 'tercero') {
+    const t = (await indiceTerceros(ctx.companyId)).find((x) => x.id === a.terceroId && x.rol === a.rol);
+    return t?.nombre ?? 'Elijo una opción';
+  }
   if (a.tipo === 'catalogo') return '¿Qué puedo preguntarte?';
+  if (a.tipo === 'noEraEsto') return 'No era esto';
   return 'Pregunta a la IA';
 }
 
@@ -673,17 +798,19 @@ function publico(c: CuerpoRespuesta): Omit<RespuestaCarmen, 'sessionId' | 'mensa
 /** Atiende un mensaje: sesión propia, freno diario, enrutado, guardado y auditoría. */
 export async function atender(ctx: CarmenCtx, entrada: EntradaCarmen): Promise<RespuestaCarmen> {
   const inicio = Date.now();
-  // La sesión se comprueba lo primero: una ajena da 404 sin leer ni guardar nada.
-  const sesionPrevia = entrada.sessionId ? await obtenerSesion(ctx, entrada.sessionId) : null;
+  const ajustes = await leerAjustes(ctx.companyId);
+  // La sesión se comprueba antes de leer o guardar ninguna conversación: una ajena
+  // (o ya caducada) da 404 sin leer ni guardar nada.
+  const sesionPrevia = entrada.sessionId ? await obtenerSesion(ctx, entrada.sessionId, ajustes.conservarDias) : null;
   if (!(await contarMensaje(ctx.userId, ctx.hoy))) {
     throw new HttpError(429, 'Has llegado al máximo de mensajes a Carmen por hoy. Mañana podrás seguir preguntando.');
   }
-  const ajustes = await leerAjustes(ctx.companyId);
   await purgarSiToca(ctx.companyId, ajustes.conservarDias);
 
   const r = await responder(ctx, entrada, sesionPrevia, ajustes);
-  const sesion = sesionPrevia ?? (await crearSesion(ctx, tituloDe(entrada)));
-  const mensajeId = await guardarTurno(ctx, sesion.id, textoDePregunta(entrada), r.cuerpo, r.contexto);
+  const pregunta = await textoDePregunta(ctx, entrada);
+  const sesion = sesionPrevia ?? (await crearSesion(ctx, tituloDe(entrada, pregunta)));
+  const mensajeId = await guardarTurno(ctx, sesion.id, pregunta, r.cuerpo, r.contexto);
   if (r.auditoria) {
     const a = r.auditoria;
     await prisma.carmenLlamadaIA.create({
@@ -708,8 +835,33 @@ export async function atender(ctx: CarmenCtx, entrada: EntradaCarmen): Promise<R
   return { sessionId: sesion.id, mensajeId, ...publico(r.cuerpo) };
 }
 
+/** Ficha de un cliente o proveedor abierta en la página (/dashboard/clientes/:id): su intención y su pregunta. */
+const FICHA_TERCERO: Array<{ re: RegExp; rol: 'cliente' | 'proveedor'; intencion: string; pregunta: (nombre: string) => string }> = [
+  { re: /^\/dashboard\/clientes\/([A-Za-z0-9_-]{1,40})\/?$/, rol: 'cliente', intencion: 'INT-01', pregunta: (n) => `¿Cuánto me debe ${n}?` },
+  { re: /^\/dashboard\/proveedores\/([A-Za-z0-9_-]{1,40})\/?$/, rol: 'proveedor', intencion: 'INT-06', pregunta: (n) => `¿Cuánto le debo a ${n}?` },
+];
+
+/**
+ * Chip con el cliente o proveedor de la ficha que se está viendo: «¿Cuánto me
+ * debe CONSTRUCCIONES PÉREZ?» en lugar de preguntar de qué cliente. Solo si es
+ * de esta empresa (índice de terceros) y el usuario tiene permiso.
+ */
+async function chipDeFicha(ctx: CarmenCtx, pagina?: string): Promise<{ boton: Boton; reemplaza: string } | null> {
+  if (!pagina) return null;
+  for (const f of FICHA_TERCERO) {
+    const m = pagina.match(f.re);
+    if (!m) continue;
+    const intencion = intencionPorId(f.intencion);
+    if (!intencion || !intencionPermitida(ctx, intencion)) return null;
+    const tercero = (await indiceTerceros(ctx.companyId)).find((t) => t.id === m[1] && t.rol === f.rol);
+    if (!tercero) return null;
+    return { boton: { texto: f.pregunta(tercero.nombre), accion: { tipo: 'intencion', id: intencion.id, huecos: { terceroId: tercero.id, rol: f.rol } } }, reemplaza: intencion.id };
+  }
+  return null;
+}
+
 /** Chips y catálogo para la ventana de Carmen (GET /catalogo). */
-export function catalogoParaPagina(ctx: CarmenCtx, pagina?: string) {
+export async function catalogoParaPagina(ctx: CarmenCtx, pagina?: string) {
   const permitidas = INTENCIONES.filter((i) => intencionPermitida(ctx, i));
   const areas = new Map<AreaIntencion, Array<{ id: string; titulo: string; ejemplos: string[] }>>();
   for (const i of permitidas) {
@@ -717,9 +869,13 @@ export function catalogoParaPagina(ctx: CarmenCtx, pagina?: string) {
     lista.push({ id: i.id, titulo: i.titulo, ejemplos: [i.pregunta, i.ejemplos[1] ?? i.ejemplos[0]] });
     areas.set(i.area, lista);
   }
-  const chips = intencionesDePagina(ctx, pagina)
-    .slice(0, 4)
-    .map((i) => botonIntencion(i));
+  const deFicha = await chipDeFicha(ctx, pagina);
+  const chips = [
+    ...(deFicha ? [deFicha.boton] : []),
+    ...intencionesDePagina(ctx, pagina)
+      .filter((i) => i.id !== deFicha?.reemplaza)
+      .map((i) => botonIntencion(i)),
+  ].slice(0, 4);
   const prefijo = pagina ? plano(pagina) : '';
   const fichasPagina = FICHAS.filter((f) => f.enlaceApp && prefijo && prefijo.startsWith(f.enlaceApp.href) && f.enlaceApp.href !== '/dashboard');
   const destacadas = (fichasPagina.length ? fichasPagina : FICHAS.filter((f) => f.bloque === 'app'))

@@ -35,7 +35,10 @@ const envSchema = z.object({
   // Interruptor general de la capa de IA. Apagada por defecto: aunque una empresa
   // la active, no se llama a la API hasta que esto valga 'true'.
   CARMEN_LLM_ACTIVO: z.enum(['true', 'false']).default('false'),
-  CARMEN_MODELO: z.string().min(1).default('claude-haiku-4-5-20251001'),
+  // Solo Haiku 4.5: los topes y la reserva por pregunta están pensados para su
+  // precio. Otro modelo (o una errata) hace fallar el arranque en lugar de
+  // cambiar el gasto sin avisar.
+  CARMEN_MODELO: z.enum(['claude-haiku-4-5-20251001', 'claude-haiku-4-5']).default('claude-haiku-4-5-20251001'),
   // Tope de gasto de la IA en el mes, para todas las empresas juntas (euros, 1 $ = 1 €).
   CARMEN_TOPE_MENSUAL_EUR: z.coerce.number().positive().default(5),
   // Preguntas a la IA por dia: por empresa y por usuario.
@@ -45,6 +48,10 @@ const envSchema = z.object({
   CARMEN_MENSAJES_USUARIO_DIA: z.coerce.number().int().positive().default(300),
   // Tokens de salida de cada respuesta de la IA (500 como maximo).
   CARMEN_MAX_TOKENS_SALIDA: z.coerce.number().int().positive().max(500).default(500),
+
+  // Secreto con el que Vercel Cron llama a las tareas programadas (cabecera
+  // Authorization: Bearer ...). Sin él, las rutas /cron/* no hacen nada.
+  CRON_SECRET: z.string().min(16).optional(),
 
   // Origenes permitidos por CORS (lista separada por comas). En produccion es
   // OBLIGATORIO acotar a los dominios del frontend. Por defecto, los puertos de
@@ -96,6 +103,7 @@ export const config = {
     mensajesUsuarioDia: env.CARMEN_MENSAJES_USUARIO_DIA,
     maxTokensSalida: env.CARMEN_MAX_TOKENS_SALIDA,
   },
+  cronSecret: env.CRON_SECRET,
   corsOrigins: (env.CORS_ORIGIN ?? 'http://localhost:5173,http://localhost:4173,http://localhost:5174,http://localhost:4174,http://localhost:3000')
     .split(',')
     .map((o) => o.trim())

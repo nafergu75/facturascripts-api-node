@@ -88,7 +88,8 @@ export const PALABRAS_VACIAS: ReadonlySet<string> = new Set(
   hola buenas buenos dias tardes noches gracias favor carmen dime dame quiero quisiera saber necesito
   podrias puedes ayudame mira oye hacer hago hace ver veo miro mirar consulto consultar tengo tiene tienen tenemos esta estan estoy va vamos
   cuanto cuanta cuantos cuantas mucho poco todo todos toda todas otro otra otros otras mas menos aqui ahi alli
-  hoy ayer ahora ya aun tambien solo`
+  hoy ayer ahora ya aun tambien solo
+  porfa porfi plis please enseñame ensename muestrame pasame llama llaman llamado llamada nombre`
     .split(/\s+/)
     .filter(Boolean),
 );

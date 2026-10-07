@@ -11,7 +11,8 @@
  * Antes de llamar a la IA se RESERVA el peor caso con UPDATE condicionales
  * atómicos dentro de una transacción (si alguno afecta a 0 filas, el tope está
  * alcanzado y no se reserva nada). Después se LIQUIDA con el coste real de
- * `usage`, o se DEVUELVE la reserva si la API falla.
+ * `usage`, o se DEVUELVE la reserva si la API contesta con un error que no
+ * cobra. Si la llamada se corta o se agota el tiempo, la reserva se queda.
  */
 import { Prisma } from '@prisma/client';
 import { prisma } from '../../config/database';
@@ -107,18 +108,33 @@ export async function reservar(
   }
 }
 
+/*
+ * liquidar y devolver tocan las filas de una en una, cada UPDATE en su propia
+ * sentencia y en el mismo orden que reservar (global → empresa día → usuario
+ * día → empresa mes). Un `WHERE clave IN (global, empresaMes)` las bloquearía
+ * en el orden de la clave primaria ('empresa:...' antes que 'global:...'), el
+ * contrario al de reservar, y dos peticiones de la misma empresa podrían
+ * interbloquearse. Así ninguna sentencia espera por una fila mientras tiene
+ * otra bloqueada.
+ */
+
 /** Ajusta la reserva al coste real (normalmente menor). */
 export async function liquidar(reserva: Reserva, costeRealUsd: number): Promise<void> {
   const ajuste = dec(redondear(costeRealUsd - reserva.usd));
-  await prisma.$executeRaw`UPDATE \`CarmenContador\` SET \`costeUsd\` = GREATEST(\`costeUsd\` + ${ajuste}, 0), \`actualizadoEn\` = NOW(3) WHERE \`clave\` IN (${reserva.claves.global}, ${reserva.claves.empresaMes})`;
+  for (const clave of [reserva.claves.global, reserva.claves.empresaMes]) {
+    await prisma.$executeRaw`UPDATE \`CarmenContador\` SET \`costeUsd\` = GREATEST(\`costeUsd\` + ${ajuste}, 0), \`actualizadoEn\` = NOW(3) WHERE \`clave\` = ${clave}`;
+  }
 }
 
-/** Devuelve la reserva entera (la API falló: no se ha gastado nada). */
+/** Devuelve la reserva entera (la API contestó con un error que no cobra: no se ha gastado nada). */
 export async function devolver(reserva: Reserva): Promise<void> {
   const usd = dec(reserva.usd);
   const { global, empresaDia, usuarioDia, empresaMes } = reserva.claves;
-  await prisma.$executeRaw`UPDATE \`CarmenContador\` SET \`costeUsd\` = GREATEST(\`costeUsd\` - ${usd}, 0), \`consultasIA\` = GREATEST(\`consultasIA\` - 1, 0), \`actualizadoEn\` = NOW(3) WHERE \`clave\` IN (${global}, ${empresaMes})`;
-  await prisma.$executeRaw`UPDATE \`CarmenContador\` SET \`consultasIA\` = GREATEST(\`consultasIA\` - 1, 0), \`actualizadoEn\` = NOW(3) WHERE \`clave\` IN (${empresaDia}, ${usuarioDia})`;
+  await prisma.$executeRaw`UPDATE \`CarmenContador\` SET \`costeUsd\` = GREATEST(\`costeUsd\` - ${usd}, 0), \`consultasIA\` = GREATEST(\`consultasIA\` - 1, 0), \`actualizadoEn\` = NOW(3) WHERE \`clave\` = ${global}`;
+  for (const clave of [empresaDia, usuarioDia]) {
+    await prisma.$executeRaw`UPDATE \`CarmenContador\` SET \`consultasIA\` = GREATEST(\`consultasIA\` - 1, 0), \`actualizadoEn\` = NOW(3) WHERE \`clave\` = ${clave}`;
+  }
+  await prisma.$executeRaw`UPDATE \`CarmenContador\` SET \`costeUsd\` = GREATEST(\`costeUsd\` - ${usd}, 0), \`consultasIA\` = GREATEST(\`consultasIA\` - 1, 0), \`actualizadoEn\` = NOW(3) WHERE \`clave\` = ${empresaMes}`;
 }
 
 // ---------- Estado ----------

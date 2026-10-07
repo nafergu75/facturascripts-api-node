@@ -502,9 +502,10 @@ export async function cobradoPorFactura(companyId: string, tipo: TipoDocumento, 
 }
 
 /** Suma de los cobros/pagos activos con fecha entre `desde` y `hasta` (ambas incluidas). */
-export async function totalCobradoEntre(companyId: string, tipo: TipoDocumento, desde: string, hasta: string): Promise<number> {
+export async function totalCobradoEntre(companyId: string, tipo: TipoDocumento, desde: string, hasta: string, invoiceIds?: string[]): Promise<number> {
   const r = await prisma.invoicePayment.aggregate({
-    where: { companyId, invoiceType: tipo, estado: 'ACTIVO', fecha: { gte: desde, lte: hasta } },
+    // Con invoiceIds, solo los cobros o pagos de esas facturas (las de un cliente o un proveedor).
+    where: { companyId, invoiceType: tipo, estado: 'ACTIVO', fecha: { gte: desde, lte: hasta }, ...(invoiceIds ? { invoiceId: { in: invoiceIds } } : {}) },
     _sum: { importe: true },
   });
   return round2(Number(r._sum.importe ?? 0));

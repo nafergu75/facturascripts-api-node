@@ -13,7 +13,9 @@ export type Accion =
   | { tipo: 'faq'; id: string }
   | { tipo: 'tercero'; terceroId: string; rol: 'cliente' | 'proveedor' | 'banco'; intencion?: string }
   | { tipo: 'ia' }
-  | { tipo: 'catalogo' };
+  | { tipo: 'catalogo' }
+  /** «No era esto»: se vuelve a mirar la pregunta (message) sin la intención descartada. */
+  | { tipo: 'noEraEsto'; intencion?: string };
 
 /** Huecos que llegan desde un boton (ya estructurados). */
 export interface HuecosEntrada {

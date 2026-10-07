@@ -11,6 +11,7 @@ import { securityHeaders } from './middleware/security-headers.middleware';
 import { requestLoggerMiddleware } from './middleware/request-logger.middleware';
 import { badRequest, HttpError } from './utils/http-errors';
 import { topeMensualAgotadoEnCache } from './services/carmen/presupuesto.service';
+import { chatAssistantController } from './controllers/chatAssistant.controller';
 
 /** Rutas de Carmen (POST /companies/:companyId/chat-assistant...). */
 const RUTA_CARMEN = /^\/companies\/[^/]+\/chat-assistant(?:\/|$)/;
@@ -91,6 +92,9 @@ export function createApp(): Express {
 
   // Documentación interactiva (OpenAPI spec y módulos)
   app.use('/api', docsRouter);
+
+  // Tareas programadas (Vercel Cron, ver vercel.json). Se protegen con CRON_SECRET.
+  app.get('/cron/carmen-purga', chatAssistantController.cronPurga);
 
   // Rutas de la API
   app.use('/', routes);

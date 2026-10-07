@@ -5,13 +5,16 @@
  * genera siempre el servidor.
  *
  * Se guardan 90 días (CarmenAjustes.conservarDias) con las cifras de cada
- * respuesta tal como se dieron, y el usuario puede borrarlas. Lo caducado se
- * purga sin prisa, en lotes de 200, como mucho cada 6 horas por empresa.
+ * respuesta tal como se dieron, y el usuario puede borrarlas. Lo caducado no se
+ * enseña aunque siga en la BD (las lecturas filtran por fecha) y se borra en
+ * lotes de 200: al usar Carmen o abrir su historial (como mucho cada 6 horas
+ * por empresa y por instancia) y en la tarea diaria de Vercel Cron.
  */
 import { Prisma } from '@prisma/client';
 import { prisma } from '../../config/database';
 import { notFound } from '../../utils/http-errors';
-import { tiene } from './contexto';
+import { PERMISO_NOMINAS, tiene } from './contexto';
+import { CONSERVAR_DIAS_DEFECTO, CONSERVAR_DIAS_MAX, CONSERVAR_DIAS_MIN } from './ajustes.service';
 import type { CarmenCtx, ContextoSesion, CuerpoRespuesta } from './tipos';
 import type { TurnoPrevio } from './llm';
 
@@ -29,10 +32,20 @@ const CADA_PURGA_MS = 6 * 3600_000;
 const SESIONES_POR_PAGINA = 20;
 export const TEXTO_OCULTO = 'Respuesta oculta: ya no tienes acceso a este dato.';
 
-/** La sesión del usuario en la empresa, o 404. */
-export async function obtenerSesion(ctx: Pick<CarmenCtx, 'companyId' | 'userId'>, sessionId: string): Promise<SesionCarmen> {
+/** Fecha desde la que se conserva lo guardado (lo anterior está caducado). */
+export function limiteConservacion(conservarDias: number = CONSERVAR_DIAS_DEFECTO, ahora: Date = new Date()): Date {
+  return new Date(ahora.getTime() - conservarDias * 86_400_000);
+}
+
+/** La sesión del usuario en la empresa, o 404. Con `conservarDias`, una sesión caducada también da 404. */
+export async function obtenerSesion(ctx: Pick<CarmenCtx, 'companyId' | 'userId'>, sessionId: string, conservarDias?: number): Promise<SesionCarmen> {
   const s = await prisma.chatSession.findFirst({
-    where: { id: sessionId, companyId: ctx.companyId, userId: ctx.userId },
+    where: {
+      id: sessionId,
+      companyId: ctx.companyId,
+      userId: ctx.userId,
+      ...(conservarDias ? { updatedAt: { gte: limiteConservacion(conservarDias) } } : {}),
+    },
     select: { id: true, titulo: true, contexto: true, updatedAt: true },
   });
   if (!s) throw notFound('Conversación no encontrada.');
@@ -94,28 +107,41 @@ export async function guardarTurno(
   return msg.id;
 }
 
-/** Hasta 2 turnos anteriores con origen 'faq' o 'ia' (nunca de datos), para la IA. */
-export async function turnosParaIA(ctx: Pick<CarmenCtx, 'companyId' | 'userId'>, sessionId: string): Promise<TurnoPrevio[]> {
+/**
+ * Hasta 2 turnos anteriores con origen 'faq' o 'ia' para la IA. Nunca de datos:
+ * se descartan también las respuestas de fichas que llevan algo de la empresa
+ * (por ejemplo, el plazo del 303 con «en la app todavía no consta como
+ * presentado»), que se reconocen porque guardan permiso o fecha de cálculo.
+ */
+export async function turnosParaIA(ctx: Pick<CarmenCtx, 'companyId' | 'userId'>, sessionId: string, conservarDias?: number): Promise<TurnoPrevio[]> {
   const filas = await prisma.chatMessage.findMany({
-    where: { sessionId, companyId: ctx.companyId, userId: ctx.userId, origen: { in: ['faq', 'ia'] } },
+    where: {
+      sessionId,
+      companyId: ctx.companyId,
+      userId: ctx.userId,
+      origen: { in: ['faq', 'ia'] },
+      ...(conservarDias ? { createdAt: { gte: limiteConservacion(conservarDias) } } : {}),
+    },
     orderBy: { createdAt: 'desc' },
     take: 8,
-    select: { role: true, content: true, origen: true, createdAt: true },
+    select: { role: true, content: true, origen: true, permisoRequerido: true, calculadoEn: true, createdAt: true },
   });
   const orden = filas.reverse();
   const turnos: TurnoPrevio[] = [];
   for (let i = 0; i + 1 < orden.length; i++) {
-    if (orden[i].role === 'user' && orden[i + 1].role === 'assistant' && orden[i].origen === orden[i + 1].origen) {
-      turnos.push({ pregunta: orden[i].content, respuesta: orden[i + 1].content });
+    const [p, r] = [orden[i], orden[i + 1]];
+    if (p.role === 'user' && r.role === 'assistant' && p.origen === r.origen) {
+      const conDatos = !!r.permisoRequerido || !!r.calculadoEn || !!p.permisoRequerido || !!p.calculadoEn;
+      if (!conDatos) turnos.push({ pregunta: p.content, respuesta: r.content });
       i++;
     }
   }
   return turnos.slice(-2);
 }
 
-export async function listarSesiones(ctx: Pick<CarmenCtx, 'companyId' | 'userId'>, pagina = 1) {
+export async function listarSesiones(ctx: Pick<CarmenCtx, 'companyId' | 'userId'>, pagina = 1, conservarDias: number = CONSERVAR_DIAS_DEFECTO) {
   const p = Math.max(1, Math.floor(pagina) || 1);
-  const where = { companyId: ctx.companyId, userId: ctx.userId };
+  const where = { companyId: ctx.companyId, userId: ctx.userId, updatedAt: { gte: limiteConservacion(conservarDias) } };
   const [total, sesiones] = await Promise.all([
     prisma.chatSession.count({ where }),
     prisma.chatSession.findMany({
@@ -129,17 +155,33 @@ export async function listarSesiones(ctx: Pick<CarmenCtx, 'companyId' | 'userId'
   return { total, pagina: p, porPagina: SESIONES_POR_PAGINA, sesiones };
 }
 
-/** ¿Sigue teniendo el usuario el permiso con que se calculó? Formato: grupos con ';' (todos) de alternativas con '|'. */
-export function conservaPermiso(ctx: Pick<CarmenCtx, 'permisos'>, permisoRequerido: string | null): boolean {
+/**
+ * ¿Sigue teniendo el usuario el permiso con que se calculó? Formato: grupos con
+ * ';' (hacen falta todos) de alternativas con '|'. El grupo 'nominas' es el
+ * acceso a nóminas de la empresa (puedeNominas).
+ */
+export function conservaPermiso(
+  ctx: Pick<CarmenCtx, 'permisos'> & Partial<Pick<CarmenCtx, 'puedeNominas' | 'esAdminGlobal'>>,
+  permisoRequerido: string | null,
+): boolean {
   if (!permisoRequerido) return true;
-  return permisoRequerido.split(';').every((grupo) => tiene(ctx, ...grupo.split('|').filter(Boolean)));
+  return permisoRequerido.split(';').every((grupo) => {
+    const alternativas = grupo.split('|').filter(Boolean);
+    if (alternativas.includes(PERMISO_NOMINAS) && ctx.puedeNominas === true) return true;
+    const permisos = alternativas.filter((a) => a !== PERMISO_NOMINAS);
+    return permisos.length > 0 && tiene(ctx, ...permisos);
+  });
 }
 
 /** Mensajes de una conversación propia; las respuestas cuyo permiso ya no tiene el usuario se ocultan. */
-export async function mensajesDeSesion(ctx: Pick<CarmenCtx, 'companyId' | 'userId' | 'permisos'>, sessionId: string) {
-  const sesion = await obtenerSesion(ctx, sessionId);
+export async function mensajesDeSesion(
+  ctx: Pick<CarmenCtx, 'companyId' | 'userId' | 'permisos'> & Partial<Pick<CarmenCtx, 'puedeNominas' | 'esAdminGlobal'>>,
+  sessionId: string,
+  conservarDias: number = CONSERVAR_DIAS_DEFECTO,
+) {
+  const sesion = await obtenerSesion(ctx, sessionId, conservarDias);
   const filas = await prisma.chatMessage.findMany({
-    where: { sessionId: sesion.id, companyId: ctx.companyId, userId: ctx.userId },
+    where: { sessionId: sesion.id, companyId: ctx.companyId, userId: ctx.userId, createdAt: { gte: limiteConservacion(conservarDias) } },
     orderBy: { createdAt: 'asc' },
     select: { id: true, role: true, content: true, origen: true, intencion: true, datos: true, permisoRequerido: true, calculadoEn: true, valoracion: true, createdAt: true },
   });
@@ -168,18 +210,21 @@ export async function valorarMensaje(ctx: Pick<CarmenCtx, 'companyId' | 'userId'
 
 const ultimaPurga = new Map<string, number>();
 
-/** Borra los mensajes y las conversaciones de la empresa más antiguos que `conservarDias`. */
-export async function purgarCaducadas(companyId: string, conservarDias: number, ahora: Date = new Date()): Promise<number> {
-  const limite = new Date(ahora.getTime() - conservarDias * 86_400_000);
+/**
+ * Borra mensajes y conversaciones anteriores a `limite`, en lotes. Sin
+ * `companyId`, de todas las empresas (la tarea diaria).
+ */
+async function purgarAntesDe(limite: Date, companyId?: string): Promise<number> {
+  const deEmpresa = companyId ? { companyId } : {};
   let borrados = 0;
   for (let lote = 0; lote < LOTES_POR_PURGA; lote++) {
-    const viejos = await prisma.chatMessage.findMany({ where: { companyId, createdAt: { lt: limite } }, select: { id: true }, take: LOTE_PURGA });
+    const viejos = await prisma.chatMessage.findMany({ where: { ...deEmpresa, createdAt: { lt: limite } }, select: { id: true }, take: LOTE_PURGA });
     if (!viejos.length) break;
     borrados += (await prisma.chatMessage.deleteMany({ where: { id: { in: viejos.map((m) => m.id) } } })).count;
     if (viejos.length < LOTE_PURGA) break;
   }
   for (let lote = 0; lote < LOTES_POR_PURGA; lote++) {
-    const sesiones = await prisma.chatSession.findMany({ where: { companyId, updatedAt: { lt: limite } }, select: { id: true }, take: LOTE_PURGA });
+    const sesiones = await prisma.chatSession.findMany({ where: { ...deEmpresa, updatedAt: { lt: limite } }, select: { id: true }, take: LOTE_PURGA });
     if (!sesiones.length) break;
     const ids = sesiones.map((s) => s.id);
     await prisma.chatMessage.deleteMany({ where: { sessionId: { in: ids } } });
@@ -189,6 +234,11 @@ export async function purgarCaducadas(companyId: string, conservarDias: number, 
   return borrados;
 }
 
+/** Borra los mensajes y las conversaciones de la empresa más antiguos que `conservarDias`. */
+export async function purgarCaducadas(companyId: string, conservarDias: number, ahora: Date = new Date()): Promise<number> {
+  return purgarAntesDe(limiteConservacion(conservarDias, ahora), companyId);
+}
+
 /** Purga perezosa: como mucho una vez cada 6 horas por empresa y por instancia. */
 export async function purgarSiToca(companyId: string, conservarDias: number): Promise<void> {
   const ultima = ultimaPurga.get(companyId) ?? 0;
@@ -196,6 +246,18 @@ export async function purgarSiToca(companyId: string, conservarDias: number): Pr
   ultimaPurga.set(companyId, Date.now());
   if (ultimaPurga.size > 1000) ultimaPurga.clear();
   await purgarCaducadas(companyId, conservarDias);
+}
+
+/**
+ * Tarea diaria (Vercel Cron): lo de más de 90 días de todas las empresas, y lo
+ * de las empresas que guardan menos días según sus ajustes. No depende de que
+ * alguien de la empresa vuelva a usar Carmen.
+ */
+export async function purgarTodas(ahora: Date = new Date()): Promise<number> {
+  let borrados = await purgarAntesDe(limiteConservacion(CONSERVAR_DIAS_MAX, ahora));
+  const conMenos = await prisma.carmenAjustes.findMany({ where: { conservarDias: { lt: CONSERVAR_DIAS_MAX } }, select: { companyId: true, conservarDias: true } });
+  for (const a of conMenos) borrados += await purgarCaducadas(a.companyId, Math.max(CONSERVAR_DIAS_MIN, a.conservarDias), ahora);
+  return borrados;
 }
 
 /** Solo para tests. */

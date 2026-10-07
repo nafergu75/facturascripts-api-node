@@ -141,7 +141,7 @@ describe('plazos', () => {
   it('próximo plazo del 303 a 07/10/2026: el 3T, hasta el 20/10/2026', () => {
     const [p] = proximosPlazos(HOY, 1, '303');
     expect(p).toMatchObject({ periodo: '3T', ejercicio: 2026, fecha: '2026-10-20' });
-    expect(frasePlazo(p, HOY)).toBe('El modelo 303 (IVA trimestral) de 3T de 2026 se presenta hasta el 20/10/2026 (quedan 13 días).');
+    expect(frasePlazo(p, HOY)).toBe('El modelo 303 (IVA trimestral) del 3T de 2026 se presenta hasta el 20/10/2026 (quedan 13 días).');
     const [enero] = proximosPlazos('2027-01-05', 1, '303');
     expect(enero).toMatchObject({ periodo: '4T', ejercicio: 2026, fecha: '2027-01-30' });
   });

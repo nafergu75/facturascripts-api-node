@@ -10,6 +10,7 @@ import { prisma } from '../../../config/database';
 import { pendientesSegunFacturas } from '../../informesContables.service';
 import { resumenFiscalPeriodo, type ResumenFiscalPeriodo } from '../../resumenFiscal.service';
 import { listarCobros, type TipoDocumento } from '../../cobrosPagos.service';
+import { facturasPorCobrar } from '../../cobrosClientes.service';
 import type { ColumnaInforme } from '../../informesContables.documentos';
 import { tiene } from '../contexto';
 import { botonIntencion, diasEntre, eur, fechaES, plural, sumar, tabla, unAnioAntes, variacion } from '../plantillas';
@@ -157,15 +158,34 @@ function fraseComparada(verbo: string, actual: ResumenFiscalPeriodo['ventas'], a
 export const facturadoEnPeriodo: Ejecutor = async (ctx, h) => {
   const puedeVentas = tiene(ctx, 'ventas:read', 'contabilidad:read');
   const puedeGastos = tiene(ctx, 'compras:read', 'contabilidad:read');
-  if (h.foco === 'ventas' && !puedeVentas) return { sinPermiso: true, area: 'cobros' };
-  if (h.foco === 'gastos' && !puedeGastos) return { sinPermiso: true, area: 'pagos' };
+  // Un cliente o un proveedor en la pregunta: solo sus facturas (lo facturado al cliente, lo gastado con el proveedor).
+  let tercero: { id: string; nombre: string; rol: 'cliente' | 'proveedor' } | null = null;
+  if (h.terceroId && (h.rol === 'cliente' || h.rol === 'proveedor')) {
+    const t = (await indiceTerceros(ctx.companyId)).find((x) => x.id === h.terceroId && x.rol === h.rol);
+    if (!t) {
+      return { entendido: 'Facturado a un cliente o gastado con un proveedor', texto: 'No encuentro ese cliente o proveedor en esta empresa.', sinCifras: true };
+    }
+    tercero = { id: t.id, nombre: t.nombre, rol: h.rol };
+  }
+  const foco = tercero ? (tercero.rol === 'cliente' ? 'ventas' : 'gastos') : h.foco;
+  if (foco === 'ventas' && !puedeVentas) return { sinPermiso: true, area: 'cobros' };
+  if (foco === 'gastos' && !puedeGastos) return { sinPermiso: true, area: 'pagos' };
   if (!puedeVentas && !puedeGastos) return { sinPermiso: true, area: 'facturacion' };
 
   const periodo = h.periodo ?? resolverCodigoPeriodo('este-trimestre', ctx.hoy)!;
-  const verVentas = puedeVentas && h.foco !== 'gastos';
-  const verGastos = puedeGastos && h.foco !== 'ventas';
+  const verVentas = puedeVentas && foco !== 'gastos';
+  const verGastos = puedeGastos && foco !== 'ventas';
   const que = verVentas && verGastos ? 'Facturado y gastado' : verVentas ? 'Facturado' : 'Gastado';
-  const entendido = `${que} en ${periodo.etiqueta}, frente al mismo periodo del año anterior`;
+  const conQuien = tercero ? (tercero.rol === 'cliente' ? ` a ${tercero.nombre}` : ` con ${tercero.nombre}`) : '';
+  const entendido = `${que}${conQuien} en ${periodo.etiqueta}, frente al mismo periodo del año anterior`;
+  const avisos: string[] = [];
+  if (tercero && h.foco && h.foco !== foco) {
+    avisos.push(
+      tercero.rol === 'cliente'
+        ? `${tercero.nombre} es cliente: te enseño lo que le has facturado.`
+        : `${tercero.nombre} es proveedor: te enseño lo que te ha facturado (tus gastos con él).`,
+    );
+  }
   if (periodo.desde > ctx.hoy) {
     return { entendido, texto: `Ese periodo (${periodo.etiqueta}) todavía no ha empezado.`, sinCifras: true };
   }
@@ -173,9 +193,10 @@ export const facturadoEnPeriodo: Ejecutor = async (ctx, h) => {
   const desdeAnt = unAnioAntes(periodo.desde);
   const hastaAnt = unAnioAntes(hasta);
   const anioAnt = Number(desdeAnt.slice(0, 4));
+  const filtro = tercero ? (tercero.rol === 'cliente' ? { customerId: tercero.id } : { supplierId: tercero.id }) : undefined;
   const [actual, anterior] = await Promise.all([
-    resumenFiscalPeriodo(ctx.companyId, periodo.desde, hasta),
-    resumenFiscalPeriodo(ctx.companyId, desdeAnt, hastaAnt),
+    resumenFiscalPeriodo(ctx.companyId, periodo.desde, hasta, filtro),
+    resumenFiscalPeriodo(ctx.companyId, desdeAnt, hastaAnt, filtro),
   ]);
   // «Este trimestre», hasta hoy; «lo que va de 2026» ya lo dice.
   const recorte = hasta < periodo.hasta && !periodo.etiqueta.startsWith('lo que va') ? ', hasta hoy,' : '';
@@ -185,29 +206,37 @@ export const facturadoEnPeriodo: Ejecutor = async (ctx, h) => {
   const permisos: string[] = [];
   if (verVentas) {
     permisos.push('ventas:read|contabilidad:read');
-    frases.push(fraseComparada(`En ${periodo.etiqueta}${recorte} has facturado`, actual.ventas, anterior.ventas, anioAnt));
+    const verbo = tercero ? `En ${periodo.etiqueta}${recorte} le has facturado a ${tercero.nombre}` : `En ${periodo.etiqueta}${recorte} has facturado`;
+    frases.push(fraseComparada(verbo, actual.ventas, anterior.ventas, anioAnt));
     kpis.push({ etiqueta: 'Facturado sin IVA', valor: eur(actual.ventas.base), detalle: plural(actual.ventas.facturas, 'factura') });
     kpis.push({ etiqueta: `Mismo periodo de ${anioAnt}`, valor: eur(anterior.ventas.base), detalle: variacion(actual.ventas.base, anterior.ventas.base) ?? undefined });
     filas.push({ celdas: ['Ventas (base imponible)', actual.ventas.base, anterior.ventas.base] }, { celdas: ['IVA repercutido', actual.ventas.iva, anterior.ventas.iva] });
   }
   if (verGastos) {
     permisos.push('compras:read|contabilidad:read');
-    frases.push(fraseComparada(`${verVentas ? 'Has gastado' : `En ${periodo.etiqueta}${recorte} has gastado`}`, actual.gastos, anterior.gastos, anioAnt));
+    const verbo = tercero
+      ? `En ${periodo.etiqueta}${recorte} has gastado con ${tercero.nombre}`
+      : `${verVentas ? 'Has gastado' : `En ${periodo.etiqueta}${recorte} has gastado`}`;
+    frases.push(fraseComparada(verbo, actual.gastos, anterior.gastos, anioAnt));
     kpis.push({ etiqueta: 'Gastado sin IVA', valor: eur(actual.gastos.base), detalle: plural(actual.gastos.facturas, 'factura') });
     kpis.push({ etiqueta: `Gastos en ${anioAnt}`, valor: eur(anterior.gastos.base), detalle: variacion(actual.gastos.base, anterior.gastos.base) ?? undefined });
     filas.push({ celdas: ['Gastos (base imponible)', actual.gastos.base, anterior.gastos.base] }, { celdas: ['IVA soportado', actual.gastos.iva, anterior.gastos.iva] });
   }
+  // Los botones repiten la consulta con el mismo cliente o proveedor (por su id, nunca por el nombre).
+  const mismos = { ...(h.foco && !tercero ? { foco: h.foco } : {}), ...(tercero ? { terceroId: tercero.id, rol: tercero.rol } : {}) };
   const otro =
-    periodo.codigo === 'este-trimestre' ? botonIntencion('¿Y el trimestre pasado?', 'INT-09', { periodo: 'trimestre-pasado', ...(h.foco ? { foco: h.foco } : {}) })
-    : periodo.codigo === 'este-mes' ? botonIntencion('¿Y el mes pasado?', 'INT-09', { periodo: 'mes-pasado', ...(h.foco ? { foco: h.foco } : {}) })
-    : botonIntencion('¿Y este año?', 'INT-09', { periodo: 'este-anio', ...(h.foco ? { foco: h.foco } : {}) });
+    periodo.codigo === 'este-trimestre' ? botonIntencion('¿Y el trimestre pasado?', 'INT-09', { periodo: 'trimestre-pasado', ...mismos })
+    : periodo.codigo === 'este-mes' ? botonIntencion('¿Y el mes pasado?', 'INT-09', { periodo: 'mes-pasado', ...mismos })
+    : periodo.codigo === 'este-anio' ? botonIntencion('¿Y el año pasado?', 'INT-09', { periodo: 'anio-pasado', ...mismos })
+    : botonIntencion('¿Y este año?', 'INT-09', { periodo: 'este-anio', ...mismos });
   return {
     entendido,
     texto: `${frases.join(' ')} ${CRITERIO_FACTURADO}`,
     permisoRequerido: permisos.join(';'),
     kpis,
+    ...(avisos.length ? { avisos } : {}),
     tabla: tabla(
-      `${que} frente al año anterior`,
+      `${que}${conQuien} frente al año anterior`,
       `Del ${fechaES(periodo.desde)} al ${fechaES(hasta)} y del ${fechaES(desdeAnt)} al ${fechaES(hastaAnt)}`,
       [
         { titulo: 'Concepto', tipo: 'texto', ancho: 6 },
@@ -217,6 +246,7 @@ export const facturadoEnPeriodo: Ejecutor = async (ctx, h) => {
       filas,
     ),
     enlaces: [
+      ...(tercero ? [{ texto: `Ficha de ${tercero.nombre}`, href: `/dashboard/${tercero.rol === 'cliente' ? 'clientes' : 'proveedores'}/${tercero.id}` }] : []),
       ...(verVentas ? [{ texto: 'Ver facturas de ingreso', href: '/dashboard/facturas' }] : []),
       ...(verGastos ? [{ texto: 'Ver compras', href: '/dashboard/compras' }] : []),
     ],
@@ -243,7 +273,13 @@ interface Encontrada {
   vence: string;
   total: number;
   proforma: boolean;
+  /** Solo emitidas: la factura que rectifica y cómo (S por sustitución, I por diferencias). */
+  facturaOriginalId?: string | null;
+  tipoRectificativa?: string | null;
 }
+
+/** Ventas válidas: emitidas, sin borradores (los antiguos quedaron con estado DRAFT y documento FINAL). */
+const VENTA_EMITIDA = { estadoDocumento: 'FINAL', estado: { not: 'DRAFT' } } as const;
 
 export const buscarFactura: Ejecutor = async (ctx, h) => {
   const ventas = tiene(ctx, 'ventas:read');
@@ -263,8 +299,19 @@ export const buscarFactura: Ejecutor = async (ctx, h) => {
   const [emitidas, recibidas] = await Promise.all([
     ventas
       ? prisma.incomeInvoice.findMany({
-          where: { companyId: ctx.companyId, numero },
-          select: { id: true, numeroCompleto: true, estadoDocumento: true, fechaEmision: true, fechaVencimiento: true, totalFactura: true, customer: { select: { nombreFiscal: true } } },
+          // Sin borradores: ni los de ahora (BORRADOR) ni los antiguos (estado DRAFT con documento FINAL).
+          where: { companyId: ctx.companyId, numero, estado: { not: 'DRAFT' } },
+          select: {
+            id: true,
+            numeroCompleto: true,
+            estadoDocumento: true,
+            fechaEmision: true,
+            fechaVencimiento: true,
+            totalFactura: true,
+            facturaOriginalId: true,
+            tipoRectificativa: true,
+            customer: { select: { nombreFiscal: true } },
+          },
           take: 50,
         })
       : Promise.resolve([]),
@@ -279,7 +326,18 @@ export const buscarFactura: Ejecutor = async (ctx, h) => {
   const encontradas: Encontrada[] = [
     ...emitidas
       .filter((f) => coincide(f.numeroCompleto) && f.estadoDocumento !== 'BORRADOR')
-      .map((f) => ({ tipo: 'INGRESO' as const, id: f.id, numero: f.numeroCompleto!, tercero: f.customer.nombreFiscal, fecha: f.fechaEmision, vence: f.fechaVencimiento, total: Number(f.totalFactura), proforma: f.estadoDocumento === 'PROFORMA' })),
+      .map((f) => ({
+        tipo: 'INGRESO' as const,
+        id: f.id,
+        numero: f.numeroCompleto!,
+        tercero: f.customer.nombreFiscal,
+        fecha: f.fechaEmision,
+        vence: f.fechaVencimiento,
+        total: Number(f.totalFactura),
+        proforma: f.estadoDocumento === 'PROFORMA',
+        facturaOriginalId: f.facturaOriginalId,
+        tipoRectificativa: f.tipoRectificativa,
+      })),
     ...recibidas
       .filter((f) => coincide(f.numeroCompleto))
       .map((f) => ({ tipo: 'GASTO' as const, id: f.id, numero: f.numeroCompleto, tercero: f.supplier.nombreFiscal, fecha: f.fechaEmision, vence: f.fechaVencimiento, total: Number(f.totalFactura), proforma: false })),
@@ -332,27 +390,72 @@ export const buscarFactura: Ejecutor = async (ctx, h) => {
       enlaces,
     };
   }
-  const r = await listarCobros(ctx.companyId, f.tipo, f.id);
   const emitida = f.tipo === 'INGRESO';
   const de = emitida ? 'cobro' : 'pago';
   const quien = emitida ? `a ${f.tercero}` : `de ${f.tercero}`;
+
+  // Emitidas: sus rectificativas cuentan como en el panel de cobros (cobrosClientes).
+  const numeroDe = async (id: string) =>
+    (await prisma.incomeInvoice.findFirst({ where: { id, companyId: ctx.companyId }, select: { numeroCompleto: true } }))?.numeroCompleto ?? 'sin número';
+  if (emitida && f.total < 0 && f.facturaOriginalId) {
+    // Rectificativa en negativo: no se cobra, abona la original.
+    const original = await numeroDe(f.facturaOriginalId);
+    return {
+      entendido,
+      texto: `La factura ${f.numero} es una rectificativa en negativo (un abono) de la factura ${original}, del ${fechaES(f.fecha)}, por ${eur(f.total)}. No se cobra: resta de lo pendiente de la ${original} y, si esa ya estaba cobrada, es un importe que le debes devolver a ${f.tercero}.`,
+      permisoRequerido,
+      kpis: [{ etiqueta: 'Importe del abono', valor: eur(f.total) }],
+      enlaces: [...enlaces, { texto: `Abrir la factura ${original}`, href: `/dashboard/facturas/${f.facturaOriginalId}` }],
+    };
+  }
+  const rectificativas = emitida
+    ? await prisma.incomeInvoice.findMany({
+        where: { companyId: ctx.companyId, facturaOriginalId: f.id, ...VENTA_EMITIDA },
+        select: { id: true, numeroCompleto: true, tipoRectificativa: true, totalFactura: true, fechaEmision: true },
+        orderBy: { fechaEmision: 'desc' },
+      })
+    : [];
+  const sustituta = rectificativas.find((x) => x.tipoRectificativa === 'S' && x.id !== f.id);
+  if (sustituta) {
+    return {
+      entendido,
+      texto: `La factura ${f.numero} emitida ${quien}, del ${fechaES(f.fecha)}, por ${eur(f.total)}, está sustituida por la rectificativa ${sustituta.numeroCompleto ?? 'sin número'} (por sustitución): ya no cuenta. Lo que se le cobró se descuenta de la nueva; pregunta por la ${sustituta.numeroCompleto ?? 'nueva'} para ver lo pendiente.`,
+      permisoRequerido,
+      kpis: [{ etiqueta: 'Total (sustituida)', valor: eur(f.total) }],
+      enlaces: [...enlaces, { texto: `Abrir la factura ${sustituta.numeroCompleto ?? 'que la sustituye'}`, href: `/dashboard/facturas/${sustituta.id}` }],
+    };
+  }
+
+  const r = await listarCobros(ctx.companyId, f.tipo, f.id);
+  let pendiente = r.importePendiente;
+  let abonado = 0;
+  if (emitida) {
+    // Lo pendiente, con las mismas reglas que el panel: rectificativas, cobros con fecha futura y cobradas a mano.
+    const fila = (await facturasPorCobrar(ctx.companyId, ctx.hoy)).facturas.find((x) => x.id === f.id);
+    pendiente = fila?.pendiente ?? 0;
+    abonado = fila?.abonado ?? sumar(rectificativas.filter((x) => Number(x.totalFactura) < 0).map((x) => -Number(x.totalFactura)));
+  }
+  const abonos = rectificativas.filter((x) => Number(x.totalFactura) < 0).map((x) => x.numeroCompleto ?? 'sin número');
   const retraso = diasEntre(f.vence, ctx.hoy);
   let estado: string;
-  if (r.importePendiente <= 0) {
-    estado = emitida ? 'Está cobrada.' : 'Está pagada.';
+  if (pendiente <= 0) {
+    estado = !emitida ? 'Está pagada.' : abonos.length && r.importeCobrado < r.totalFactura ? `No queda nada pendiente de cobro: la rectificativa ${abonos.join(', ')} la abona.` : 'Está cobrada.';
   } else {
     const vencida = retraso > 0 ? ` Venció el ${fechaES(f.vence)} (hace ${plural(retraso, 'día')}).` : ` Vence el ${fechaES(f.vence)}.`;
-    estado = `${r.importeCobrado > 0 ? `Lleva ${eur(r.importeCobrado)} ${emitida ? 'cobrados' : 'pagados'} y quedan` : 'Quedan'} ${eur(r.importePendiente)} pendientes de ${de}.${vencida}`;
+    const conAbono = abonado > 0 ? `${abonos.length ? ` La rectificativa ${abonos.join(', ')} le resta ${eur(abonado)}.` : ''}` : '';
+    estado = `${r.importeCobrado > 0 ? `Lleva ${eur(r.importeCobrado)} ${emitida ? 'cobrados' : 'pagados'} y quedan` : 'Quedan'} ${eur(pendiente)} pendientes de ${de}.${conAbono}${vencida}`;
   }
+  const sustituye = emitida && f.tipoRectificativa === 'S' && f.facturaOriginalId ? ` Sustituye a la factura ${await numeroDe(f.facturaOriginalId)}.` : '';
   const activos = r.cobros.filter((c) => c.estado === 'ACTIVO');
   return {
     entendido,
-    texto: `La factura ${f.numero} ${emitida ? 'emitida' : 'recibida'} ${quien}, del ${fechaES(f.fecha)}, es de ${eur(r.totalFactura)}. ${estado}`,
+    texto: `La factura ${f.numero} ${emitida ? 'emitida' : 'recibida'} ${quien}, del ${fechaES(f.fecha)}, es de ${eur(r.totalFactura)}.${sustituye} ${estado}`,
     permisoRequerido,
     kpis: [
       { etiqueta: 'Total', valor: eur(r.totalFactura) },
       { etiqueta: emitida ? 'Cobrado' : 'Pagado', valor: eur(r.importeCobrado), detalle: plural(activos.length, de) },
-      { etiqueta: 'Pendiente', valor: eur(r.importePendiente) },
+      ...(abonado > 0 ? [{ etiqueta: 'Abonado por rectificativa', valor: eur(abonado) }] : []),
+      { etiqueta: 'Pendiente', valor: eur(pendiente) },
     ],
     ...(activos.length
       ? {

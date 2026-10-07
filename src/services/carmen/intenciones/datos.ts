@@ -160,38 +160,61 @@ export const facturasVencidas: Ejecutor = async (ctx, h) => {
 // ---------------- INT-05: cobrado o pagado en un periodo ----------------
 
 export const cobradoEnPeriodo: Ejecutor = async (ctx, h) => {
-  const sentido = h.sentido ?? 'cobros';
+  // Con un cliente (lo que te ha pagado) o un proveedor (lo que le has pagado), solo los cobros o pagos de sus facturas.
+  let tercero: { id: string; nombre: string; rol: 'cliente' | 'proveedor' } | null = null;
+  if (h.terceroId && (h.rol === 'cliente' || h.rol === 'proveedor')) {
+    const t = (await indiceTerceros(ctx.companyId)).find((x) => x.id === h.terceroId && x.rol === h.rol);
+    if (!t) return { entendido: 'Cobrado de un cliente o pagado a un proveedor', texto: 'No encuentro ese cliente o proveedor en esta empresa.', sinCifras: true };
+    tercero = { id: t.id, nombre: t.nombre, rol: h.rol };
+  }
+  const sentido = tercero ? (tercero.rol === 'cliente' ? 'cobros' : 'pagos') : (h.sentido ?? 'cobros');
   const permitido = sentido === 'cobros' ? tiene(ctx, 'ventas:read', 'contabilidad:read') : tiene(ctx, 'compras:read', 'contabilidad:read');
   if (!permitido) return { sinPermiso: true, area: sentido === 'cobros' ? 'cobros' : 'pagos' };
   const periodo = h.periodo ?? resolverCodigoPeriodo('este-mes', ctx.hoy)!;
   const verbo = sentido === 'cobros' ? 'cobrado' : 'pagado';
   const nombre = sentido === 'cobros' ? 'cobro' : 'pago';
-  const entendido = `Total ${verbo} en ${periodo.etiqueta}`;
-  const otro = botonIntencion(sentido === 'cobros' ? 'Ver los pagos' : 'Ver los cobros', 'INT-05', { periodo: periodo.codigo, sentido: sentido === 'cobros' ? 'pagos' : 'cobros' });
+  const deQuien = tercero ? (tercero.rol === 'cliente' ? ` de ${tercero.nombre}` : ` a ${tercero.nombre}`) : '';
+  const entendido = `Total ${verbo}${deQuien} en ${periodo.etiqueta}`;
+  const mismos = tercero ? { terceroId: tercero.id, rol: tercero.rol } : {};
+  const otro = tercero ? null : botonIntencion(sentido === 'cobros' ? 'Ver los pagos' : 'Ver los cobros', 'INT-05', { periodo: periodo.codigo, sentido: sentido === 'cobros' ? 'pagos' : 'cobros' });
   if (periodo.desde > ctx.hoy) {
-    return { entendido, texto: `Ese periodo (${periodo.etiqueta}) todavía no ha empezado.`, sinCifras: true, botones: [otro] };
+    return { entendido, texto: `Ese periodo (${periodo.etiqueta}) todavía no ha empezado.`, sinCifras: true, ...(otro ? { botones: [otro] } : {}) };
   }
   const hasta = hastaHoy(periodo, ctx.hoy);
   const tipo = sentido === 'cobros' ? 'INGRESO' : 'GASTO';
+  const ids = tercero
+    ? (tercero.rol === 'cliente'
+        ? await prisma.incomeInvoice.findMany({ where: { companyId: ctx.companyId, customerId: tercero.id }, select: { id: true } })
+        : await prisma.expenseInvoice.findMany({ where: { companyId: ctx.companyId, supplierId: tercero.id }, select: { id: true } })
+      ).map((f) => f.id)
+    : undefined;
   const [total, numero] = await Promise.all([
-    totalCobradoEntre(ctx.companyId, tipo, periodo.desde, hasta),
-    prisma.invoicePayment.count({ where: { companyId: ctx.companyId, invoiceType: tipo, estado: 'ACTIVO', fecha: { gte: periodo.desde, lte: hasta } } }),
+    totalCobradoEntre(ctx.companyId, tipo, periodo.desde, hasta, ids),
+    prisma.invoicePayment.count({
+      where: { companyId: ctx.companyId, invoiceType: tipo, estado: 'ACTIVO', fecha: { gte: periodo.desde, lte: hasta }, ...(ids ? { invoiceId: { in: ids } } : {}) },
+    }),
   ]);
   const recorte = hasta < periodo.hasta ? ' (hasta hoy)' : '';
   const anterior =
-    periodo.codigo === 'este-mes' ? botonIntencion('¿Y el mes pasado?', 'INT-05', { periodo: 'mes-pasado', sentido })
-    : periodo.codigo === 'este-trimestre' ? botonIntencion('¿Y el trimestre pasado?', 'INT-05', { periodo: 'trimestre-pasado', sentido })
-    : periodo.codigo === 'este-anio' ? botonIntencion('¿Y el año pasado?', 'INT-05', { periodo: 'anio-pasado', sentido })
-    : botonIntencion('¿Y este mes?', 'INT-05', { periodo: 'este-mes', sentido });
+    periodo.codigo === 'este-mes' ? botonIntencion('¿Y el mes pasado?', 'INT-05', { periodo: 'mes-pasado', sentido, ...mismos })
+    : periodo.codigo === 'este-trimestre' ? botonIntencion('¿Y el trimestre pasado?', 'INT-05', { periodo: 'trimestre-pasado', sentido, ...mismos })
+    : periodo.codigo === 'este-anio' ? botonIntencion('¿Y el año pasado?', 'INT-05', { periodo: 'anio-pasado', sentido, ...mismos })
+    : botonIntencion('¿Y este mes?', 'INT-05', { periodo: 'este-mes', sentido, ...mismos });
+  const frase = tercero
+    ? tercero.rol === 'cliente'
+      ? `En ${periodo.etiqueta}${recorte} ${tercero.nombre} te ha pagado ${eur(total)} en ${plural(numero, 'cobro registrado', 'cobros registrados')}.`
+      : `En ${periodo.etiqueta}${recorte} le has pagado ${eur(total)} a ${tercero.nombre} en ${plural(numero, 'pago registrado', 'pagos registrados')}.`
+    : `En ${periodo.etiqueta}${recorte} has ${verbo} ${eur(total)} en ${plural(numero, `${nombre} registrado`, `${nombre}s registrados`)}.`;
   return {
     entendido,
-    texto:
-      `En ${periodo.etiqueta}${recorte} has ${verbo} ${eur(total)} en ${plural(numero, `${nombre} registrado`, `${nombre}s registrados`)}. ` +
-      `Suma los ${nombre}s con fecha en ese periodo; las facturas marcadas como ${verbo}s a mano, sin ${nombre} registrado, no cuentan porque no tienen fecha.`,
+    texto: `${frase} Suma los ${nombre}s con fecha en ese periodo; las facturas marcadas como ${verbo.replace(/o$/, 'as')} a mano, sin ${nombre} registrado, no cuentan porque no tienen fecha.`,
     permisoRequerido: sentido === 'cobros' ? 'ventas:read|contabilidad:read' : 'compras:read|contabilidad:read',
     kpis: [{ etiqueta: `Total ${verbo}`, valor: eur(total), detalle: plural(numero, nombre) }],
-    enlaces: [sentido === 'cobros' ? { texto: 'Ver facturas de ingreso', href: '/dashboard/facturas' } : { texto: 'Ver compras', href: '/dashboard/compras' }],
-    botones: [anterior, otro],
+    enlaces: [
+      ...(tercero ? [{ texto: `Ficha de ${tercero.nombre}`, href: `/dashboard/${tercero.rol === 'cliente' ? 'clientes' : 'proveedores'}/${tercero.id}` }] : []),
+      sentido === 'cobros' ? { texto: 'Ver facturas de ingreso', href: '/dashboard/facturas' } : { texto: 'Ver compras', href: '/dashboard/compras' },
+    ],
+    botones: [anterior, ...(otro ? [otro] : [])],
   };
 };
 

@@ -143,6 +143,8 @@ export const INTENCIONES: Intencion[] = [
     huecos: [
       { nombre: 'periodo', obligatorio: false, porDefecto: 'este-mes' },
       { nombre: 'sentido', obligatorio: false },
+      // «¿Cuánto he cobrado de X este mes?» (el enrutador la elige con un periodo y el verbo en pasado).
+      { nombre: 'tercero', obligatorio: false, roles: ['cliente', 'proveedor'] },
     ],
     paginas: ['/dashboard/facturas', '/dashboard/compras', '/dashboard/tesoreria'],
     ejemplos: [
@@ -208,6 +210,8 @@ export const INTENCIONES: Intencion[] = [
     huecos: [
       { nombre: 'periodo', obligatorio: false, porDefecto: 'este-trimestre' },
       { nombre: 'foco', obligatorio: false },
+      // «¿Cuánto le he facturado a X?»: solo las facturas de ese cliente (o de ese proveedor).
+      { nombre: 'tercero', obligatorio: false, roles: ['cliente', 'proveedor'] },
     ],
     paginas: ['/dashboard/facturas', '/dashboard/compras', '/dashboard'],
     ejemplos: [

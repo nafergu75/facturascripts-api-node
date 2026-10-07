@@ -5,7 +5,10 @@
  * abreviaturas ya expandidas: «3t» llega como «tercer trimestre»).
  *
  * Reglas:
- *  - un mes o un trimestre sin año es el más reciente que ya ha empezado;
+ *  - un mes, un trimestre o un semestre sin año es el más reciente que ya ha
+ *    empezado; «del año pasado» o «de este año» detrás fijan el año;
+ *  - un rango sin año empieza en la fecha más reciente que ya ha llegado y
+ *    termina en el mismo año (o en el siguiente si el final queda antes);
  *  - «hoy» es la fecha peninsular que se pasa (hoyEspana()).
  */
 import type { Periodo } from '../tipos';
@@ -13,6 +16,13 @@ import type { Periodo } from '../tipos';
 const MESES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
 const MESES_RE = '(enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre)';
 const ORDINAL_TRIM: Record<string, number> = { primer: 1, primero: 1, segundo: 2, tercer: 3, tercero: 3, cuarto: 4 };
+const ANIO_RE = '(?:año|ano|anio|ejercicio)';
+/**
+ * Año detrás de un trimestre, un semestre o un mes: «de 2025», «del año 2025»,
+ * «del año pasado», «del ejercicio anterior», «de este año», «del año».
+ * El orden importa: «del año pasado» antes que «del año».
+ */
+const SUFIJO_ANIO = `(?<sufijo> (?:(?:de|del) )?(?:(?:el )?${ANIO_RE} )?(?<digitos>\\d{4})| (?:de|del) (?:el )?${ANIO_RE} (?:pasado|anterior)| (?:de|del) (?:este |el )?${ANIO_RE}(?: actual| en curso)?)?`;
 
 const pad = (n: number) => String(n).padStart(2, '0');
 const iso = (a: number, m: number, d: number) => `${a}-${pad(m)}-${pad(d)}`;
@@ -42,6 +52,11 @@ export function periodoMes(anio: number, mes: number, etiqueta?: string, codigo?
 export function periodoTrimestre(anio: number, t: number, etiqueta?: string, codigo?: string): Periodo {
   const mesIni = (t - 1) * 3 + 1;
   return crear(iso(anio, mesIni, 1), iso(anio, mesIni + 2, diasDelMes(anio, mesIni + 2)), etiqueta ?? `el ${t}T de ${anio}`, codigo ?? `${anio}-${t}T`);
+}
+
+export function periodoSemestre(anio: number, s: number, etiqueta?: string, codigo?: string): Periodo {
+  const mesIni = s === 1 ? 1 : 7;
+  return crear(iso(anio, mesIni, 1), iso(anio, mesIni + 5, diasDelMes(anio, mesIni + 5)), etiqueta ?? `el ${s === 1 ? 'primer' : 'segundo'} semestre de ${anio}`, codigo ?? `${anio}-${s}S`);
 }
 
 export function periodoAnio(anio: number, etiqueta?: string, codigo?: string): Periodo {
@@ -102,6 +117,15 @@ export function resolverCodigoPeriodo(codigo: string, hoy: string): Periodo | nu
       const tp = t === 1 ? 4 : t - 1;
       return periodoTrimestre(a, tp, `el trimestre pasado (${tp}T de ${a})`, 'trimestre-pasado');
     }
+    case 'este-semestre': {
+      const se = mes <= 6 ? 1 : 2;
+      return periodoSemestre(anio, se, `este semestre (${se === 1 ? 'primer' : 'segundo'} semestre de ${anio})`, 'este-semestre');
+    }
+    case 'semestre-pasado': {
+      const a = mes <= 6 ? anio - 1 : anio;
+      const se = mes <= 6 ? 2 : 1;
+      return periodoSemestre(a, se, `el semestre pasado (${se === 1 ? 'primer' : 'segundo'} semestre de ${a})`, 'semestre-pasado');
+    }
     case 'este-anio':
       return periodoAnio(anio, `lo que va de ${anio}`, 'este-anio');
     case 'anio-pasado':
@@ -115,6 +139,7 @@ export function resolverCodigoPeriodo(codigo: string, hoy: string): Periodo | nu
     return mm >= 1 && mm <= 12 ? periodoMes(Number(m[1]), mm) : null;
   }
   if ((m = codigo.match(/^(\d{4})-([1-4])T$/))) return periodoTrimestre(Number(m[1]), Number(m[2]));
+  if ((m = codigo.match(/^(\d{4})-([12])S$/))) return periodoSemestre(Number(m[1]), Number(m[2]));
   if ((m = codigo.match(/^(\d{4})$/))) return periodoAnio(Number(m[1]));
   if ((m = codigo.match(/^(\d{4}-\d{2}-\d{2})_(\d{4}-\d{2}-\d{2})$/))) {
     if (!fechaValida(m[1]) || !fechaValida(m[2]) || m[1] > m[2]) return null;
@@ -134,14 +159,38 @@ function anioMasReciente(mes: number, hoy: string): number {
   return mes <= Number(hoy.slice(5, 7)) ? anio : anio - 1;
 }
 
-/** Fecha dd/mm(/aaaa) sin año: la más reciente que no pase de hoy. */
-function fechaSinAnio(d: number, m: number, hoy: string, anio?: number): string | null {
-  let a = anio ?? Number(hoy.slice(0, 4));
-  if (a < 100) a += 2000;
-  if (m < 1 || m > 12 || d < 1 || d > diasDelMes(a, m)) return null;
-  let f = iso(a, m, d);
-  if (anio === undefined && f > hoy) f = iso(a - 1, m, d);
-  return f;
+const normalizarAnio = (a: number) => (a < 100 ? a + 2000 : a);
+
+/**
+ * Rango de dos fechas (día y mes, con año o sin él). Sin año, el inicio es la
+ * fecha más reciente que ya ha llegado y el final va en el mismo año (o en el
+ * siguiente si queda antes del inicio), aunque sea futuro: «del 1/10 al 31/10»
+ * el 07/10/2026 es octubre de 2026, no de 2025. Los cálculos que no admiten
+ * futuro ya recortan a hoy (hastaHoy).
+ */
+function rangoFechas(d1: number, m1: number, a1: number | undefined, d2: number, m2: number, a2: number | undefined, hoy: string): { desde: string; hasta: string } | null {
+  if (m1 < 1 || m1 > 12 || m2 < 1 || m2 > 12) return null;
+  let anioDesde: number;
+  let anioHasta: number;
+  if (a1 !== undefined && a2 !== undefined) {
+    anioDesde = normalizarAnio(a1);
+    anioHasta = normalizarAnio(a2);
+  } else if (a1 !== undefined) {
+    anioDesde = normalizarAnio(a1);
+    anioHasta = m2 * 100 + d2 < m1 * 100 + d1 ? anioDesde + 1 : anioDesde;
+  } else if (a2 !== undefined) {
+    anioHasta = normalizarAnio(a2);
+    anioDesde = m1 * 100 + d1 > m2 * 100 + d2 ? anioHasta - 1 : anioHasta;
+  } else {
+    const anioHoy = Number(hoy.slice(0, 4));
+    // El inicio más reciente que ya ha llegado (se compara como texto AAAA-MM-DD).
+    anioDesde = iso(anioHoy, m1, d1) <= hoy ? anioHoy : anioHoy - 1;
+    anioHasta = m2 * 100 + d2 < m1 * 100 + d1 ? anioDesde + 1 : anioDesde;
+  }
+  const desde = iso(anioDesde, m1, d1);
+  const hasta = iso(anioHasta, m2, d2);
+  if (!fechaValida(desde) || !fechaValida(hasta) || desde > hasta) return null;
+  return { desde, hasta };
 }
 
 export interface PeriodoExtraido {
@@ -159,37 +208,15 @@ export function extraerPeriodo(texto: string, hoy: string): PeriodoExtraido | nu
   // Rango de fechas: «del 15/12 al 15/01», «entre el 1/9/2026 y el 30/9/2026».
   m = texto.match(/(?:del?|desde el|desde|entre el|entre)\s+(\d{1,2})[/-](\d{1,2})(?:[/-](\d{2,4}))?\s+(?:al|hasta el|hasta|y el|y)\s+(\d{1,2})[/-](\d{1,2})(?:[/-](\d{2,4}))?/);
   if (m) {
-    const anioFin = m[6] ? Number(m[6]) : undefined;
-    const hasta = fechaSinAnio(Number(m[4]), Number(m[5]), hoy, anioFin);
-    if (hasta) {
-      let desde = fechaSinAnio(Number(m[1]), Number(m[2]), hoy, m[3] ? Number(m[3]) : undefined);
-      if (desde && !m[3] && desde > hasta) desde = iso(Number(desde.slice(0, 4)) - 1, Number(m[2]), Number(m[1]));
-      if (desde && !m[3] && desde.slice(0, 4) !== hasta.slice(0, 4) && Number(m[2]) <= Number(m[5])) {
-        // «del 1/3 al 15/3» sin año: mismo año que el final.
-        desde = iso(Number(hasta.slice(0, 4)), Number(m[2]), Number(m[1]));
-      }
-      if (desde && desde <= hasta) {
-        return { periodo: crear(desde, hasta, `del ${fechaES(desde)} al ${fechaES(hasta)}`, `${desde}_${hasta}`), resto: quitar(m[0]) };
-      }
-    }
+    const r = rangoFechas(Number(m[1]), Number(m[2]), m[3] ? Number(m[3]) : undefined, Number(m[4]), Number(m[5]), m[6] ? Number(m[6]) : undefined, hoy);
+    if (r) return { periodo: crear(r.desde, r.hasta, `del ${fechaES(r.desde)} al ${fechaES(r.hasta)}`, `${r.desde}_${r.hasta}`), resto: quitar(m[0]) };
   }
 
   // Rango con meses escritos: «del 15 de diciembre al 15 de enero».
   m = texto.match(new RegExp(`(?:del?|desde el)\\s+(\\d{1,2}) de ${MESES_RE}(?: de (\\d{4}))?\\s+(?:al|hasta el)\\s+(\\d{1,2}) de ${MESES_RE}(?: de (\\d{4}))?`));
   if (m) {
-    const mesA = indiceMes(m[2]);
-    const mesB = indiceMes(m[5]);
-    const hasta = fechaSinAnio(Number(m[4]), mesB, hoy, m[6] ? Number(m[6]) : undefined);
-    if (hasta) {
-      let desde = fechaSinAnio(Number(m[1]), mesA, hoy, m[3] ? Number(m[3]) : undefined);
-      if (desde && !m[3]) {
-        desde = iso(Number(hasta.slice(0, 4)), mesA, Number(m[1]));
-        if (desde > hasta) desde = iso(Number(hasta.slice(0, 4)) - 1, mesA, Number(m[1]));
-      }
-      if (desde && desde <= hasta) {
-        return { periodo: crear(desde, hasta, `del ${fechaES(desde)} al ${fechaES(hasta)}`, `${desde}_${hasta}`), resto: quitar(m[0]) };
-      }
-    }
+    const r = rangoFechas(Number(m[1]), indiceMes(m[2]), m[3] ? Number(m[3]) : undefined, Number(m[4]), indiceMes(m[5]), m[6] ? Number(m[6]) : undefined, hoy);
+    if (r) return { periodo: crear(r.desde, r.hasta, `del ${fechaES(r.desde)} al ${fechaES(r.hasta)}`, `${r.desde}_${r.hasta}`), resto: quitar(m[0]) };
   }
 
   const fijos: Array<[RegExp, string]> = [
@@ -203,24 +230,42 @@ export function extraerPeriodo(texto: string, hoy: string): PeriodoExtraido | nu
     [/\b((?:en )?este mes|en lo que va de mes|del mes|el mes)\b/, 'este-mes'],
     [/\b((?:el |este )?trimestre pasado|(?:el )?trimestre anterior|(?:el )?anterior trimestre|(?:el )?ultimo trimestre)\b/, 'trimestre-pasado'],
     [/\b((?:en )?este trimestre|en lo que va de trimestre|del trimestre|el trimestre|trimestre actual)\b/, 'este-trimestre'],
+    [/\b((?:el |este )?semestre pasado|(?:el )?semestre anterior|(?:el )?anterior semestre|(?:el )?ultimo semestre)\b/, 'semestre-pasado'],
+    [/\b((?:en )?este semestre|en lo que va de semestre|del semestre|el semestre|semestre actual)\b/, 'este-semestre'],
     [/\b((?:el )?(?:año|ano|anio|ejercicio) pasado|(?:el )?(?:año|ano|anio|ejercicio) anterior)\b/, 'anio-pasado'],
     [/\b((?:en )?lo que va de (?:año|ano|anio|ejercicio)|(?:en )?este (?:año|ano|anio|ejercicio)|del (?:año|ano|anio|ejercicio)|el (?:año|ano|anio|ejercicio)|(?:año|ano|anio|ejercicio) actual)\b(?! \d)/, 'este-anio'],
   ];
 
-  // Trimestre con ordinal: «el tercer trimestre (de 2025)».
-  m = texto.match(/\b(?:el )?(primer|primero|segundo|tercer|tercero|cuarto) trimestre(?: (?:de|del) (?:(?:año|ano|anio|ejercicio) )?(\d{4}))?/);
+  /** Año del sufijo («de 2025», «del año pasado», «de este año»), o null si no lo hay. */
+  const anioDelSufijo = (g: Record<string, string | undefined> | undefined): number | null => {
+    if (!g?.sufijo) return null;
+    if (g.digitos) return Number(g.digitos);
+    return /pasado|anterior/.test(g.sufijo) ? anioHoy - 1 : anioHoy;
+  };
+
+  // Trimestre con ordinal: «el tercer trimestre (de 2025 | del año pasado)».
+  m = texto.match(new RegExp(`\\b(?:el )?(primer|primero|segundo|tercer|tercero|cuarto) trimestre${SUFIJO_ANIO}`));
   if (m) {
     const t = ORDINAL_TRIM[m[1]];
-    let anio = m[2] ? Number(m[2]) : anioHoy;
-    if (!m[2] && t > trimestreDe(hoy)) anio -= 1;
+    let anio = anioDelSufijo(m.groups) ?? anioHoy;
+    if (!m.groups?.sufijo && t > trimestreDe(hoy)) anio -= 1;
     return { periodo: periodoTrimestre(anio, t), resto: quitar(m[0]) };
   }
 
-  // Mes con nombre: «septiembre», «en marzo de 2025».
-  m = texto.match(new RegExp(`\\b(?:en |de |del mes de )?${MESES_RE}(?: (?:de |del )?(\\d{4}))?\\b`));
+  // Semestre con ordinal: «el primer semestre (de 2025 | del año pasado)».
+  m = texto.match(new RegExp(`\\b(?:el )?(primer|primero|segundo) semestre${SUFIJO_ANIO}`));
+  if (m) {
+    const se = m[1] === 'segundo' ? 2 : 1;
+    let anio = anioDelSufijo(m.groups) ?? anioHoy;
+    if (!m.groups?.sufijo && se === 2 && Number(hoy.slice(5, 7)) < 7) anio -= 1;
+    return { periodo: periodoSemestre(anio, se), resto: quitar(m[0]) };
+  }
+
+  // Mes con nombre: «septiembre», «en marzo de 2025», «marzo del año pasado».
+  m = texto.match(new RegExp(`\\b(?:en |de |del mes de )?${MESES_RE}${SUFIJO_ANIO}(?![\\p{L}\\d])`, 'u'));
   if (m) {
     const mes = indiceMes(m[1]);
-    const anio = m[2] ? Number(m[2]) : anioMasReciente(mes, hoy);
+    const anio = anioDelSufijo(m.groups) ?? anioMasReciente(mes, hoy);
     return { periodo: periodoMes(anio, mes), resto: quitar(m[0]) };
   }
 

@@ -15,10 +15,10 @@ import { prisma } from '../config/database';
 import { config } from '../config/env';
 import { incomeInvoicesService } from '../services/income-invoices.service';
 import { facturasPorCobrar, resumenCobrosClientes } from '../services/cobrosClientes.service';
-import { clavesContador, contarMensaje, devolver, reservar, type Reserva } from '../services/carmen/presupuesto.service';
+import { clavesContador, contarMensaje, devolver, liquidar, reservar, type Reserva } from '../services/carmen/presupuesto.service';
 import { atender } from '../services/carmen/enrutador';
 import { construirContexto } from '../services/carmen/contexto';
-import { borrarSesion, mensajesDeSesion, purgarCaducadas } from '../services/carmen/sesiones';
+import { borrarSesion, listarSesiones, mensajesDeSesion, purgarCaducadas, purgarTodas } from '../services/carmen/sesiones';
 import { guardarAjustes, leerAjustes, topeEmpresaDia } from '../services/carmen/ajustes.service';
 import { fijarClienteIA } from '../services/carmen/llm';
 import { olvidarIndices } from '../services/carmen/terceros';
@@ -89,6 +89,41 @@ describe('tope concurrente', () => {
     }
   });
 
+  it('reservas y liquidaciones de la misma empresa a la vez: sin interbloqueos y con las cuentas exactas', async () => {
+    const dia = `2099-05-${String((SUF % 28) + 1).padStart(2, '0')}`;
+    const claves = clavesContador(EMPRESA, ANA.userId, dia);
+    await prisma.carmenContador.deleteMany({ where: { clave: { in: Object.values(claves) } } });
+    cfg.carmen.topeMensualEur = 1;
+    cfg.carmen.topeUsuarioDia = 1000;
+    try {
+      const primeras: Reserva[] = [];
+      for (let i = 0; i < 10; i++) {
+        const r = await reservar(EMPRESA, ANA.userId, dia, 1000);
+        if (r.ok) primeras.push(r.reserva);
+      }
+      expect(primeras).toHaveLength(10);
+      // A la vez: 10 liquidaciones (0,001 $ cada una) y 10 reservas nuevas de la misma empresa.
+      const todo = await Promise.allSettled([
+        ...primeras.map((r) => liquidar(r, 0.001)),
+        ...Array.from({ length: 10 }, () => reservar(EMPRESA, ANA.userId, dia, 1000)),
+      ]);
+      expect(todo.filter((t) => t.status === 'rejected')).toEqual([]);
+      const nuevas = todo.slice(10).map((t) => (t as PromiseFulfilledResult<Awaited<ReturnType<typeof reservar>>>).value);
+      expect(nuevas.every((r) => r.ok)).toBe(true);
+      const global = await prisma.carmenContador.findUniqueOrThrow({ where: { clave: claves.global } });
+      // 10 × 0,001 liquidado + 10 × 0,006 reservado.
+      expect(Number(global.costeUsd)).toBeCloseTo(0.07, 6);
+      expect(global.consultasIA).toBe(20);
+      const empresaMes = await prisma.carmenContador.findUniqueOrThrow({ where: { clave: claves.empresaMes } });
+      expect(Number(empresaMes.costeUsd)).toBeCloseTo(0.07, 6);
+      for (const r of nuevas) if (r.ok) await devolver(r.reserva);
+      expect(Number((await prisma.carmenContador.findUniqueOrThrow({ where: { clave: claves.global } })).costeUsd)).toBeCloseTo(0.01, 6);
+    } finally {
+      cfg.carmen.topeMensualEur = original.topeMensualEur;
+      cfg.carmen.topeUsuarioDia = original.topeUsuarioDia;
+    }
+  });
+
   it('el tope diario de la empresa (100 o el suyo, si es menor) también corta', async () => {
     const dia = '2099-02-01';
     const claves = clavesContador(OTRA, BEA.userId, dia);
@@ -150,6 +185,29 @@ describe('conversaciones', () => {
     expect(await prisma.chatSession.findUnique({ where: { id: vieja.id } })).toBeNull();
     expect(await prisma.chatSession.findUnique({ where: { id: nueva.id } })).not.toBeNull();
     expect(await prisma.chatMessage.count({ where: { sessionId: nueva.id } })).toBe(1);
+  });
+});
+
+describe('caducidad de las conversaciones', () => {
+  it('lo de más de 90 días no se lista ni se lee aunque siga en la BD, y la purga diaria lo borra en todas las empresas', async () => {
+    const ctx = construirContexto(BEA, OTRA, HOY);
+    const hace = (dias: number) => new Date(Date.now() - dias * 86_400_000);
+    const vieja = await prisma.chatSession.create({ data: { companyId: OTRA, userId: BEA.userId, titulo: 'de hace 100 días', updatedAt: hace(100) } });
+    await prisma.chatMessage.create({ data: { sessionId: vieja.id, companyId: OTRA, userId: BEA.userId, role: 'assistant', content: 'Saldo 1.000,00 €', origen: 'datos', createdAt: hace(100) } });
+    const reciente = await prisma.chatSession.create({ data: { companyId: OTRA, userId: BEA.userId, titulo: 'de esta semana' } });
+
+    const lista = await listarSesiones(ctx, 1, 90);
+    expect(lista.sesiones.map((x) => x.id)).toContain(reciente.id);
+    expect(lista.sesiones.map((x) => x.id)).not.toContain(vieja.id);
+    await expect(mensajesDeSesion(ctx, vieja.id, 90)).rejects.toMatchObject({ statusCode: 404 });
+    await expect(atender(ctx, { message: 'hola', sessionId: vieja.id })).rejects.toMatchObject({ statusCode: 404 });
+    // Sigue en la BD hasta la purga...
+    expect(await prisma.chatSession.findUnique({ where: { id: vieja.id } })).not.toBeNull();
+    // ...que no depende de que alguien de la empresa vuelva a preguntar.
+    await purgarTodas();
+    expect(await prisma.chatSession.findUnique({ where: { id: vieja.id } })).toBeNull();
+    expect(await prisma.chatMessage.count({ where: { sessionId: vieja.id } })).toBe(0);
+    expect(await prisma.chatSession.findUnique({ where: { id: reciente.id } })).not.toBeNull();
   });
 });
 

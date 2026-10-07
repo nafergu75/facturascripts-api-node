@@ -9,9 +9,16 @@
  * Puntuación de un candidato: la mayor entre Jaro-Winkler, Dice de trigramas y
  * el extra por prefijos («const perez» → CONSTRUCCIONES PÉREZ); un NIF exacto
  * vale 1.
- *  - ≥ 0,88 y con 0,08 de margen sobre el segundo: se usa.
+ *  - ≥ 0,88 y con 0,08 de margen sobre el segundo: se usa. Pero si la
+ *    pregunta solo trae parte del nombre y esa parte está entera en el nombre
+ *    de otro del mismo papel («Martínez» en «Talleres Martínez» y en «Martínez
+ *    Hermanos»), se pregunta: el margen no basta para elegir.
  *  - 0,60-0,88, o empate: se pregunta con botones.
  *  - < 0,60: no se encuentra.
+ *
+ * Los bancos se reconocen por su nombre («saldo del Sabadell») aunque sea una
+ * palabra del vocabulario, siempre que la pregunta hable de bancos (saldo,
+ * cuenta, movimientos...).
  */
 import { prisma } from '../../config/database';
 import { plano } from '../../utils/texto';
@@ -171,11 +178,11 @@ export function puntuar(consulta: string[], nombre: string[]): number {
  * son vacías ni del dominio («cuanto me debe construcciones perez» →
  * ['construcciones perez']).
  */
-export function trozosCandidatos(textoBase: string): string[][] {
+export function trozosCandidatos(textoBase: string, permitidas?: ReadonlySet<string>): string[][] {
   const trozos: string[][] = [];
   let actual: string[] = [];
   for (const p of textoBase.split(' ')) {
-    const util = p.length >= 2 && /[a-zñ]/.test(p) && !PALABRAS_VACIAS.has(p) && !esPalabraDelDominio(p);
+    const util = !!permitidas?.has(p) || (p.length >= 2 && /[a-zñ]/.test(p) && !PALABRAS_VACIAS.has(p) && !esPalabraDelDominio(p));
     if (util) actual.push(p);
     else if (actual.length) {
       trozos.push(actual);
@@ -185,6 +192,9 @@ export function trozosCandidatos(textoBase: string): string[][] {
   if (actual.length) trozos.push(actual);
   return trozos;
 }
+
+/** La pregunta habla del banco: solo entonces «sabadell» o «rural» pueden ser el nombre de una cuenta. */
+export const PISTA_BANCO = /\b(banco|bancos|bancaria|bancarias|cuenta|cuentas|saldo|saldos|movimiento|movimientos|cargo|cargos|extracto|extractos|dinero|liquidez|tengo en|hay en|transferencia\w*|recibo\w*|entrad\w*|salid\w*|ingres\w*|apuntes?)\b/;
 
 /** Busca el mejor tercero para la pregunta en un índice dado (puro). */
 export function buscarEnIndice(textoBase: string, indice: Tercero[], roles?: RolTercero[]): ResultadoTercero | null {
@@ -197,9 +207,14 @@ export function buscarEnIndice(textoBase: string, indice: Tercero[], roles?: Rol
     const porNif = candidatosIndice.filter((t) => t.nif === nif);
     if (porNif.length === 1) return { tipo: 'unico', tercero: porNif[0], puntuacion: 1, trozo: nif };
     if (porNif.length > 1) return { tipo: 'dudas', candidatos: porNif.map((tercero) => ({ tercero, puntuacion: 1 })), trozo: nif };
+    // Un NIF que no es de nadie: se busca por el resto de la pregunta y, si no, «no encuentro a B99999999».
+    const sinNif = buscarEnIndice(textoBase.replace(RE_NIF, ' ').replace(/\s+/g, ' ').trim(), candidatosIndice);
+    return sinNif && sinNif.tipo !== 'ninguno' ? sinNif : { tipo: 'ninguno', trozo: nif, parecidos: [] };
   }
 
-  const trozos = trozosCandidatos(textoBase);
+  // Nombres de banco (palabras del vocabulario como «sabadell»), si la pregunta habla del banco.
+  const tokensBanco = PISTA_BANCO.test(textoBase) ? new Set(candidatosIndice.filter((t) => t.rol === 'banco').flatMap((t) => t.tokens)) : undefined;
+  const trozos = trozosCandidatos(textoBase, tokensBanco);
   if (!trozos.length) return null;
 
   let mejorTrozo = '';
@@ -233,6 +248,14 @@ export function buscarEnIndice(textoBase: string, indice: Tercero[], roles?: Rol
   const [primero, segundo] = puntuados;
   const margen = primero.puntuacion - (segundo?.puntuacion ?? 0);
   if (primero.puntuacion >= UMBRAL_USAR && margen >= MARGEN_USAR) {
+    // Solo una parte del nombre, y esa parte está entera en otro del mismo papel: se pregunta.
+    const palabras = mejorTrozo.split(' ');
+    const enNombre = palabras.filter((p) => primero.tercero.tokens.includes(p));
+    const cubreNombre = primero.tercero.tokens.every((tok) => palabras.includes(tok));
+    if (enNombre.length && !cubreNombre) {
+      const comparten = puntuados.filter((c) => c.tercero.rol === primero.tercero.rol && enNombre.every((p) => c.tercero.tokens.includes(p)));
+      if (comparten.length > 1) return { tipo: 'dudas', candidatos: comparten.slice(0, 3), trozo: mejorTrozo };
+    }
     return { tipo: 'unico', tercero: primero.tercero, puntuacion: primero.puntuacion, trozo: mejorTrozo };
   }
   if (primero.puntuacion >= UMBRAL_DUDA) {
@@ -276,7 +299,7 @@ const REFRESCO_MIN_MS = 60_000;
 
 /** Busca un tercero en la pregunta; si no lo encuentra, refresca el índice (una vez por minuto como mucho). */
 export async function buscarTercero(companyId: string, textoBase: string, roles?: RolTercero[]): Promise<ResultadoTercero | null> {
-  if (!trozosCandidatos(textoBase).length && !RE_NIF.test(textoBase)) return null;
+  if (!trozosCandidatos(textoBase).length && !RE_NIF.test(textoBase) && !PISTA_BANCO.test(textoBase)) return null;
   const r = buscarEnIndice(textoBase, await indiceTerceros(companyId), roles);
   if (r && r.tipo !== 'ninguno') return r;
   const enCache = cache.get(companyId);

@@ -10,9 +10,16 @@
  *    terceros) y la fecha de hoy.
  * Nada de resultados de servicios ni respuestas de datos del historial.
  *
- * Antes se reserva el tope (presupuesto.service), después se liquida con
- * `usage` y, si la API falla, se devuelve la reserva. La respuesta pasa por el
- * validador de cifras: si trae una cifra sin respaldo, se descarta.
+ * Antes se reserva el tope (presupuesto.service) y después se liquida con
+ * `usage`. Si la API contesta con un error (4xx/5xx), no lo cobra: se devuelve
+ * la reserva, y ante una sobrecarga (429, 5xx, 529) se reintenta una vez con la
+ * misma reserva. Si la llamada se corta o se agota el tiempo, Anthropic puede
+ * haberla procesado y cobrado: la reserva se queda como gasto (el peor caso),
+ * la pregunta cuenta en los topes del día y no se reintenta. El SDK no
+ * reintenta por su cuenta (maxRetries 0), así que ningún intento queda sin
+ * contar. La respuesta pasa por el validador de cifras: si trae una cifra sin
+ * respaldo, se descarta; si se cortó en los 500 tokens, se deja hasta la
+ * última frase completa con un aviso.
  */
 import Anthropic from '@anthropic-ai/sdk';
 import { config } from '../../config/env';
@@ -25,8 +32,12 @@ import { fechaES } from './plantillas';
 import type { FichaFAQ } from './faq/faq.data';
 
 export const ETIQUETA_IA = 'Respuesta orientativa generada por IA. No ha visto los datos de tu empresa.';
+export const AVISO_RECORTADA = 'La respuesta se ha acortado. Para más detalle, consúltalo con tu asesor.';
 const TIMEOUT_MS = 15_000;
 const TEMPERATURA = 0.2;
+/** Errores HTTP de sobrecarga que se reintentan una vez (Anthropic no los cobra). */
+const REINTENTABLES = new Set([429, 500, 502, 503, 504, 529]);
+const ESPERA_REINTENTO_MS = 800;
 
 /** Turno anterior que puede ir a la IA (solo de fichas o de la propia IA). */
 export interface TurnoPrevio {
@@ -72,7 +83,8 @@ let cliente: ClienteIA | null = null;
 
 function clienteIA(): ClienteIA {
   if (!cliente) {
-    cliente = new Anthropic({ apiKey: config.anthropicApiKey, timeout: TIMEOUT_MS, maxRetries: 1 });
+    // Sin reintentos del SDK: el reintento lo hace preguntarIA, solo cuando la API no ha cobrado.
+    cliente = new Anthropic({ apiKey: config.anthropicApiKey, timeout: TIMEOUT_MS, maxRetries: 0 });
   }
   return cliente;
 }
@@ -139,28 +151,51 @@ export async function preguntarIA(p: PeticionIA): Promise<ResultadoIA> {
   const reserva: Reserva = r.reserva;
   const { system, messages, fichasUsadas } = construirMensajes(p);
   const inicio = Date.now();
-  let respuesta: Anthropic.Message;
-  try {
-    respuesta = await clienteIA().messages.create({
+  const llamar = () =>
+    clienteIA().messages.create({
       model: config.carmen.modelo,
       max_tokens: config.carmen.maxTokensSalida,
       temperature: TEMPERATURA,
       system,
       messages,
     });
+  let respuesta: Anthropic.Message;
+  try {
+    try {
+      respuesta = await llamar();
+    } catch (e) {
+      // Sobrecarga con respuesta de la API: no se ha cobrado; un reintento con la misma reserva.
+      if (!(e instanceof Anthropic.APIError) || e.status === undefined || !REINTENTABLES.has(e.status)) throw e;
+      await new Promise((res) => setTimeout(res, ESPERA_REINTENTO_MS));
+      respuesta = await llamar();
+    }
   } catch (e) {
-    await devolver(reserva);
-    const motivo =
-      e instanceof Anthropic.APIError
-        ? `api_${e.status ?? 'sin_estado'}${e instanceof Anthropic.APIConnectionTimeoutError ? '_timeout' : ''}`
-        : 'error_desconocido';
+    const conRespuesta = e instanceof Anthropic.APIError && e.status !== undefined;
+    let motivo: string;
+    if (conRespuesta) {
+      // La API ha contestado con un error: no lo cobra, se devuelve la reserva.
+      motivo = `api_${(e as InstanceType<typeof Anthropic.APIError>).status}`;
+      await devolver(reserva);
+    } else {
+      // Tiempo agotado o conexión cortada: puede haberse procesado y cobrado. La
+      // reserva se queda como gasto y la pregunta cuenta en los topes del día.
+      motivo = e instanceof Anthropic.APIConnectionTimeoutError ? 'tiempo_agotado' : e instanceof Anthropic.APIConnectionError ? 'conexion' : 'error_desconocido';
+    }
     logger.error(`carmen: la llamada a la IA ha fallado (${motivo})`);
-    return { tipo: 'error', auditoria: { ...auditoriaBase(p, reserva.usd), estado: 'error', motivo, duracionMs: Date.now() - inicio } };
+    return {
+      tipo: 'error',
+      auditoria: { ...auditoriaBase(p, reserva.usd), estado: 'error', motivo, costeUsd: conRespuesta ? 0 : reserva.usd, duracionMs: Date.now() - inicio },
+    };
   }
 
   const uso = respuesta.usage as UsoTokens;
   const coste = costeUsd(config.carmen.modelo, uso);
-  await liquidar(reserva, coste);
+  try {
+    await liquidar(reserva, coste);
+  } catch {
+    // La respuesta ya está pagada: se entrega igual. La reserva (el peor caso) se queda como gasto.
+    logger.error('carmen: no se ha podido liquidar el coste de la IA; se queda la reserva');
+  }
   const auditoria: AuditoriaIA = {
     ...auditoriaBase(p, reserva.usd),
     tokensEntrada: uso.input_tokens,
@@ -172,7 +207,7 @@ export async function preguntarIA(p: PeticionIA): Promise<ResultadoIA> {
     duracionMs: Date.now() - inicio,
   };
 
-  const texto = respuesta.content
+  let texto = respuesta.content
     .filter((b): b is Anthropic.TextBlock => b.type === 'text')
     .map((b) => b.text)
     .join('\n')
@@ -180,9 +215,24 @@ export async function preguntarIA(p: PeticionIA): Promise<ResultadoIA> {
   if (!texto || respuesta.stop_reason === 'refusal') {
     return { tipo: 'descartada', auditoria: { ...auditoria, estado: 'descartada', motivo: texto ? 'rechazo' : 'sin_texto' } };
   }
-  const validacion = validarCifras(texto, [`Hoy es ${fechaES(p.hoy)}.`, p.pregunta, ...fichasUsadas.map((f) => `${f.pregunta}\n${f.respuesta}`)]);
+  let recortada = false;
+  if (respuesta.stop_reason === 'max_tokens') {
+    // Cortada en los 500 tokens: hasta la última frase completa y con aviso; si no queda nada útil, se descarta.
+    const completa = hastaUltimaFrase(texto);
+    if (!completa) return { tipo: 'descartada', auditoria: { ...auditoria, estado: 'descartada', motivo: 'truncada' } };
+    texto = completa;
+    recortada = true;
+  }
+  const validacion = validarCifras(texto, [p.pregunta, ...fichasUsadas.map((f) => `${f.pregunta}\n${f.respuesta}`)], { fechas: [p.hoy] });
   if (!validacion.ok) {
     return { tipo: 'descartada', auditoria: { ...auditoria, estado: 'descartada', motivo: `cifras_sin_respaldo:${validacion.sinRespaldo.length}` } };
   }
-  return { tipo: 'ok', texto, auditoria };
+  return { tipo: 'ok', texto: recortada ? `${texto}\n\n${AVISO_RECORTADA}` : texto, auditoria: recortada ? { ...auditoria, motivo: 'recortada' } : auditoria };
+}
+
+/** Texto hasta la última frase completa (acabada en «.», «!», «?» o «…»), o null si queda muy poco. */
+export function hastaUltimaFrase(texto: string): string | null {
+  const m = texto.match(/^[\s\S]*[.!?…](?=\s|$)/);
+  const r = m?.[0].trim() ?? '';
+  return r.length >= 40 ? r : null;
 }
