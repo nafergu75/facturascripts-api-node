@@ -27,7 +27,7 @@ import {
 import { perfilDesdeConfig, perfilEmpresa, type PerfilEmpresa } from './perfilEmpresa.service';
 import { marcarTransaccion, mensajeSinTipo, resolverTipoCambio, type TipoResuelto } from './tiposCambio.service';
 import { resolverFiscalidad } from './fiscalidad-venta.service';
-import { hoyEspana } from '../utils/fechas';
+import { hoyEspana, vencimientoPorDefecto } from '../utils/fechas';
 import { leerPais } from './clientes.service';
 
 /**
@@ -107,7 +107,7 @@ export interface CrearFacturaIngresoDTO {
    */
   numero?: number;
   fechaEmision?: string; // YYYY-MM-DD, defecto: hoy
-  fechaVencimiento?: string; // YYYY-MM-DD, defecto: fechaEmision + 15 días
+  fechaVencimiento?: string; // YYYY-MM-DD, defecto: fechaEmision + 30 días (DIAS_VENCIMIENTO_POR_DEFECTO)
   /** Fecha de la operacion (devengo) si es distinta de la de emision: fija el tipo de cambio. */
   fechaOperacion?: string | null;
   lineas: CrearLineaIngresoDTO[];
@@ -861,7 +861,7 @@ async function crear(dto: CrearFacturaIngresoDTO, opciones: { origen?: OrigenFac
   comprobarMonedaLineas(dto.lineas, moneda, false);
 
   const fechaEmision = validarFecha(dto.fechaEmision ?? hoyISO(), 'fecha de emisión');
-  const fechaVencimiento = validarFecha(dto.fechaVencimiento ?? sumarDias(fechaEmision, 15), 'fecha de vencimiento');
+  const fechaVencimiento = validarFecha(dto.fechaVencimiento ?? vencimientoPorDefecto(fechaEmision), 'fecha de vencimiento');
   if (fechaVencimiento < fechaEmision) throw badRequest('El vencimiento no puede ser anterior a la fecha de emisión.');
   const fechaOperacion = validarFechaOperacion(dto.fechaOperacion, fechaEmision);
   // Una factura emitida (o registrada desde el lector) lleva asiento en su fecha:

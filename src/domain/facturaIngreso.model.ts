@@ -40,7 +40,7 @@ export interface CrearFacturaIngresoDTO {
   /** Serie (codigo, ej. 'A'); si falta se usa la serie por defecto de FACTURA. */
   serie?: string;
   fechaEmision?: string; // yyyy-mm-dd (hoy por defecto)
-  fechaVencimiento?: string; // yyyy-mm-dd (emision + 15 dias por defecto)
+  fechaVencimiento?: string; // yyyy-mm-dd (emision + 30 dias por defecto)
   lineas: LineaIngresoDTO[];
   observaciones?: string;
   plantillaId?: string;

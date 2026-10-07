@@ -1,5 +1,6 @@
 import { prisma } from '../config/database';
 import { badRequest, notFound } from '../utils/http-errors';
+import { vencimientoPorDefecto } from '../utils/fechas';
 
 /**
  * DTOs para creación y manipulación de facturas de gasto
@@ -242,14 +243,8 @@ export const expenseInvoicesService = {
 
     // 3) Resolver fechas
     const fechaEmision = (dto.fechaEmision ?? new Date().toISOString().slice(0, 10)).slice(0, 10);
-    const fechaVencimiento = (
-      dto.fechaVencimiento ??
-      (() => {
-        const d = new Date(fechaEmision);
-        d.setDate(d.getDate() + 30);
-        return d.toISOString().slice(0, 10);
-      })()
-    ).slice(0, 10);
+    // Mismo plazo por defecto que las facturas de venta (en UTC: sin saltos de dia).
+    const fechaVencimiento = (dto.fechaVencimiento ?? vencimientoPorDefecto(fechaEmision)).slice(0, 10);
 
     // 4) Calcular totales
     const { baseTotal, ivaTotal, retencionTotal, totalFactura, lineasConTotales } = calcularTotales(lineas);
