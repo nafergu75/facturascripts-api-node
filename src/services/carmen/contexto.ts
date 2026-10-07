@@ -9,11 +9,14 @@ import { hoyEspana } from '../../utils/fechas';
 import type { CarmenCtx } from './tipos';
 
 /**
- * Grupo de permiso de las respuestas con datos de nóminas (gastos de personal).
- * En main no hay permiso propio: vale `puedeNominas` (admin o contable). Al
- * fusionar la rama de nóminas pasará a ser 'nominas:read'.
+ * Permiso de las respuestas con datos de nóminas (gastos de personal, cuentas
+ * 64x, 465 y 476): el mismo 'nominas:read' que exigen las rutas de /nominas y
+ * /empleados (admin y contable; el admin global también).
  */
-export const PERMISO_NOMINAS = 'nominas';
+export const PERMISO_NOMINAS = 'nominas:read';
+
+/** Grupo con que se guardaban esas respuestas antes de existir 'nominas:read'. */
+export const PERMISO_NOMINAS_ANTIGUO = 'nominas';
 
 export function construirContexto(user: AuthUser, companyId: string, hoy: string = hoyEspana()): CarmenCtx {
   const permisos = permisosEnEmpresa(user, companyId);
@@ -26,8 +29,8 @@ export function construirContexto(user: AuthUser, companyId: string, hoy: string
     permisos: new Set(permisos),
     esAdminGlobal,
     esAdminEmpresa,
-    // En main no hay permiso propio de nóminas: admin global, o admin o contable en la empresa.
-    puedeNominas: esAdminGlobal || roles.includes('admin') || roles.includes('contable'),
+    // Misma regla que authorize('nominas:read') en las rutas de nóminas.
+    puedeNominas: cubrePermisos(permisos, [PERMISO_NOMINAS], esAdminGlobal),
     hoy,
   };
 }

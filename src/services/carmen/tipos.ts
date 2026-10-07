@@ -120,7 +120,7 @@ export interface CarmenCtx {
   esAdminGlobal: boolean;
   /** Admin de la empresa (rol admin) o admin global. */
   esAdminEmpresa: boolean;
-  /** Puede ver sueldos y Seguridad Social (cuentas 64x, 465, 476). */
+  /** Tiene 'nominas:read' en la empresa: puede ver sueldos y Seguridad Social (cuentas 64x, 465, 476). */
   puedeNominas: boolean;
   /** Hoy en hora peninsular, AAAA-MM-DD. */
   hoy: string;

@@ -272,7 +272,12 @@ describe('matriz de permisos', () => {
     expect(contable.tabla?.filas.map((f) => f.celdas[0])).toContain('6. Gastos de personal');
     expect(contable.descargas?.map((d) => d.formato)).toEqual(['pdf', 'xlsx']);
     // Con los gastos de personal, el historial pide también el acceso a nóminas.
-    expect(contable.permisoRequerido).toBe('contabilidad:read;nominas');
+    expect(contable.permisoRequerido).toBe('contabilidad:read;nominas:read');
+    // Las guardadas antes de existir 'nominas:read' (grupo 'nominas') se tratan igual.
+    expect(conservaPermiso(construirContexto(ROLES.contable, 'E1', HOY), 'contabilidad:read;nominas')).toBe(true);
+    expect(conservaPermiso(construirContexto(ROLES.tesoreria, 'E1', HOY), 'contabilidad:read;nominas')).toBe(false);
+    expect(construirContexto(ROLES['admin global'], 'E1', HOY).puedeNominas).toBe(true);
+    expect(construirContexto(ROLES.ventas, 'E1', HOY).puedeNominas).toBe(false);
     expect(lectura.permisoRequerido).toBe('contabilidad:read');
     expect(conservaPermiso(construirContexto(ROLES.contable, 'E1', HOY), contable.permisoRequerido!)).toBe(true);
     // Si pasa a tesorería o solo lectura (siguen con contabilidad:read, pero sin nóminas), se oculta.

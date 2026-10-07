@@ -13,7 +13,7 @@
 import { Prisma } from '@prisma/client';
 import { prisma } from '../../config/database';
 import { notFound } from '../../utils/http-errors';
-import { PERMISO_NOMINAS, tiene } from './contexto';
+import { PERMISO_NOMINAS, PERMISO_NOMINAS_ANTIGUO, tiene } from './contexto';
 import { CONSERVAR_DIAS_DEFECTO, CONSERVAR_DIAS_MAX, CONSERVAR_DIAS_MIN } from './ajustes.service';
 import type { CarmenCtx, ContextoSesion, CuerpoRespuesta } from './tipos';
 import type { TurnoPrevio } from './llm';
@@ -157,8 +157,9 @@ export async function listarSesiones(ctx: Pick<CarmenCtx, 'companyId' | 'userId'
 
 /**
  * ¿Sigue teniendo el usuario el permiso con que se calculó? Formato: grupos con
- * ';' (hacen falta todos) de alternativas con '|'. El grupo 'nominas' es el
- * acceso a nóminas de la empresa (puedeNominas).
+ * ';' (hacen falta todos) de alternativas con '|'. Las respuestas con gastos de
+ * personal llevan 'nominas:read'; las guardadas antes con el grupo 'nominas'
+ * valen igual que 'nominas:read'.
  */
 export function conservaPermiso(
   ctx: Pick<CarmenCtx, 'permisos'> & Partial<Pick<CarmenCtx, 'puedeNominas' | 'esAdminGlobal'>>,
@@ -166,10 +167,11 @@ export function conservaPermiso(
 ): boolean {
   if (!permisoRequerido) return true;
   return permisoRequerido.split(';').every((grupo) => {
-    const alternativas = grupo.split('|').filter(Boolean);
-    if (alternativas.includes(PERMISO_NOMINAS) && ctx.puedeNominas === true) return true;
-    const permisos = alternativas.filter((a) => a !== PERMISO_NOMINAS);
-    return permisos.length > 0 && tiene(ctx, ...permisos);
+    const alternativas = grupo
+      .split('|')
+      .filter(Boolean)
+      .map((a) => (a === PERMISO_NOMINAS_ANTIGUO ? PERMISO_NOMINAS : a));
+    return alternativas.length > 0 && tiene(ctx, ...alternativas);
   });
 }
 
