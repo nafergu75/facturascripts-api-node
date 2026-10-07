@@ -205,7 +205,7 @@ export const FICHAS: FichaFAQ[] = [
     pregunta: '¿Por qué no puedo ver o hacer algo en la app?',
     variantes: ['no tengo permiso', 'me sale que falta permiso', 'no veo tesoreria', 'quien me da acceso', 'roles de usuario', 'como doy permisos a un empleado'],
     respuesta:
-      'Cada usuario tiene un rol en cada empresa: administrador, contable, tesorería, ventas o solo lectura. El rol decide qué pantallas ves y qué puedes cambiar, y Carmen sigue las mismas reglas. Si te falta acceso a algo, pídeselo al administrador de tu empresa.',
+      'Cada usuario tiene un rol en cada empresa: administrador, contable, ventas o solo lectura. El rol decide qué pantallas ves y qué puedes cambiar, y Carmen sigue las mismas reglas. Si te falta acceso a algo, pídeselo al administrador de tu empresa.',
     fuente: APP('/dashboard', 'Resumen'),
     ...VERIFICADA,
     etiquetas: ['permiso', 'permisos', 'rol', 'roles', 'acceso', 'usuario'],
