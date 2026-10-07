@@ -9,8 +9,7 @@
 
 import { Request, Response } from 'express';
 import { asyncHandler } from '../utils/async-handler';
-import { badRequest } from '../utils/http-errors';
-import { sendOk } from '../utils/response';
+import { badRequest, notImplemented } from '../utils/http-errors';
 import { prisma } from '../config/database';
 import { AVISO_NO_FACTURA, gastosExtractorService, GastoExtraido } from '../services/gastos-extractor.service';
 
@@ -79,7 +78,8 @@ export const gastosExtractorController = {
   }),
 
   /**
-   * POST /confirmar — confirma un gasto extraído y lo guarda (crea asiento contable).
+   * POST /confirmar — de momento NO registra nada: responde 501 (ver al final).
+   * Las nominas y los seguros sociales con trabajadores siguen dando 400 (van a Nominas).
    * Body esperado:
    * {
    *   numeroFactura, proveedor, nifProveedor, fecha,
@@ -87,22 +87,9 @@ export const gastosExtractorController = {
    *   cuentaContableBase (opcional, si quiere override)
    * }
    */
-  confirmar: asyncHandler(async (req: Request, res: Response) => {
+  confirmar: asyncHandler(async (req: Request, _res: Response) => {
     const companyId = req.companyId as string;
-    const userId = (req as Request & { user?: { id?: string } }).user?.id;
-
-    const {
-      numeroFactura,
-      proveedor,
-      nifProveedor,
-      fecha,
-      conceptoGasto,
-      base,
-      iva,
-      total,
-      cuentaContableBase,
-      tipoDocumento,
-    } = (req.body ?? {}) as Record<string, unknown>;
+    const { cuentaContableBase, tipoDocumento } = (req.body ?? {}) as Record<string, unknown>;
 
     // Las nominas y los seguros sociales de una empresa que lleva sus nominas en la
     // app no son facturas de gasto: van a Nominas (antes se guardaban como facturas
@@ -116,36 +103,9 @@ export const gastosExtractorController = {
       throw badRequest('Las cuentas 640, 641 y 642 son de nóminas: con trabajadores dados de alta, se registran en Nóminas, no como facturas de gasto.');
     }
 
-    // Validaciones básicas
-    if (!numeroFactura || typeof numeroFactura !== 'string') {
-      throw badRequest('numeroFactura es requerido.');
-    }
-    if (!proveedor || typeof proveedor !== 'string') {
-      throw badRequest('proveedor es requerido.');
-    }
-    if (typeof base !== 'number' || typeof iva !== 'number' || typeof total !== 'number') {
-      throw badRequest('base, iva, total deben ser números.');
-    }
-    if (!fecha || typeof fecha !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(fecha)) {
-      throw badRequest('fecha debe tener formato YYYY-MM-DD.');
-    }
-
-    // Aquí iría la lógica de crear un asiento contable.
-    // Por ahora, retornamos un objeto confirmado simulado.
-    const resultado = {
-      ok: true,
-      gastoId: `gasto-${Date.now()}`,
-      numeroFactura,
-      proveedor,
-      fecha,
-      base,
-      iva,
-      total,
-      cuentaContableBase,
-      estado: 'CONFIRMADO',
-      creadoEn: new Date().toISOString(),
-    };
-
-    sendOk(res, resultado);
+    // Antes devolvia un gasto "confirmado" inventado (gastoId falso) sin guardar
+    // nada, y la pantalla decia «Gasto registrado». Hasta que se conecte con el
+    // alta real de facturas de gasto, no se finge: 501 y no se crea nada.
+    throw notImplemented('El registro desde el lector de gastos aún no está disponible: da de alta la factura en Compras');
   }),
 };

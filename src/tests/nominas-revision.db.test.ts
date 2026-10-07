@@ -337,8 +337,9 @@ describe('auditoria, PDF borrados, atrasos y lector de gastos', () => {
 
   it('lector de gastos: el recibo de la SS se registra en una empresa sin trabajadores; con trabajadores, va a Nominas', async () => {
     const recibo = { tipoDocumento: 'seguros_sociales', numeroFactura: 'RLC-03', proveedor: 'TGSS', fecha: '2026-03-31', base: 320, iva: 0, total: 320, cuentaContableBase: '642000' };
+    // Sin trabajadores no lo frena Nominas; el registro desde el lector aun no existe (501, no un alta fingida).
     const sin = await request(app(R5)).post('/gastos-extractor/confirmar').send(recibo);
-    expect(sin.status).toBe(200);
+    expect(sin.status).toBe(501);
     const con = await request(app(R4)).post('/gastos-extractor/confirmar').send(recibo);
     expect(con.status).toBe(400);
     expect(con.body.message).toMatch(/Seguridad Social/);

@@ -3,7 +3,7 @@
  * Montadas bajo /companies/:companyId/gastos-extractor (ver routes/index.ts).
  *
  *  POST /extraer-ia     extraer datos de un PDF/imagen de comprobante de gasto
- *  POST /confirmar      confirmar y guardar el gasto (crea asiento contable)
+ *  POST /confirmar      501: el registro desde el lector aun no esta disponible (alta en Compras)
  */
 
 import { Router } from 'express';
