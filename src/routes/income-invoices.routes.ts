@@ -26,6 +26,14 @@ router.get('/', incomeInvoicesController.listar);
 router.get('/resumen/periodo', incomeInvoicesController.resumenPeriodo);
 
 /**
+ * Cobros de clientes para el panel: pendiente de cobro (todas las facturas
+ * emitidas, de cualquier año) y vencido, cobrado en el año y las proximas
+ * facturas a cobrar. Va antes de '/:id' para que "stats" no se tome por un id.
+ * GET /stats/cobros?anio=2026
+ */
+router.get('/stats/cobros', authorize('ventas:read', 'contabilidad:read'), incomeInvoicesController.estadisticasCobros);
+
+/**
  * Obtener factura por ID.
  * GET /api/invoices/income/:id
  */
