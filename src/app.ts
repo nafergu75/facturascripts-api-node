@@ -1,4 +1,4 @@
-import express, { Express } from 'express';
+import express, { Express, RequestHandler } from 'express';
 import cors from 'cors';
 import routes from './routes';
 import docsRouter from './routes/docs';
@@ -9,6 +9,21 @@ import { errorMiddleware, notFoundHandler } from './middleware/error.middleware'
 import { rateLimit } from './middleware/rate-limit.middleware';
 import { securityHeaders } from './middleware/security-headers.middleware';
 import { requestLoggerMiddleware } from './middleware/request-logger.middleware';
+import { badRequest, HttpError } from './utils/http-errors';
+import { topeMensualAgotadoEnCache } from './services/carmen/presupuesto.service';
+import { chatAssistantController } from './controllers/chatAssistant.controller';
+
+/** Rutas de Carmen (POST /companies/:companyId/chat-assistant...). */
+const RUTA_CARMEN = /^\/companies\/[^/]+\/chat-assistant(?:\/|$)/;
+
+const parserCarmen = express.json({ limit: '16kb' });
+const jsonCarmen: RequestHandler = (req, res, next) =>
+  parserCarmen(req, res, (err?: unknown) => {
+    if (!err) return next();
+    const tipo = (err as { type?: string }).type;
+    if (tipo === 'entity.too.large') return next(new HttpError(413, 'El mensaje es demasiado largo.'));
+    return next(badRequest('El cuerpo de la peticion no es un JSON valido.'));
+  });
 
 /** Crea y configura la instancia de Express. */
 export function createApp(): Express {
@@ -35,6 +50,9 @@ export function createApp(): Express {
   );
 
   app.use(rateLimit({ ventanaMs: 60_000, max: 300 })); // OWASP API4: limita consumo
+  // Carmen: cuerpos de 16 KB como mucho. Va antes del parser general, que ya no
+  // vuelve a leer un cuerpo leido (body-parser marca req._body).
+  app.use(RUTA_CARMEN, jsonCarmen);
   // 20mb: el lector de facturas envia archivos (hasta 15MB) como JSON en base64
   // (~33% mas grande que el binario original).
   app.use(express.json({ limit: '20mb' }));
@@ -60,6 +78,8 @@ export function createApp(): Express {
         ENCRYPTION_KEY: !!process.env.ENCRYPTION_KEY,
         ANTHROPIC_API_KEY: !!process.env.ANTHROPIC_API_KEY,
       },
+      // Sin importes. topeAgotado es lo ultimo que ha visto esta instancia (null si aun nada).
+      carmen: { llmActivo: config.carmen.llmActivo && !!config.anthropicApiKey, topeAgotado: topeMensualAgotadoEnCache() },
     });
   });
 
@@ -72,6 +92,9 @@ export function createApp(): Express {
 
   // Documentación interactiva (OpenAPI spec y módulos)
   app.use('/api', docsRouter);
+
+  // Tareas programadas (Vercel Cron, ver vercel.json). Se protegen con CRON_SECRET.
+  app.get('/cron/carmen-purga', chatAssistantController.cronPurga);
 
   // Rutas de la API
   app.use('/', routes);

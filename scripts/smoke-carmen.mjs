@@ -1,44 +1,36 @@
 /**
- * Smoke test e2e de Carmen (T4) contra un despliegue real (Vercel) o local.
+ * Smoke test de Carmen contra un despliegue (Vercel) o un servidor local.
  *
- * Verifica de un golpe:
- *   - T2 (RAG en serverless): la respuesta trae `sources` (el indice se cargo /
- *     reconstruyo en memoria; si llegaran 0 fuentes, el RAG arranco vacio).
- *   - T3 (LLM real): detecta si Carmen responde con Claude o en modo degradado
- *     (sin ANTHROPIC_API_KEY), mirando el centinela del fallback local.
+ * Comprueba:
+ *   - /health responde y dice si la IA de Carmen está encendida (sin importes);
+ *   - una pregunta de datos se responde con los datos de la app (origen 'datos'),
+ *     o con el aviso de permisos si el usuario no los tiene, sin pasar por la IA;
+ *   - una pregunta frecuente se responde con su ficha y su fuente (origen 'faq');
+ *   - una pregunta que no entiende devuelve botones (origen 'aclaracion');
+ *   - /estado dice si la IA está disponible y por qué no.
  *
- * Uso:
- *   node scripts/smoke-carmen.mjs https://conta-api.vercel.app
- *   CONTA_API_URL=https://... CARMEN_EMAIL=demo@empresa.com CARMEN_PASS=demo1234 \
- *     node scripts/smoke-carmen.mjs
+ * Uso (las credenciales SIEMPRE por variables de entorno, nunca en el código):
+ *   CARMEN_EMAIL=... CARMEN_PASS=... node scripts/smoke-carmen.mjs https://tu-api.vercel.app
  *
- * No requiere dependencias (fetch global de Node 18+). Exit 0 = OK, 1 = fallo.
+ * Sin dependencias (fetch de Node 18+). Exit 0 = OK, 1 = fallo.
  */
 
 const BASE = (process.argv[2] || process.env.CONTA_API_URL || '').replace(/\/+$/, '');
-const EMAIL = process.env.CARMEN_EMAIL || 'demo@empresa.com';
-const PASS = process.env.CARMEN_PASS || 'demo1234';
-const PREGUNTA = process.env.CARMEN_PREGUNTA || '¿Cuándo se declara el IVA y dónde veo mis libros de IVA en la app?';
+const EMAIL = process.env.CARMEN_EMAIL;
+const PASS = process.env.CARMEN_PASS;
 
-// Centinela del modo degradado (assistant-engine.buildFallbackResponse).
-const SENTINELA_SIN_KEY = 'Carmen aún no tiene a Claude configurado';
-const SENTINELA_ERROR_LLM = 'No he podido conectar con el motor de IA';
-
-function abort(msg) {
-  console.error(`\n❌ ${msg}`);
+function abortar(msg) {
+  console.error(`\nFALLO: ${msg}`);
   process.exit(1);
 }
 
-async function callJson(method, path, { token, body } = {}) {
+async function llamar(method, path, { token, body } = {}) {
   const res = await fetch(`${BASE}${path}`, {
     method,
-    headers: {
-      'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
+    headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
     body: body ? JSON.stringify(body) : undefined,
   });
-  let json;
+  let json = null;
   try {
     json = await res.json();
   } catch {
@@ -48,63 +40,49 @@ async function callJson(method, path, { token, body } = {}) {
 }
 
 async function main() {
-  if (!BASE) {
-    abort('Falta la URL base. Uso: node scripts/smoke-carmen.mjs https://tu-deploy.vercel.app');
-  }
-  console.log(`▶ Smoke Carmen contra ${BASE}`);
+  if (!BASE) abortar('Falta la URL base. Uso: node scripts/smoke-carmen.mjs https://tu-api.vercel.app');
+  if (!EMAIL || !PASS) abortar('Faltan CARMEN_EMAIL y CARMEN_PASS en las variables de entorno.');
+  console.log(`Smoke de Carmen contra ${BASE}`);
 
-  // 0) Health (sanity check del deploy)
-  const health = await callJson('GET', '/health');
-  console.log(`  /health -> ${health.status}`);
-  if (health.status !== 200) abort(`/health no responde 200 (status ${health.status}). ¿URL/deploy correctos?`);
+  const health = await llamar('GET', '/health');
+  if (health.status !== 200) abortar(`/health devuelve ${health.status}.`);
+  console.log(`  /health OK; carmen: ${JSON.stringify(health.json?.carmen ?? null)}`);
 
-  // 1) Login
-  const login = await callJson('POST', '/auth/login', { body: { email: EMAIL, password: PASS } });
-  if (login.status !== 200 || !login.json?.data?.token) {
-    abort(`Login fallo (status ${login.status}): ${JSON.stringify(login.json)}`);
-  }
+  const login = await llamar('POST', '/auth/login', { body: { email: EMAIL, password: PASS } });
+  if (login.status !== 200 || !login.json?.data?.token) abortar(`login falla (${login.status}).`);
   const { token, empresas, empresaSeleccionada } = login.json.data;
   const companyId = empresaSeleccionada || empresas?.[0]?.companyId;
-  if (!companyId) abort('El usuario no tiene ninguna empresa asociada (empresas vacio).');
-  console.log(`  login OK -> companyId=${companyId}`);
+  if (!companyId) abortar('El usuario no tiene ninguna empresa.');
+  const ruta = `/companies/${companyId}/chat-assistant`;
 
-  // 2) Chat
-  const chat = await callJson('POST', `/companies/${companyId}/chat-assistant`, {
-    token,
-    body: { message: PREGUNTA, sessionId: `smoke-${Date.now()}`, currentPage: '/impuestos' },
-  });
-  if (chat.status !== 200 || !chat.json?.data) {
-    abort(`chat-assistant fallo (status ${chat.status}): ${JSON.stringify(chat.json)}`);
+  const casos = [
+    { nombre: 'pregunta de datos', message: '¿Cuánto dinero tengo en el banco?', origenes: ['datos', 'sistema'] },
+    { nombre: 'pregunta frecuente', message: '¿Cómo apruebo los asientos?', origenes: ['faq'], conFuente: true },
+    { nombre: 'pregunta no entendida', message: 'zxq wpl', origenes: ['aclaracion'], conBotones: true },
+  ];
+  let sessionId;
+  for (const c of casos) {
+    const r = await llamar('POST', ruta, { token, body: { message: c.message, ...(sessionId ? { sessionId } : {}), currentPage: '/dashboard' } });
+    if (r.status !== 200 || !r.json?.data) abortar(`${c.nombre}: estado ${r.status} ${JSON.stringify(r.json)}`);
+    const d = r.json.data;
+    sessionId = d.sessionId;
+    if (!c.origenes.includes(d.origen)) abortar(`${c.nombre}: origen ${d.origen}, se esperaba ${c.origenes.join(' o ')}.`);
+    if (d.origen === 'ia') abortar(`${c.nombre}: ha respondido la IA y no debía.`);
+    if (c.conFuente && !d.fuente?.url) abortar(`${c.nombre}: la ficha no trae fuente.`);
+    if (c.conBotones && !(d.botones?.length > 0)) abortar(`${c.nombre}: la aclaración no trae botones.`);
+    console.log(`  ${c.nombre}: OK (origen ${d.origen}${d.intencion ? `, ${d.intencion}` : ''})`);
   }
-  const { response, sources, suggestions, sessionId } = chat.json.data;
-  console.log(`  chat OK -> sessionId=${sessionId}, sources=${sources?.length ?? 0}, suggestions=${suggestions?.length ?? 0}`);
 
-  // 3) Diagnostico T2 (RAG)
-  const ragOk = Array.isArray(sources) && sources.length > 0;
-  console.log(`\n  ${ragOk ? '✅' : '⚠️ '} T2 RAG: ${ragOk ? `${sources.length} fuentes recuperadas` : 'SIN fuentes (indice vacio en prod)'}`);
-  if (ragOk) console.log(`     fuentes: ${sources.map((s) => s.source).join(', ')}`);
+  const estado = await llamar('GET', `${ruta}/estado`, { token });
+  if (estado.status !== 200) abortar(`/estado devuelve ${estado.status}.`);
+  console.log(`  /estado: iaDisponible=${estado.json.data.iaDisponible}${estado.json.data.motivo ? ` (${estado.json.data.motivo})` : ''}`);
 
-  // 4) Diagnostico T3 (LLM vs degradado)
-  // OJO orden: el fallback de error EMBEBE el texto de "sin key", asi que hay
-  // que comprobar el centinela de error ANTES que el de "sin key".
-  const errorLlm = response.includes(SENTINELA_ERROR_LLM);
-  const degradadoSinKey = !errorLlm && response.includes(SENTINELA_SIN_KEY);
-  let modo;
-  if (errorLlm) modo = 'KEY presente pero la llamada a Claude fallo (revisar key/cuota/acceso a Opus/logs)';
-  else if (degradadoSinKey) modo = 'DEGRADADO (sin ANTHROPIC_API_KEY) — falta T3';
-  else modo = 'LLM REAL (Claude respondio)';
-  console.log(`  ${degradadoSinKey || errorLlm ? '⚠️ ' : '✅'} T3 LLM: ${modo}`);
-
-  console.log('\n--- Respuesta de Carmen (primeros 400 chars) ---');
-  console.log(response.slice(0, 400) + (response.length > 400 ? '…' : ''));
-
-  // El smoke "pasa" si al menos el pipeline e2e responde con RAG. El modo LLM es
-  // informativo: en degradado el exit sigue siendo 0 (Carmen funciona), pero lo
-  // marcamos para que sepas que falta configurar la key.
-  if (!ragOk) abort('RAG sin fuentes: T2 no esta surtiendo efecto en este deploy.');
-  console.log('\n✅ Smoke e2e OK (pipeline login -> scope -> RAG -> respuesta).');
-  if (degradadoSinKey) console.log('ℹ️  Aun en modo degradado: completa T3 (ANTHROPIC_API_KEY en Vercel) y redeploy.');
-  if (errorLlm) console.log('ℹ️  La key esta puesta pero Claude rechaza la llamada: revisa que la key sea valida (no revocada), con credito/billing y acceso a Opus 4.8. Mira `vercel logs`.');
+  const historial = await llamar('GET', `${ruta}/${sessionId}/messages`, { token });
+  if (historial.status !== 200) abortar(`historial devuelve ${historial.status}.`);
+  const borrar = await llamar('DELETE', `${ruta}/${sessionId}`, { token });
+  if (borrar.status !== 200) abortar(`borrar la conversación devuelve ${borrar.status}.`);
+  console.log('  historial y borrado: OK');
+  console.log('\nSmoke de Carmen OK.');
 }
 
-main().catch((e) => abort(e?.stack || String(e)));
+main().catch((e) => abortar(e?.stack || String(e)));

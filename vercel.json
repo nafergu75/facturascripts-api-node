@@ -6,6 +6,12 @@
   "regions": [
     "fra1"
   ],
+  "crons": [
+    {
+      "path": "/cron/carmen-purga",
+      "schedule": "30 3 * * *"
+    }
+  ],
   "git": {
     "deploymentEnabled": {
       "**": false,

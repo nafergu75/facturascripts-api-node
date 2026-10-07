@@ -23,6 +23,7 @@ export interface FacturaVentaCobro {
   id: string;
   numeroCompleto: string | null;
   cliente: string;
+  customerId?: string;
   fechaEmision: string;
   fechaVencimiento: string;
   totalFactura: number;
@@ -36,6 +37,7 @@ export interface FacturaPorCobrar {
   id: string;
   numeroCompleto: string | null;
   cliente: string;
+  customerId?: string;
   fechaEmision: string;
   fechaVencimiento: string;
   total: number;
@@ -109,7 +111,7 @@ function sumarEn(mapa: Map<string, number>, id: string, centimos: number): void 
 export function resumirCobrosClientes(
   facturas: FacturaVentaCobro[],
   cobradoPorId: Map<string, number>,
-  opciones: { anio: number; hoy: string; cobradoEnElAnio: number; cobradoHastaHoy?: Map<string, number> },
+  opciones: { anio: number; hoy: string; cobradoEnElAnio: number; cobradoHastaHoy?: Map<string, number>; maxProximas?: number },
 ): ResumenCobrosClientes {
   const hastaHoy = opciones.cobradoHastaHoy ?? cobradoPorId;
   /** Pendiente propio en céntimos (sin contar rectificativas), con la regla de cobrosPagos. */
@@ -177,6 +179,7 @@ export function resumirCobrosClientes(
         id: f.id,
         numeroCompleto: f.numeroCompleto,
         cliente: f.cliente,
+        ...(f.customerId ? { customerId: f.customerId } : {}),
         fechaEmision: f.fechaEmision,
         fechaVencimiento: f.fechaVencimiento,
         total: aEuros(total),
@@ -205,7 +208,7 @@ export function resumirCobrosClientes(
         a.fechaEmision.localeCompare(b.fechaEmision) ||
         (a.numeroCompleto ?? '').localeCompare(b.numeroCompleto ?? '', 'es', { numeric: true }),
     )
-    .slice(0, MAX_PROXIMAS);
+    .slice(0, opciones.maxProximas ?? MAX_PROXIMAS);
 
   return {
     anio: opciones.anio,
@@ -220,33 +223,70 @@ export function resumirCobrosClientes(
   };
 }
 
-/** Resumen de cobros de clientes de la empresa para el año indicado, a fecha de `hoy`. */
-export async function resumenCobrosClientes(companyId: string, anio: number, hoy: string = hoyEspana()): Promise<ResumenCobrosClientes> {
-  const finAnio = `${anio}-12-31`;
-  const [filas, cobrado, cobradoHastaHoy, cobradoEnElAnio] = await Promise.all([
-    prisma.incomeInvoice.findMany({
-      // estado DRAFT: borradores de antes de estadoDocumento, que quedaron como FINAL.
-      where: { companyId, estadoDocumento: 'FINAL', estado: { not: 'DRAFT' } },
-      select: {
-        id: true,
-        numeroCompleto: true,
-        fechaEmision: true,
-        fechaVencimiento: true,
-        totalFactura: true,
-        estado: true,
-        facturaOriginalId: true,
-        tipoRectificativa: true,
-        customer: { select: { nombreFiscal: true } },
-      },
-    }),
-    cobradoPorFactura(companyId, 'INGRESO'),
-    cobradoPorFactura(companyId, 'INGRESO', hoy),
-    totalCobradoEntre(companyId, 'INGRESO', `${anio}-01-01`, finAnio < hoy ? finAnio : hoy),
-  ]);
-  const facturas: FacturaVentaCobro[] = filas.map(({ customer, ...f }) => ({
+/** Facturas de venta emitidas de la empresa (sin borradores ni proformas), con su cliente. */
+async function facturasEmitidas(companyId: string): Promise<FacturaVentaCobro[]> {
+  const filas = await prisma.incomeInvoice.findMany({
+    // estado DRAFT: borradores de antes de estadoDocumento, que quedaron como FINAL.
+    where: { companyId, estadoDocumento: 'FINAL', estado: { not: 'DRAFT' } },
+    select: {
+      id: true,
+      numeroCompleto: true,
+      fechaEmision: true,
+      fechaVencimiento: true,
+      totalFactura: true,
+      estado: true,
+      facturaOriginalId: true,
+      tipoRectificativa: true,
+      customerId: true,
+      customer: { select: { nombreFiscal: true } },
+    },
+  });
+  return filas.map(({ customer, ...f }) => ({
     ...f,
     totalFactura: Number(f.totalFactura),
     cliente: customer.nombreFiscal,
   }));
-  return resumirCobrosClientes(facturas, cobrado, { anio, hoy, cobradoEnElAnio, cobradoHastaHoy });
+}
+
+/** Resumen de cobros de clientes de la empresa para el año indicado, a fecha de `hoy`. */
+export async function resumenCobrosClientes(companyId: string, anio: number, hoy: string = hoyEspana()): Promise<ResumenCobrosClientes> {
+  const finAnio = `${anio}-12-31`;
+  const [facturas, cobrado, cobradoHastaHoy, cobradoEnElAnio] = await Promise.all([
+    facturasEmitidas(companyId),
+    cobradoPorFactura(companyId, 'INGRESO'),
+    cobradoPorFactura(companyId, 'INGRESO', hoy),
+    totalCobradoEntre(companyId, 'INGRESO', `${anio}-01-01`, finAnio < hoy ? finAnio : hoy),
+  ]);
+  // El resumen del panel no lleva el id del cliente (su respuesta no cambia).
+  const sinCliente = facturas.map(({ customerId: _customerId, ...f }) => f);
+  return resumirCobrosClientes(sinCliente, cobrado, { anio, hoy, cobradoEnElAnio, cobradoHastaHoy });
+}
+
+export interface FacturasPorCobrar {
+  hoy: string;
+  /** Todas las facturas con algo pendiente, de cualquier año, primero las que vencen (o vencieron) antes. */
+  facturas: FacturaPorCobrar[];
+  pendientes: Cifra;
+  vencidas: Cifra;
+}
+
+/**
+ * Lista completa de facturas de venta pendientes de cobro a fecha de `hoy`, con
+ * las mismas reglas que el resumen del panel (rectificativas, cobros con fecha
+ * futura, cobradas a mano). Solo lectura. La usa Carmen.
+ */
+export async function facturasPorCobrar(companyId: string, hoy: string = hoyEspana()): Promise<FacturasPorCobrar> {
+  const [facturas, cobrado, cobradoHastaHoy] = await Promise.all([
+    facturasEmitidas(companyId),
+    cobradoPorFactura(companyId, 'INGRESO'),
+    cobradoPorFactura(companyId, 'INGRESO', hoy),
+  ]);
+  const r = resumirCobrosClientes(facturas, cobrado, {
+    anio: Number(hoy.slice(0, 4)),
+    hoy,
+    cobradoEnElAnio: 0,
+    cobradoHastaHoy,
+    maxProximas: Number.POSITIVE_INFINITY,
+  });
+  return { hoy, facturas: r.proximas, pendientes: r.pendientes, vencidas: r.vencidas };
 }

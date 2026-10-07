@@ -626,3 +626,59 @@ export async function buscarModelo(companyId: string, ejercicio: number, codigo:
   return todos.find((m) => m.codigo === codigo && m.periodo === periodo);
 }
 void randomUUID; // (reservado para ids en almacenes futuros)
+
+// --- Solo lectura (Carmen) ---
+
+/** Modelo del calendario con su estado, aunque la fila todavía no exista en la BD. */
+export interface ModeloCalendarioLectura extends ModeloImpuestoResumen {
+  /** false: la fila no existe todavía (nadie ha abierto ese ejercicio en la pantalla). */
+  guardado: boolean;
+}
+
+/**
+ * Calendario fiscal del ejercicio en curso y del anterior SIN escribir nada:
+ * a diferencia de listarModelosImpuesto, no crea las filas que faltan
+ * (asegurarCalendario); una fila que no existe cuenta como 'vigente' sin
+ * borrador, que es como nacería al abrir la pantalla. Lo usa Carmen (INT-30).
+ */
+export async function calendarioFiscalSoloLectura(companyId: string, hoy: string): Promise<ModeloCalendarioLectura[]> {
+  const anio = Number(hoy.slice(0, 4));
+  const ejercicios = [anio - 1, anio];
+  let filas: FilaModelo[];
+  if (dbOk()) {
+    const rows = await prisma.modeloImpuesto.findMany({
+      where: { companyId, ejercicio: { in: ejercicios } },
+      select: { id: true, companyId: true, codigo: true, ejercicio: true, periodo: true, estado: true, casillas: true, origen: true },
+    });
+    filas = rows.map((f) => ({ ...f, casillas: (f.casillas as Casillas | null) ?? null, datos: null }));
+  } else {
+    filas = [...memoria.values()].filter((f) => f.companyId === companyId && ejercicios.includes(f.ejercicio));
+  }
+  const out: ModeloCalendarioLectura[] = [];
+  for (const ejercicio of ejercicios) {
+    for (const { codigo, periodo } of calendarioEjercicio(ejercicio)) {
+      const fila = filas.find((f) => f.codigo === codigo && f.ejercicio === ejercicio && f.periodo === periodo);
+      const base: FilaModelo = fila ?? { id: '', companyId, codigo, ejercicio, periodo, estado: 'vigente', casillas: null, datos: null, origen: null };
+      out.push({ ...aResumen(base, hoy), guardado: !!fila });
+    }
+  }
+  return out.sort((a, b) => a.fechaVencimiento.localeCompare(b.fechaVencimiento) || a.codigo.localeCompare(b.codigo));
+}
+
+/** Un modelo guardado (estado y casillas) sin crearlo si no existe. Solo lee. */
+export async function modeloGuardadoSoloLectura(
+  companyId: string,
+  codigo: string,
+  ejercicio: number,
+  periodo: string,
+): Promise<{ id: string; estado: string; casillas: Casillas | null; origen: string | null } | null> {
+  if (dbOk()) {
+    const f = await prisma.modeloImpuesto.findUnique({
+      where: { companyId_codigo_ejercicio_periodo: { companyId, codigo, ejercicio, periodo } },
+      select: { id: true, estado: true, casillas: true, origen: true },
+    });
+    return f ? { ...f, casillas: (f.casillas as Casillas | null) ?? null } : null;
+  }
+  const f = memoria.get(clave(companyId, codigo, ejercicio, periodo));
+  return f ? { id: f.id, estado: f.estado, casillas: f.casillas, origen: f.origen } : null;
+}

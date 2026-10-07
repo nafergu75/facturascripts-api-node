@@ -457,9 +457,12 @@ async function calcularTerceros(companyId: string, tipo: TipoTercero, periodo: P
  * emitidas (o de gasto) hasta `hasta`, menos sus cobros (o pagos) activos con
  * fecha hasta `hasta`. Sirve para cruzarlo con el saldo contable. Una factura
  * de venta marcada como cobrada a mano, sin cobros registrados, cuenta como
- * cobrada entera.
+ * cobrada entera. Los borradores no cuentan: ni las ventas sin emitir ni las
+ * facturas de gasto en DRAFT (mismo criterio que los modelos fiscales).
+ *
+ * Exportada para Carmen (INT-06, lo que se debe a proveedores). Solo lee.
  */
-interface FacturaPendiente {
+export interface FacturaPendiente {
   id: string;
   terceroId: string;
   numeroCompleto: string | null;
@@ -470,7 +473,7 @@ interface FacturaPendiente {
   estado: string;
 }
 
-async function pendientesSegunFacturas(companyId: string, tipo: TipoTercero, hasta: string): Promise<FacturaPendiente[]> {
+export async function pendientesSegunFacturas(companyId: string, tipo: TipoTercero, hasta: string): Promise<FacturaPendiente[]> {
   const tipoDoc = tipo === 'clientes' ? 'INGRESO' : 'GASTO';
   const cobrado = await cobradoPorFactura(companyId, tipoDoc, hasta);
   const facturas =
@@ -484,7 +487,7 @@ async function pendientesSegunFacturas(companyId: string, tipo: TipoTercero, has
         ).map(({ customerId, ...f }) => ({ ...f, terceroId: customerId }))
       : (
           await prisma.expenseInvoice.findMany({
-            where: { companyId, fechaEmision: { lte: hasta } },
+            where: { companyId, estado: { not: 'DRAFT' }, fechaEmision: { lte: hasta } },
             select: { id: true, supplierId: true, numeroCompleto: true, fechaEmision: true, fechaVencimiento: true, totalFactura: true, estadoPago: true },
             orderBy: { fechaEmision: 'asc' },
           })
