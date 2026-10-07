@@ -338,7 +338,7 @@ describe('contabilizarFacturaGasto', () => {
     });
   });
 
-  describe('SERVICIO_PROFESIONAL con retención 15% → 623/472/4751(HABER)/400', () => {
+  describe('SERVICIO_PROFESIONAL con retención 15% → 623/472/4751(HABER)/410', () => {
     let invoiceId: string;
     let journalEntryId: string;
 
@@ -378,9 +378,10 @@ describe('contabilizarFacturaGasto', () => {
       expect(pc['4751'].debe).toBe(0);
     });
 
-    it('400 HABER 1060 (proveedor cobra el neto)', async () => {
+    it('410 HABER 1060 (el profesional es acreedor, no proveedor, y cobra el neto)', async () => {
       const pc = porCuenta(await getLineas(journalEntryId));
-      expect(pc['400'].haber).toBeCloseTo(1060);
+      expect(pc['410'].haber).toBeCloseTo(1060);
+      expect(pc['400']).toBeUndefined();
     });
 
     it('DEBE=1210 HABER=1210', async () => {
