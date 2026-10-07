@@ -5,6 +5,8 @@ export interface CuentaBancariaEmpresa {
   bancoNombre?: string;
   subcuentaCodigo: string; // referencia a subcuenta 572xxx
   activa: boolean;
+  /** Moneda de la cuenta (ISO 4217): la de la contabilidad de la empresa. */
+  moneda?: string;
 }
 
 export interface MovimientoBancarioImportado {
