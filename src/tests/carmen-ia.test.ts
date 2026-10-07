@@ -11,7 +11,7 @@ const mockPrisma = {
 jest.mock('../config/database', () => ({ prisma: mockPrisma }));
 
 import Anthropic from '@anthropic-ai/sdk';
-import { config } from '../config/env';
+import { config, leerCarmen } from '../config/env';
 import { costeUsd, reservaUsd } from '../services/carmen/precios';
 import { clavesContador, devolver, liquidar, motivoSinIA, reservar } from '../services/carmen/presupuesto.service';
 import { AVISO_RECORTADA, construirMensajes, fijarClienteIA, hastaUltimaFrase, preguntarIA, type PeticionIA } from '../services/carmen/llm';
@@ -49,22 +49,53 @@ describe('precios y topes', () => {
     expect(config.carmen.llmActivo).toBe(false);
   });
 
-  it('CARMEN_MODELO solo admite Haiku 4.5: otro modelo (o una errata) no arranca', () => {
-    const antes = process.env.CARMEN_MODELO;
+  it('CARMEN_MODELO solo admite Haiku 4.5: otro modelo (o una errata) deja la IA apagada, sin tumbar la API', () => {
     const errores = jest.spyOn(console, 'error').mockImplementation(() => undefined);
     try {
       for (const modelo of ['claude-sonnet-4-5', 'claude-haiku-4-5-2025100', 'cualquiera']) {
-        process.env.CARMEN_MODELO = modelo;
-        expect(() => jest.isolateModules(() => require('../config/env'))).toThrow(/entorno/);
+        const { carmen } = leerCarmen({ CARMEN_LLM_ACTIVO: 'true', CARMEN_MODELO: modelo });
+        expect(carmen.llmActivo).toBe(false);
+        expect(carmen.modelo).toBe('claude-haiku-4-5-20251001');
       }
-      process.env.CARMEN_MODELO = 'claude-haiku-4-5';
+      const bueno = leerCarmen({ CARMEN_LLM_ACTIVO: 'true', CARMEN_MODELO: 'claude-haiku-4-5' }).carmen;
+      expect([bueno.llmActivo, bueno.modelo]).toEqual([true, 'claude-haiku-4-5']);
+    } finally {
+      errores.mockRestore();
+    }
+  });
+
+  it('una errata en CARMEN_* o CRON_SECRET no impide arrancar: modo seguro (IA apagada, cron sin configurar)', () => {
+    const errores = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    const antes = { ...process.env };
+    try {
+      Object.assign(process.env, {
+        CARMEN_LLM_ACTIVO: 'False',
+        CRON_SECRET: 'purga-carmen',
+        CARMEN_TOPE_MENSUAL_EUR: 'cinco',
+        CARMEN_TOPE_EMPRESA_DIA: '0',
+        CARMEN_MAX_TOKENS_SALIDA: '900',
+      });
       jest.isolateModules(() => {
         const { config: otra } = require('../config/env') as typeof import('../config/env');
-        expect(otra.carmen.modelo).toBe('claude-haiku-4-5');
+        expect(otra.carmen.llmActivo).toBe(false);
+        expect(otra.cronSecret).toBeUndefined();
+        expect([otra.carmen.topeMensualEur, otra.carmen.topeEmpresaDia, otra.carmen.maxTokensSalida]).toEqual([5, 100, 500]);
       });
+      // El interruptor: solo 'true' enciende (sin mirar mayúsculas ni espacios); cualquier otra cosa apaga.
+      for (const [valor, activo] of [['TRUE', true], [' true ', true], ['0', false], ['si', false], ['', false]] as const) {
+        expect(leerCarmen({ CARMEN_LLM_ACTIVO: valor }).carmen.llmActivo).toBe(activo);
+      }
+      // Un tope con un valor no válido apaga la IA aunque el interruptor diga 'true'.
+      expect(leerCarmen({ CARMEN_LLM_ACTIVO: 'true', CARMEN_TOPE_USUARIO_DIA: '-3' }).carmen.llmActivo).toBe(false);
+      // La coma decimal vale.
+      const coma = leerCarmen({ CARMEN_LLM_ACTIVO: 'true', CARMEN_TOPE_MENSUAL_EUR: '2,5' }).carmen;
+      expect([coma.llmActivo, coma.topeMensualEur]).toEqual([true, 2.5]);
+      // CRON_SECRET de 16 caracteres o más, tal cual.
+      expect(leerCarmen({ CRON_SECRET: 'a'.repeat(64) }).cronSecret).toBe('a'.repeat(64));
+      expect(leerCarmen({}).cronSecret).toBeUndefined();
     } finally {
-      if (antes === undefined) delete process.env.CARMEN_MODELO;
-      else process.env.CARMEN_MODELO = antes;
+      for (const k of Object.keys(process.env)) if (!(k in antes)) delete process.env[k];
+      Object.assign(process.env, antes);
       errores.mockRestore();
     }
   });

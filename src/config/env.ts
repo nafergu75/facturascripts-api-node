@@ -31,27 +31,8 @@ const envSchema = z.object({
   // app y sus fichas, sin IA.
   ANTHROPIC_API_KEY: z.string().optional(),
 
-  // --- Carmen (asistente) ---
-  // Interruptor general de la capa de IA. Apagada por defecto: aunque una empresa
-  // la active, no se llama a la API hasta que esto valga 'true'.
-  CARMEN_LLM_ACTIVO: z.enum(['true', 'false']).default('false'),
-  // Solo Haiku 4.5: los topes y la reserva por pregunta están pensados para su
-  // precio. Otro modelo (o una errata) hace fallar el arranque en lugar de
-  // cambiar el gasto sin avisar.
-  CARMEN_MODELO: z.enum(['claude-haiku-4-5-20251001', 'claude-haiku-4-5']).default('claude-haiku-4-5-20251001'),
-  // Tope de gasto de la IA en el mes, para todas las empresas juntas (euros, 1 $ = 1 €).
-  CARMEN_TOPE_MENSUAL_EUR: z.coerce.number().positive().default(5),
-  // Preguntas a la IA por dia: por empresa y por usuario.
-  CARMEN_TOPE_EMPRESA_DIA: z.coerce.number().int().positive().default(100),
-  CARMEN_TOPE_USUARIO_DIA: z.coerce.number().int().positive().default(15),
-  // Mensajes a Carmen por usuario y dia, de cualquier tipo (freno contra abusos).
-  CARMEN_MENSAJES_USUARIO_DIA: z.coerce.number().int().positive().default(300),
-  // Tokens de salida de cada respuesta de la IA (500 como maximo).
-  CARMEN_MAX_TOKENS_SALIDA: z.coerce.number().int().positive().max(500).default(500),
-
-  // Secreto con el que Vercel Cron llama a las tareas programadas (cabecera
-  // Authorization: Bearer ...). Sin él, las rutas /cron/* no hacen nada.
-  CRON_SECRET: z.string().min(16).optional(),
+  // Carmen y CRON_SECRET se leen aparte (leerCarmen): una errata en ellas no
+  // impide arrancar la API; deja la IA apagada o el cron sin configurar.
 
   // Origenes permitidos por CORS (lista separada por comas). En produccion es
   // OBLIGATORIO acotar a los dominios del frontend. Por defecto, los puertos de
@@ -68,6 +49,100 @@ if (!parsed.success) {
 }
 
 const env = parsed.data;
+
+// ---------------- Carmen y tareas programadas ----------------
+//
+// Van fuera de envSchema a proposito: si fallaran ahi, una errata en una opcion
+// de Carmen (que viene apagada) tumbaria la API entera, login incluido. Aqui un
+// valor no valido se avisa en el log y deja el modo seguro: la IA APAGADA (asi
+// tampoco cambia el gasto sin avisar) y, si es CRON_SECRET, el cron sin
+// configurar (responde 503).
+
+const MODELOS_CARMEN = ['claude-haiku-4-5-20251001', 'claude-haiku-4-5'] as const;
+type ModeloCarmen = (typeof MODELOS_CARMEN)[number];
+
+/** Admite la coma decimal ("2,5"). */
+const numeroCarmen = (opciones: { entero?: boolean; max?: number } = {}) =>
+  z.preprocess(
+    (v) => (typeof v === 'string' ? v.trim().replace(',', '.') : v),
+    (opciones.entero ? z.coerce.number().int() : z.coerce.number()).positive().max(opciones.max ?? Number.MAX_SAFE_INTEGER),
+  );
+
+const carmenSchema = z.object({
+  // Solo Haiku 4.5: los topes y la reserva por pregunta estan pensados para su precio.
+  CARMEN_MODELO: z.enum(MODELOS_CARMEN).default('claude-haiku-4-5-20251001'),
+  // Tope de gasto de la IA en el mes, para todas las empresas juntas (euros, 1 $ = 1 €).
+  CARMEN_TOPE_MENSUAL_EUR: numeroCarmen().default(5),
+  // Preguntas a la IA por dia: por empresa y por usuario.
+  CARMEN_TOPE_EMPRESA_DIA: numeroCarmen({ entero: true }).default(100),
+  CARMEN_TOPE_USUARIO_DIA: numeroCarmen({ entero: true }).default(15),
+  // Mensajes a Carmen por usuario y dia, de cualquier tipo (freno contra abusos).
+  CARMEN_MENSAJES_USUARIO_DIA: numeroCarmen({ entero: true }).default(300),
+  // Tokens de salida de cada respuesta de la IA (500 como maximo).
+  CARMEN_MAX_TOKENS_SALIDA: numeroCarmen({ entero: true, max: 500 }).default(500),
+});
+const CARMEN_POR_DEFECTO = carmenSchema.parse({});
+
+interface ConfigCarmen {
+  llmActivo: boolean;
+  modelo: ModeloCarmen;
+  topeMensualEur: number;
+  topeEmpresaDia: number;
+  topeUsuarioDia: number;
+  mensajesUsuarioDia: number;
+  maxTokensSalida: number;
+}
+
+/** Variables vacias = sin definir (en Vercel o en un .env se quedan a veces como ""). */
+function sinVacias(fuente: NodeJS.ProcessEnv): Record<string, string> {
+  const r: Record<string, string> = {};
+  for (const [k, v] of Object.entries(fuente)) if (v !== undefined && v.trim() !== '') r[k] = v;
+  return r;
+}
+
+export function leerCarmen(fuente: NodeJS.ProcessEnv = process.env): { carmen: ConfigCarmen; cronSecret: string | undefined } {
+  const vars = sinVacias(fuente);
+  /* eslint-disable no-console */
+  // Interruptor general de la IA: solo 'true' (sin mirar mayusculas ni espacios) la enciende.
+  const interruptor = (vars.CARMEN_LLM_ACTIVO ?? 'false').trim().toLowerCase();
+  let llmActivo = interruptor === 'true';
+  if (interruptor !== 'true' && interruptor !== 'false') {
+    console.error(`CARMEN_LLM_ACTIVO no vale 'true' ni 'false': la IA de Carmen queda apagada.`);
+  }
+
+  const leidas = carmenSchema.safeParse(vars);
+  let opciones = CARMEN_POR_DEFECTO;
+  if (leidas.success) {
+    opciones = leidas.data;
+  } else {
+    // Se usan los valores por defecto, pero la IA se apaga: nada de gasto con una configuracion dudosa.
+    console.error('Variables de Carmen invalidas (se usan las de por defecto y la IA queda apagada):', Object.keys(leidas.error.flatten().fieldErrors).join(', '));
+    llmActivo = false;
+  }
+
+  // Vercel Cron manda "Authorization: Bearer <CRON_SECRET>". Corto = sin configurar.
+  let cronSecret: string | undefined = vars.CRON_SECRET;
+  if (cronSecret !== undefined && cronSecret.length < 16) {
+    console.error('CRON_SECRET tiene menos de 16 caracteres: las tareas programadas quedan sin configurar (responden 503).');
+    cronSecret = undefined;
+  }
+  /* eslint-enable no-console */
+
+  return {
+    carmen: {
+      llmActivo,
+      modelo: opciones.CARMEN_MODELO,
+      topeMensualEur: opciones.CARMEN_TOPE_MENSUAL_EUR,
+      topeEmpresaDia: opciones.CARMEN_TOPE_EMPRESA_DIA,
+      topeUsuarioDia: opciones.CARMEN_TOPE_USUARIO_DIA,
+      mensajesUsuarioDia: opciones.CARMEN_MENSAJES_USUARIO_DIA,
+      maxTokensSalida: opciones.CARMEN_MAX_TOKENS_SALIDA,
+    },
+    cronSecret,
+  };
+}
+
+const carmen = leerCarmen();
 
 /**
  * Una clave de Anthropic real empieza por "sk-ant-" y tiene longitud considerable.
@@ -94,16 +169,8 @@ export const config = {
   fsApiUrl: env.FS_API_URL,
   fsApiKey: env.FS_API_KEY,
   anthropicApiKey: normalizarAnthropicKey(env.ANTHROPIC_API_KEY),
-  carmen: {
-    llmActivo: env.CARMEN_LLM_ACTIVO === 'true',
-    modelo: env.CARMEN_MODELO,
-    topeMensualEur: env.CARMEN_TOPE_MENSUAL_EUR,
-    topeEmpresaDia: env.CARMEN_TOPE_EMPRESA_DIA,
-    topeUsuarioDia: env.CARMEN_TOPE_USUARIO_DIA,
-    mensajesUsuarioDia: env.CARMEN_MENSAJES_USUARIO_DIA,
-    maxTokensSalida: env.CARMEN_MAX_TOKENS_SALIDA,
-  },
-  cronSecret: env.CRON_SECRET,
+  carmen: carmen.carmen,
+  cronSecret: carmen.cronSecret,
   corsOrigins: (env.CORS_ORIGIN ?? 'http://localhost:5173,http://localhost:4173,http://localhost:5174,http://localhost:4174,http://localhost:3000')
     .split(',')
     .map((o) => o.trim())
