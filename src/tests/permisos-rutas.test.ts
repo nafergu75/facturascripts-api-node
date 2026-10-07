@@ -119,7 +119,7 @@ describe('permisos que exigen las rutas', () => {
   });
 
   it('las lecturas de compras, gastos y proveedores piden compras:read o contabilidad:read', () => {
-    for (const fichero of ['expense-invoices.routes.ts', 'compras.routes.ts']) {
+    for (const fichero of ['expense-invoices.routes.ts', 'compras.routes.ts', 'proveedores.routes.ts']) {
       const codigo = readFileSync(join(DIR_RUTAS, fichero), 'utf-8');
       for (const m of codigo.matchAll(/\brouter\.get\(\s*'([^']*)'([\s\S]*?)\);/g)) {
         expect(`${fichero} GET ${m[1]}: ${m[2].includes("authorize('compras:read', 'contabilidad:read')")}`).toBe(`${fichero} GET ${m[1]}: true`);

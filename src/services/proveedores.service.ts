@@ -1,24 +1,36 @@
 /**
  * Proveedores — MIGRADO de FacturaScripts a Prisma (modelo `Supplier`), épico
  * FS→Prisma (ADR-002). Comparte la MISMA tabla `supplier` que las facturas de
- * gasto (expense-invoices). Mantiene los endpoints /companies/:companyId/proveedores
- * (el frontend Chakra no cambia). Espejo de clientes.service.
+ * gasto (expense-invoices). Mantiene los endpoints /companies/:companyId/proveedores.
+ *
+ * Alta y modificacion con los datos validados (datosProveedor): NIF español
+ * con su caracter de control, pais ISO-2, direccion completa, email y
+ * telefono que se pueden borrar. NIF repetido y borrar con facturas: 409.
+ * Cada alta, cambio y baja queda en el historial (SupplierAudit).
  */
+import { Prisma } from '@prisma/client';
 import { prisma } from '../config/database';
-import { CompanyScopedService, ID, Paginated } from '../domain/common.types';
+import { ID, Paginated } from '../domain/common.types';
 import { parsePagination } from '../utils/pagination';
-import { badRequest, notFound } from '../utils/http-errors';
-import { validarNifEspanol } from '../utils/nif';
+import { badRequest, conflict, notFound } from '../utils/http-errors';
+import { normalizarNif, validarNifEspanol } from '../utils/nif';
 import { esCodigoPais, problemaCodigoPostal } from '../utils/geografia';
 import { limpiarNif, normalizarPais, prefijoNifIvaUe } from '../domain/tipo-operacion.model';
+import { logCreate, logDelete, logUpdate } from './suppliers/supplierAudit.service';
 
+/** Proveedor tal como lo devuelve la API. */
 export interface Proveedor {
-  codproveedor?: string;
-  nombre?: string;
-  razonsocial?: string;
-  cifnif?: string;
-  email?: string;
-  [key: string]: unknown;
+  id: string;
+  nombreFiscal: string;
+  nifCif: string;
+  email: string;
+  telefono: string;
+  direccion: string;
+  provincia: string;
+  municipio: string;
+  cp: string;
+  pais: string;
+  activo: boolean;
 }
 
 /** Proveedor en formato ligero para selectores (espejo de ClienteResumen). */
@@ -28,6 +40,8 @@ export interface ProveedorResumen {
   nif: string;
   email: string;
   telefono: string;
+  pais: string;
+  activo: boolean;
 }
 
 type SupplierRow = {
@@ -36,96 +50,136 @@ type SupplierRow = {
   nifCif: string;
   email: string | null;
   telefono: string | null;
+  direccion: string | null;
+  provincia: string | null;
+  municipio: string | null;
+  cp: string | null;
+  pais: string;
   activo: boolean;
 };
 
-/** Supplier (Prisma) -> forma de respuesta del recurso proveedores. */
-function aProveedor(s: SupplierRow): Record<string, unknown> {
+/** Supplier (Prisma) -> forma de respuesta del recurso proveedores (todos los campos). */
+function aProveedor(s: SupplierRow): Proveedor {
   return {
     id: s.id,
     nombreFiscal: s.nombreFiscal,
     nifCif: s.nifCif,
     email: s.email ?? '',
     telefono: s.telefono ?? '',
+    direccion: s.direccion ?? '',
+    provincia: s.provincia ?? '',
+    municipio: s.municipio ?? '',
+    cp: s.cp ?? '',
+    pais: s.pais || 'ES',
     activo: s.activo,
   };
 }
 
-/** Lee nombre/nif/teléfono del payload aceptando alias FS y Prisma. */
-function leerDatos(data: Record<string, unknown>): { nombreFiscal?: string; nifCif?: string; email: string | null; telefono: string | null; direccion: string | null } {
-  const nombre = (data.nombreFiscal ?? data.nombre ?? data.razonsocial) as string | undefined;
-  const nif = (data.nifCif ?? data.cifnif ?? data.nif) as string | undefined;
-  const tel = (data.telefono ?? data.telefono1) as string | undefined;
-  return {
-    nombreFiscal: nombre !== undefined ? String(nombre) : undefined,
-    nifCif: nif !== undefined ? String(nif) : undefined,
-    email: data.email != null ? String(data.email) : null,
-    telefono: tel != null && tel !== '' ? String(tel) : null,
-    direccion: data.direccion != null ? String(data.direccion) : null,
-  };
+/** P2002 del indice (companyId, nifCif). */
+const nifRepetido = (e: unknown) =>
+  e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002' && String((e.meta as { target?: unknown } | undefined)?.target ?? '').includes('nifCif');
+
+async function errorNifRepetido(companyId: string, nif: string, excluir?: string) {
+  const ya = await prisma.supplier.findFirst({
+    where: { companyId, nifCif: nif, ...(excluir ? { id: { not: excluir } } : {}) },
+    select: { id: true, nombreFiscal: true },
+  });
+  return conflict(`Ya existe un proveedor con ese NIF: ${ya?.nombreFiscal ?? ''}.`.replace(': .', '.'), { campo: 'nifCif', proveedorId: ya?.id });
 }
 
-export const proveedoresService: CompanyScopedService<Proveedor> = {
-  async list(companyId: ID, params: Record<string, unknown> = {}): Promise<Paginated<Proveedor>> {
-    const { limit, offset } = parsePagination(params);
-    const where = { companyId: String(companyId) };
+async function buscarDeLaEmpresa(companyId: string, id: string): Promise<SupplierRow> {
+  const s = (await prisma.supplier.findFirst({ where: { id, companyId } })) as SupplierRow | null;
+  if (!s) throw notFound('Proveedor no encontrado.');
+  return s;
+}
+
+const CAMPOS_HISTORIAL = ['nombreFiscal', 'nifCif', 'pais', 'direccion', 'provincia', 'municipio', 'cp', 'email', 'telefono', 'activo'] as const;
+
+export const proveedoresService = {
+  /**
+   * Listado con busqueda en el servidor (q: nombre, NIF o email), filtro de
+   * activo y paginacion (page/limit, por defecto 50 y como mucho 200).
+   */
+  async list(companyId: ID, params: Record<string, unknown> = {}): Promise<Paginated<Proveedor> & { page: number }> {
+    const { limit, offset, page } = parsePagination(params);
+    const where: Prisma.SupplierWhereInput = { companyId: String(companyId) };
+    const q = typeof params.q === 'string' ? params.q.trim() : '';
+    if (q) where.OR = [{ nombreFiscal: { contains: q } }, { nifCif: { contains: q } }, { email: { contains: q } }];
+    if (params.activo === 'true' || params.activo === true) where.activo = true;
+    if (params.activo === 'false' || params.activo === false) where.activo = false;
     const [items, total] = await Promise.all([
-      prisma.supplier.findMany({ where, skip: offset, take: limit, orderBy: { createdAt: 'desc' } }),
+      prisma.supplier.findMany({ where, skip: offset, take: limit, orderBy: [{ nombreFiscal: 'asc' }, { id: 'asc' }] }),
       prisma.supplier.count({ where }),
     ]);
-    return { items: (items as SupplierRow[]).map(aProveedor) as unknown as Proveedor[], total, limit, offset };
+    return { items: (items as SupplierRow[]).map(aProveedor), total, limit, offset, page };
   },
 
   async getById(companyId: ID, id: ID): Promise<Proveedor> {
-    const s = (await prisma.supplier.findFirst({ where: { id: String(id), companyId: String(companyId) } })) as SupplierRow | null;
-    if (!s) throw notFound('Proveedor no encontrado.');
-    return aProveedor(s) as unknown as Proveedor;
+    return aProveedor(await buscarDeLaEmpresa(String(companyId), String(id)));
   },
 
-  async create(companyId: ID, data: Record<string, unknown>): Promise<Proveedor> {
-    const d = leerDatos(data);
-    if (!d.nombreFiscal || !d.nifCif) throw notFound('Se requiere nombre y NIF.');
-    const s = (await prisma.supplier.create({
-      data: {
-        companyId: String(companyId),
-        nombreFiscal: d.nombreFiscal,
-        nifCif: d.nifCif,
-        email: d.email,
-        telefono: d.telefono,
-        direccion: d.direccion,
-        pais: data.pais != null ? String(data.pais) : 'ES',
-      },
-    })) as SupplierRow;
-    return aProveedor(s) as unknown as Proveedor;
+  /** Proveedor de la empresa con ese NIF (normalizado), o 404. */
+  async porNif(companyId: ID, nif: string): Promise<Proveedor> {
+    const nifs = [...new Set([normalizarNif(nif), limpiarNif(nif)].filter(Boolean))];
+    const s = (await prisma.supplier.findFirst({ where: { companyId: String(companyId), nifCif: { in: nifs } } })) as SupplierRow | null;
+    if (!s) throw notFound('No hay ningún proveedor con ese NIF.');
+    return aProveedor(s);
   },
 
-  async update(companyId: ID, id: ID, data: Record<string, unknown>): Promise<Proveedor> {
-    const existe = await prisma.supplier.findFirst({ where: { id: String(id), companyId: String(companyId) } });
-    if (!existe) throw notFound('Proveedor no encontrado.');
-    const d = leerDatos(data);
-    const s = (await prisma.supplier.update({
-      where: { id: String(id) },
-      data: {
-        ...(d.nombreFiscal !== undefined ? { nombreFiscal: d.nombreFiscal } : {}),
-        ...(d.nifCif !== undefined ? { nifCif: d.nifCif } : {}),
-        ...(data.email !== undefined ? { email: d.email } : {}),
-        ...(data.telefono !== undefined || data.telefono1 !== undefined ? { telefono: d.telefono } : {}),
-      },
-    })) as SupplierRow;
-    return aProveedor(s) as unknown as Proveedor;
+  async create(companyId: ID, data: Record<string, unknown>, usuarioEmail?: string): Promise<Proveedor> {
+    const d = datosProveedor(data ?? {});
+    const ya = await prisma.supplier.findFirst({ where: { companyId: String(companyId), nifCif: d.nifCif! }, select: { id: true } });
+    if (ya) throw await errorNifRepetido(String(companyId), d.nifCif!);
+    let s: SupplierRow;
+    try {
+      s = (await prisma.supplier.create({
+        data: { companyId: String(companyId), ...d, nombreFiscal: d.nombreFiscal!, nifCif: d.nifCif!, pais: d.pais ?? 'ES' },
+      })) as SupplierRow;
+    } catch (e) {
+      if (nifRepetido(e)) throw await errorNifRepetido(String(companyId), d.nifCif!);
+      throw e;
+    }
+    await logCreate(s.id, usuarioEmail);
+    return aProveedor(s);
   },
 
-  async remove(companyId: ID, id: ID): Promise<void> {
-    const existe = await prisma.supplier.findFirst({ where: { id: String(id), companyId: String(companyId) } });
-    if (!existe) throw notFound('Proveedor no encontrado.');
-    await prisma.supplier.delete({ where: { id: String(id) } });
+  /** Modificacion parcial: solo cambian los campos que llegan. Un historial por campo cambiado. */
+  async update(companyId: ID, id: ID, data: Record<string, unknown>, usuarioEmail?: string): Promise<Proveedor> {
+    const existe = await buscarDeLaEmpresa(String(companyId), String(id));
+    const d = datosProveedor(data ?? {}, existe);
+    const cambios = CAMPOS_HISTORIAL.filter((k) => d[k] !== undefined && (existe[k] ?? null) !== (d[k] ?? null));
+    if (!cambios.length) return aProveedor(existe);
+    if (d.nifCif) {
+      const ya = await prisma.supplier.findFirst({ where: { companyId: String(companyId), nifCif: d.nifCif, id: { not: existe.id } }, select: { id: true } });
+      if (ya) throw await errorNifRepetido(String(companyId), d.nifCif, existe.id);
+    }
+    let s: SupplierRow;
+    try {
+      s = (await prisma.supplier.update({ where: { id: existe.id }, data: Object.fromEntries(cambios.map((k) => [k, d[k]])) })) as SupplierRow;
+    } catch (e) {
+      if (nifRepetido(e)) throw await errorNifRepetido(String(companyId), d.nifCif ?? '', existe.id);
+      throw e;
+    }
+    for (const k of cambios) await logUpdate(existe.id, k, existe[k], d[k], usuarioEmail);
+    return aProveedor(s);
+  },
+
+  /** Borra el proveedor si no tiene facturas; con facturas, 409 (se puede desactivar). */
+  async remove(companyId: ID, id: ID, usuarioEmail?: string): Promise<void> {
+    const existe = await buscarDeLaEmpresa(String(companyId), String(id));
+    const facturas = await prisma.expenseInvoice.count({ where: { companyId: String(companyId), supplierId: existe.id } });
+    if (facturas > 0) {
+      throw conflict(`No se puede borrar: tiene ${facturas} factura(s). Puedes desactivarlo para que no salga al registrar gastos.`, { facturas });
+    }
+    await prisma.supplier.delete({ where: { id: existe.id } });
+    await logDelete(existe.id, usuarioEmail, `Proveedor eliminado: ${existe.nombreFiscal} (${existe.nifCif})`);
   },
 };
 
 /** Busqueda por nombre/NIF/email sobre Prisma (espejo de buscarClientes). */
-export async function buscarProveedores(companyId: ID, query: string, limit = 20): Promise<ProveedorResumen[]> {
+export async function buscarProveedores(companyId: ID, query: string, limit = 20, soloActivos = false): Promise<ProveedorResumen[]> {
   const q = (query ?? '').trim();
-  const where: Record<string, unknown> = { companyId: String(companyId) };
+  const where: Prisma.SupplierWhereInput = { companyId: String(companyId), ...(soloActivos ? { activo: true } : {}) };
   if (q) {
     where.OR = [
       { nombreFiscal: { contains: q } },
@@ -134,7 +188,7 @@ export async function buscarProveedores(companyId: ID, query: string, limit = 20
     ];
   }
   const items = (await prisma.supplier.findMany({ where, take: limit, orderBy: { nombreFiscal: 'asc' } })) as SupplierRow[];
-  return items.map((s) => ({ id: s.id, nombre: s.nombreFiscal, nif: s.nifCif, email: s.email ?? '', telefono: s.telefono ?? '' }));
+  return items.map((s) => ({ id: s.id, nombre: s.nombreFiscal, nif: s.nifCif, email: s.email ?? '', telefono: s.telefono ?? '', pais: s.pais || 'ES', activo: s.activo }));
 }
 
 // ---------------------------------------------------------------------------
