@@ -3,6 +3,7 @@ import multer from 'multer';
 import { nominasController as c } from '../controllers/nominas.controller';
 import { nominasConexionesController as x } from '../controllers/nominasConexiones.controller';
 import { authorize } from '../middleware/authorize.middleware';
+import { soloEmpresaEspanolaEnEuros as espanola } from '../middleware/nominasEmpresa.middleware';
 import { badRequest } from '../utils/http-errors';
 
 /**
@@ -24,6 +25,10 @@ import { badRequest } from '../utils/http-errors';
  * Archivo: PDF de la gestoria por mes (POST/GET .../documentos), descarga y ZIP. Solo con nominas:read:
  *   el archivo general de facturas no los muestra.
  * Informes: GET /informes/coste?ejercicio&agrupar=mes|empleado&formato=xlsx.
+ *
+ * Solo empresas establecidas en Espana con la contabilidad en euros (`espanola`)
+ * pueden dar de alta, importar, contabilizar y pagar: 400 en otro caso. Leer,
+ * anular y borrar lo que ya exista sigue libre.
  */
 const router = Router({ mergeParams: true });
 
@@ -56,24 +61,24 @@ const subidaPdf: RequestHandler = (req, res, next) =>
   });
 
 router.get('/', authorize('nominas:read'), c.listar);
-router.post('/', authorize('nominas:write'), c.crear);
+router.post('/', authorize('nominas:write'), espanola, c.crear);
 
 router.get('/plantilla', authorize('nominas:read'), c.plantilla);
 router.get('/resumen', authorize('nominas:read'), c.resumen);
 router.post('/resumen', authorize('nominas:write'), c.resumenObsoleto);
 
-router.post('/importar/subidas', authorize('nominas:write'), trozo.single('trozo'), c.subirTrozo);
+router.post('/importar/subidas', authorize('nominas:write'), espanola, trozo.single('trozo'), c.subirTrozo);
 router.delete('/importar/subidas/:subidaId', authorize('nominas:write'), c.descartarSubida);
-router.post('/importar/vista-previa', authorize('nominas:write'), subida.single('archivo'), c.vistaPrevia);
-router.post('/importar', authorize('nominas:write'), subida.single('archivo'), c.importar);
+router.post('/importar/vista-previa', authorize('nominas:write'), espanola, subida.single('archivo'), c.vistaPrevia);
+router.post('/importar', authorize('nominas:write'), espanola, subida.single('archivo'), c.importar);
 
 router.get('/periodos/:ejercicio/:mes', authorize('nominas:read'), c.periodo);
 router.get('/periodos/:ejercicio/:mes/asiento-preview', authorize('nominas:read'), c.asientoPreview);
-router.post('/periodos/:ejercicio/:mes/contabilizar', authorize('nominas:write'), c.contabilizar);
+router.post('/periodos/:ejercicio/:mes/contabilizar', authorize('nominas:write'), espanola, c.contabilizar);
 router.post('/periodos/:ejercicio/:mes/anular', authorize('nominas:write'), c.anular);
 
 // Pago de los liquidos (465 de cada trabajador contra 572/570 o un cargo del extracto).
-router.post('/periodos/:ejercicio/:mes/pago', authorize('nominas:write'), x.pagar);
+router.post('/periodos/:ejercicio/:mes/pago', authorize('nominas:write'), espanola, x.pagar);
 router.post('/periodos/:ejercicio/:mes/pago/anular', authorize('nominas:write'), x.anularPago);
 
 // PDF de la gestoria (nominas, RLC, RNT) en el archivo privado.
@@ -87,8 +92,8 @@ router.delete('/documentos/:documentoId', authorize('nominas:write'), x.anularDo
 // Seguros sociales (RLC) y su pago (476 contra 572).
 router.get('/seguros-sociales', authorize('nominas:read'), x.listarSegurosSociales);
 router.get('/seguros-sociales/:ejercicio/:mes', authorize('nominas:read'), x.obtenerSegurosSociales);
-router.put('/seguros-sociales/:ejercicio/:mes', authorize('nominas:write'), x.guardarSegurosSociales);
-router.post('/seguros-sociales/:ejercicio/:mes/pago', authorize('nominas:write'), x.pagarSegurosSociales);
+router.put('/seguros-sociales/:ejercicio/:mes', authorize('nominas:write'), espanola, x.guardarSegurosSociales);
+router.post('/seguros-sociales/:ejercicio/:mes/pago', authorize('nominas:write'), espanola, x.pagarSegurosSociales);
 router.post('/seguros-sociales/:ejercicio/:mes/pago/anular', authorize('nominas:write'), x.anularPagoSegurosSociales);
 
 // Modelo 111 (misma fuente que Impuestos) y su pago; modelo 190 por perceptor.
@@ -105,7 +110,7 @@ router.get('/conciliacion/sugerencias', authorize('nominas:read'), x.sugerencias
 router.get('/conciliacion/cargos', authorize('nominas:read'), x.cargos);
 
 router.get('/:id', authorize('nominas:read'), c.obtener);
-router.put('/:id', authorize('nominas:write'), c.actualizar);
+router.put('/:id', authorize('nominas:write'), espanola, c.actualizar);
 router.delete('/:id', authorize('nominas:write'), c.borrar);
 
 export default router;

@@ -17,6 +17,10 @@ import { vencimiento111 } from '../services/nominas/informes';
 import { fechaCargoPorDefecto } from '../services/nominas/segurosSociales';
 import { cuentasNominasPorDefecto } from '../services/nominas/calculo';
 import nominasRoutes from '../routes/nominas.routes';
+import empleadosRoutes from '../routes/empleados.routes';
+import { prisma } from '../config/database';
+import { MENSAJE_NOMINAS_SOLO_ESPANA } from '../middleware/nominasEmpresa.middleware';
+import { MENSAJE_SIN_MODELOS } from '../services/impuestosCalculo.service';
 import { errorMiddleware } from '../middleware/error.middleware';
 
 const nif = (n: number) => `${String(n).padStart(8, '0')}${letraNif(n)}`;
@@ -332,9 +336,40 @@ describe('permisos de las rutas nuevas de nominas', () => {
       next();
     });
     a.use('/nominas', nominasRoutes);
+    a.use('/empleados', empleadosRoutes);
     a.use(errorMiddleware);
     return a;
   }
+
+  it('empresa de EE. UU. con la contabilidad en USD: 400 al dar de alta, importar, contabilizar o pagar, y sin 111 ni 190', async () => {
+    const bd = prisma as unknown as { legalConfig?: unknown };
+    bd.legalConfig = { findUnique: jest.fn(async () => ({ pais: 'US', monedaCuenta: 'USD' })) };
+    try {
+      const a = app('contable');
+      const escrituras: Array<['post' | 'put', string]> = [
+        ['post', '/nominas'],
+        ['post', '/nominas/importar'],
+        ['post', '/nominas/importar/vista-previa'],
+        ['post', '/nominas/periodos/2026/1/contabilizar'],
+        ['post', '/nominas/periodos/2026/1/pago'],
+        ['put', '/nominas/seguros-sociales/2026/1'],
+        ['post', '/nominas/seguros-sociales/2026/1/pago'],
+        ['put', '/nominas/n1'],
+        ['post', '/empleados'],
+        ['put', '/empleados/e1'],
+      ];
+      for (const [metodo, ruta] of escrituras) {
+        const r = await request(a)[metodo](ruta).send({});
+        expect(`${metodo} ${ruta} ${r.status} ${r.body.message}`).toBe(`${metodo} ${ruta} 400 ${MENSAJE_NOMINAS_SOLO_ESPANA}`);
+      }
+      for (const ruta of ['/nominas/retenciones/2026/1T', '/nominas/190/2025/perceptores', '/nominas/190/2025/fichero']) {
+        const r = await request(a).get(ruta);
+        expect(`${ruta} ${r.status} ${r.body.message}`).toBe(`${ruta} 400 ${MENSAJE_SIN_MODELOS}`);
+      }
+    } finally {
+      delete bd.legalConfig;
+    }
+  });
 
   it('solo-lectura, ventas y tesoreria: 403 en el 190, los PDF, la SS, el 111, el coste y la prevision', async () => {
     for (const rol of ['solo_lectura', 'ventas', 'tesoreria']) {
