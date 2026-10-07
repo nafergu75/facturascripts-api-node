@@ -15,6 +15,10 @@ export interface AuthUser {
   empresaSeleccionada?: string;
   /** Huella de la contrasena con la que se emitio el token (claim `pwd`). */
   huellaContrasena?: string;
+  /** Permisos efectivos por empresa, calculados en authMiddleware con permisosDeAcceso (BD). */
+  permisosPorEmpresa?: Record<string, string[]>;
+  /** true: contrasena provisional; solo puede usar /auth/me y /auth/cambiar-contrasena. */
+  debeCambiarContrasena?: boolean;
   /**
    * true cuando authMiddleware ya ha cambiado lo que decia el token por lo que
    * dice la BD (activo, empresas, roles y modo administrador actuales).

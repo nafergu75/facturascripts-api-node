@@ -12,7 +12,6 @@ import { autorizado } from '../services/rbac.service';
  */
 export function authorize(...permisosNecesarios: string[]): RequestHandler {
   if (permisosNecesarios.length === 0) throw new Error('authorize() necesita al menos un permiso.');
-  const permisoNecesario = permisosNecesarios.join(' o ');
   return (req, _res, next) => {
     if (!req.user) return next(unauthorized('Usuario no autenticado.'));
 
@@ -24,6 +23,9 @@ export function authorize(...permisosNecesarios: string[]): RequestHandler {
     if (permisosNecesarios.length === 1 && permisosNecesarios[0] === 'admin:global') {
       return next(forbidden('Esto solo lo puede hacer un administrador global de la plataforma.'));
     }
-    return next(forbidden(`Falta permiso: ${permisoNecesario}`));
+    // Texto para la persona, sin codigos; los codigos van en details para el frontend.
+    return next(
+      forbidden('No tienes permiso para esto en esta empresa. Si lo necesitas, pídeselo al administrador.', { permisos: permisosNecesarios }),
+    );
   };
 }
