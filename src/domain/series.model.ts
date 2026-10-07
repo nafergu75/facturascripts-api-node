@@ -23,6 +23,10 @@ export interface SerieDocumento {
   ultimoNumero?: number;
   /** Fecha (YYYY-MM-DD) de la ultima factura finalizada en la serie. */
   ultimaFecha?: string;
+  /** Numero que llevara el proximo documento (ultimoNumero + 1). Solo en la lista de la API. */
+  numeroSiguiente?: number;
+  /** Documentos ya numerados en la serie (facturas emitidas o registradas y proformas). Solo en la lista de la API. */
+  documentos?: number;
   creadoEn: string;
   actualizadoEn: string;
 }

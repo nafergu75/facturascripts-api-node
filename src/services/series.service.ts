@@ -26,6 +26,27 @@ const NOMBRE_TIPO: Record<TipoDocumentoSerie, string> = {
 
 const CODIGO_RE = /^[A-Z0-9-]{1,10}$/;
 
+/** Mayor numero inicial que se admite (la columna es un entero de 32 bits). */
+export const NUMERO_INICIAL_MAX = 999_999_999;
+
+/**
+ * Numero inicial de una serie (para seguir la numeracion de otro programa):
+ * entero desde 1. undefined si no se indica.
+ */
+function validarNumeroInicial(valor: unknown): number | undefined {
+  if (valor === undefined || valor === null || valor === '') return undefined;
+  const n = typeof valor === 'number' ? valor : Number(valor);
+  if (!Number.isInteger(n) || n < 1 || n > NUMERO_INICIAL_MAX) {
+    throw badRequest('El número inicial es un número entero desde 1 (sin letras ni decimales).', { campo: 'numeroInicial' });
+  }
+  return n;
+}
+
+/** Documentos ya numerados en la serie (los borradores aun no tienen numero). */
+function contarDocumentos(db: Tx | typeof prisma, companyId: string, codigo: string): Promise<number> {
+  return db.incomeInvoice.count({ where: { companyId, serie: codigo, numero: { not: null } } });
+}
+
 function aDominio(s: InvoiceSeries): SerieDocumento {
   return {
     id: s.id,
@@ -75,6 +96,21 @@ async function asegurarSemilla(companyId: string): Promise<void> {
   }
 }
 
+/**
+ * Lista para la pantalla (GET /series): cada serie con el proximo numero y
+ * cuantos documentos numerados tiene (el numero inicial solo se cambia sin ellos).
+ */
+export async function listarSeriesConUso(companyId: string, tipoDocumento?: TipoDocumentoSerie): Promise<SerieDocumento[]> {
+  const series = await listarSeries(companyId, tipoDocumento);
+  const usos = await prisma.incomeInvoice.groupBy({
+    by: ['serie'],
+    where: { companyId, numero: { not: null }, serie: { in: series.map((s) => s.codigo) } },
+    _count: { _all: true },
+  });
+  const porSerie = new Map(usos.map((u) => [u.serie, u._count._all]));
+  return series.map((s) => ({ ...s, numeroSiguiente: (s.ultimoNumero ?? 0) + 1, documentos: porSerie.get(s.codigo) ?? 0 }));
+}
+
 export async function listarSeries(companyId: string, tipoDocumento?: TipoDocumentoSerie): Promise<SerieDocumento[]> {
   await asegurarSemilla(companyId);
   const series = await prisma.invoiceSeries.findMany({
@@ -96,7 +132,7 @@ const esP2002 = (e: unknown) => e instanceof Prisma.PrismaClientKnownRequestErro
 
 export async function crearSerie(
   companyId: string,
-  data: Pick<SerieDocumento, 'codigo' | 'descripcion' | 'tipoDocumento' | 'activa' | 'porDefecto'>,
+  data: Pick<SerieDocumento, 'codigo' | 'descripcion' | 'tipoDocumento' | 'activa' | 'porDefecto'> & { numeroInicial?: unknown },
 ): Promise<SerieDocumento> {
   const codigo = data.codigo?.trim().toUpperCase();
   if (!codigo) throw badRequest('El código de la serie es obligatorio.', { campo: 'codigo' });
@@ -112,13 +148,23 @@ export async function crearSerie(
   if (porDefecto && !activa) {
     throw badRequest('Una serie desactivada no puede ser la predeterminada: créala activa.', { campo: 'porDefecto' });
   }
+  // Numero inicial: el primer documento de la serie llevara ese numero.
+  const numeroInicial = validarNumeroInicial(data.numeroInicial);
   const dup = await prisma.invoiceSeries.findUnique({ where: { companyId_codigo: { companyId, codigo } } });
   if (dup) throw conflict(`Ya existe la serie ${codigo}.`, { campo: 'codigo' });
 
   if (porDefecto) await desmarcarOtrasPorDefecto(prisma, companyId, data.tipoDocumento);
   try {
     const serie = await prisma.invoiceSeries.create({
-      data: { companyId, codigo, descripcion: String(data.descripcion ?? ''), tipoDocumento: data.tipoDocumento, activa, porDefecto },
+      data: {
+        companyId,
+        codigo,
+        descripcion: String(data.descripcion ?? ''),
+        tipoDocumento: data.tipoDocumento,
+        activa,
+        porDefecto,
+        ...(numeroInicial ? { ultimoNumero: numeroInicial - 1 } : {}),
+      },
     });
     return aDominio(serie);
   } catch (e) {
@@ -128,22 +174,28 @@ export async function crearSerie(
 }
 
 /**
- * Cambia la descripcion, si esta activa y si es la predeterminada. El codigo, el
- * tipo y la numeracion no se tocan: cambiarlos romperia la correlatividad de las
- * facturas ya emitidas. Las reglas se comprueban dentro de una transaccion, con
- * las series del mismo tipo bloqueadas: dos cambios a la vez no pueden dejar un
- * tipo sin serie activa ni sin predeterminada.
+ * Cambia la descripcion, si esta activa, si es la predeterminada y el numero
+ * inicial (solo mientras la serie no tiene documentos numerados: sirve para
+ * seguir la numeracion de otro programa). El codigo y el tipo no se tocan:
+ * cambiarlos romperia la correlatividad de las facturas ya emitidas. Las
+ * reglas se comprueban dentro de una transaccion, con las series del mismo
+ * tipo bloqueadas: dos cambios a la vez no pueden dejar un tipo sin serie
+ * activa ni sin predeterminada.
  */
 export async function actualizarSerie(
   companyId: string,
   serieId: string,
-  data: Partial<Pick<SerieDocumento, 'descripcion' | 'activa' | 'porDefecto'>>,
+  data: Partial<Pick<SerieDocumento, 'descripcion' | 'activa' | 'porDefecto'>> & { numeroInicial?: unknown },
 ): Promise<SerieDocumento> {
   for (const campo of ['activa', 'porDefecto'] as const) {
     if (data[campo] !== undefined && typeof data[campo] !== 'boolean') {
       throw badRequest(`${campo} es sí o no (true/false).`, { campo });
     }
   }
+  if (data.descripcion !== undefined && data.descripcion !== null && String(data.descripcion).length > 191) {
+    throw badRequest('La descripción admite como máximo 191 caracteres.', { campo: 'descripcion' });
+  }
+  const numeroInicial = validarNumeroInicial(data.numeroInicial);
   const previa = await prisma.invoiceSeries.findFirst({ where: { id: serieId, companyId } });
   if (!previa) throw notFound('Serie no encontrada.');
 
@@ -177,11 +229,20 @@ export async function actualizarSerie(
       }
     }
 
+    // (d) El numero inicial solo mientras no haya documentos numerados en la serie.
+    if (numeroInicial !== undefined && (await contarDocumentos(tx, companyId, actual.codigo)) > 0) {
+      throw conflict(
+        `La serie ${actual.codigo} ya tiene documentos numerados: su numeración sigue desde el último y el número inicial ya no se puede cambiar.`,
+        { campo: 'numeroInicial' },
+      );
+    }
+
     if (data.porDefecto === true) await desmarcarOtrasPorDefecto(tx, companyId, actual.tipoDocumento, actual.id);
     return tx.invoiceSeries.update({
       where: { id: serieId },
       data: {
-        ...(data.descripcion !== undefined ? { descripcion: String(data.descripcion) } : {}),
+        ...(numeroInicial !== undefined ? { ultimoNumero: numeroInicial - 1, ultimaFecha: null } : {}),
+        ...(data.descripcion !== undefined ? { descripcion: String(data.descripcion ?? '') } : {}),
         ...(data.activa !== undefined ? { activa: data.activa } : {}),
         ...(data.porDefecto !== undefined ? { porDefecto: data.porDefecto } : {}),
       },
