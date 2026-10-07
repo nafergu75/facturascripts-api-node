@@ -94,7 +94,7 @@ export const FICHAS: FichaFAQ[] = [
     pregunta: '¿Dónde registro una factura de un proveedor?',
     variantes: ['como meto un gasto', 'registrar factura de compra', 'donde subo las facturas de proveedores', 'apuntar un gasto', 'meter una factura recibida', 'escanear factura de gasto', 'subir ticket de gasto'],
     respuesta:
-      'Las facturas de proveedor van en Compras → Compras. Si la tienes en PDF o en foto, súbela a Compras → Bandeja OCR: el lector saca proveedor, fecha, base, IVA y total, y tú los revisas antes de guardar. Después, desde la ficha de la factura, la contabilizas y apruebas su asiento en Contabilidad → Motor contable. Los pagos al proveedor también se registran en esa ficha.',
+      'Las facturas de proveedor van en Compras → Compras. La lectura automática de PDF y fotos aún no está disponible, así que los datos de la factura se meten a mano. Después, desde la ficha de la factura, la contabilizas y apruebas su asiento en Contabilidad → Motor contable. Los pagos al proveedor también se registran en esa ficha.',
     fuente: APP('/dashboard/compras', 'Compras'),
     ...VERIFICADA,
     enlaceApp: { texto: 'Ir a Compras', href: '/dashboard/compras' },

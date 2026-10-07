@@ -21,7 +21,6 @@ export const PANTALLAS: PantallaApp[] = [
   { ruta: 'Ventas → Proformas', href: '/dashboard/proformas', descripcion: 'Proformas (serie P): no se contabilizan y se pasan a factura si el cliente acepta.' },
   { ruta: 'Compras → Proveedores', href: '/dashboard/proveedores', descripcion: 'Proveedores y sus datos fiscales.' },
   { ruta: 'Compras → Compras', href: '/dashboard/compras', descripcion: 'Facturas recibidas y gastos de proveedor, con sus pagos.' },
-  { ruta: 'Compras → Bandeja OCR', href: '/dashboard/ocr', descripcion: 'Sube facturas en PDF o foto: el lector saca sus datos para revisarlos.' },
   { ruta: 'Contabilidad → Movimientos', href: '/dashboard/movimientos', descripcion: 'Ingresos y gastos con estados y estadísticas.' },
   { ruta: 'Contabilidad → Plan contable', href: '/dashboard/plan-contable', descripcion: 'Cuentas y subcuentas del PGC de la empresa.' },
   { ruta: 'Contabilidad → Motor contable', href: '/dashboard/motor-contable', descripcion: 'Asientos generados desde las facturas; aquí se revisan y se aprueban.' },

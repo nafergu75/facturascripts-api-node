@@ -156,6 +156,12 @@ describe('enlaces de las respuestas', () => {
     expect(hrefValido('https://otra-web.com')).toBe(false);
   });
 
+  it('la Bandeja OCR, retirada del menú, no sale ni en el mapa ni en las fichas', () => {
+    expect(hrefValido('/dashboard/ocr')).toBe(false);
+    expect(JSON.stringify(PANTALLAS)).not.toMatch(/Bandeja OCR|\/dashboard\/ocr/);
+    expect(JSON.stringify(FICHAS)).not.toMatch(/Bandeja OCR|\/dashboard\/ocr|lector-gastos/);
+  });
+
   // Solo en local, con el frontend al lado: cada pantalla existe en app/dashboard.
   const app = join(__dirname, '..', '..', '..', 'frontend-carmen', 'web', 'app', 'dashboard');
   (existsSync(app) ? it : it.skip)('cada pantalla del mapa existe en el frontend', () => {
