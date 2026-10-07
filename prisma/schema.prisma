@@ -140,21 +140,24 @@ model Membership {
 
 /// Cliente de la empresa (receptor de facturas de ingreso = cliente que nos paga).
 model Customer {
-  id           String          @id @default(cuid())
-  companyId    String
-  nombreFiscal String
-  nifCif       String
-  direccion    String?
-  pais         String          @default("ES")
-  provincia    String?
-  municipio    String?
-  cp           String?
-  email        String?
-  telefono     String?
-  activo       Boolean         @default(true)
-  createdAt    DateTime        @default(now())
-  updatedAt    DateTime        @updatedAt
-  invoices     IncomeInvoice[]
+  id              String          @id @default(cuid())
+  companyId       String
+  nombreFiscal    String
+  nifCif          String
+  direccion       String?
+  pais            String          @default("ES")
+  provincia       String?
+  municipio       String?
+  cp              String?
+  email           String?
+  telefono        String?
+  activo          Boolean         @default(true)
+  /// Moneda en la que se le suele facturar (ISO 4217). Solo la propone el
+  /// formulario; el backend no la aplica si la factura no indica moneda.
+  monedaPreferida String?         @db.VarChar(3)
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+  invoices        IncomeInvoice[]
 
   @@unique([companyId, nifCif])
   @@index([companyId])
@@ -184,10 +187,36 @@ model IncomeInvoice {
   fechaEmision        String // YYYY-MM-DD
   fechaVencimiento    String // YYYY-MM-DD
   estado              String                @default("PENDING") // DRAFT, PENDING, PAID, OVERDUE; proformas: PENDIENTE, ACEPTADA, RECHAZADA
+  // baseTotal, ivaTotal, retencionTotal y totalFactura: SIEMPRE en la moneda de
+  // cuenta de la empresa (LegalConfig.monedaCuenta). Son las que leen la
+  // contabilidad, el libro de IVA y los modelos de la AEAT.
   baseTotal           Decimal               @default(0) @db.Decimal(14, 2)
   ivaTotal            Decimal               @default(0) @db.Decimal(14, 2)
   retencionTotal      Decimal               @default(0) @db.Decimal(14, 2)
   totalFactura        Decimal               @default(0) @db.Decimal(14, 2)
+  /// Moneda del documento (ISO 4217). Las facturas anteriores, EUR.
+  moneda              String                @default("EUR") @db.VarChar(3)
+  /// Unidades de `moneda` por 1 unidad de la moneda de cuenta (convencion del
+  /// BCE: 1 EUR = 1,1490 USD). importeCuenta = importeDoc / tipoCambio.
+  tipoCambio          Decimal               @default(1) @db.Decimal(18, 8)
+  /// Fecha real de la observacion del tipo (AAAA-MM-DD); null si PAR.
+  fechaTipoCambio     String?
+  /// PAR | BCE | MANUAL | HEREDADO | PENDIENTE
+  fuenteTipoCambio    String                @default("PAR") @db.VarChar(10)
+  /// Fecha de la operacion (devengo) si es distinta de la de emision; fija el tipo de cambio.
+  fechaOperacion      String?
+  /// Totales en la moneda del documento. null = iguales a las columnas de cuenta.
+  baseTotalDoc        Decimal?              @db.Decimal(14, 2)
+  ivaTotalDoc         Decimal?              @db.Decimal(14, 2)
+  retencionTotalDoc   Decimal?              @db.Decimal(14, 2)
+  totalFacturaDoc     Decimal?              @db.Decimal(14, 2)
+  /// Tipo de operacion de IVA (domain/tipo-operacion.model.ts). null = factura
+  /// anterior a esta funcion (se clasifica con operacionEfectiva).
+  tipoOperacion       String?               @db.VarChar(24)
+  /// E1 | E3 | E4 | E6, solo con tipoOperacion EXENTA.
+  causaExencion       String?               @db.VarChar(2)
+  /// Precepto que ampara la exencion (obligatorio en EXENTA, opcional en ISP_NACIONAL).
+  referenciaLegal     String?               @db.VarChar(200)
   plantillaId         String                @default("default")
   observaciones       String?               @db.Text
   esRectificativa     Boolean               @default(false)
@@ -210,6 +239,8 @@ model IncomeInvoice {
   @@index([companyId, estado])
   @@index([companyId, estadoDocumento])
   @@index([customerId])
+  @@index([companyId, moneda])
+  @@index([companyId, tipoOperacion])
 }
 
 /// Serie de facturacion de una empresa (A, RECTIFICATIVA, ...). Guarda el
@@ -245,6 +276,14 @@ model IncomeInvoiceLine {
   ivaImporte          Decimal       @default(0) @db.Decimal(14, 2)
   tipoRetencion       Int           @default(0) // 0, 7, 15, 19 (IRPF/otros)
   retencionImporte    Decimal       @default(0) @db.Decimal(14, 2)
+  // Las columnas de arriba van en la moneda de cuenta (precioUnitario y
+  // descuentoImporte son informativos si la factura esta en otra moneda).
+  // Las *Doc, en la moneda del documento; null = iguales a las de cuenta.
+  precioUnitarioDoc   Decimal?      @db.Decimal(14, 4)
+  baseLineDoc         Decimal?      @db.Decimal(14, 2)
+  descuentoImporteDoc Decimal?      @db.Decimal(14, 2)
+  ivaImporteDoc       Decimal?      @db.Decimal(14, 2)
+  retencionImporteDoc Decimal?      @db.Decimal(14, 2)
   // NUEVO: Referencia a cuenta contable (grupo 7 para ingresos)
   accountCode         String? // Código PGC (ej. "700" para ventas)
   invoice             IncomeInvoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
@@ -463,6 +502,10 @@ model VATBook {
   cuotaIva      Decimal  @db.Decimal(14, 2)
   asientoId     String? // Referencia al asiento contable
   observaciones String?  @db.Text
+  /// Tipo de operacion de la factura (domain/tipo-operacion.model.ts); null = anterior.
+  tipoOperacion String?  @db.VarChar(24)
+  /// E1..E6 (E2 exportacion y E5 intracomunitaria se derivan del tipo).
+  causaExencion String?  @db.VarChar(2)
   createdAt     DateTime @default(now())
 
   // Un apunte por tipo de IVA: una factura 21% + 10% son dos filas.
@@ -470,6 +513,7 @@ model VATBook {
   @@index([companyId])
   @@index([fechaFactura])
   @@index([tipoLibro])
+  @@index([companyId, tipoLibro, tipoOperacion])
 }
 
 /// ============================================================================
@@ -611,7 +655,24 @@ model InvoicePayment {
   invoiceType      String
   invoiceId        String
   fecha            String // YYYY-MM-DD
+  /// Importe en moneda de cuenta aplicado a la cuenta del tercero (430/400) al
+  /// tipo de la factura. En los cobros en la moneda de cuenta coincide con lo
+  /// que entra en tesoreria.
   importe          Decimal   @db.Decimal(14, 2)
+  /// Moneda de la factura cobrada.
+  moneda           String    @default("EUR") @db.VarChar(3)
+  /// En la moneda de la factura; reduce lo pendiente. null = importe.
+  importeDoc       Decimal?  @db.Decimal(14, 2)
+  /// En moneda de cuenta, lo que entra o sale de la 572/570. null = importe.
+  importeTesoreria Decimal?  @db.Decimal(14, 2)
+  /// Unidades de la moneda de la factura por 1 de la moneda de cuenta, al cobrar.
+  tipoCambio       Decimal   @default(1) @db.Decimal(18, 8)
+  /// PAR | BCE | MANUAL | BANCO
+  fuenteTipoCambio String    @default("PAR") @db.VarChar(10)
+  /// Diferencia de cambio en moneda de cuenta: > 0 a la 768, < 0 a la 668.
+  diferenciaCambio Decimal   @default(0) @db.Decimal(14, 2)
+  /// Comision bancaria en moneda de cuenta (626).
+  comisionBancaria Decimal   @default(0) @db.Decimal(14, 2)
   /// Subcuenta de tesoreria: la 572xxx de la cuenta bancaria o la 570 de caja.
   cuentaTesoreria  String
   bankAccountId    String?
@@ -723,6 +784,8 @@ model BankAccount {
   bic             String?
   /// Saldo que el usuario declara al dar de alta la cuenta (pantalla de tesoreria).
   saldoInicial    Decimal        @default(0) @db.Decimal(14, 2)
+  /// Moneda de la cuenta (ISO 4217). Al darla de alta, la moneda de cuenta de la empresa.
+  moneda          String         @default("EUR") @db.VarChar(3)
   activa          Boolean        @default(true)
   createdAt       DateTime       @default(now())
   movimientos     BankMovement[]
@@ -909,6 +972,11 @@ model LegalConfig {
   // Pais de la empresa (ISO 3166-1 alfa-2). Fuera de ES no se aplican las
   // validaciones ni los requisitos espanoles (NIF, CP, Registro Mercantil).
   pais                       String   @default("ES")
+  // Moneda de la contabilidad (ISO 4217): la de las columnas de importe, los
+  // asientos y los informes. EUR obligatoria si pais = ES; las empresas de EE. UU.
+  // y Hong Kong trabajan en USD. No cambia si ya hay facturas o asientos.
+  // El idioma y el formato de las facturas salen del pais (ES espanol; resto ingles).
+  monedaCuenta               String   @default("EUR") @db.VarChar(3)
   // Contacto de la empresa (sale en las facturas).
   telefono                   String?
   email                      String?
@@ -1189,6 +1257,11 @@ model DocumentoArchivo {
   iva              Decimal? @db.Decimal(14, 2)
   retencion        Decimal? @db.Decimal(14, 2)
   total            Decimal? @db.Decimal(14, 2)
+  /// Moneda de la factura archivada. base, iva y total van en moneda de cuenta.
+  moneda           String   @default("EUR") @db.VarChar(3)
+  /// Total en la moneda de la factura (si es distinta de la de cuenta).
+  totalDivisa      Decimal? @db.Decimal(14, 2)
+  tipoCambio       Decimal? @db.Decimal(18, 8)
   archivoNombre    String
   archivoTipo      String // MIME type
   archivoTamanio   Int
@@ -1214,4 +1287,19 @@ model DocumentoArchivo {
   @@index([incomeInvoiceId])
   @@index([expenseInvoiceId])
   @@index([fecha])
+}
+
+/// Cache global de los tipos de referencia del BCE (unidades de `moneda` por
+/// 1 EUR), por fecha REAL de observacion. Sirve para no repetir llamadas y como
+/// prueba del tipo aplicado a cada factura.
+model TipoCambioBce {
+  moneda         String   @db.VarChar(3)
+  /// AAAA-MM-DD de la observacion del BCE
+  fecha          String   @db.VarChar(10)
+  unidadesPorEur Decimal  @db.Decimal(18, 8)
+  /// ECB_API | FRANKFURTER_ECB
+  origen         String   @default("ECB_API") @db.VarChar(20)
+  createdAt      DateTime @default(now())
+
+  @@id([moneda, fecha])
 }

@@ -6,6 +6,12 @@ import { avisosFactura, generarPdfFactura } from '../services/facturaPdf.service
 import { registrarAuditoria } from '../services/auditoria.service';
 import { accountingHooksService } from '../services/accounting-hooks.service';
 import { archivarVentaSinRomper } from '../services/archivoFacturas.service';
+import { contextoFiscalEmpresa, sugerirOperacion } from '../services/fiscalidad-venta.service';
+
+/** Datos de divisa para la auditoria: total en moneda de cuenta y en la de la factura. */
+function metaDivisa(f: { totalFactura: number; moneda: string; totalFacturaDoc: number; tipoCambio: number; fuenteTipoCambio: string }) {
+  return { total: f.totalFactura, moneda: f.moneda, totalDoc: f.totalFacturaDoc, tipoCambio: f.tipoCambio, fuente: f.fuenteTipoCambio };
+}
 
 /**
  * Contabiliza una factura recien emitida y la guarda en el archivo de su
@@ -46,8 +52,9 @@ export const incomeInvoicesController = {
       resourceId: factura.id,
       meta: {
         numeroCompleto: factura.numeroCompleto,
-        total: factura.totalFactura,
+        ...metaDivisa(factura),
         cliente: factura.customerId,
+        tipoOperacion: factura.tipoOperacion ?? null,
       },
     });
 
@@ -114,6 +121,7 @@ export const incomeInvoicesController = {
   finalizar: asyncHandler(async (req, res) => {
     const factura = await incomeInvoicesService.finalizar(req.companyId!, req.params.id, {
       fechaEmision: req.body?.fechaEmision,
+      tipoCambio: req.body?.tipoCambio,
     });
     await registrarAuditoria({
       userId: req.user?.userId || 'unknown',
@@ -121,7 +129,7 @@ export const incomeInvoicesController = {
       action: 'EMITIR_FACTURA_INGRESO',
       resourceType: 'INCOME_INVOICE',
       resourceId: factura.id,
-      meta: { numeroCompleto: factura.numeroCompleto, total: factura.totalFactura },
+      meta: { numeroCompleto: factura.numeroCompleto, ...metaDivisa(factura), tipoOperacion: factura.tipoOperacion ?? null },
     });
     await contabilizar(req.companyId!, factura.id);
     sendOk(res, { invoice: factura });
@@ -157,6 +165,8 @@ export const incomeInvoicesController = {
       customerId: req.query.customerId as string | undefined,
       desde: req.query.desde as string | undefined,
       hasta: req.query.hasta as string | undefined,
+      tipoOperacion: req.query.tipoOperacion as string | undefined,
+      moneda: req.query.moneda as string | undefined,
       skip: req.query.skip ? Number(req.query.skip) : 0,
       take: req.query.take ? Number(req.query.take) : 20,
     });
@@ -217,6 +227,10 @@ export const incomeInvoicesController = {
       tipoRectificativa: b.tipoRectificativa,
       serie: b.serie,
       borrador: b.borrador,
+      // Se heredan de la original: solo sirven para rechazar otra moneda, otro tipo u otra operacion.
+      moneda: b.moneda,
+      tipoCambio: b.tipoCambio,
+      tipoOperacion: b.tipoOperacion,
     });
     if (factura.estadoDocumento === 'FINAL') await contabilizar(req.companyId!, factura.id);
 
@@ -248,6 +262,30 @@ export const incomeInvoicesController = {
   hacerRecurrente: asyncHandler(async (req) => {
     void req;
     throw notImplemented('Facturas periódicas pendientes. Requiere job scheduler + persistencia de patrón de recurrencia.');
+  }),
+
+  /** GET /tipos-operacion?customerId= — contexto fiscal del formulario de factura. */
+  tiposOperacion: asyncHandler(async (req, res) => {
+    const customerId = typeof req.query.customerId === 'string' && req.query.customerId ? req.query.customerId : undefined;
+    sendOk(res, await contextoFiscalEmpresa(req.companyId!, customerId));
+  }),
+
+  /** POST /sugerir-operacion — sugerencia y revision fiscal sin guardar nada. */
+  sugerirOperacion: asyncHandler(async (req, res) => {
+    const b = req.body ?? {};
+    sendOk(
+      res,
+      await sugerirOperacion(req.companyId!, {
+        customerId: typeof b.customerId === 'string' ? b.customerId : undefined,
+        cliente: b.cliente,
+        lineas: b.lineas,
+        tipoOperacion: b.tipoOperacion,
+        causaExencion: b.causaExencion,
+        referenciaLegal: b.referenciaLegal,
+        tipoFactura: b.tipoFactura,
+        modo: b.modo,
+      }),
+    );
   }),
 
   /**

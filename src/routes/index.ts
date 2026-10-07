@@ -49,6 +49,7 @@ import ocrSessionsRoutes from './ocr-sessions.routes';
 import ocrAnalyticsRoutes from './ocr-analytics.routes';
 import taxModelsRoutes from './tax-models.routes';
 import treasuryRoutes from './treasury.routes';
+import tiposCambioRoutes from './tiposCambio.routes';
 
 const router = Router();
 
@@ -95,6 +96,7 @@ scoped.use('/extractos', extractosRoutes);
 scoped.use('/cuadre-bancos', cuadreBancosRoutes);
 scoped.use('/nominas', nominasRoutes);
 scoped.use('/income-invoices', incomeInvoicesRoutes);
+scoped.use('/tipos-cambio', tiposCambioRoutes);
 scoped.use('/expense-invoices', expenseInvoicesRoutes);
 scoped.use('/income-reader', incomeReaderRoutes);
 scoped.use('/invoice-extractor', invoiceExtractorRoutes);

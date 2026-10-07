@@ -1,5 +1,11 @@
 import { prisma } from '../config/database';
 import { badRequest } from '../utils/http-errors';
+import { esPaisEspana } from '../domain/perfil-empresa.model';
+import { esPaisUe } from '../domain/tipo-operacion.model';
+import { validarMonedaCuenta } from '../domain/divisas';
+
+export { esPaisEspana };
+export { esEmpresaEspanola, monedaDeCuenta, perfilEmpresa } from './perfilEmpresa.service';
 
 export interface LegalConfigInput {
   tipoSociedad?: string;
@@ -26,6 +32,8 @@ export interface LegalConfigInput {
   email?: string | null;
   web?: string | null;
   pais?: string;
+  /** Moneda de la contabilidad (EUR o USD). Ver actualizar(). */
+  monedaCuenta?: string;
 }
 
 const TEXTOS = [
@@ -56,7 +64,7 @@ const INSCRIBIBLES = ['SA', 'SL', 'SLU'];
 /** Campos que faltan para que la empresa pueda facturar con todos los datos. */
 export function camposPendientesEmpresa(cfg: Record<string, unknown> | null): string[] {
   const vacio = (k: string) => !String(cfg?.[k] ?? '').trim();
-  const espana = String(cfg?.pais ?? 'ES').toUpperCase() === 'ES';
+  const espana = esPaisEspana(cfg?.pais as string | null | undefined);
   const faltan: string[] = [];
   for (const [k, nombre] of [
     ['denominacion', 'Denominación o nombre'],
@@ -149,7 +157,47 @@ export function limpiarLegalConfig(datos: Record<string, unknown>, paisActual = 
   if (typeof limpio.fechaConstitucion === 'string' && !/^\d{4}-\d{2}-\d{2}$/.test(limpio.fechaConstitucion as string)) {
     throw badRequest('fechaConstitucion tiene que tener el formato AAAA-MM-DD.');
   }
+  if (datos.monedaCuenta !== undefined && datos.monedaCuenta !== null && datos.monedaCuenta !== '') {
+    limpio.monedaCuenta = validarMonedaCuenta(datos.monedaCuenta, String(limpio.pais ?? paisActual));
+  }
   return limpio as LegalConfigInput;
+}
+
+/**
+ * Moneda de cuenta por defecto segun el pais: euros en Espana y en la UE; en el
+ * resto (EE. UU., Hong Kong...), dolares.
+ */
+export function monedaCuentaPorPais(pais: string): string {
+  return esPaisEspana(pais) || esPaisUe(pais) ? 'EUR' : 'USD';
+}
+
+/**
+ * Decide la moneda de cuenta tras guardar la configuracion:
+ *  - la indicada (validada: EUR obligatoria en Espana);
+ *  - si no se indica y cambia el pais, la de su pais (USD fuera de la UE);
+ *  - no cambia si la empresa ya tiene facturas o asientos.
+ */
+export function decidirMonedaCuenta(opc: {
+  indicada?: string;
+  paisAnterior: string;
+  paisNuevo: string;
+  monedaActual: string;
+  tieneDocumentos: boolean;
+}): string {
+  const { indicada, paisAnterior, paisNuevo, monedaActual, tieneDocumentos } = opc;
+  const nueva = indicada ?? (paisNuevo !== paisAnterior ? monedaCuentaPorPais(paisNuevo) : monedaActual);
+  if (esPaisEspana(paisNuevo) && nueva !== 'EUR') {
+    throw badRequest('Una empresa establecida en España lleva la contabilidad en euros (EUR).');
+  }
+  if (nueva === monedaActual) return monedaActual;
+  if (tieneDocumentos) {
+    // Sin indicarla, se conserva la que hay (un cambio de pais no reescribe la contabilidad).
+    if (indicada === undefined && !esPaisEspana(paisNuevo)) return monedaActual;
+    throw badRequest(
+      `No se puede cambiar la moneda de la contabilidad (${monedaActual}): la empresa ya tiene facturas o asientos.`,
+    );
+  }
+  return nueva;
 }
 
 /** La config sin los bytes del logo (no viajan en el JSON): solo si hay logo. */
@@ -179,10 +227,27 @@ export const legalConfigService = {
   },
 
   async actualizar(companyId: string, datos: Record<string, unknown>) {
-    const actual = await prisma.legalConfig.findUnique({ where: { companyId }, select: { pais: true } });
+    const actual = await prisma.legalConfig.findUnique({ where: { companyId }, select: { pais: true, monedaCuenta: true } });
     const limpio = limpiarLegalConfig(datos ?? {}, actual?.pais ?? 'ES');
     delete (limpio as Record<string, unknown>).logo;
     delete (limpio as Record<string, unknown>).logoMime;
+    const paisAnterior = actual?.pais ?? 'ES';
+    const paisNuevo = limpio.pais ?? paisAnterior;
+    const monedaActual = actual?.monedaCuenta ?? 'EUR';
+    if (limpio.monedaCuenta !== undefined || paisNuevo !== paisAnterior) {
+      const [facturas, gastos, asientos] = await Promise.all([
+        prisma.incomeInvoice.count({ where: { companyId } }),
+        prisma.expenseInvoice.count({ where: { companyId } }),
+        prisma.journalEntry.count({ where: { companyId } }),
+      ]);
+      limpio.monedaCuenta = decidirMonedaCuenta({
+        indicada: limpio.monedaCuenta,
+        paisAnterior,
+        paisNuevo,
+        monedaActual,
+        tieneDocumentos: facturas + gastos + asientos > 0,
+      });
+    }
     return sinLogo(
       await prisma.legalConfig.upsert({
         where: { companyId },

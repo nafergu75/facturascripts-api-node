@@ -37,6 +37,7 @@ import { prisma } from '../config/database';
 import { config } from '../config/env';
 import { putObject, getObject } from '../utils/storage';
 import { archivarVentaSinRomper } from './archivoFacturas.service';
+import { paisDelCliente } from '../domain/tipo-operacion.model';
 import {
   esVigente,
   diasParaCaducidad,
@@ -727,7 +728,8 @@ export const incomeReaderService = {
           companyId,
           nombreFiscal: parsed.nombreReceptor || `Cliente ${parsed.nifReceptor}`,
           nifCif: parsed.nifReceptor,
-          pais: 'ES',
+          // ES salvo que el NIF lleve el prefijo de otro Estado de la UE (FR..., DE...; EL = Grecia).
+          pais: paisDelCliente({ pais: 'ES', nifCif: parsed.nifReceptor }),
           activo: true,
         },
       });
@@ -758,16 +760,21 @@ export const incomeReaderService = {
       : { serie: fechaEmision.slice(0, 4), numero: undefined };
 
     // Crear factura de ingreso
-    const factura = await incomeInvoicesService.crearIngreso({
-      companyId,
-      customer: { id: customerId },
-      serie: numeracion.serie,
-      numero: numeracion.numero,
-      fechaEmision,
-      fechaVencimiento: parsed.fechaVencimiento,
-      lineas,
-      observaciones: `Digitalizado desde: ${documento.originalFileName}`,
-    });
+    // Origen lector: la fiscalidad avisa en vez de rechazar (y en una empresa no
+    // espanola quita el IVA que el OCR pone por defecto).
+    const factura = await incomeInvoicesService.crearIngreso(
+      {
+        companyId,
+        customer: { id: customerId },
+        serie: numeracion.serie,
+        numero: numeracion.numero,
+        fechaEmision,
+        fechaVencimiento: parsed.fechaVencimiento,
+        lineas,
+        observaciones: `Digitalizado desde: ${documento.originalFileName}`,
+      },
+      { origen: 'lector' },
+    );
 
     // Actualizar documento como verificado
     await prisma.incomeReaderDocument.update({
