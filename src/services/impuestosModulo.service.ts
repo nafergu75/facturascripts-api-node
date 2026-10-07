@@ -44,6 +44,14 @@ import {
   generarPaginaModelo303_03,
 } from './impuestosExport.service';
 import { badRequest, forbidden, notFound } from '../utils/http-errors';
+import {
+  calendarioEjercicio,
+  filasQueFaltan,
+  planCambioCalendario,
+  type EntradaCalendario,
+  type OpcionesCalendario,
+} from '../domain/calendarioFiscal';
+import { ajustesFiscalesDeFila } from '../domain/ajustes.model';
 
 /**
  * Modulo "Impuestos" estilo Quipu:
@@ -84,6 +92,7 @@ const DESCRIPCIONES: Record<string, string> = {
   '390': 'IVA — resumen anual',
   '347': 'Operaciones con terceros (> 3.005,06)',
   '200': 'Impuesto sobre Sociedades',
+  '130': 'Pago fraccionado del IRPF (autonomos)',
   '190': 'Retenciones: resumen anual (trabajo y profesionales)',
 };
 
@@ -110,15 +119,24 @@ export function fechaVencimientoModelo(codigo: string, ejercicio: number, period
   return `${ejercicio + 1}-01-30`;
 }
 
-/** Modelos que componen el calendario de un ejercicio. */
-function calendarioEjercicio(ejercicio: number): Array<{ codigo: string; periodo: string }> {
-  const out: Array<{ codigo: string; periodo: string }> = [];
-  for (const codigo of ['303', '111', '115', '349']) {
-    for (const periodo of ['1T', '2T', '3T', '4T']) out.push({ codigo, periodo });
-  }
-  for (const codigo of ['390', '347', '200', '190']) out.push({ codigo, periodo: '0A' });
-  void ejercicio;
-  return out;
+/** El 130 no se calcula todavia: se rellena a mano. */
+export const MENSAJE_130_MANUAL = 'La app todavía no calcula el modelo 130: rellena sus casillas a mano y guárdalo.';
+const RELLENO_MANUAL = new Set(['130']);
+
+/**
+ * Lo que decide el calendario de la empresa: sus ajustes fiscales
+ * (Configuracion > Impuestos; sin fila, los de por defecto) y si es autonomo.
+ */
+export async function opcionesCalendarioEmpresa(companyId: string): Promise<OpcionesCalendario> {
+  const tabla = (prisma as { ajustesFiscales?: { findUnique?: unknown } }).ajustesFiscales;
+  const legal = (prisma as { legalConfig?: { findUnique?: unknown } }).legalConfig;
+  const [fila, cfg] = await Promise.all([
+    typeof tabla?.findUnique === 'function' ? prisma.ajustesFiscales.findUnique({ where: { companyId } }).catch(() => null) : null,
+    typeof legal?.findUnique === 'function'
+      ? prisma.legalConfig.findUnique({ where: { companyId }, select: { tipoSociedad: true } }).catch(() => null)
+      : null,
+  ]);
+  return { ajustes: ajustesFiscalesDeFila(fila), autonomo: cfg?.tipoSociedad === 'AUTONOMO' };
 }
 
 const clave = (companyId: string, codigo: string, ejercicio: number, periodo: string): string =>
@@ -130,20 +148,103 @@ const clave = (companyId: string, codigo: string, ejercicio: number, periodo: st
  */
 async function asegurarCalendario(companyId: string, ejercicio: number): Promise<void> {
   if (!(await esEmpresaEspanolaFiscal(companyId))) return;
-  for (const { codigo, periodo } of calendarioEjercicio(ejercicio)) {
-    if (dbOk()) {
-      await prisma.modeloImpuesto.upsert({
-        where: { companyId_codigo_ejercicio_periodo: { companyId, codigo, ejercicio, periodo } },
-        update: {},
-        create: { companyId, codigo, ejercicio, periodo, estado: 'vigente' },
+  const deseado = calendarioEjercicio(ejercicio, await opcionesCalendarioEmpresa(companyId));
+  // Solo se anaden las que faltan y no se solapan con otra fila del mismo modelo
+  // (p. ej. el 1T trimestral que ya existia cuando se paso a IVA mensual).
+  if (dbOk()) {
+    const existentes = await prisma.modeloImpuesto.findMany({ where: { companyId, ejercicio }, select: { codigo: true, periodo: true } });
+    const faltan = filasQueFaltan(ejercicio, deseado, existentes);
+    if (faltan.length) {
+      await prisma.modeloImpuesto.createMany({
+        data: faltan.map(({ codigo, periodo }) => ({ companyId, codigo, ejercicio, periodo, estado: 'vigente' })),
+        skipDuplicates: true,
       });
-    } else {
-      const k = clave(companyId, codigo, ejercicio, periodo);
-      if (!memoria.has(k)) {
-        memoria.set(k, { id: k, companyId, codigo, ejercicio, periodo, estado: 'vigente', casillas: null, datos: null, origen: null });
-      }
     }
+    return;
   }
+  const existentes = [...memoria.values()].filter((f) => f.companyId === companyId && f.ejercicio === ejercicio);
+  for (const { codigo, periodo } of filasQueFaltan(ejercicio, deseado, existentes)) {
+    const k = clave(companyId, codigo, ejercicio, periodo);
+    memoria.set(k, { id: k, companyId, codigo, ejercicio, periodo, estado: 'vigente', casillas: null, datos: null, origen: null });
+  }
+}
+
+/** Un modelo del calendario, sin fila en la BD (vista previa de los ajustes fiscales). */
+export interface ModeloPrevisto {
+  codigo: string;
+  periodo: string;
+  periodoEtiqueta: string;
+  descripcion: string;
+  fechaVencimiento: string;
+  rellenoManual: boolean;
+}
+
+/** Calendario que saldria en el ejercicio con esas opciones (no escribe nada). */
+export function vistaCalendario(ejercicio: number, opciones: OpcionesCalendario): ModeloPrevisto[] {
+  const hoy = `${ejercicio}-01-01`;
+  return calendarioEjercicio(ejercicio, opciones)
+    .map(({ codigo, periodo }) => {
+      const r = aResumen({ id: '', companyId: '', codigo, ejercicio, periodo, estado: 'vigente', casillas: null, datos: null, origen: null }, hoy);
+      return {
+        codigo,
+        periodo,
+        periodoEtiqueta: r.periodoEtiqueta,
+        descripcion: r.descripcion,
+        fechaVencimiento: r.fechaVencimiento,
+        rellenoManual: RELLENO_MANUAL.has(codigo),
+      };
+    })
+    .sort((a, b) => a.fechaVencimiento.localeCompare(b.fechaVencimiento) || a.codigo.localeCompare(b.codigo));
+}
+
+/** Resultado de aplicar unos ajustes fiscales nuevos al calendario de un ejercicio. */
+export interface CambioCalendario {
+  ejercicio: number;
+  /** Primer dia al que se aplican; null = el ejercicio ya no los admite (se aplican desde el siguiente). */
+  aplicadoDesde: string | null;
+  borradas: number;
+  creadas: number;
+}
+
+/**
+ * Aplica las opciones del calendario a los ejercicios del año en curso en
+ * adelante que ya tienen filas. Las presentadas, omitidas o editadas a mano no
+ * se tocan; el cambio empieza en el primer trimestre libre despues de ellas
+ * (domain/calendarioFiscal, planCambioCalendario). Los años pasados no cambian.
+ * Devuelve el cambio del año en curso y de los siguientes que tengan filas.
+ */
+export async function aplicarCambioCalendario(companyId: string, opciones: OpcionesCalendario, hoy: string): Promise<CambioCalendario[]> {
+  const anio = Number(hoy.slice(0, 4));
+  if (!dbOk()) return [{ ejercicio: anio, aplicadoDesde: `${anio}-01-01`, borradas: 0, creadas: 0 }];
+  const filas = await prisma.modeloImpuesto.findMany({
+    where: { companyId, ejercicio: { gte: anio } },
+    select: { id: true, codigo: true, ejercicio: true, periodo: true, estado: true, origen: true },
+  });
+  const ejercicios = [...new Set([anio, ...filas.map((f) => f.ejercicio)])].sort((a, b) => a - b);
+  const out: CambioCalendario[] = [];
+  for (const ejercicio of ejercicios) {
+    const existentes = filas.filter((f) => f.ejercicio === ejercicio);
+    if (!existentes.length) {
+      // Sin filas todavia: se crearan con los ajustes nuevos al abrir el ejercicio.
+      out.push({ ejercicio, aplicadoDesde: `${ejercicio}-01-01`, borradas: 0, creadas: 0 });
+      continue;
+    }
+    const plan = planCambioCalendario(ejercicio, existentes, calendarioEjercicio(ejercicio, opciones));
+    if (plan.borrar.length || plan.crear.length) {
+      await prisma.$transaction([
+        // Solo las que siguen sin presentar, sin omitir y sin editar a mano.
+        prisma.modeloImpuesto.deleteMany({
+          where: { companyId, id: { in: plan.borrar }, estado: 'vigente', OR: [{ origen: null }, { origen: { not: 'manual-mixto' } }] },
+        }),
+        prisma.modeloImpuesto.createMany({
+          data: plan.crear.map(({ codigo, periodo }: EntradaCalendario) => ({ companyId, codigo, ejercicio, periodo, estado: 'vigente' })),
+          skipDuplicates: true,
+        }),
+      ]);
+    }
+    out.push({ ejercicio, aplicadoDesde: plan.aplicadoDesde, borradas: plan.borrar.length, creadas: plan.crear.length });
+  }
+  return out;
 }
 
 async function cargarFila(companyId: string, modeloId: string): Promise<FilaModelo> {
@@ -196,6 +297,7 @@ function aResumen(f: FilaModelo, hoy: string): ModeloImpuestoResumen {
     diasDesdeVencimiento: dias < 0 ? -dias : undefined,
     tieneBorrador: !!f.casillas,
     origen: (f.origen as 'autorrelleno' | 'manual-mixto' | null) ?? undefined,
+    ...(RELLENO_MANUAL.has(f.codigo) ? { rellenoManual: true } : {}),
   };
 }
 
@@ -437,6 +539,8 @@ async function calcularCasillas(companyId: string, fila: FilaModelo): Promise<{ 
         datos: d,
       };
     }
+    case '130':
+      throw badRequest(MENSAJE_130_MANUAL);
     default:
       throw badRequest(`Autorrelleno no soportado para el modelo ${fila.codigo}.`);
   }
@@ -553,6 +657,8 @@ export async function generarTxtModelo(companyId: string, modeloId: string): Pro
       return { nombre, contenido: generarFicheroModelo115(nif, periodo, datos as DatosModelo115, { razonSocial: razon }) };
     case '200':
       return { nombre, contenido: generarFicheroModelo200(nif, refrescada.ejercicio, { razonSocial: razon }) };
+    case '130':
+      throw badRequest('La app todavía no genera el fichero del modelo 130: preséntalo con el formulario de la sede de la AEAT.');
     case '190':
       throw badRequest('El fichero del 190 lleva los datos de cada trabajador: descárgalo en Nóminas > Modelo 190 (solo administración y contabilidad).');
     default:
@@ -680,12 +786,15 @@ export async function calendarioFiscalSoloLectura(companyId: string, hoy: string
   } else {
     filas = [...memoria.values()].filter((f) => f.companyId === companyId && ejercicios.includes(f.ejercicio));
   }
+  const opciones = await opcionesCalendarioEmpresa(companyId);
   const out: ModeloCalendarioLectura[] = [];
   for (const ejercicio of ejercicios) {
-    for (const { codigo, periodo } of calendarioEjercicio(ejercicio)) {
-      const fila = filas.find((f) => f.codigo === codigo && f.ejercicio === ejercicio && f.periodo === periodo);
-      const base: FilaModelo = fila ?? { id: '', companyId, codigo, ejercicio, periodo, estado: 'vigente', casillas: null, datos: null, origen: null };
-      out.push({ ...aResumen(base, hoy), guardado: !!fila });
+    // Las filas que ya hay y las que se crearian al abrir el ejercicio en la pantalla.
+    const delAnio = filas.filter((f) => f.ejercicio === ejercicio);
+    for (const fila of delAnio) out.push({ ...aResumen(fila, hoy), guardado: true });
+    for (const { codigo, periodo } of filasQueFaltan(ejercicio, calendarioEjercicio(ejercicio, opciones), delAnio)) {
+      const base: FilaModelo = { id: '', companyId, codigo, ejercicio, periodo, estado: 'vigente', casillas: null, datos: null, origen: null };
+      out.push({ ...aResumen(base, hoy), guardado: false });
     }
   }
   return out.sort((a, b) => a.fechaVencimiento.localeCompare(b.fechaVencimiento) || a.codigo.localeCompare(b.codigo));

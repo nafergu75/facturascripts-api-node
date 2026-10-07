@@ -11,10 +11,10 @@ export type EstadoModeloImpuesto = 'vigente' | 'expirado' | 'omitido' | 'present
 export interface ModeloImpuestoResumen {
   id: string;
   companyId: string;
-  codigo: string; // '303', '390', '347', '349', '111', '115', '200'
+  codigo: string; // '303', '390', '347', '349', '111', '115', '130', '190', '200'
   descripcion: string;
   ejercicio: number;
-  periodo: string; // '1T'..'4T' | '0A'
+  periodo: string; // '1T'..'4T' | '01'..'12' | '0A'
   /** Periodo legible estilo Quipu, ej. '2026Q1' o '2026'. */
   periodoEtiqueta: string;
   estado: EstadoModeloImpuesto;
@@ -27,6 +27,8 @@ export interface ModeloImpuestoResumen {
   /** Si hay casillas guardadas (borrador autorrelleno o manual). */
   tieneBorrador: boolean;
   origen?: 'autorrelleno' | 'manual-mixto';
+  /** true: la app no lo calcula (hoy, el 130): se rellena a mano. */
+  rellenoManual?: boolean;
 }
 
 /** Texto explicativo del modelo (como la cabecera informativa del video). */

@@ -58,3 +58,27 @@ export const AJUSTES_FISCALES_POR_DEFECTO: Readonly<AjustesFiscales> = Object.fr
 
 /** Volumen de operaciones a partir del cual se es gran empresa (art. 71.3 RIVA). */
 export const UMBRAL_GRAN_EMPRESA = '6.010.121,04 €';
+
+/** Ajustes fiscales a partir de la fila guardada (o los de por defecto si no hay). */
+export function ajustesFiscalesDeFila(
+  fila: {
+    periodicidadIva: string;
+    redeme: boolean;
+    sii: boolean;
+    granEmpresa: boolean;
+    recargoEquivalencia: boolean;
+    criterioCaja: boolean;
+    prorrata: unknown;
+  } | null,
+): AjustesFiscales {
+  if (!fila) return { ...AJUSTES_FISCALES_POR_DEFECTO };
+  return {
+    periodicidadIva: fila.periodicidadIva === 'MENSUAL' ? 'MENSUAL' : 'TRIMESTRAL',
+    redeme: fila.redeme,
+    sii: fila.sii,
+    granEmpresa: fila.granEmpresa,
+    recargoEquivalencia: fila.recargoEquivalencia,
+    criterioCaja: fila.criterioCaja,
+    prorrata: fila.prorrata === null || fila.prorrata === undefined ? null : Number(fila.prorrata),
+  };
+}
