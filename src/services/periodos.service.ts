@@ -1,6 +1,14 @@
 import { prisma } from '../config/database';
 import { badRequest, conflict } from '../utils/http-errors';
 import { EstadoPeriodo, PeriodoContable } from '../domain/periodos.model';
+import { FILTRO_ASIENTOS_CIERRE } from '../domain/asientosCierre';
+import {
+  enlaceCierre,
+  ENLACE_CONFIG_EJERCICIOS,
+  estadoEfectivoEjercicio,
+  reaperturaDelAnio,
+  type EstadoEfectivoEjercicio,
+} from './fiscalYears.service';
 
 /**
  * Periodos contables PERSISTIDOS en Prisma (tabla Periodo). Si la BD no esta
@@ -121,16 +129,50 @@ export async function comprobarFechaAbierta(companyId: string, fecha: string, ac
     throw badRequest(`El periodo de ${mes} está ${estado}: no se pueden añadir asientos con esa fecha.`);
   }
   const ejercicio = Number(fecha.slice(0, 4));
-  if (await ejercicioCerrado(companyId, ejercicio)) {
+  const estadoEj = await estadoCierreAnio(companyId, ejercicio);
+  if (estadoEj !== 'ABIERTO') {
     if (accion) {
-      throw badRequest(
-        `No se puede ${accion} con fecha ${ddmmaaaa(fecha)}: el ejercicio ${ejercicio} está cerrado. ` +
-          'Usa otra fecha o, si de verdad tiene que ir en ese año, deshaz antes el cierre en Contabilidad > Cierre y traspaso de saldos.',
-        { ...campoFecha(accion), motivo: 'ejercicio_cerrado' },
-      );
+      const queHacer =
+        estadoEj === 'CERRADO_SIN_ASIENTOS'
+          ? await textoReabrir(companyId, ejercicio)
+          : 'Usa otra fecha o, si de verdad tiene que ir en ese año, deshaz antes el cierre en Contabilidad > Cierre y traspaso de saldos.';
+      throw badRequest(`No se puede ${accion} con fecha ${ddmmaaaa(fecha)}: el ejercicio ${ejercicio} está cerrado. ${queHacer}`, {
+        ...campoFecha(accion),
+        motivo: 'ejercicio_cerrado',
+        enlace: estadoEj === 'CERRADO_SIN_ASIENTOS' ? ENLACE_CONFIG_EJERCICIOS : enlaceCierre(ejercicio),
+      });
     }
     throw badRequest(`El ejercicio ${ejercicio} está cerrado: no se pueden añadir asientos con esa fecha.`);
   }
+}
+
+/** Que hacer con un ejercicio cerrado sin asientos de cierre (Configuracion, no Cierre y traspaso). */
+async function textoReabrir(companyId: string, ejercicio: number): Promise<string> {
+  const { motivo } = await reaperturaDelAnio(companyId, ejercicio);
+  return motivo
+    ? `Se marcó como cerrado sin hacer la regularización ni el cierre. ${motivo}`
+    : 'Se marcó como cerrado sin hacer la regularización ni el cierre: el administrador de la empresa puede reabrirlo en Configuración > Ejercicios y periodos.';
+}
+
+/**
+ * Estado del ejercicio de ese año: CERRADO si tiene asientos de regularizacion
+ * o cierre (domain/asientosCierre, tambien los de cierres anteriores);
+ * CERRADO_SIN_ASIENTOS si esta marcado como cerrado sin ellos; si no, ABIERTO.
+ */
+export async function estadoCierreAnio(companyId: string, ejercicio: number): Promise<EstadoEfectivoEjercicio> {
+  const [fy, cierre] = await Promise.all([
+    prisma.fiscalYear.findFirst({ where: { companyId, label: String(ejercicio) }, select: { estado: true } }),
+    prisma.journalEntry.findFirst({
+      where: {
+        companyId,
+        estado: 'POSTED',
+        ...FILTRO_ASIENTOS_CIERRE,
+        fecha: { gte: new Date(Date.UTC(ejercicio, 0, 1)), lt: new Date(Date.UTC(ejercicio + 1, 0, 1)) },
+      },
+      select: { id: true },
+    }),
+  ]);
+  return estadoEfectivoEjercicio(fy?.estado ?? 'OPEN', !!cierre);
 }
 
 /**
@@ -138,17 +180,7 @@ export async function comprobarFechaAbierta(companyId: string, fecha: string, ac
  * si esta marcado como cerrado (CLOSED), aunque no los tenga.
  */
 export async function ejercicioCerrado(companyId: string, ejercicio: number): Promise<boolean> {
-  const fy = await prisma.fiscalYear.findFirst({ where: { companyId, label: String(ejercicio) }, select: { estado: true } });
-  if (fy?.estado === 'CLOSED') return true;
-  return !!(await prisma.journalEntry.findFirst({
-    where: {
-      companyId,
-      estado: 'POSTED',
-      origen: { in: ['REGULARIZACION', 'CIERRE'] },
-      fecha: { gte: new Date(Date.UTC(ejercicio, 0, 1)), lt: new Date(Date.UTC(ejercicio + 1, 0, 1)) },
-    },
-    select: { id: true },
-  }));
+  return (await estadoCierreAnio(companyId, ejercicio)) !== 'ABIERTO';
 }
 
 /** Modelos que se miran al desbloquear un mes: si estan presentados, hay que confirmar. */
@@ -204,10 +236,18 @@ export async function cambiarBloqueoMes(
     );
   }
   if (estado === 'abierto' && actual?.estado !== 'abierto') {
-    if (await ejercicioCerrado(companyId, ejercicio)) {
+    const estadoEj = await estadoCierreAnio(companyId, ejercicio);
+    if (estadoEj === 'CERRADO_SIN_ASIENTOS') {
+      throw conflict(`El ejercicio ${ejercicio} está cerrado: sus meses no se desbloquean. ${await textoReabrir(companyId, ejercicio)}`, {
+        campo: 'estado',
+        motivo: 'ejercicio_cerrado',
+        enlace: ENLACE_CONFIG_EJERCICIOS,
+      });
+    }
+    if (estadoEj === 'CERRADO') {
       throw conflict(
         `El ejercicio ${ejercicio} está cerrado: sus meses no se desbloquean. Si hay que corregir algo, deshaz antes el cierre en Contabilidad > Cierre y traspaso de saldos.`,
-        { campo: 'estado', motivo: 'ejercicio_cerrado', enlace: `/dashboard/contabilidad/cierre-ejercicio?ejercicio=${ejercicio}` },
+        { campo: 'estado', motivo: 'ejercicio_cerrado', enlace: enlaceCierre(ejercicio) },
       );
     }
     const presentados = await modelosPresentadosDelMes(companyId, ejercicio, mes);

@@ -20,6 +20,8 @@ import { estadoEfectivoEjercicio } from '../services/fiscalYears.service';
 const SUFIJO = Date.now();
 const EMPRESA = `ejer-conf-${SUFIJO}`;
 const OTRA = `ejer-conf-otra-${SUFIJO}`;
+// Sin ningun asiento: sus años cerrados para sacar los libros se quedan cerrados.
+const VACIA = `ejer-conf-vacia-${SUFIJO}`;
 
 let rol = 'admin';
 const app = express();
@@ -36,14 +38,14 @@ app.use(errorMiddleware);
 const base = `/companies/${EMPRESA}`;
 const ids: Record<string, string> = {};
 
-async function asientoCierre(fecha: string, numero: string) {
+async function asientoCierre(fecha: string, numero: string, origen = 'CIERRE', descripcion = 'Cierre') {
   await prisma.journalEntry.create({
-    data: { companyId: EMPRESA, fecha: new Date(`${fecha}T00:00:00Z`), numeroAsiento: numero, descripcion: 'Cierre', origen: 'CIERRE', estado: 'POSTED' },
+    data: { companyId: EMPRESA, fecha: new Date(`${fecha}T00:00:00Z`), numeroAsiento: numero, descripcion, origen, estado: 'POSTED' },
   });
 }
 
 beforeAll(async () => {
-  for (const id of [EMPRESA, OTRA]) {
+  for (const id of [EMPRESA, OTRA, VACIA]) {
     await prisma.company.create({ data: { id, name: id, fsBaseUrl: 'http://localhost:8080', fsApiKeyEnc: 'k' } });
   }
   const fy = (label: string, estado: string, companyId = EMPRESA) =>
@@ -51,12 +53,23 @@ beforeAll(async () => {
       .create({ data: { companyId, label, fechaInicio: `${label}-01-01`, fechaFin: `${label}-12-31`, estado, closingDate: estado === 'CLOSED' ? `${label}-12-31` : null } })
       .then((f) => f.id);
   ids.abierto = await fy('2020', 'OPEN');
-  ids.sinAsientos = await fy('2021', 'CLOSED');
+  // Cerrado sin asientos, pero el 2022 ya se cerro de verdad despues: no se reabre.
+  ids.anteriorAlCierre = await fy('2021', 'CLOSED');
   ids.cerrado = await fy('2022', 'CLOSED');
+  ids.sinAsientos = await fy('2023', 'CLOSED');
   ids.abiertoConAsientos = await fy('2019', 'OPEN');
+  // Cerrado con el cierre de antes del 06-10-2026 (AJUSTE_MANUAL, se reconoce por el concepto).
+  ids.cierreAntiguo = await fy('2018', 'CLOSED');
+  // Con la regularizacion del antiguo /accounting/closures/generar-asiento.
+  ids.cierreAutomatico = await fy('2017', 'OPEN');
   ids.otra = await fy('2021', 'CLOSED', OTRA);
+  ids.vacia = await fy('2016', 'CLOSED', VACIA);
   await asientoCierre('2022-12-31', `CIE-2022-${SUFIJO}`);
   await asientoCierre('2019-12-31', `CIE-2019-${SUFIJO}`);
+  await asientoCierre('2018-12-31', `AS-2018-${SUFIJO}`, 'AJUSTE_MANUAL', 'Regularizacion ejercicio 2018');
+  await asientoCierre('2017-12-31', `CIE-AUTO-2017-${SUFIJO}`, 'CIERRE_AUTOMATICO', 'CIERRE CONTABLE - Período 2017-01-01 a 2017-12-31');
+  // Un asiento normal del 2023: hay algo que cerrar.
+  await asientoCierre('2023-03-15', `FV-2023-${SUFIJO}`, 'FACTURA_INGRESO', 'Factura 2023');
   // Libros del ejercicio cerrado sin asientos: uno pendiente sin fichero y otro ya generado.
   await prisma.legalBook.create({ data: { companyId: EMPRESA, fiscalYearId: ids.sinAsientos, type: 'DIARIO', filePath: '', hash: '', status: 'PENDING' } });
   await prisma.legalBook.create({ data: { companyId: EMPRESA, fiscalYearId: ids.sinAsientos, type: 'ACTAS', filePath: 'x.pdf', hash: 'h', status: 'GENERATED' } });
@@ -70,11 +83,19 @@ describe('GET /fiscal-years: estado único', () => {
     expect(res.status).toBe(200);
     const por = Object.fromEntries(res.body.data.map((f: { label: string; estadoEfectivo: string; tieneAsientosCierre: boolean }) => [f.label, [f.estadoEfectivo, f.tieneAsientosCierre]]));
     expect(por).toEqual({
+      '2023': ['CERRADO_SIN_ASIENTOS', false],
       '2022': ['CERRADO', true],
       '2021': ['CERRADO_SIN_ASIENTOS', false],
       '2020': ['ABIERTO', false],
       '2019': ['CERRADO', true], // abierto pero con asientos de cierre: cuenta como cerrado
+      '2018': ['CERRADO', true], // cierre antiguo (AJUSTE_MANUAL «Regularizacion ejercicio 2018»)
+      '2017': ['CERRADO', true], // CIERRE_AUTOMATICO
     });
+    const fila = (label: string) => res.body.data.find((f: { label: string }) => f.label === label);
+    expect(fila('2023')).toMatchObject({ puedeReabrir: true, motivoNoReabrir: null });
+    expect(fila('2021').puedeReabrir).toBe(false);
+    expect(fila('2021').motivoNoReabrir).toMatch(/un ejercicio posterior ya está cerrado/);
+    expect(fila('2022')).toMatchObject({ puedeReabrir: false, motivoNoReabrir: null });
   });
 
   it('estadoEfectivoEjercicio (puro)', () => {
@@ -100,6 +121,26 @@ describe('POST /fiscal-years/:fyId/reabrir', () => {
     expect(res.body.details.enlace).toBe('/dashboard/contabilidad/cierre-ejercicio?ejercicio=2022');
   });
 
+  it('los cierres antiguos (AJUSTE_MANUAL) también remiten a Cierre y traspaso de saldos', async () => {
+    const res = await reabrir(ids.cierreAntiguo);
+    expect(res.status).toBe(409);
+    expect(res.body.details.enlace).toBe('/dashboard/contabilidad/cierre-ejercicio?ejercicio=2018');
+  });
+
+  it('no se reabre si un ejercicio posterior ya está cerrado con asientos (409)', async () => {
+    const res = await reabrir(ids.anteriorAlCierre);
+    expect(res.status).toBe(409);
+    expect(res.body.details).toEqual({ motivo: 'posterior_cerrado' });
+    expect((await prisma.fiscalYear.findUniqueOrThrow({ where: { id: ids.anteriorAlCierre } })).estado).toBe('CLOSED');
+  });
+
+  it('no se reabre un año sin ningún asiento: no se podría volver a cerrar (409)', async () => {
+    const res = await request(app).post(`/companies/${VACIA}/fiscal-years/${ids.vacia}/reabrir`);
+    expect(res.status).toBe(409);
+    expect(res.body.details).toEqual({ motivo: 'sin_asientos' });
+    expect(res.body.message).toMatch(/no tiene asientos/);
+  });
+
   it('uno abierto: 409; uno de otra empresa: 404', async () => {
     expect((await reabrir(ids.abierto)).status).toBe(409);
     expect((await reabrir(ids.otra)).status).toBe(404);
@@ -108,7 +149,17 @@ describe('POST /fiscal-years/:fyId/reabrir', () => {
   it('el cerrado sin asientos se reabre: plazos fuera, libros pendientes fuera, el generado se queda', async () => {
     const res = await reabrir(ids.sinAsientos);
     expect(res.status).toBe(200);
-    expect(res.body.data).toMatchObject({ estado: 'OPEN', estadoEfectivo: 'ABIERTO', closingDate: null, asientosBloqueados: false, librosPendientesBorrados: 1 });
+    expect(res.body.data).toMatchObject({
+      estado: 'OPEN',
+      estadoEfectivo: 'ABIERTO',
+      closingDate: null,
+      asientosBloqueados: false,
+      librosPendientesBorrados: 1,
+      mesesBloqueados: 12,
+    });
+    // Sus 12 meses quedan bloqueados hasta repetir el cierre.
+    const meses = await prisma.periodo.findMany({ where: { companyId: EMPRESA, ejercicio: 2023 } });
+    expect(meses.map((m) => m.estado)).toEqual(Array(12).fill('bloqueado'));
     const libros = await prisma.legalBook.findMany({ where: { fiscalYearId: ids.sinAsientos } });
     expect(libros.map((l) => l.status)).toEqual(['GENERATED']);
     expect(await prisma.auditLog.count({ where: { companyId: EMPRESA, action: 'REOPEN_FISCAL_YEAR_SIN_ASIENTOS', resourceId: ids.sinAsientos } })).toBe(1);
@@ -147,6 +198,14 @@ describe('periodos', () => {
     const res = await cambiar(6, 2022, { estado: 'abierto' });
     expect(res.status).toBe(409);
     expect(res.body.details).toMatchObject({ motivo: 'ejercicio_cerrado' });
+  });
+
+  it('un mes de un ejercicio cerrado sin asientos remite a Configuración, no a Cierre y traspaso', async () => {
+    await cambiar(2, 2021, { estado: 'bloqueado' });
+    const res = await cambiar(2, 2021, { estado: 'abierto' });
+    expect(res.status).toBe(409);
+    expect(res.body.details).toMatchObject({ motivo: 'ejercicio_cerrado', enlace: '/dashboard/configuracion/ejercicios' });
+    expect(res.body.message).toMatch(/sin hacer la regularización ni el cierre/);
   });
 
   it('un mes cerrado por el cierre no se toca a mano (409)', async () => {

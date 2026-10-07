@@ -23,6 +23,8 @@ import {
   type LecturaDiario,
 } from './lectorContable';
 import { analizarCuentas, crearCuentasNuevas, prepararPlanEmpresa, type CuentaNueva } from './planCuentas';
+// Cerrado: con asientos de regularizacion o cierre (los de ahora y los de cierres anteriores) o marcado CLOSED.
+import { ejercicioCerrado } from '../periodos.service';
 
 const round2 = (n: number): number => Math.round((n + Number.EPSILON) * 100) / 100;
 const esPyg = (codigo: string) => codigo.startsWith('6') || codigo.startsWith('7');
@@ -70,16 +72,6 @@ export function cuentasDesdeJson(valor: unknown): CuentaSaldo[] {
     else out.set(codigo, { codigo, nombre: String(item.nombre ?? '').slice(0, 150), saldo: round2(saldo) });
   }
   return [...out.values()].filter((c) => aCentimos(c.saldo) !== 0);
-}
-
-async function ejercicioCerrado(companyId: string, ejercicio: number): Promise<boolean> {
-  const fy = await prisma.fiscalYear.findFirst({ where: { companyId, label: String(ejercicio) } });
-  if (fy?.estado === 'CLOSED') return true;
-  const cierre = await prisma.journalEntry.findFirst({
-    where: { companyId, estado: 'POSTED', origen: { in: ['REGULARIZACION', 'CIERRE'] }, fecha: rangoEjercicio(ejercicio) },
-    select: { id: true },
-  });
-  return !!cierre;
 }
 
 /** Crea el ejercicio (FiscalYear) si no existe. */

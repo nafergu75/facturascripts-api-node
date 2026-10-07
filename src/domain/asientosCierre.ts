@@ -1,0 +1,31 @@
+/**
+ * Como se reconocen los asientos del cierre de un ejercicio. Un unico criterio
+ * para todo (estado del ejercicio, bloqueo de meses, cierre y su deshacer,
+ * puesta en marcha, informes y el arreglo SQL de reapertura), el mismo que
+ * tipoAsiento() en contabilidadDatos.service:
+ *
+ *  - Por el origen: REGULARIZACION y CIERRE (Cierre y traspaso de saldos) y
+ *    CIERRE_AUTOMATICO (el antiguo POST /accounting/closures/generar-asiento).
+ *  - Por el concepto, en los anteriores al 06-10-2026: el cierre los grababa
+ *    con origen AJUSTE_MANUAL y conceptos «Regularizacion ejercicio X»,
+ *    «Cierre ejercicio X» y «Apertura ejercicio X+1».
+ *
+ * En MySQL la comparacion de texto no distingue mayusculas ni tildes (cotejo
+ * utf8mb4_unicode_ci), asi que «Regularización» y «regularizacion» coinciden.
+ */
+import type { Prisma } from '@prisma/client';
+
+export const ORIGENES_CIERRE = ['REGULARIZACION', 'CIERRE', 'CIERRE_AUTOMATICO'] as const;
+export const CONCEPTOS_CIERRE = ['Regularizacion ejercicio', 'Regularización ejercicio', 'Cierre ejercicio', 'Cierre contable'] as const;
+export const CONCEPTO_APERTURA = 'Apertura ejercicio';
+
+/** Filtro (sobre JournalEntry) de los asientos de regularizacion o cierre. */
+export const FILTRO_ASIENTOS_CIERRE: Prisma.JournalEntryWhereInput = {
+  OR: [{ origen: { in: [...ORIGENES_CIERRE] } }, ...CONCEPTOS_CIERRE.map((c) => ({ descripcion: { startsWith: c } }))],
+};
+
+/** Filtro (sobre JournalEntry) de los asientos de apertura. */
+export const FILTRO_ASIENTOS_APERTURA: Prisma.JournalEntryWhereInput = {
+  OR: [{ origen: 'APERTURA' }, { descripcion: { startsWith: CONCEPTO_APERTURA } }],
+};
+

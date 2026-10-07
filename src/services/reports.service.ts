@@ -12,25 +12,17 @@
 
 import { prisma } from '../config/database';
 import { perfilEmpresa } from './perfilEmpresa.service';
+import { FILTRO_ASIENTOS_CIERRE } from '../domain/asientosCierre';
 
 /**
  * Filtro Prisma (sobre JournalEntry) que deja fuera los asientos de
  * regularizacion y de cierre. Esos asientos dejan a cero las cuentas al 31-12:
  * si se suman como uno normal, la PyG y el balance de un ejercicio cerrado
- * salen a cero. Mismo criterio que tipoAsiento() (origen, o el concepto en los
- * asientos antiguos que se guardaron como AJUSTE_MANUAL).
+ * salen a cero. Mismo criterio que tipoAsiento() y que el estado del ejercicio
+ * (domain/asientosCierre: origen, o el concepto en los asientos antiguos que se
+ * guardaron como AJUSTE_MANUAL).
  */
-export const SIN_REGULARIZACION_NI_CIERRE = {
-  NOT: {
-    OR: [
-      { origen: { in: ['REGULARIZACION', 'CIERRE', 'CIERRE_AUTOMATICO'] } },
-      { descripcion: { startsWith: 'Regularizacion ejercicio' } },
-      { descripcion: { startsWith: 'Regularización ejercicio' } },
-      { descripcion: { startsWith: 'Cierre ejercicio' } },
-      { descripcion: { startsWith: 'Cierre contable' } },
-    ],
-  },
-};
+export const SIN_REGULARIZACION_NI_CIERRE = { NOT: FILTRO_ASIENTOS_CIERRE };
 
 export class ReportsService {
   /**
