@@ -16,6 +16,8 @@ const mockPrisma = {
   customer: { findMany: jest.fn() },
   supplier: { findMany: jest.fn() },
   bankAccount: { findMany: jest.fn() },
+  // Trabajadores: solo para tapar sus nombres antes de la IA y frenarla si se nombran.
+  empleado: { findMany: jest.fn().mockResolvedValue([]) },
   modeloImpuesto: { findUnique: jest.fn() },
   $executeRaw: jest.fn(),
   $transaction: jest.fn(),

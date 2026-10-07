@@ -11,6 +11,7 @@ const mockPrisma = {
   customer: { findMany: jest.fn() },
   supplier: { findMany: jest.fn() },
   bankAccount: { findMany: jest.fn() },
+  empleado: { findMany: jest.fn() },
   carmenContador: { createMany: jest.fn(), findMany: jest.fn() },
   modeloImpuesto: { findUnique: jest.fn() },
   chatMessage: { findMany: jest.fn() },
@@ -80,6 +81,7 @@ beforeEach(() => {
     { id: 'p2', nombreFiscal: 'REPSOL COMERCIAL SA', nifCif: 'A55555555' },
   ]);
   mockPrisma.bankAccount.findMany.mockResolvedValue([{ id: 'b1', bancoNombre: 'Banco Sabadell', iban: 'ES0000000000000000001234' }]);
+  mockPrisma.empleado.findMany.mockResolvedValue([{ id: 'e1', nombre: 'Lucía', apellidos: 'Gómez Ruiz' }]);
   mockPrisma.carmenContador.findMany.mockResolvedValue([]);
   mockPrisma.carmenContador.createMany.mockResolvedValue({ count: 4 });
   mockPrisma.$executeRaw.mockResolvedValue(1);
@@ -472,6 +474,23 @@ describe('capa 1: preguntas de datos', () => {
     const r = await preguntar('¿Es buena idea hacer un descuento a Talleres Martínez por pronto pago?');
     expect(r.cuerpo.origen).not.toBe('ia');
     expect(crearMensaje).not.toHaveBeenCalled();
+  });
+
+  it('nombrar a un trabajador frena la IA, también con «preguntar a la IA»; con el nombre de pila solo, va tapado', async () => {
+    for (const frase of [
+      '¿Qué pasa si Lucía Gómez Ruiz coge una baja por maternidad en noviembre?',
+      '¿Qué tipo de contrato le conviene a Lucía Gómez si vuelve de una excedencia?',
+    ]) {
+      expect((await preguntar(frase)).cuerpo.origen).not.toBe('ia');
+      expect((await preguntar(frase, { accion: { tipo: 'ia' } })).cuerpo.origen).not.toBe('ia');
+    }
+    expect(crearMensaje).not.toHaveBeenCalled();
+    // Los trabajadores se tapan aunque quien pregunta no vea nóminas.
+    const r = await preguntar('¿Cuántos días de permiso le corresponden a Lucía si se casa este verano?', {}, { ...admin, puedeNominas: false });
+    expect(r.cuerpo.origen).toBe('ia');
+    const enviado = JSON.stringify(crearMensaje.mock.calls[0][0].messages);
+    expect(enviado).not.toMatch(/luc[ií]a/i);
+    expect(enviado).toContain('un trabajador');
   });
 });
 

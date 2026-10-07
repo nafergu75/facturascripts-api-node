@@ -308,7 +308,61 @@ export async function buscarTercero(companyId: string, textoBase: string, roles?
   return refrescado ?? r;
 }
 
+// ---------- Trabajadores (solo para proteger sus datos) ----------
+
+/**
+ * Trabajadores de la empresa (tabla Empleado, también los de baja). NO se usan
+ * para buscar ni para enseñar nada: solo para tapar sus nombres antes de
+ * mandar una pregunta a la IA y para no mandarla si nombra a uno. Por eso se
+ * cargan siempre, aunque el usuario no tenga nominas:read.
+ */
+export interface Trabajador {
+  id: string;
+  rol: 'trabajador';
+  /** Nombre y apellidos normalizados, en palabras. */
+  tokens: string[];
+}
+
+/** «Lucía Gómez-Ruiz» → ['lucia', 'gomez', 'ruiz']. */
+export function tokensPersona(nombre: string): string[] {
+  return plano(nombre).replace(/[^a-z0-9ñ]+/g, ' ').trim().split(' ').filter(Boolean);
+}
+
+/** Más corta que la de terceros: un trabajador recién dado de alta se tapa enseguida. */
+const CADUCIDAD_TRABAJADORES_MS = 60_000;
+const cacheTrabajadores = new Map<string, { indice: Trabajador[]; en: number }>();
+
+export async function indiceTrabajadores(companyId: string): Promise<Trabajador[]> {
+  const enCache = cacheTrabajadores.get(companyId);
+  if (enCache && Date.now() - enCache.en < CADUCIDAD_TRABAJADORES_MS) return enCache.indice;
+  const filas = await prisma.empleado.findMany({ where: { companyId }, select: { id: true, nombre: true, apellidos: true } });
+  const indice = filas
+    .map((e) => ({ id: e.id, rol: 'trabajador' as const, tokens: tokensPersona(`${e.nombre} ${e.apellidos}`) }))
+    .filter((t) => t.tokens.length > 0);
+  if (cacheTrabajadores.size > 500) cacheTrabajadores.clear();
+  cacheTrabajadores.set(companyId, { indice, en: Date.now() });
+  return indice;
+}
+
+/** Palabras de un nombre de persona que la identifican: 4 letras o más, ni vacías ni del vocabulario contable. */
+const palabraDePersona = (tok: string) => tok.length >= 4 && !PALABRAS_VACIAS.has(tok) && !esPalabraDelDominio(tok);
+
+/**
+ * ¿La pregunta nombra a un trabajador? Sí si trae dos palabras de su nombre
+ * («Lucía Gómez», «Gómez Ruiz») o su nombre entero si solo tiene una. Una sola
+ * palabra suelta («Lucía») no frena la IA, pero se tapa igual (depurar.ts).
+ */
+export function nombraTrabajadorEn(texto: string, trabajadores: Trabajador[]): boolean {
+  const palabras = new Set(tokensPersona(texto));
+  return trabajadores.some((t) => {
+    const propias = t.tokens.filter(palabraDePersona);
+    const presentes = propias.filter((tok) => palabras.has(tok)).length;
+    return presentes >= 2 || (propias.length > 0 && presentes === propias.length);
+  });
+}
+
 /** Solo para tests. */
 export function olvidarIndices(): void {
   cache.clear();
+  cacheTrabajadores.clear();
 }

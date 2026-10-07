@@ -24,7 +24,7 @@ import { tiene } from './contexto';
 import { normalizar, type TextoNormalizado } from './normalizar';
 import { extraerPeriodo, resolverCodigoPeriodo } from './huecos/periodo';
 import { extraerFoco, extraerImporteMinimo, extraerModelo, extraerNumeroFactura, extraerSentido } from './huecos/otros';
-import { buscarTercero, indiceTerceros, trozosCandidatos, UMBRAL_USAR, type ResultadoTercero, type Tercero } from './terceros';
+import { buscarTercero, indiceTerceros, indiceTrabajadores, nombraTrabajadorEn, trozosCandidatos, UMBRAL_USAR, type ResultadoTercero } from './terceros';
 import { RE_NIF } from './huecos/otros';
 import { clasificar, decidir, textoParaClasificar, UMBRAL_DATOS, type Puntuacion } from './clasificador';
 import { INTENCIONES, intencionPorId, type Intencion } from './intenciones/catalogo';
@@ -279,6 +279,15 @@ function nombraTercero(h: HuecosTexto, texto: string): boolean {
   return !PREGUNTA_DE_CONCEPTO.test(texto);
 }
 
+/**
+ * ¿La pregunta nombra a un trabajador de la empresa? Entonces habla de una
+ * persona concreta (una baja, su contrato...) y no va a la IA, aunque sea una
+ * duda general: son datos personales, a veces de salud o familiares.
+ */
+async function nombraTrabajador(ctx: CarmenCtx, mensaje: string): Promise<boolean> {
+  return nombraTrabajadorEn(mensaje, await indiceTrabajadores(ctx.companyId));
+}
+
 function huecosEntradaDe(h: HuecosResueltos): HuecosEntrada {
   const e: HuecosEntrada = {};
   if (h.periodo) e.periodo = h.periodo.codigo;
@@ -509,7 +518,9 @@ async function responderConIA(
   fichas: FichaPuntuada[],
   conservarDias: number,
 ): Promise<Resultado> {
-  const terceros: Tercero[] = await indiceTerceros(ctx.companyId);
+  // Se tapan también los trabajadores (de alta y de baja), aunque el usuario no vea nóminas.
+  const [clientesYProveedores, trabajadores] = await Promise.all([indiceTerceros(ctx.companyId), indiceTrabajadores(ctx.companyId)]);
+  const terceros = [...clientesYProveedores, ...trabajadores];
   const pregunta = depurarParaIA(mensaje, terceros);
   const turnos = sesion
     ? (await turnosParaIA(ctx, sesion.id, conservarDias)).map((t) => ({ pregunta: depurarParaIA(t.pregunta, terceros), respuesta: depurarParaIA(t.respuesta, terceros) }))
@@ -634,7 +645,8 @@ async function noEraEsto(ctx: CarmenCtx, entrada: EntradaCarmen, descartada: str
   const h = await extraerHuecos(ctx, n);
   const ranking = clasificar(h.textoClasificar, h.senales, entrada.currentPage, ctx.hoy).filter((p) => p.intencion.id !== descartada);
   const fichas = buscarFichas(entrada.message, ctx.hoy, 3, ctx.espanola);
-  const deDatos = (ranking[0]?.puntuacion ?? 0) >= UMBRAL_DATOS || tieneMarcadoresPropios(n.texto) || nombraTercero(h, n.texto);
+  const deDatos =
+    (ranking[0]?.puntuacion ?? 0) >= UMBRAL_DATOS || tieneMarcadoresPropios(n.texto) || nombraTercero(h, n.texto) || (await nombraTrabajador(ctx, entrada.message));
   const disp = deDatos || contarPalabras(entrada.message) < PALABRAS_MIN_IA ? null : await disponibilidadIA(ctx, ajustes);
   const texto = fichas.length || ranking.some((p) => p.puntuacion > 0.15)
     ? 'Perdona. ¿Es alguna de estas? Si no, consúltalo con tu asesor.'
@@ -678,7 +690,12 @@ async function responderAccion(ctx: CarmenCtx, entrada: EntradaCarmen, sesion: S
       const ranking = clasificar(h.textoClasificar, h.senales, entrada.currentPage, ctx.hoy);
       const fichas = buscarFichas(entrada.message, ctx.hoy, 3, ctx.espanola);
       // La guarda de datos propios vale también para el botón: una pregunta de datos nunca va a la IA.
-      if ((ranking[0]?.puntuacion ?? 0) >= UMBRAL_DATOS || tieneMarcadoresPropios(n.texto) || nombraTercero(h, n.texto)) {
+      if (
+        (ranking[0]?.puntuacion ?? 0) >= UMBRAL_DATOS ||
+        tieneMarcadoresPropios(n.texto) ||
+        nombraTercero(h, n.texto) ||
+        (await nombraTrabajador(ctx, entrada.message))
+      ) {
         return { cuerpo: aclaracion(ctx, 'Eso es una pregunta sobre tus datos, y a la IA no le paso datos de tu empresa. Prueba con una de estas consultas:', { ranking, fichas, pagina: entrada.currentPage }) };
       }
       const disp = await disponibilidadIA(ctx, ajustes);
@@ -770,7 +787,7 @@ export async function responder(ctx: CarmenCtx, entrada: EntradaCarmen, sesion: 
 
   // 7. Fichas.
   if (fichaClara) return { cuerpo: respuestaFicha(f1.ficha), contexto: null };
-  if (propia) {
+  if (propia || (await nombraTrabajador(ctx, mensaje))) {
     return { cuerpo: aclaracion(ctx, 'No sé si te he entendido. ¿Es alguna de estas consultas?', { ranking, fichas, huecos: huecosEntradaDe(h.resueltos), pagina }) };
   }
 

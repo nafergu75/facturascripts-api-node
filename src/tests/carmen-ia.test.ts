@@ -18,7 +18,7 @@ import { AVISO_RECORTADA, construirMensajes, fijarClienteIA, hastaUltimaFrase, p
 import { depurarParaIA } from '../services/carmen/depurar';
 import { validarCifras, extraerCifras } from '../services/carmen/validarCifras';
 import { systemPrompt } from '../services/carmen/llm-prompt';
-import { tokensNombre, type Tercero } from '../services/carmen/terceros';
+import { nombraTrabajadorEn, tokensNombre, tokensPersona, type Tercero } from '../services/carmen/terceros';
 import { FICHAS } from '../services/carmen/faq/faq.data';
 
 const HOY = '2026-10-07';
@@ -185,6 +185,30 @@ describe('lo que se envía a la IA', () => {
     expect(b).toContain('un cliente');
     // Las palabras del vocabulario contable no se tocan aunque estén en un nombre («clientes» de Iberdrola Clientes).
     expect(depurarParaIA('¿Cómo cobro a mis clientes por adelantado?', conPartes)).toBe('¿Cómo cobro a mis clientes por adelantado?');
+  });
+
+  it('tapa los nombres de los trabajadores y su número de afiliación (NAF)', () => {
+    const conTrabajador = [...terceros, { id: 'e1', rol: 'trabajador' as const, tokens: tokensPersona('Lucía Gómez Ruiz') }];
+    const a = depurarParaIA('¿Qué tipo de contrato le conviene a Lucía Gómez Ruiz si vuelve de una excedencia?', conTrabajador);
+    expect(a).toBe('¿Qué tipo de contrato le conviene a un trabajador si vuelve de una excedencia?');
+    // Solo el nombre de pila también se tapa.
+    expect(depurarParaIA('¿Cuántos días de permiso tiene Lucía por mudanza?', conTrabajador)).toBe('¿Cuántos días de permiso tiene un trabajador por mudanza?');
+    for (const naf of ['281234567840', '28 12345678 40', '28/12345678/40']) {
+      expect(depurarParaIA(`¿Dónde se pone el número de afiliación ${naf} en la ficha del trabajador?`)).toBe(
+        '¿Dónde se pone el número de afiliación [NAF] en la ficha del trabajador?',
+      );
+    }
+    // Un teléfono sigue siendo un teléfono y un importe no se toca.
+    expect(depurarParaIA('Llama al 612 345 678 por los 1.500 €')).toBe('Llama al [TELÉFONO] por los 1.500 €');
+  });
+
+  it('nombrar a un trabajador (dos palabras de su nombre) frena la IA; el nombre de pila solo no', () => {
+    const lucia = [{ id: 'e1', rol: 'trabajador' as const, tokens: tokensPersona('Lucía Gómez Ruiz') }];
+    expect(nombraTrabajadorEn('¿Qué pasa si Lucía Gómez coge una baja por maternidad?', lucia)).toBe(true);
+    expect(nombraTrabajadorEn('¿Y si GÓMEZ RUIZ pide una excedencia?', lucia)).toBe(true);
+    expect(nombraTrabajadorEn('¿Cuántos días de permiso tiene Lucía por mudanza?', lucia)).toBe(false);
+    expect(nombraTrabajadorEn('¿Cómo se calcula el finiquito?', lucia)).toBe(false);
+    expect(nombraTrabajadorEn('¿Qué le pasa a Ruiz?', [{ id: 'e2', rol: 'trabajador', tokens: tokensPersona('Ruiz') }])).toBe(true);
   });
 
   it('el system prompt lleva los menús reales y las reglas, sin fecha ni datos de la empresa', () => {
