@@ -10,12 +10,14 @@
 --  1) Lista las empresas afectadas:
 --       SELECT l.companyId, l.denominacion, l.pais, l.monedaCuenta,
 --              (SELECT COUNT(*) FROM IncomeInvoice f WHERE f.companyId = l.companyId) AS facturas,
---              (SELECT COUNT(*) FROM JournalEntry a WHERE a.companyId = l.companyId) AS asientos
+--              (SELECT COUNT(*) FROM JournalEntry a WHERE a.companyId = l.companyId) AS asientos,
+--              (SELECT COUNT(*) FROM Nomina n WHERE n.companyId = l.companyId AND n.estado <> 'ANULADA') AS nominas
 --       FROM LegalConfig l
 --       WHERE l.pais IN ('US', 'HK') AND l.monedaCuenta = 'EUR';
 --  2) Confirma con la empresa que TODAS sus cifras (facturas, asientos, saldos y
 --     cuentas bancarias) son dolares. Si alguna esta de verdad en euros, NO lo
---     ejecutes: esa parte habria que convertirla a mano.
+--     ejecutes: esa parte habria que convertirla a mano. Si tiene nominas, NO lo
+--     ejecutes: son de la Seguridad Social y el IRPF espanoles, en euros.
 --  3) Cambia PON_AQUI_EL_ID_DE_LA_EMPRESA por su companyId en las cinco sentencias.
 --
 -- Ejecucion (Git Bash, carpeta backend, con DATABASE_URL de produccion):
@@ -53,10 +55,11 @@ WHERE p.companyId = 'PON_AQUI_EL_ID_DE_LA_EMPRESA'
   AND l.pais IN ('US', 'HK') AND l.monedaCuenta = 'USD'
   AND p.moneda = 'EUR' AND p.tipoCambio = 1;
 
--- 5) Sus facturas archivadas.
+-- 5) Sus facturas archivadas (no los PDF de nominas ni de seguros sociales).
 UPDATE DocumentoArchivo d
 JOIN LegalConfig l ON l.companyId = d.companyId
 SET d.moneda = 'USD'
 WHERE d.companyId = 'PON_AQUI_EL_ID_DE_LA_EMPRESA'
   AND l.pais IN ('US', 'HK') AND l.monedaCuenta = 'USD'
+  AND d.tipo IN ('ingreso', 'gasto')
   AND d.moneda = 'EUR';
