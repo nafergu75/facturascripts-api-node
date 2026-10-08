@@ -344,7 +344,11 @@ export class AccountingEngineController {
         });
         const motivo = gasto ? await motivoPeriodoBloqueado(companyId, asiento.fecha.toISOString().slice(0, 10), retencionDe(gasto)) : null;
         if (motivo) {
-          throw conflict(`${motivo}: modifica la factura y, si la recibiste más tarde, pon en «¿La recibiste más tarde?» la fecha en que te llegó, de un periodo sin presentar. Después aprueba el asiento.`);
+          // campo y facturaId: la pantalla abre la factura con «¿La recibiste más tarde?» desplegado.
+          throw conflict(
+            `${motivo}: modifica la factura y, si la recibiste más tarde, pon en «¿La recibiste más tarde?» la fecha en que te llegó, de un periodo sin presentar. Después aprueba el asiento.`,
+            { campo: 'fechaRegistro', facturaId: asiento.invoiceId },
+          );
         }
       }
 

@@ -20,6 +20,7 @@ import expenseInvoicesRoutes from '../routes/expense-invoices.routes';
 import { errorMiddleware } from '../middleware/error.middleware';
 import { expenseInvoicesService } from '../services/expense-invoices.service';
 import { AccountingEngineController } from '../controllers/accounting-engine.controller';
+import { accountingEngineRoutes } from '../routes/accounting-engine.routes';
 import { registrarCobroFactura } from '../services/cobrosPagos.service';
 import { cambiarEstadoPeriodo } from '../services/periodos.service';
 import { calcularModelo303, calcularModelo347 } from '../services/impuestosCalculo.service';
@@ -54,6 +55,27 @@ function app(companyId: string) {
     next();
   });
   a.use('/expense-invoices', expenseInvoicesRoutes);
+  a.use(errorMiddleware);
+  return a;
+}
+
+/** El motor contable montado como en routes/index.ts (/companies/:companyId/accounting). */
+function appMotor(companyId: string) {
+  const a = express();
+  a.use(express.json());
+  a.use((req, _res, next) => {
+    // sesionVerificada: authMiddleware de la ruta no vuelve a pedir el token.
+    req.user = {
+      userId: 'u-rev',
+      email: 'contable@test.local',
+      roles: ['contable'],
+      companies: [companyId],
+      rolesPorEmpresa: { [companyId]: ['contable'] },
+      sesionVerificada: true,
+    } as never;
+    next();
+  });
+  a.use('/companies/:companyId/accounting', accountingEngineRoutes);
   a.use(errorMiddleware);
   return a;
 }
@@ -115,7 +137,13 @@ describe('alta en un trimestre con el 303 presentado', () => {
     await expect(motor.aprobarAsiento(E, asientoId, 'u-rev')).rejects.toMatchObject({
       statusCode: 409,
       message: expect.stringMatching(/^El 303 del 1T de 2026 ya está presentado: modifica la factura/),
+      // La pantalla abre la factura con «¿La recibiste más tarde?» desplegado.
+      details: { campo: 'fechaRegistro', facturaId: f.id },
     });
+    // Por la ruta (POST .../approve) tambien llegan los details.
+    const porRuta = await request(appMotor(E)).post(`/companies/${E}/accounting/journal-entries/${asientoId}/approve`).send({});
+    expect(porRuta.status).toBe(409);
+    expect(porRuta.body.details).toEqual({ campo: 'fechaRegistro', facturaId: f.id });
     expect((await prisma.journalEntry.findUniqueOrThrow({ where: { id: asientoId } })).estado).toBe('DRAFT');
     expect((await prisma.expenseInvoice.findUniqueOrThrow({ where: { id: f.id } })).estado).toBe('DRAFT');
     await esperarCuadre(expect, E, 2026, 1, 0, 0);

@@ -179,7 +179,9 @@ accountingEngineRoutes.post(
       const statusCode =
         err instanceof HttpError ? err.statusCode : 400;
       const message = err instanceof Error ? err.message : String(err);
-      res.status(statusCode).json({ error: message });
+      // Los details (p. ej. { campo: 'fechaRegistro', facturaId }) le dicen a la pantalla que abrir.
+      const details = err instanceof HttpError && err.details !== undefined ? { details: err.details } : {};
+      res.status(statusCode).json({ error: message, ...details });
     }
   }
 );
