@@ -4,7 +4,9 @@
  *    factura en un trimestre con el 303 (o el 111/115) ya presentado;
  *  - el boton Contabilizar de una factura anterior usa su fecha de registro,
  *    su cuenta y la base de las lineas con retencion, y el proveedor en la
- *    misma cuenta (400/410) que sus pagos.
+ *    misma cuenta (400/410) que sus pagos;
+ *  - una factura anterior sin asiento de un trimestre declarado no se
+ *    modifica ni se anula sin contraasiento.
  *
  * Necesita MySQL (en GitHub Actions lo levanta el workflow de tests).
  */
@@ -17,6 +19,8 @@ import { errorMiddleware } from '../middleware/error.middleware';
 import { expenseInvoicesService } from '../services/expense-invoices.service';
 import { AccountingEngineController } from '../controllers/accounting-engine.controller';
 import { registrarCobroFactura } from '../services/cobrosPagos.service';
+import { calcularModelo303 } from '../services/impuestosCalculo.service';
+import { periodoFiscal } from '../services/nominas/fiscal';
 import { controlCif } from '../utils/nif';
 import { esperarCuadre } from './ayuda-cuadre-recibidas';
 
@@ -198,5 +202,40 @@ describe('Contabilizar una factura anterior', () => {
     const asiento = await prisma.journalEntry.findFirstOrThrow({ where: { invoiceId: f.id, origen: 'FACTURA_GASTO' }, include: { lineas: true } });
     expect(asiento.lineas.find((l) => l.haber > 0)?.accountCode).toBe('400');
     expect(await saldos(E, ['400', '410'])).toEqual({ '400': 0, '410': 0 });
+  });
+});
+
+describe('factura anterior sin asiento con el 303 presentado', () => {
+  it('no se modifica ni se anula; se contabiliza y despues se anula con contraasiento', async () => {
+    const E = await nuevaEmpresa('anterior-303');
+    const sup = await proveedor(E);
+    const f = await anterior(E, sup);
+    await presentar(E, '303', '1T');
+    const cuota1T = async () => (await calcularModelo303(E, periodoFiscal(2026, '1T'))).totalCuotaDeducible;
+    expect(await cuota1T()).toBe(210);
+
+    const ficha = await request(app(E)).get(`/expense-invoices/${f.id}`);
+    expect(ficha.body.data.acciones).toMatchObject({
+      editar: { permitido: false, motivo: expect.stringMatching(/^El 303 del 1T de 2026 ya está presentado: esta factura ya cuenta en lo presentado y no se puede modificar así\. Contabilízala/) },
+      anular: { permitido: false, conContraasiento: false, motivo: expect.stringMatching(/no se puede anular así/) },
+      contabilizar: true,
+    });
+    const put = await request(app(E)).put(`/expense-invoices/${f.id}`).send(factura(sup, { lineas: [{ descripcion: 'Luz', cantidad: 1, precioUnitario: 500, tipoIva: 21 }] }));
+    expect(put.status).toBe(409);
+    expect(put.body.details).toEqual({ accion: 'contabilizar' });
+    const anu = await request(app(E)).post(`/expense-invoices/${f.id}/anular`).send({ motivo: 'Repetida' });
+    expect(anu.status).toBe(409);
+    expect(await cuota1T()).toBe(210);
+
+    // Mover la fecha a un trimestre declarado tampoco: una anterior del 2T no puede pasar al 1T.
+    const otra = await anterior(E, sup, { fechaEmision: '2026-04-10' });
+    const mover = await request(app(E)).put(`/expense-invoices/${otra.id}`).send(factura(sup, { numeroFacturaProveedor: 'MOV-1', fechaEmision: '2026-03-30' }));
+    expect(mover.status).toBe(409);
+
+    await motor.contabilizarFacturaGasto(E, f.id);
+    const ok = await request(app(E)).post(`/expense-invoices/${f.id}/anular`).send({ motivo: 'Repetida', fecha: '2026-04-15' });
+    expect(ok.status).toBe(200);
+    expect(ok.body.data.contraasiento).toBe(true);
+    await esperarCuadre(expect, E, 2026, 1, 210, 1000);
   });
 });

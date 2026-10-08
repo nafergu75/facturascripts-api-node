@@ -611,6 +611,20 @@ async function pagadoPorFacturas(companyId: string, ids: string[]): Promise<Map<
 
 const mensajeConPagos = 'La factura tiene pagos registrados: anúlalos antes de modificarla.';
 
+/**
+ * La factura ya cuenta en los modelos: con su asiento en firme o, sin asiento,
+ * si es una anterior sin contabilizar (entra en el 303 por su fecha).
+ */
+const cuentaEnModelos = (estado: string, asiento: { estado: string } | null) =>
+  asiento ? asiento.estado === 'POSTED' : ESTADOS_SIN_CONTABILIZAR.includes(estado);
+
+const textoNoModificable = (motivo: string) =>
+  `${motivo}: esta factura ya no se puede modificar. Anúlala (se hará un contraasiento con fecha de hoy) y vuelve a registrarla.`;
+
+/** Factura anterior sin asiento de un periodo declarado: primero se contabiliza; despues se anula con contraasiento. */
+const textoAnteriorDeclarada = (motivo: string, accion: 'modificar' | 'anular') =>
+  `${motivo}: esta factura ya cuenta en lo presentado y no se puede ${accion} así. Contabilízala y, si hace falta, anúlala después (se hará un contraasiento).`;
+
 // ---------------------------------------------------------------------------
 // Alta (manual con asiento firme o desde el lector con asiento en borrador)
 // ---------------------------------------------------------------------------
@@ -879,11 +893,12 @@ export async function editarGasto(
   if (await tieneCobrosActivos(companyId, 'GASTO', id)) throw conflict(mensajeConPagos);
 
   const asiento = await asientoVigente(prisma, companyId, id);
+  const enModelos = cuentaEnModelos(actual.estado, asiento);
   const bloqueo = (motivo: string) =>
-    conflict(`${motivo}: esta factura ya no se puede modificar. Anúlala (se hará un contraasiento con fecha de hoy) y vuelve a registrarla.`, {
-      accion: 'anular',
-    });
-  if (asiento?.estado === 'POSTED') {
+    asiento
+      ? conflict(textoNoModificable(motivo), { accion: 'anular' })
+      : conflict(textoAnteriorDeclarada(motivo, 'modificar'), { accion: 'contabilizar' });
+  if (enModelos) {
     const motivo = await motivoPeriodoBloqueado(companyId, fechaContableGasto(actual), retencionDe(actual));
     if (motivo) throw bloqueo(motivo);
   }
@@ -899,7 +914,7 @@ export async function editarGasto(
 
   const fechaNueva = v.fechaRegistro ?? v.fechaEmision;
   await comprobarFechaAbierta(companyId, fechaNueva);
-  if (asiento?.estado === 'POSTED') {
+  if (enModelos) {
     const motivo = await motivoPeriodoBloqueado(companyId, fechaNueva, retencionTotal > 0 ? tipoRetencionLibro(v.tipoGasto) : null);
     if (motivo) throw bloqueo(motivo);
   }
@@ -1006,8 +1021,11 @@ export async function anularGasto(
   const fechaPedida = typeof datos.fecha === 'string' && datos.fecha ? datos.fecha : null;
 
   const asiento = await asientoVigente(prisma, companyId, id);
-  const conContraasiento =
-    asiento?.estado === 'POSTED' && (await motivoPeriodoBloqueado(companyId, fechaContableGasto(f), retencionDe(f))) !== null;
+  const declarada = cuentaEnModelos(f.estado, asiento) ? await motivoPeriodoBloqueado(companyId, fechaContableGasto(f), retencionDe(f)) : null;
+  // Una factura anterior sin asiento ya cuenta en los modelos: si su periodo
+  // esta declarado, anularla sin contraasiento cambiaria lo presentado.
+  if (declarada && !asiento) throw conflict(textoAnteriorDeclarada(declarada, 'anular'), { accion: 'contabilizar' });
+  const conContraasiento = asiento?.estado === 'POSTED' && declarada !== null;
   const fechaAnulacion = fechaPedida ?? hoyEspana();
   if (conContraasiento) {
     await comprobarFechaAbierta(companyId, fechaAnulacion);
@@ -1148,21 +1166,23 @@ async function obtenerDetalle(companyId: string, id: string): Promise<GastoDetal
   const tipo = esTipoGasto(f.tipoGasto) ? f.tipoGasto : null;
 
   // Lo que se puede hacer (las mismas reglas que editarGasto y anularGasto, sin lanzar errores).
-  const bloqueo = asiento?.estado === 'POSTED' && f.estado !== 'ANULADA' ? await motivoPeriodoBloqueado(companyId, fechaContableGasto(f), retencionDe(f)) : null;
+  const bloqueo = cuentaEnModelos(f.estado, asiento) ? await motivoPeriodoBloqueado(companyId, fechaContableGasto(f), retencionDe(f)) : null;
   const editar =
     f.estado === 'ANULADA'
       ? { permitido: false, motivo: 'La factura está anulada: no se puede modificar.' }
       : activos > 0
         ? { permitido: false, motivo: mensajeConPagos }
         : bloqueo
-          ? { permitido: false, motivo: `${bloqueo}: esta factura ya no se puede modificar. Anúlala (se hará un contraasiento con fecha de hoy) y vuelve a registrarla.` }
+          ? { permitido: false, motivo: asiento ? textoNoModificable(bloqueo) : textoAnteriorDeclarada(bloqueo, 'modificar') }
           : { permitido: true };
   const anular =
     f.estado === 'ANULADA'
       ? { permitido: false, motivo: 'La factura ya está anulada.', conContraasiento: false }
       : activos > 0
         ? { permitido: false, motivo: 'La factura tiene pagos registrados: anúlalos antes de anularla.', conContraasiento: false }
-        : { permitido: true, conContraasiento: !!bloqueo };
+        : bloqueo && !asiento
+          ? { permitido: false, motivo: textoAnteriorDeclarada(bloqueo, 'anular'), conContraasiento: false }
+          : { permitido: true, conContraasiento: !!bloqueo };
 
   return {
     id: f.id,
