@@ -26,7 +26,7 @@
 
 import Anthropic from '@anthropic-ai/sdk';
 import { randomUUID as uuid } from 'crypto';
-import { badRequest } from '../utils/http-errors';
+import { badRequest, HttpError } from '../utils/http-errors';
 import { validarNifEspanol } from '../utils/nif';
 import { prefijoNifIvaUe } from '../domain/tipo-operacion.model';
 import { tipoGastoDeCuenta, type TipoGasto } from '../domain/factura-gasto.model';
@@ -89,6 +89,9 @@ const anthropicClient = process.env.ANTHROPIC_API_KEY
   : null;
 
 const MIME_IMAGEN = /^image\/(jpeg|png|gif|webp)$/i;
+
+export const MENSAJE_LECTOR_SIN_IA =
+  'La lectura con IA no está activada en esta instalación. Registra la factura con Compras → Nueva factura de gasto.';
 
 const PROMPT_EXTRACCION = `Eres un experto en contabilidad española de gastos e impuestos.
 Analiza esta imagen de comprobante de gasto (factura, ticket, recibo, etc.)
@@ -323,7 +326,9 @@ interface LecturaClaude {
  */
 async function leerDocumentoConClaude(buffer: Buffer, mimeType: string): Promise<LecturaClaude> {
   if (!anthropicClient) {
-    throw badRequest('El extractor IA no está disponible: falta ANTHROPIC_API_KEY en el servidor.');
+    // Sin la clave de la IA en el servidor. El usuario no puede arreglarlo: se le
+    // dice que hacer (503, no 400) y la pantalla enlaza al alta manual.
+    throw new HttpError(503, MENSAJE_LECTOR_SIN_IA, { codigo: 'LECTOR_SIN_IA', alternativa: '/dashboard/compras/nueva' });
   }
 
   const esPdf = /pdf/i.test(mimeType);
