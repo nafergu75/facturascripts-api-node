@@ -64,7 +64,9 @@ const FICHAS: Record<string, FichaModeloImpuesto> = {
       'Las nominas cuentan por su fecha de pago: una nomina de diciembre pagada en enero va al 1T del ano siguiente.',
     ],
     notasConfiguracion: ['Las retenciones de compras se leen del campo IRPF de cada factura de proveedor.'],
-    recomendaciones: ['Cuadra el total con el saldo de la subcuenta 4751 antes de presentar.'],
+    recomendaciones: [
+      'Antes de presentarlo, cuadra el total con la parte de nóminas y de profesionales de la 4751: las retenciones de alquileres también van a la 4751, pero se ingresan con el 115.',
+    ],
   },
   '190': {
     modeloCodigo: '190',
@@ -83,7 +85,9 @@ const FICHAS: Record<string, FichaModeloImpuesto> = {
     titulo: 'Modelo 115 — Retenciones por alquileres',
     textoExplicativo:
       'Ingresa las retenciones practicadas en los alquileres de inmuebles urbanos (locales, oficinas) que pagas como inquilino.',
-    advertencias: ['TODO: el autorrelleno de alquileres requiere marcar las facturas de arrendamiento; hoy devuelve ceros.'],
+    advertencias: [
+      'Sale de las facturas de gasto de tipo Alquileres con retención. El resumen anual por arrendador (los datos del 180) está en Fiscalidad > Modelo 115.',
+    ],
     notasConfiguracion: ['El arrendador debe facilitarte su NIF y el porcentaje de retencion vigente (19%).'],
     recomendaciones: ['Cuadra con el resumen anual 180 a fin de ejercicio.'],
   },

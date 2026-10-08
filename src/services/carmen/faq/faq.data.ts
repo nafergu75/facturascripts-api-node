@@ -637,7 +637,7 @@ export const FICHAS: FichaFAQ[] = [
     pregunta: '¿Qué es el modelo 111?',
     variantes: ['para que sirve el 111', 'modelo de retenciones de trabajadores y profesionales', 'que reviso en el modelo 111', 'quien presenta el 111', 'explicacion del modelo 111'],
     respuesta:
-      'Con el modelo 111 se ingresan las retenciones de IRPF que la empresa o el autónomo ha practicado: las de las nóminas de sus trabajadores y las de las facturas de profesionales, entre otras. Se presenta cada trimestre, en los veinte primeros días de abril, julio, octubre y enero, y cada mes en las grandes empresas. Antes de presentarlo, comprueba que las facturas de profesionales con retención están registradas y que el total cuadra con el saldo de la cuenta 4751. El resumen anual es el modelo 190.',
+      'Con el modelo 111 se ingresan las retenciones de IRPF que la empresa o el autónomo ha practicado: las de las nóminas de sus trabajadores y las de las facturas de profesionales, entre otras. Se presenta cada trimestre, en los veinte primeros días de abril, julio, octubre y enero, y cada mes en las grandes empresas. Antes de presentarlo, comprueba que las facturas de profesionales con retención están registradas y que el total cuadra con la parte de nóminas y de profesionales de la cuenta 4751 (las retenciones de alquileres también van a la 4751, pero se ingresan con el modelo 115). El resumen anual es el modelo 190.',
     fuente: BOE('BOE-A-2007-6820', 'a108', 'Reglamento del IRPF (RD 439/2007), artículo 108'),
     ...VERIFICADA,
     enlaceApp: { texto: 'Ir al Modelo 111', href: '/dashboard/fiscal/modelo-111' },
