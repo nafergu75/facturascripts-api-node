@@ -582,6 +582,37 @@ export async function cuentaAcreedorDePagos(companyId: string, invoiceId: string
   return lineas.find((l) => /^4[01]/.test(l.accountCode))?.accountCode ?? null;
 }
 
+const mensajeCambiada = 'La factura ha cambiado mientras la modificabas: vuelve a abrirla.';
+
+/**
+ * Bloquea la factura (SELECT ... FOR UPDATE) y comprueba que sigue como se
+ * leyo antes de la transaccion: el mismo estado y updatedAt, sin pagos activos
+ * y el mismo asiento vigente. Si otra pestana u otro usuario la ha modificado,
+ * anulado o pagado entretanto, 409 y no se toca nada (antes quedaban dos
+ * asientos en firme o una anulada que seguia contando).
+ */
+async function bloquearSinCambios(
+  tx: TransaccionBD,
+  companyId: string,
+  id: string,
+  antes: { estado: string; updatedAt: Date },
+  asiento: { id: string; estado: string } | null,
+  textoPagos: string,
+): Promise<void> {
+  const [fila] = await tx.$queryRaw<Array<{ estado: string; updatedAt: Date }>>`SELECT estado, updatedAt FROM ExpenseInvoice WHERE id = ${id} FOR UPDATE`;
+  if (!fila) throw notFound('Factura de gasto no encontrada.');
+  if (fila.estado === 'ANULADA' && antes.estado !== 'ANULADA') throw conflict('La factura ya está anulada.');
+  const pagos = await tx.invoicePayment.count({ where: { companyId, invoiceType: 'GASTO', invoiceId: id, estado: 'ACTIVO' } });
+  const vigente = await asientoVigente(tx, companyId, id);
+  const cambiada =
+    fila.estado !== antes.estado ||
+    new Date(fila.updatedAt).getTime() !== antes.updatedAt.getTime() ||
+    (vigente?.id ?? null) !== (asiento?.id ?? null) ||
+    (vigente?.estado ?? null) !== (asiento?.estado ?? null);
+  if (cambiada) throw conflict(mensajeCambiada);
+  if (pagos > 0) throw conflict(textoPagos);
+}
+
 /** Borra el libro de IVA y el de retenciones de un asiento. */
 async function borrarLibrosDeAsiento(tx: TransaccionBD, companyId: string, asientoId: string): Promise<void> {
   await tx.vATBook.deleteMany({ where: { companyId, asientoId } });
@@ -926,7 +957,8 @@ export async function editarGasto(
   let r: { asientoNuevo: string | null; supplierId: string };
   try {
     r = await prisma.$transaction(async (tx) => {
-      await tx.$queryRaw`SELECT id FROM ExpenseInvoice WHERE id = ${id} FOR UPDATE`;
+      // Lo comprobado arriba se vuelve a mirar con la factura bloqueada.
+      await bloquearSinCambios(tx, companyId, id, actual, asiento, mensajeConPagos);
       const supplier: ProveedorBasico = prov.existente ?? (await tx.supplier.create({ data: { companyId, ...prov.nuevo! } }));
       await tx.expenseInvoiceLine.deleteMany({ where: { invoiceId: id } });
       const f = await tx.expenseInvoice.update({
@@ -1039,9 +1071,8 @@ export async function anularGasto(
   }
 
   const contraId = await prisma.$transaction(async (tx) => {
-    await tx.$queryRaw`SELECT id FROM ExpenseInvoice WHERE id = ${id} FOR UPDATE`;
-    const ahora = await tx.expenseInvoice.findUniqueOrThrow({ where: { id }, select: { estado: true } });
-    if (ahora.estado === 'ANULADA') throw conflict('La factura ya está anulada.');
+    // Lo comprobado arriba se vuelve a mirar con la factura bloqueada.
+    await bloquearSinCambios(tx, companyId, id, f, asiento, 'La factura tiene pagos registrados: anúlalos antes de anularla.');
 
     let contra: string | null = null;
     if (asiento && !conContraasiento) {

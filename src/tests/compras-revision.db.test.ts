@@ -300,3 +300,56 @@ describe('anular: la fecha del contraasiento', () => {
     expect(listado.body.message).toBe('La fecha «desde» no existe.');
   });
 });
+
+describe('modificar y anular a la vez (dos pestañas o dos usuarios)', () => {
+  const asientosFirmes = (invoiceId: string) => prisma.journalEntry.count({ where: { invoiceId, origen: 'FACTURA_GASTO', estado: 'POSTED' } });
+
+  it('dos PUT a la vez: un solo asiento en firme y el libro cuadra con la factura', async () => {
+    const E = await nuevaEmpresa('carrera-put');
+    const sup = await proveedor(E);
+    for (let i = 0; i < 3; i++) {
+      const num = `C-${i}`;
+      const alta = await request(app(E)).post('/expense-invoices').send(factura(sup, { numeroFacturaProveedor: num, fechaEmision: '2026-05-04' }));
+      expect(alta.status).toBe(201);
+      const id = alta.body.data.id as string;
+      const rs = await Promise.all([
+        request(app(E)).put(`/expense-invoices/${id}`).send(factura(sup, { numeroFacturaProveedor: num, fechaEmision: '2026-05-04', lineas: [{ descripcion: 'Luz', cantidad: 1, precioUnitario: 800, tipoIva: 21 }] })),
+        request(app(E)).put(`/expense-invoices/${id}`).send(factura(sup, { numeroFacturaProveedor: num, fechaEmision: '2026-05-04', lineas: [{ descripcion: 'Luz', cantidad: 1, precioUnitario: 600, tipoIva: 10 }] })),
+      ]);
+      for (const r of rs) expect([200, 409]).toContain(r.status);
+      for (const r of rs.filter((x) => x.status === 409)) expect(r.body.message).toBe('La factura ha cambiado mientras la modificabas: vuelve a abrirla.');
+      expect(await asientosFirmes(id)).toBe(1);
+    }
+    const facturas = await prisma.expenseInvoice.findMany({ where: { companyId: E } });
+    const cuota = Math.round(facturas.reduce((a, f) => a + Number(f.ivaTotal), 0) * 100) / 100;
+    await esperarCuadre(expect, E, 2026, 2, cuota);
+  });
+
+  it('anular y modificar a la vez: o queda anulada sin contar, o modificada; nunca las dos cosas', async () => {
+    const E = await nuevaEmpresa('carrera-anular');
+    const sup = await proveedor(E);
+    for (let i = 0; i < 3; i++) {
+      const num = `A-${i}`;
+      const alta = await request(app(E)).post('/expense-invoices').send(factura(sup, { numeroFacturaProveedor: num, fechaEmision: '2026-05-04' }));
+      const id = alta.body.data.id as string;
+      const [anu, put] = await Promise.all([
+        request(app(E)).post(`/expense-invoices/${id}/anular`).send({ motivo: 'Repetida' }),
+        request(app(E)).put(`/expense-invoices/${id}`).send(factura(sup, { numeroFacturaProveedor: num, fechaEmision: '2026-05-04', lineas: [{ descripcion: 'Luz', cantidad: 1, precioUnitario: 800, tipoIva: 21 }] })),
+      ]);
+      const f = await prisma.expenseInvoice.findUniqueOrThrow({ where: { id } });
+      if (f.estado === 'ANULADA') {
+        expect(anu.status).toBe(200);
+        expect(await asientosFirmes(id)).toBe(0);
+        expect(f.numeroProveedorActivo).toBeNull();
+      } else {
+        expect(anu.status).toBe(409);
+        expect(put.status).toBe(200);
+        expect(f.anuladaEn).toBeNull();
+        expect(await asientosFirmes(id)).toBe(1);
+      }
+    }
+    const vigentes = await prisma.expenseInvoice.findMany({ where: { companyId: E, estado: { not: 'ANULADA' } } });
+    const cuota = Math.round(vigentes.reduce((a, f) => a + Number(f.ivaTotal), 0) * 100) / 100;
+    await esperarCuadre(expect, E, 2026, 2, cuota);
+  });
+});
