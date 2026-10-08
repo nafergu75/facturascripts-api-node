@@ -632,7 +632,8 @@ async function bloquearSinCambios(
     new Date(fila.updatedAt).getTime() !== antes.updatedAt.getTime() ||
     (vigente?.id ?? null) !== (asiento?.id ?? null) ||
     (vigente?.estado ?? null) !== (asiento?.estado ?? null);
-  if (cambiada) throw conflict(mensajeCambiada);
+  // motivo: la pantalla ofrece volver a abrirla en vez de solo ensenar el texto.
+  if (cambiada) throw conflict(mensajeCambiada, { motivo: 'factura_cambiada' });
   if (pagos > 0) throw conflict(textoPagos);
 }
 

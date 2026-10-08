@@ -345,7 +345,10 @@ describe('modificar y anular a la vez (dos pestañas o dos usuarios)', () => {
         request(app(E)).put(`/expense-invoices/${id}`).send(factura(sup, { numeroFacturaProveedor: num, fechaEmision: '2026-05-04', lineas: [{ descripcion: 'Luz', cantidad: 1, precioUnitario: 600, tipoIva: 10 }] })),
       ]);
       for (const r of rs) expect([200, 409]).toContain(r.status);
-      for (const r of rs.filter((x) => x.status === 409)) expect(r.body.message).toBe('La factura ha cambiado mientras la modificabas: vuelve a abrirla.');
+      for (const r of rs.filter((x) => x.status === 409)) {
+        expect(r.body.message).toBe('La factura ha cambiado mientras la modificabas: vuelve a abrirla.');
+        expect(r.body.details).toEqual({ motivo: 'factura_cambiada' });
+      }
       expect(await asientosFirmes(id)).toBe(1);
     }
     const facturas = await prisma.expenseInvoice.findMany({ where: { companyId: E } });
