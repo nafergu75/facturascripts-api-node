@@ -53,6 +53,21 @@ describe('validarFacturaGasto', () => {
     expect(error({ ...valida(), tipoGasto: 'COMPRA' }).message).toMatch(/Solo las facturas de profesionales/);
   });
 
+  it('profesionales al 1 % o al 2 %: no son de la clave G del 190', () => {
+    for (const pct of [1, 2]) {
+      const c = valida();
+      c.lineas[0].tipoRetencion = pct;
+      expect(error(c)).toEqual({
+        status: 400,
+        message: 'Las retenciones del 1 % y del 2 % (actividades agrícolas, ganaderas y forestales o en módulos) aún no están disponibles: consúltalo con tu asesor.',
+        campo: 'lineas.0.tipoRetencion',
+      });
+    }
+    const siete = valida();
+    siete.lineas[0].tipoRetencion = 7;
+    expect(() => validarFacturaGasto(siete)).not.toThrow();
+  });
+
   it('alquiler al 15 %', () => {
     expect(error({ ...valida(), tipoGasto: 'ALQUILER' })).toMatchObject({ status: 400, campo: 'lineas.0.tipoRetencion' });
     const ok = valida();

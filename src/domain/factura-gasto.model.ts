@@ -16,7 +16,7 @@ export const esTipoGasto = (v: unknown): v is TipoGasto => typeof v === 'string'
 /** Etiqueta en pantalla, cuenta de gasto por defecto, cuenta del acreedor y retenciones admitidas. */
 export const TIPO_GASTO_INFO: Record<TipoGasto, { texto: string; cuenta: string; acreedor: '400' | '410'; retenciones: number[] }> = {
   COMPRA: { texto: 'Compras de mercaderías', cuenta: '600', acreedor: '400', retenciones: [0] },
-  SERVICIO_PROFESIONAL: { texto: 'Profesionales independientes', cuenta: '623', acreedor: '410', retenciones: [0, 1, 2, 7, 15, 19] },
+  SERVICIO_PROFESIONAL: { texto: 'Profesionales independientes', cuenta: '623', acreedor: '410', retenciones: [0, 7, 15, 19] },
   ALQUILER: { texto: 'Alquileres', cuenta: '621', acreedor: '410', retenciones: [0, 19] },
   SUMINISTROS: { texto: 'Suministros y otros servicios', cuenta: '628', acreedor: '410', retenciones: [0] },
 };

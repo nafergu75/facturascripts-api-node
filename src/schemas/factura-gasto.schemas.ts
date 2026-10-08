@@ -134,7 +134,9 @@ export function validarFacturaGasto(cuerpo: unknown, opciones: { paisProveedor?:
   d.lineas.forEach((l, i) => {
     if (!admitidas.includes(l.tipoRetencion)) {
       throw error(
-        'Solo las facturas de profesionales (1, 2, 7, 15 o 19 %) y de alquileres (19 %) llevan retención de IRPF: revisa el tipo de gasto.',
+        l.tipoRetencion === 1 || l.tipoRetencion === 2
+          ? 'Las retenciones del 1 % y del 2 % (actividades agrícolas, ganaderas y forestales o en módulos) aún no están disponibles: consúltalo con tu asesor.'
+          : 'Solo las facturas de profesionales (7, 15 o 19 %) y de alquileres (19 %) llevan retención de IRPF: revisa el tipo de gasto.',
         `lineas.${i}.tipoRetencion`,
       );
     }
