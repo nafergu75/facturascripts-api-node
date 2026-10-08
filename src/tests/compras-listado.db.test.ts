@@ -173,3 +173,22 @@ describe('pagos y Contabilizar en borradores y anuladas', () => {
     expect((await prisma.expenseInvoice.findUniqueOrThrow({ where: { id: ids.l6 } })).estado).toBe('ACCOUNTED');
   });
 });
+
+describe('el contador «Pendientes de pago» y su filtro cuentan lo mismo', () => {
+  it('una pagada en parte cuenta en el contador y en pago=por_pagar, no en pago=pendiente', async () => {
+    const bancoId = (
+      await prisma.bankAccount.create({ data: { companyId: E, iban: `ES00${String(Date.now()).slice(-10)}`.padEnd(24, '0').slice(0, 24), bancoNombre: 'Banco', subcuentaCodigo: '5720001' } })
+    ).id;
+    await registrarCobroFactura(E, 'GASTO', ids.c3, { fecha: '2026-02-05', importe: 20, cuentaBancariaId: bancoId });
+    expect((await prisma.expenseInvoice.findUniqueOrThrow({ where: { id: ids.c3 } })).estadoPago).toBe('PARCIAL');
+
+    const porPagar = await request(app()).get('/expense-invoices?pago=por_pagar');
+    expect(porPagar.status).toBe(200);
+    expect(porPagar.body.data.total).toBe(porPagar.body.data.contadores.pendientesPago);
+    expect(porPagar.body.data.items.some((f: { id: string }) => f.id === ids.c3)).toBe(true);
+    expect(porPagar.body.data.items.some((f: { estado: string }) => f.estado === 'ANULADA')).toBe(false);
+
+    const pendiente = await request(app()).get('/expense-invoices?pago=pendiente');
+    expect(pendiente.body.data.total).toBe(porPagar.body.data.total - 1);
+  });
+});

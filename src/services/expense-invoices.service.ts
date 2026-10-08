@@ -1181,6 +1181,8 @@ const ESTADOS_FILTRO: Record<string, Prisma.ExpenseInvoiceWhereInput> = {
 function filtroPago(pago: string, hoy: string): Prisma.ExpenseInvoiceWhereInput {
   const noAnulada = { estado: { not: 'ANULADA' } };
   if (pago === 'pendiente') return { ...noAnulada, estadoPago: 'PENDIENTE' };
+  // Lo que cuenta el contador «Pendientes de pago»: sin pagar del todo (pendientes y pagadas en parte).
+  if (pago === 'por_pagar') return { ...noAnulada, estadoPago: { not: 'PAGADA' } };
   if (pago === 'parcial') return { ...noAnulada, estadoPago: 'PARCIAL' };
   if (pago === 'pagada') return { estadoPago: 'PAGADA' };
   return { ...noAnulada, estadoPago: { not: 'PAGADA' }, fechaVencimiento: { lt: hoy } }; // vencida
@@ -1202,7 +1204,7 @@ async function listarGastos(companyId: string, filtros: FiltrosGastos = {}): Pro
   const desde = texto(filtros.desde);
   const hasta = texto(filtros.hasta);
   if (estado && !ESTADOS_FILTRO[estado]) throw badRequest('Estado no válido: usa sin_contabilizar, pendiente_revision, contabilizada o anulada.');
-  if (pago && !['pendiente', 'parcial', 'pagada', 'vencida'].includes(pago)) throw badRequest('Filtro de pago no válido: usa pendiente, parcial, pagada o vencida.');
+  if (pago && !['pendiente', 'parcial', 'por_pagar', 'pagada', 'vencida'].includes(pago)) throw badRequest('Filtro de pago no válido: usa pendiente, parcial, por_pagar, pagada o vencida.');
   for (const [nombre, f] of [['desde', desde], ['hasta', hasta]] as const) {
     if (f && !/^\d{4}-\d{2}-\d{2}$/.test(f)) throw badRequest(`La fecha «${nombre}» tiene que ser AAAA-MM-DD.`);
   }
@@ -1240,7 +1242,7 @@ async function listarGastos(companyId: string, filtros: FiltrosGastos = {}): Pro
     }),
     prisma.expenseInvoice.count({ where }),
     prisma.expenseInvoice.groupBy({ by: ['estado'], where: whereBase, _count: { _all: true } }),
-    prisma.expenseInvoice.count({ where: { AND: [whereBase, { estado: { not: 'ANULADA' }, estadoPago: { not: 'PAGADA' } }] } }),
+    prisma.expenseInvoice.count({ where: { AND: [whereBase, filtroPago('por_pagar', hoy)] } }),
     prisma.expenseInvoice.count({ where: { AND: [whereBase, filtroPago('vencida', hoy)] } }),
     prisma.expenseInvoice.aggregate({ where: sinAnuladas, _sum: { baseTotal: true, ivaTotal: true, retencionTotal: true, totalFactura: true } }),
     prisma.expenseInvoice.findMany({ where: sinAnuladas, select: { id: true } }),
