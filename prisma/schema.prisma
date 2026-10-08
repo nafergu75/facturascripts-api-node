@@ -24,6 +24,15 @@ model User {
   isActive      Boolean      @default(true)
   /// Admin GLOBAL de plataforma: puede acceder a TODAS las empresas y administrar.
   isGlobalAdmin Boolean      @default(false)
+  /// La contrasena la puso un administrador (alta o restablecimiento de la de
+  /// OTRO usuario): hasta que el usuario ponga una suya, authMiddleware solo le
+  /// deja ver GET /auth/me y usar POST /auth/cambiar-contrasena.
+  debeCambiarContrasena Boolean @default(false)
+  /// Hasta cuando vale la contrasena provisional que puso un administrador
+  /// (alta o restablecimiento): pasada esta fecha no deja entrar y hay que
+  /// pedir otra. NULL = no caduca (la propia, o cuando el administrador solo
+  /// pide que cambie la que ya tenia).
+  contrasenaProvisionalHasta DateTime?
   createdAt     DateTime     @default(now())
   memberships   Membership[]
 }
@@ -132,6 +141,10 @@ model Membership {
   userId    String
   companyId String
   role      Role    @default(solo_lectura)
+  /// Permisos a medida en esta empresa: lista canonica de codigos de
+  /// rbac.service (solo PERMISOS_PERSONALIZABLES). NULL = los del perfil (role).
+  /// Con role = admin se ignora: el administrador lo puede todo.
+  permisosPersonalizados Json?
   user      User    @relation(fields: [userId], references: [id], onDelete: Cascade)
   company   Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
 

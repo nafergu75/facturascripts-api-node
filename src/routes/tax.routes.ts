@@ -12,6 +12,7 @@ import { Router, Request, Response } from 'express';
 import { taxDocumentsService } from '../services/tax-documents.service';
 import { authMiddleware } from '../middleware/auth.middleware';
 import { HttpError } from '../utils/http-errors';
+import { authorize } from '../middleware/authorize.middleware';
 
 // mergeParams: hereda :companyId del router padre (/companies/:companyId/tax).
 export const taxRoutes = Router({ mergeParams: true });
@@ -34,6 +35,7 @@ export const taxRoutes = Router({ mergeParams: true });
  */
 taxRoutes.get(
   '/vat/books/issued',
+  authorize('impuestos:read', 'contabilidad:read'),
   authMiddleware,
   async (req: Request, res: Response) => {
     try {
@@ -80,6 +82,7 @@ taxRoutes.get(
  */
 taxRoutes.get(
   '/vat/books/received',
+  authorize('impuestos:read', 'contabilidad:read'),
   authMiddleware,
   async (req: Request, res: Response) => {
     try {
@@ -127,6 +130,7 @@ taxRoutes.get(
  */
 taxRoutes.get(
   '/vat/summary',
+  authorize('impuestos:read', 'contabilidad:read'),
   authMiddleware,
   async (req: Request, res: Response) => {
     try {
@@ -172,6 +176,7 @@ taxRoutes.get(
  */
 taxRoutes.get(
   '/retentions/summary',
+  authorize('impuestos:read', 'contabilidad:read'),
   authMiddleware,
   async (req: Request, res: Response) => {
     try {
@@ -214,6 +219,7 @@ taxRoutes.get(
  */
 taxRoutes.get(
   '/export/modelo-303',
+  authorize('impuestos:read', 'contabilidad:read'),
   authMiddleware,
   async (req: Request, res: Response) => {
     try {

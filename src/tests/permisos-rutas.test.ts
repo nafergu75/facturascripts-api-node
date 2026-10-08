@@ -31,6 +31,7 @@ const ESCRITURA_SIN_PERMISO: Record<string, string> = {
   'auth.routes.ts POST /dev-login': 'solo desarrollo, protegida por NODE_ENV',
   'auth.routes.ts POST /refresh': 'autenticada por el refresh token',
   'auth.routes.ts POST /logout': 'cerrar la propia sesion',
+  'auth.routes.ts POST /cambiar-contrasena': 'cambia la contraseña propia; exige sesión y la contraseña actual',
   'chatAssistant.routes.ts POST /': 'consulta al asistente; el permiso se comprueba por intencion',
   'chatAssistant.routes.ts POST /mensajes/:id/valoracion': 'valora una respuesta propia (empresa + usuario)',
   'chatAssistant.routes.ts DELETE /:sessionId': 'borra una conversacion propia (empresa + usuario)',

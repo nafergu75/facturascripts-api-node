@@ -17,13 +17,13 @@ router.post('/', authorize('ventas:write'), incomeInvoicesController.crearIngres
  * GET /api/invoices/income?estado=PENDING&customerId=...&desde=...&hasta=...
  * Las proformas: ?estadoDocumento=PROFORMA
  */
-router.get('/', incomeInvoicesController.listar);
+router.get('/', authorize('ventas:read', 'contabilidad:read'), incomeInvoicesController.listar);
 
 /**
  * Obtener resumen de ingresos por período (para dashboard).
  * GET /api/invoices/income/resumen/periodo?desde=2024-01-01&hasta=2024-12-31
  */
-router.get('/resumen/periodo', incomeInvoicesController.resumenPeriodo);
+router.get('/resumen/periodo', authorize('ventas:read', 'contabilidad:read'), incomeInvoicesController.resumenPeriodo);
 
 /**
  * Tipo de operacion de IVA (van ANTES de '/:id'):
@@ -47,7 +47,7 @@ router.get('/stats/cobros', authorize('ventas:read', 'contabilidad:read'), incom
  * Obtener factura por ID.
  * GET /api/invoices/income/:id
  */
-router.get('/:id', incomeInvoicesController.obtenerPorId);
+router.get('/:id', authorize('ventas:read', 'contabilidad:read'), incomeInvoicesController.obtenerPorId);
 
 /** Modificar / borrar un borrador o una proforma pendiente (las facturas emitidas no se tocan). */
 router.put('/:id', authorize('ventas:write'), incomeInvoicesController.actualizar);
@@ -64,10 +64,10 @@ router.post('/:id/pasar-a-factura', authorize('ventas:write'), incomeInvoicesCon
 router.post('/:id/rechazar', authorize('ventas:write'), incomeInvoicesController.rechazar);
 
 /** Descargar la factura en PDF. */
-router.get('/:id/pdf', incomeInvoicesController.pdf);
+router.get('/:id/pdf', authorize('ventas:read', 'contabilidad:read'), incomeInvoicesController.pdf);
 
 /** Datos que faltan en la factura (emisor, cliente, IBAN, logo). */
-router.get('/:id/avisos', incomeInvoicesController.avisos);
+router.get('/:id/avisos', authorize('ventas:read', 'contabilidad:read'), incomeInvoicesController.avisos);
 
 /**
  * Cambiar estado de factura (PENDING -> PAID, etc.).

@@ -130,6 +130,7 @@ reportsRoutes.get(
  */
 reportsRoutes.get(
   '/analytics/monthly',
+  authorize('contabilidad:read'),
   authMiddleware,
   async (req: Request, res: Response) => {
     try {
@@ -176,6 +177,7 @@ reportsRoutes.get(
  */
 reportsRoutes.get(
   '/analytics/by-customer',
+  authorize('ventas:read', 'contabilidad:read'),
   authMiddleware,
   async (req: Request, res: Response) => {
     try {
@@ -212,19 +214,19 @@ reportsRoutes.get(
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** GET /companies/:companyId/reports/income — Ingresos contabilizados */
-reportsRoutes.get('/income', reportsController.income);
+reportsRoutes.get('/income', authorize('ventas:read', 'contabilidad:read'), reportsController.income);
 
 /** GET /companies/:companyId/reports/expenses — Gastos contabilizados */
-reportsRoutes.get('/expenses', reportsController.expenses);
+reportsRoutes.get('/expenses', authorize('compras:read', 'contabilidad:read'), reportsController.expenses);
 
 /** GET /companies/:companyId/reports/result — Resultado (ingresos - gastos) */
-reportsRoutes.get('/result', reportsController.result);
+reportsRoutes.get('/result', authorize('contabilidad:read'), reportsController.result);
 
 /** GET /companies/:companyId/reports/vat — IVA repercutido vs soportado */
-reportsRoutes.get('/vat', reportsController.vat);
+reportsRoutes.get('/vat', authorize('impuestos:read', 'contabilidad:read'), reportsController.vat);
 
 /** GET /companies/:companyId/reports/retentions — Retenciones IRPF practicadas */
-reportsRoutes.get('/retentions', reportsController.retentions);
+reportsRoutes.get('/retentions', authorize('impuestos:read', 'contabilidad:read'), reportsController.retentions);
 
 /** GET /companies/:companyId/reports/treasury — Tesorería (cuentas 57x POSTED) */
-reportsRoutes.get('/treasury', reportsController.treasury);
+reportsRoutes.get('/treasury', authorize('tesoreria:read', 'contabilidad:read'), reportsController.treasury);

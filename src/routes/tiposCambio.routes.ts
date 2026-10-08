@@ -8,6 +8,6 @@ const router = Router({ mergeParams: true });
  * Tipo de cambio de referencia del BCE para facturar o cobrar en otra moneda.
  * GET /companies/:companyId/tipos-cambio?moneda=USD&fecha=AAAA-MM-DD
  */
-router.get('/', authorize('ventas:read', 'contabilidad:read', 'tesoreria:read'), tiposCambioController.obtener);
+router.get('/', authorize('ventas:read', 'compras:read', 'contabilidad:read', 'tesoreria:read'), tiposCambioController.obtener);
 
 export default router;

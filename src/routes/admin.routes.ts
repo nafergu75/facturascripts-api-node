@@ -1,6 +1,8 @@
 import { Router } from 'express';
+import { z } from 'zod';
 import { adminController } from '../controllers/admin.controller';
 import { authorize } from '../middleware/authorize.middleware';
+import { validate } from '../middleware/validation.middleware';
 
 // Administracion de plataforma (modo administrador global). NO acotado a empresa.
 //
@@ -10,6 +12,13 @@ import { authorize } from '../middleware/authorize.middleware';
 // authMiddleware ya ha puesto en req.user el modo administrador ACTUAL (no el
 // del token), asi que quitarlo o desactivar a alguien le cierra el panel al momento.
 const router = Router();
+
+// Cuerpo de dar/cambiar un acceso: rol (o role/roles[0], como siempre) y areas.
+// Estricto: cualquier otra clave (por ejemplo `permisos` con codigos sueltos)
+// es un 400. Las areas se validan en admin.service (esquemaAreas).
+const accesoSchema = z
+  .object({ rol: z.unknown().optional(), role: z.unknown().optional(), roles: z.unknown().optional(), areas: z.unknown().optional() })
+  .strict();
 
 // --- Empresas ---
 router.get('/empresas', authorize('admin:global'), adminController.listarEmpresas);
@@ -21,10 +30,13 @@ router.get('/usuarios', authorize('admin:global'), adminController.listarUsuario
 router.post('/usuarios', authorize('admin:global'), adminController.crearUsuario);
 router.patch('/usuarios/:userId', authorize('admin:global'), adminController.actualizarUsuario);
 
+// --- Permisos a medida: catalogo de la matriz (areas, niveles y perfiles) ---
+router.get('/permisos/catalogo', authorize('admin:global'), adminController.catalogoPermisos);
+
 // --- Accesos de un usuario a una empresa ---
-router.put('/usuarios/:userId/empresas/:companyId', authorize('admin:global'), adminController.asignarRol);
+router.put('/usuarios/:userId/empresas/:companyId', authorize('admin:global'), validate(accesoSchema), adminController.asignarRol);
 router.delete('/usuarios/:userId/empresas/:companyId', authorize('admin:global'), adminController.quitarAcceso);
 // Compatibilidad: la version anterior asignaba con POST (body { role }).
-router.post('/usuarios/:userId/empresas/:companyId', authorize('admin:global'), adminController.asignarRol);
+router.post('/usuarios/:userId/empresas/:companyId', authorize('admin:global'), validate(accesoSchema), adminController.asignarRol);
 
 export default router;

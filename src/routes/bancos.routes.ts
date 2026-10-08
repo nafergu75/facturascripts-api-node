@@ -7,7 +7,7 @@ const router = Router({ mergeParams: true });
 
 router.get('/cuentas', bancosController.listarCuentas);
 router.post('/cuentas', authorize('tesoreria:write'), bancosController.crearCuenta);
-router.get('/movimientos', bancosController.listarMovs);
+router.get('/movimientos', authorize('tesoreria:read', 'contabilidad:read'), bancosController.listarMovs);
 // Importacion CSV: acepta text/plain (cuerpo crudo) o JSON { csv }
 router.post(
   '/cuentas/:cuentaId/importar-csv',

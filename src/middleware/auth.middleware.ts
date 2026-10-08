@@ -1,7 +1,8 @@
 import { RequestHandler } from 'express';
 import jwt from 'jsonwebtoken';
 import { config } from '../config/env';
-import { unauthorized } from '../utils/http-errors';
+import { forbidden, unauthorized } from '../utils/http-errors';
+import { MENSAJE_PROVISIONAL_CADUCADA } from '../utils/password';
 import { mismaHuella, sesionDeBd } from '../services/auth.service';
 import type { AuthUser } from '../types/express';
 
@@ -50,6 +51,12 @@ function usuarioDelToken(header: string): AuthUser | Error {
   };
 }
 
+/** details.codigo del 403 de la contrasena provisional (el frontend lleva a cambiarla). */
+export const CODIGO_CAMBIO_CONTRASENA = 'CAMBIO_CONTRASENA_OBLIGATORIO';
+
+const errorProvisional = () =>
+  forbidden('Antes de seguir tienes que poner una contraseña tuya.', { codigo: CODIGO_CAMBIO_CONTRASENA });
+
 /**
  * Valida el JWT del header `Authorization: Bearer <token>` y puebla req.user.
  *
@@ -58,46 +65,69 @@ function usuarioDelToken(header: string): AuthUser | Error {
  * ella, no el token:
  * - usuario desactivado o borrado -> 401 al momento;
  * - contrasena cambiada desde que se emitio el token (huella `pwd`) -> 401;
- * - empresas, rol en cada empresa y modo administrador global: los ACTUALES.
- *   Quitar un acceso, bajar un rol o quitar el modo administrador surte efecto
- *   en la siguiente peticion; dar un acceso o subir un rol, tambien, sin tener
- *   que volver a entrar.
+ * - empresas, rol y permisos (tambien los personalizados) en cada empresa y
+ *   modo administrador global: los ACTUALES. Quitar un acceso, bajar un rol,
+ *   recortar un permiso o quitar el modo administrador surte efecto en la
+ *   siguiente peticion; dar un acceso o un permiso, tambien, sin volver a entrar;
+ * - contrasena provisional (la puso un administrador) -> 403 con
+ *   details.codigo = CAMBIO_CONTRASENA_OBLIGATORIO en todo salvo GET /auth/me y
+ *   POST /auth/cambiar-contrasena. Se comprueba DESPUES de lo anterior: un
+ *   token viejo sigue dando 401, no 403;
+ * - contrasena provisional caducada -> 401 en todo, tambien en esas dos: la
+ *   sesion se cierra y al volver a entrar el login explica que pida otra.
  *
  * companyScope y authorize trabajan despues con estos datos frescos.
  */
-export const authMiddleware: RequestHandler = (req, _res, next) => {
-  // Algunas rutas repiten authMiddleware en linea: si esta peticion ya se
-  // contrasto con la BD, ni se repite la consulta ni se pisan los datos frescos
-  // con los del token.
-  if (req.user?.sesionVerificada) return next();
-
-  const delToken = usuarioDelToken(req.header('authorization') ?? '');
-  if (delToken instanceof Error) return next(delToken);
-
-  sesionDeBd(delToken.userId)
-    .then((bd) => {
-      if (!bd) {
-        // Atajo de desarrollo: tokens dummy de usuarios que no estan en la BD.
-        if (config.allowInsecureDevAuth) {
-          req.user = delToken;
-          return next();
-        }
-        return next(unauthorized('Tu usuario ya no existe. Inicia sesión de nuevo.'));
-      }
-      if (!bd.activo) return next(unauthorized('Tu usuario está desactivado. Habla con el administrador de la plataforma.'));
-      // Tokens emitidos antes de llevar huella: valen hasta que caducan (24 h).
-      if (delToken.huellaContrasena !== undefined && !mismaHuella(delToken.huellaContrasena, bd.huellaContrasena)) {
-        return next(unauthorized('Tu contraseña ha cambiado. Inicia sesión de nuevo con la nueva.'));
-      }
-      req.user = {
-        ...delToken,
-        esAdminGlobal: bd.esAdminGlobal,
-        companies: bd.companies,
-        roles: bd.roles,
-        rolesPorEmpresa: bd.rolesPorEmpresa,
-        sesionVerificada: true,
-      };
+function crearAuthMiddleware(permitirProvisional: boolean): RequestHandler {
+  return (req, _res, next) => {
+    // Algunas rutas repiten authMiddleware en linea: si esta peticion ya se
+    // contrasto con la BD, ni se repite la consulta ni se pisan los datos frescos
+    // con los del token. El bloqueo de la contrasena provisional se aplica igual.
+    if (req.user?.sesionVerificada) {
+      if (req.user.debeCambiarContrasena && !permitirProvisional) return next(errorProvisional());
       return next();
-    })
-    .catch(next);
-};
+    }
+
+    const delToken = usuarioDelToken(req.header('authorization') ?? '');
+    if (delToken instanceof Error) return next(delToken);
+
+    sesionDeBd(delToken.userId)
+      .then((bd) => {
+        if (!bd) {
+          // Atajo de desarrollo: tokens dummy de usuarios que no estan en la BD.
+          if (config.allowInsecureDevAuth) {
+            req.user = delToken;
+            return next();
+          }
+          return next(unauthorized('Tu usuario ya no existe. Inicia sesión de nuevo.'));
+        }
+        if (!bd.activo) return next(unauthorized('Tu usuario está desactivado. Habla con el administrador de la plataforma.'));
+        // Tokens emitidos antes de llevar huella: valen hasta que caducan (24 h).
+        if (delToken.huellaContrasena !== undefined && !mismaHuella(delToken.huellaContrasena, bd.huellaContrasena)) {
+          return next(unauthorized('Tu contraseña ha cambiado. Inicia sesión de nuevo con la nueva.'));
+        }
+        if (bd.provisionalCaducada) return next(unauthorized(MENSAJE_PROVISIONAL_CADUCADA));
+        req.user = {
+          ...delToken,
+          esAdminGlobal: bd.esAdminGlobal,
+          companies: bd.companies,
+          roles: bd.roles,
+          rolesPorEmpresa: bd.rolesPorEmpresa,
+          permisosPorEmpresa: bd.permisosPorEmpresa,
+          debeCambiarContrasena: bd.debeCambiarContrasena,
+          sesionVerificada: true,
+        };
+        // El bloqueo sale de la BD, no del token: vale igual para tokens con o
+        // sin huella y para los de /auth/refresh o /auth/dev-login.
+        if (bd.debeCambiarContrasena && !permitirProvisional) return next(errorProvisional());
+        return next();
+      })
+      .catch(next);
+  };
+}
+
+/** Para todas las rutas: con contrasena provisional, 403 CAMBIO_CONTRASENA_OBLIGATORIO. */
+export const authMiddleware: RequestHandler = crearAuthMiddleware(false);
+
+/** Solo GET /auth/me y POST /auth/cambiar-contrasena: dejan pasar la contrasena provisional. */
+export const authMiddlewarePermitiendoProvisional: RequestHandler = crearAuthMiddleware(true);

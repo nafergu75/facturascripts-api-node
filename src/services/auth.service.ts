@@ -2,14 +2,10 @@ import jwt from 'jsonwebtoken';
 import { createHmac, randomUUID, timingSafeEqual } from 'crypto';
 import { config } from '../config/env';
 import { prisma } from '../config/database';
-import { verifyPassword } from '../utils/password';
-import { unauthorized } from '../utils/http-errors';
-import { permisosDeRoles } from './rbac.service';
-
-/** El admin global lo puede todo; el resto, lo que den sus roles. */
-function permisosEfectivos(roles: string[], esAdminGlobal: boolean): string[] {
-  return esAdminGlobal ? ['*'] : permisosDeRoles(roles);
-}
+import { contrasenaProvisionalCaducada, hashPassword, MENSAJE_PROVISIONAL_CADUCADA, verifyPassword } from '../utils/password';
+import { badRequest, conflict, unauthorized } from '../utils/http-errors';
+import { permisosPorEmpresaDe, personalizadoPorEmpresaDe } from './rbac.service';
+import { conCampo, validarContrasena } from './admin.service';
 
 /** Agrupa las membresias del usuario: { companyId: [roles] }. */
 export function rolesPorEmpresaDe(memberships: Array<{ companyId: string; role: unknown }>): Record<string, string[]> {
@@ -46,17 +42,31 @@ export interface SesionBd {
   companies: string[];
   roles: string[];
   rolesPorEmpresa: Record<string, string[]>;
+  /** Permisos efectivos en cada empresa (rbac.service, permisosDeAcceso): tambien los personalizados. */
+  permisosPorEmpresa: Record<string, string[]>;
+  /** Contrasena provisional: hasta cambiarla solo puede usar /auth/me y /auth/cambiar-contrasena. */
+  debeCambiarContrasena: boolean;
+  /** La provisional ha caducado: ni eso, 401 (tiene que pedir otra al administrador). */
+  provisionalCaducada: boolean;
 }
 
 /**
  * Lee de la BD lo que el token solo "recuerda" del momento del login: si el
  * usuario sigue activo, si es administrador global, sus empresas con su rol y
- * la huella de su contrasena. null si el usuario no existe.
+ * sus permisos (tambien los personalizados), si tiene una contrasena
+ * provisional y la huella de su contrasena. null si el usuario no existe.
  */
 export async function sesionDeBd(userId: string): Promise<SesionBd | null> {
   const u = await prisma.user.findUnique({
     where: { id: userId },
-    select: { isActive: true, isGlobalAdmin: true, passwordHash: true, memberships: { select: { companyId: true, role: true } } },
+    select: {
+      isActive: true,
+      isGlobalAdmin: true,
+      passwordHash: true,
+      debeCambiarContrasena: true,
+      contrasenaProvisionalHasta: true,
+      memberships: { select: { companyId: true, role: true, permisosPersonalizados: true } },
+    },
   });
   if (!u) return null;
   return {
@@ -66,12 +76,11 @@ export async function sesionDeBd(userId: string): Promise<SesionBd | null> {
     companies: u.memberships.map((m) => m.companyId),
     roles: Array.from(new Set(u.memberships.map((m) => String(m.role)))),
     rolesPorEmpresa: rolesPorEmpresaDe(u.memberships),
+    permisosPorEmpresa: permisosPorEmpresaDe(u.memberships, u.isGlobalAdmin),
+    // `=== true`: un prisma simulado (tests) que no traiga el campo no bloquea.
+    debeCambiarContrasena: u.debeCambiarContrasena === true,
+    provisionalCaducada: contrasenaProvisionalCaducada(u),
   };
-}
-
-/** Permisos por empresa, para que el frontend sepa que puede hacer en cada una. */
-function permisosPorEmpresaDe(porEmpresa: Record<string, string[]>, esAdminGlobal: boolean): Record<string, string[]> {
-  return Object.fromEntries(Object.entries(porEmpresa).map(([id, roles]) => [id, permisosEfectivos(roles, esAdminGlobal)]));
 }
 
 export interface LoginInput {
@@ -120,13 +129,68 @@ export interface LoginResult {
      * menu con ellos: `roles` son nombres de rol ('contable'), no permisos.
      */
     permisos: string[];
-    /** Permisos efectivos en cada empresa del usuario. */
+    /** Permisos efectivos en cada empresa del usuario (tambien los personalizados). */
     permisosPorEmpresa: Record<string, string[]>;
     /** Roles en cada empresa (para mostrar "Contable", "Ventas"... en el menu). */
     rolesPorEmpresa: Record<string, string[]>;
+    /** true en las empresas donde sus permisos estan ajustados a medida. */
+    personalizadoPorEmpresa: Record<string, boolean>;
+    /** Contrasena provisional: tiene que poner una suya antes de usar nada mas. */
+    debeCambiarContrasena: boolean;
   };
   empresas: EmpresaLogin[];
   empresaSeleccionada?: string;
+}
+
+/** Usuario leido con sus accesos (include memberships + company: trae todas las columnas). */
+interface UsuarioConAccesos {
+  id: string;
+  email: string;
+  passwordHash: string;
+  isGlobalAdmin: boolean;
+  debeCambiarContrasena?: boolean | null;
+  memberships: Array<{ companyId: string; role: unknown; permisosPersonalizados?: unknown; company: { codigo: string | null; name: string } }>;
+}
+
+/**
+ * Lo que devuelven login, refresh, devLogin, me y cambiarContrasena, calculado
+ * en un solo sitio (antes habia cuatro copias). Los permisos salen de la BD con
+ * permisosDeAcceso; los claims del token no cambian.
+ */
+function resultadoDeSesion(user: UsuarioConAccesos, empresaSeleccionada?: string) {
+  const esAdminGlobal = user.isGlobalAdmin;
+  const companies = user.memberships.map((m) => m.companyId);
+  const roles = Array.from(new Set(user.memberships.map((m) => String(m.role))));
+  const empresas: EmpresaLogin[] = user.memberships.map((m) => ({ companyId: m.companyId, codigo: m.company.codigo, nombre: m.company.name }));
+  const rolesPorEmpresa = rolesPorEmpresaDe(user.memberships);
+  const permisosPorEmpresa = permisosPorEmpresaDe(user.memberships, esAdminGlobal);
+  const claims: AuthClaims = {
+    userId: user.id,
+    email: user.email,
+    roles,
+    rolesPorEmpresa,
+    companies,
+    esAdminGlobal,
+    empresaSeleccionada,
+    huellaContrasena: huellaContrasena(user.passwordHash),
+  };
+  return {
+    claims,
+    user: {
+      id: user.id,
+      email: user.email,
+      roles,
+      companies,
+      esAdminGlobal,
+      // Permisos en la empresa activa (la seleccionada o la primera), no la union.
+      permisos: permisosPorEmpresa[empresaSeleccionada ?? companies[0]] ?? (esAdminGlobal ? ['*'] : []),
+      permisosPorEmpresa,
+      rolesPorEmpresa,
+      personalizadoPorEmpresa: personalizadoPorEmpresaDe(user.memberships),
+      debeCambiarContrasena: user.debeCambiarContrasena === true,
+    },
+    empresas,
+  };
 }
 
 export const authService = {
@@ -142,55 +206,25 @@ export const authService = {
     if (!user || !user.isActive || !verifyPassword(input.password ?? '', user.passwordHash)) {
       throw unauthorized('Credenciales invalidas.');
     }
-
-    const esAdminGlobal = user.isGlobalAdmin;
-    const companies = user.memberships.map((m) => m.companyId);
-    const roles = Array.from(new Set(user.memberships.map((m) => String(m.role))));
-    const empresas: EmpresaLogin[] = user.memberships.map((m) => ({
-      companyId: m.companyId,
-      codigo: m.company.codigo,
-      nombre: m.company.name,
-    }));
+    // Despues de comprobar la contrasena: solo quien la sabe se entera de que caduco.
+    if (contrasenaProvisionalCaducada(user)) throw unauthorized(MENSAJE_PROVISIONAL_CADUCADA);
 
     // Seccion 5 — empresaCodigo opcional: valida acceso a esa empresa concreta.
     let empresaSeleccionada: string | undefined;
     if (input.empresaCodigo) {
-      const elegida = empresas.find((e) => e.codigo === input.empresaCodigo);
-      if (!elegida && !esAdminGlobal) {
+      const elegida = user.memberships.find((m) => m.company.codigo === input.empresaCodigo);
+      if (!elegida && !user.isGlobalAdmin) {
         throw unauthorized(`El usuario no tiene acceso a la empresa '${input.empresaCodigo}'.`);
       }
       empresaSeleccionada = elegida?.companyId;
     }
 
-    const rolesPorEmpresa = rolesPorEmpresaDe(user.memberships);
-    const huella = huellaContrasena(user.passwordHash);
-    const token = this.generateToken({
-      userId: user.id,
-      email: user.email,
-      roles,
-      rolesPorEmpresa,
-      companies,
-      esAdminGlobal,
-      empresaSeleccionada,
-      huellaContrasena: huella,
-    });
-    const refreshToken = this.signRefreshToken(user.id, user.passwordHash);
-
+    const r = resultadoDeSesion(user, empresaSeleccionada);
     return {
-      token,
-      refreshToken,
-      user: {
-        id: user.id,
-        email: user.email,
-        roles,
-        companies,
-        esAdminGlobal,
-        // Permisos en la empresa activa (la seleccionada o la primera), no la union.
-        permisos: permisosEfectivos(rolesPorEmpresa[empresaSeleccionada ?? companies[0]] ?? [], esAdminGlobal),
-        permisosPorEmpresa: permisosPorEmpresaDe(rolesPorEmpresa, esAdminGlobal),
-        rolesPorEmpresa,
-      },
-      empresas,
+      token: this.generateToken(r.claims),
+      refreshToken: this.signRefreshToken(user.id, user.passwordHash),
+      user: r.user,
+      empresas: r.empresas,
       empresaSeleccionada,
     };
   },
@@ -206,6 +240,10 @@ export const authService = {
    * `pwd`): restablecer la contrasena echa a quien la estuviera usando, aunque
    * tuviera un refresh token. Los refresh tokens sin huella (anteriores a esta
    * comprobacion) tampoco valen: obligan una vez a volver a entrar.
+   *
+   * Con contrasena provisional se puede refrescar, pero el token nuevo sigue
+   * bloqueado en authMiddleware (el bloqueo sale de la BD, no del token). Con
+   * la provisional caducada, no: 401.
    */
   async refresh(refreshToken: string): Promise<LoginResult> {
     let payload: jwt.JwtPayload;
@@ -232,15 +270,10 @@ export const authService = {
       throw unauthorized('Tu email ha cambiado. Inicia sesión de nuevo.');
     }
 
-    const huella = huellaContrasena(user.passwordHash);
-    if (!mismaHuella(payload.pwd, huella)) {
+    if (!mismaHuella(payload.pwd, huellaContrasena(user.passwordHash))) {
       throw unauthorized('Tu contraseña ha cambiado o la sesión es antigua. Inicia sesión de nuevo.');
     }
-
-    const esAdminGlobal = user.isGlobalAdmin;
-    const companies = user.memberships.map((m) => m.companyId);
-    const roles = Array.from(new Set(user.memberships.map((m) => String(m.role))));
-    const empresas: EmpresaLogin[] = user.memberships.map((m) => ({ companyId: m.companyId, codigo: m.company.codigo, nombre: m.company.name }));
+    if (contrasenaProvisionalCaducada(user)) throw unauthorized(MENSAJE_PROVISIONAL_CADUCADA);
 
     // Limpieza oportunista de revocaciones ya expiradas (evita crecimiento indefinido
     // de la tabla sin necesidad de un cron dedicado).
@@ -253,23 +286,12 @@ export const authService = {
       });
     }
 
-    const rolesPorEmpresa = rolesPorEmpresaDe(user.memberships);
-    const token = this.generateToken({ userId: user.id, email: user.email, roles, rolesPorEmpresa, companies, esAdminGlobal, huellaContrasena: huella });
-    const nuevoRefresh = this.signRefreshToken(user.id, user.passwordHash);
+    const r = resultadoDeSesion(user);
     return {
-      token,
-      refreshToken: nuevoRefresh,
-      user: {
-        id: user.id,
-        email: user.email,
-        roles,
-        companies,
-        esAdminGlobal,
-        permisos: permisosEfectivos(rolesPorEmpresa[companies[0]] ?? [], esAdminGlobal),
-        permisosPorEmpresa: permisosPorEmpresaDe(rolesPorEmpresa, esAdminGlobal),
-        rolesPorEmpresa,
-      },
-      empresas,
+      token: this.generateToken(r.claims),
+      refreshToken: this.signRefreshToken(user.id, user.passwordHash),
+      user: r.user,
+      empresas: r.empresas,
     };
   },
 
@@ -329,44 +351,13 @@ export const authService = {
     });
     if (!user) throw unauthorized('Usuario demo no encontrado. Ejecuta: npx prisma db seed');
 
-    const esAdminGlobal = user.isGlobalAdmin;
-    const companies = user.memberships.map((m) => m.companyId);
-    const roles = Array.from(new Set(user.memberships.map((m) => String(m.role))));
-    const empresas: EmpresaLogin[] = user.memberships.map((m) => ({
-      companyId: m.companyId,
-      codigo: m.company.codigo,
-      nombre: m.company.name,
-    }));
-    const empresaSeleccionada = empresas[0]?.companyId;
-
-    const rolesPorEmpresa = rolesPorEmpresaDe(user.memberships);
-    const token = this.generateToken({
-      userId: user.id,
-      email: user.email,
-      roles,
-      rolesPorEmpresa,
-      companies,
-      esAdminGlobal,
-      empresaSeleccionada,
-      huellaContrasena: huellaContrasena(user.passwordHash),
-    });
-    const refreshToken = this.signRefreshToken(user.id, user.passwordHash);
-
+    const empresaSeleccionada = user.memberships[0]?.companyId;
+    const r = resultadoDeSesion(user, empresaSeleccionada);
     return {
-      token,
-      refreshToken,
-      user: {
-        id: user.id,
-        email: user.email,
-        roles,
-        companies,
-        esAdminGlobal,
-        // Permisos en la empresa activa (la seleccionada o la primera), no la union.
-        permisos: permisosEfectivos(rolesPorEmpresa[empresaSeleccionada ?? companies[0]] ?? [], esAdminGlobal),
-        permisosPorEmpresa: permisosPorEmpresaDe(rolesPorEmpresa, esAdminGlobal),
-        rolesPorEmpresa,
-      },
-      empresas,
+      token: this.generateToken(r.claims),
+      refreshToken: this.signRefreshToken(user.id, user.passwordHash),
+      user: r.user,
+      empresas: r.empresas,
       empresaSeleccionada,
     };
   },
@@ -374,7 +365,9 @@ export const authService = {
   /**
    * Usuario de la sesion con sus permisos ACTUALES (GET /auth/me). El frontend
    * filtra el menu con los permisos que guardo al iniciar sesion; si cambian
-   * (rol nuevo, arreglo de permisos) los refresca aqui sin volver a entrar.
+   * (rol nuevo, permisos a medida) los refresca aqui sin volver a entrar.
+   * Responde tambien con contrasena provisional, para que el frontend sepa que
+   * tiene que llevarle a cambiarla.
    */
   async me(userId: string): Promise<Omit<LoginResult, 'token' | 'refreshToken'>> {
     const user = await prisma.user.findUnique({
@@ -382,23 +375,50 @@ export const authService = {
       include: { memberships: { include: { company: true } } },
     });
     if (!user || !user.isActive) throw unauthorized('Usuario inactivo o inexistente.');
-    const esAdminGlobal = user.isGlobalAdmin;
-    const companies = user.memberships.map((m) => m.companyId);
-    const roles = Array.from(new Set(user.memberships.map((m) => String(m.role))));
-    const empresas: EmpresaLogin[] = user.memberships.map((m) => ({ companyId: m.companyId, codigo: m.company.codigo, nombre: m.company.name }));
-    const rolesPorEmpresa = rolesPorEmpresaDe(user.memberships);
+    const r = resultadoDeSesion(user);
+    return { user: r.user, empresas: r.empresas };
+  },
+
+  /**
+   * El usuario cambia SU contrasena (POST /auth/cambiar-contrasena): la
+   * provisional obligatoria y, mas adelante, desde Configuracion. Pide la
+   * actual. Los errores de datos son 400 (nunca 401: el frontend cierra la
+   * sesion con cualquier 401) y llevan `details.campo`.
+   *
+   * La escritura es condicional al hash leido: si un administrador la
+   * restablece justo a la vez, no se pisa (409). Devuelve tokens NUEVOS con la
+   * huella nueva; los anteriores, de acceso y de refresco, dejan de valer solos.
+   */
+  async cambiarContrasena(userId: string, actual: string, nueva: string): Promise<LoginResult & { eraProvisional: boolean }> {
+    const incluir = { memberships: { include: { company: true } } } as const;
+    const user = await prisma.user.findUnique({ where: { id: userId }, include: incluir });
+    if (!user || !user.isActive) throw unauthorized('Usuario inactivo o inexistente.');
+    // authMiddleware ya lo para; esto cubre que caduque justo entre medias.
+    if (contrasenaProvisionalCaducada(user)) throw unauthorized(MENSAJE_PROVISIONAL_CADUCADA);
+
+    if (!verifyPassword(actual ?? '', user.passwordHash)) {
+      throw badRequest('La contraseña actual no es correcta.', { campo: 'actual' });
+    }
+    conCampo('nueva', () => validarContrasena(nueva, user.email));
+    if (verifyPassword(nueva, user.passwordHash)) {
+      throw badRequest('La nueva contraseña tiene que ser distinta de la actual.', { campo: 'nueva' });
+    }
+
+    const r = await prisma.user.updateMany({
+      where: { id: userId, passwordHash: user.passwordHash },
+      data: { passwordHash: hashPassword(nueva), debeCambiarContrasena: false, contrasenaProvisionalHasta: null },
+    });
+    if (r.count === 0) throw conflict('Tu contraseña acaba de cambiar desde otro sitio. Vuelve a entrar.');
+
+    const ahora = await prisma.user.findUnique({ where: { id: userId }, include: incluir });
+    if (!ahora || !ahora.isActive) throw unauthorized('Usuario inactivo o inexistente.');
+    const s = resultadoDeSesion(ahora);
     return {
-      user: {
-        id: user.id,
-        email: user.email,
-        roles,
-        companies,
-        esAdminGlobal,
-        permisos: permisosEfectivos(rolesPorEmpresa[companies[0]] ?? [], esAdminGlobal),
-        permisosPorEmpresa: permisosPorEmpresaDe(rolesPorEmpresa, esAdminGlobal),
-        rolesPorEmpresa,
-      },
-      empresas,
+      token: this.generateToken(s.claims),
+      refreshToken: this.signRefreshToken(ahora.id, ahora.passwordHash),
+      user: s.user,
+      empresas: s.empresas,
+      eraProvisional: user.debeCambiarContrasena === true,
     };
   },
 };

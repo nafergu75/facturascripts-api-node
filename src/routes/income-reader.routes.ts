@@ -48,13 +48,13 @@ router.post('/email-hook', raw({ type: ['application/json', 'text/plain'], limit
  * Listar documentos pendientes de verificar.
  * GET /api/income-reader/pending
  */
-router.get('/pending', incomeReaderController.listarPendientes);
+router.get('/pending', authorize('ventas:read', 'contabilidad:read'), incomeReaderController.listarPendientes);
 
 /**
  * Obtener configuración de email del lector.
  * GET /api/income-reader/config
  */
-router.get('/config', incomeReaderController.obtenerConfig);
+router.get('/config', authorize('ventas:read', 'contabilidad:read'), incomeReaderController.obtenerConfig);
 
 /**
  * Crear/actualizar configuración de email del lector.
@@ -66,7 +66,7 @@ router.post('/config', authorize('admin:empresa'), incomeReaderController.actual
  * Obtener detalle de un documento.
  * GET /api/income-reader/:id
  */
-router.get('/:id', incomeReaderController.obtenerDetalle);
+router.get('/:id', authorize('ventas:read', 'contabilidad:read'), incomeReaderController.obtenerDetalle);
 
 /**
  * Actualizar datos extraídos de un documento (correcciones manuales).

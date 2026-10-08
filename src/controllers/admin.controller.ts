@@ -4,6 +4,7 @@ import {
   actualizarEmpresa,
   actualizarUsuario,
   asignarRol,
+  catalogoPermisos,
   crearEmpresa,
   crearUsuario,
   listarEmpresas,
@@ -12,17 +13,30 @@ import {
 } from '../services/admin.service';
 import { registrarAuditoria } from '../services/auditoria.service';
 import type { CambiosUsuario } from '../services/admin.service';
-import type { UsuarioAdmin } from '../domain/admin.model';
+import type { Response } from 'express';
+import type { UsuarioConContrasena } from '../domain/admin.model';
 
-/** Auditoria del alta de un usuario. Nunca la contrasena. (La usa tambien POST /users.) */
-export async function auditarAltaUsuario(actorId: string, usuario: UsuarioAdmin): Promise<void> {
+/** Las respuestas que pueden llevar una contrasena provisional no se guardan en ninguna cache. */
+const sinCache = (res: Response) => res.setHeader('Cache-Control', 'no-store');
+
+/**
+ * Auditoria del alta de un usuario. Nunca la contrasena: solo que es
+ * provisional y si la genero el servidor. (La usa tambien POST /users.)
+ */
+export async function auditarAltaUsuario(actorId: string, usuario: UsuarioConContrasena): Promise<void> {
   await registrarAuditoria({
     userId: actorId,
     companyId: usuario.empresas?.[0]?.companyId,
     action: 'CREATE_USUARIO',
     resourceType: 'USUARIO',
     resourceId: usuario.id,
-    after: { email: usuario.email, esAdminGlobal: usuario.esAdminGlobal, empresas: usuario.empresas?.map((e) => ({ companyId: e.companyId, rol: e.rol })) },
+    after: {
+      email: usuario.email,
+      esAdminGlobal: usuario.esAdminGlobal,
+      contrasenaProvisional: true,
+      contrasenaGenerada: typeof usuario.contrasenaProvisional === 'string',
+      empresas: usuario.empresas?.map((e) => ({ companyId: e.companyId, rol: e.rol, personalizado: e.personalizado, areas: e.areas })),
+    },
   });
 }
 
@@ -86,45 +100,77 @@ export const adminController = {
     sendOk(res, await listarUsuarios());
   }),
 
+  /** Areas, niveles y perfiles de la matriz de permisos (lo pinta el panel). */
+  catalogoPermisos: asyncHandler(async (_req, res) => {
+    sendOk(res, catalogoPermisos());
+  }),
+
+  /**
+   * Alta: sin `password`, la genera el servidor y va en la respuesta UNA vez
+   * (contrasenaProvisional). Con ella escrita, no se repite. Siempre provisional.
+   */
   crearUsuario: asyncHandler(async (req, res) => {
-    const { email, password, esAdminGlobal, companyId, rol, role } = req.body ?? {};
-    const usuario = await crearUsuario({ email, password, esAdminGlobal, companyId, rol: rol ?? role });
+    const { email, password, esAdminGlobal, companyId, rol, role, areas } = req.body ?? {};
+    const usuario = await crearUsuario({ email, password, esAdminGlobal, companyId, rol: rol ?? role, areas }, { generarSiFalta: true });
     await auditarAltaUsuario(req.user!.userId, usuario);
+    sinCache(res);
     sendOk(res, usuario, undefined, 201);
   }),
 
   actualizarUsuario: asyncHandler(async (req, res) => {
-    const { activo, esAdminGlobal, nuevaContrasena } = req.body ?? {};
-    const { usuario, cambios } = await actualizarUsuario(req.user!.userId, req.params.userId, { activo, esAdminGlobal, nuevaContrasena });
+    const { activo, esAdminGlobal, nuevaContrasena, restablecerContrasena, exigirCambioContrasena } = req.body ?? {};
+    const { usuario, cambios, contrasenaProvisional } = await actualizarUsuario(req.user!.userId, req.params.userId, {
+      activo,
+      esAdminGlobal,
+      nuevaContrasena,
+      restablecerContrasena,
+      exigirCambioContrasena,
+    });
     await auditarCambioUsuario(req.user!.userId, req.params.userId, usuario.email, cambios);
-    sendOk(res, usuario);
+    sinCache(res);
+    sendOk(res, contrasenaProvisional ? { ...usuario, contrasenaProvisional } : usuario);
   }),
 
+  /**
+   * Da o cambia el acceso (sustitucion completa: rol y areas). El cuerpo ya
+   * viene validado (admin.routes, solo rol/role/roles/areas). Sin cambios no se
+   * audita nada.
+   */
   asignarRol: asyncHandler(async (req, res) => {
     const pedido = req.body?.rol ?? req.body?.role ?? (Array.isArray(req.body?.roles) ? req.body.roles[0] : undefined);
     const { userId, companyId } = req.params;
-    const { rol, rolAnterior } = await asignarRol(userId, companyId, pedido);
-    await registrarAuditoria({
-      userId: req.user!.userId,
+    const r = await asignarRol(userId, companyId, pedido, req.body?.areas);
+    if (r.cambiado) {
+      const base = { targetUserId: userId, companyId, rol: r.rol, personalizado: r.personalizado, areas: r.areas };
+      const [action, meta] = !r.rolAnterior
+        ? ['ASIGNAR_USUARIO_EMPRESA', base]
+        : r.rolAnterior !== r.rol
+          ? ['CAMBIAR_ROL_EMPRESA', { ...base, rolAnterior: r.rolAnterior, areasAnteriores: r.areasAnteriores }]
+          : ['CAMBIAR_PERMISOS_EMPRESA', { ...base, personalizadoAntes: r.personalizadoAntes, areasAnteriores: r.areasAnteriores }];
+      await registrarAuditoria({ userId: req.user!.userId, companyId, action: action as string, resourceType: 'MEMBERSHIP', resourceId: userId, meta });
+    }
+    sendOk(res, {
+      userId,
       companyId,
-      action: rolAnterior ? 'CAMBIAR_ROL_EMPRESA' : 'ASIGNAR_USUARIO_EMPRESA',
-      resourceType: 'MEMBERSHIP',
-      resourceId: userId,
-      meta: { targetUserId: userId, companyId, rol, rolAnterior },
+      rol: r.rol,
+      rolAnterior: r.rolAnterior,
+      personalizado: r.personalizado,
+      areas: r.areas,
+      areasAnteriores: r.areasAnteriores,
+      cambiado: r.cambiado,
     });
-    sendOk(res, { userId, companyId, rol, rolAnterior });
   }),
 
   quitarAcceso: asyncHandler(async (req, res) => {
     const { userId, companyId } = req.params;
-    const { rolAnterior } = await quitarAcceso(userId, companyId);
+    const { rolAnterior, personalizadoAntes } = await quitarAcceso(userId, companyId);
     await registrarAuditoria({
       userId: req.user!.userId,
       companyId,
       action: 'QUITAR_USUARIO_EMPRESA',
       resourceType: 'MEMBERSHIP',
       resourceId: userId,
-      meta: { targetUserId: userId, companyId, rolAnterior },
+      meta: { targetUserId: userId, companyId, rolAnterior, personalizadoAntes },
     });
     sendOk(res, { userId, companyId, quitado: true });
   }),

@@ -46,27 +46,27 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 
 // --- Ejercicios contables ---
 // Ya no cierra: responde 409 y remite a Contabilidad > Cierre y traspaso de saldos.
 router.post('/fiscal-years/:fyId/close', authorize('contabilidad:write'), fiscalYearsController.cerrar);
-router.get('/fiscal-years/:fyId/deadlines', fiscalYearsController.deadlines);
+router.get('/fiscal-years/:fyId/deadlines', authorize('contabilidad:read'), fiscalYearsController.deadlines);
 
 // --- Libros contables y societarios ---
 router.post('/fiscal-years/:fyId/books/generate', authorize('contabilidad:write'), booksController.generar);
-router.get('/fiscal-years/:fyId/books', booksController.listar);
-router.get('/books/:bookId/download', booksController.descargar);
+router.get('/fiscal-years/:fyId/books', authorize('contabilidad:read'), booksController.listar);
+router.get('/books/:bookId/download', authorize('contabilidad:read'), booksController.descargar);
 
 // --- Expediente de legalización ---
-router.get('/fiscal-years/:fyId/legalization-packages', legalizationPackagesController.listar);
+router.get('/fiscal-years/:fyId/legalization-packages', authorize('contabilidad:read'), legalizationPackagesController.listar);
 router.post('/fiscal-years/:fyId/legalization-package', authorize('contabilidad:write'), legalizationPackagesController.crear);
-router.get('/legalization-packages/:packageId/download', legalizationPackagesController.descargar);
+router.get('/legalization-packages/:packageId/download', authorize('contabilidad:read'), legalizationPackagesController.descargar);
 router.patch('/legalization-packages/:packageId', authorize('contabilidad:write'), legalizationPackagesController.actualizar);
 router.post('/legalization-packages/:packageId/diligence', authorize('contabilidad:write'), upload.single('archivo'), legalizationPackagesController.diligencia);
 
 // --- Depósito de cuentas anuales ---
 router.post('/fiscal-years/:fyId/annual-accounts/generate', authorize('contabilidad:write'), annualAccountsController.generar);
-router.get('/fiscal-years/:fyId/annual-accounts', annualAccountsController.listar);
-router.get('/fiscal-years/:fyId/memoria', annualAccountsController.memoria);
+router.get('/fiscal-years/:fyId/annual-accounts', authorize('contabilidad:read'), annualAccountsController.listar);
+router.get('/fiscal-years/:fyId/memoria', authorize('contabilidad:read'), annualAccountsController.memoria);
 router.put('/fiscal-years/:fyId/memoria', authorize('contabilidad:write'), annualAccountsController.guardarMemoria);
-router.get('/annual-accounts/:id/download', annualAccountsController.descargar);
-router.get('/annual-accounts/:id/xbrl', annualAccountsController.descargarXbrl);
+router.get('/annual-accounts/:id/download', authorize('contabilidad:read'), annualAccountsController.descargar);
+router.get('/annual-accounts/:id/xbrl', authorize('contabilidad:read'), annualAccountsController.descargarXbrl);
 router.post('/annual-accounts/:id/filing', authorize('contabilidad:write'), annualAccountsController.filing);
 router.post('/annual-accounts/:id/resolution', authorize('contabilidad:write'), annualAccountsController.resolution);
 

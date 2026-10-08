@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { authController } from '../controllers/auth.controller';
 import { validate } from '../middleware/validation.middleware';
 import { porEmail, rateLimit } from '../middleware/rate-limit.middleware';
-import { authMiddleware } from '../middleware/auth.middleware';
+import { authMiddlewarePermitiendoProvisional } from '../middleware/auth.middleware';
 
 const router = Router();
 
@@ -38,7 +38,39 @@ router.post('/dev-login', authLimit, authController.devLogin);
 router.post('/refresh', authLimit, authController.refresh);
 router.post('/logout', authLimit, authController.logout);
 
-// Con sesion: usuario y permisos actuales (el menu se refresca con esto).
-router.get('/me', authMiddleware, authController.me);
+// Con sesion: usuario y permisos actuales (el menu se refresca con esto). Responde
+// tambien con contrasena provisional: el frontend sabe asi que debe pedir cambiarla.
+router.get('/me', authMiddlewarePermitiendoProvisional, authController.me);
+
+// Cambio de la contrasena PROPIA: la provisional obligatoria y, cuando exista,
+// desde Configuracion. Pide la actual; cualquier otro campo del cuerpo es un 400.
+const cambiarContrasenaSchema = z
+  .object({
+    actual: z.string().min(1).max(128),
+    nueva: z.string().min(1).max(128),
+  })
+  .strict();
+
+// Limitador PROPIO por IP: authLimit lo comparten login, refresh y logout y
+// sumaria intentos de cosas distintas en el mismo cubo.
+const cambioPorIp = rateLimit({ ventanaMs: 60_000, max: 10 });
+
+// Por usuario y solo fallos: frena probar contrasenas con una sesion robada.
+const cambioPorUsuario = rateLimit({
+  ventanaMs: 15 * 60_000,
+  max: 10,
+  soloFallos: true,
+  keyGenerator: (req) => `usuario:${req.user?.userId ?? req.ip}`,
+  mensaje: 'Demasiados intentos. Espera unos minutos y vuelve a probar.',
+});
+
+router.post(
+  '/cambiar-contrasena',
+  cambioPorIp,
+  authMiddlewarePermitiendoProvisional,
+  validate(cambiarContrasenaSchema),
+  cambioPorUsuario,
+  authController.cambiarContrasena,
+);
 
 export default router;
