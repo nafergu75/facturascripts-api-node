@@ -205,9 +205,10 @@ export const FICHAS: FichaFAQ[] = [
     pregunta: '¿Por qué no puedo ver o hacer algo en la app?',
     variantes: ['no tengo permiso', 'me sale que falta permiso', 'no veo tesoreria', 'quien me da acceso', 'roles de usuario', 'como doy permisos a un empleado'],
     respuesta:
-      'Cada usuario tiene un rol en cada empresa: administrador, contable, ventas o solo lectura. El rol decide qué pantallas ves y qué puedes cambiar, y Carmen sigue las mismas reglas. Si te falta acceso a algo, pídeselo al administrador de tu empresa.',
-    fuente: APP('/dashboard', 'Resumen'),
+      'Cada usuario tiene un perfil en cada empresa: administrador, contable, ventas o solo lectura. El administrador de la plataforma puede ajustarlo a medida, área por área (ventas, compras, contabilidad, tesorería, impuestos y nóminas), con «Ver» o «Modificar»; el perfil Administrador siempre puede con todo. Eso decide qué pantallas ves y qué puedes cambiar, y Carmen sigue las mismas reglas. Lo tuyo lo ves en Más → Configuración → Tu acceso y usuarios. Si te falta algo, pídeselo al administrador.',
+    fuente: APP('/dashboard/configuracion/acceso', 'Tu acceso y usuarios'),
     ...VERIFICADA,
+    enlaceApp: { texto: 'Ver tu acceso', href: '/dashboard/configuracion/acceso' },
     etiquetas: ['permiso', 'permisos', 'rol', 'roles', 'acceso', 'usuario'],
   },
   {

@@ -48,6 +48,12 @@ export const PANTALLAS: PantallaApp[] = [
   { ruta: 'Fiscalidad → Registro Mercantil', href: '/dashboard/registro-mercantil', descripcion: 'Libros oficiales y cuentas anuales para depositar.' },
   { ruta: 'Más → Datos de la empresa', href: '/dashboard/empresa', descripcion: 'Datos fiscales, contacto y logo de las facturas.' },
   { ruta: 'Más → Archivo', href: '/dashboard/archivo', descripcion: 'Documentos y archivos de la empresa.' },
+  { ruta: 'Más → Configuración', href: '/dashboard/configuracion', descripcion: 'Puesta en marcha de la empresa: ejercicios, series, facturación, impuestos y accesos.' },
+  { ruta: 'Más → Configuración → Ejercicios y periodos', href: '/dashboard/configuracion/ejercicios', descripcion: 'Ejercicios de la empresa y bloqueo o desbloqueo de cada mes.' },
+  { ruta: 'Más → Configuración → Series de numeración', href: '/dashboard/configuracion/series', descripcion: 'Series de las facturas y su numeración.' },
+  { ruta: 'Más → Configuración → Facturación', href: '/dashboard/configuracion/facturacion', descripcion: 'Forma de pago, vencimiento, cuenta e IBAN, IRPF habitual y pie de las facturas.' },
+  { ruta: 'Más → Configuración → Impuestos', href: '/dashboard/configuracion/impuestos', descripcion: 'IVA trimestral o mensual, SII, REDEME, recargo de equivalencia, criterio de caja y prorrata.' },
+  { ruta: 'Más → Configuración → Tu acceso y usuarios', href: '/dashboard/configuracion/acceso', descripcion: 'Qué puedes ver y cambiar en la empresa y, si eres administrador, quién más entra.' },
 ];
 
 /** Prefijos de rutas con identificador que también existen (/dashboard/facturas/{id}...). */
