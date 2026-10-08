@@ -7,7 +7,8 @@
  *    misma cuenta (400/410) que sus pagos;
  *  - una factura anterior sin asiento de un trimestre declarado no se
  *    modifica ni se anula sin contraasiento;
- *  - el 347 no lleva las compras con retencion de IRPF (van en el 190 y el 180).
+ *  - el 347 no lleva las compras con retencion de IRPF (van en el 190 y el 180);
+ *  - la fecha de anulacion tiene que existir y no ser anterior a la factura.
  *
  * Necesita MySQL (en GitHub Actions lo levanta el workflow de tests).
  */
@@ -20,6 +21,7 @@ import { errorMiddleware } from '../middleware/error.middleware';
 import { expenseInvoicesService } from '../services/expense-invoices.service';
 import { AccountingEngineController } from '../controllers/accounting-engine.controller';
 import { registrarCobroFactura } from '../services/cobrosPagos.service';
+import { cambiarEstadoPeriodo } from '../services/periodos.service';
 import { calcularModelo303, calcularModelo347 } from '../services/impuestosCalculo.service';
 import { taxModelsService } from '../services/tax-models.service';
 import { periodoFiscal } from '../services/nominas/fiscal';
@@ -269,5 +271,32 @@ describe('347 sin las compras con retencion', () => {
       ['Asesoria Fiscal SL', 3630],
       ['Electrica del Turia SL', 4840],
     ]);
+  });
+});
+
+describe('anular: la fecha del contraasiento', () => {
+  it('una fecha que no existe o anterior a la factura: 400 y nada cambia', async () => {
+    const E = await nuevaEmpresa('anular-fecha');
+    const sup = await proveedor(E);
+    const r = await request(app(E)).post('/expense-invoices').send(factura(sup, { fechaEmision: '2026-03-15' }));
+    expect(r.status).toBe(201);
+    const id = r.body.data.id as string;
+    await cambiarEstadoPeriodo(E, 2026, 3, 'cerrado');
+    try {
+      const antes = await prisma.journalEntry.count({ where: { companyId: E } });
+      const noExiste = await request(app(E)).post(`/expense-invoices/${id}/anular`).send({ motivo: 'Error', fecha: '2026-06-31' });
+      expect(noExiste.status).toBe(400);
+      expect(noExiste.body).toMatchObject({ message: 'Esa fecha no existe.', details: { campo: 'fecha' } });
+      const anterior = await request(app(E)).post(`/expense-invoices/${id}/anular`).send({ motivo: 'Error', fecha: '2026-01-10' });
+      expect(anterior.status).toBe(400);
+      expect(anterior.body).toMatchObject({ message: 'La fecha de anulación no puede ser anterior a la de registro de la factura (15/03/2026).', details: { campo: 'fecha' } });
+      expect(await prisma.journalEntry.count({ where: { companyId: E } })).toBe(antes);
+      expect((await prisma.expenseInvoice.findUniqueOrThrow({ where: { id } })).estado).toBe('ACCOUNTED');
+    } finally {
+      await cambiarEstadoPeriodo(E, 2026, 3, 'abierto');
+    }
+    const listado = await request(app(E)).get('/expense-invoices?desde=2026-02-30');
+    expect(listado.status).toBe(400);
+    expect(listado.body.message).toBe('La fecha «desde» no existe.');
   });
 });

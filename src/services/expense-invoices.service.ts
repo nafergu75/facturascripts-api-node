@@ -18,7 +18,7 @@ import {
   tipoRetencionLibro,
   type TipoGasto,
 } from '../domain/factura-gasto.model';
-import { validarFacturaGasto, type FacturaGastoBody } from '../schemas/factura-gasto.schemas';
+import { esFechaReal, validarFacturaGasto, type FacturaGastoBody } from '../schemas/factura-gasto.schemas';
 import { contabilizarFacturaGasto, desgloseIvaPorTipo } from './accounting-engine.service';
 import { asegurarPlanContableEmpresa } from './chart-of-accounts.service';
 // Se importa de cobrosPagos (y con dos argumentos): asi sirve antes y despues de
@@ -1017,6 +1017,8 @@ export async function anularGasto(
   if (motivo.length > 500) throw badRequest('El motivo es demasiado largo (500 caracteres como mucho).', { campo: 'motivo' });
   if (datos.fecha !== undefined && datos.fecha !== null && datos.fecha !== '') {
     if (typeof datos.fecha !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(datos.fecha)) throw badRequest('La fecha tiene que ser AAAA-MM-DD.', { campo: 'fecha' });
+    // new Date('2026-06-31') es el 1 de julio: el contraasiento caeria en otro trimestre.
+    if (!esFechaReal(datos.fecha)) throw badRequest('Esa fecha no existe.', { campo: 'fecha' });
   }
   const fechaPedida = typeof datos.fecha === 'string' && datos.fecha ? datos.fecha : null;
 
@@ -1027,6 +1029,9 @@ export async function anularGasto(
   if (declarada && !asiento) throw conflict(textoAnteriorDeclarada(declarada, 'anular'), { accion: 'contabilizar' });
   const conContraasiento = asiento?.estado === 'POSTED' && declarada !== null;
   const fechaAnulacion = fechaPedida ?? hoyEspana();
+  if (conContraasiento && fechaAnulacion < fechaContableGasto(f)) {
+    throw badRequest(`La fecha de anulación no puede ser anterior a la de registro de la factura (${ddmmaaaa(fechaContableGasto(f))}).`, { campo: 'fecha' });
+  }
   if (conContraasiento) {
     await comprobarFechaAbierta(companyId, fechaAnulacion);
     const m = await motivoPeriodoBloqueado(companyId, fechaAnulacion, retencionDe(f));
@@ -1263,6 +1268,7 @@ async function listarGastos(companyId: string, filtros: FiltrosGastos = {}): Pro
   if (pago && !['pendiente', 'parcial', 'por_pagar', 'pagada', 'vencida'].includes(pago)) throw badRequest('Filtro de pago no válido: usa pendiente, parcial, por_pagar, pagada o vencida.');
   for (const [nombre, f] of [['desde', desde], ['hasta', hasta]] as const) {
     if (f && !/^\d{4}-\d{2}-\d{2}$/.test(f)) throw badRequest(`La fecha «${nombre}» tiene que ser AAAA-MM-DD.`);
+    if (f && !esFechaReal(f)) throw badRequest(`La fecha «${nombre}» no existe.`);
   }
 
   const hoy = hoyEspana();
