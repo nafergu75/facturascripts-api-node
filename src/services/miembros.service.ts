@@ -4,6 +4,7 @@
  * Administracion global. Nunca devuelve hashes, tokens ni datos de otras empresas.
  */
 import { prisma } from '../config/database';
+import { accesoPersonalizado, areasDeAcceso, type Areas } from './rbac.service';
 
 export interface MiembroEmpresa {
   userId: string;
@@ -14,14 +15,26 @@ export interface MiembroEmpresa {
   rol: string;
   /** false: la cuenta esta desactivada y no puede entrar. */
   activo: boolean;
+  /** true: el administrador de la plataforma le ha ajustado los permisos a medida. */
+  personalizado: boolean;
+  /** Lo que puede en cada area (ver/modificar/ninguno); null con el perfil Administrador (todo). */
+  areas: Areas | null;
 }
 
 export async function listarMiembros(companyId: string): Promise<MiembroEmpresa[]> {
   const membresias = await prisma.membership.findMany({
     where: { companyId },
-    select: { userId: true, role: true, user: { select: { email: true, isActive: true } } },
+    select: { userId: true, role: true, permisosPersonalizados: true, user: { select: { email: true, isActive: true } } },
   });
   return membresias
-    .map((m) => ({ userId: m.userId, nombre: null, email: m.user.email, rol: String(m.role), activo: m.user.isActive }))
+    .map((m) => ({
+      userId: m.userId,
+      nombre: null,
+      email: m.user.email,
+      rol: String(m.role),
+      activo: m.user.isActive,
+      personalizado: accesoPersonalizado(m),
+      areas: areasDeAcceso(m),
+    }))
     .sort((a, b) => a.email.localeCompare(b.email));
 }

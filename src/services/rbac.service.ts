@@ -246,6 +246,20 @@ export function permisosDeAcceso(acceso: AccesoConPermisos | undefined, esAdminG
   return permisosDeRoles([rol]);
 }
 
+/** ¿Acceso a medida? Nunca con el perfil Administrador (lo usan el panel y Configuracion). */
+export function accesoPersonalizado(acceso: AccesoConPermisos): boolean {
+  return rolNormalizado(String(acceso.role)) !== 'admin' && leerPersonalizados(acceso.permisosPersonalizados) !== null;
+}
+
+/**
+ * Areas que da un acceso por si mismo (sin contar el modo admin global). null
+ * con el perfil Administrador ("todo").
+ */
+export function areasDeAcceso(acceso: AccesoConPermisos): Areas | null {
+  if (rolNormalizado(String(acceso.role)) === 'admin') return null;
+  return areasDePermisos(permisosDeAcceso(acceso, false));
+}
+
 type MembresiaConPermisos = AccesoConPermisos & { companyId: string };
 
 /** { companyId: permisos efectivos }. Dos membresias de la misma empresa (tests) se unen. */

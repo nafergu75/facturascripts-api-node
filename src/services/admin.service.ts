@@ -12,12 +12,11 @@ import {
 import {
   AREAS,
   NIVELES,
+  accesoPersonalizado,
+  areasDeAcceso,
   areasDePerfil,
-  areasDePermisos,
   canonizarParaGuardar,
   esquemaAreas,
-  leerPersonalizados,
-  permisosDeAcceso,
   type Areas,
 } from './rbac.service';
 import { HttpError, badRequest, conflict, notFound } from '../utils/http-errors';
@@ -419,21 +418,9 @@ const SELECT_USUARIO = {
   },
 } as const;
 
-/** ¿Acceso personalizado? Nunca con el perfil Administrador. */
-function esPersonalizado(acceso: { role: unknown; permisosPersonalizados?: unknown }): boolean {
-  return String(acceso.role) !== 'admin' && leerPersonalizados(acceso.permisosPersonalizados) !== null;
-}
-
-/**
- * Areas que da un acceso por si mismo (sin contar el modo admin global: el
- * usuario ya trae esAdminGlobal para que el panel lo explique). null con el
- * perfil Administrador ("todo").
- */
-function areasDeAcceso(acceso: { role: unknown; permisosPersonalizados?: unknown }): Areas | null {
-  if (String(acceso.role) === 'admin') return null;
-  return areasDePermisos(permisosDeAcceso(acceso, false));
-}
-
+// accesoPersonalizado y areasDeAcceso viven en rbac.service (las usa tambien
+// GET /miembros). El modo admin global no cuenta: el usuario ya trae
+// esAdminGlobal para que el panel lo explique.
 const aUsuarioAdmin = (u: UsuarioConAccesos): UsuarioAdmin => ({
   id: u.id,
   email: u.email,
@@ -452,7 +439,7 @@ const aUsuarioAdmin = (u: UsuarioConAccesos): UsuarioAdmin => ({
         codigo: m.company.codigo,
         activa: m.company.isActive,
         rol: String(m.role),
-        personalizado: esPersonalizado(m),
+        personalizado: accesoPersonalizado(m),
         areas: areasDeAcceso(m),
       }),
     )
@@ -622,8 +609,8 @@ export async function asignarRol(userId: string, companyId: string, rolPedido: u
     return {
       rol,
       rolAnterior: anterior ? String(anterior.role) : null,
-      personalizado: esPersonalizado(nuevo),
-      personalizadoAntes: anterior ? esPersonalizado(anterior) : false,
+      personalizado: accesoPersonalizado(nuevo),
+      personalizadoAntes: anterior ? accesoPersonalizado(anterior) : false,
       areas: areasDeAcceso(nuevo),
       areasAnteriores: anterior ? areasDeAcceso(anterior) : null,
       cambiado,
@@ -639,7 +626,7 @@ export async function quitarAcceso(userId: string, companyId: string): Promise<{
   });
   if (!m) throw notFound('Ese usuario no tiene acceso a esa empresa.');
   await prisma.membership.delete({ where: { id: m.id } });
-  return { rolAnterior: String(m.role), personalizadoAntes: esPersonalizado(m) };
+  return { rolAnterior: String(m.role), personalizadoAntes: accesoPersonalizado(m) };
 }
 
 /** Lo que cambio en un usuario (para la auditoria). NUNCA la contrasena. */
