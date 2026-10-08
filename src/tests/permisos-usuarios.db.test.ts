@@ -140,7 +140,8 @@ describeBd('permisos a medida y contraseña provisional (BD real)', () => {
 
     it('4. surte efecto en la siguiente petición, con la sesión ya abierta', async () => {
       await accesoU({ rol: 'contable', areas: { ...CONTABLE, compras: 'ninguno' } });
-      expect((await como(tokenU).get(`/companies/${E}/expense-invoices`)).status).toBe(403);
+      // Las facturas de gasto, como los proveedores, las cubre Ver Contabilidad.
+      expect((await como(tokenU).get(`/companies/${E}/expense-invoices`)).status).toBe(200);
       expect((await como(tokenU).get(`/companies/${E}/proveedores`)).status).toBe(200); // lo cubre Ver Contabilidad
 
       await accesoU({ rol: 'contable', areas: { ...CONTABLE, compras: 'ninguno', contabilidad: 'ninguno' } });
