@@ -314,8 +314,12 @@ export function agregar347(
   const acumulado = new Map<string, OperacionTercero>();
 
   for (const f of delAno) {
+    // Las compras con retencion de IRPF no van al 347: ya estan en el 190 o en
+    // el 180 (art. 33.2 del RD 1065/2007). Solo cuentan sus lineas sin retencion.
+    const lineas = f.lineas.filter((l) => !l.conRetencion);
+    if (!lineas.length) continue;
     // El 347 se declara con IVA incluido (antes se sumaba solo la base).
-    const base = round2(f.lineas.reduce((a, l) => a + l.base + l.cuota, 0));
+    const base = round2(lineas.reduce((a, l) => a + l.base + l.cuota, 0));
     const key = `${f.tipo}:${f.cifnif}`;
     const prev =
       acumulado.get(key) ??
@@ -511,8 +515,13 @@ export async function obtenerFacturasFiscales(companyId: string, desde: string, 
         fecha,
         operacion: clasificarOperacion(f.supplier?.pais, f.supplier?.nifCif),
         lineas: f.lineas.length
-          ? f.lineas.map((l) => ({ tipoIva: l.tipoIva, base: signo * round2(l.baseLine), cuota: signo * round2(l.ivaImporte) }))
-          : [{ tipoIva: 0, base: signo * round2(f.baseTotal), cuota: 0 }],
+          ? f.lineas.map((l) => ({
+              tipoIva: l.tipoIva,
+              base: signo * round2(l.baseLine),
+              cuota: signo * round2(l.ivaImporte),
+              ...(Number(l.tipoRetencion) > 0 ? { conRetencion: true } : {}),
+            }))
+          : [{ tipoIva: 0, base: signo * round2(f.baseTotal), cuota: 0, ...(Number(f.retencionTotal) > 0 ? { conRetencion: true } : {}) }],
       });
     }
   }

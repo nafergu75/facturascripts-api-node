@@ -118,6 +118,24 @@ export function whereGastosFiscales(companyId: string, desde: string, hasta: str
 const euros = (centimos: number) => Math.round(centimos) / 100;
 
 /**
+ * Importe con IVA de una factura de gasto que va al 347: sin las lineas con
+ * retencion de IRPF (profesionales y alquileres), que ya se declaran en el 190
+ * y en el 180 (art. 33.2 del RD 1065/2007). Sin lineas, toda la factura o nada.
+ */
+export function importe347Gasto(f: {
+  baseTotal: number;
+  ivaTotal: number;
+  retencionTotal: number;
+  lineas?: Array<{ tipoRetencion: number; baseLine: number; ivaImporte: number }>;
+}): number {
+  const lineas = f.lineas ?? [];
+  if (!lineas.length) return aCentimos(Number(f.retencionTotal) || 0) > 0 ? 0 : euros(aCentimos(Number(f.baseTotal) || 0) + aCentimos(Number(f.ivaTotal) || 0));
+  return euros(
+    lineas.filter((l) => !(Number(l.tipoRetencion) > 0)).reduce((a, l) => a + aCentimos(Number(l.baseLine) || 0) + aCentimos(Number(l.ivaImporte) || 0), 0),
+  );
+}
+
+/**
  * Base sujeta a retencion y cuota por porcentaje, a partir de las lineas. Sin
  * lineas, o si las lineas no cuadran con la cabecera (facturas antiguas), la
  * cabecera: el porcentaje guardado o, si es 0, el que resulta de la cuota.

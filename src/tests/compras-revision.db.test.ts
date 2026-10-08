@@ -6,7 +6,8 @@
  *    su cuenta y la base de las lineas con retencion, y el proveedor en la
  *    misma cuenta (400/410) que sus pagos;
  *  - una factura anterior sin asiento de un trimestre declarado no se
- *    modifica ni se anula sin contraasiento.
+ *    modifica ni se anula sin contraasiento;
+ *  - el 347 no lleva las compras con retencion de IRPF (van en el 190 y el 180).
  *
  * Necesita MySQL (en GitHub Actions lo levanta el workflow de tests).
  */
@@ -19,7 +20,8 @@ import { errorMiddleware } from '../middleware/error.middleware';
 import { expenseInvoicesService } from '../services/expense-invoices.service';
 import { AccountingEngineController } from '../controllers/accounting-engine.controller';
 import { registrarCobroFactura } from '../services/cobrosPagos.service';
-import { calcularModelo303 } from '../services/impuestosCalculo.service';
+import { calcularModelo303, calcularModelo347 } from '../services/impuestosCalculo.service';
+import { taxModelsService } from '../services/tax-models.service';
 import { periodoFiscal } from '../services/nominas/fiscal';
 import { controlCif } from '../utils/nif';
 import { esperarCuadre } from './ayuda-cuadre-recibidas';
@@ -237,5 +239,35 @@ describe('factura anterior sin asiento con el 303 presentado', () => {
     expect(ok.status).toBe(200);
     expect(ok.body.data.contraasiento).toBe(true);
     await esperarCuadre(expect, E, 2026, 1, 210, 1000);
+  });
+});
+
+describe('347 sin las compras con retencion', () => {
+  it('alquiler y profesional con retencion fuera; el suministro y la parte sin retencion, dentro', async () => {
+    const E = await nuevaEmpresa('347');
+    const alquiler = await proveedor(E, 'Arrendador Centro SL');
+    const asesor = await proveedor(E, 'Asesoria Fiscal SL');
+    const luz = await proveedor(E, 'Electrica del Turia SL');
+    const linea = (precioUnitario: number, tipoRetencion = 0) => ({ descripcion: 'Concepto', cantidad: 1, precioUnitario, tipoIva: 21, tipoRetencion });
+    for (const [i, fecha] of ['2026-01-10', '2026-04-10', '2026-07-10', '2026-10-10'].entries()) {
+      for (const [sup, tipo, lineas] of [
+        [alquiler, 'ALQUILER', [linea(1000, 19)]],
+        [asesor, 'SERVICIO_PROFESIONAL', [linea(1000, 15), ...(i === 0 ? [linea(3000)] : [])]],
+        [luz, 'SUMINISTROS', [linea(1000)]],
+      ] as const) {
+        const r = await request(app(E)).post('/expense-invoices').send(factura(sup, { numeroFacturaProveedor: `${tipo}-${i}`, fechaEmision: fecha, tipoGasto: tipo, lineas }));
+        expect(r.status).toBe(201);
+      }
+    }
+    const m = await calcularModelo347(E, 2026);
+    expect(m.operaciones.map((o) => [o.nombre, o.baseAnual])).toEqual([
+      ['Electrica del Turia SL', 4840],
+      ['Asesoria Fiscal SL', 3630],
+    ]);
+    const fiscal = await taxModelsService.generarModelo347(E, 2026);
+    expect(fiscal.terceros.map((t: { nombre: string; totalOperaciones: number }) => [t.nombre, t.totalOperaciones]).sort()).toEqual([
+      ['Asesoria Fiscal SL', 3630],
+      ['Electrica del Turia SL', 4840],
+    ]);
   });
 });

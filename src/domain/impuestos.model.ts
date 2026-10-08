@@ -44,8 +44,11 @@ export interface FacturaFiscal {
   deducible?: boolean;
   /** Categoria del ingreso/gasto (informativa, para deducibilidad futura). */
   categoria?: string;
-  /** Desglose por tipo de IVA. */
-  lineas: Array<{ tipoIva: number; base: number; cuota: number }>;
+  /**
+   * Desglose por tipo de IVA. `conRetencion`: linea de una compra con
+   * retencion de IRPF; cuenta en el 303 pero no en el 347 (va en el 190/180).
+   */
+  lineas: Array<{ tipoIva: number; base: number; cuota: number; conRetencion?: boolean }>;
 }
 
 /** Desglose de base y cuota para un tipo de IVA. */

@@ -28,7 +28,7 @@ import {
 import type { DatosModelo111, DatosModelo115 } from '../domain/impuestos.model';
 import { calcularModelo115 } from './impuestosCalculo.service';
 import { periodoFiscal } from './nominas/fiscal';
-import { aparicionesEntre, whereGastosFiscales } from '../domain/factura-gasto.model';
+import { aparicionesEntre, importe347Gasto, whereGastosFiscales } from '../domain/factura-gasto.model';
 import { calcularCasillasModelo } from './impuestosModulo.service';
 import type { Modelo190 } from './nominas/fiscal';
 
@@ -524,6 +524,7 @@ export class TaxModelsService {
       where: whereGastosFiscales(companyId, `${ejercicio}-01-01`, `${ejercicio}-12-31`),
       include: {
         supplier: true,
+        lineas: true,
       },
     });
 
@@ -578,6 +579,9 @@ export class TaxModelsService {
     // Procesar proveedores (una operacion por aparicion fiscal en el ano, con su signo)
     for (const factura of proveedoresFacturas) {
       if (!factura.supplier.nifCif || !espanol(factura.supplier.pais)) continue;
+      // Sin las lineas con retencion de IRPF: ya van en el 190 o en el 180 (art. 33.2 RD 1065/2007).
+      const importeCompra = importe347Gasto(factura);
+      if (importeCompra === 0) continue;
       for (const { signo } of aparicionesEntre(factura, `${ejercicio}-01-01`, `${ejercicio}-12-31`)) {
         const key = `proveedor-${factura.supplier.nifCif}`;
         if (!tercerosMapa.has(key)) {
@@ -591,10 +595,10 @@ export class TaxModelsService {
         }
 
         const tercero = tercerosMapa.get(key)!;
-        tercero.totalOperaciones += signo * importe(factura);
+        tercero.totalOperaciones += signo * importeCompra;
         tercero.operaciones.push({
           tipoOperacion: 'compra',
-          importe: signo * importe(factura),
+          importe: signo * importeCompra,
           id: factura.id,
           numero: factura.numeroFacturaProveedor ?? factura.numeroCompleto,
         });

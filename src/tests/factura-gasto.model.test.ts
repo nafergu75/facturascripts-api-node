@@ -10,6 +10,7 @@ import {
   desgloseRetencionGasto,
   esVencida,
   fechaContableGasto,
+  importe347Gasto,
   normalizarNumeroProveedor,
   textoEstadoGasto,
   textoEstadoPago,
@@ -138,5 +139,18 @@ describe('textos y reglas', () => {
     expect(tipoGastoDeCuenta('600')).toBe('COMPRA');
     expect(tipoGastoDeCuenta('629')).toBe('SUMINISTROS');
     expect(tipoGastoDeCuenta(null)).toBe('SUMINISTROS');
+  });
+});
+
+describe('importe347Gasto', () => {
+  it('solo las lineas sin retencion de IRPF, con IVA', () => {
+    const l = (tipoRetencion: number, baseLine: number, ivaImporte: number) => ({ tipoRetencion, baseLine, ivaImporte });
+    expect(importe347Gasto({ baseTotal: 1200, ivaTotal: 252, retencionTotal: 150, lineas: [l(15, 1000, 210), l(0, 200, 42)] })).toBe(242);
+    expect(importe347Gasto({ baseTotal: 1000, ivaTotal: 210, retencionTotal: 190, lineas: [l(19, 1000, 210)] })).toBe(0);
+    expect(importe347Gasto({ baseTotal: 1000.1, ivaTotal: 210.02, retencionTotal: 0, lineas: [l(0, 1000.1, 210.02)] })).toBe(1210.12);
+  });
+  it('sin lineas: toda la factura o nada', () => {
+    expect(importe347Gasto({ baseTotal: 1000, ivaTotal: 210, retencionTotal: 0 })).toBe(1210);
+    expect(importe347Gasto({ baseTotal: 1000, ivaTotal: 210, retencionTotal: 150 })).toBe(0);
   });
 });
