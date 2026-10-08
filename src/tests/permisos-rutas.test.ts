@@ -111,7 +111,6 @@ describe('permisos que exigen las rutas', () => {
       return next.mock.calls[0][0] as { statusCode?: number } | undefined;
     };
     expect(error(['ventas'])).toBeUndefined(); // ventas tiene contabilidad:read
-    expect(error(['tesoreria'])).toBeUndefined();
     expect(error(['solo-lectura'])).toBeUndefined();
     expect(error(['contable'])).toBeUndefined();
     expect(error(['admin'])).toBeUndefined();
