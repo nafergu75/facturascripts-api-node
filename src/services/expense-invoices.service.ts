@@ -380,7 +380,7 @@ async function asientoVigente(db: TransaccionBD | typeof prisma, companyId: stri
 }
 
 /** Retencion de la factura para buscar el modelo presentado: 111 (profesionales) o 115 (alquileres). */
-const retencionDe = (f: { retencionTotal: number; tipoGasto: string }) =>
+export const retencionDe = (f: { retencionTotal: number; tipoGasto: string }) =>
   aCentimos(Number(f.retencionTotal) || 0) > 0 ? tipoRetencionLibro(f.tipoGasto) : null;
 
 /**
@@ -410,6 +410,13 @@ export async function motivoPeriodoBloqueado(
   if (presentado) return `El ${presentado.codigo} del ${presentado.periodo} de ${ejercicio} ya está presentado`;
   return null;
 }
+
+/**
+ * Mensaje de una factura que caeria en un periodo ya declarado: se registra
+ * con la fecha en que se recibio (art. 99 LIVA), que es la que cuenta en el IVA.
+ */
+export const textoPeriodoPresentado = (motivo: string) =>
+  `${motivo}: si la recibiste más tarde, indica en «¿La recibiste más tarde?» la fecha en que te llegó, de un periodo sin presentar.`;
 
 /** La cuenta de gasto tiene que estar en el plan de la empresa (activa) o en el plan base. */
 async function comprobarCuentas(companyId: string, cuentas: string[]): Promise<void> {
@@ -619,6 +626,10 @@ export async function registrarGasto(companyId: string, cuerpo: unknown, opcione
 
   const fechaContable = v.fechaRegistro ?? v.fechaEmision;
   await comprobarFechaAbierta(companyId, fechaContable);
+  // Presentar el 303 (o el 111/115) no cierra el mes: sin esto la factura
+  // entraria en un trimestre ya declarado y su IVA no se deduciria en ninguno.
+  const presentado = await motivoPeriodoBloqueado(companyId, fechaContable, retencionTotal > 0 ? tipoRetencionLibro(v.tipoGasto) : null);
+  if (presentado) throw conflict(textoPeriodoPresentado(presentado), { campo: 'fechaRegistro' });
   await asegurarPlanContableEmpresa(companyId);
 
   const { fechaEmision, fechaVencimiento } = resolverFechasGasto({ fechaEmision: v.fechaEmision, fechaVencimiento: v.fechaVencimiento });

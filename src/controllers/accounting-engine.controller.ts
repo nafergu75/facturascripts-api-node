@@ -9,7 +9,7 @@
  * - Registrar auditoría de todas las operaciones
  */
 
-import { badRequest, notFound, notImplemented } from '../utils/http-errors';
+import { badRequest, conflict, notFound, notImplemented } from '../utils/http-errors';
 import { registrarAuditoria } from '../services/auditoria.service';
 import { accountingEngineService, desgloseIvaPorTipo } from '../services/accounting-engine.service';
 import { prisma } from '../config/database';
@@ -18,6 +18,7 @@ import { asegurarPlanContableEmpresa } from '../services/chart-of-accounts.servi
 import { perfilEmpresa } from '../services/perfilEmpresa.service';
 import { motivoSinTipoFijado, notaDivisa } from '../domain/divisas';
 import { esTipoOperacion, fechaDevengoVenta } from '../domain/tipo-operacion.model';
+import { motivoPeriodoBloqueado, retencionDe } from '../services/expense-invoices.service';
 
 export class AccountingEngineController {
   /**
@@ -331,6 +332,19 @@ export class AccountingEngineController {
           throw badRequest(
             `Cuenta PGC ${linea.accountCode} está inactiva. Solicita a tu asesor que la active.`
           );
+        }
+      }
+
+      // El borrador de una factura de gasto (lector) no entra en un periodo con
+      // el 303 (o el 111/115) ya presentado: se cambia antes la fecha de registro.
+      if (asiento.origen === 'FACTURA_GASTO' && asiento.invoiceId) {
+        const gasto = await prisma.expenseInvoice.findFirst({
+          where: { id: asiento.invoiceId, companyId },
+          select: { tipoGasto: true, retencionTotal: true },
+        });
+        const motivo = gasto ? await motivoPeriodoBloqueado(companyId, asiento.fecha.toISOString().slice(0, 10), retencionDe(gasto)) : null;
+        if (motivo) {
+          throw conflict(`${motivo}: modifica la factura y, si la recibiste más tarde, pon en «¿La recibiste más tarde?» la fecha en que te llegó, de un periodo sin presentar. Después aprueba el asiento.`);
         }
       }
 
