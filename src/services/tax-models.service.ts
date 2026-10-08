@@ -774,7 +774,7 @@ export class TaxModelsService {
     const guardadas = (modelo.casillas as CasillasGuardadas | null) ?? {};
     const base = '03_retenciones' in guardadas ? guardadas : oficiales;
     const v = (k: string) => Number(base[k] ?? 0) || 0;
-    const avisos: string[] = [];
+    const avisos: string[] = [...(datos.avisos ?? [])];
     if (modelo.estado === 'presentado') avisos.push('Modelo presentado: se muestran las casillas tal como se presentaron, aunque después hayan cambiado las facturas.');
     else if (modelo.origen === 'manual-mixto') avisos.push('Casillas editadas a mano en Impuestos: se muestran tal como se guardaron.');
 

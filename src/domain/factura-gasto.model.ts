@@ -100,6 +100,29 @@ export const aparicionesEntre = (f: DatosFiscalesGasto, desde: string, hasta: st
   aparicionesFiscales(f).filter((a) => a.fecha >= desde && a.fecha <= hasta);
 
 /**
+ * Donde cuenta una factura de gasto en los modelos de RETENCIONES (111, 115 y
+ * 190). Estos no admiten casillas negativas ni compensan con otro periodo:
+ * una anulada nunca resta. Si su retencion ya se declaro (el 111 o el 115 de
+ * su periodo esta presentado) se queda en ese periodo, que habra que
+ * rectificar si no se llego a pagar; si no, no cuenta en ninguno.
+ */
+export function aparicionesRetencionEntre(
+  f: DatosFiscalesGasto,
+  desde: string,
+  hasta: string,
+  retencionDeclarada: boolean,
+): Array<{ fecha: string; signo: 1 }> {
+  if (f.estado === 'ANULADA') {
+    const contable = fechaContableGasto(f);
+    return retencionDeclarada && f.anulacionAsientoId && contable >= desde && contable <= hasta ? [{ fecha: contable, signo: 1 }] : [];
+  }
+  return aparicionesEntre(f, desde, hasta).map((a) => ({ fecha: a.fecha, signo: 1 as const }));
+}
+
+/** Periodos en que se puede haber presentado el modelo de una fecha: su trimestre y su mes. */
+export const periodosDeFecha = (fecha: string): string[] => [`${Math.ceil(Number(fecha.slice(5, 7)) / 3)}T`, fecha.slice(5, 7)];
+
+/**
  * where de Prisma con las facturas que PUEDEN aparecer entre `desde` y `hasta`.
  * Despues se filtra con aparicionesFiscales (o aparicionesEntre).
  */

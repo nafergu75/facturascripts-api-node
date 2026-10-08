@@ -1,7 +1,7 @@
 import type { Prisma } from '@prisma/client';
 import { prisma } from '../config/database';
 import { badRequest } from '../utils/http-errors';
-import { retencionesActividades, retencionesTrabajo } from './nominas/fiscal';
+import { avisoRetencionAnulada, retencionDeclaradaEn, retencionesActividades, retencionesTrabajo } from './nominas/fiscal';
 import { obtenerAsientosEjercicio, calcularSaldosPorSubcuenta } from './contabilidadDatos.service';
 import {
   DatosModelo111,
@@ -17,7 +17,7 @@ import {
   OperacionTercero,
   PeriodoFiscal,
 } from '../domain/impuestos.model';
-import { aparicionesEntre, desgloseRetencionGasto, whereGastosFiscales } from '../domain/factura-gasto.model';
+import { aparicionesEntre, aparicionesRetencionEntre, desgloseRetencionGasto, fechaContableGasto, whereGastosFiscales } from '../domain/factura-gasto.model';
 import {
   esPaisEspana,
   esTipoOperacion,
@@ -626,16 +626,21 @@ export async function calcularModelo115(companyId: string, periodo: PeriodoFisca
     include: { lineas: true, supplier: { select: { nifCif: true, nombreFiscal: true } } },
   });
   const c = (n: number) => Math.round(n * 100);
-  const porArrendador = new Map<string, { nif: string; nombre: string; base: number; retencion: number; facturas: number; positivas: boolean }>();
+  // Una anulada no resta nunca (el 115 no admite negativos): solo cuenta, en su
+  // periodo, si su 115 ya estaba presentado, y entonces con un aviso.
+  const declaradaEn = await retencionDeclaradaEn(companyId, '115', facturas);
+  const avisos: string[] = [];
+  const porArrendador = new Map<string, { nif: string; nombre: string; base: number; retencion: number; facturas: number }>();
   for (const f of facturas) {
-    for (const { signo } of aparicionesEntre(f, periodo.fechaInicio, periodo.fechaFin)) {
-      const a = porArrendador.get(f.supplierId) ?? { nif: f.supplier.nifCif, nombre: f.supplier.nombreFiscal, base: 0, retencion: 0, facturas: 0, positivas: false };
+    const declarada = declaradaEn(f);
+    for (const _ of aparicionesRetencionEntre(f, periodo.fechaInicio, periodo.fechaFin, declarada !== null)) {
+      if (declarada) avisos.push(avisoRetencionAnulada(f.numeroFacturaProveedor ?? f.numeroCompleto, f.supplier.nombreFiscal, '115', declarada, fechaContableGasto(f).slice(0, 4)));
+      const a = porArrendador.get(f.supplierId) ?? { nif: f.supplier.nifCif, nombre: f.supplier.nombreFiscal, base: 0, retencion: 0, facturas: 0 };
       for (const d of desgloseRetencionGasto(f)) {
-        a.base += signo * c(d.base);
-        a.retencion += signo * c(d.cuota);
+        a.base += c(d.base);
+        a.retencion += c(d.cuota);
       }
-      a.facturas += signo;
-      if (signo > 0) a.positivas = true;
+      a.facturas += 1;
       porArrendador.set(f.supplierId, a);
     }
   }
@@ -644,7 +649,7 @@ export async function calcularModelo115(companyId: string, periodo: PeriodoFisca
   const retenciones = lista.reduce((s, a) => s + a.retencion, 0);
   return {
     periodo,
-    nPerceptores: lista.filter((a) => a.positivas).length,
+    nPerceptores: lista.length,
     baseRetenciones: base / 100,
     retenciones: retenciones / 100,
     resultadoAnteriores: 0,
@@ -652,6 +657,7 @@ export async function calcularModelo115(companyId: string, periodo: PeriodoFisca
     perceptores: lista
       .map((a) => ({ nif: a.nif, nombre: a.nombre, base: a.base / 100, retencion: a.retencion / 100, facturas: a.facturas }))
       .sort((x, y) => x.nombre.localeCompare(y.nombre, 'es')),
+    ...(avisos.length ? { avisos } : {}),
   };
 }
 
@@ -696,6 +702,6 @@ export async function calcularModelo111(companyId: string, periodo: PeriodoFisca
     borradores: trabajo.borradores,
     totalRetenciones,
     resultadoIngresar: totalRetenciones, // [30] = [28] - resultados anteriores [29] (0)
-    avisos: trabajo.avisos,
+    avisos: [...trabajo.avisos, ...(actividades.avisos ?? [])],
   };
 }

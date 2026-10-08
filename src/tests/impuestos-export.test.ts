@@ -145,6 +145,12 @@ describe('generarFicheroModelo115', () => {
     expect(pagina.slice(174, 191)).toBe('00000000000095000'); // [05] a ingresar 950 @175
     expect(pagina.slice(488, 500)).toBe('</T11501000>'); // cierre @489
   });
+
+  it('con casillas negativas no genera el fichero (antes escribia su valor absoluto)', () => {
+    const periodo: PeriodoFiscal = { ejercicio: 2026, periodo: '2T', tipo: 'trimestral', fechaInicio: '2026-04-01', fechaFin: '2026-06-30' };
+    const datos: DatosModelo115 = { periodo, nPerceptores: 0, baseRetenciones: -1000, retenciones: -190, resultadoAnteriores: 0, resultadoIngresar: -190 };
+    expect(() => generarFicheroModelo115('B12345678', periodo, datos)).toThrow(/^El 115 sale con importes negativos/);
+  });
 });
 
 describe('generarFicheroModelo349', () => {

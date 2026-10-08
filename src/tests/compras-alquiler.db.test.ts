@@ -135,7 +135,7 @@ describe('alquiler y profesional en el mismo trimestre', () => {
 });
 
 describe('anuladas en el 111 y el 115', () => {
-  it('anulada sin contraasiento: fuera; con contraasiento en el trimestre siguiente: resta alli', async () => {
+  it('una anulada nunca resta: sin el 111/115 de su periodo presentado no cuenta en ninguno', async () => {
     const E = await nuevaEmpresa('anuladas');
     const arrendador = await proveedor(E, 'Locales Norte SL');
     const asesor = await proveedor(E, 'Abogados Sur SL');
@@ -148,7 +148,8 @@ describe('anuladas en el 111 y el 115', () => {
     expect((await calcularModelo115(E, periodoFiscal(2026, '1T'))).retenciones).toBe(0);
     expect((await calcularModelo111(E, periodoFiscal(2026, '1T'))).retencionesActividades).toBe(0);
 
-    // Periodo cerrado: contraasiento en abril, que resta en el 2T.
+    // Periodo cerrado sin el 111/115 presentado: contraasiento en abril, pero
+    // los modelos de retenciones no la cuentan en ningun trimestre (ni restan).
     const a2 = await alta(E, alquiler(arrendador, '2026-01-15', 'L-2'));
     const p2 = await alta(E, profesional(asesor, '2026-01-15', 'P-2'));
     await cambiarEstadoPeriodo(E, 2026, 1, 'cerrado');
@@ -156,11 +157,41 @@ describe('anuladas en el 111 y el 115', () => {
     const r2 = await expenseInvoicesService.anularGasto(E, p2.id, { motivo: 'Error del asesor', fecha: '2026-04-10' });
     expect([r1.contraasiento, r2.contraasiento]).toEqual([true, true]);
 
-    expect(await calcularModelo115(E, periodoFiscal(2026, '1T'))).toMatchObject({ nPerceptores: 1, retenciones: 190 });
-    expect(await calcularModelo115(E, periodoFiscal(2026, '2T'))).toMatchObject({ nPerceptores: 0, baseRetenciones: -1000, retenciones: -190 });
-    expect((await calcularModelo111(E, periodoFiscal(2026, '1T'))).retencionesActividades).toBe(75);
-    expect((await calcularModelo111(E, periodoFiscal(2026, '2T'))).retencionesActividades).toBe(-75);
-    // En el año, la anulada se compensa: el 190 no la tiene.
-    expect((await calcularModelo190(E, 2026)).totales.retenciones).toBe(0);
+    for (const t of ['1T', '2T']) {
+      expect(await calcularModelo115(E, periodoFiscal(2026, t))).toMatchObject({ nPerceptores: 0, baseRetenciones: 0, retenciones: 0 });
+      expect((await calcularModelo111(E, periodoFiscal(2026, t))).retencionesActividades).toBe(0);
+    }
+    const m190 = await calcularModelo190(E, 2026);
+    expect(m190.totales.retenciones).toBe(0);
+    expect(m190.perceptores.filter((p) => p.origen === 'profesional')).toEqual([]);
+  });
+
+  it('con el 111/115 de su periodo presentado: se queda alli con un aviso, y no resta en el de la anulacion', async () => {
+    const E = await nuevaEmpresa('anuladas-presentadas');
+    const arrendador = await proveedor(E, 'Locales Este SL');
+    const asesor = await proveedor(E, 'Abogados Oeste SL');
+    const a = await alta(E, alquiler(arrendador, '2026-05-15', 'L-9'));
+    const p = await alta(E, profesional(asesor, '2026-05-15', 'P-9'));
+    for (const codigo of ['111', '115']) {
+      await prisma.modeloImpuesto.create({ data: { companyId: E, codigo, ejercicio: 2026, periodo: '2T', estado: 'presentado' } });
+    }
+    const r1 = await expenseInvoicesService.anularGasto(E, a.id, { motivo: 'Error del arrendador', fecha: '2026-07-10' });
+    const r2 = await expenseInvoicesService.anularGasto(E, p.id, { motivo: 'Error del asesor', fecha: '2026-07-10' });
+    expect([r1.contraasiento, r2.contraasiento]).toEqual([true, true]);
+
+    const m115 = await calcularModelo115(E, periodoFiscal(2026, '2T'));
+    expect(m115).toMatchObject({ nPerceptores: 1, retenciones: 190 });
+    expect(m115.avisos).toEqual([
+      'La factura L-9 de Locales Este SL está anulada, pero su retención se declaró en el 115 del 2T de 2026: si no llegaste a pagarla, pide la rectificación de ese modelo.',
+    ]);
+    expect(await calcularModelo115(E, periodoFiscal(2026, '3T'))).toMatchObject({ nPerceptores: 0, baseRetenciones: 0, retenciones: 0, resultadoIngresar: 0 });
+    const m111 = await calcularModelo111(E, periodoFiscal(2026, '2T'));
+    expect(m111.retencionesActividades).toBe(75);
+    expect(m111.avisos).toContain(
+      'La factura P-9 de Abogados Oeste SL está anulada, pero su retención se declaró en el 111 del 2T de 2026: si no llegaste a pagarla, pide la rectificación de ese modelo.',
+    );
+    expect((await calcularModelo111(E, periodoFiscal(2026, '3T'))).retencionesActividades).toBe(0);
+    // El 190 casa con los 111 presentados.
+    expect((await calcularModelo190(E, 2026)).totales.retenciones).toBe(75);
   });
 });

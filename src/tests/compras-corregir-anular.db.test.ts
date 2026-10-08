@@ -239,11 +239,12 @@ describe('anular con el periodo cerrado', () => {
     expect(ret.map((x) => [x.mes, x.cuotaRetencion, x.baseImponible])).toEqual([[1, 150, 1000], [4, -150, -1000]]);
   });
 
-  it('el 1T cuadra con la cuota original y el 2T con la misma en negativo; el 111 suma y resta', async () => {
+  it('el 1T cuadra con la cuota original y el 2T con la misma en negativo; el 111 (sin presentar) no la cuenta en ninguno', async () => {
     await esperarCuadre(expect, E, 2026, 1, 210, 1000);
     await esperarCuadre(expect, E, 2026, 2, -210, -1000);
-    expect((await calcularModelo111(E, periodoFiscal(2026, '1T'))).retencionesActividades).toBe(150);
-    expect((await calcularModelo111(E, periodoFiscal(2026, '2T'))).retencionesActividades).toBe(-150);
+    // El 111 no admite negativos ni compensa entre trimestres: una anulada no resta.
+    expect((await calcularModelo111(E, periodoFiscal(2026, '1T'))).retencionesActividades).toBe(0);
+    expect((await calcularModelo111(E, periodoFiscal(2026, '2T'))).retencionesActividades).toBe(0);
   });
 
   it('el proveedor queda a cero en la 410 y la factura no esta pendiente', async () => {
