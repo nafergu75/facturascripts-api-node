@@ -23,10 +23,10 @@ cd "$(dirname "$0")/.."
 # CarmenLlamadaIA, CarmenAjustes y las columnas nuevas de ChatSession y
 # ChatMessage; con Configuracion: AjustesFacturacion, AjustesFiscales y las
 # copias ibanCobro y textoPie de la factura emitida; con Compras: el numero de
-# factura del proveedor, numeroProveedorActivo y numeroFacturaEmisor).
+# factura del proveedor, numeroProveedorActivo y numeroFacturaEmisor; con los
+# permisos de usuarios: la contraseña provisional y los permisos a medida).
 # Una marca por linea: al integrar otra rama que añada las suyas, se añaden
-# lineas y no choca con esta lista (p. ej. permisos-usuarios: 'debeCambiarContrasena',
-# 'contrasenaProvisionalHasta' y 'permisosPersonalizados').
+# lineas y no choca con esta lista.
 MARCAS=(
   'model TipoCambioBce'
   'model Nomina '
@@ -41,6 +41,9 @@ MARCAS=(
   'ibanCobro'
   'numeroProveedorActivo'
   'numeroFacturaEmisor'
+  'debeCambiarContrasena'
+  'contrasenaProvisionalHasta'
+  'permisosPersonalizados'
 )
 for marca in "${MARCAS[@]}"; do
   grep -q "$marca" prisma/schema.prisma || {
