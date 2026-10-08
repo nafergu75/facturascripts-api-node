@@ -12,7 +12,7 @@ import { asyncHandler } from '../utils/async-handler';
 import { badRequest } from '../utils/http-errors';
 import { prisma } from '../config/database';
 import { AVISO_NO_FACTURA, gastosExtractorService, GastoExtraido, GastoExtraidoEmpresa } from '../services/gastos-extractor.service';
-import { expenseInvoicesService } from '../services/expense-invoices.service';
+import { empresaConNominas, expenseInvoicesService } from '../services/expense-invoices.service';
 import { normalizarNumeroProveedor } from '../domain/factura-gasto.model';
 import { limpiarNif } from '../domain/tipo-operacion.model';
 import { normalizarNif } from '../utils/nif';
@@ -20,22 +20,6 @@ import { normalizarNif } from '../utils/nif';
 /** Tamano maximo del archivo: el cuerpo de una funcion de Vercel no pasa de 4,5 MB. */
 export const MAX_ARCHIVO_LECTOR = 4 * 1024 * 1024;
 export const MENSAJE_ARCHIVO_GRANDE = 'El archivo pesa más de 4 MB: redúcelo o hazle una foto con menos resolución.';
-
-/**
- * Si la empresa lleva las nominas en la app (tiene trabajadores dados de alta).
- * Solo entonces una nomina, un RLC o una cuenta 640-642 tienen que ir por
- * Nominas: una empresa sin trabajadores (p. ej. una SL cuyo administrador paga
- * su cuota de autonomos) registra el recibo de la Seguridad Social como gasto.
- */
-async function empresaConNominas(companyId: string): Promise<boolean> {
-  const db = prisma as unknown as { empleado?: { count?: unknown } };
-  if (typeof db.empleado?.count !== 'function') return false;
-  try {
-    return (await prisma.empleado.count({ where: { companyId } })) > 0;
-  } catch {
-    return false; // sin la tabla de nominas (esquema sin aplicar): como antes de existir
-  }
-}
 
 interface ArchivoSubido {
   buffer: Buffer;
@@ -124,13 +108,10 @@ export const gastosExtractorController = {
     // Las nominas y los seguros sociales de una empresa que lleva sus nominas en la
     // app no son facturas de gasto: van a Nominas (antes se guardaban como facturas
     // de la 640/642, sin trabajador ni retenciones). Si el usuario corrige la
-    // clasificacion en la pantalla ("Es una factura de gasto"), llega como 'factura'.
-    const conNominas = (tipoDocumento === 'nomina' || tipoDocumento === 'seguros_sociales' || cuenta !== null) && (await empresaConNominas(companyId));
-    if (conNominas && (tipoDocumento === 'nomina' || tipoDocumento === 'seguros_sociales')) {
+    // clasificacion en la pantalla ("Es una factura de gasto"), llega como 'factura'
+    // y, si alguna linea va a la 640-642, lo frena registrarGasto.
+    if ((tipoDocumento === 'nomina' || tipoDocumento === 'seguros_sociales') && (await empresaConNominas(companyId))) {
       throw badRequest(AVISO_NO_FACTURA[tipoDocumento]);
-    }
-    if (conNominas && cuenta !== null && /^64[012]/.test(cuenta.trim())) {
-      throw badRequest('Las cuentas 640, 641 y 642 son de nóminas: con trabajadores dados de alta, se registran en Nóminas, no como facturas de gasto.');
     }
 
     const pct = typeof confianza === 'number' && Number.isFinite(confianza) ? Math.round(confianza <= 1 ? confianza * 100 : confianza) : null;

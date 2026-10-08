@@ -353,3 +353,32 @@ describe('modificar y anular a la vez (dos pestañas o dos usuarios)', () => {
     await esperarCuadre(expect, E, 2026, 2, cuota);
   });
 });
+
+describe('cuentas 640-642 con trabajadores dados de alta', () => {
+  it('ni en la cuenta de la factura ni en la de una linea, al dar de alta ni al modificar', async () => {
+    const E = await nuevaEmpresa('nominas640');
+    const sup = await proveedor(E);
+    await prisma.empleado.create({ data: { companyId: E, nif: '12345678Z', nombre: 'Trabajadora' } });
+    const mensaje = 'Las cuentas 640, 641 y 642 son de nóminas: con trabajadores dados de alta, se registran en Nóminas, no como facturas de gasto.';
+
+    const porLinea = await request(app(E))
+      .post('/expense-invoices')
+      .send(factura(sup, { lineas: [{ descripcion: 'Sueldos', cantidad: 1, precioUnitario: 1000, tipoIva: 0, cuenta: '640' }] }));
+    expect(porLinea.status).toBe(400);
+    expect(porLinea.body).toMatchObject({ message: mensaje, details: { campo: 'lineas.0.cuenta' } });
+    const porFactura = await request(app(E)).post('/expense-invoices').send(factura(sup, { cuentaGasto: '642' }));
+    expect(porFactura.status).toBe(400);
+    expect(porFactura.body).toMatchObject({ message: mensaje, details: { campo: 'cuentaGasto' } });
+    // El lector, con la clasificacion corregida a «factura» y la cuenta en la linea.
+    await expect(
+      expenseInvoicesService.registrarGasto(E, factura(sup, { lineas: [{ descripcion: 'RLC', cantidad: 1, precioUnitario: 300, tipoIva: 0, cuenta: '642' }] }), { contabilizar: 'DRAFT' }),
+    ).rejects.toMatchObject({ statusCode: 400, message: mensaje });
+    expect(await prisma.expenseInvoice.count({ where: { companyId: E } })).toBe(0);
+
+    const ok = await request(app(E)).post('/expense-invoices').send(factura(sup));
+    expect(ok.status).toBe(201);
+    const put = await request(app(E)).put(`/expense-invoices/${ok.body.data.id}`).send(factura(sup, { cuentaGasto: '641' }));
+    expect(put.status).toBe(400);
+    expect(put.body.message).toBe(mensaje);
+  });
+});

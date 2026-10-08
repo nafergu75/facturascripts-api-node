@@ -428,6 +428,36 @@ async function comprobarCuentas(companyId: string, cuentas: string[]): Promise<v
   }
 }
 
+/**
+ * Si la empresa lleva las nominas en la app (tiene trabajadores dados de alta).
+ * Solo entonces una nomina, un RLC o una cuenta 640-642 tienen que ir por
+ * Nominas: una empresa sin trabajadores (p. ej. una SL cuyo administrador paga
+ * su cuota de autonomos) registra el recibo de la Seguridad Social como gasto.
+ */
+export async function empresaConNominas(companyId: string): Promise<boolean> {
+  const db = prisma as unknown as { empleado?: { count?: unknown } };
+  if (typeof db.empleado?.count !== 'function') return false;
+  try {
+    return (await prisma.empleado.count({ where: { companyId } })) > 0;
+  } catch {
+    return false; // sin la tabla de nominas (esquema sin aplicar): como antes de existir
+  }
+}
+
+export const MENSAJE_CUENTAS_NOMINA =
+  'Las cuentas 640, 641 y 642 son de nóminas: con trabajadores dados de alta, se registran en Nóminas, no como facturas de gasto.';
+
+/**
+ * Con trabajadores dados de alta, ninguna linea puede ir a la 640-642 (se
+ * duplicarian las nominas): en el alta, el lector y la edicion, tanto con la
+ * cuenta de la factura como con la de una linea.
+ */
+async function comprobarCuentasNomina(companyId: string, v: FacturaGastoBody, cuentas: Array<string | null>): Promise<void> {
+  const i = cuentas.findIndex((c) => /^64[012]/.test(c ?? ''));
+  if (i < 0 || !(await empresaConNominas(companyId))) return;
+  throw badRequest(MENSAJE_CUENTAS_NOMINA, { campo: v.lineas[i]?.cuenta ? `lineas.${i}.cuenta` : 'cuentaGasto' });
+}
+
 /** 409 si ya hay otra factura vigente del mismo proveedor con ese numero. */
 async function comprobarDuplicado(companyId: string, supplierId: string, numeroActivo: string, excluirId?: string): Promise<void> {
   const otra = await prisma.expenseInvoice.findFirst({
@@ -690,6 +720,7 @@ export async function registrarGasto(companyId: string, cuerpo: unknown, opcione
   const v = validarFacturaGasto(bruto, { paisProveedor: prov.pais, permitirSerie: true });
   const { lineas, baseTotal, ivaTotal, retencionTotal, totalFactura, cabecera } = lineasParaGuardar(v);
   await comprobarCuentas(companyId, lineas.map((l) => l.accountCode).filter((c): c is string => !!c));
+  await comprobarCuentasNomina(companyId, v, lineas.map((l) => l.accountCode));
 
   const numeroActivo = normalizarNumeroProveedor(v.numeroFacturaProveedor);
   if (prov.existente) await comprobarDuplicado(companyId, prov.existente.id, numeroActivo);
@@ -940,6 +971,7 @@ export async function editarGasto(
   const v = validarFacturaGasto(bruto, { paisProveedor: prov.pais, permitirSerie: false });
   const { lineas, baseTotal, ivaTotal, retencionTotal, totalFactura, cabecera } = lineasParaGuardar(v);
   await comprobarCuentas(companyId, lineas.map((l) => l.accountCode).filter((c): c is string => !!c));
+  await comprobarCuentasNomina(companyId, v, lineas.map((l) => l.accountCode));
   const numeroActivo = normalizarNumeroProveedor(v.numeroFacturaProveedor);
   if (prov.existente) await comprobarDuplicado(companyId, prov.existente.id, numeroActivo, id);
 
