@@ -4,7 +4,7 @@
 jest.mock('../config/database', () => ({ prisma: {} }));
 
 import { existsSync } from 'fs';
-import { join } from 'path';
+import { basename, join } from 'path';
 import { FICHAS, type FichaFAQ } from '../services/carmen/faq/faq.data';
 import { buscarFichas, fichaPorId, fichaServible, MARGEN_FAQ, UMBRAL_FAQ } from '../services/carmen/faq/faq';
 import { plazosDelEjercicio, proximosPlazos, frasePlazo } from '../services/carmen/faq/calendario';
@@ -163,8 +163,12 @@ describe('enlaces de las respuestas', () => {
     expect(JSON.stringify(FICHAS)).not.toMatch(/Bandeja OCR|\/dashboard\/ocr/);
   });
 
-  // Solo en local, con el frontend al lado: cada pantalla existe en app/dashboard.
-  const app = join(__dirname, '..', '..', '..', 'frontend-carmen', 'web', 'app', 'dashboard');
+  // Solo en local, con el frontend de esta copia al lado (backend-x -> frontend-x,
+  // o el que diga CONTA_FRONTEND_WEB): cada pantalla existe en app/dashboard.
+  // Comparar con el frontend de otra rama daria fallos que no son de esta.
+  const raiz = join(__dirname, '..', '..');
+  const web = process.env.CONTA_FRONTEND_WEB ?? join(raiz, '..', basename(raiz).replace(/^backend/, 'frontend'), 'web');
+  const app = join(web, 'app', 'dashboard');
   (existsSync(app) ? it : it.skip)('cada pantalla del mapa existe en el frontend', () => {
     for (const p of PANTALLAS) {
       const ruta = p.href.replace(/^\/dashboard\/?/, '');
