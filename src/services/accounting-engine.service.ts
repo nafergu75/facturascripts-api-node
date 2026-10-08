@@ -416,6 +416,8 @@ export async function contabilizarFacturaGasto(
     gastoPorCuenta?: Array<{ cuenta: string; nombre?: string; base: number }>;
     /** Base y cuota por porcentaje de retencion. Sin el, una fila con los totales. */
     desgloseRetencion?: Array<{ porcentaje: number; base: number; cuota: number }>;
+    /** Cuenta del acreedor si no es la del tipo (la que ya usaron los pagos de la factura). */
+    cuentaAcreedor?: string;
   },
   tx?: TransaccionBD,
 ): Promise<{ asientoId: string; lineas: any[] }> {
@@ -508,7 +510,7 @@ export async function contabilizarFacturaGasto(
   }
 
   // Acreedor (HABER): 400 en compras, 410 en servicios.
-  const acreedor = regla.proveedorAcreedor!;
+  const acreedor = invoiceData.cuentaAcreedor ?? regla.proveedorAcreedor!;
   await apunte(acreedor, NOMBRE_ACREEDOR[acreedor] ?? 'Proveedores', 0, invoiceData.totalFactura);
 
   // Validar equilibrio: DEBE (base+IVA) = HABER (retención+totalFactura)

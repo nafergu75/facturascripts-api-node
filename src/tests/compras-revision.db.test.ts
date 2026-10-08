@@ -1,7 +1,10 @@
 /**
  * Arreglos de la revision de Compras, sobre BD real:
  *  - el alta (manual y del lector) y la aprobacion del borrador no meten una
- *    factura en un trimestre con el 303 (o el 111/115) ya presentado.
+ *    factura en un trimestre con el 303 (o el 111/115) ya presentado;
+ *  - el boton Contabilizar de una factura anterior usa su fecha de registro,
+ *    su cuenta y la base de las lineas con retencion, y el proveedor en la
+ *    misma cuenta (400/410) que sus pagos.
  *
  * Necesita MySQL (en GitHub Actions lo levanta el workflow de tests).
  */
@@ -13,6 +16,7 @@ import expenseInvoicesRoutes from '../routes/expense-invoices.routes';
 import { errorMiddleware } from '../middleware/error.middleware';
 import { expenseInvoicesService } from '../services/expense-invoices.service';
 import { AccountingEngineController } from '../controllers/accounting-engine.controller';
+import { registrarCobroFactura } from '../services/cobrosPagos.service';
 import { controlCif } from '../utils/nif';
 import { esperarCuadre } from './ayuda-cuadre-recibidas';
 
@@ -114,5 +118,85 @@ describe('alta en un trimestre con el 303 presentado', () => {
     await motor.aprobarAsiento(E, r.body.data.asiento.id, 'u-rev');
     await esperarCuadre(expect, E, 2026, 1, 0, 0);
     await esperarCuadre(expect, E, 2026, 2, 210, 1000);
+  });
+});
+
+/** Factura anterior al alta con asiento: PENDING y sin asiento (crearGasto sin opciones). */
+async function anterior(E: string, sup: string, extra: Record<string, unknown> = {}) {
+  return expenseInvoicesService.crearGasto({
+    companyId: E,
+    provider: { id: sup },
+    serie: 'G',
+    fechaEmision: '2026-02-10',
+    fechaVencimiento: '2099-12-31',
+    tipoGasto: 'SUMINISTROS',
+    lineas: [{ descripcion: 'Luz', cantidad: 1, precioUnitario: 1000, tipoIva: 21 }],
+    ...extra,
+  });
+}
+
+async function banco(E: string) {
+  return (await prisma.bankAccount.create({ data: { companyId: E, iban: `ES00${String(Date.now()).slice(-10)}${n++}`.padEnd(24, '0').slice(0, 24), bancoNombre: 'Banco', subcuentaCodigo: '5720001' } })).id;
+}
+
+async function saldos(E: string, cuentas: string[]) {
+  const lineas = await prisma.journalEntryLine.findMany({ where: { companyId: E, entry: { estado: 'POSTED' } }, select: { accountCode: true, debe: true, haber: true } });
+  return Object.fromEntries(cuentas.map((c) => [c, Math.round(lineas.filter((l) => l.accountCode === c).reduce((a, l) => a + Number(l.haber) - Number(l.debe), 0) * 100) / 100]));
+}
+
+describe('Contabilizar una factura anterior', () => {
+  it('con la fecha de registro y la cuenta elegidas al modificarla: todo en el 2T y a la 629', async () => {
+    const E = await nuevaEmpresa('anterior-fecha');
+    const sup = await proveedor(E);
+    const f = await anterior(E, sup);
+    const put = await request(app(E)).put(`/expense-invoices/${f.id}`).send(factura(sup, { numeroFacturaProveedor: 'ANT-1', fechaRegistro: '2026-04-05', cuentaGasto: '629' }));
+    expect(put.status).toBe(200);
+    expect(put.body.data).toMatchObject({ estado: 'OVERDUE', asiento: null, acciones: { contabilizar: true } });
+
+    await motor.contabilizarFacturaGasto(E, f.id);
+    const asiento = await prisma.journalEntry.findFirstOrThrow({ where: { invoiceId: f.id, origen: 'FACTURA_GASTO' }, include: { lineas: true } });
+    expect(asiento.fecha.toISOString().slice(0, 10)).toBe('2026-04-05');
+    expect(Object.fromEntries(asiento.lineas.map((l) => [l.accountCode, [l.debe, l.haber]]))).toEqual({ '629': [1000, 0], '472': [210, 0], '410': [0, 1210] });
+    const libro = await prisma.vATBook.findFirstOrThrow({ where: { companyId: E } });
+    expect(libro).toMatchObject({ numeroFacturaEmisor: 'ANT-1', observaciones: 'Fecha de expedición: 10/02/2026' });
+    await esperarCuadre(expect, E, 2026, 1, 0, 0);
+    await esperarCuadre(expect, E, 2026, 2, 210, 1000);
+  });
+
+  it('con lineas con y sin retencion: el libro de retenciones lleva solo la base retenida', async () => {
+    const E = await nuevaEmpresa('anterior-ret');
+    const sup = await proveedor(E);
+    const f = await anterior(E, sup, {
+      tipoGasto: 'SERVICIO_PROFESIONAL',
+      lineas: [
+        { descripcion: 'Honorarios', cantidad: 1, precioUnitario: 1000, tipoIva: 21, tipoRetencion: 15 },
+        { descripcion: 'Suplidos', cantidad: 1, precioUnitario: 200, tipoIva: 21 },
+      ],
+    });
+    await motor.contabilizarFacturaGasto(E, f.id);
+    const ret = await prisma.retentionBook.findMany({ where: { companyId: E } });
+    expect(ret.map((r) => [r.baseImponible, r.porcentajeRetencion, r.cuotaRetencion, r.tipoRetencionNombre])).toEqual([[1000, 15, 150, 'PROFESIONAL']]);
+  });
+
+  it('pagada antes de contabilizarla: el pago y la factura van a la misma cuenta y el proveedor queda a cero', async () => {
+    const E = await nuevaEmpresa('anterior-pago');
+    const sup = await proveedor(E);
+    const f = await anterior(E, sup);
+    await registrarCobroFactura(E, 'GASTO', f.id, { fecha: '2026-02-20', importe: 1210, cuentaBancariaId: await banco(E) });
+    await motor.contabilizarFacturaGasto(E, f.id);
+    expect(await saldos(E, ['400', '410'])).toEqual({ '400': 0, '410': 0 });
+  });
+
+  it('pagos antiguos a la 400 de una factura de servicios: el asiento abona tambien la 400', async () => {
+    const E = await nuevaEmpresa('anterior-pago400');
+    const sup = await proveedor(E);
+    // Se paga como compra (a la 400, como antes de separar la 410) y luego pasa a suministros.
+    const f = await anterior(E, sup, { tipoGasto: 'COMPRA' });
+    await registrarCobroFactura(E, 'GASTO', f.id, { fecha: '2026-02-20', importe: 1210, cuentaBancariaId: await banco(E) });
+    await prisma.expenseInvoice.update({ where: { id: f.id }, data: { tipoGasto: 'SUMINISTROS' } });
+    await motor.contabilizarFacturaGasto(E, f.id);
+    const asiento = await prisma.journalEntry.findFirstOrThrow({ where: { invoiceId: f.id, origen: 'FACTURA_GASTO' }, include: { lineas: true } });
+    expect(asiento.lineas.find((l) => l.haber > 0)?.accountCode).toBe('400');
+    expect(await saldos(E, ['400', '410'])).toEqual({ '400': 0, '410': 0 });
   });
 });

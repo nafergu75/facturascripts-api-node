@@ -18,7 +18,7 @@ import { asegurarPlanContableEmpresa } from '../services/chart-of-accounts.servi
 import { perfilEmpresa } from '../services/perfilEmpresa.service';
 import { motivoSinTipoFijado, notaDivisa } from '../domain/divisas';
 import { esTipoOperacion, fechaDevengoVenta } from '../domain/tipo-operacion.model';
-import { motivoPeriodoBloqueado, retencionDe } from '../services/expense-invoices.service';
+import { cuentaAcreedorDePagos, datosContablesGasto, motivoPeriodoBloqueado, retencionDe } from '../services/expense-invoices.service';
 
 export class AccountingEngineController {
   /**
@@ -216,26 +216,15 @@ export class AccountingEngineController {
       }
 
       // Transacción atómica: crear asiento + líneas + VATBook + RetentionBook + marcar factura
+      // Los mismos datos que el alta: la fecha de registro (si se recibio mas
+      // tarde), la cuenta de cada linea, la base de las lineas con retencion y,
+      // si ya tiene pagos, la cuenta del proveedor que usaron (400 o 410).
+      const cuentaAcreedor = await cuentaAcreedorDePagos(companyId, invoiceId);
       const result = await prisma.$transaction(async (tx) => {
         const asiento = await accountingEngineService.contabilizarFacturaGasto(
           companyId,
           invoiceId,
-          {
-            baseTotal: factura.baseTotal,
-            ivaTotal: factura.ivaTotal,
-            ivaRate: factura.tipoIva,
-            retencionTotal: factura.retencionTotal,
-            retencionRate: factura.tipoRetencion,
-            // Facturas antiguas sin lineas: el servicio cae en los totales de cabecera.
-            desgloseIva: desgloseIvaPorTipo(factura.lineas),
-            totalFactura: factura.totalFactura,
-            fechaEmision: factura.fechaEmision,
-            numeroFactura: factura.numeroCompleto,
-            proveedorId: factura.supplierId,
-            proveedorNif: factura.supplier.nifCif,
-            proveedorNombre: factura.supplier.nombreFiscal,
-            tipoGasto: factura.tipoGasto as 'COMPRA' | 'SERVICIO_PROFESIONAL' | 'ALQUILER' | 'SUMINISTROS',
-          },
+          datosContablesGasto(factura, factura.supplier, { estadoAsiento: 'POSTED', cuentaAcreedor }),
           tx,
         );
 

@@ -515,11 +515,15 @@ function lineasParaGuardar(v: FacturaGastoBody) {
 
 const NOMBRE_CUENTA = new Map(PGC_BASE.map((n) => [n.code, n.name]));
 
-/** Datos del motor contable a partir de la factura guardada y su proveedor. */
-function datosContablesGasto(
+/**
+ * Datos del motor contable a partir de la factura guardada y su proveedor: la
+ * fecha de registro, la cuenta de cada linea y la base de las lineas con
+ * retencion. Lo usan el alta, la edicion y el boton Contabilizar.
+ */
+export function datosContablesGasto(
   f: FacturaConLineas,
   s: { id: string; nifCif: string; nombreFiscal: string },
-  extra: { estadoAsiento: 'POSTED' | 'DRAFT'; numeroAsiento?: string },
+  extra: { estadoAsiento: 'POSTED' | 'DRAFT'; numeroAsiento?: string; cuentaAcreedor?: string | null },
 ): Parameters<typeof contabilizarFacturaGasto>[2] {
   const tipo: TipoGasto = esTipoGasto(f.tipoGasto) ? f.tipoGasto : 'COMPRA';
   const porCuenta = new Map<string, number>();
@@ -554,7 +558,28 @@ function datosContablesGasto(
     }),
     estadoAsiento: extra.estadoAsiento,
     ...(extra.numeroAsiento ? { numeroAsiento: extra.numeroAsiento } : {}),
+    ...(extra.cuentaAcreedor ? { cuentaAcreedor: extra.cuentaAcreedor } : {}),
   };
+}
+
+/**
+ * Cuenta del proveedor (40x/41x) que cargaron los pagos activos de una factura
+ * aun sin asiento (null si no tiene pagos). Al contabilizarla, el abono va a
+ * esa misma cuenta: si no, el pago queda en la 400 y la deuda en la 410.
+ */
+export async function cuentaAcreedorDePagos(companyId: string, invoiceId: string): Promise<string | null> {
+  const pagos = await prisma.invoicePayment.findMany({
+    where: { companyId, invoiceType: 'GASTO', invoiceId, estado: 'ACTIVO', journalEntryId: { not: null } },
+    select: { journalEntryId: true },
+    orderBy: { createdAt: 'asc' },
+  });
+  const ids = pagos.map((p) => p.journalEntryId).filter((x): x is string => !!x);
+  if (!ids.length) return null;
+  const lineas = await prisma.journalEntryLine.findMany({
+    where: { companyId, entryId: { in: ids }, debe: { gt: 0 } },
+    select: { accountCode: true },
+  });
+  return lineas.find((l) => /^4[01]/.test(l.accountCode))?.accountCode ?? null;
 }
 
 /** Borra el libro de IVA y el de retenciones de un asiento. */

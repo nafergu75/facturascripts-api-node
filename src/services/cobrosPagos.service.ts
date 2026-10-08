@@ -16,6 +16,7 @@ import { CONTABLE_RULES } from './accounting-engine.service';
 import { perfilEmpresa } from './perfilEmpresa.service';
 import { referenciaParaComprobar, tipoReferencia } from './tiposCambio.service';
 import { asegurarPlanContableEmpresa } from './chart-of-accounts.service';
+import { TIPO_GASTO_INFO, esTipoGasto } from '../domain/factura-gasto.model';
 
 /**
  * Cobros de facturas de venta y pagos de facturas de gasto, con su asiento.
@@ -253,6 +254,12 @@ export async function cuentaTerceroDeFactura(companyId: string, tipo: TipoDocume
   const linea = asiento?.lineas.find((l) =>
     tipo === 'INGRESO' ? l.accountCode.startsWith('43') && l.debe > 0 : /^4[01]/.test(l.accountCode) && l.haber > 0,
   );
+  if (!linea && tipo === 'GASTO') {
+    // Factura de gasto aun sin asiento: la cuenta que usara al contabilizarla
+    // (400 en compras, 410 en servicios), para que el pago y la deuda casen.
+    const f = await prisma.expenseInvoice.findFirst({ where: { id: invoiceId, companyId }, select: { tipoGasto: true } });
+    if (f && esTipoGasto(f.tipoGasto)) return TIPO_GASTO_INFO[f.tipoGasto].acreedor;
+  }
   return linea?.accountCode ?? (tipo === 'INGRESO' ? '430' : '400');
 }
 
