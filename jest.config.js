@@ -5,6 +5,8 @@ module.exports = {
   roots: ['<rootDir>/src'],
   testMatch: ['**/tests/**/*.test.ts'],
   setupFiles: ['<rootDir>/src/tests/jest.setup.ts'],
+  // Cierra el cliente Prisma de cada fichero al acabarlo (ver jest.cerrar-bd.ts).
+  setupFilesAfterEnv: ['<rootDir>/src/tests/jest.cerrar-bd.ts'],
   clearMocks: true,
   // Cierra conexiones Prisma abiertas al final (evita que Jest se quede colgado).
   forceExit: true,
