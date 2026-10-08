@@ -106,13 +106,59 @@ const campoFecha = (accion: string) => (accion.startsWith('emitir') ? { campo: '
 
 /**
  * Una factura recibida lleva la fecha que puso el proveedor: no se cambia para
- * esquivar un mes bloqueado. Su IVA se deduce en el periodo en que se recibe
- * (art. 99 LIVA), pero la app todavia no contabiliza una factura recibida en
- * un periodo posterior al de su fecha: se dice asi, sin invitar a cambiarla.
+ * esquivar un mes bloqueado. Por eso, al contabilizarla, el mensaje no dice
+ * «usa otra fecha».
  */
 const esFacturaRecibida = (accion: string) => accion.includes('factura de gasto');
-const SIN_CAMBIAR_FECHA_RECIBIDA =
-  'No cambies la fecha de la factura: es la que puso el proveedor. Si la recibiste más tarde, modifica la factura y pon la fecha en que la recibiste (en «¿La recibiste más tarde?»): su IVA se deduce en ese periodo.';
+const NO_CAMBIES_LA_FECHA = 'No cambies la fecha de la factura: es la que puso el proveedor.';
+
+/** Por que no se puede apuntar nada en una fecha y como se sale de ahi. */
+export interface PeriodoNoAbierto {
+  motivo: 'periodo_bloqueado' | 'periodo_cerrado' | 'ejercicio_cerrado';
+  /** «el mes 03/2026 está bloqueado» o «el ejercicio 2024 está cerrado». */
+  situacion: string;
+  /**
+   * Que hacer con una factura recibida que ya cuenta en ese periodo (una
+   * anterior sin contabilizar): desbloquear el mes, deshacer el cierre o
+   * reabrir el ejercicio. Nunca cambiarle la fecha: mientras el periodo siga
+   * asi, tampoco se puede modificar ni anular (expense-invoices.service).
+   */
+  queHacer: string;
+  enlace: string;
+}
+
+/**
+ * null si la fecha cae en un mes abierto de un ejercicio abierto. Si no, por
+ * que (mes bloqueado o cerrado, ejercicio cerrado) y que hacer.
+ */
+export async function periodoNoAbierto(companyId: string, fecha: string): Promise<PeriodoNoAbierto | null> {
+  const estado = await estadoPeriodoEnFecha(companyId, fecha);
+  const mes = `${fecha.slice(5, 7)}/${fecha.slice(0, 4)}`;
+  const ejercicio = Number(fecha.slice(0, 4));
+  const deshacerCierre =
+    'Esta factura cuenta en ese periodo: para contabilizarla o corregirla hay que deshacer antes el cierre en Contabilidad > Cierre y traspaso de saldos. Consúltalo antes con tu asesor.';
+  if (estado === 'bloqueado') {
+    return {
+      motivo: 'periodo_bloqueado',
+      situacion: `el mes ${mes} está bloqueado`,
+      queHacer:
+        'Esta factura cuenta en ese mes: para contabilizarla o corregirla (también la fecha en que la recibiste, en «¿La recibiste más tarde?»), desbloquéalo antes en Configuración > Ejercicios y periodos y vuelve a bloquearlo después. Si ya presentaste el modelo de ese periodo, consúltalo antes con tu asesor.',
+      enlace: ENLACE_CONFIG_EJERCICIOS,
+    };
+  }
+  if (estado === 'cerrado') {
+    return { motivo: 'periodo_cerrado', situacion: `el mes ${mes} está cerrado`, queHacer: deshacerCierre, enlace: enlaceCierre(ejercicio) };
+  }
+  const estadoEj = await estadoCierreAnio(companyId, ejercicio);
+  if (estadoEj === 'ABIERTO') return null;
+  const sinAsientos = estadoEj === 'CERRADO_SIN_ASIENTOS';
+  return {
+    motivo: 'ejercicio_cerrado',
+    situacion: `el ejercicio ${ejercicio} está cerrado`,
+    queHacer: sinAsientos ? await textoReabrir(companyId, ejercicio) : deshacerCierre,
+    enlace: sinAsientos ? ENLACE_CONFIG_EJERCICIOS : enlaceCierre(ejercicio),
+  };
+}
 
 /**
  * No se apunta nada en un periodo cerrado o bloqueado, ni en un ejercicio
@@ -124,17 +170,28 @@ const SIN_CAMBIAR_FECHA_RECIBIDA =
  * usen sin importarse en circulo; cobrosPagos la reexporta.
  */
 export async function comprobarFechaAbierta(companyId: string, fecha: string, accion?: string): Promise<void> {
+  if (accion && esFacturaRecibida(accion)) {
+    // Contabilizar una factura anterior: ya cuenta en ese periodo, asi que no
+    // se puede modificar ni anular mientras siga asi (no se manda a hacerlo).
+    const p = await periodoNoAbierto(companyId, fecha);
+    if (!p) return;
+    // Un ejercicio cerrado sin asientos se reabre (textoReabrir): ahi no hace falta el aviso de la fecha.
+    const sinAsientos = p.motivo === 'ejercicio_cerrado' && p.enlace === ENLACE_CONFIG_EJERCICIOS;
+    const noCambies = sinAsientos ? '' : `${NO_CAMBIES_LA_FECHA} `;
+    throw badRequest(`No se puede ${accion} con fecha ${ddmmaaaa(fecha)}: ${p.situacion}. ${noCambies}${p.queHacer}`, {
+      motivo: p.motivo,
+      enlace: p.enlace,
+    });
+  }
   const estado = await estadoPeriodoEnFecha(companyId, fecha);
   const mes = `${fecha.slice(5, 7)}/${fecha.slice(0, 4)}`;
   if (estado === 'cerrado' || estado === 'bloqueado') {
     if (accion) {
       throw badRequest(
         `No se puede ${accion} con fecha ${ddmmaaaa(fecha)}: el mes ${mes} está ${estado}. ` +
-          (esFacturaRecibida(accion)
-            ? SIN_CAMBIAR_FECHA_RECIBIDA
-            : estado === 'bloqueado'
-              ? 'Usa otra fecha o desbloquea ese mes en Configuración > Ejercicios y periodos.'
-              : 'Usa otra fecha: ese mes ya se cerró.'),
+          (estado === 'bloqueado'
+            ? 'Usa otra fecha o desbloquea ese mes en Configuración > Ejercicios y periodos.'
+            : 'Usa otra fecha: ese mes ya se cerró.'),
         { ...campoFecha(accion), motivo: `periodo_${estado}` },
       );
     }
@@ -147,9 +204,7 @@ export async function comprobarFechaAbierta(companyId: string, fecha: string, ac
       const queHacer =
         estadoEj === 'CERRADO_SIN_ASIENTOS'
           ? await textoReabrir(companyId, ejercicio)
-          : esFacturaRecibida(accion)
-            ? SIN_CAMBIAR_FECHA_RECIBIDA
-            : 'Usa otra fecha o, si de verdad tiene que ir en ese año, deshaz antes el cierre en Contabilidad > Cierre y traspaso de saldos.';
+          : 'Usa otra fecha o, si de verdad tiene que ir en ese año, deshaz antes el cierre en Contabilidad > Cierre y traspaso de saldos.';
       throw badRequest(`No se puede ${accion} con fecha ${ddmmaaaa(fecha)}: el ejercicio ${ejercicio} está cerrado. ${queHacer}`, {
         ...campoFecha(accion),
         motivo: 'ejercicio_cerrado',

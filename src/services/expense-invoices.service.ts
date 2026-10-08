@@ -22,7 +22,7 @@ import { esFechaReal, validarFacturaGasto, type FacturaGastoBody } from '../sche
 import { contabilizarFacturaGasto, desgloseIvaPorTipo } from './accounting-engine.service';
 import { asegurarPlanContableEmpresa } from './chart-of-accounts.service';
 import { tieneCobrosActivos } from './cobrosPagos.service';
-import { comprobarFechaAbierta } from './periodos.service';
+import { comprobarFechaAbierta, periodoNoAbierto } from './periodos.service';
 import { archivarGastoSinRomper } from './archivoFacturas.service';
 import { perfilEmpresa } from './perfilEmpresa.service';
 import { registrarAuditoria } from './auditoria.service';
@@ -680,6 +680,31 @@ const textoNoModificable = (motivo: string) =>
 const textoAnteriorDeclarada = (motivo: string, accion: 'modificar' | 'anular') =>
   `${motivo}: esta factura ya cuenta en lo presentado y no se puede ${accion} así. Contabilízala y, si hace falta, anúlala después (se hará un contraasiento).`;
 
+const mayuscula = (t: string) => t.charAt(0).toUpperCase() + t.slice(1);
+
+/**
+ * Por que no se puede modificar o anular una factura anterior sin asiento y
+ * que hacer. Si su mes esta bloqueado o cerrado (o su ejercicio cerrado),
+ * contabilizarla tampoco se puede: se dice como abrirlo, sin mandar a
+ * Contabilizar (si no, Contabilizar mandaba a modificarla y al reves). Si es
+ * por un modelo presentado, contabilizarla y anularla despues con contraasiento.
+ */
+async function bloqueoAnterior(
+  companyId: string,
+  fecha: string,
+  motivo: string,
+  accion: 'modificar' | 'anular',
+): Promise<{ texto: string; details: Record<string, unknown> }> {
+  const p = await periodoNoAbierto(companyId, fecha);
+  if (p) {
+    return {
+      texto: `${mayuscula(p.situacion)}: esta factura cuenta en ese periodo y no se puede ${accion} mientras siga así. ${p.queHacer}`,
+      details: { motivo: p.motivo, enlace: p.enlace },
+    };
+  }
+  return { texto: textoAnteriorDeclarada(motivo, accion), details: { accion: 'contabilizar' } };
+}
+
 // ---------------------------------------------------------------------------
 // Alta (manual con asiento firme o desde el lector con asiento en borrador)
 // ---------------------------------------------------------------------------
@@ -950,13 +975,14 @@ export async function editarGasto(
 
   const asiento = await asientoVigente(prisma, companyId, id);
   const enModelos = cuentaEnModelos(actual.estado, asiento);
-  const bloqueo = (motivo: string) =>
-    asiento
-      ? conflict(textoNoModificable(motivo), { accion: 'anular' })
-      : conflict(textoAnteriorDeclarada(motivo, 'modificar'), { accion: 'contabilizar' });
+  const bloqueo = async (motivo: string, fecha: string) => {
+    if (asiento) return conflict(textoNoModificable(motivo), { accion: 'anular' });
+    const b = await bloqueoAnterior(companyId, fecha, motivo, 'modificar');
+    return conflict(b.texto, b.details);
+  };
   if (enModelos) {
     const motivo = await motivoPeriodoBloqueado(companyId, fechaContableGasto(actual), retencionDe(actual));
-    if (motivo) throw bloqueo(motivo);
+    if (motivo) throw await bloqueo(motivo, fechaContableGasto(actual));
   }
 
   const bruto = { ...((cuerpo ?? {}) as Record<string, unknown>) };
@@ -973,7 +999,7 @@ export async function editarGasto(
   await comprobarFechaAbierta(companyId, fechaNueva);
   if (enModelos) {
     const motivo = await motivoPeriodoBloqueado(companyId, fechaNueva, retencionTotal > 0 ? tipoRetencionLibro(v.tipoGasto) : null);
-    if (motivo) throw bloqueo(motivo);
+    if (motivo) throw await bloqueo(motivo, fechaNueva);
   }
   if (asiento) await asegurarPlanContableEmpresa(companyId);
 
@@ -1084,7 +1110,10 @@ export async function anularGasto(
   const declarada = cuentaEnModelos(f.estado, asiento) ? await motivoPeriodoBloqueado(companyId, fechaContableGasto(f), retencionDe(f)) : null;
   // Una factura anterior sin asiento ya cuenta en los modelos: si su periodo
   // esta declarado, anularla sin contraasiento cambiaria lo presentado.
-  if (declarada && !asiento) throw conflict(textoAnteriorDeclarada(declarada, 'anular'), { accion: 'contabilizar' });
+  if (declarada && !asiento) {
+    const b = await bloqueoAnterior(companyId, fechaContableGasto(f), declarada, 'anular');
+    throw conflict(b.texto, b.details);
+  }
   const conContraasiento = asiento?.estado === 'POSTED' && declarada !== null;
   const fechaAnulacion = fechaPedida ?? hoyEspana();
   if (conContraasiento && fechaAnulacion < fechaContableGasto(f)) {
@@ -1229,21 +1258,28 @@ async function obtenerDetalle(companyId: string, id: string): Promise<GastoDetal
 
   // Lo que se puede hacer (las mismas reglas que editarGasto y anularGasto, sin lanzar errores).
   const bloqueo = cuentaEnModelos(f.estado, asiento) ? await motivoPeriodoBloqueado(companyId, fechaContableGasto(f), retencionDe(f)) : null;
+  const [bloqueoEditar, bloqueoAnular] =
+    bloqueo && !asiento
+      ? await Promise.all([
+          bloqueoAnterior(companyId, fechaContableGasto(f), bloqueo, 'modificar'),
+          bloqueoAnterior(companyId, fechaContableGasto(f), bloqueo, 'anular'),
+        ])
+      : [null, null];
   const editar =
     f.estado === 'ANULADA'
       ? { permitido: false, motivo: 'La factura está anulada: no se puede modificar.' }
       : activos > 0
         ? { permitido: false, motivo: mensajeConPagos }
         : bloqueo
-          ? { permitido: false, motivo: asiento ? textoNoModificable(bloqueo) : textoAnteriorDeclarada(bloqueo, 'modificar') }
+          ? { permitido: false, motivo: bloqueoEditar ? bloqueoEditar.texto : textoNoModificable(bloqueo) }
           : { permitido: true };
   const anular =
     f.estado === 'ANULADA'
       ? { permitido: false, motivo: 'La factura ya está anulada.', conContraasiento: false }
       : activos > 0
         ? { permitido: false, motivo: 'La factura tiene pagos registrados: anúlalos antes de anularla.', conContraasiento: false }
-        : bloqueo && !asiento
-          ? { permitido: false, motivo: textoAnteriorDeclarada(bloqueo, 'anular'), conContraasiento: false }
+        : bloqueoAnular
+          ? { permitido: false, motivo: bloqueoAnular.texto, conContraasiento: false }
           : { permitido: true, conContraasiento: !!bloqueo };
 
   return {
