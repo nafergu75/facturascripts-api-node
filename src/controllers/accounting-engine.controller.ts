@@ -15,6 +15,7 @@ import { accountingEngineService, desgloseIvaPorTipo } from '../services/account
 import { prisma } from '../config/database';
 import { cuadraEnCentimos } from '../utils/money';
 import { asegurarPlanContableEmpresa } from '../services/chart-of-accounts.service';
+import { comprobarFechaAbierta } from '../services/periodos.service';
 import { perfilEmpresa } from '../services/perfilEmpresa.service';
 import { motivoSinTipoFijado, notaDivisa } from '../domain/divisas';
 import { esTipoOperacion, fechaDevengoVenta } from '../domain/tipo-operacion.model';
@@ -87,6 +88,8 @@ export class AccountingEngineController {
       if (entryExistente) {
         throw badRequest(`Esta factura ya ha sido contabilizada (asiento: ${entryExistente.id}).`);
       }
+      // Ni en un mes bloqueado ni en un ejercicio cerrado (tambien desde el hook AUTO).
+      await comprobarFechaAbierta(companyId, factura.fechaEmision, 'contabilizar la factura');
 
       // Transacción atómica: crear asiento + líneas + VATBook
       const result = await prisma.$transaction(async (tx) => {
@@ -214,6 +217,8 @@ export class AccountingEngineController {
       if (entryExistente) {
         throw badRequest(`Esta factura de gasto ya ha sido contabilizada (asiento: ${entryExistente.id}).`);
       }
+      // Ni en un mes bloqueado ni en un ejercicio cerrado.
+      await comprobarFechaAbierta(companyId, factura.fechaEmision, 'contabilizar la factura de gasto');
 
       // Transacción atómica: crear asiento + líneas + VATBook + RetentionBook + marcar factura
       // Los mismos datos que el alta: la fecha de registro (si se recibio mas
@@ -294,6 +299,10 @@ export class AccountingEngineController {
           `No se puede aprobar un asiento en estado ${asiento.estado}. Solo se pueden aprobar asientos en DRAFT o PENDING_REVIEW.`
         );
       }
+
+      // Un borrador (p. ej. del lector) no pasa a definitivo en un mes bloqueado
+      // ni en un ejercicio cerrado.
+      await comprobarFechaAbierta(companyId, asiento.fecha.toISOString().slice(0, 10), 'aprobar el asiento');
 
       // Validar debe = haber
       const totalDebe = asiento.lineas.reduce((s, l) => s + (l.debe || 0), 0);

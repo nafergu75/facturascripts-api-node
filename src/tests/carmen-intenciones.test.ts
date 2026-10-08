@@ -105,7 +105,6 @@ const ROLES: Record<string, AuthUser> = {
   admin: usuario(['admin']),
   contable: usuario(['contable']),
   ventas: usuario(['ventas']),
-  tesoreria: usuario(['tesoreria']),
   'solo-lectura': usuario(['solo_lectura']),
   'sin rol': usuario([]),
   'admin global': usuario([], true),
@@ -202,19 +201,19 @@ const conCifras = (r: RespuestaDatos) => !r.sinPermiso && !r.sinCifras;
 
 /** true = el rol ve las cifras de la intención. */
 const MATRIZ: Record<string, Record<string, boolean>> = {
-  'INT-01': { admin: true, contable: true, ventas: true, tesoreria: true, 'solo-lectura': true, 'sin rol': false, 'admin global': true },
-  'INT-02': { admin: true, contable: true, ventas: true, tesoreria: true, 'solo-lectura': true, 'sin rol': false, 'admin global': true },
-  'INT-03': { admin: true, contable: true, ventas: true, tesoreria: true, 'solo-lectura': true, 'sin rol': false, 'admin global': true },
-  'INT-05': { admin: true, contable: true, ventas: true, tesoreria: true, 'solo-lectura': true, 'sin rol': false, 'admin global': true },
-  'INT-06': { admin: true, contable: true, ventas: true, tesoreria: true, 'solo-lectura': true, 'sin rol': false, 'admin global': true },
-  'INT-09': { admin: true, contable: true, ventas: true, tesoreria: true, 'solo-lectura': true, 'sin rol': false, 'admin global': true },
-  'INT-13': { admin: true, contable: true, ventas: true, tesoreria: false, 'solo-lectura': true, 'sin rol': false, 'admin global': true },
-  'INT-18': { admin: true, contable: true, ventas: true, tesoreria: true, 'solo-lectura': true, 'sin rol': false, 'admin global': true },
-  'INT-23': { admin: true, contable: true, ventas: true, tesoreria: true, 'solo-lectura': true, 'sin rol': false, 'admin global': true },
-  'INT-24': { admin: true, contable: true, ventas: false, tesoreria: true, 'solo-lectura': true, 'sin rol': false, 'admin global': true },
-  'INT-25': { admin: true, contable: true, ventas: false, tesoreria: true, 'solo-lectura': true, 'sin rol': false, 'admin global': true },
-  'INT-28': { admin: true, contable: true, ventas: false, tesoreria: false, 'solo-lectura': true, 'sin rol': false, 'admin global': true },
-  'INT-30': { admin: true, contable: true, ventas: false, tesoreria: false, 'solo-lectura': true, 'sin rol': false, 'admin global': true },
+  'INT-01': { admin: true, contable: true, ventas: true, 'solo-lectura': true, 'sin rol': false, 'admin global': true },
+  'INT-02': { admin: true, contable: true, ventas: true, 'solo-lectura': true, 'sin rol': false, 'admin global': true },
+  'INT-03': { admin: true, contable: true, ventas: true, 'solo-lectura': true, 'sin rol': false, 'admin global': true },
+  'INT-05': { admin: true, contable: true, ventas: true, 'solo-lectura': true, 'sin rol': false, 'admin global': true },
+  'INT-06': { admin: true, contable: true, ventas: true, 'solo-lectura': true, 'sin rol': false, 'admin global': true },
+  'INT-09': { admin: true, contable: true, ventas: true, 'solo-lectura': true, 'sin rol': false, 'admin global': true },
+  'INT-13': { admin: true, contable: true, ventas: true, 'solo-lectura': true, 'sin rol': false, 'admin global': true },
+  'INT-18': { admin: true, contable: true, ventas: true, 'solo-lectura': true, 'sin rol': false, 'admin global': true },
+  'INT-23': { admin: true, contable: true, ventas: true, 'solo-lectura': true, 'sin rol': false, 'admin global': true },
+  'INT-24': { admin: true, contable: true, ventas: false, 'solo-lectura': true, 'sin rol': false, 'admin global': true },
+  'INT-25': { admin: true, contable: true, ventas: false, 'solo-lectura': true, 'sin rol': false, 'admin global': true },
+  'INT-28': { admin: true, contable: true, ventas: false, 'solo-lectura': true, 'sin rol': false, 'admin global': true },
+  'INT-30': { admin: true, contable: true, ventas: false, 'solo-lectura': true, 'sin rol': false, 'admin global': true },
 };
 
 const SERVICIOS = [mockFacturasPorCobrar, mockTotalCobradoEntre, mockObtenerResumen, mockPendientes, mockPyG, mockResumenFiscal, mockListarCobros, mockCalendario, mockModeloGuardado, mockCalcular303];
@@ -281,13 +280,12 @@ describe('matriz de permisos', () => {
     expect(contable.permisoRequerido).toBe('contabilidad:read;nominas:read');
     // Las guardadas antes de existir 'nominas:read' (grupo 'nominas') se tratan igual.
     expect(conservaPermiso(construirContexto(ROLES.contable, 'E1', HOY), 'contabilidad:read;nominas')).toBe(true);
-    expect(conservaPermiso(construirContexto(ROLES.tesoreria, 'E1', HOY), 'contabilidad:read;nominas')).toBe(false);
+    expect(conservaPermiso(construirContexto(ROLES['solo-lectura'], 'E1', HOY), 'contabilidad:read;nominas')).toBe(false);
     expect(construirContexto(ROLES['admin global'], 'E1', HOY).puedeNominas).toBe(true);
     expect(construirContexto(ROLES.ventas, 'E1', HOY).puedeNominas).toBe(false);
     expect(lectura.permisoRequerido).toBe('contabilidad:read');
     expect(conservaPermiso(construirContexto(ROLES.contable, 'E1', HOY), contable.permisoRequerido!)).toBe(true);
-    // Si pasa a tesorería o solo lectura (siguen con contabilidad:read, pero sin nóminas), se oculta.
-    expect(conservaPermiso(construirContexto(ROLES.tesoreria, 'E1', HOY), contable.permisoRequerido!)).toBe(false);
+    // Si pasa a solo lectura (sigue con contabilidad:read, pero sin nóminas), se oculta.
     expect(conservaPermiso(construirContexto(ROLES['solo-lectura'], 'E1', HOY), contable.permisoRequerido!)).toBe(false);
     expect(conservaPermiso(construirContexto(ROLES['solo-lectura'], 'E1', HOY), lectura.permisoRequerido!)).toBe(true);
   });
@@ -320,7 +318,7 @@ describe('matriz de permisos', () => {
     expect(r.permisoRequerido).toBe('ventas:read|contabilidad:read;contabilidad:read');
     expect(conservaPermiso(construirContexto(ROLES.ventas, 'E1', HOY), r.permisoRequerido!)).toBe(true);
     expect(conservaPermiso(construirContexto(ROLES['sin rol'], 'E1', HOY), r.permisoRequerido!)).toBe(false);
-    expect(conservaPermiso(construirContexto(ROLES.tesoreria, 'E1', HOY), 'tesoreria:read')).toBe(true);
+    expect(conservaPermiso(construirContexto(ROLES['solo-lectura'], 'E1', HOY), 'tesoreria:read')).toBe(true);
     expect(conservaPermiso(construirContexto(ROLES.ventas, 'E1', HOY), 'tesoreria:read')).toBe(false);
   });
 
@@ -610,29 +608,29 @@ describe('contrato de cifras', () => {
   });
 
   it('INT-24: el saldo es el de obtenerResumen, con la fecha del último extracto', async () => {
-    const r = await ejecutar('INT-24', 'tesoreria');
+    const r = await ejecutar('INT-24', 'contable');
     if (!conCifras(r) || r.sinPermiso) throw new Error('sin cifras');
     expect(r.texto).toBe('El saldo de tus 2 cuentas es 15.000,25 €, según los extractos importados hasta el 05/10/2026.');
-    const una = await ejecutar('INT-24', 'tesoreria', { ibanFinal: '5678' });
+    const una = await ejecutar('INT-24', 'contable', { ibanFinal: '5678' });
     expect(!una.sinPermiso && una.texto).toBe('El saldo de BBVA …5678 es 5.000,00 €, según los extractos importados hasta el 05/10/2026.');
     // El IBAN completo no sale nunca: solo los 4 últimos dígitos.
     expect(JSON.stringify(r)).not.toMatch(/ES00 0000/);
   });
 
   it('INT-24: con un banco de la pregunta, solo esa cuenta', async () => {
-    const r = await ejecutar('INT-24', 'tesoreria', { terceroId: 'b2', rol: 'banco' });
+    const r = await ejecutar('INT-24', 'contable', { terceroId: 'b2', rol: 'banco' });
     expect(!r.sinPermiso && r.texto).toBe('El saldo de BBVA …5678 es 5.000,00 €, según los extractos importados hasta el 05/10/2026.');
   });
 
   it('INT-25: filtra por texto e importe en memoria', async () => {
-    const r = await ejecutar('INT-25', 'tesoreria', { texto: 'repsol' });
+    const r = await ejecutar('INT-25', 'contable', { texto: 'repsol' });
     if (!conCifras(r) || r.sinPermiso) throw new Error('sin cifras');
     expect(r.tabla?.filas).toHaveLength(1);
     expect(r.kpis).toEqual([
       { etiqueta: 'Entradas', valor: '0,00 €' },
       { etiqueta: 'Salidas', valor: '60,50 €' },
     ]);
-    const grandes = await ejecutar('INT-25', 'tesoreria', { importeMinimo: 1000 });
+    const grandes = await ejecutar('INT-25', 'contable', { importeMinimo: 1000 });
     expect(!grandes.sinPermiso && grandes.tabla?.filas).toHaveLength(1);
   });
 

@@ -91,6 +91,20 @@ const FICHAS: Record<string, FichaModeloImpuesto> = {
     notasConfiguracion: ['El arrendador debe facilitarte su NIF y el porcentaje de retencion vigente (19%).'],
     recomendaciones: ['Cuadra con el resumen anual 180 a fin de ejercicio.'],
   },
+  '130': {
+    modeloCodigo: '130',
+    titulo: 'Modelo 130 — Pago fraccionado del IRPF (estimación directa)',
+    textoExplicativo:
+      'Lo presentan cada trimestre los autónomos en estimación directa: el 20 % del rendimiento neto acumulado desde enero, menos las retenciones soportadas y los pagos de los trimestres anteriores.',
+    advertencias: [
+      'La app todavía no calcula el 130: rellena sus casillas a mano y guárdalo.',
+      'Si más del 70 % de tus ingresos llevan retención, puede que no estés obligado a presentarlo: consúltalo con tu asesor.',
+    ],
+    notasConfiguracion: [
+      'Sale en el calendario cuando la forma jurídica de la empresa es Autónomo. Se cambia en Registro Mercantil > Datos para la memoria (en el menú lateral), que es donde se guarda la forma jurídica.',
+    ],
+    recomendaciones: ['Revisa los ingresos y gastos del año hasta el final del trimestre antes de rellenarlo.'],
+  },
   '200': {
     modeloCodigo: '200',
     titulo: 'Modelo 200 — Impuesto sobre Sociedades',

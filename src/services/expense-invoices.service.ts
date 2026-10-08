@@ -2,7 +2,7 @@ import { Prisma } from '@prisma/client';
 import { prisma, type TransaccionBD } from '../config/database';
 import { badRequest, conflict, HttpError, notFound } from '../utils/http-errors';
 import { aCentimos } from '../utils/money';
-import { hoyEspana } from '../utils/fechas';
+import { hoyEspana, vencimientoPorDefecto } from '../utils/fechas';
 import { PGC_BASE } from '../domain/pgc-model';
 import {
   ESTADOS_SIN_CONTABILIZAR,
@@ -21,9 +21,8 @@ import {
 import { esFechaReal, validarFacturaGasto, type FacturaGastoBody } from '../schemas/factura-gasto.schemas';
 import { contabilizarFacturaGasto, desgloseIvaPorTipo } from './accounting-engine.service';
 import { asegurarPlanContableEmpresa } from './chart-of-accounts.service';
-// Se importa de cobrosPagos (y con dos argumentos): asi sirve antes y despues de
-// que la rama de configuracion la mueva a periodos.service.
-import { comprobarFechaAbierta, tieneCobrosActivos } from './cobrosPagos.service';
+import { tieneCobrosActivos } from './cobrosPagos.service';
+import { comprobarFechaAbierta } from './periodos.service';
 import { archivarGastoSinRomper } from './archivoFacturas.service';
 import { perfilEmpresa } from './perfilEmpresa.service';
 import { registrarAuditoria } from './auditoria.service';
@@ -314,14 +313,8 @@ function determinarEstado(fechaVencimiento: string): string {
 function resolverFechasGasto(dto: { fechaEmision?: string; fechaVencimiento?: string }): { fechaEmision: string; fechaVencimiento: string } {
     // 3) Resolver fechas
     const fechaEmision = (dto.fechaEmision ?? new Date().toISOString().slice(0, 10)).slice(0, 10);
-    const fechaVencimiento = (
-      dto.fechaVencimiento ??
-      (() => {
-        const d = new Date(fechaEmision);
-        d.setDate(d.getDate() + 30);
-        return d.toISOString().slice(0, 10);
-      })()
-    ).slice(0, 10);
+    // Mismo plazo por defecto que las facturas de venta (en UTC: sin saltos de dia).
+    const fechaVencimiento = (dto.fechaVencimiento ?? vencimientoPorDefecto(fechaEmision)).slice(0, 10);
     return { fechaEmision, fechaVencimiento };
 }
 

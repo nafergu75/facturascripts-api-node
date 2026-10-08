@@ -138,10 +138,12 @@ describe('cobros de facturas de venta', () => {
     const f = await facturaVenta(200, '2026-04-02');
     await contabilizarVenta(f.id);
     const { cobro } = await registrarCobroFactura(COMPANY_ID, 'INGRESO', f.id, { fecha: '2026-04-05', cuentaBancariaId: bancoId });
+    // Emitida antes de cerrar el mes: con el mes cerrado ya no se podria emitir.
+    const otra = await facturaVenta(10, '2026-04-03');
     await cambiarEstadoPeriodo(COMPANY_ID, 2026, 4, 'cerrado');
     try {
       await expect(
-        registrarCobroFactura(COMPANY_ID, 'INGRESO', (await facturaVenta(10, '2026-04-03')).id, { fecha: '2026-04-20', cuentaBancariaId: bancoId }),
+        registrarCobroFactura(COMPANY_ID, 'INGRESO', otra.id, { fecha: '2026-04-20', cuentaBancariaId: bancoId }),
       ).rejects.toThrow(/está cerrado/);
 
       const { resumen, contraasiento } = await anularCobroFactura(COMPANY_ID, 'INGRESO', f.id, cobro.id, { fecha: '2026-05-02' });

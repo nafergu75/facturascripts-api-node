@@ -231,6 +231,11 @@ model IncomeInvoice {
   proformaId          String?               @unique
   esRecurrente        Boolean               @default(false)
   recurrenciaConfig   String? // JSON con patrón: { frecuencia: 'mensual'|'trimestral', proximaFecha: '...' }
+  /// Copia, al emitir, del IBAN que sale en la factura ('' = sin IBAN). null:
+  /// borrador, proforma o factura anterior a esta copia (el PDF usa los ajustes de ahora).
+  ibanCobro           String?
+  /// Copia, al emitir, del texto legal al pie ('' = sin texto). null: como ibanCobro.
+  textoPie            String?               @db.Text
   createdAt           DateTime              @default(now())
   updatedAt           DateTime              @updatedAt
   lineas              IncomeInvoiceLine[]
@@ -1227,6 +1232,43 @@ model LegalConfig {
   logoMime                   String?
   createdAt                  DateTime @default(now())
   updatedAt                  DateTime @updatedAt
+}
+
+/// Valores por defecto de facturacion (1:1 con la empresa). Sin fila, los de
+/// siempre: transferencia, 30 dias, sin IRPF, cuenta automatica, con IBAN y sin pie.
+model AjustesFacturacion {
+  id               String   @id @default(cuid())
+  companyId        String   @unique
+  /// TRANSFERENCIA | GIRO | CONTADO
+  formaPago        String   @default("TRANSFERENCIA")
+  diasVencimiento  Int      @default(30)
+  /// IRPF habitual de las lineas (0, 1, 2, 7, 15 o 19). Siempre 0 fuera de Espana.
+  irpfDefecto      Decimal  @default(0) @db.Decimal(5, 2)
+  /// Cuenta bancaria que sale en la factura; null = la primera activa en la moneda de la factura.
+  cuentaBancariaId String?
+  mostrarIban      Boolean  @default(true)
+  /// Texto legal al pie de la factura (maximo 500 caracteres).
+  textoPie         String?  @db.Text
+  updatedAt        DateTime @updatedAt
+  updatedBy        String?
+}
+
+/// Ajustes fiscales que cambian el calendario de modelos (solo empresas
+/// espanolas). Gran empresa obliga a SII; SII o REDEME obligan a IVA mensual.
+model AjustesFiscales {
+  id                  String   @id @default(cuid())
+  companyId           String   @unique
+  /// TRIMESTRAL | MENSUAL
+  periodicidadIva     String   @default("TRIMESTRAL")
+  redeme              Boolean  @default(false)
+  sii                 Boolean  @default(false)
+  granEmpresa         Boolean  @default(false)
+  /// Todavia no se aplican en los asientos ni en el 303: el PUT solo acepta su valor por defecto.
+  recargoEquivalencia Boolean  @default(false)
+  criterioCaja        Boolean  @default(false)
+  prorrata            Decimal? @db.Decimal(5, 2)
+  updatedAt           DateTime @updatedAt
+  updatedBy           String?
 }
 
 /// Ejercicio contable de una empresa.

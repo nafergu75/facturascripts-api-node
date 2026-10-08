@@ -17,12 +17,32 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 # Lo minimo que tiene que traer el esquema de esta version (divisas, nominas,
-# modo administrador, Carmen y el numero de proveedor de Compras). Si falta,
-# esta copia tiene un esquema viejo:
-# aplicarlo no haria nada y el codigo nuevo fallaria en produccion por tablas o
-# columnas que no existen (con Carmen: CarmenContador, CarmenLlamadaIA,
-# CarmenAjustes y las columnas nuevas de ChatSession y ChatMessage).
-for marca in 'model TipoCambioBce' 'model Nomina ' 'model LiquidacionSS' 'monedaCuenta'   'model CarmenContador' 'model CarmenLlamadaIA' 'model CarmenAjustes' 'permisoRequerido' 'numeroProveedorActivo' 'numeroFacturaEmisor'; do
+# modo administrador, Carmen, Configuracion y Compras). Si falta, esta copia
+# tiene un esquema viejo: aplicarlo no haria nada y el codigo nuevo fallaria en
+# produccion por tablas o columnas que no existen (con Carmen: CarmenContador,
+# CarmenLlamadaIA, CarmenAjustes y las columnas nuevas de ChatSession y
+# ChatMessage; con Configuracion: AjustesFacturacion, AjustesFiscales y las
+# copias ibanCobro y textoPie de la factura emitida; con Compras: el numero de
+# factura del proveedor, numeroProveedorActivo y numeroFacturaEmisor).
+# Una marca por linea: al integrar otra rama que añada las suyas, se añaden
+# lineas y no choca con esta lista (p. ej. permisos-usuarios: 'debeCambiarContrasena',
+# 'contrasenaProvisionalHasta' y 'permisosPersonalizados').
+MARCAS=(
+  'model TipoCambioBce'
+  'model Nomina '
+  'model LiquidacionSS'
+  'monedaCuenta'
+  'model CarmenContador'
+  'model CarmenLlamadaIA'
+  'model CarmenAjustes'
+  'permisoRequerido'
+  'model AjustesFacturacion'
+  'model AjustesFiscales'
+  'ibanCobro'
+  'numeroProveedorActivo'
+  'numeroFacturaEmisor'
+)
+for marca in "${MARCAS[@]}"; do
   grep -q "$marca" prisma/schema.prisma || {
     echo "prisma/schema.prisma no tiene '$marca': esta copia no tiene el esquema nuevo."
     echo "Ejecutalo desde la copia que se va a subir a main. Abortado."

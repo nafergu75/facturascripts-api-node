@@ -44,6 +44,15 @@ import {
   generarPaginaModelo303_03,
 } from './impuestosExport.service';
 import { badRequest, forbidden, notFound } from '../utils/http-errors';
+import {
+  calendarioEjercicio,
+  filasQueFaltan,
+  planCambioCalendario,
+  type EntradaCalendario,
+  type OpcionesCalendario,
+} from '../domain/calendarioFiscal';
+import { AJUSTES_FISCALES_POR_DEFECTO, ajustesFiscalesDeFila } from '../domain/ajustes.model';
+import { anioEspana } from '../utils/fechas';
 
 /**
  * Modulo "Impuestos" estilo Quipu:
@@ -77,13 +86,14 @@ const dbOk = (): boolean =>
 // --- Calendario fiscal (plazos AEAT) ---
 
 const DESCRIPCIONES: Record<string, string> = {
-  '303': 'IVA — autoliquidacion trimestral',
+  '303': 'IVA — autoliquidación trimestral',
   '111': 'Retenciones IRPF (trabajo y profesionales)',
   '115': 'Retenciones por alquileres',
   '349': 'Operaciones intracomunitarias',
   '390': 'IVA — resumen anual',
   '347': 'Operaciones con terceros (> 3.005,06)',
   '200': 'Impuesto sobre Sociedades',
+  '130': 'Pago fraccionado del IRPF (autónomos)',
   '190': 'Retenciones: resumen anual (trabajo y profesionales)',
 };
 
@@ -91,6 +101,23 @@ const DESCRIPCIONES: Record<string, string> = {
 export function fechaVencimientoModelo(codigo: string, ejercicio: number, periodo: string): string {
   const TRIM: Record<string, string> = { '1T': `${ejercicio}-04-20`, '2T': `${ejercicio}-07-20`, '3T': `${ejercicio}-10-20` };
   if (periodo in TRIM) return TRIM[periodo];
+  if (/^(0[1-9]|1[0-2])$/.test(periodo)) {
+    const mes = Number(periodo);
+    const siguiente = String(mes + 1).padStart(2, '0');
+    if (codigo === '303') {
+      // IVA mensual: solo lo presentan las empresas en el SII (gran empresa,
+      // REDEME o SII voluntario), que tienen los 30 primeros dias naturales del
+      // mes siguiente (art. 71.4 RIVA); el de enero, hasta el ultimo dia de
+      // febrero, y el de diciembre, hasta el 30 de enero.
+      if (mes === 1) return `${ejercicio}-02-${String(new Date(Date.UTC(ejercicio, 2, 0)).getUTCDate()).padStart(2, '0')}`;
+      if (mes === 12) return `${ejercicio + 1}-01-30`;
+      return `${ejercicio}-${siguiente}-30`;
+    }
+    // 111 y 115 mensuales (gran empresa): hasta el dia 20 del mes siguiente;
+    // el de diciembre, hasta el 20 de enero.
+    if (mes === 12) return `${ejercicio + 1}-01-20`;
+    return `${ejercicio}-${siguiente}-20`;
+  }
   if (periodo === '4T') {
     // 111/115: 20 de enero; 303/349: 30 de enero
     return codigo === '111' || codigo === '115' ? `${ejercicio + 1}-01-20` : `${ejercicio + 1}-01-30`;
@@ -103,15 +130,29 @@ export function fechaVencimientoModelo(codigo: string, ejercicio: number, period
   return `${ejercicio + 1}-01-30`;
 }
 
-/** Modelos que componen el calendario de un ejercicio. */
-function calendarioEjercicio(ejercicio: number): Array<{ codigo: string; periodo: string }> {
-  const out: Array<{ codigo: string; periodo: string }> = [];
-  for (const codigo of ['303', '111', '115', '349']) {
-    for (const periodo of ['1T', '2T', '3T', '4T']) out.push({ codigo, periodo });
-  }
-  for (const codigo of ['390', '347', '200', '190']) out.push({ codigo, periodo: '0A' });
-  void ejercicio;
-  return out;
+/** El 130 no se calcula todavia: se rellena a mano. */
+export const MENSAJE_130_MANUAL = 'La app todavía no calcula el modelo 130: rellena sus casillas a mano y guárdalo.';
+const RELLENO_MANUAL = new Set(['130']);
+
+/**
+ * Lo que decide el calendario de la empresa: sus ajustes fiscales
+ * (Configuracion > Impuestos; sin fila, los de por defecto) y si es autonomo.
+ *
+ * Con `ejercicio`: a un año anterior al de la ultima vez que se guardaron los
+ * ajustes no se le aplican (se crean con los de por defecto, como antes de
+ * existir esta pantalla): un cambio de regimen no reescribe años pasados.
+ */
+export async function opcionesCalendarioEmpresa(companyId: string, ejercicio?: number): Promise<OpcionesCalendario> {
+  const tabla = (prisma as { ajustesFiscales?: { findUnique?: unknown } }).ajustesFiscales;
+  const legal = (prisma as { legalConfig?: { findUnique?: unknown } }).legalConfig;
+  const [fila, cfg] = await Promise.all([
+    typeof tabla?.findUnique === 'function' ? prisma.ajustesFiscales.findUnique({ where: { companyId } }).catch(() => null) : null,
+    typeof legal?.findUnique === 'function'
+      ? prisma.legalConfig.findUnique({ where: { companyId }, select: { tipoSociedad: true } }).catch(() => null)
+      : null,
+  ]);
+  const anterior = ejercicio !== undefined && !!fila?.updatedAt && ejercicio < anioEspana(fila.updatedAt);
+  return { ajustes: anterior ? AJUSTES_FISCALES_POR_DEFECTO : ajustesFiscalesDeFila(fila), autonomo: cfg?.tipoSociedad === 'AUTONOMO' };
 }
 
 const clave = (companyId: string, codigo: string, ejercicio: number, periodo: string): string =>
@@ -123,20 +164,181 @@ const clave = (companyId: string, codigo: string, ejercicio: number, periodo: st
  */
 async function asegurarCalendario(companyId: string, ejercicio: number): Promise<void> {
   if (!(await esEmpresaEspanolaFiscal(companyId))) return;
-  for (const { codigo, periodo } of calendarioEjercicio(ejercicio)) {
-    if (dbOk()) {
-      await prisma.modeloImpuesto.upsert({
-        where: { companyId_codigo_ejercicio_periodo: { companyId, codigo, ejercicio, periodo } },
-        update: {},
-        create: { companyId, codigo, ejercicio, periodo, estado: 'vigente' },
+  const deseado = calendarioEjercicio(ejercicio, await opcionesCalendarioEmpresa(companyId, ejercicio));
+  // Solo se anaden las que faltan y no se solapan con otra fila del mismo modelo
+  // (p. ej. el 1T trimestral que ya existia cuando se paso a IVA mensual).
+  if (dbOk()) {
+    const existentes = await prisma.modeloImpuesto.findMany({ where: { companyId, ejercicio }, select: { codigo: true, periodo: true } });
+    const faltan = filasQueFaltan(ejercicio, deseado, existentes);
+    if (faltan.length) {
+      await prisma.modeloImpuesto.createMany({
+        data: faltan.map(({ codigo, periodo }) => ({ companyId, codigo, ejercicio, periodo, estado: 'vigente' })),
+        skipDuplicates: true,
       });
-    } else {
-      const k = clave(companyId, codigo, ejercicio, periodo);
-      if (!memoria.has(k)) {
-        memoria.set(k, { id: k, companyId, codigo, ejercicio, periodo, estado: 'vigente', casillas: null, datos: null, origen: null });
-      }
     }
+    return;
   }
+  const existentes = [...memoria.values()].filter((f) => f.companyId === companyId && f.ejercicio === ejercicio);
+  for (const { codigo, periodo } of filasQueFaltan(ejercicio, deseado, existentes)) {
+    const k = clave(companyId, codigo, ejercicio, periodo);
+    memoria.set(k, { id: k, companyId, codigo, ejercicio, periodo, estado: 'vigente', casillas: null, datos: null, origen: null });
+  }
+}
+
+/** Un modelo del calendario (de la BD o el que se crearia), para Configuracion > Impuestos. */
+export interface ModeloPrevisto {
+  codigo: string;
+  periodo: string;
+  periodoEtiqueta: string;
+  descripcion: string;
+  fechaVencimiento: string;
+  rellenoManual: boolean;
+  /** vigente/expirado (segun hoy), presentado u omitido. */
+  estado: EstadoModeloImpuesto;
+}
+
+const FILA_VACIA = { id: '', companyId: '', estado: 'vigente', casillas: null, datos: null, origen: null };
+
+function aPrevisto(f: Pick<FilaModelo, 'codigo' | 'ejercicio' | 'periodo' | 'estado'>, hoy: string): ModeloPrevisto {
+  const r = aResumen({ ...FILA_VACIA, ...f }, hoy);
+  return {
+    codigo: f.codigo,
+    periodo: f.periodo,
+    periodoEtiqueta: r.periodoEtiqueta,
+    descripcion: r.descripcion,
+    fechaVencimiento: r.fechaVencimiento,
+    rellenoManual: RELLENO_MANUAL.has(f.codigo),
+    estado: r.estado,
+  };
+}
+
+const porVencimiento = (a: ModeloPrevisto, b: ModeloPrevisto) => a.fechaVencimiento.localeCompare(b.fechaVencimiento) || a.codigo.localeCompare(b.codigo);
+
+/** Calendario teorico del ejercicio con esas opciones, entero (no escribe nada). */
+export function vistaCalendario(ejercicio: number, opciones: OpcionesCalendario, hoy = `${ejercicio}-01-01`): ModeloPrevisto[] {
+  return calendarioEjercicio(ejercicio, opciones)
+    .map(({ codigo, periodo }) => aPrevisto({ codigo, ejercicio, periodo, estado: 'vigente' }, hoy))
+    .sort(porVencimiento);
+}
+
+/** Resultado de aplicar unos ajustes fiscales nuevos al calendario de un ejercicio. */
+export interface CambioCalendario {
+  ejercicio: number;
+  /** Primer dia al que se aplican; null = el ejercicio ya no los admite (se aplican desde el siguiente). */
+  aplicadoDesde: string | null;
+  borradas: number;
+  creadas: number;
+  /** De las borradas, las de periodos ya vencidos (solo con aplicarDesde hacia atras). */
+  borradasVencidas: number;
+}
+
+type FilaPlan = { id: string; codigo: string; ejercicio: number; periodo: string; estado: string; origen: string | null };
+
+/** El plan del cambio de un ejercicio: desde hoy, o desde `aplicarDesde` en el año en curso. */
+function planDelEjercicio(ejercicio: number, existentes: FilaPlan[], opciones: OpcionesCalendario, hoy: string, aplicarDesde?: string) {
+  const anio = Number(hoy.slice(0, 4));
+  return planCambioCalendario(ejercicio, existentes, calendarioEjercicio(ejercicio, opciones), {
+    hoy,
+    aplicarDesde: ejercicio === anio ? aplicarDesde : undefined,
+  });
+}
+
+const vencidas = (filas: FilaPlan[], ids: string[], hoy: string) => {
+  const set = new Set(ids);
+  return filas.filter((f) => set.has(f.id) && fechaVencimientoModelo(f.codigo, f.ejercicio, f.periodo) < hoy).length;
+};
+
+/**
+ * Calendario de un ejercicio tal como quedaria con esas opciones, a partir de
+ * las filas que ya existen (no escribe nada): las presentadas, omitidas o
+ * editadas a mano y las de periodos ya empezados se quedan como estan; se
+ * quitan y se añaden las que cambiarian (planCambioCalendario). Sin filas, el
+ * calendario entero (se creara asi al abrir el ejercicio). Un año pasado no cambia.
+ */
+export async function calendarioResultante(
+  companyId: string,
+  ejercicio: number,
+  opciones: OpcionesCalendario,
+  hoy: string,
+  aplicarDesde?: string,
+): Promise<{ modelos: ModeloPrevisto[] } & Omit<CambioCalendario, 'ejercicio'>> {
+  const anio = Number(hoy.slice(0, 4));
+  const filas: FilaPlan[] = dbOk()
+    ? await prisma.modeloImpuesto.findMany({
+        where: { companyId, ejercicio },
+        select: { id: true, codigo: true, ejercicio: true, periodo: true, estado: true, origen: true },
+      })
+    : [...memoria.values()].filter((f) => f.companyId === companyId && f.ejercicio === ejercicio);
+  if (!filas.length) {
+    const aplicadoDesde = ejercicio >= anio ? `${ejercicio}-01-01` : null;
+    return { aplicadoDesde, modelos: vistaCalendario(ejercicio, opciones, hoy), borradas: 0, creadas: 0, borradasVencidas: 0 };
+  }
+  const plan = ejercicio >= anio ? planDelEjercicio(ejercicio, filas, opciones, hoy, aplicarDesde) : { aplicadoDesde: null, borrar: [], crear: [] };
+  const borrar = new Set(plan.borrar);
+  const modelos = [
+    ...filas.filter((f) => !borrar.has(f.id)).map((f) => aPrevisto(f, hoy)),
+    ...plan.crear.map(({ codigo, periodo }) => aPrevisto({ codigo, ejercicio, periodo, estado: 'vigente' }, hoy)),
+  ].sort(porVencimiento);
+  return {
+    aplicadoDesde: plan.aplicadoDesde,
+    modelos,
+    borradas: plan.borrar.length,
+    creadas: plan.crear.length,
+    borradasVencidas: vencidas(filas, plan.borrar, hoy),
+  };
+}
+
+/**
+ * Aplica las opciones del calendario a los ejercicios del año en curso en
+ * adelante que ya tienen filas. Las presentadas, omitidas o editadas a mano no
+ * se tocan, ni los periodos que ya han empezado (salvo `aplicarDesde`, solo en
+ * el año en curso); el cambio empieza en el primer trimestre libre
+ * (domain/calendarioFiscal, planCambioCalendario). Los años pasados no cambian.
+ * Devuelve el cambio del año en curso y de los siguientes que tengan filas.
+ */
+export async function aplicarCambioCalendario(
+  companyId: string,
+  opciones: OpcionesCalendario,
+  hoy: string,
+  aplicarDesde?: string,
+): Promise<CambioCalendario[]> {
+  const anio = Number(hoy.slice(0, 4));
+  if (!dbOk()) return [{ ejercicio: anio, aplicadoDesde: `${anio}-01-01`, borradas: 0, creadas: 0, borradasVencidas: 0 }];
+  const filas = await prisma.modeloImpuesto.findMany({
+    where: { companyId, ejercicio: { gte: anio } },
+    select: { id: true, codigo: true, ejercicio: true, periodo: true, estado: true, origen: true },
+  });
+  const ejercicios = [...new Set([anio, ...filas.map((f) => f.ejercicio)])].sort((a, b) => a - b);
+  const out: CambioCalendario[] = [];
+  for (const ejercicio of ejercicios) {
+    const existentes = filas.filter((f) => f.ejercicio === ejercicio);
+    if (!existentes.length) {
+      // Sin filas todavia: se crearan con los ajustes nuevos al abrir el ejercicio.
+      out.push({ ejercicio, aplicadoDesde: `${ejercicio}-01-01`, borradas: 0, creadas: 0, borradasVencidas: 0 });
+      continue;
+    }
+    const plan = planDelEjercicio(ejercicio, existentes, opciones, hoy, aplicarDesde);
+    if (plan.borrar.length || plan.crear.length) {
+      await prisma.$transaction([
+        // Solo las que siguen sin presentar, sin omitir y sin editar a mano.
+        prisma.modeloImpuesto.deleteMany({
+          where: { companyId, id: { in: plan.borrar }, estado: 'vigente', OR: [{ origen: null }, { origen: { not: 'manual-mixto' } }] },
+        }),
+        prisma.modeloImpuesto.createMany({
+          data: plan.crear.map(({ codigo, periodo }: EntradaCalendario) => ({ companyId, codigo, ejercicio, periodo, estado: 'vigente' })),
+          skipDuplicates: true,
+        }),
+      ]);
+    }
+    out.push({
+      ejercicio,
+      aplicadoDesde: plan.aplicadoDesde,
+      borradas: plan.borrar.length,
+      creadas: plan.crear.length,
+      borradasVencidas: vencidas(existentes, plan.borrar, hoy),
+    });
+  }
+  return out;
 }
 
 async function cargarFila(companyId: string, modeloId: string): Promise<FilaModelo> {
@@ -172,12 +374,14 @@ function aResumen(f: FilaModelo, hoy: string): ModeloImpuestoResumen {
   // estado derivado: 'vigente'/'expirado' se calculan por fecha; omitido/presentado son pegajosos
   let estado = f.estado as EstadoModeloImpuesto;
   if (estado === 'vigente' || estado === 'expirado') estado = dias >= 0 ? 'vigente' : 'expirado';
-  const etiqueta = f.periodo === '0A' ? String(f.ejercicio) : `${f.ejercicio}Q${f.periodo[0]}`;
+  // 2026 (anual), 2026Q1 (trimestre) o 2026-05 (mes).
+  const etiqueta = f.periodo === '0A' ? String(f.ejercicio) : /^\d{2}$/.test(f.periodo) ? `${f.ejercicio}-${f.periodo}` : `${f.ejercicio}Q${f.periodo[0]}`;
   return {
     id: f.id,
     companyId: f.companyId,
     codigo: f.codigo,
-    descripcion: DESCRIPCIONES[f.codigo] ?? `Modelo ${f.codigo}`,
+    descripcion:
+      f.codigo === '303' && /^\d{2}$/.test(f.periodo) ? 'IVA — autoliquidación mensual' : DESCRIPCIONES[f.codigo] ?? `Modelo ${f.codigo}`,
     ejercicio: f.ejercicio,
     periodo: f.periodo,
     periodoEtiqueta: etiqueta,
@@ -187,6 +391,7 @@ function aResumen(f: FilaModelo, hoy: string): ModeloImpuestoResumen {
     diasDesdeVencimiento: dias < 0 ? -dias : undefined,
     tieneBorrador: !!f.casillas,
     origen: (f.origen as 'autorrelleno' | 'manual-mixto' | null) ?? undefined,
+    ...(RELLENO_MANUAL.has(f.codigo) ? { rellenoManual: true } : {}),
   };
 }
 
@@ -233,14 +438,29 @@ export const marcarModeloNoPresentado = (companyId: string, modeloId: string) =>
 
 // --- 2) Detalle, autorrelleno y guardado manual ---
 
-function periodoFiscalDe(fila: FilaModelo): PeriodoFiscal {
+/**
+ * Periodo fiscal de una fila del calendario: '0A' (anual), '1T'..'4T'
+ * (trimestral) o '01'..'12' (mensual: 303 de quien esta en REDEME o el SII, y
+ * 111/115 de las grandes empresas). Antes solo entendia '0A' y los trimestres:
+ * una fila mensual rompia el detalle del modelo con un 500.
+ */
+export function periodoFiscalDe(fila: Pick<FilaModelo, 'ejercicio' | 'periodo'>): PeriodoFiscal {
   const ej = fila.ejercicio;
-  if (fila.periodo === '0A') {
+  const periodo = String(fila.periodo ?? '').toUpperCase();
+  if (periodo === '0A') {
     return { ejercicio: ej, periodo: '0A', tipo: 'anual', fechaInicio: `${ej}-01-01`, fechaFin: `${ej}-12-31` };
   }
   const T: Record<string, [string, string]> = { '1T': ['01-01', '03-31'], '2T': ['04-01', '06-30'], '3T': ['07-01', '09-30'], '4T': ['10-01', '12-31'] };
-  const [ini, fin] = T[fila.periodo];
-  return { ejercicio: ej, periodo: fila.periodo, tipo: 'trimestral', fechaInicio: `${ej}-${ini}`, fechaFin: `${ej}-${fin}` };
+  if (T[periodo]) {
+    const [ini, fin] = T[periodo];
+    return { ejercicio: ej, periodo, tipo: 'trimestral', fechaInicio: `${ej}-${ini}`, fechaFin: `${ej}-${fin}` };
+  }
+  if (/^(0[1-9]|1[0-2])$/.test(periodo)) {
+    const mes = Number(periodo);
+    const ultimo = new Date(Date.UTC(ej, mes, 0)).getUTCDate(); // dia 0 del mes siguiente = ultimo de este
+    return { ejercicio: ej, periodo, tipo: 'mensual', fechaInicio: `${ej}-${periodo}-01`, fechaFin: `${ej}-${periodo}-${String(ultimo).padStart(2, '0')}` };
+  }
+  throw badRequest(`Periodo no válido: "${fila.periodo}". Usa 0A (anual), 1T a 4T (trimestres) o 01 a 12 (meses).`);
 }
 
 /** Configuracion de la empresa para el autorrelleno (NIF, razon social, IBAN). */
@@ -413,6 +633,8 @@ async function calcularCasillas(companyId: string, fila: FilaModelo): Promise<{ 
         datos: d,
       };
     }
+    case '130':
+      throw badRequest(MENSAJE_130_MANUAL);
     default:
       throw badRequest(`Autorrelleno no soportado para el modelo ${fila.codigo}.`);
   }
@@ -529,6 +751,8 @@ export async function generarTxtModelo(companyId: string, modeloId: string): Pro
       return { nombre, contenido: generarFicheroModelo115(nif, periodo, datos as DatosModelo115, { razonSocial: razon }) };
     case '200':
       return { nombre, contenido: generarFicheroModelo200(nif, refrescada.ejercicio, { razonSocial: razon }) };
+    case '130':
+      throw badRequest('La app todavía no genera el fichero del modelo 130: preséntalo con el formulario de la sede de la AEAT.');
     case '190':
       throw badRequest('El fichero del 190 lleva los datos de cada trabajador: descárgalo en Nóminas > Modelo 190 (solo administración y contabilidad).');
     default:
@@ -658,10 +882,13 @@ export async function calendarioFiscalSoloLectura(companyId: string, hoy: string
   }
   const out: ModeloCalendarioLectura[] = [];
   for (const ejercicio of ejercicios) {
-    for (const { codigo, periodo } of calendarioEjercicio(ejercicio)) {
-      const fila = filas.find((f) => f.codigo === codigo && f.ejercicio === ejercicio && f.periodo === periodo);
-      const base: FilaModelo = fila ?? { id: '', companyId, codigo, ejercicio, periodo, estado: 'vigente', casillas: null, datos: null, origen: null };
-      out.push({ ...aResumen(base, hoy), guardado: !!fila });
+    const opciones = await opcionesCalendarioEmpresa(companyId, ejercicio);
+    // Las filas que ya hay y las que se crearian al abrir el ejercicio en la pantalla.
+    const delAnio = filas.filter((f) => f.ejercicio === ejercicio);
+    for (const fila of delAnio) out.push({ ...aResumen(fila, hoy), guardado: true });
+    for (const { codigo, periodo } of filasQueFaltan(ejercicio, calendarioEjercicio(ejercicio, opciones), delAnio)) {
+      const base: FilaModelo = { id: '', companyId, codigo, ejercicio, periodo, estado: 'vigente', casillas: null, datos: null, origen: null };
+      out.push({ ...aResumen(base, hoy), guardado: false });
     }
   }
   return out.sort((a, b) => a.fechaVencimiento.localeCompare(b.fechaVencimiento) || a.codigo.localeCompare(b.codigo));

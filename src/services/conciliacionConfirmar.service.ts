@@ -3,6 +3,7 @@ import { registrarCobro } from './cobros.service';
 import { crearAsientoTesoreria } from './asientos.service';
 import { EstadoCobroFactura } from '../domain/cobros.model';
 import { badRequest } from '../utils/http-errors';
+import { comprobarFechaAbierta } from './periodos.service';
 
 const round2 = (n: number): number => Math.round((n + Number.EPSILON) * 100) / 100;
 
@@ -24,6 +25,8 @@ export async function conciliarMovimientoConFactura(
     // pago y liquidarlo. Por ahora solo abonos (cobros de cliente).
     throw badRequest('Solo se concilian abonos (cobros) con factura de venta por ahora.');
   }
+  // El cobro se apunta con la fecha del movimiento: ni en un mes bloqueado ni en un ejercicio cerrado.
+  await comprobarFechaAbierta(companyId, mov.fecha, 'conciliar el movimiento');
   const estado = await registrarCobro(companyId, facturaId, round2(mov.importe), mov.fecha, 'TRANSFERENCIA');
   await marcarMovimientoConciliado(companyId, movimientoId, `factura:${facturaId}`);
   return { estado, movimientoConciliado: true };
@@ -42,6 +45,7 @@ export async function conciliarMovimientoConCuenta(
 ): Promise<{ asiento: unknown; movimientoConciliado: boolean }> {
   const mov = await obtenerMovimiento(companyId, movimientoId);
   if (mov.conciliado) throw badRequest('El movimiento ya esta conciliado.');
+  await comprobarFechaAbierta(companyId, mov.fecha, 'conciliar el movimiento');
 
   const cuentas = await listarCuentasBancarias(companyId);
   const cuenta = cuentas.find((c) => c.id === mov.cuentaBancariaId);

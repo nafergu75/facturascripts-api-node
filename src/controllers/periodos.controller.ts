@@ -1,30 +1,60 @@
 import { asyncHandler } from '../utils/async-handler';
 import { sendOk } from '../utils/response';
 import { badRequest } from '../utils/http-errors';
-import { cambiarEstadoPeriodo, listarPeriodos } from '../services/periodos.service';
+import { cambiarBloqueoMes, listarPeriodos, modelosPresentadosDelMes, type EstadoMesManual } from '../services/periodos.service';
 import { deshacerCierreEjercicio, ejecutarCierreEjercicio, previsualizarCierre } from '../services/cierreEjercicio.service';
-import { EstadoPeriodo } from '../domain/periodos.model';
 import { registrarAuditoria } from '../services/auditoria.service';
+import { ANIO_MINIMO_EJERCICIO } from '../services/fiscalYears.service';
+import { anioEspana } from '../utils/fechas';
 
-const ESTADOS: EstadoPeriodo[] = ['abierto', 'bloqueado', 'cerrado'];
+// A mano solo se bloquea o se desbloquea un mes: 'cerrado' lo pone el cierre del ejercicio.
+const ESTADOS_MANUALES: EstadoMesManual[] = ['abierto', 'bloqueado'];
 
+/**
+ * Año del ejercicio de la consulta: de 1990 al año que viene, como al crear un
+ * ejercicio. Leer los meses los crea si faltan: sin este limite, cualquiera con
+ * permiso de lectura creaba 12 filas por cada año que pidiera (y uno enorme daba 500).
+ */
 function parseEjercicio(raw: unknown): number {
   const e = Number(raw);
-  if (!Number.isInteger(e)) throw badRequest('Parametro "ejercicio" invalido.');
+  const maximo = anioEspana() + 1;
+  if (raw === undefined || raw === '' || !Number.isInteger(e) || e < ANIO_MINIMO_EJERCICIO || e > maximo) {
+    throw badRequest(`Indica el ejercicio con su año, entre ${ANIO_MINIMO_EJERCICIO} y ${maximo}.`, { campo: 'ejercicio' });
+  }
   return e;
 }
 
 export const periodosController = {
+  /** Los 12 meses, cada uno con los 303/111 ya presentados que lo cubren (para avisar antes de desbloquear). */
   listar: asyncHandler(async (req, res) => {
-    sendOk(res, await listarPeriodos(req.companyId!, parseEjercicio(req.query.ejercicio)));
+    const ejercicio = parseEjercicio(req.query.ejercicio);
+    const periodos = await listarPeriodos(req.companyId!, ejercicio);
+    const conModelos = await Promise.all(
+      periodos.map(async (p) => ({ ...p, modelosPresentados: await modelosPresentadosDelMes(req.companyId!, ejercicio, p.mes) })),
+    );
+    sendOk(res, conModelos);
   }),
   cambiarEstado: asyncHandler(async (req, res) => {
     const ejercicio = parseEjercicio(req.query.ejercicio);
     const mes = Number(req.params.mes);
-    if (!Number.isInteger(mes) || mes < 1 || mes > 12) throw badRequest('Mes invalido (1..12).');
-    const estado = req.body?.estado as EstadoPeriodo;
-    if (!ESTADOS.includes(estado)) throw badRequest(`estado invalido (${ESTADOS.join(', ')}).`);
-    sendOk(res, await cambiarEstadoPeriodo(req.companyId!, ejercicio, mes, estado));
+    if (!Number.isInteger(mes) || mes < 1 || mes > 12) throw badRequest('El mes tiene que ser un número del 1 al 12.', { campo: 'mes' });
+    const estado = req.body?.estado as EstadoMesManual;
+    if (!ESTADOS_MANUALES.includes(estado)) {
+      throw badRequest('Aquí solo se puede bloquear o desbloquear un mes (estado "bloqueado" o "abierto"): los meses se cierran con el cierre del ejercicio.', {
+        campo: 'estado',
+      });
+    }
+    const confirmar = req.body?.confirmar === true;
+    const r = await cambiarBloqueoMes(req.companyId!, ejercicio, mes, estado, { confirmar });
+    await registrarAuditoria({
+      userId: req.user!.userId,
+      companyId: req.companyId,
+      action: estado === 'bloqueado' ? 'BLOQUEAR_MES' : 'DESBLOQUEAR_MES',
+      resourceType: 'PERIODO',
+      resourceId: `${ejercicio}-${String(mes).padStart(2, '0')}`,
+      meta: r.modelosPresentados ? { modelosPresentados: r.modelosPresentados } : undefined,
+    });
+    sendOk(res, r);
   }),
   cierre: asyncHandler(async (req, res) => {
     const ejercicio = parseEjercicio(req.query.ejercicio);

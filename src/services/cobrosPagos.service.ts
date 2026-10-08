@@ -3,7 +3,7 @@ import { prisma, type TransaccionBD as Tx } from '../config/database';
 import { badRequest, notFound } from '../utils/http-errors';
 import { aCentimos } from '../utils/money';
 import { hoyEspana } from '../utils/fechas';
-import { estadoPeriodoEnFecha } from './periodos.service';
+import { comprobarFechaAbierta } from './periodos.service';
 import {
   calcularCobroDivisa,
   comprobarTipoManual,
@@ -263,30 +263,8 @@ export async function cuentaTerceroDeFactura(companyId: string, tipo: TipoDocume
   return linea?.accountCode ?? (tipo === 'INGRESO' ? '430' : '400');
 }
 
-/**
- * No se apunta nada en un periodo cerrado o bloqueado, ni en un ejercicio
- * cerrado (con asientos de regularizacion/cierre o marcado como cerrado).
- */
-export async function comprobarFechaAbierta(companyId: string, fecha: string): Promise<void> {
-  const estado = await estadoPeriodoEnFecha(companyId, fecha);
-  if (estado === 'cerrado' || estado === 'bloqueado') {
-    throw badRequest(`El periodo de ${fecha.slice(5, 7)}/${fecha.slice(0, 4)} está ${estado}: no se pueden añadir asientos con esa fecha.`);
-  }
-  const ejercicio = Number(fecha.slice(0, 4));
-  const fy = await prisma.fiscalYear.findFirst({ where: { companyId, label: String(ejercicio) }, select: { estado: true } });
-  const cierre =
-    fy?.estado === 'CLOSED' ||
-    !!(await prisma.journalEntry.findFirst({
-      where: {
-        companyId,
-        estado: 'POSTED',
-        origen: { in: ['REGULARIZACION', 'CIERRE'] },
-        fecha: { gte: new Date(Date.UTC(ejercicio, 0, 1)), lt: new Date(Date.UTC(ejercicio + 1, 0, 1)) },
-      },
-      select: { id: true },
-    }));
-  if (cierre) throw badRequest(`El ejercicio ${ejercicio} está cerrado: no se pueden añadir asientos con esa fecha.`);
-}
+/** Vive en periodos.service (la usan tambien el motor contable y las facturas). */
+export { comprobarFechaAbierta };
 
 /**
  * Cuenta de tesoreria: la de la cuenta bancaria indicada, caja, o la primera

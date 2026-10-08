@@ -4,7 +4,7 @@ import { authorize } from '../middleware/authorize.middleware';
 
 const router = Router({ mergeParams: true });
 
-router.get('/', periodosController.listar);
+router.get('/', authorize('contabilidad:read'), periodosController.listar);
 router.put('/:mes/estado', authorize('contabilidad:write'), periodosController.cambiarEstado);
 // Cierre del ejercicio y traspaso de saldos: vista previa, cierre y deshacer.
 router.get('/cierre', authorize('contabilidad:read'), periodosController.vistaCierre);

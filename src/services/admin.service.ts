@@ -22,10 +22,10 @@ import {
  * Administracion de la plataforma (modo administrador global): empresas,
  * usuarios y accesos de cada usuario a cada empresa.
  *
- * Roles que se pueden asignar: los del enum Role de la BD. OJO: 'tesoreria'
- * existe en rbac.service (ROL_PERMISOS) pero NO en el enum Role de Prisma;
- * antes figuraba aqui y asignarlo hacia fallar el upsert con un error 500 de
- * Prisma. Si algun dia se quiere ese rol hay que anadirlo primero al esquema.
+ * Roles que se pueden asignar: los del enum Role de la BD, los mismos que
+ * ROL_PERMISOS en rbac.service. Antes figuraba 'tesoreria', que no esta en el
+ * enum: asignarlo hacia fallar el upsert con un error 500 de Prisma. Si algun
+ * dia se quiere ese rol, hay que anadirlo a la vez al esquema, aqui y en rbac.
  */
 export const ROLES_VALIDOS = ['admin', 'contable', 'ventas', 'solo_lectura'] as const;
 export type RolEmpresa = (typeof ROLES_VALIDOS)[number];

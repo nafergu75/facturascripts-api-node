@@ -18,7 +18,6 @@ jest.mock('../services/fiscalYears.service', () => ({
       }
       return ejercicios[id];
     }),
-    cerrar: jest.fn(async (id: string) => ({ ...ejercicios[id], estado: 'CLOSED' })),
   },
 }));
 jest.mock('../services/booksService', () => ({ booksService: { obtener: jest.fn(), listar: jest.fn(async () => []) } }));
@@ -49,9 +48,11 @@ app.use((err: { status?: number; statusCode?: number; message: string }, _req: e
 });
 
 describe('Registro Mercantil: permisos por empresa', () => {
-  it('cierra el ejercicio de la empresa donde es contable', async () => {
+  it('el cierre ya no se hace aqui: 409 que remite a Cierre y traspaso de saldos, sin tocar el ejercicio', async () => {
     const res = await request(app).post('/fiscal-years/fy-a/close');
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(409);
+    expect(res.body.error).toMatch(/Cierre y traspaso de saldos/);
+    expect(ejercicios['fy-a'].estado).toBe('OPEN');
   });
 
   it('no cierra el de la empresa donde solo es lectura', async () => {

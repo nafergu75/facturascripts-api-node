@@ -5,6 +5,7 @@ import { crearDocumentoPdfA, guardarPdfA } from '../utils/pdf-a';
 import { textoInscripcionRegistral } from './legalConfig.service';
 import { desgloseIvaPorTipo } from './accounting-engine.service';
 import { perfilDesdeConfig } from './perfilEmpresa.service';
+import { cuentaParaFactura, leerAjustesFacturacion } from './ajustesFacturacion.service';
 import { importesDoc, nombreMoneda, textoTipo } from '../domain/divisas';
 import {
   esPaisEspana,
@@ -126,6 +127,8 @@ export interface DatosFacturaPdf {
   original: { numeroCompleto: string | null; fechaEmision: string } | null;
   /** Cuenta donde se cobra (solo se imprime si la forma de pago es transferencia). */
   cuenta: { iban: string; bic: string | null } | null;
+  /** Texto legal al pie (Configuración > Facturación), en letra pequeña al final. */
+  textoPie?: string | null;
   /** Logo de la empresa (PNG o JPG). */
   logo?: { bytes: Uint8Array; mime: string } | null;
   /** Moneda de la factura (ISO 4217). Por defecto EUR. */
@@ -1073,6 +1076,18 @@ export async function renderizarFactura(f: DatosFacturaPdf): Promise<Buffer> {
     }
   }
 
+  // ---------- Texto legal al pie (Configuracion > Facturacion) ----------
+  const lineasPie = f.textoPie?.trim() ? partir(f.textoPie.trim(), normal, 7.5, anchoUtil) : [];
+  if (lineasPie.length) {
+    y -= 10;
+    asegurar(Math.min(lineasPie.length, 3) * 10);
+    for (const l of lineasPie) {
+      asegurar(10);
+      texto(p, l, MARGEN, y, { tam: 7.5, color: GRIS });
+      y -= 10;
+    }
+  }
+
   // ---------- Pie en todas las paginas ----------
   const pie = `${nombreEmpresa} · ${T.nif} ${nifEmpresa}${esBorrador ? ` · ${T.pieBorrador}` : esProforma ? ` · ${T.piePro}` : ''}`;
   // Datos registrales (obligatorios en las sociedades) encima del pie, en letra pequena.
@@ -1094,24 +1109,49 @@ export function elegirCuentaCobro<C extends { moneda?: string | null }>(cuentas:
 }
 
 export async function generarPdfFactura(companyId: string, id: string): Promise<{ nombre: string; contenido: Buffer }> {
+  const { datos, nombre } = await datosPdfFactura(companyId, id);
+  return { nombre, contenido: await renderizarFactura(datos) };
+}
+
+/** Lo que se dibuja en el PDF de una factura (y el nombre del fichero), leido de la BD. */
+export async function datosPdfFactura(companyId: string, id: string): Promise<{ datos: DatosFacturaPdf; nombre: string }> {
   const factura = await prisma.incomeInvoice.findFirst({
     where: { id, companyId },
     include: { lineas: true, customer: true },
   });
   if (!factura) throw notFound('Factura no encontrada.');
 
-  const [empresa, original, cuentas, compania] = await Promise.all([
+  const [empresa, original, todasCuentas, compania, ajustes] = await Promise.all([
     prisma.legalConfig.findUnique({ where: { companyId } }).catch(() => null),
     factura.facturaOriginalId
       ? prisma.incomeInvoice.findFirst({ where: { id: factura.facturaOriginalId, companyId } })
       : Promise.resolve(null),
-    prisma.bankAccount.findMany({ where: { companyId, activa: true }, orderBy: { createdAt: 'asc' } }).catch(() => []),
+    prisma.bankAccount.findMany({ where: { companyId }, orderBy: { createdAt: 'asc' } }).catch(() => []),
     prisma.company.findUnique({ where: { id: companyId }, select: { name: true } }).catch(() => null),
+    leerAjustesFacturacion(companyId),
   ]);
 
   const perfil = perfilDesdeConfig(empresa);
   const moneda = factura.moneda || perfil.monedaCuenta;
-  const cuenta = elegirCuentaCobro(cuentas, moneda);
+  // Factura emitida con copia: el IBAN y el pie de cuando se emitio, aunque los
+  // ajustes hayan cambiado ('' = sin IBAN o sin pie). Emitida ANTES de la copia
+  // (ibanCobro null): la regla de entonces (la primera cuenta activa en su
+  // moneda, sin pie), para que el PDF de una factura ya enviada no cambie con
+  // los ajustes. Borradores y proformas: los ajustes de ahora.
+  const sinEspacios = (t: string) => t.replace(/\s/g, '').toUpperCase();
+  const activas = todasCuentas.filter((c) => c.activa);
+  const emitidaSinCopia = factura.estadoDocumento === 'FINAL' && (factura.ibanCobro === null || factura.ibanCobro === undefined);
+  let cuenta: { iban: string; bic: string | null } | null;
+  if (factura.ibanCobro !== null && factura.ibanCobro !== undefined) {
+    const copiada = factura.ibanCobro;
+    const deEsa = copiada ? todasCuentas.find((c) => sinEspacios(c.iban) === sinEspacios(copiada)) : undefined;
+    cuenta = copiada ? { iban: copiada, bic: deEsa?.bic ?? null } : null;
+  } else {
+    const elegida = emitidaSinCopia ? elegirCuentaCobro(activas, moneda) : cuentaParaFactura(activas, ajustes, moneda);
+    cuenta = elegida?.iban ? { iban: elegida.iban, bic: elegida.bic ?? null } : null;
+  }
+  const textoPie =
+    factura.textoPie !== null && factura.textoPie !== undefined ? factura.textoPie : emitidaSinCopia ? null : ajustes.textoPie;
   // Totales y lineas en la moneda de la factura (*Doc; null = igual que la de cuenta).
   const doc = importesDoc({
     moneda,
@@ -1143,7 +1183,7 @@ export async function generarPdfFactura(companyId: string, id: string): Promise<
     : null;
 
   const c = factura.customer;
-  const contenido = await renderizarFactura({
+  const datos: DatosFacturaPdf = {
     id: factura.id,
     numeroCompleto: factura.numeroCompleto,
     estadoDocumento: factura.estadoDocumento,
@@ -1195,7 +1235,8 @@ export async function generarPdfFactura(companyId: string, id: string): Promise<
         }
       : null,
     original: original ? { numeroCompleto: original.numeroCompleto, fechaEmision: original.fechaEmision } : null,
-    cuenta: cuenta?.iban ? { iban: cuenta.iban, bic: cuenta.bic ?? null } : null,
+    cuenta,
+    textoPie,
     logo: empresa?.logo && empresa.logoMime ? { bytes: new Uint8Array(empresa.logo), mime: empresa.logoMime } : null,
     moneda,
     monedaCuenta: perfil.monedaCuenta,
@@ -1208,7 +1249,7 @@ export async function generarPdfFactura(companyId: string, id: string): Promise<
     causaExencion: factura.causaExencion,
     referenciaLegal: factura.referenciaLegal,
     conIva,
-  });
+  };
 
   const nombre =
     factura.estadoDocumento === 'PROFORMA'
@@ -1216,7 +1257,7 @@ export async function generarPdfFactura(companyId: string, id: string): Promise<
       : factura.estadoDocumento !== 'FINAL'
         ? `borrador_factura_${factura.id.slice(-6)}.pdf`
         : `factura_${factura.numeroCompleto}.pdf`;
-  return { nombre: nombre.replace(/[^\w.-]/g, '_'), contenido };
+  return { nombre: nombre.replace(/[^\w.-]/g, '_'), datos };
 }
 
 /**
@@ -1246,7 +1287,10 @@ export async function avisosFactura(companyId: string, id: string): Promise<stri
   if (!empresa?.logoMime) avisos.push('EMISOR_LOGO');
   const c = factura.customer;
   if (!c.direccion?.trim() || !(c.cp?.trim() || c.municipio?.trim())) avisos.push('CLIENTE_DIRECCION');
-  if (factura.formaPago === 'TRANSFERENCIA' && cuentas.length === 0) avisos.push('CUENTA_BANCARIA');
+  // Sin cuenta solo falta algo si el IBAN se muestra (Configuracion > Facturacion).
+  if (factura.formaPago === 'TRANSFERENCIA' && cuentas.length === 0 && (await leerAjustesFacturacion(companyId)).mostrarIban) {
+    avisos.push('CUENTA_BANCARIA');
+  }
 
   const moneda = factura.moneda || perfil.monedaCuenta;
   // Sin aviso de cuenta en la moneda de la factura: las cuentas bancarias van en

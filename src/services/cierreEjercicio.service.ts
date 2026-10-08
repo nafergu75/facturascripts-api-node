@@ -21,6 +21,8 @@ import { aCentimos } from '../utils/money';
 import { anularAsientos, grabarAsientos, OPCIONES_TX, rangoEjercicio, type AsientoNuevo } from './puestaEnMarcha/asientosEnBloque';
 import { analizarCuentas } from './puestaEnMarcha/planCuentas';
 import { asegurarEjercicio, cuentaResultado } from './puestaEnMarcha/puestaEnMarcha.service';
+import { FILTRO_ASIENTOS_APERTURA, FILTRO_ASIENTOS_CIERRE } from '../domain/asientosCierre';
+import { ENLACE_CONFIG_EJERCICIOS, mensajeCerradoSinAsientos, reaperturaDelAnio } from './fiscalYears.service';
 
 const round2 = (n: number): number => Math.round((n + Number.EPSILON) * 100) / 100;
 
@@ -133,6 +135,8 @@ export interface VistaCierre {
   puedeCerrar: boolean;
   puedeDeshacer: boolean;
   motivoNoDeshacer: string | null;
+  /** Pantalla donde se arregla lo que impide deshacer (p. ej. reabrir un cerrado sin asientos). */
+  enlaceNoDeshacer: string | null;
 }
 
 /**
@@ -159,7 +163,7 @@ async function facturasEnDivisaPendientes(companyId: string, ejercicio: number):
 
 async function asientosDeCierre(companyId: string, ejercicio: number) {
   return prisma.journalEntry.findMany({
-    where: { companyId, estado: 'POSTED', origen: { in: ['REGULARIZACION', 'CIERRE'] }, fecha: rangoEjercicio(ejercicio) },
+    where: { companyId, estado: 'POSTED', ...FILTRO_ASIENTOS_CIERRE, fecha: rangoEjercicio(ejercicio) },
     select: { id: true, numeroAsiento: true, origen: true, fecha: true },
     orderBy: { numeroAsiento: 'asc' },
   });
@@ -170,10 +174,10 @@ async function estadoSiguiente(companyId: string, ejercicio: number) {
   const [fy, apertura, otros] = await Promise.all([
     prisma.fiscalYear.findFirst({ where: { companyId, label: String(sig) } }),
     prisma.journalEntry.findFirst({
-      where: { companyId, estado: 'POSTED', origen: 'APERTURA', fecha: rangoEjercicio(sig) },
+      where: { companyId, estado: 'POSTED', ...FILTRO_ASIENTOS_APERTURA, fecha: rangoEjercicio(sig) },
       select: { id: true, numeroAsiento: true },
     }),
-    prisma.journalEntry.count({ where: { companyId, estado: 'POSTED', origen: { not: 'APERTURA' }, fecha: rangoEjercicio(sig) } }),
+    prisma.journalEntry.count({ where: { companyId, estado: 'POSTED', NOT: FILTRO_ASIENTOS_APERTURA, fecha: rangoEjercicio(sig) } }),
   ]);
   return {
     ejercicio: sig,
@@ -183,6 +187,11 @@ async function estadoSiguiente(companyId: string, ejercicio: number) {
     otrosAsientos: otros,
     cerrado: fy?.estado === 'CLOSED',
   };
+}
+
+/** El ejercicio siguiente esta marcado como cerrado pero sin asientos de cierre. */
+async function siguienteCerradoSinAsientos(companyId: string, ejercicio: number): Promise<boolean> {
+  return (await asientosDeCierre(companyId, ejercicio + 1)).length === 0;
 }
 
 export async function previsualizarCierre(companyId: string, ejercicio: number, opciones: { reemplazarApertura?: boolean } = {}): Promise<VistaCierre> {
@@ -242,13 +251,24 @@ export async function previsualizarCierre(companyId: string, ejercicio: number, 
       if (opciones.reemplazarApertura) avisos.push(`${txt} Se anulará y se sustituirá por el del cierre.`);
       else motivos.push(`${txt} Marca "Sustituir la apertura existente" o anúlala antes.`);
     }
-    if (siguiente.cerrado) motivos.push(`El ejercicio ${ejercicio + 1} ya está cerrado.`);
+    if (siguiente.cerrado) {
+      motivos.push(
+        (await siguienteCerradoSinAsientos(companyId, ejercicio))
+          ? `El ejercicio ${ejercicio + 1} está marcado como cerrado sin hacer la regularización ni el cierre. El administrador de la empresa puede reabrirlo en Configuración > Ejercicios y periodos; después cierra primero el ${ejercicio} y luego el ${ejercicio + 1}.`
+          : `El ejercicio ${ejercicio + 1} ya está cerrado.`,
+      );
+    }
   }
 
   let motivoNoDeshacer: string | null = null;
+  let enlaceNoDeshacer: string | null = null;
   if (!cerrado) motivoNoDeshacer = 'El ejercicio no está cerrado.';
-  else if (existentes.length === 0) motivoNoDeshacer = 'El ejercicio se marcó como cerrado sin asientos de cierre en esta aplicación.';
-  else if (siguiente.cerrado) motivoNoDeshacer = `El ejercicio ${ejercicio + 1} también está cerrado: deshaz antes su cierre.`;
+  else if (existentes.length === 0) {
+    // Lo cerro el boton de Registro Mercantil: aqui no hay nada que deshacer.
+    const { puedeReabrir, motivo } = await reaperturaDelAnio(companyId, ejercicio);
+    motivoNoDeshacer = mensajeCerradoSinAsientos(ejercicio, motivo);
+    if (puedeReabrir) enlaceNoDeshacer = ENLACE_CONFIG_EJERCICIOS;
+  } else if (siguiente.cerrado) motivoNoDeshacer = `El ejercicio ${ejercicio + 1} también está cerrado: deshaz antes su cierre.`;
   else if (siguiente.otrosAsientos > 0) {
     motivoNoDeshacer = `El ejercicio ${ejercicio + 1} ya tiene ${siguiente.otrosAsientos} asiento(s) además de la apertura. Para no descuadrarlo, el cierre ya no se puede deshacer automáticamente.`;
   }
@@ -270,6 +290,7 @@ export async function previsualizarCierre(companyId: string, ejercicio: number, 
     puedeCerrar: motivos.length === 0,
     puedeDeshacer: motivoNoDeshacer === null,
     motivoNoDeshacer,
+    enlaceNoDeshacer,
   };
 }
 
@@ -311,14 +332,14 @@ export async function ejecutarCierreEjercicio(
   const resultado = await prisma.$transaction(async (tx) => {
     // Otra peticion pudo cerrar mientras tanto.
     const otra = await tx.journalEntry.findFirst({
-      where: { companyId, estado: 'POSTED', origen: { in: ['REGULARIZACION', 'CIERRE'] }, fecha: rangoEjercicio(ejercicio) },
+      where: { companyId, estado: 'POSTED', ...FILTRO_ASIENTOS_CIERRE, fecha: rangoEjercicio(ejercicio) },
       select: { id: true },
     });
     if (otra) throw conflict(`El ejercicio ${ejercicio} ya está cerrado.`);
 
     if (opciones.reemplazarApertura) {
       const aperturas = await tx.journalEntry.findMany({
-        where: { companyId, estado: 'POSTED', origen: 'APERTURA', fecha: rangoEjercicio(ejercicio + 1) },
+        where: { companyId, estado: 'POSTED', ...FILTRO_ASIENTOS_APERTURA, fecha: rangoEjercicio(ejercicio + 1) },
         select: { id: true },
       });
       await anularAsientos(tx, companyId, aperturas.map((a) => a.id));
@@ -364,7 +385,7 @@ export async function ejecutarCierreEjercicio(
   };
 }
 
-/** Borradores de los libros obligatorios del ejercicio cerrado (como fiscalYearsService.cerrar). */
+/** Borradores de los libros obligatorios del ejercicio cerrado (PENDING, para Registro Mercantil). */
 async function crearLibrosPendientes(companyId: string, fiscalYearId: string): Promise<void> {
   try {
     const cfg = await legalConfigService.obtener(companyId);
@@ -390,15 +411,15 @@ export async function deshacerCierreEjercicio(companyId: string, ejercicio: numb
 
   return prisma.$transaction(async (tx) => {
     const sig = await tx.journalEntry.count({
-      where: { companyId, estado: 'POSTED', origen: { not: 'APERTURA' }, fecha: rangoEjercicio(ejercicio + 1) },
+      where: { companyId, estado: 'POSTED', NOT: FILTRO_ASIENTOS_APERTURA, fecha: rangoEjercicio(ejercicio + 1) },
     });
     if (sig > 0) throw conflict(`El ejercicio ${ejercicio + 1} ya tiene asientos: no se puede deshacer el cierre.`);
     const delCierre = await tx.journalEntry.findMany({
-      where: { companyId, estado: 'POSTED', origen: { in: ['REGULARIZACION', 'CIERRE'] }, fecha: rangoEjercicio(ejercicio) },
+      where: { companyId, estado: 'POSTED', ...FILTRO_ASIENTOS_CIERRE, fecha: rangoEjercicio(ejercicio) },
       select: { id: true },
     });
     const aperturas = await tx.journalEntry.findMany({
-      where: { companyId, estado: 'POSTED', origen: 'APERTURA', fecha: rangoEjercicio(ejercicio + 1) },
+      where: { companyId, estado: 'POSTED', ...FILTRO_ASIENTOS_APERTURA, fecha: rangoEjercicio(ejercicio + 1) },
       select: { id: true },
     });
     const anulados = await anularAsientos(tx, companyId, [...delCierre, ...aperturas].map((a) => a.id));

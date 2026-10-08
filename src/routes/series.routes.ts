@@ -4,7 +4,8 @@ import { authorize } from '../middleware/authorize.middleware';
 
 const router = Router({ mergeParams: true });
 
-router.get('/', authorize('ventas:read'), seriesController.listar);
+// Las ve quien factura y tambien quien lleva la contabilidad (antes el contable recibia un 403).
+router.get('/', authorize('ventas:read', 'contabilidad:read'), seriesController.listar);
 router.post('/', authorize('ventas:write'), seriesController.crear);
 router.put('/:id', authorize('ventas:write'), seriesController.actualizar);
 

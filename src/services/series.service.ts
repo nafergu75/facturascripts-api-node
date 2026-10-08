@@ -1,13 +1,51 @@
-import type { InvoiceSeries } from '@prisma/client';
-import { prisma } from '../config/database';
-import { SerieDocumento, TipoDocumentoSerie } from '../domain/series.model';
-import { badRequest, notFound } from '../utils/http-errors';
+import { Prisma, type InvoiceSeries } from '@prisma/client';
+import { prisma, type TransaccionBD as Tx } from '../config/database';
+import { SerieDocumento, TipoDocumentoSerie, TIPOS_DOCUMENTO_SERIE, esTipoDocumentoSerie } from '../domain/series.model';
+import { badRequest, conflict, notFound } from '../utils/http-errors';
 
 /**
  * Series de documentos por empresa, guardadas en la tabla InvoiceSeries.
  * Cada serie lleva su ultimo numero emitido: la numeracion de las facturas
  * finales sale de aqui, en orden y sin huecos (ver siguienteNumero).
+ *
+ * Reglas que se mantienen siempre:
+ *  - la serie predeterminada de cada tipo esta activa;
+ *  - las facturas y las rectificativas tienen al menos una serie activa;
+ *  - una serie no se crea sola por teclear un codigo: solo las del lector o
+ *    de una importacion (con su numero original), y desactivadas.
  */
+
+/** Tipos que siempre necesitan una serie activa (las proformas no son facturas). */
+const TIPOS_CON_SERIE_OBLIGATORIA: readonly TipoDocumentoSerie[] = ['FACTURA', 'RECTIFICATIVA'];
+
+const NOMBRE_TIPO: Record<TipoDocumentoSerie, string> = {
+  FACTURA: 'facturas',
+  RECTIFICATIVA: 'rectificativas',
+  PROFORMA: 'proformas',
+};
+
+const CODIGO_RE = /^[A-Z0-9-]{1,10}$/;
+
+/** Mayor numero inicial que se admite (la columna es un entero de 32 bits). */
+export const NUMERO_INICIAL_MAX = 999_999_999;
+
+/**
+ * Numero inicial de una serie (para seguir la numeracion de otro programa):
+ * entero desde 1. undefined si no se indica.
+ */
+function validarNumeroInicial(valor: unknown): number | undefined {
+  if (valor === undefined || valor === null || valor === '') return undefined;
+  const n = typeof valor === 'number' ? valor : Number(valor);
+  if (!Number.isInteger(n) || n < 1 || n > NUMERO_INICIAL_MAX) {
+    throw badRequest('El número inicial es un número entero desde 1 (sin letras ni decimales).', { campo: 'numeroInicial' });
+  }
+  return n;
+}
+
+/** Documentos ya numerados en la serie (los borradores aun no tienen numero). */
+function contarDocumentos(db: Tx | typeof prisma, companyId: string, codigo: string): Promise<number> {
+  return db.incomeInvoice.count({ where: { companyId, serie: codigo, numero: { not: null } } });
+}
 
 function aDominio(s: InvoiceSeries): SerieDocumento {
   return {
@@ -58,6 +96,21 @@ async function asegurarSemilla(companyId: string): Promise<void> {
   }
 }
 
+/**
+ * Lista para la pantalla (GET /series): cada serie con el proximo numero y
+ * cuantos documentos numerados tiene (el numero inicial solo se cambia sin ellos).
+ */
+export async function listarSeriesConUso(companyId: string, tipoDocumento?: TipoDocumentoSerie): Promise<SerieDocumento[]> {
+  const series = await listarSeries(companyId, tipoDocumento);
+  const usos = await prisma.incomeInvoice.groupBy({
+    by: ['serie'],
+    where: { companyId, numero: { not: null }, serie: { in: series.map((s) => s.codigo) } },
+    _count: { _all: true },
+  });
+  const porSerie = new Map(usos.map((u) => [u.serie, u._count._all]));
+  return series.map((s) => ({ ...s, numeroSiguiente: (s.ultimoNumero ?? 0) + 1, documentos: porSerie.get(s.codigo) ?? 0 }));
+}
+
 export async function listarSeries(companyId: string, tipoDocumento?: TipoDocumentoSerie): Promise<SerieDocumento[]> {
   await asegurarSemilla(companyId);
   const series = await prisma.invoiceSeries.findMany({
@@ -68,56 +121,132 @@ export async function listarSeries(companyId: string, tipoDocumento?: TipoDocume
 }
 
 /** Si una serie pasa a ser la por defecto, el resto del mismo tipo deja de serlo. */
-async function desmarcarOtrasPorDefecto(companyId: string, tipoDocumento: string, exceptoId?: string): Promise<void> {
-  await prisma.invoiceSeries.updateMany({
+async function desmarcarOtrasPorDefecto(db: Tx | typeof prisma, companyId: string, tipoDocumento: string, exceptoId?: string): Promise<void> {
+  await db.invoiceSeries.updateMany({
     where: { companyId, tipoDocumento, porDefecto: true, ...(exceptoId ? { NOT: { id: exceptoId } } : {}) },
     data: { porDefecto: false },
   });
 }
 
+const esP2002 = (e: unknown) => e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002';
+
 export async function crearSerie(
   companyId: string,
-  data: Pick<SerieDocumento, 'codigo' | 'descripcion' | 'tipoDocumento' | 'activa' | 'porDefecto'>,
+  data: Pick<SerieDocumento, 'codigo' | 'descripcion' | 'tipoDocumento' | 'activa' | 'porDefecto'> & { numeroInicial?: unknown },
 ): Promise<SerieDocumento> {
   const codigo = data.codigo?.trim().toUpperCase();
-  if (!codigo) throw badRequest('El código de la serie es obligatorio.');
-  if (!/^[A-Z0-9-]{1,10}$/.test(codigo)) {
-    throw badRequest('El código de la serie solo admite letras, números y guiones (máximo 10).');
+  if (!codigo) throw badRequest('El código de la serie es obligatorio.', { campo: 'codigo' });
+  if (!CODIGO_RE.test(codigo)) {
+    throw badRequest('El código de la serie solo admite letras sin acentos ni ñ, números y guiones (máximo 10).', { campo: 'codigo' });
   }
+  if (!esTipoDocumentoSerie(data.tipoDocumento)) {
+    throw badRequest(`Tipo de documento no válido. Usa: ${TIPOS_DOCUMENTO_SERIE.join(', ')}.`, { campo: 'tipoDocumento' });
+  }
+  const activa = data.activa ?? true;
+  const porDefecto = data.porDefecto ?? false;
+  if (typeof activa !== 'boolean' || typeof porDefecto !== 'boolean') throw badRequest('activa y porDefecto son sí o no (true/false).');
+  if (porDefecto && !activa) {
+    throw badRequest('Una serie desactivada no puede ser la predeterminada: créala activa.', { campo: 'porDefecto' });
+  }
+  // Numero inicial: el primer documento de la serie llevara ese numero.
+  const numeroInicial = validarNumeroInicial(data.numeroInicial);
   const dup = await prisma.invoiceSeries.findUnique({ where: { companyId_codigo: { companyId, codigo } } });
-  if (dup) throw badRequest(`Ya existe la serie '${codigo}'.`);
+  if (dup) throw conflict(`Ya existe la serie ${codigo}.`, { campo: 'codigo' });
 
-  if (data.porDefecto) await desmarcarOtrasPorDefecto(companyId, data.tipoDocumento);
-  const serie = await prisma.invoiceSeries.create({
-    data: {
-      companyId,
-      codigo,
-      descripcion: data.descripcion ?? '',
-      tipoDocumento: data.tipoDocumento,
-      activa: data.activa ?? true,
-      porDefecto: data.porDefecto ?? false,
-    },
-  });
-  return aDominio(serie);
+  if (porDefecto) await desmarcarOtrasPorDefecto(prisma, companyId, data.tipoDocumento);
+  try {
+    const serie = await prisma.invoiceSeries.create({
+      data: {
+        companyId,
+        codigo,
+        descripcion: String(data.descripcion ?? ''),
+        tipoDocumento: data.tipoDocumento,
+        activa,
+        porDefecto,
+        ...(numeroInicial ? { ultimoNumero: numeroInicial - 1 } : {}),
+      },
+    });
+    return aDominio(serie);
+  } catch (e) {
+    if (esP2002(e)) throw conflict(`Ya existe la serie ${codigo}.`, { campo: 'codigo' });
+    throw e;
+  }
 }
 
+/**
+ * Cambia la descripcion, si esta activa, si es la predeterminada y el numero
+ * inicial (solo mientras la serie no tiene documentos numerados: sirve para
+ * seguir la numeracion de otro programa). El codigo y el tipo no se tocan:
+ * cambiarlos romperia la correlatividad de las facturas ya emitidas. Las
+ * reglas se comprueban dentro de una transaccion, con las series del mismo
+ * tipo bloqueadas: dos cambios a la vez no pueden dejar un tipo sin serie
+ * activa ni sin predeterminada.
+ */
 export async function actualizarSerie(
   companyId: string,
   serieId: string,
-  data: Partial<Pick<SerieDocumento, 'descripcion' | 'activa' | 'porDefecto'>>,
+  data: Partial<Pick<SerieDocumento, 'descripcion' | 'activa' | 'porDefecto'>> & { numeroInicial?: unknown },
 ): Promise<SerieDocumento> {
-  const actual = await prisma.invoiceSeries.findFirst({ where: { id: serieId, companyId } });
-  if (!actual) throw notFound('Serie no encontrada.');
-  // El codigo, el tipo y la numeracion no se tocan: cambiarlos romperia la
-  // correlatividad de las facturas ya emitidas.
-  if (data.porDefecto === true) await desmarcarOtrasPorDefecto(companyId, actual.tipoDocumento, actual.id);
-  const serie = await prisma.invoiceSeries.update({
-    where: { id: serieId },
-    data: {
-      ...(data.descripcion !== undefined ? { descripcion: String(data.descripcion) } : {}),
-      ...(data.activa !== undefined ? { activa: Boolean(data.activa) } : {}),
-      ...(data.porDefecto !== undefined ? { porDefecto: Boolean(data.porDefecto) } : {}),
-    },
+  for (const campo of ['activa', 'porDefecto'] as const) {
+    if (data[campo] !== undefined && typeof data[campo] !== 'boolean') {
+      throw badRequest(`${campo} es sí o no (true/false).`, { campo });
+    }
+  }
+  if (data.descripcion !== undefined && data.descripcion !== null && String(data.descripcion).length > 191) {
+    throw badRequest('La descripción admite como máximo 191 caracteres.', { campo: 'descripcion' });
+  }
+  const numeroInicial = validarNumeroInicial(data.numeroInicial);
+  const previa = await prisma.invoiceSeries.findFirst({ where: { id: serieId, companyId } });
+  if (!previa) throw notFound('Serie no encontrada.');
+
+  const serie = await prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT id FROM InvoiceSeries WHERE companyId = ${companyId} AND tipoDocumento = ${previa.tipoDocumento} FOR UPDATE`;
+    const actual = await tx.invoiceSeries.findFirst({ where: { id: serieId, companyId } });
+    if (!actual) throw notFound('Serie no encontrada.');
+    const tipo = (esTipoDocumentoSerie(actual.tipoDocumento) ? NOMBRE_TIPO[actual.tipoDocumento] : actual.tipoDocumento.toLowerCase());
+    const activa = data.activa ?? actual.activa;
+
+    // (a) La predeterminada tiene que estar activa.
+    if (data.porDefecto === true && !activa) {
+      throw conflict(`La serie ${actual.codigo} está desactivada: actívala antes de marcarla como predeterminada.`, { campo: 'porDefecto' });
+    }
+    // (b) La predeterminada no se desactiva ni se desmarca sin mas: hay que elegir otra.
+    if (actual.porDefecto && data.activa === false) {
+      throw conflict(`La serie ${actual.codigo} es la predeterminada de ${tipo}. Marca antes otra serie como predeterminada.`, { campo: 'activa' });
+    }
+    if (actual.porDefecto && data.porDefecto === false) {
+      throw conflict(`Para cambiar la serie predeterminada de ${tipo}, marca como predeterminada la otra serie: esta dejará de serlo sola.`, {
+        campo: 'porDefecto',
+      });
+    }
+    // (c) Facturas y rectificativas siempre con alguna serie activa.
+    if (actual.activa && data.activa === false && (TIPOS_CON_SERIE_OBLIGATORIA as readonly string[]).includes(actual.tipoDocumento)) {
+      const otrasActivas = await tx.invoiceSeries.count({
+        where: { companyId, tipoDocumento: actual.tipoDocumento, activa: true, NOT: { id: actual.id } },
+      });
+      if (otrasActivas === 0) {
+        throw conflict(`No puede quedar ninguna serie de ${tipo} activa: crea o activa otra antes de desactivar la ${actual.codigo}.`, { campo: 'activa' });
+      }
+    }
+
+    // (d) El numero inicial solo mientras no haya documentos numerados en la serie.
+    if (numeroInicial !== undefined && (await contarDocumentos(tx, companyId, actual.codigo)) > 0) {
+      throw conflict(
+        `La serie ${actual.codigo} ya tiene documentos numerados: su numeración sigue desde el último y el número inicial ya no se puede cambiar.`,
+        { campo: 'numeroInicial' },
+      );
+    }
+
+    if (data.porDefecto === true) await desmarcarOtrasPorDefecto(tx, companyId, actual.tipoDocumento, actual.id);
+    return tx.invoiceSeries.update({
+      where: { id: serieId },
+      data: {
+        ...(numeroInicial !== undefined ? { ultimoNumero: numeroInicial - 1, ultimaFecha: null } : {}),
+        ...(data.descripcion !== undefined ? { descripcion: String(data.descripcion ?? '') } : {}),
+        ...(data.activa !== undefined ? { activa: data.activa } : {}),
+        ...(data.porDefecto !== undefined ? { porDefecto: data.porDefecto } : {}),
+      },
+    });
   });
   return aDominio(serie);
 }
@@ -157,16 +286,60 @@ export async function resolverCodSerieFactura(
   return def.codigo;
 }
 
-/** Serie por codigo; si no existe se crea (las facturas antiguas usaban "2026" como serie). */
-export async function obtenerOCrearSerie(
+/**
+ * Serie de la empresa por su codigo (tal cual o en mayusculas), o null. No crea
+ * nada: una errata al teclear la serie ya no crea una serie nueva y activa.
+ */
+export async function buscarSeriePorCodigo(companyId: string, codigo: string): Promise<SerieDocumento | null> {
+  await asegurarSemilla(companyId);
+  const limpio = String(codigo ?? '').trim();
+  if (!limpio) return null;
+  const candidatos = [...new Set([limpio, limpio.toUpperCase()])];
+  for (const c of candidatos) {
+    const s = await prisma.invoiceSeries.findUnique({ where: { companyId_codigo: { companyId, codigo: c } } });
+    if (s) return aDominio(s);
+  }
+  return null;
+}
+
+/**
+ * Codigo de serie valido a partir del que trae una factura leida ("fac/2026"
+ * -> "FAC-2026"): mayusculas, lo que no sea letra, numero o guion pasa a guion
+ * y como mucho 10 caracteres. Vacio si no queda nada.
+ */
+export function normalizarCodigoSerie(texto: string): string {
+  return String(texto ?? '')
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .toUpperCase()
+    .replace(/[^A-Z0-9-]+/g, '-')
+    .replace(/-{2,}/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 10)
+    .replace(/-+$/, '');
+}
+
+/**
+ * Serie de una factura que llega del lector (o de una importacion) con su
+ * numeracion original. Si no existe se crea con el codigo normalizado y
+ * DESACTIVADA: guarda la numeracion de otro programa, pero no aparece para
+ * emitir facturas nuevas. Solo para ese camino: la pantalla y la API usan
+ * buscarSeriePorCodigo, y un codigo que no existe es un 400.
+ */
+export async function obtenerOCrearSerieHistorica(
   companyId: string,
-  codigo: string,
+  codigoLeido: string,
   tipoDocumento: TipoDocumentoSerie = 'FACTURA',
 ): Promise<SerieDocumento> {
-  await asegurarSemilla(companyId);
+  const existente = await buscarSeriePorCodigo(companyId, codigoLeido);
+  if (existente) return existente;
+  const codigo = normalizarCodigoSerie(codigoLeido);
+  if (!CODIGO_RE.test(codigo)) {
+    throw badRequest(`La serie "${codigoLeido}" de la factura no es válida: corrígela (letras, números y guiones, máximo 10).`, { campo: 'serie' });
+  }
   const s = await prisma.invoiceSeries.upsert({
     where: { companyId_codigo: { companyId, codigo } },
-    create: { companyId, codigo, descripcion: `Serie ${codigo}`, tipoDocumento, activa: true, porDefecto: false },
+    create: { companyId, codigo, descripcion: `Serie ${codigo} (facturas importadas)`, tipoDocumento, activa: false, porDefecto: false },
     update: {},
   });
   return aDominio(s);

@@ -6,6 +6,7 @@ import { obtenerVencimiento, marcarComoLiquidado, crearVencimientos } from './ve
 import { crearAsientoTesoreria } from './asientos.service';
 import { subcuentaTercero } from './contabilidadReglas.service';
 import { obtenerReglas } from './reglasContables.service';
+import { comprobarFechaAbierta } from './periodos.service';
 
 /**
  * Cobros PERSISTIDOS en Prisma (tabla Cobro). Fallback en memoria si la BD no
@@ -126,6 +127,8 @@ export async function registrarCobro(
   fecha: string,
   formaPago?: string,
 ): Promise<EstadoCobroFactura> {
+  // Antes de crear nada: el asiento de tesoreria lleva esta fecha.
+  await comprobarFechaAbierta(companyId, fecha, 'registrar el cobro');
   const [v] = await crearVencimientos(companyId, facturaId, 'cobro', [
     { fecha, importe: round2(importe), formaPago: formaPago ?? 'CONTADO' },
   ]);
@@ -144,6 +147,8 @@ export async function registrarCobroVencimiento(
   fecha: string,
   formaPago?: string,
 ): Promise<{ estado: EstadoCobroFactura; asientoTesoreria: unknown }> {
+  // Ni en un mes bloqueado ni en un ejercicio cerrado (como cobrosPagos).
+  await comprobarFechaAbierta(companyId, fecha, 'registrar el cobro o el pago');
   const v = await obtenerVencimiento(companyId, vencimientoId);
   const reglas = await obtenerReglas(companyId);
 

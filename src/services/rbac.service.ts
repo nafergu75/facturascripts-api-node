@@ -28,7 +28,6 @@ export const PERMISOS: Permiso[] = [
 const ROL_PERMISOS: Record<NombreRol, string[]> = {
   admin: ['*'],
   contable: ['contabilidad:read', 'contabilidad:write', 'aeat:read', 'tesoreria:read', 'impuestos:read', 'impuestos:write', 'compras:read', 'compras:write', 'nominas:read', 'nominas:write'],
-  tesoreria: ['tesoreria:read', 'tesoreria:write', 'contabilidad:read'],
   ventas: ['ventas:read', 'ventas:write', 'contabilidad:read'],
   'solo-lectura': ['contabilidad:read', 'tesoreria:read', 'aeat:read', 'ventas:read', 'impuestos:read', 'compras:read'],
 };

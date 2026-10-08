@@ -1,8 +1,9 @@
 import type { Prisma } from '@prisma/client';
 import { badRequest, notFound } from '../utils/http-errors';
 import { prisma, type TransaccionBD as Tx } from '../config/database';
-import { obtenerOCrearSerie, obtenerSeriePorDefecto, resolverCodSerieFactura } from './series.service';
+import { buscarSeriePorCodigo, obtenerOCrearSerieHistorica, obtenerSeriePorDefecto, resolverCodSerieFactura } from './series.service';
 import { listarCobros, registrarCobroFactura, tieneCobrosActivos, type DatosCobro } from './cobrosPagos.service';
+import { comprobarFechaAbierta } from './periodos.service';
 import {
   calcularImportesFactura,
   lineasEspejo,
@@ -26,7 +27,9 @@ import {
 import { perfilDesdeConfig, perfilEmpresa, type PerfilEmpresa } from './perfilEmpresa.service';
 import { marcarTransaccion, mensajeSinTipo, resolverTipoCambio, type TipoResuelto } from './tiposCambio.service';
 import { resolverFiscalidad } from './fiscalidad-venta.service';
-import { hoyEspana } from '../utils/fechas';
+import { hoyEspana, sumarDiasISO } from '../utils/fechas';
+import { copiaAlEmitir, leerAjustesFacturacion } from './ajustesFacturacion.service';
+import { FORMAS_PAGO, type FormaPago } from '../domain/ajustes.model';
 import { leerPais } from './clientes.service';
 
 /**
@@ -69,9 +72,8 @@ export type EstadoProforma = (typeof ESTADOS_PROFORMA)[number];
 export const TIPOS_FACTURA = ['F1', 'F2', 'R1', 'R2', 'R3', 'R4', 'R5'] as const;
 export type TipoFactura = (typeof TIPOS_FACTURA)[number];
 
-/** Formas de pago que se imprimen en la factura. */
-export const FORMAS_PAGO = ['TRANSFERENCIA', 'GIRO', 'CONTADO'] as const;
-export type FormaPago = (typeof FORMAS_PAGO)[number];
+/** Formas de pago que se imprimen en la factura (viven en domain/ajustes.model). */
+export { FORMAS_PAGO, type FormaPago };
 
 /** Estados de cobro que se pueden poner a mano en una factura final. */
 export const ESTADOS_COBRO = ['PENDING', 'PAID', 'OVERDUE'] as const;
@@ -106,7 +108,7 @@ export interface CrearFacturaIngresoDTO {
    */
   numero?: number;
   fechaEmision?: string; // YYYY-MM-DD, defecto: hoy
-  fechaVencimiento?: string; // YYYY-MM-DD, defecto: fechaEmision + 15 días
+  fechaVencimiento?: string; // YYYY-MM-DD, defecto: fechaEmision + los días de Configuración > Facturación (30 si no se han tocado)
   /** Fecha de la operacion (devengo) si es distinta de la de emision: fija el tipo de cambio. */
   fechaOperacion?: string | null;
   lineas: CrearLineaIngresoDTO[];
@@ -117,7 +119,7 @@ export interface CrearFacturaIngresoDTO {
   /** true: factura proforma (serie P, numero al crearla, sin efectos fiscales). */
   proforma?: boolean;
   tipoFactura?: TipoFactura;
-  /** Transferencia bancaria (defecto), giro (recibo domiciliado) o contado. */
+  /** Transferencia bancaria, giro (recibo domiciliado) o contado. Defecto: el de Configuración > Facturación. */
   formaPago?: FormaPago;
   facturaOriginalId?: string; // Si es rectificativa
   tipoRectificativa?: 'S' | 'I';
@@ -628,24 +630,42 @@ function validarTipoFactura(tipo: string | undefined, porDefecto: TipoFactura): 
   return t as TipoFactura;
 }
 
-function validarFormaPago(forma: string | undefined): FormaPago {
-  const f = (forma ?? 'TRANSFERENCIA').toUpperCase();
+function validarFormaPago(forma: string | undefined, porDefecto: FormaPago = 'TRANSFERENCIA'): FormaPago {
+  const f = (forma ?? porDefecto).toUpperCase();
   if (!(FORMAS_PAGO as readonly string[]).includes(f)) {
     throw badRequest(`Forma de pago no válida. Usa: ${FORMAS_PAGO.join(', ')}.`);
   }
   return f as FormaPago;
 }
 
-/** Serie elegida en el DTO (o la por defecto), creandola si es un codigo antiguo. */
-async function resolverSerie(companyId: string, codigo: string | undefined, esRectificativa: boolean): Promise<string> {
+/** Serie que no existe: ya no se crea sola (una errata creaba una serie nueva y activa). */
+const serieNoExiste = (codigo: string) =>
+  badRequest(`La serie ${String(codigo).trim()} no existe. Elige una de las series de la empresa o créala antes en Configuración > Series.`, {
+    campo: 'serie',
+  });
+
+/**
+ * Serie elegida en el DTO (o la por defecto). Desde la pantalla o la API tiene
+ * que existir y estar activa. Solo una factura del lector, que trae su numero
+ * original, puede crear su serie (desactivada: guarda la numeracion de otro
+ * programa, pero no sale para emitir facturas nuevas).
+ */
+async function resolverSerie(
+  companyId: string,
+  codigo: string | undefined,
+  esRectificativa: boolean,
+  origen: OrigenFactura = 'pantalla',
+): Promise<string> {
   if (esRectificativa && !codigo) {
     const r = await obtenerSeriePorDefecto(companyId, 'RECTIFICATIVA');
     if (!r) throw badRequest('No hay serie de rectificativas configurada.');
     return r.codigo;
   }
   if (!codigo) return resolverCodSerieFactura(companyId, {});
-  const serie = await obtenerOCrearSerie(companyId, String(codigo).trim());
-  if (!serie.activa) throw badRequest(`La serie ${serie.codigo} está desactivada.`);
+  const lector = origen === 'lector';
+  const serie = lector ? await obtenerOCrearSerieHistorica(companyId, String(codigo)) : await buscarSeriePorCodigo(companyId, String(codigo));
+  if (!serie) throw serieNoExiste(String(codigo));
+  if (!serie.activa && !lector) throw badRequest(`La serie ${serie.codigo} está desactivada.`, { campo: 'serie' });
   if (esRectificativa && serie.tipoDocumento !== 'RECTIFICATIVA') {
     throw badRequest('Las rectificativas van en una serie propia de rectificativas, no en la de facturas.');
   }
@@ -665,8 +685,9 @@ async function resolverSerieProforma(companyId: string, codigo: string | undefin
     if (!p) throw badRequest('No hay serie de proformas configurada.');
     return p.codigo;
   }
-  const serie = await obtenerOCrearSerie(companyId, String(codigo).trim(), 'PROFORMA');
-  if (!serie.activa) throw badRequest(`La serie ${serie.codigo} está desactivada.`);
+  const serie = await buscarSeriePorCodigo(companyId, String(codigo));
+  if (!serie) throw serieNoExiste(String(codigo));
+  if (!serie.activa) throw badRequest(`La serie ${serie.codigo} está desactivada.`, { campo: 'serie' });
   if (serie.tipoDocumento !== 'PROFORMA') throw badRequest(`La serie ${serie.codigo} no es de proformas.`);
   return serie.codigo;
 }
@@ -840,15 +861,23 @@ async function crear(dto: CrearFacturaIngresoDTO, opciones: { origen?: OrigenFac
   const moneda = original ? original.moneda : validarMoneda(dto.moneda ?? perfil.monedaCuenta, perfil.monedasFactura);
   comprobarMonedaLineas(dto.lineas, moneda, false);
 
+  const fechaEmision = validarFecha(dto.fechaEmision ?? hoyISO(), 'fecha de emisión');
+  // Sin forma de pago o sin vencimiento: los de Configuración > Facturación.
+  const ajustes = await leerAjustesFacturacion(dto.companyId);
+  const fechaVencimiento = validarFecha(dto.fechaVencimiento ?? sumarDiasISO(fechaEmision, ajustes.diasVencimiento), 'fecha de vencimiento');
+  if (fechaVencimiento < fechaEmision) throw badRequest('El vencimiento no puede ser anterior a la fecha de emisión.');
+  const fechaOperacion = validarFechaOperacion(dto.fechaOperacion, fechaEmision);
+  // Una factura emitida (o registrada desde el lector) lleva asiento en su fecha:
+  // no puede caer en un mes bloqueado ni en un ejercicio cerrado. Se comprueba
+  // antes de numerarla, para no gastar un numero de la serie.
+  if (!dto.proforma && !dto.borrador) {
+    await comprobarFechaAbierta(dto.companyId, fechaEmision, dto.numero ? 'registrar la factura' : 'emitir la factura');
+  }
+  // Cliente y serie despues de las fechas: una factura rechazada no deja nada creado.
   const cliente = await resolverCliente(dto.companyId, dto.customer);
   const serie = dto.proforma
     ? await resolverSerieProforma(dto.companyId, dto.serie)
-    : await resolverSerie(dto.companyId, dto.serie, esRectificativa);
-
-  const fechaEmision = validarFecha(dto.fechaEmision ?? hoyISO(), 'fecha de emisión');
-  const fechaVencimiento = validarFecha(dto.fechaVencimiento ?? sumarDias(fechaEmision, 15), 'fecha de vencimiento');
-  if (fechaVencimiento < fechaEmision) throw badRequest('El vencimiento no puede ser anterior a la fecha de emisión.');
-  const fechaOperacion = validarFechaOperacion(dto.fechaOperacion, fechaEmision);
+    : await resolverSerie(dto.companyId, dto.serie, esRectificativa, origen);
 
   // Quien revisa la fiscalidad lo decide el servidor, nunca el cuerpo.
   const modo: ModoFiscal = esRectificativa
@@ -894,7 +923,7 @@ async function crear(dto: CrearFacturaIngresoDTO, opciones: { origen?: OrigenFac
     fechaVencimiento,
     fechaOperacion,
     tipoFactura,
-    formaPago: validarFormaPago(dto.formaPago),
+    formaPago: validarFormaPago(dto.formaPago, ajustes.formaPago),
     ...cabecera(importes),
     moneda,
     ...datosTipo(tipo),
@@ -940,6 +969,9 @@ async function crear(dto: CrearFacturaIngresoDTO, opciones: { origen?: OrigenFac
     return aRespuesta(factura, ctx);
   }
 
+  // Al emitir se copian el IBAN y el pie de ahora: el PDF ya no cambia con los ajustes.
+  const copia = await copiaAlEmitir(dto.companyId, moneda);
+
   // Factura emitida fuera de la app (lector): conserva su numero original.
   if (dto.numero) {
     const existe = await prisma.incomeInvoice.findFirst({ where: { companyId: dto.companyId, serie, numero: dto.numero } });
@@ -947,6 +979,7 @@ async function crear(dto: CrearFacturaIngresoDTO, opciones: { origen?: OrigenFac
     const factura = await prisma.incomeInvoice.create({
       data: {
         ...comunes,
+        ...copia,
         numero: dto.numero,
         numeroCompleto: `${serie}-${dto.numero}`,
         estadoDocumento: ESTADO_FINAL,
@@ -968,6 +1001,7 @@ async function crear(dto: CrearFacturaIngresoDTO, opciones: { origen?: OrigenFac
     return tx.incomeInvoice.create({
       data: {
         ...comunes,
+        ...copia,
         numero,
         numeroCompleto: `${serie}-${numero}`,
         estadoDocumento: ESTADO_FINAL,
@@ -1275,6 +1309,8 @@ export const incomeInvoicesService = {
     }
 
     const fechaEmision = validarFecha(opciones.fechaEmision ?? hoyISO(), 'fecha de emisión');
+    // Ni en un mes bloqueado ni en un ejercicio cerrado (antes de numerarla).
+    await comprobarFechaAbierta(companyId, fechaEmision, 'emitir la factura');
     // Se mantienen los dias de plazo que tenia el borrador.
     const fechaVencimiento = sumarDias(fechaEmision, plazoDias(actual));
     const fechaOperacion = actual.fechaOperacion && actual.fechaOperacion !== fechaEmision ? actual.fechaOperacion : null;
@@ -1331,6 +1367,8 @@ export const incomeInvoicesService = {
     const recalcular = normaliza || (!misma && !heredado);
     exigirNoFinal(actual);
     const importes = recalcular ? calcularImportesFactura(lineas, { tipoCambio: tipo.tipoCambio, mismaMoneda: misma }) : null;
+    // IBAN y pie de ahora, copiados en la factura: su PDF ya no cambia con los ajustes.
+    const copia = await copiaAlEmitir(companyId, actual.moneda);
 
     const factura = await transaccion(async (tx) => {
       const numero = await asignarNumero(tx, companyId, actual.serie, fechaEmision);
@@ -1346,6 +1384,7 @@ export const incomeInvoicesService = {
           fechaEmision,
           fechaVencimiento,
           fechaOperacion,
+          ...copia,
           estado: determinarEstado(fechaVencimiento),
           ...datosTipo(tipo),
           tipoOperacion: fiscal.tipoOperacion,
