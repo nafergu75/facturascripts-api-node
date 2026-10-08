@@ -19,6 +19,7 @@ import { comprobarFechaAbierta } from '../services/periodos.service';
 import { perfilEmpresa } from '../services/perfilEmpresa.service';
 import { motivoSinTipoFijado, notaDivisa } from '../domain/divisas';
 import { esTipoOperacion, fechaDevengoVenta } from '../domain/tipo-operacion.model';
+import { fechaContableGasto } from '../domain/factura-gasto.model';
 import { cuentaAcreedorDePagos, datosContablesGasto, motivoPeriodoBloqueado, retencionDe } from '../services/expense-invoices.service';
 
 export class AccountingEngineController {
@@ -217,8 +218,9 @@ export class AccountingEngineController {
       if (entryExistente) {
         throw badRequest(`Esta factura de gasto ya ha sido contabilizada (asiento: ${entryExistente.id}).`);
       }
-      // Ni en un mes bloqueado ni en un ejercicio cerrado.
-      await comprobarFechaAbierta(companyId, factura.fechaEmision, 'contabilizar la factura de gasto');
+      // Ni en un mes bloqueado ni en un ejercicio cerrado. Cuenta la fecha del
+      // asiento (la de registro si se recibio mas tarde), no la de expedicion.
+      await comprobarFechaAbierta(companyId, fechaContableGasto(factura), 'contabilizar la factura de gasto');
 
       // Transacción atómica: crear asiento + líneas + VATBook + RetentionBook + marcar factura
       // Los mismos datos que el alta: la fecha de registro (si se recibio mas

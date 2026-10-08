@@ -112,7 +112,7 @@ const campoFecha = (accion: string) => (accion.startsWith('emitir') ? { campo: '
  */
 const esFacturaRecibida = (accion: string) => accion.includes('factura de gasto');
 const SIN_CAMBIAR_FECHA_RECIBIDA =
-  'No cambies la fecha de la factura: es la que puso el proveedor. Si ese periodo ya está declarado y la factura llegó tarde, su IVA se deduce en el periodo en que la recibes; la aplicación todavía no permite contabilizarla con otra fecha, así que consulta con tu asesor cómo anotarla antes de desbloquear el mes.';
+  'No cambies la fecha de la factura: es la que puso el proveedor. Si la recibiste más tarde, modifica la factura y pon la fecha en que la recibiste (en «¿La recibiste más tarde?»): su IVA se deduce en ese periodo.';
 
 /**
  * No se apunta nada en un periodo cerrado o bloqueado, ni en un ejercicio

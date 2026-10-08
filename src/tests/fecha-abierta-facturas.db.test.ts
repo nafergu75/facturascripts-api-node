@@ -131,6 +131,22 @@ describe('facturas de gasto y aprobacion de asientos', () => {
     expect((await prisma.expenseInvoice.findUniqueOrThrow({ where: { id: g.id } })).estado).not.toBe('ACCOUNTED');
   });
 
+  it('un gasto expedido en un mes bloqueado y recibido en uno abierto se contabiliza con la fecha de registro', async () => {
+    const g = await expenseInvoicesService.crearGasto({
+      companyId: COMPANY_ID,
+      provider: { id: supplierId },
+      serie: 'G',
+      fechaEmision: '2026-03-20',
+      fechaVencimiento: '2026-04-20',
+      lineas: [{ descripcion: 'Material', cantidad: 1, precioUnitario: 80, tipoIva: 21 }],
+    });
+    await prisma.expenseInvoice.update({ where: { id: g.id }, data: { fechaRegistro: '2026-04-10' } });
+    const r = await motor.contabilizarFacturaGasto(COMPANY_ID, g.id);
+    expect(r.estado).toBe('POSTED');
+    const asiento = await prisma.journalEntry.findUniqueOrThrow({ where: { id: r.journalEntryId } });
+    expect(asiento.fecha.toISOString().slice(0, 10)).toBe('2026-04-10');
+  });
+
   it('un asiento en borrador de un mes bloqueado no se aprueba', async () => {
     const borrador = await prisma.journalEntry.create({
       data: { companyId: COMPANY_ID, fecha: new Date('2026-03-04T00:00:00Z'), numeroAsiento: 'TEST-FA-1', descripcion: 'Borrador', origen: 'MANUAL', estado: 'DRAFT' },
