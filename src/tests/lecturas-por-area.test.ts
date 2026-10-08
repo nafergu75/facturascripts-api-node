@@ -31,11 +31,9 @@ const LECTURAS_ABIERTAS: Record<string, string> = {
   'planContableBase.routes.ts GET /todo': 'plan PGC generico, ya publico',
   'legalConfig.routes.ts GET /': 'datos de la empresa para las facturas',
   'legalConfig.routes.ts GET /logo': 'logo de la empresa para las facturas',
-  'periodos.routes.ts GET /': 'saber si un mes esta cerrado antes de grabar',
   'plantillasDocumento.routes.ts GET /': 'plantillas de factura',
   'plantillasDocumento.routes.ts GET /tipo/:tipoDocumento/predeterminada': 'plantilla de factura predeterminada',
   'plantillasDocumento.routes.ts GET /:plantillaId': 'plantilla de factura',
-  'fiscalYears.routes.ts GET /': 'lista de ejercicios',
   'chart-of-accounts.routes.ts GET /': 'elegir cuenta en un formulario; sin saldos',
   'chart-of-accounts.routes.ts GET /arbol': 'elegir cuenta en un formulario; sin saldos',
   'chart-of-accounts.routes.ts GET /:codigo': 'elegir cuenta en un formulario; sin saldos',
@@ -78,6 +76,17 @@ const LECTURAS_POR_AREA: Record<string, string[]> = {
   'proveedores.routes.ts GET /:id': C,
   'compras.routes.ts GET /': C,
   'compras.routes.ts GET /:id': C,
+  // Compras: facturas de gasto y ficha del proveedor.
+  'expense-invoices.routes.ts GET /': C,
+  'expense-invoices.routes.ts GET /:id': C,
+  'expense-invoices.routes.ts GET /:id/pagos': C,
+  'proveedores.routes.ts GET /buscar': C,
+  'proveedores.routes.ts GET /por-nif/:nif': C,
+  'proveedores.routes.ts GET /:supplierId/contacts': C,
+  'proveedores.routes.ts GET /:supplierId/bank-accounts': C,
+  'proveedores.routes.ts GET /:supplierId/audit-trail': C,
+  'proveedores.routes.ts GET /:supplierId/invoices': C,
+  'proveedores.routes.ts GET /:supplierId/export': C,
   'ocr-sessions.routes.ts GET /ocr/sessions': O,
   'ocr-sessions.routes.ts GET /ocr/sessions/:sessionId': O,
   'ocr-sessions.routes.ts GET /ocr/stats': O,
@@ -110,6 +119,12 @@ const LECTURAS_POR_AREA: Record<string, string[]> = {
   'accounting-closure.routes.ts GET /prior-years/:ejercicio': K,
   'accounting-closure.routes.ts GET /prior-years': K,
   'accounting-closure.routes.ts GET /comparativas/:ej1/:ej2': K,
+  // Configuracion: ejercicios y periodos (Contabilidad), facturacion y series (Ventas).
+  'periodos.routes.ts GET /': K,
+  'periodos.routes.ts GET /cierre': K,
+  'fiscalYears.routes.ts GET /': K,
+  'ajustesFacturacion.routes.ts GET /': V,
+  'series.routes.ts GET /': V,
   'registroMercantil.routes.ts GET /fiscal-years/:fyId/deadlines': K,
   'registroMercantil.routes.ts GET /fiscal-years/:fyId/books': K,
   'registroMercantil.routes.ts GET /books/:bookId/download': K,
@@ -120,6 +135,15 @@ const LECTURAS_POR_AREA: Record<string, string[]> = {
   'registroMercantil.routes.ts GET /annual-accounts/:id/download': K,
   'registroMercantil.routes.ts GET /annual-accounts/:id/xbrl': K,
   'tiposCambio.routes.ts GET /': ['ventas:read', 'compras:read', 'contabilidad:read', 'tesoreria:read'],
+};
+
+/**
+ * Lecturas nuevas que piden solo su permiso, sin la alternativa de
+ * contabilidad:read: no las tenia nadie antes, asi que ningun perfil las pierde.
+ */
+const LECTURAS_SOLO_SU_PERMISO: Record<string, string[]> = {
+  'ajustesFiscales.routes.ts GET /': ['impuestos:read'],
+  'miembros.routes.ts GET /': ['admin:empresa'],
 };
 
 /** Cada GET de las rutas: { 'fichero GET /ruta': permisos de su authorize en linea (null si no lleva) }. */
@@ -150,7 +174,7 @@ describe('lecturas por area', () => {
   });
 
   it('las lecturas cerradas piden exactamente su area o contabilidad', () => {
-    const distintas = Object.entries(LECTURAS_POR_AREA)
+    const distintas = Object.entries({ ...LECTURAS_POR_AREA, ...LECTURAS_SOLO_SU_PERMISO })
       .filter(([ruta, esperado]) => JSON.stringify([...(todas.get(ruta) ?? [])].sort()) !== JSON.stringify([...esperado].sort()))
       .map(([ruta]) => `${ruta}: ${JSON.stringify(todas.get(ruta))}`);
     expect(distintas).toEqual([]);
