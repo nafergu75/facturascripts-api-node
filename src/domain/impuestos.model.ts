@@ -44,8 +44,11 @@ export interface FacturaFiscal {
   deducible?: boolean;
   /** Categoria del ingreso/gasto (informativa, para deducibilidad futura). */
   categoria?: string;
-  /** Desglose por tipo de IVA. */
-  lineas: Array<{ tipoIva: number; base: number; cuota: number }>;
+  /**
+   * Desglose por tipo de IVA. `conRetencion`: linea de una compra con
+   * retencion de IRPF; cuenta en el 303 pero no en el 347 (va en el 190/180).
+   */
+  lineas: Array<{ tipoIva: number; base: number; cuota: number; conRetencion?: boolean }>;
 }
 
 /** Desglose de base y cuota para un tipo de IVA. */
@@ -212,6 +215,10 @@ export interface DatosModelo115 {
   retenciones: number; // [03]
   resultadoAnteriores: number; // [04]
   resultadoIngresar: number; // [05] = [03] - [04]
+  /** Desglose por arrendador (pantalla y resumen anual, el contenido del 180). No va al fichero. */
+  perceptores?: Array<{ nif: string; nombre: string; base: number; retencion: number; facturas: number }>;
+  /** Facturas anuladas cuya retencion sigue en un 115 presentado. */
+  avisos?: string[];
 }
 
 /** Modelo 349 — operaciones intracomunitarias. */

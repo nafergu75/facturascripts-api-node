@@ -150,34 +150,43 @@ export class TaxDocumentsService {
       throw badRequest('Trimestre debe ser 1-4');
     }
 
-    const startDate = new Date(ano, (numTrimestre - 1) * 3, 1);
-    const endDate = new Date(ano, numTrimestre * 3, 0);
+    // El libro guarda la fecha a las 00:00 UTC: el trimestre se acota en UTC
+    // (con la hora local, el ultimo dia del trimestre se quedaba fuera).
+    const startDate = new Date(Date.UTC(ano, (numTrimestre - 1) * 3, 1));
+    const finExclusivo = new Date(Date.UTC(ano, numTrimestre * 3, 1));
 
-    const facturas = await prisma.vATBook.findMany({
-      where: {
-        companyId,
-        tipoLibro: 'RECIBIDAS',
-        fechaFactura: { gte: startDate, lte: endDate },
-      },
-      orderBy: { fechaFactura: 'asc' },
-    });
+    // Solo los apuntes de asientos en firme (POSTED): un borrador del lector
+    // o un asiento anulado no cuentan. Sin ninguno, el libro esta vacio. Asi
+    // el libro cuadra con la 472 y con el 303.
+    const posted = await prisma.journalEntry.findMany({ where: { companyId, estado: 'POSTED' }, select: { id: true } });
+    const facturas = posted.length
+      ? await prisma.vATBook.findMany({
+          where: {
+            companyId,
+            tipoLibro: 'RECIBIDAS',
+            fechaFactura: { gte: startDate, lt: finExclusivo },
+            asientoId: { in: posted.map((p) => p.id) },
+          },
+          orderBy: [{ fechaFactura: 'asc' }, { numeroFactura: 'asc' }],
+        })
+      : [];
 
-    const totalBases = facturas.reduce(
-      (s, f) => s + (f.baseImponible || 0),
-      0
-    );
-    const totalCuotas = facturas.reduce((s, f) => s + (f.cuotaIva || 0), 0);
+    const totalBases = round2(facturas.reduce((s, f) => s + (f.baseImponible || 0), 0));
+    const totalCuotas = round2(facturas.reduce((s, f) => s + (f.cuotaIva || 0), 0));
 
     return {
       periodo: period,
       facturas: facturas.map((f) => ({
         fecha: f.fechaFactura,
-        numero: f.numeroFactura,
+        // El numero que puso el proveedor; el de registro (G-12) aparte.
+        numero: f.numeroFacturaEmisor ?? f.numeroFactura,
+        numeroRegistro: f.numeroFactura,
         nif: f.nifTercero,
         nombre: f.nombreTercero,
         base: f.baseImponible,
         tipoIva: f.tipoIva,
         cuota: f.cuotaIva,
+        observaciones: f.observaciones ?? null,
       })),
       totalBases,
       totalCuotas,

@@ -7,6 +7,7 @@
  * (movements.controller) y Carmen (INT-09). Solo lee.
  */
 import { prisma } from '../config/database';
+import { GASTO_VIGENTE } from '../domain/factura-gasto.model';
 
 export interface TotalesFacturas {
   facturas: number;
@@ -58,7 +59,7 @@ export async function resumenFiscalPeriodo(companyId: string, desde: string, has
     sinGastos
       ? Promise.resolve(vacio)
       : prisma.expenseInvoice.aggregate({
-          where: { companyId, estado: { not: 'DRAFT' }, fechaEmision: fechas, ...(filtro?.supplierId ? { supplierId: filtro.supplierId } : {}) },
+          where: { companyId, ...GASTO_VIGENTE, fechaEmision: fechas, ...(filtro?.supplierId ? { supplierId: filtro.supplierId } : {}) },
           _sum: suma,
           _count: true,
         }),

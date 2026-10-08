@@ -23,6 +23,7 @@ import { nombreSeguro } from '../utils/nombre-seguro';
 import { crearZip, ZipEntry } from '../utils/zip';
 import { generarPdfFactura } from './facturaPdf.service';
 import { perfilEmpresa } from './perfilEmpresa.service';
+import { GASTO_VIGENTE } from '../domain/factura-gasto.model';
 
 export type CarpetaArchivo = 'ventas' | 'gastos';
 
@@ -401,7 +402,7 @@ export async function regenerarArchivo(
       orderBy: { fechaEmision: 'asc' },
     }),
     prisma.expenseInvoice.findMany({
-      where: { companyId, estado: { not: 'DRAFT' }, ...filtroFecha },
+      where: { companyId, ...GASTO_VIGENTE, ...filtroFecha },
       select: { id: true },
       orderBy: { fechaEmision: 'asc' },
     }),

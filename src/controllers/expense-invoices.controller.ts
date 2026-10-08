@@ -1,70 +1,64 @@
 import { asyncHandler } from '../utils/async-handler';
-import { sendOk, sendMessage } from '../utils/response';
-import { badRequest, notFound } from '../utils/http-errors';
-import { expenseInvoicesService, CrearFacturaGastoDTO } from '../services/expense-invoices.service';
-import { archivarGastoSinRomper } from '../services/archivoFacturas.service';
+import { sendOk } from '../utils/response';
+import { expenseInvoicesService, type FiltrosGastos } from '../services/expense-invoices.service';
 
+/**
+ * Facturas de gasto: /companies/:companyId/expense-invoices. Las respuestas
+ * van en un solo sobre ({ ok, data }); antes la lista y la ficha iban en dos.
+ */
 export const expenseInvoicesController = {
   /**
    * GET /companies/:companyId/expense-invoices
-   * Listar facturas de gasto con paginación y filtros.
+   * Listado paginado (page, limit) con filtros (q, estado, pago, supplierId,
+   * desde, hasta), contadores y totales.
    */
   list: asyncHandler(async (req, res) => {
-    const companyId = req.companyId!;
-    const { estado, supplierId, desde, hasta, skip, take } = req.query;
-
-    const result = await expenseInvoicesService.listarGastos(companyId, {
-      estado: estado as string | undefined,
-      supplierId: supplierId as string | undefined,
-      desde: desde as string | undefined,
-      hasta: hasta as string | undefined,
-      skip: skip ? parseInt(skip as string, 10) : undefined,
-      take: take ? parseInt(take as string, 10) : undefined,
-    });
-
-    sendOk(res, { data: result });
+    sendOk(res, await expenseInvoicesService.listarGastos(req.companyId!, req.query as FiltrosGastos));
   }),
 
   /**
    * POST /companies/:companyId/expense-invoices
-   * Crear una nueva factura de gasto.
+   * Alta con su asiento en firme (la factura queda contabilizada).
    */
   create: asyncHandler(async (req, res) => {
-    const dto: CrearFacturaGastoDTO = {
-      ...req.body,
-      companyId: req.companyId!,
-    };
-
-    const factura = await expenseInvoicesService.crearGasto(dto);
-    // Queda registrada en el archivo de su trimestre (sin original: se puede
-    // adjuntar desde Archivo). No bloqueante.
-    await archivarGastoSinRomper(req.companyId!, factura.id);
-    sendOk(res, { data: factura }, undefined, 201);
+    const factura = await expenseInvoicesService.crearGasto(
+      { ...(req.body ?? {}), companyId: req.companyId! },
+      { contabilizar: 'POSTED', usuarioEmail: req.user?.email, userId: req.user?.userId },
+    );
+    sendOk(res, factura, undefined, 201);
   }),
 
   /**
    * GET /companies/:companyId/expense-invoices/:id
-   * Obtener detalle de una factura de gasto.
+   * Ficha de la factura de gasto.
    */
   getById: asyncHandler(async (req, res) => {
-    const { id } = req.params;
-    const factura = await expenseInvoicesService.obtenerPorId(req.companyId!, id);
-    sendOk(res, { data: factura });
+    sendOk(res, await expenseInvoicesService.obtenerPorId(req.companyId!, req.params.id));
+  }),
+
+  /**
+   * PUT /companies/:companyId/expense-invoices/:id
+   * Corrige la factura (y rehace su asiento y sus libros).
+   */
+  update: asyncHandler(async (req, res) => {
+    sendOk(res, await expenseInvoicesService.editarGasto(req.companyId!, req.params.id, req.body ?? {}, { userId: req.user?.userId, usuarioEmail: req.user?.email }));
+  }),
+
+  /**
+   * POST /companies/:companyId/expense-invoices/:id/anular
+   * Anula la factura: { motivo, fecha? }.
+   */
+  anular: asyncHandler(async (req, res) => {
+    const { motivo, fecha } = (req.body ?? {}) as { motivo?: unknown; fecha?: unknown };
+    sendOk(res, await expenseInvoicesService.anularGasto(req.companyId!, req.params.id, { motivo, fecha }, { userId: req.user?.userId }));
   }),
 
   /**
    * PATCH /companies/:companyId/expense-invoices/:id/estado
-   * Cambiar el estado de una factura de gasto.
+   * Cambio de estado a mano (solo entre PENDING, OVERDUE y CONFIRMED).
    */
   cambiarEstado: asyncHandler(async (req, res) => {
-    const { id } = req.params;
-    const { nuevoEstado } = req.body;
-
-    if (!nuevoEstado) {
-      throw badRequest('Se requiere nuevoEstado en el body');
-    }
-
-    const factura = await expenseInvoicesService.cambiarEstado(req.companyId!, id, nuevoEstado);
-    sendOk(res, { data: factura });
+    const { nuevoEstado } = (req.body ?? {}) as { nuevoEstado?: unknown };
+    sendOk(res, await expenseInvoicesService.cambiarEstado(req.companyId!, req.params.id, nuevoEstado));
   }),
 };

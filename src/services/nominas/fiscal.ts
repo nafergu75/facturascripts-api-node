@@ -9,8 +9,9 @@
  *    obligacion de retener nace al pagar): una nomina de diciembre pagada en
  *    enero entra en el 1T del ano siguiente. Cuentan las no anuladas; las que
  *    siguen en borrador tambien, con aviso.
- *  - Profesionales (actividades economicas): facturas de gasto confirmadas con
- *    retencion, por fecha de la factura (como hasta ahora).
+ *  - Profesionales (actividades economicas): facturas de gasto con retencion,
+ *    por su fecha contable y con el criterio fiscal de domain/factura-gasto.model
+ *    (sin borradores ni anuladas). Los alquileres no: van al 115.
  *  - Resumen mensual antiguo (NominaResumen, solo totales): solo para los meses
  *    sin nominas por trabajador, con aviso de que la casilla 01 no es fiable.
  *    No entra en el 190.
@@ -20,6 +21,14 @@ import { prisma } from '../../config/database';
 import type { PeriodoFiscal } from '../../domain/impuestos.model';
 import { badRequest } from '../../utils/http-errors';
 import { aCentimos } from '../../utils/money';
+import {
+  aparicionesRetencionEntre,
+  desgloseRetencionGasto,
+  fechaContableGasto,
+  periodosDeFecha,
+  whereGastosFiscales,
+  type DatosFiscalesGasto,
+} from '../../domain/factura-gasto.model';
 
 const euros = (centimos: number): number => Math.round(centimos) / 100;
 const mm = (n: number) => String(n).padStart(2, '0');
@@ -321,6 +330,8 @@ export interface RetencionesActividades {
   retenciones: number;
   /** Desglose por el tipo de retencion de las facturas (15 %, 7 %...), para las pantallas. */
   porTipo: Array<{ porcentaje: number; perceptores: number; base: number; cuota: number }>;
+  /** Facturas anuladas cuya retencion sigue en un 111 presentado. */
+  avisos?: string[];
 }
 
 /** Desglose de las facturas con retencion por su tipo (puro). */
@@ -342,25 +353,82 @@ export function desgloseActividadesPorTipo(
 }
 
 /**
- * Retenciones a profesionales: facturas de gasto confirmadas (no borrador) con
- * retencion y fecha de la factura en el periodo.
+ * Para las facturas ANULADAS con contraasiento: el periodo (`1T`, `05`...) en
+ * que su retencion ya se declaro, si el 111 o el 115 de su fecha contable esta
+ * presentado; null si no. Sin anuladas no consulta nada.
+ */
+export async function retencionDeclaradaEn(
+  companyId: string,
+  codigo: '111' | '115',
+  facturas: DatosFiscalesGasto[],
+): Promise<(f: DatosFiscalesGasto) => string | null> {
+  const anuladas = facturas.filter((f) => f.estado === 'ANULADA' && f.anulacionAsientoId);
+  if (!anuladas.length || !tablaLista('modeloImpuesto')) return () => null;
+  const ejercicios = [...new Set(anuladas.map((f) => Number(fechaContableGasto(f).slice(0, 4))))];
+  const presentados = await prisma.modeloImpuesto.findMany({
+    where: { companyId, codigo, estado: 'presentado', ejercicio: { in: ejercicios } },
+    select: { ejercicio: true, periodo: true },
+  });
+  const claves = new Set(presentados.map((m) => `${m.ejercicio}|${m.periodo}`));
+  return (f) => {
+    if (f.estado !== 'ANULADA') return null;
+    const fecha = fechaContableGasto(f);
+    return periodosDeFecha(fecha).find((p) => claves.has(`${fecha.slice(0, 4)}|${p}`)) ?? null;
+  };
+}
+
+/** Aviso de una anulada cuya retencion sigue en un modelo presentado. */
+export const avisoRetencionAnulada = (numero: string, proveedor: string, codigo: '111' | '115', periodo: string, ejercicio: string) =>
+  `La factura ${numero} de ${proveedor} está anulada, pero su retención se declaró en el ${codigo} del ${periodo} de ${ejercicio}: si no llegaste a pagarla, pide la rectificación de ese modelo.`;
+
+/**
+ * Facturas de gasto de PROFESIONALES con retencion entre dos fechas, una fila
+ * por factura y porcentaje (domain/factura-gasto.model): sin borradores; una
+ * anulada no resta nunca y solo cuenta, en su periodo, si su 111 ya estaba
+ * presentado (con un aviso). Los alquileres no entran (van al 115). La base es
+ * la de las lineas con retencion.
+ */
+async function retencionesProfesionalesEntre(companyId: string, desde: string, hasta: string) {
+  type Fila = {
+    supplierId: string;
+    signo: 1;
+    baseTotal: number;
+    retencionTotal: number;
+    tipoRetencion: number;
+    supplier: { nifCif: string; nombreFiscal: string; cp: string | null; provincia: string | null };
+  };
+  const filas: Fila[] = [];
+  const avisos: string[] = [];
+  if (!tablaLista('expenseInvoice')) return { filas, avisos };
+  const facturas = await prisma.expenseInvoice.findMany({
+    where: { AND: [whereGastosFiscales(companyId, desde, hasta), { tipoGasto: { not: 'ALQUILER' }, retencionTotal: { gt: 0 } }] },
+    include: { lineas: true, supplier: { select: { nifCif: true, nombreFiscal: true, cp: true, provincia: true } } },
+  });
+  const declaradaEn = await retencionDeclaradaEn(companyId, '111', facturas);
+  for (const f of facturas) {
+    const periodo = declaradaEn(f);
+    for (const { signo } of aparicionesRetencionEntre(f, desde, hasta, periodo !== null)) {
+      if (periodo) avisos.push(avisoRetencionAnulada(f.numeroFacturaProveedor ?? f.numeroCompleto, f.supplier.nombreFiscal, '111', periodo, fechaContableGasto(f).slice(0, 4)));
+      for (const d of desgloseRetencionGasto(f)) {
+        filas.push({ supplierId: f.supplierId, signo, baseTotal: d.base, retencionTotal: d.cuota, tipoRetencion: d.porcentaje, supplier: f.supplier });
+      }
+    }
+  }
+  return { filas, avisos };
+}
+
+/**
+ * Retenciones a profesionales [07]-[09]: facturas de gasto con retencion en su
+ * fecha contable (ver retencionesProfesionalesEntre). Los alquileres van al 115.
  */
 export async function retencionesActividades(companyId: string, periodo: PeriodoFiscal): Promise<RetencionesActividades> {
-  if (!tablaLista('expenseInvoice')) return { perceptores: 0, percepciones: 0, retenciones: 0, porTipo: [] };
-  const conIrpf = await prisma.expenseInvoice.findMany({
-    where: {
-      companyId,
-      estado: { not: 'DRAFT' },
-      fechaEmision: { gte: periodo.fechaInicio, lte: periodo.fechaFin },
-      retencionTotal: { gt: 0 },
-    },
-    select: { supplierId: true, retencionTotal: true, baseTotal: true, tipoRetencion: true },
-  });
+  const { filas: conIrpf, avisos } = await retencionesProfesionalesEntre(companyId, periodo.fechaInicio, periodo.fechaFin);
   return {
     perceptores: new Set(conIrpf.map((f) => f.supplierId)).size,
     percepciones: euros(conIrpf.reduce((a, f) => a + aCentimos(Number(f.baseTotal)), 0)),
     retenciones: euros(conIrpf.reduce((a, f) => a + aCentimos(Number(f.retencionTotal)), 0)),
     porTipo: desgloseActividadesPorTipo(conIrpf),
+    ...(avisos.length ? { avisos } : {}),
   };
 }
 
@@ -629,7 +697,10 @@ export function perceptoresProfesionales(
     g._ret += aCentimos(Number(f.retencionTotal));
     g.documentos++;
   }
-  return [...grupos.values()].map(({ _base, _ret, ...p }) => ({ ...p, percepcionIntegra: euros(_base), retenciones: euros(_ret) }));
+  // Un registro a cero no se declara (no es un perceptor).
+  return [...grupos.values()]
+    .filter((g) => g._base !== 0 || g._ret !== 0)
+    .map(({ _base, _ret, ...p }) => ({ ...p, percepcionIntegra: euros(_base), retenciones: euros(_ret) }));
 }
 
 /**
@@ -654,12 +725,9 @@ export async function calcularModelo190(companyId: string, ejercicio: number): P
     );
   }
 
-  const facturas = tablaLista('expenseInvoice')
-    ? await prisma.expenseInvoice.findMany({
-        where: { companyId, estado: { not: 'DRAFT' }, fechaEmision: { gte: anio.fechaInicio, lte: anio.fechaFin }, retencionTotal: { gt: 0 } },
-        select: { supplierId: true, baseTotal: true, retencionTotal: true, tipoRetencion: true, supplier: { select: { nifCif: true, nombreFiscal: true, cp: true, provincia: true } } },
-      })
-    : [];
+  // Clave G: solo profesionales (los alquileres van al 115 y al resumen anual del 115).
+  const { filas: facturas, avisos: avisosAnuladas } = await retencionesProfesionalesEntre(companyId, anio.fechaInicio, anio.fechaFin);
+  avisos.push(...avisosAnuladas);
 
   const perceptores = [
     ...perceptoresDeNominas(ejercicio, nominas, empleados),

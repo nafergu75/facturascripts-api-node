@@ -25,7 +25,7 @@ import express from 'express';
 import request from 'supertest';
 import * as XLSX from 'xlsx';
 import { prisma } from '../config/database';
-import { letraNif } from '../utils/nif';
+import { controlCif, letraNif } from '../utils/nif';
 import { anularNominas, borrarNomina, confirmarImportacion, contabilizarNominas, crearNomina, actualizarNomina } from '../services/nominas.service';
 import { crearEmpleado } from '../services/empleados.service';
 import { calcularModelo190, periodoFiscal, retencionesTrabajo } from '../services/nominas/fiscal';
@@ -336,10 +336,19 @@ describe('auditoria, PDF borrados, atrasos y lector de gastos', () => {
   });
 
   it('lector de gastos: el recibo de la SS se registra en una empresa sin trabajadores; con trabajadores, va a Nominas', async () => {
-    const recibo = { tipoDocumento: 'seguros_sociales', numeroFactura: 'RLC-03', proveedor: 'TGSS', fecha: '2026-03-31', base: 320, iva: 0, total: 320, cuentaContableBase: '642000' };
-    // Sin trabajadores no lo frena Nominas; el registro desde el lector aun no existe (501, no un alta fingida).
+    const recibo = {
+      tipoDocumento: 'seguros_sociales',
+      proveedor: { nuevo: { nombreFiscal: 'Tesorería General de la Seguridad Social', nifCif: `Q2827003${controlCif('2827003').letra}` } },
+      numeroFacturaProveedor: 'RLC-03',
+      fechaEmision: '2026-03-31',
+      tipoGasto: 'SUMINISTROS',
+      cuentaContableBase: '642',
+      lineas: [{ descripcion: 'Seguros sociales', cantidad: 1, precioUnitario: 320, tipoIva: 0 }],
+    };
+    // Sin trabajadores no lo frena Nominas: se registra como gasto (pendiente de revisar).
     const sin = await request(app(R5)).post('/gastos-extractor/confirmar').send(recibo);
-    expect(sin.status).toBe(501);
+    expect(sin.status).toBe(201);
+    expect(sin.body.data.factura).toMatchObject({ estado: 'DRAFT', cuentaGasto: '642', totalFactura: 320 });
     const con = await request(app(R4)).post('/gastos-extractor/confirmar').send(recibo);
     expect(con.status).toBe(400);
     expect(con.body.message).toMatch(/Seguridad Social/);

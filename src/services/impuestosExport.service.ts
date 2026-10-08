@@ -407,6 +407,19 @@ export function generarFicheroModelo390(nif: string, ejercicio: number, datos: D
 }
 
 /**
+ * El 111 y el 115 no admiten casillas negativas (lo declarado de mas se
+ * rectifica en su periodo): antes se escribia su valor absoluto y el fichero
+ * no casaba con la pantalla. Ahora no se genera.
+ */
+function sinCasillasNegativas(modelo: '111' | '115', importes: number[]): void {
+  if (importes.some((v) => Math.round((Number(v) || 0) * 100) < 0)) {
+    throw badRequest(
+      `El ${modelo} sale con importes negativos y no admite casillas negativas: revisa las facturas anuladas del periodo. Si declaraste de más en otro periodo, se rectifica ese modelo.`,
+    );
+  }
+}
+
+/**
  * Modelo 111 (retenciones IRPF) — diseno OFICIAL v1.9. Fichero = cabecera/envoltura
  * <AUX> (328) + pagina M11101 (1000) + cierre (18). La envoltura del 111 trae sus
  * constantes literales (a diferencia del 303/390): pos6 '0', pos13 '0000>',
@@ -426,6 +439,16 @@ export function generarFicheroModelo111(
   datos: DatosModelo111,
   opts: { denominacion?: string; versionPrograma?: string; nifEmpresaDesarrollo?: string } = {},
 ): string {
+  sinCasillasNegativas('111', [
+    datos.percepcionesTrabajo,
+    datos.retencionesTrabajo,
+    datos.percepcionesEspecie ?? 0,
+    datos.ingresosACuentaEspecie ?? 0,
+    datos.percepcionesActividades ?? 0,
+    datos.retencionesActividades ?? 0,
+    datos.totalRetenciones,
+    datos.resultadoIngresar,
+  ]);
   const cents = (v: number): number => Math.round(Math.abs(v) * 100);
 
   // --- Pagina M11101 (1000 chars), mayoritariamente numerica -> ceros ---
@@ -493,6 +516,7 @@ export function generarFicheroModelo115(
   datos: DatosModelo115,
   opts: { razonSocial?: string; versionPrograma?: string; nifEmpresaDesarrollo?: string } = {},
 ): string {
+  sinCasillasNegativas('115', [datos.baseRetenciones, datos.retenciones, datos.resultadoAnteriores, datos.resultadoIngresar]);
   const cents = (v: number): number => Math.round(Math.abs(v) * 100);
 
   const p = new Array(500).fill('0') as string[];

@@ -156,10 +156,11 @@ describe('enlaces de las respuestas', () => {
     expect(hrefValido('https://otra-web.com')).toBe(false);
   });
 
-  it('la Bandeja OCR, retirada del menú, no sale ni en el mapa ni en las fichas', () => {
+  it('la Bandeja OCR, retirada del menú, no sale ni en el mapa ni en las fichas (el lector de gastos sí)', () => {
+    expect(PANTALLAS.some((p) => p.href === '/dashboard/compras/lector-gastos')).toBe(true);
     expect(hrefValido('/dashboard/ocr')).toBe(false);
     expect(JSON.stringify(PANTALLAS)).not.toMatch(/Bandeja OCR|\/dashboard\/ocr/);
-    expect(JSON.stringify(FICHAS)).not.toMatch(/Bandeja OCR|\/dashboard\/ocr|lector-gastos/);
+    expect(JSON.stringify(FICHAS)).not.toMatch(/Bandeja OCR|\/dashboard\/ocr/);
   });
 
   // Solo en local, con el frontend al lado: cada pantalla existe en app/dashboard.

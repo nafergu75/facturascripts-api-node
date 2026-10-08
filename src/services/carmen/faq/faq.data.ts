@@ -94,7 +94,7 @@ export const FICHAS: FichaFAQ[] = [
     pregunta: '¿Dónde registro una factura de un proveedor?',
     variantes: ['como meto un gasto', 'registrar factura de compra', 'donde subo las facturas de proveedores', 'apuntar un gasto', 'meter una factura recibida', 'escanear factura de gasto', 'subir ticket de gasto'],
     respuesta:
-      'Las facturas de proveedor van en Compras → Compras. La lectura automática de PDF y fotos aún no está disponible, así que los datos de la factura se meten a mano. Después, desde la ficha de la factura, la contabilizas y apruebas su asiento en Contabilidad → Motor contable. Los pagos al proveedor también se registran en esa ficha.',
+      'Las facturas de proveedor se dan de alta en Compras → Compras, con «Nueva factura de gasto»: al guardarla queda anotada en la contabilidad y en el libro de IVA. Si la tienes en PDF o en foto, usa Compras → Lector de gastos: lee los datos, los revisas y, al registrarla, su asiento queda en borrador hasta que lo apruebes en Contabilidad → Motor contable. Los pagos al proveedor se apuntan en la ficha de la factura.',
     fuente: APP('/dashboard/compras', 'Compras'),
     ...VERIFICADA,
     enlaceApp: { texto: 'Ir a Compras', href: '/dashboard/compras' },
@@ -637,7 +637,7 @@ export const FICHAS: FichaFAQ[] = [
     pregunta: '¿Qué es el modelo 111?',
     variantes: ['para que sirve el 111', 'modelo de retenciones de trabajadores y profesionales', 'que reviso en el modelo 111', 'quien presenta el 111', 'explicacion del modelo 111'],
     respuesta:
-      'Con el modelo 111 se ingresan las retenciones de IRPF que la empresa o el autónomo ha practicado: las de las nóminas de sus trabajadores y las de las facturas de profesionales, entre otras. Se presenta cada trimestre, en los veinte primeros días de abril, julio, octubre y enero, y cada mes en las grandes empresas. Antes de presentarlo, comprueba que las facturas de profesionales con retención están registradas y que el total cuadra con el saldo de la cuenta 4751. El resumen anual es el modelo 190.',
+      'Con el modelo 111 se ingresan las retenciones de IRPF que la empresa o el autónomo ha practicado: las de las nóminas de sus trabajadores y las de las facturas de profesionales, entre otras. Se presenta cada trimestre, en los veinte primeros días de abril, julio, octubre y enero, y cada mes en las grandes empresas. Antes de presentarlo, comprueba que las facturas de profesionales con retención están registradas y que el total cuadra con la parte de nóminas y de profesionales de la cuenta 4751 (las retenciones de alquileres también van a la 4751, pero se ingresan con el modelo 115). El resumen anual es el modelo 190.',
     fuente: BOE('BOE-A-2007-6820', 'a108', 'Reglamento del IRPF (RD 439/2007), artículo 108'),
     ...VERIFICADA,
     enlaceApp: { texto: 'Ir al Modelo 111', href: '/dashboard/fiscal/modelo-111' },

@@ -25,7 +25,10 @@ import {
   generarCasillas390,
   ModeloFiscalAuditoria,
 } from '../utils/aeat-models';
-import type { DatosModelo111 } from '../domain/impuestos.model';
+import type { DatosModelo111, DatosModelo115 } from '../domain/impuestos.model';
+import { calcularModelo115 } from './impuestosCalculo.service';
+import { periodoFiscal } from './nominas/fiscal';
+import { aparicionesEntre, importe347Gasto, whereGastosFiscales } from '../domain/factura-gasto.model';
 import { calcularCasillasModelo } from './impuestosModulo.service';
 import type { Modelo190 } from './nominas/fiscal';
 
@@ -514,17 +517,14 @@ export class TaxModelsService {
       })
     ).filter((f) => fechaDevengoVenta(f).startsWith(`${ejercicio}-`));
 
-    // Obtener proveedores (facturas de gasto)
+    // Obtener proveedores (facturas de gasto), con el criterio fiscal de las
+    // facturas de gasto: sin borradores del lector ni anuladas; una anulada con
+    // contraasiento en el ano siguiente resta en ese ano.
     const proveedoresFacturas = await prisma.expenseInvoice.findMany({
-      where: {
-        companyId,
-        fechaEmision: {
-          gte: `${ejercicio}-01-01`,
-          lte: `${ejercicio}-12-31`,
-        },
-      },
+      where: whereGastosFiscales(companyId, `${ejercicio}-01-01`, `${ejercicio}-12-31`),
       include: {
         supplier: true,
+        lineas: true,
       },
     });
 
@@ -576,28 +576,33 @@ export class TaxModelsService {
       });
     }
 
-    // Procesar proveedores
+    // Procesar proveedores (una operacion por aparicion fiscal en el ano, con su signo)
     for (const factura of proveedoresFacturas) {
       if (!factura.supplier.nifCif || !espanol(factura.supplier.pais)) continue;
+      // Sin las lineas con retencion de IRPF: ya van en el 190 o en el 180 (art. 33.2 RD 1065/2007).
+      const importeCompra = importe347Gasto(factura);
+      if (importeCompra === 0) continue;
+      for (const { signo } of aparicionesEntre(factura, `${ejercicio}-01-01`, `${ejercicio}-12-31`)) {
+        const key = `proveedor-${factura.supplier.nifCif}`;
+        if (!tercerosMapa.has(key)) {
+          tercerosMapa.set(key, {
+            nif: factura.supplier.nifCif,
+            nombre: factura.supplier.nombreFiscal || 'Sin nombre',
+            tipoTercero: 'proveedor',
+            totalOperaciones: 0,
+            operaciones: [],
+          });
+        }
 
-      const key = `proveedor-${factura.supplier.nifCif}`;
-      if (!tercerosMapa.has(key)) {
-        tercerosMapa.set(key, {
-          nif: factura.supplier.nifCif,
-          nombre: factura.supplier.nombreFiscal || 'Sin nombre',
-          tipoTercero: 'proveedor',
-          totalOperaciones: 0,
-          operaciones: [],
+        const tercero = tercerosMapa.get(key)!;
+        tercero.totalOperaciones += signo * importeCompra;
+        tercero.operaciones.push({
+          tipoOperacion: 'compra',
+          importe: signo * importeCompra,
+          id: factura.id,
+          numero: factura.numeroFacturaProveedor ?? factura.numeroCompleto,
         });
       }
-
-      const tercero = tercerosMapa.get(key)!;
-      tercero.totalOperaciones += importe(factura);
-      tercero.operaciones.push({
-        tipoOperacion: 'compra',
-        importe: importe(factura),
-        id: factura.id,
-      });
     }
 
     const terceros = Array.from(tercerosMapa.values())
@@ -707,11 +712,12 @@ export class TaxModelsService {
   }
 
   /**
-   * MODELO 115: ARRENDAMIENTOS LOCALES (TRIMESTRAL)
+   * MODELO 115: RETENCIONES POR ALQUILERES (TRIMESTRAL)
    *
-   * Genera modelo 115 a partir de:
-   * - Facturas de arrendamiento sujetas a retención IRPF
-   * - Cuentas contables: 621 (arrendamiento), 721 (otros arrendamientos)
+   * Lo calcula el modulo Impuestos (calcularModelo115: facturas de gasto de
+   * ALQUILER con retencion, con el criterio fiscal de las facturas de gasto),
+   * como el 111. Se guarda en ModeloImpuesto con las mismas reglas: un modelo
+   * presentado, omitido o editado a mano no se recalcula.
    */
   async generarModelo115(
     companyId: string,
@@ -719,6 +725,7 @@ export class TaxModelsService {
     trimestre: number,
     userId?: string
   ): Promise<{
+    id: string;
     ejercicio: number;
     trimestre: number;
     baseImponible: number;
@@ -726,80 +733,20 @@ export class TaxModelsService {
     retencion: number;
     operaciones: number;
     estado: string;
-    casillas: any;
-    id: string;
+    casillas: Record<string, number>;
+    casillasOficiales: CasillasGuardadas;
+    perceptores: NonNullable<DatosModelo115['perceptores']>;
+    avisos: string[];
   }> {
     // Una empresa no establecida en Espana no presenta modelos de la AEAT.
     await exigirEmpresaEspanola(companyId);
-    // Validar trimestre
-    if (trimestre < 1 || trimestre > 4) {
+    if (!Number.isInteger(trimestre) || trimestre < 1 || trimestre > 4) {
       throw badRequest('Trimestre debe estar entre 1 y 4');
     }
-
-    // Calcular meses del trimestre
-    const startMonth = (trimestre - 1) * 3 + 1;
-    const endMonth = trimestre * 3;
-    const startDate = `${ejercicio}-${String(startMonth).padStart(2, '0')}-01`;
-    const endDate = `${ejercicio}-${String(endMonth).padStart(2, '0')}-${endMonth === 2 ? '28' : '31'}`;
-
-    // Obtener facturas de arrendamiento del período
-    // Se buscan en las facturas de gasto con conceptos de arrendamiento
-    const arrendamientos = await prisma.expenseInvoice.findMany({
-      where: {
-        companyId,
-        fechaEmision: {
-          gte: startDate,
-          lte: endDate,
-        },
-        // Nota: En un MVP, se filtran por nombre del proveedor o concepto
-        // Ideally, debería haber una categoría/tipo de factura específica
-      },
-      include: {
-        supplier: true,
-      },
-    });
-
-    // Filtrar solo arrendamientos (esto es una simplificación MVP)
-    // En producción, se consultaría una tabla de categorías o conceptos
-    const sonArrendamientos = arrendamientos.filter(
-      (f) =>
-        f.observaciones?.toLowerCase().includes('arrendamiento') ||
-        f.observaciones?.toLowerCase().includes('alquiler') ||
-        f.supplier.nombreFiscal?.toLowerCase().includes('alquiler')
-    );
-
-    // Calcular totales
-    let baseImponible = 0;
-    let totalRetencion = 0;
-    const desgloseArrendamientos = [];
-
-    for (const arr of sonArrendamientos) {
-      baseImponible += arr.totalFactura;
-      totalRetencion += arr.retencionTotal || 0;
-
-      desgloseArrendamientos.push({
-        nifArrendador: arr.supplier.nifCif || '',
-        nombreArrendador: arr.supplier.nombreFiscal || 'Sin nombre',
-        base: arr.totalFactura,
-        retencion: arr.retencionTotal || 0,
-        concepto: arr.observaciones || 'Arrendamiento',
-      });
-    }
-
-    // Porcentaje efectivo de retención (típicamente 15% en arrendamientos)
-    const porcentajeRetencion = baseImponible > 0 ? (totalRetencion / baseImponible) * 100 : 0;
-
-    // Generar casillas AEAT
-    const casillas = generarCasillas115({
-      baseImponible,
-      porcentajeRetencion: Math.round(porcentajeRetencion * 100) / 100,
-      retencion: totalRetencion,
-      operaciones: sonArrendamientos.length,
-      trimestre,
-      desgloseArrendamientos,
-    });
-
-    // Auditoría
+    const periodo = `${trimestre}T`;
+    const calculo = await calcularCasillasModelo(companyId, '115', ejercicio, periodo);
+    const oficiales = calculo.casillas as CasillasGuardadas;
+    const datos = calculo.datos as DatosModelo115;
     const auditoria: ModeloFiscalAuditoria = {
       generadoPor: userId || 'SYSTEM',
       generadoEn: new Date().toISOString(),
@@ -807,62 +754,30 @@ export class TaxModelsService {
       version: `${ejercicio}.Q${trimestre}`,
     };
 
-    // Buscar modelo existente
-    let modelo = await prisma.modeloImpuesto.findUnique({
-      where: {
-        companyId_codigo_ejercicio_periodo: {
-          companyId,
-          codigo: '115',
-          ejercicio,
-          periodo: `${trimestre}T`,
-        },
-      },
-    });
-
-    // Crear o actualizar modelo
+    const clave = { companyId_codigo_ejercicio_periodo: { companyId, codigo: '115', ejercicio, periodo } };
+    let modelo = await prisma.modeloImpuesto.findUnique({ where: clave });
     if (!modelo) {
       modelo = await prisma.modeloImpuesto.create({
-        data: {
-          companyId,
-          codigo: '115',
-          ejercicio,
-          periodo: `${trimestre}T`,
-          estado: 'vigente',
-          casillas,
-          datos: {
-            baseImponible,
-            porcentajeRetencion,
-            retencion: totalRetencion,
-            operaciones: sonArrendamientos.length,
-            periodoDescription: `Q${trimestre}-${ejercicio}`,
-            desgloseArrendamientos,
-            auditoria,
-          },
-          origen: 'autorrelleno',
-        },
+        data: { companyId, codigo: '115', ejercicio, periodo, estado: 'vigente', casillas: oficiales as never, datos: { ...datos, auditoria } as never, origen: 'autorrelleno' },
       });
-    } else if (modelo.estado !== 'presentado' && modelo.estado !== 'omitido') {
-      // Un modelo presentado u omitido no se recalcula: lo guardado tiene que
-      // seguir siendo lo que se presento, aunque luego cambie una factura.
+    } else if (modelo.estado !== 'presentado' && modelo.estado !== 'omitido' && modelo.origen !== 'manual-mixto') {
+      // Se conservan los datos de la empresa (config_*) que guarda el modulo Impuestos.
+      const previas = (modelo.casillas as CasillasGuardadas | null) ?? {};
+      const config = Object.fromEntries(Object.entries(previas).filter(([k]) => k.startsWith('config_')));
       modelo = await prisma.modeloImpuesto.update({
         where: { id: modelo.id },
-        data: {
-          casillas,
-          datos: {
-            baseImponible,
-            porcentajeRetencion,
-            retencion: totalRetencion,
-            operaciones: sonArrendamientos.length,
-            periodoDescription: `Q${trimestre}-${ejercicio}`,
-            desgloseArrendamientos,
-            auditoria,
-          },
-          origen: 'autorrelleno',
-        },
+        data: { casillas: { ...oficiales, ...config } as never, datos: { ...datos, auditoria } as never, origen: 'autorrelleno' },
       });
     }
 
-    // Registrar auditoría
+    // Lo guardado manda (presentado o editado a mano); si es de antes (otro formato), el calculo.
+    const guardadas = (modelo.casillas as CasillasGuardadas | null) ?? {};
+    const base = '03_retenciones' in guardadas ? guardadas : oficiales;
+    const v = (k: string) => Number(base[k] ?? 0) || 0;
+    const avisos: string[] = [...(datos.avisos ?? [])];
+    if (modelo.estado === 'presentado') avisos.push('Modelo presentado: se muestran las casillas tal como se presentaron, aunque después hayan cambiado las facturas.');
+    else if (modelo.origen === 'manual-mixto') avisos.push('Casillas editadas a mano en Impuestos: se muestran tal como se guardaron.');
+
     await registrarAuditoria({
       userId: userId || 'SYSTEM',
       companyId,
@@ -871,16 +786,69 @@ export class TaxModelsService {
       resourceId: `115-${ejercicio}-${trimestre}T`,
     });
 
+    const baseImponible = v('02_base');
+    const retencion = v('03_retenciones');
     return {
       id: modelo.id,
       ejercicio,
       trimestre,
       baseImponible,
-      porcentajeRetencion,
-      retencion: totalRetencion,
-      operaciones: sonArrendamientos.length,
+      porcentajeRetencion: baseImponible ? Math.round((retencion / baseImponible) * 10000) / 100 : 0,
+      retencion,
+      operaciones: (datos.perceptores ?? []).reduce((a, p) => a + p.facturas, 0),
       estado: modelo.estado,
-      casillas,
+      casillas: { '01': v('01_perceptores'), '02': baseImponible, '03': retencion, '04': v('04_anteriores'), '05': v('05_resultado') },
+      casillasOficiales: base,
+      perceptores: datos.perceptores ?? [],
+      avisos,
+    };
+  }
+
+  /**
+   * Resumen anual del 115 (los datos del modelo 180): los cuatro trimestres
+   * y el total por arrendador. Solo lee: no escribe en ModeloImpuesto.
+   */
+  async resumenAnual115(
+    companyId: string,
+    ejercicio: number
+  ): Promise<{
+    ejercicio: number;
+    totalBase: number;
+    totalRetenido: number;
+    estado: 'vigente';
+    casillas: Record<string, never>;
+    desgloseTrimestral: Array<{ numero: number; base: number; cuota: number; operaciones: number; estado: string }>;
+    arrendadores: NonNullable<DatosModelo115['perceptores']>;
+    avisos: string[];
+  }> {
+    await exigirEmpresaEspanola(companyId);
+    const guardados = await prisma.modeloImpuesto.findMany({
+      where: { companyId, codigo: '115', ejercicio, periodo: { in: ['1T', '2T', '3T', '4T'] } },
+      select: { periodo: true, estado: true },
+    });
+    const desgloseTrimestral = [];
+    for (const numero of [1, 2, 3, 4]) {
+      const d = await calcularModelo115(companyId, periodoFiscal(ejercicio, `${numero}T`));
+      desgloseTrimestral.push({
+        numero,
+        base: d.baseRetenciones,
+        cuota: d.retenciones,
+        operaciones: (d.perceptores ?? []).reduce((a, p) => a + p.facturas, 0),
+        estado: guardados.find((g) => g.periodo === `${numero}T`)?.estado ?? 'vigente',
+      });
+    }
+    const anual = await calcularModelo115(companyId, periodoFiscal(ejercicio, '0A'));
+    const avisos: string[] = [];
+    if (!anual.perceptores?.length) avisos.push(`No hay facturas de alquiler con retención en ${ejercicio}.`);
+    return {
+      ejercicio,
+      totalBase: anual.baseRetenciones,
+      totalRetenido: anual.retenciones,
+      estado: 'vigente',
+      casillas: {},
+      desgloseTrimestral,
+      arrendadores: anual.perceptores ?? [],
+      avisos,
     };
   }
 

@@ -9,7 +9,7 @@
  * - Registrar auditoría de todas las operaciones
  */
 
-import { badRequest, notFound, notImplemented } from '../utils/http-errors';
+import { badRequest, conflict, notFound, notImplemented } from '../utils/http-errors';
 import { registrarAuditoria } from '../services/auditoria.service';
 import { accountingEngineService, desgloseIvaPorTipo } from '../services/accounting-engine.service';
 import { prisma } from '../config/database';
@@ -18,6 +18,7 @@ import { asegurarPlanContableEmpresa } from '../services/chart-of-accounts.servi
 import { perfilEmpresa } from '../services/perfilEmpresa.service';
 import { motivoSinTipoFijado, notaDivisa } from '../domain/divisas';
 import { esTipoOperacion, fechaDevengoVenta } from '../domain/tipo-operacion.model';
+import { cuentaAcreedorDePagos, datosContablesGasto, motivoPeriodoBloqueado, retencionDe } from '../services/expense-invoices.service';
 
 export class AccountingEngineController {
   /**
@@ -192,6 +193,13 @@ export class AccountingEngineController {
           `La factura de gasto está en estado "${factura.estado}" (ya contabilizada) y no puede contabilizarse otra vez.`,
         );
       }
+      if (factura.estado === 'ANULADA' || factura.estado === 'DRAFT') {
+        throw badRequest(
+          factura.estado === 'ANULADA'
+            ? 'La factura está anulada: no se contabiliza.'
+            : 'La factura está pendiente de revisar: su asiento en borrador está en el Motor contable.',
+        );
+      }
 
       // Evitar doble contabilización
       const entryExistente = await prisma.journalEntry.findFirst({
@@ -208,26 +216,15 @@ export class AccountingEngineController {
       }
 
       // Transacción atómica: crear asiento + líneas + VATBook + RetentionBook + marcar factura
+      // Los mismos datos que el alta: la fecha de registro (si se recibio mas
+      // tarde), la cuenta de cada linea, la base de las lineas con retencion y,
+      // si ya tiene pagos, la cuenta del proveedor que usaron (400 o 410).
+      const cuentaAcreedor = await cuentaAcreedorDePagos(companyId, invoiceId);
       const result = await prisma.$transaction(async (tx) => {
         const asiento = await accountingEngineService.contabilizarFacturaGasto(
           companyId,
           invoiceId,
-          {
-            baseTotal: factura.baseTotal,
-            ivaTotal: factura.ivaTotal,
-            ivaRate: factura.tipoIva,
-            retencionTotal: factura.retencionTotal,
-            retencionRate: factura.tipoRetencion,
-            // Facturas antiguas sin lineas: el servicio cae en los totales de cabecera.
-            desgloseIva: desgloseIvaPorTipo(factura.lineas),
-            totalFactura: factura.totalFactura,
-            fechaEmision: factura.fechaEmision,
-            numeroFactura: factura.numeroCompleto,
-            proveedorId: factura.supplierId,
-            proveedorNif: factura.supplier.nifCif,
-            proveedorNombre: factura.supplier.nombreFiscal,
-            tipoGasto: factura.tipoGasto as 'COMPRA' | 'SERVICIO_PROFESIONAL' | 'ALQUILER' | 'SUMINISTROS',
-          },
+          datosContablesGasto(factura, factura.supplier, { estadoAsiento: 'POSTED', cuentaAcreedor }),
           tx,
         );
 
@@ -327,14 +324,36 @@ export class AccountingEngineController {
         }
       }
 
-      // Actualizar estado
+      // El borrador de una factura de gasto (lector) no entra en un periodo con
+      // el 303 (o el 111/115) ya presentado: se cambia antes la fecha de registro.
+      if (asiento.origen === 'FACTURA_GASTO' && asiento.invoiceId) {
+        const gasto = await prisma.expenseInvoice.findFirst({
+          where: { id: asiento.invoiceId, companyId },
+          select: { tipoGasto: true, retencionTotal: true },
+        });
+        const motivo = gasto ? await motivoPeriodoBloqueado(companyId, asiento.fecha.toISOString().slice(0, 10), retencionDe(gasto)) : null;
+        if (motivo) {
+          throw conflict(`${motivo}: modifica la factura y, si la recibiste más tarde, pon en «¿La recibiste más tarde?» la fecha en que te llegó, de un periodo sin presentar. Después aprueba el asiento.`);
+        }
+      }
+
+      // Actualizar estado. Si es el borrador de una factura de gasto del lector,
+      // la factura pasa a contabilizada en la misma transaccion.
       const ahora = new Date();
-      const asientoActualizado = await prisma.journalEntry.update({
-        where: { id: journalEntryId },
-        data: {
-          estado: 'POSTED',
-          updatedAt: ahora,
-        },
+      await prisma.$transaction(async (tx) => {
+        await tx.journalEntry.update({
+          where: { id: journalEntryId },
+          data: {
+            estado: 'POSTED',
+            updatedAt: ahora,
+          },
+        });
+        if (asiento.origen === 'FACTURA_GASTO') {
+          await tx.expenseInvoice.updateMany({
+            where: { id: asiento.invoiceId ?? '', companyId, estado: 'DRAFT' },
+            data: { estado: 'ACCOUNTED' },
+          });
+        }
       });
 
       // Auditoría
@@ -461,7 +480,8 @@ export class AccountingEngineController {
           errores,
           advertencias: [],
         },
-        permitidoAprobar: asiento.estado === 'PENDING_REVIEW',
+        // Lo mismo que acepta aprobarAsiento.
+        permitidoAprobar: ['DRAFT', 'PENDING_REVIEW'].includes(asiento.estado),
         permitidoAjustar: ['DRAFT', 'PENDING_REVIEW'].includes(asiento.estado),
       };
     } catch (err) {

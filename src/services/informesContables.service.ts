@@ -38,6 +38,7 @@ import {
   type TipoTercero,
 } from './informesContables.calculo';
 import { fechaES, num, textoPeriodo, type FilaInforme, type TablaInforme } from './informesContables.documentos';
+import { GASTO_VIGENTE } from '../domain/factura-gasto.model';
 
 const round2 = (n: number): number => Math.round((n + Number.EPSILON) * 100) / 100;
 
@@ -487,7 +488,7 @@ export async function pendientesSegunFacturas(companyId: string, tipo: TipoTerce
         ).map(({ customerId, ...f }) => ({ ...f, terceroId: customerId }))
       : (
           await prisma.expenseInvoice.findMany({
-            where: { companyId, estado: { not: 'DRAFT' }, fechaEmision: { lte: hasta } },
+            where: { companyId, ...GASTO_VIGENTE, fechaEmision: { lte: hasta } },
             select: { id: true, supplierId: true, numeroCompleto: true, fechaEmision: true, fechaVencimiento: true, totalFactura: true, estadoPago: true },
             orderBy: { fechaEmision: 'asc' },
           })

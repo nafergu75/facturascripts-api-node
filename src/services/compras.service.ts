@@ -1,7 +1,7 @@
 /**
  * Compras (facturas de gasto) — MIGRADO de FacturaScripts a Prisma (modelo
  * `ExpenseInvoice`), épico FS→Prisma (ADR-002). Solo lectura (list/getById); el
- * alta va por el lector de facturas. Mantiene los endpoints /companies/:id/compras
+ * alta, la edicion y la anulacion van por /expense-invoices. Mantiene los endpoints /companies/:id/compras
  * (el frontend Chakra no cambia). La forma de respuesta conserva los alias FS
  * (codigo/nombre/neto/totaliva/total) que espera el front.
  */
@@ -21,6 +21,8 @@ interface ExpenseRow {
   ivaTotal: number;
   retencionTotal: number;
   totalFactura: number;
+  numeroFacturaProveedor?: string | null;
+  estadoPago?: string;
   supplier?: { nombreFiscal: string } | null;
 }
 
@@ -40,6 +42,8 @@ function aCompra(f: ExpenseRow): Record<string, unknown> {
     totaliva: f.ivaTotal,
     retencion: f.retencionTotal,
     total: f.totalFactura,
+    numeroFacturaProveedor: f.numeroFacturaProveedor ?? null,
+    estadoPago: f.estadoPago ?? null,
   };
 }
 
@@ -64,7 +68,7 @@ export const comprasService: CompanyScopedService = {
   },
 
   async create(): Promise<unknown> {
-    throw notImplemented('El alta de compras se hace por el lector de facturas (income-reader).');
+    throw notImplemented('El alta de facturas de gasto es POST /expense-invoices.');
   },
   async update(): Promise<unknown> {
     throw notImplemented('Edición de compras no implementada.');
