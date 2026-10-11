@@ -33,7 +33,17 @@ import {
 import { calcularModelo200 } from './impuestoSociedadesCalculo.service';
 import { calcularModelo190 } from './nominas/fiscal';
 import { conservarNumeracion190 } from './nominas/numeracion190';
-import { casillasAGuardadas, casillasDeDatos111, casillasDeDatos115, declaracionDeGuardadas, esOpcion, ficheroDeclaracion } from './aeatRetenciones/declaracion';
+import {
+  casillasAGuardadas,
+  casillasDeDatos111,
+  casillasDeDatos115,
+  declaracionDeGuardadas,
+  esOpcion,
+  ficheroDeclaracion,
+  tieneCasillasGuardadas,
+  type DeclaracionRetenciones,
+} from './aeatRetenciones/declaracion';
+import { PERIODO_111_115 } from './aeatRetenciones/diseno';
 import {
   envolverFichero,
   generarFicheroModelo200,
@@ -702,8 +712,109 @@ export async function generarTxt303Trimestre(companyId: string, ejercicio: numbe
   };
 }
 
+/** Declaracion del 111 o del 115 de un periodo y de donde salen sus cifras. */
+export interface DeclaracionRetencionesPeriodo {
+  /** La fila de ModeloImpuesto (ya guardada si se ha recalculado). */
+  fila: FilaModelo;
+  declaracion: DeclaracionRetenciones;
+  /** Datos del calculo: los de ahora si se ha recalculado; si no, los guardados (o los de ahora si no hay). */
+  datos: DatosModelo111 | DatosModelo115;
+  /**
+   * 'recalculado': sin presentar, recalculado con la contabilidad de hoy y guardado.
+   * 'guardado': presentado, omitido o editado a mano (lo guardado manda).
+   * 'guardado-antiguo': presentado antes de que se guardaran las casillas: se rehacen con los datos guardados.
+   * 'calculado-sin-guardar': presentado sin casillas ni datos guardados: solo queda el calculo de hoy.
+   */
+  fuente: 'recalculado' | 'guardado' | 'guardado-antiguo' | 'calculado-sin-guardar';
+}
+
+const datosDeRetenciones = (codigo: '111' | '115', d: unknown): DatosModelo111 | DatosModelo115 | null => {
+  if (!d || typeof d !== 'object') return null;
+  const x = d as Record<string, unknown>;
+  if (codigo === '111') return typeof x.totalRetenciones === 'number' && typeof x.resultadoIngresar === 'number' ? (d as DatosModelo111) : null;
+  return typeof x.retenciones === 'number' && typeof x.resultadoIngresar === 'number' ? (d as DatosModelo115) : null;
+};
+
+/** Fila de ModeloImpuesto de un modelo y periodo; se crea (vigente) si aun no existe. */
+async function filaDePeriodo(companyId: string, codigo: string, ejercicio: number, periodo: string): Promise<FilaModelo> {
+  if (dbOk()) {
+    const clavePrisma = { companyId_codigo_ejercicio_periodo: { companyId, codigo, ejercicio, periodo } };
+    let f = await prisma.modeloImpuesto.findUnique({ where: clavePrisma });
+    if (!f) {
+      try {
+        f = await prisma.modeloImpuesto.create({ data: { companyId, codigo, ejercicio, periodo, estado: 'vigente' } });
+      } catch {
+        f = await prisma.modeloImpuesto.findUniqueOrThrow({ where: clavePrisma });
+      }
+    }
+    return { ...f, casillas: (f.casillas as Casillas | null) ?? null, datos: f.datos ?? null };
+  }
+  const k = clave(companyId, codigo, ejercicio, periodo);
+  if (!memoria.has(k)) memoria.set(k, { id: k, companyId, codigo, ejercicio, periodo, estado: 'vigente', casillas: null, datos: null, origen: null });
+  return memoria.get(k)!;
+}
+
+/**
+ * LA fuente del 111 y del 115: la pantalla (tax-models) y el fichero (TXT del
+ * modulo Impuestos) salen de aqui, tambien con filas antiguas o presentadas.
+ *  - Presentado (u omitido): lo guardado, con los datos de la empresa con que
+ *    se guardo. Una fila presentada de antes del formato actual se rehace con
+ *    sus datos guardados; si no los tiene, con el calculo de hoy (fuente
+ *    'calculado-sin-guardar', con aviso).
+ *  - Editado a mano (manual-mixto): sus casillas, con los datos de la empresa de hoy.
+ *  - Si no: se recalcula con la contabilidad de hoy y se guarda (lo mismo que
+ *    «Recalcular importes»), para no descargar cifras viejas.
+ */
+export async function declaracionRetenciones(
+  companyId: string,
+  codigo: '111' | '115',
+  ejercicio: number,
+  periodo: string,
+  opts: { auditoria?: Record<string, unknown> } = {},
+): Promise<DeclaracionRetencionesPeriodo> {
+  const p = String(periodo ?? '').toUpperCase();
+  if (!PERIODO_111_115.test(p)) throw badRequest(`El ${codigo} es mensual (01 a 12) o trimestral (1T a 4T): el periodo "${periodo}" no es válido.`);
+  if (!(await esEmpresaEspanolaFiscal(companyId))) throw badRequest(MENSAJE_SIN_MODELOS);
+  const [fila, config] = await Promise.all([filaDePeriodo(companyId, codigo, ejercicio, p), configuracionEmpresa(companyId)]);
+  const guardadas = (fila.casillas ?? {}) as Record<string, unknown>;
+  const calculadasDe = (d: DatosModelo111 | DatosModelo115) => (codigo === '111' ? casillasDeDatos111(d as DatosModelo111) : casillasDeDatos115(d as DatosModelo115));
+  const cerrado = fila.estado === 'presentado' || fila.estado === 'omitido';
+
+  if (cerrado) {
+    const guardados = datosDeRetenciones(codigo, fila.datos);
+    if (tieneCasillasGuardadas(codigo, guardadas) || guardados) {
+      const datos = guardados ?? ((await calcularCasillas(companyId, fila)).datos as DatosModelo111 | DatosModelo115);
+      const fuente = tieneCasillasGuardadas(codigo, guardadas) ? 'guardado' : 'guardado-antiguo';
+      // Los datos de la empresa con que se presento mandan (los de hoy solo si no se guardaron).
+      return { fila, datos, fuente, declaracion: declaracionDeGuardadas(codigo, { ...config, ...guardadas }, ejercicio, p, calculadasDe(datos)) };
+    }
+    const datos = (await calcularCasillas(companyId, fila)).datos as DatosModelo111 | DatosModelo115;
+    return { fila, datos, fuente: 'calculado-sin-guardar', declaracion: declaracionDeGuardadas(codigo, { ...config, ...guardadas }, ejercicio, p, calculadasDe(datos)) };
+  }
+
+  if (fila.origen === 'manual-mixto' && tieneCasillasGuardadas(codigo, guardadas)) {
+    const datos = datosDeRetenciones(codigo, fila.datos) ?? ((await calcularCasillas(companyId, fila)).datos as DatosModelo111 | DatosModelo115);
+    return { fila, datos, fuente: 'guardado', declaracion: declaracionDeGuardadas(codigo, { ...guardadas, ...config }, ejercicio, p, calculadasDe(datos)) };
+  }
+
+  // Sin presentar: el calculo de hoy, guardado (las opciones del borrador se conservan).
+  const { casillas, datos } = await calcularCasillas(companyId, fila);
+  const opciones = Object.fromEntries(Object.entries(guardadas).filter(([k]) => esOpcion(k)));
+  fila.casillas = { ...casillas, ...config, ...opciones } as Casillas;
+  fila.datos = opts.auditoria ? { ...(datos as object), auditoria: opts.auditoria } : datos;
+  fila.origen = 'autorrelleno';
+  await guardarFila(fila);
+  const d = datos as DatosModelo111 | DatosModelo115;
+  return { fila, datos: d, fuente: 'recalculado', declaracion: declaracionDeGuardadas(codigo, fila.casillas as Record<string, unknown>, ejercicio, p, calculadasDe(d)) };
+}
+
 export async function generarTxtModelo(companyId: string, modeloId: string): Promise<{ nombre: string; contenido: string }> {
   const fila = await cargarFila(companyId, modeloId);
+  if (fila.codigo === '111' || fila.codigo === '115') {
+    // La misma funcion que la pantalla: presentado = lo guardado; sin presentar, recalculado.
+    const r = await declaracionRetenciones(companyId, fila.codigo, fila.ejercicio, fila.periodo);
+    return { nombre: `${fila.codigo}_${fila.ejercicio}_${fila.periodo}.txt`, contenido: ficheroDeclaracion(r.declaracion) };
+  }
   if (!fila.datos) await autorrellenarModelo(companyId, modeloId);
   const refrescada = await cargarFila(companyId, modeloId);
   const datos = refrescada.datos;
@@ -728,15 +839,6 @@ export async function generarTxtModelo(companyId: string, modeloId: string): Pro
       return { nombre, contenido: generarFicheroModelo347(nif, refrescada.ejercicio, datos as DatosModelo347, razon) };
     case '349':
       return { nombre, contenido: generarFicheroModelo349(nif, periodo, datos as DatosModelo349, razon) };
-    case '111':
-    case '115': {
-      // Mismo origen que la pantalla: las casillas guardadas (tambien las
-      // editadas a mano), los datos de la empresa y las opciones del borrador.
-      const modelo = refrescada.codigo as '111' | '115';
-      const calculadas = modelo === '111' ? casillasDeDatos111(datos as DatosModelo111) : casillasDeDatos115(datos as DatosModelo115);
-      const decl = declaracionDeGuardadas(modelo, cas, refrescada.ejercicio, refrescada.periodo, calculadas);
-      return { nombre, contenido: ficheroDeclaracion(decl) };
-    }
     case '200':
       return { nombre, contenido: generarFicheroModelo200(nif, refrescada.ejercicio, { razonSocial: razon }) };
     case '130':

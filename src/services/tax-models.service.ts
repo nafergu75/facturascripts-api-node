@@ -28,8 +28,8 @@ import type { DatosModelo111, DatosModelo115 } from '../domain/impuestos.model';
 import { calcularModelo115 } from './impuestosCalculo.service';
 import { periodoFiscal } from './nominas/fiscal';
 import { aparicionesEntre, importe347Gasto, whereGastosFiscales } from '../domain/factura-gasto.model';
-import { calcularCasillasModelo, configuracionEmpresa } from './impuestosModulo.service';
-import { casillasDeDatos111, casillasDeDatos115, declaracionDeGuardadas, esOpcion, formularioDeclaracion, type FormularioRetenciones } from './aeatRetenciones/declaracion';
+import { calcularCasillasModelo, declaracionRetenciones, type DeclaracionRetencionesPeriodo } from './impuestosModulo.service';
+import { casillasAGuardadas, formularioDeclaracion, type FormularioRetenciones } from './aeatRetenciones/declaracion';
 import type { Modelo190 } from './nominas/fiscal';
 import { DR190 } from './aeatRetenciones/diseno';
 import { comprobarDiseno190 } from './nominas/modelo190';
@@ -97,13 +97,31 @@ function casillasPantalla111(oficiales: CasillasGuardadas, porTipo?: PorTipoActi
 }
 
 /**
- * Casillas a guardar al recalcular el 111 o el 115: las calculadas, los datos
- * actuales de la empresa (config_*) y las opciones del borrador que ya hubiera
- * (forma de pago, complementaria), que no son importes.
+ * Periodo del 111 y del 115: '1T'..'4T' o '01'..'12' (mensual). Un numero es un
+ * trimestre (la pantalla antigua mandaba trimestre=1..4). 400 si no vale.
  */
-function casillasRecalculadas(oficiales: CasillasGuardadas, config: CasillasGuardadas, previas: CasillasGuardadas | null): CasillasGuardadas {
-  const opciones = Object.fromEntries(Object.entries(previas ?? {}).filter(([k]) => esOpcion(k)));
-  return { ...oficiales, ...config, ...opciones };
+export function periodoRetenciones(entrada: number | string): string {
+  if (typeof entrada === 'number') {
+    if (Number.isInteger(entrada) && entrada >= 1 && entrada <= 4) return `${entrada}T`;
+    throw badRequest('El trimestre va del 1 al 4.');
+  }
+  const p = String(entrada ?? '').toUpperCase().trim();
+  if (/^[1-4]T$/.test(p)) return p;
+  if (/^(0?[1-9]|1[0-2])$/.test(p)) return p.padStart(2, '0');
+  throw badRequest(`Periodo "${entrada}" no válido: usa un trimestre (1T a 4T) o un mes (01 a 12).`);
+}
+
+const trimestreDe = (periodo: string): number | null => (/^[1-4]T$/.test(periodo) ? Number(periodo[0]) : null);
+
+/** Avisos de donde salen las cifras del 111 o del 115 (presentado, editado a mano...). */
+function avisosFuente(r: DeclaracionRetencionesPeriodo, origen: string): string[] {
+  if (r.fuente === 'calculado-sin-guardar') {
+    return [`Modelo presentado antes de que la app guardara sus casillas: se muestran las calculadas hoy con ${origen}. Compruébalas con el justificante de la sede.`];
+  }
+  if (r.fila.estado === 'presentado') return [`Modelo presentado: se muestran las casillas tal como se presentaron, aunque después hayan cambiado ${origen}.`];
+  if (r.fila.estado === 'omitido') return ['Modelo marcado como omitido: se muestran las casillas guardadas.'];
+  if (r.fuente === 'guardado') return ['Casillas editadas a mano en Impuestos: se muestran tal como se guardaron.'];
+  return [];
 }
 
 /** 400 si la empresa no esta establecida en Espana (no presenta modelos de la AEAT). */
@@ -285,11 +303,14 @@ export class TaxModelsService {
   async generarModelo111(
     companyId: string,
     ejercicio: number,
-    trimestre: number,
+    periodoEntrada: number | string,
     userId?: string
   ): Promise<{
     ejercicio: number;
-    trimestre: number;
+    /** 1-4 en los trimestrales; null en un periodo mensual. */
+    trimestre: number | null;
+    /** '1T'..'4T' o '01'..'12'. */
+    periodo: string;
     casillas: any;
     casillasOficiales: CasillasGuardadas;
     totalBase: number;
@@ -301,63 +322,40 @@ export class TaxModelsService {
     formulario: FormularioRetenciones;
     id: string;
   }> {
-    // Una empresa no establecida en Espana no presenta modelos de la AEAT.
-    await exigirEmpresaEspanola(companyId);
-    if (trimestre < 1 || trimestre > 4) {
-      throw badRequest('Trimestre debe estar entre 1 y 4');
-    }
-    const periodo = `${trimestre}T`;
-    const [calculo, config] = await Promise.all([calcularCasillasModelo(companyId, '111', ejercicio, periodo), configuracionEmpresa(companyId)]);
-    const oficiales = calculo.casillas as CasillasGuardadas;
-    const datos = calculo.datos as DatosModelo111;
+    const periodo = periodoRetenciones(periodoEntrada);
     const auditoria: ModeloFiscalAuditoria = {
       generadoPor: userId || 'SYSTEM',
       generadoEn: new Date().toISOString(),
       origen: 'autorrelleno',
-      version: `${ejercicio}.Q${trimestre}`,
+      version: `${ejercicio}.${periodo}`,
     };
-
-    const clave = { companyId_codigo_ejercicio_periodo: { companyId, codigo: '111', ejercicio, periodo } };
-    let modelo = await prisma.modeloImpuesto.findUnique({ where: clave });
-    if (!modelo) {
-      modelo = await prisma.modeloImpuesto.create({
-        data: { companyId, codigo: '111', ejercicio, periodo, estado: 'vigente', casillas: { ...oficiales, ...config } as never, datos: { ...datos, auditoria } as never, origen: 'autorrelleno' },
-      });
-    } else if (modelo.estado !== 'presentado' && modelo.estado !== 'omitido' && modelo.origen !== 'manual-mixto') {
-      modelo = await prisma.modeloImpuesto.update({
-        where: { id: modelo.id },
-        data: { casillas: casillasRecalculadas(oficiales, config, modelo.casillas as CasillasGuardadas | null) as never, datos: { ...datos, auditoria } as never, origen: 'autorrelleno' },
-      });
-    }
-
-    // Lo guardado manda (presentado o editado a mano); si es de antes (otro formato), el calculo.
-    const guardadas = (modelo.casillas as CasillasGuardadas | null) ?? {};
-    const base = '28_total_retenciones' in guardadas ? guardadas : oficiales;
-    const pantalla = casillasPantalla111(base, datos.actividadesPorTipo);
-    // El formulario sale de la misma declaracion que el fichero de la AEAT.
-    const formulario = formularioDeclaracion(declaracionDeGuardadas('111', { ...config, ...guardadas }, ejercicio, periodo, casillasDeDatos111(datos)));
-    const avisos = [...(datos.avisos ?? [])];
-    if (modelo.estado === 'presentado') avisos.push('Modelo presentado: se muestran las casillas tal como se presentaron, aunque después hayan cambiado las nóminas o las facturas.');
-    else if (modelo.origen === 'manual-mixto') avisos.push('Casillas editadas a mano en Impuestos: se muestran tal como se guardaron.');
+    // La misma funcion que el fichero: presentado = lo guardado; sin presentar, recalculado y guardado.
+    const r = await declaracionRetenciones(companyId, '111', ejercicio, periodo, { auditoria: auditoria as never });
+    const datos = r.datos as DatosModelo111;
+    const oficiales = casillasAGuardadas('111', r.declaracion.casillas);
+    const pantalla = casillasPantalla111(oficiales, datos.actividadesPorTipo);
+    const formulario = formularioDeclaracion(r.declaracion);
+    const avisos = [...(datos.avisos ?? []), ...avisosFuente(r, 'las nóminas o las facturas')];
 
     await registrarAuditoria({
       userId: userId || 'SYSTEM',
       companyId,
       action: 'GENERAR_MODELO_111',
       resourceType: 'modelo_fiscal',
-      resourceId: `111-${ejercicio}-${trimestre}T`,
+      resourceId: `111-${ejercicio}-${periodo}`,
     });
 
     return {
-      id: modelo.id,
+      id: r.fila.id,
       ejercicio,
-      trimestre,
+      trimestre: trimestreDe(periodo),
+      periodo,
       casillas: pantalla.casillas,
-      casillasOficiales: base,
+      casillasOficiales: oficiales,
       totalBase: pantalla.totalBase,
       totalRetenido: pantalla.totalRetenido,
-      estado: modelo.estado,
-      origen: modelo.origen,
+      estado: r.fila.estado,
+      origen: r.fila.origen,
       avisos,
       formulario,
     };
@@ -746,12 +744,15 @@ export class TaxModelsService {
   async generarModelo115(
     companyId: string,
     ejercicio: number,
-    trimestre: number,
+    periodoEntrada: number | string,
     userId?: string
   ): Promise<{
     id: string;
     ejercicio: number;
-    trimestre: number;
+    /** 1-4 en los trimestrales; null en un periodo mensual. */
+    trimestre: number | null;
+    /** '1T'..'4T' o '01'..'12'. */
+    periodo: string;
     baseImponible: number;
     porcentajeRetencion: number;
     retencion: number;
@@ -764,69 +765,44 @@ export class TaxModelsService {
     /** Formulario oficial (identificacion, casillas 01-05, liquidacion): misma declaracion que el fichero. */
     formulario: FormularioRetenciones;
   }> {
-    // Una empresa no establecida en Espana no presenta modelos de la AEAT.
-    await exigirEmpresaEspanola(companyId);
-    if (!Number.isInteger(trimestre) || trimestre < 1 || trimestre > 4) {
-      throw badRequest('Trimestre debe estar entre 1 y 4');
-    }
-    const periodo = `${trimestre}T`;
-    const [calculo, config] = await Promise.all([calcularCasillasModelo(companyId, '115', ejercicio, periodo), configuracionEmpresa(companyId)]);
-    const oficiales = calculo.casillas as CasillasGuardadas;
-    const datos = calculo.datos as DatosModelo115;
+    const periodo = periodoRetenciones(periodoEntrada);
     const auditoria: ModeloFiscalAuditoria = {
       generadoPor: userId || 'SYSTEM',
       generadoEn: new Date().toISOString(),
       origen: 'autorrelleno',
-      version: `${ejercicio}.Q${trimestre}`,
+      version: `${ejercicio}.${periodo}`,
     };
-
-    const clave = { companyId_codigo_ejercicio_periodo: { companyId, codigo: '115', ejercicio, periodo } };
-    let modelo = await prisma.modeloImpuesto.findUnique({ where: clave });
-    if (!modelo) {
-      modelo = await prisma.modeloImpuesto.create({
-        data: { companyId, codigo: '115', ejercicio, periodo, estado: 'vigente', casillas: { ...oficiales, ...config } as never, datos: { ...datos, auditoria } as never, origen: 'autorrelleno' },
-      });
-    } else if (modelo.estado !== 'presentado' && modelo.estado !== 'omitido' && modelo.origen !== 'manual-mixto') {
-      modelo = await prisma.modeloImpuesto.update({
-        where: { id: modelo.id },
-        data: { casillas: casillasRecalculadas(oficiales, config, modelo.casillas as CasillasGuardadas | null) as never, datos: { ...datos, auditoria } as never, origen: 'autorrelleno' },
-      });
-    }
-
-    // Lo guardado manda (presentado o editado a mano); si es de antes (otro formato), el calculo.
-    const guardadas = (modelo.casillas as CasillasGuardadas | null) ?? {};
-    const base = '03_retenciones' in guardadas ? guardadas : oficiales;
-    // El formulario sale de la misma declaracion que el fichero de la AEAT.
-    const formulario = formularioDeclaracion(declaracionDeGuardadas('115', { ...config, ...guardadas }, ejercicio, periodo, casillasDeDatos115(datos)));
-    const v = (k: string) => Number(base[k] ?? 0) || 0;
-    const avisos: string[] = [...(datos.avisos ?? [])];
-    if (modelo.estado === 'presentado') avisos.push('Modelo presentado: se muestran las casillas tal como se presentaron, aunque después hayan cambiado las facturas.');
-    else if (modelo.origen === 'manual-mixto') avisos.push('Casillas editadas a mano en Impuestos: se muestran tal como se guardaron.');
+    // La misma funcion que el fichero: presentado = lo guardado; sin presentar, recalculado y guardado.
+    const r = await declaracionRetenciones(companyId, '115', ejercicio, periodo, { auditoria: auditoria as never });
+    const datos = r.datos as DatosModelo115;
+    const c = r.declaracion.casillas;
+    const avisos: string[] = [...(datos.avisos ?? []), ...avisosFuente(r, 'las facturas')];
 
     await registrarAuditoria({
       userId: userId || 'SYSTEM',
       companyId,
       action: 'GENERAR_MODELO_115',
       resourceType: 'modelo_fiscal',
-      resourceId: `115-${ejercicio}-${trimestre}T`,
+      resourceId: `115-${ejercicio}-${periodo}`,
     });
 
-    const baseImponible = v('02_base');
-    const retencion = v('03_retenciones');
+    const baseImponible = c['02'];
+    const retencion = c['03'];
     return {
-      id: modelo.id,
+      id: r.fila.id,
       ejercicio,
-      trimestre,
+      trimestre: trimestreDe(periodo),
+      periodo,
       baseImponible,
       porcentajeRetencion: baseImponible ? Math.round((retencion / baseImponible) * 10000) / 100 : 0,
       retencion,
       operaciones: (datos.perceptores ?? []).reduce((a, p) => a + p.facturas, 0),
-      estado: modelo.estado,
-      casillas: { '01': v('01_perceptores'), '02': baseImponible, '03': retencion, '04': v('04_anteriores'), '05': v('05_resultado') },
-      casillasOficiales: base,
+      estado: r.fila.estado,
+      casillas: { '01': c['01'], '02': baseImponible, '03': retencion, '04': c['04'], '05': c['05'] },
+      casillasOficiales: casillasAGuardadas('115', c),
       perceptores: datos.perceptores ?? [],
       avisos,
-      formulario,
+      formulario: formularioDeclaracion(r.declaracion),
     };
   }
 
