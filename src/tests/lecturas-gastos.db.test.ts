@@ -182,6 +182,8 @@ describe('POST y GET con Azure', () => {
         errores: [],
         proveedorExistente: { id: supId, nifCif: NIF_EMISOR },
         duplicada: null,
+        // Sin facturas anteriores del proveedor no hay cuenta habitual.
+        cuentaHabitual: null,
       },
       lectura: { origen: 'AZURE', textoOrigen: 'Leída con Azure', respaldo: null, confianza: 0.91, estado: 'ok', requiereRevision: false, qr: { estado: 'SIN_QR', texto: 'Sin QR VERI*FACTU.' } },
     });
@@ -194,6 +196,28 @@ describe('POST y GET con Azure', () => {
     // En la fila nunca hay nada bruto de Azure.
     const guardado = JSON.stringify(fila);
     for (const bruto of ['analyzeResult', '"content"', 'polygon', 'spans', 'words', 'facturacion@']) expect(guardado).not.toContain(bruto);
+  });
+
+  it('con facturas anteriores del proveedor, la lectura trae su cuenta habitual para proponerla en cada linea', async () => {
+    const previa = await prisma.expenseInvoice.create({
+      data: {
+        companyId: E,
+        supplierId: supId,
+        serie: 'H',
+        numero: 1,
+        numeroCompleto: `H-1-${supId}`,
+        fechaEmision: '2026-02-01',
+        fechaVencimiento: '2026-03-01',
+        estado: 'ACCOUNTED',
+        lineas: { create: [{ descripcion: 'Carteles', cantidad: 1, precioUnitario: 10, baseLine: 10, accountCode: '627' }] },
+      },
+    });
+    try {
+      const { body } = await leerConAzure('resultado-simple');
+      expect(body.gasto.cuentaHabitual).toEqual({ codigo: '627', nombre: expect.any(String) });
+    } finally {
+      await prisma.expenseInvoice.delete({ where: { id: previa.id } });
+    }
   });
 
   it('dos GET a la vez: una sola llamada a Azure (bloqueo optimista)', async () => {
