@@ -1,0 +1,667 @@
+{
+ "modelo": "347",
+ "version": "Ejercicio 2025 y siguientes",
+ "fuente": "347.pdf (diseños de registro de la AEAT, 26 páginas)",
+ "revisar": "Revisar cuando la AEAT publique la orden del 347 del ejercicio 2027 o un diseño nuevo.",
+ "codificacion": "ISO-8859-1",
+ "finDeRegistro": "CRLF",
+ "reglas": [
+  "Todos los importes serán positivos (el signo va en su subcampo).",
+  "Los campos numéricos sin contenido se rellenan a ceros, ajustados a la derecha.",
+  "Los alfanuméricos y alfabéticos sin contenido se rellenan a blancos, ajustados a la izquierda, en mayúsculas, sin caracteres especiales ni vocales acentuadas."
+ ],
+ "registros": {
+  "1": {
+   "nombre": "Registro de declarante",
+   "longitud": 500,
+   "campos": [
+    {
+     "pos": 1,
+     "len": 1,
+     "tipo": "Num",
+     "desc": "TIPO DE REGISTRO",
+     "constante": "1"
+    },
+    {
+     "pos": 2,
+     "len": 3,
+     "tipo": "Num",
+     "desc": "MODELO DECLARACIÓN",
+     "constante": "347"
+    },
+    {
+     "pos": 5,
+     "len": 4,
+     "tipo": "Num",
+     "desc": "EJERCICIO"
+    },
+    {
+     "pos": 9,
+     "len": 9,
+     "tipo": "An",
+     "desc": "NIF DEL DECLARANTE (ajustado a la derecha, ceros a la izquierda)",
+     "formato": "nif"
+    },
+    {
+     "pos": 18,
+     "len": 40,
+     "tipo": "An",
+     "desc": "APELLIDOS Y NOMBRE, RAZÓN SOCIAL O DENOMINACIÓN DEL DECLARANTE"
+    },
+    {
+     "pos": 58,
+     "len": 1,
+     "tipo": "A",
+     "desc": "TIPO DE SOPORTE (\"C\" soporte, \"T\" transmisión telemática)"
+    },
+    {
+     "pos": 59,
+     "len": 9,
+     "tipo": "Num",
+     "desc": "PERSONA CON QUIÉN RELACIONARSE - TELÉFONO"
+    },
+    {
+     "pos": 68,
+     "len": 40,
+     "tipo": "An",
+     "desc": "PERSONA CON QUIÉN RELACIONARSE - APELLIDOS Y NOMBRE"
+    },
+    {
+     "pos": 108,
+     "len": 13,
+     "tipo": "Num",
+     "desc": "NÚMERO IDENTIFICATIVO DE LA DECLARACIÓN (secuencial que empieza por 347)"
+    },
+    {
+     "pos": 121,
+     "len": 1,
+     "tipo": "A",
+     "desc": "DECLARACIÓN COMPLEMENTARIA (\"C\")"
+    },
+    {
+     "pos": 122,
+     "len": 1,
+     "tipo": "A",
+     "desc": "DECLARACIÓN SUSTITUTIVA (\"S\")"
+    },
+    {
+     "pos": 123,
+     "len": 13,
+     "tipo": "Num",
+     "desc": "NÚMERO IDENTIFICATIVO DE LA DECLARACIÓN ANTERIOR (ceros si no es C ni S)"
+    },
+    {
+     "pos": 136,
+     "len": 9,
+     "tipo": "Num",
+     "desc": "NÚMERO TOTAL DE PERSONAS Y ENTIDADES (registros de declarado)"
+    },
+    {
+     "pos": 145,
+     "len": 1,
+     "tipo": "A",
+     "desc": "IMPORTE TOTAL ANUAL DE LAS OPERACIONES - SIGNO (blanco o \"N\")",
+     "formato": "signo"
+    },
+    {
+     "pos": 146,
+     "len": 15,
+     "tipo": "Num",
+     "desc": "IMPORTE TOTAL ANUAL DE LAS OPERACIONES - IMPORTE (13 enteros y 2 decimales)",
+     "formato": "importe"
+    },
+    {
+     "pos": 161,
+     "len": 9,
+     "tipo": "Num",
+     "desc": "NÚMERO TOTAL DE INMUEBLES"
+    },
+    {
+     "pos": 170,
+     "len": 1,
+     "tipo": "A",
+     "desc": "IMPORTE TOTAL DE LAS OPERACIONES DE ARRENDAMIENTO DE LOCALES DE NEGOCIO - SIGNO (blanco o \"N\")",
+     "formato": "signo"
+    },
+    {
+     "pos": 171,
+     "len": 15,
+     "tipo": "Num",
+     "desc": "IMPORTE TOTAL DE LAS OPERACIONES DE ARRENDAMIENTO DE LOCALES DE NEGOCIO - IMPORTE (13 enteros y 2 decimales)",
+     "formato": "importe"
+    },
+    {
+     "pos": 186,
+     "len": 205,
+     "tipo": "An",
+     "desc": "BLANCOS",
+     "blancos": true
+    },
+    {
+     "pos": 391,
+     "len": 9,
+     "tipo": "An",
+     "desc": "NIF DEL REPRESENTANTE LEGAL (solo menores de 14 años)",
+     "formato": "nif"
+    },
+    {
+     "pos": 400,
+     "len": 88,
+     "tipo": "An",
+     "desc": "BLANCOS",
+     "blancos": true
+    },
+    {
+     "pos": 488,
+     "len": 13,
+     "tipo": "An",
+     "desc": "SELLO ELECTRÓNICO (lo rellena la AEAT; blancos)",
+     "blancos": true
+    }
+   ]
+  },
+  "2D": {
+   "nombre": "Registro de declarado",
+   "longitud": 500,
+   "campos": [
+    {
+     "pos": 1,
+     "len": 1,
+     "tipo": "Num",
+     "desc": "TIPO DE REGISTRO",
+     "constante": "2"
+    },
+    {
+     "pos": 2,
+     "len": 3,
+     "tipo": "Num",
+     "desc": "MODELO DECLARACIÓN",
+     "constante": "347"
+    },
+    {
+     "pos": 5,
+     "len": 4,
+     "tipo": "Num",
+     "desc": "EJERCICIO"
+    },
+    {
+     "pos": 9,
+     "len": 9,
+     "tipo": "An",
+     "desc": "NIF DEL DECLARANTE (ajustado a la derecha, ceros a la izquierda)",
+     "formato": "nif"
+    },
+    {
+     "pos": 18,
+     "len": 9,
+     "tipo": "An",
+     "desc": "NIF DEL DECLARADO (ajustado a la derecha, ceros a la izquierda)",
+     "formato": "nif"
+    },
+    {
+     "pos": 27,
+     "len": 9,
+     "tipo": "An",
+     "desc": "NIF DEL REPRESENTANTE LEGAL",
+     "formato": "nif"
+    },
+    {
+     "pos": 36,
+     "len": 40,
+     "tipo": "An",
+     "desc": "APELLIDOS Y NOMBRE, RAZÓN SOCIAL O DENOMINACIÓN DEL DECLARADO"
+    },
+    {
+     "pos": 76,
+     "len": 1,
+     "tipo": "A",
+     "desc": "TIPO DE HOJA",
+     "constante": "D"
+    },
+    {
+     "pos": 77,
+     "len": 2,
+     "tipo": "Num",
+     "desc": "CÓDIGO PROVINCIA (01-52; 99 no residentes sin EP)"
+    },
+    {
+     "pos": 79,
+     "len": 2,
+     "tipo": "A",
+     "desc": "CÓDIGO PAÍS (solo no residentes sin EP)"
+    },
+    {
+     "pos": 81,
+     "len": 1,
+     "tipo": "An",
+     "desc": "BLANCOS",
+     "blancos": true
+    },
+    {
+     "pos": 82,
+     "len": 1,
+     "tipo": "A",
+     "desc": "CLAVE OPERACIÓN (A, B, C, D, E, F, G)"
+    },
+    {
+     "pos": 83,
+     "len": 1,
+     "tipo": "A",
+     "desc": "IMPORTE ANUAL DE LAS OPERACIONES - SIGNO (blanco o \"N\")",
+     "formato": "signo"
+    },
+    {
+     "pos": 84,
+     "len": 15,
+     "tipo": "Num",
+     "desc": "IMPORTE ANUAL DE LAS OPERACIONES - IMPORTE (13 enteros y 2 decimales)",
+     "formato": "importe"
+    },
+    {
+     "pos": 99,
+     "len": 1,
+     "tipo": "A",
+     "desc": "OPERACIÓN SEGURO (\"X\")"
+    },
+    {
+     "pos": 100,
+     "len": 1,
+     "tipo": "A",
+     "desc": "ARRENDAMIENTO LOCAL NEGOCIO (\"X\")"
+    },
+    {
+     "pos": 101,
+     "len": 15,
+     "tipo": "Num",
+     "desc": "IMPORTE PERCIBIDO EN METÁLICO (13 enteros y 2 decimales)",
+     "formato": "importe"
+    },
+    {
+     "pos": 116,
+     "len": 1,
+     "tipo": "A",
+     "desc": "IMPORTE ANUAL PERCIBIDO POR TRANSMISIONES DE INMUEBLES SUJETAS A IVA - SIGNO (blanco o \"N\")",
+     "formato": "signo"
+    },
+    {
+     "pos": 117,
+     "len": 15,
+     "tipo": "Num",
+     "desc": "IMPORTE ANUAL PERCIBIDO POR TRANSMISIONES DE INMUEBLES SUJETAS A IVA - IMPORTE (13 enteros y 2 decimales)",
+     "formato": "importe"
+    },
+    {
+     "pos": 132,
+     "len": 4,
+     "tipo": "Num",
+     "desc": "EJERCICIO (de las operaciones cobradas en metálico)"
+    },
+    {
+     "pos": 136,
+     "len": 1,
+     "tipo": "A",
+     "desc": "IMPORTE DE LAS OPERACIONES 1T - SIGNO (blanco o \"N\")",
+     "formato": "signo"
+    },
+    {
+     "pos": 137,
+     "len": 15,
+     "tipo": "Num",
+     "desc": "IMPORTE DE LAS OPERACIONES 1T - IMPORTE (13 enteros y 2 decimales)",
+     "formato": "importe"
+    },
+    {
+     "pos": 152,
+     "len": 1,
+     "tipo": "A",
+     "desc": "IMPORTE PERCIBIDO POR TRANSMISIONES DE INMUEBLES SUJETAS A IVA 1T - SIGNO (blanco o \"N\")",
+     "formato": "signo"
+    },
+    {
+     "pos": 153,
+     "len": 15,
+     "tipo": "Num",
+     "desc": "IMPORTE PERCIBIDO POR TRANSMISIONES DE INMUEBLES SUJETAS A IVA 1T - IMPORTE (13 enteros y 2 decimales)",
+     "formato": "importe"
+    },
+    {
+     "pos": 168,
+     "len": 1,
+     "tipo": "A",
+     "desc": "IMPORTE DE LAS OPERACIONES 2T - SIGNO (blanco o \"N\")",
+     "formato": "signo"
+    },
+    {
+     "pos": 169,
+     "len": 15,
+     "tipo": "Num",
+     "desc": "IMPORTE DE LAS OPERACIONES 2T - IMPORTE (13 enteros y 2 decimales)",
+     "formato": "importe"
+    },
+    {
+     "pos": 184,
+     "len": 1,
+     "tipo": "A",
+     "desc": "IMPORTE PERCIBIDO POR TRANSMISIONES DE INMUEBLES SUJETAS A IVA 2T - SIGNO (blanco o \"N\")",
+     "formato": "signo"
+    },
+    {
+     "pos": 185,
+     "len": 15,
+     "tipo": "Num",
+     "desc": "IMPORTE PERCIBIDO POR TRANSMISIONES DE INMUEBLES SUJETAS A IVA 2T - IMPORTE (13 enteros y 2 decimales)",
+     "formato": "importe"
+    },
+    {
+     "pos": 200,
+     "len": 1,
+     "tipo": "A",
+     "desc": "IMPORTE DE LAS OPERACIONES 3T - SIGNO (blanco o \"N\")",
+     "formato": "signo"
+    },
+    {
+     "pos": 201,
+     "len": 15,
+     "tipo": "Num",
+     "desc": "IMPORTE DE LAS OPERACIONES 3T - IMPORTE (13 enteros y 2 decimales)",
+     "formato": "importe"
+    },
+    {
+     "pos": 216,
+     "len": 1,
+     "tipo": "A",
+     "desc": "IMPORTE PERCIBIDO POR TRANSMISIONES DE INMUEBLES SUJETAS A IVA 3T - SIGNO (blanco o \"N\")",
+     "formato": "signo"
+    },
+    {
+     "pos": 217,
+     "len": 15,
+     "tipo": "Num",
+     "desc": "IMPORTE PERCIBIDO POR TRANSMISIONES DE INMUEBLES SUJETAS A IVA 3T - IMPORTE (13 enteros y 2 decimales)",
+     "formato": "importe"
+    },
+    {
+     "pos": 232,
+     "len": 1,
+     "tipo": "A",
+     "desc": "IMPORTE DE LAS OPERACIONES 4T - SIGNO (blanco o \"N\")",
+     "formato": "signo"
+    },
+    {
+     "pos": 233,
+     "len": 15,
+     "tipo": "Num",
+     "desc": "IMPORTE DE LAS OPERACIONES 4T - IMPORTE (13 enteros y 2 decimales)",
+     "formato": "importe"
+    },
+    {
+     "pos": 248,
+     "len": 1,
+     "tipo": "A",
+     "desc": "IMPORTE PERCIBIDO POR TRANSMISIONES DE INMUEBLES SUJETAS A IVA 4T - SIGNO (blanco o \"N\")",
+     "formato": "signo"
+    },
+    {
+     "pos": 249,
+     "len": 15,
+     "tipo": "Num",
+     "desc": "IMPORTE PERCIBIDO POR TRANSMISIONES DE INMUEBLES SUJETAS A IVA 4T - IMPORTE (13 enteros y 2 decimales)",
+     "formato": "importe"
+    },
+    {
+     "pos": 264,
+     "len": 2,
+     "tipo": "A",
+     "desc": "NIF OPERADOR COMUNITARIO - CÓDIGO PAÍS"
+    },
+    {
+     "pos": 266,
+     "len": 15,
+     "tipo": "An",
+     "desc": "NIF OPERADOR COMUNITARIO - NÚMERO"
+    },
+    {
+     "pos": 281,
+     "len": 1,
+     "tipo": "A",
+     "desc": "OPERACIONES RÉGIMEN ESPECIAL CRITERIO DE CAJA IVA (\"X\")"
+    },
+    {
+     "pos": 282,
+     "len": 1,
+     "tipo": "A",
+     "desc": "OPERACIÓN CON INVERSIÓN DEL SUJETO PASIVO (\"X\")"
+    },
+    {
+     "pos": 283,
+     "len": 1,
+     "tipo": "A",
+     "desc": "OPERACIÓN CON BIENES VINCULADOS AL RÉGIMEN DE DEPÓSITO DISTINTO DEL ADUANERO (\"X\")"
+    },
+    {
+     "pos": 284,
+     "len": 1,
+     "tipo": "A",
+     "desc": "IMPORTE ANUAL DE LAS OPERACIONES DEVENGADAS CONFORME AL CRITERIO DE CAJA DEL IVA - SIGNO (blanco o \"N\")",
+     "formato": "signo"
+    },
+    {
+     "pos": 285,
+     "len": 15,
+     "tipo": "Num",
+     "desc": "IMPORTE ANUAL DE LAS OPERACIONES DEVENGADAS CONFORME AL CRITERIO DE CAJA DEL IVA - IMPORTE (13 enteros y 2 decimales)",
+     "formato": "importe"
+    },
+    {
+     "pos": 300,
+     "len": 6,
+     "tipo": "Num",
+     "desc": "NÚMERO DE CONVOCATORIA BDNS (solo clave E)"
+    },
+    {
+     "pos": 306,
+     "len": 195,
+     "tipo": "An",
+     "desc": "BLANCOS",
+     "blancos": true
+    }
+   ]
+  },
+  "2I": {
+   "nombre": "Registro de inmueble",
+   "longitud": 500,
+   "campos": [
+    {
+     "pos": 1,
+     "len": 1,
+     "tipo": "Num",
+     "desc": "TIPO DE REGISTRO",
+     "constante": "2"
+    },
+    {
+     "pos": 2,
+     "len": 3,
+     "tipo": "Num",
+     "desc": "MODELO DECLARACIÓN",
+     "constante": "347"
+    },
+    {
+     "pos": 5,
+     "len": 4,
+     "tipo": "Num",
+     "desc": "EJERCICIO"
+    },
+    {
+     "pos": 9,
+     "len": 9,
+     "tipo": "An",
+     "desc": "NIF DEL DECLARANTE (ajustado a la derecha, ceros a la izquierda)",
+     "formato": "nif"
+    },
+    {
+     "pos": 18,
+     "len": 9,
+     "tipo": "An",
+     "desc": "NIF DEL ARRENDATARIO",
+     "formato": "nif"
+    },
+    {
+     "pos": 27,
+     "len": 9,
+     "tipo": "An",
+     "desc": "NIF DEL REPRESENTANTE LEGAL",
+     "formato": "nif"
+    },
+    {
+     "pos": 36,
+     "len": 40,
+     "tipo": "An",
+     "desc": "APELLIDOS Y NOMBRE, RAZÓN SOCIAL O DENOMINACIÓN DEL ARRENDATARIO"
+    },
+    {
+     "pos": 76,
+     "len": 1,
+     "tipo": "A",
+     "desc": "TIPO DE HOJA",
+     "constante": "I"
+    },
+    {
+     "pos": 77,
+     "len": 22,
+     "tipo": "An",
+     "desc": "BLANCOS",
+     "blancos": true
+    },
+    {
+     "pos": 99,
+     "len": 1,
+     "tipo": "A",
+     "desc": "IMPORTE DE LA OPERACIÓN - SIGNO (blanco o \"N\")",
+     "formato": "signo"
+    },
+    {
+     "pos": 100,
+     "len": 15,
+     "tipo": "Num",
+     "desc": "IMPORTE DE LA OPERACIÓN - IMPORTE (13 enteros y 2 decimales)",
+     "formato": "importe"
+    },
+    {
+     "pos": 115,
+     "len": 1,
+     "tipo": "Num",
+     "desc": "SITUACIÓN DEL INMUEBLE (1 a 4)"
+    },
+    {
+     "pos": 116,
+     "len": 25,
+     "tipo": "An",
+     "desc": "REFERENCIA CATASTRAL"
+    },
+    {
+     "pos": 141,
+     "len": 5,
+     "tipo": "An",
+     "desc": "DIRECCIÓN - TIPO DE VÍA (INE)"
+    },
+    {
+     "pos": 146,
+     "len": 50,
+     "tipo": "An",
+     "desc": "DIRECCIÓN - NOMBRE VÍA PÚBLICA"
+    },
+    {
+     "pos": 196,
+     "len": 3,
+     "tipo": "An",
+     "desc": "DIRECCIÓN - TIPO DE NUMERACIÓN"
+    },
+    {
+     "pos": 199,
+     "len": 5,
+     "tipo": "Num",
+     "desc": "DIRECCIÓN - NÚMERO DE CASA"
+    },
+    {
+     "pos": 204,
+     "len": 3,
+     "tipo": "An",
+     "desc": "DIRECCIÓN - CALIFICADOR DEL NÚMERO"
+    },
+    {
+     "pos": 207,
+     "len": 3,
+     "tipo": "An",
+     "desc": "DIRECCIÓN - BLOQUE"
+    },
+    {
+     "pos": 210,
+     "len": 3,
+     "tipo": "An",
+     "desc": "DIRECCIÓN - PORTAL"
+    },
+    {
+     "pos": 213,
+     "len": 3,
+     "tipo": "An",
+     "desc": "DIRECCIÓN - ESCALERA"
+    },
+    {
+     "pos": 216,
+     "len": 3,
+     "tipo": "An",
+     "desc": "DIRECCIÓN - PLANTA O PISO"
+    },
+    {
+     "pos": 219,
+     "len": 3,
+     "tipo": "An",
+     "desc": "DIRECCIÓN - PUERTA"
+    },
+    {
+     "pos": 222,
+     "len": 40,
+     "tipo": "An",
+     "desc": "DIRECCIÓN - COMPLEMENTO"
+    },
+    {
+     "pos": 262,
+     "len": 30,
+     "tipo": "An",
+     "desc": "DIRECCIÓN - LOCALIDAD O POBLACIÓN"
+    },
+    {
+     "pos": 292,
+     "len": 30,
+     "tipo": "An",
+     "desc": "DIRECCIÓN - MUNICIPIO"
+    },
+    {
+     "pos": 322,
+     "len": 5,
+     "tipo": "Num",
+     "desc": "DIRECCIÓN - CÓDIGO DE MUNICIPIO (INE)"
+    },
+    {
+     "pos": 327,
+     "len": 2,
+     "tipo": "Num",
+     "desc": "DIRECCIÓN - CÓDIGO PROVINCIA"
+    },
+    {
+     "pos": 329,
+     "len": 5,
+     "tipo": "Num",
+     "desc": "DIRECCIÓN - CÓDIGO POSTAL"
+    },
+    {
+     "pos": 334,
+     "len": 167,
+     "tipo": "An",
+     "desc": "BLANCOS",
+     "blancos": true
+    }
+   ]
+  }
+ }
+}
