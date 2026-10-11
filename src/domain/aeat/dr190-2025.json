@@ -291,8 +291,7 @@
           "lon": 2,
           "tipo": "Num",
           "desc": "Subclave",
-          "clave": "subclave",
-          "blancoSiVacio": true
+          "clave": "subclave"
         },
         {
           "n": 11,

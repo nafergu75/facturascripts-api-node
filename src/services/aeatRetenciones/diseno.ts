@@ -45,8 +45,6 @@ export interface CampoDr {
   blancos?: boolean;
   /** NIF del 190: a la derecha y con ceros a la izquierda. */
   alinear?: 'derecha';
-  /** Numerico que va en blanco cuando no se cumplimenta (subclave del 190). */
-  blancoSiVacio?: boolean;
   /** Texto libre (correo electronico): admite @, punto, guion... */
   libre?: boolean;
   obligatorio?: boolean;
@@ -200,7 +198,7 @@ export function formatearCampoDr(registro: RegistroDr, c: CampoDr, valor: ValorD
       return texto.slice(0, c.lon).padEnd(c.lon, ' ');
     }
     case 'Num': {
-      if (vacio) return (c.blancoSiVacio ? ' ' : '0').repeat(c.lon);
+      if (vacio) return '0'.repeat(c.lon);
       if (typeof valor === 'number' && Math.round(valor * 10 ** (c.decimales ?? 0)) < 0) {
         throw badRequest(`La ${etiqueta(registro, c)} no admite importes negativos.`);
       }

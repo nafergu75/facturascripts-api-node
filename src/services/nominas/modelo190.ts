@@ -114,7 +114,12 @@ export function valoresPerceptor190(ejercicio: number, nifDeclarante: string, p:
     nombrePerceptor: p.nombre,
     provincia: p.provincia ?? 0,
     clave: p.clave,
-    // Subclave: solo en las claves que la tienen; en la A, la D y la J no se cumplimenta.
+    // Subclave (79-80, numerico) en la A, la D y la J: '00'. DISENOS_LOGICOS_190_2025,
+    // posiciones 79-80: «En percepciones correspondientes a claves distintas de las
+    // mencionadas, no se cumplimentará este campo». Y la regla general del diseño
+    // (pagina 2): «Todos los campos tendrán contenido, a no ser que se especifique lo
+    // contrario en la descripción del campo. Si no lo tuvieran, los campos numéricos
+    // se rellenarán a ceros». Las instrucciones de la sede (GI10) no dicen otra cosa.
     subclave: CLAVES_SIN_SUBCLAVE.includes(p.clave) ? null : p.subclave,
     // Reintegro de percepciones de ejercicios anteriores: N y el importe sin signo.
     signoPercepcion: p.percepcionIntegra < 0 ? 'N' : '',

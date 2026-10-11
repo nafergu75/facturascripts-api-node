@@ -274,7 +274,7 @@ describe('fichero del 190 (diseno de registro del ejercicio 2025)', () => {
     expect(c(a, 36, 75)).toBe('PRUEBA UNO ANA'.padEnd(40, ' '));
     expect(c(a, 76, 77)).toBe('46');
     expect(c(a, 78, 78)).toBe('A');
-    expect(c(a, 79, 80)).toBe('  ');
+    expect(c(a, 79, 80)).toBe('00'); // clave A sin subclave: numerico sin contenido, a ceros
     expect(c(a, 81, 81)).toBe(' ');
     expect(c(a, 82, 94)).toBe('0000002400000');
     expect(c(a, 95, 107)).toBe('0000000360050');

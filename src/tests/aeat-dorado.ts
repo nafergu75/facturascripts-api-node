@@ -47,7 +47,7 @@ export function comprobarRegistro(texto: string, registro: RegistroDr, esperados
     const blanco = /^ +$/.test(v);
     switch (c.tipo) {
       case 'Num':
-        if (!(c.blancoSiVacio && blanco)) expect(falla(/^\d+$/.test(v) ? 'ok' : 'Num: solo cifras, a la derecha con ceros')).toEqual(falla('ok'));
+        expect(falla(/^\d+$/.test(v) ? 'ok' : 'Num: solo cifras, a la derecha con ceros')).toEqual(falla('ok'));
         break;
       case 'N':
         expect(falla(/^(N\d+|\d+)$/.test(v) ? 'ok' : 'N: cifras con N delante si es negativo')).toEqual(falla('ok'));
