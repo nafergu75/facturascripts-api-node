@@ -31,6 +31,7 @@ import { hoyEspana, sumarDiasISO } from '../utils/fechas';
 import { copiaAlEmitir, leerAjustesFacturacion } from './ajustesFacturacion.service';
 import { FORMAS_PAGO, type FormaPago } from '../domain/ajustes.model';
 import { leerPais } from './clientes.service';
+import { exigirPuedeEmitirFinal } from './verifactu/redSeguridad';
 
 /**
  * Facturas de venta.
@@ -842,6 +843,10 @@ async function crear(dto: CrearFacturaIngresoDTO, opciones: { origen?: OrigenFac
   if (esRectificativa !== tipoFactura.startsWith('R')) {
     throw badRequest('Una factura rectificativa debe ser de tipo R1 a R5, y solo las rectificativas pueden serlo.');
   }
+  // Red de seguridad de VERI*FACTU: antes de crear nada (cliente, numero...).
+  // Emitir aqui es la emision directa y la rectificativa emitida al momento; el
+  // lector registra facturas que expidio otro programa y no se bloquea.
+  if (!dto.proforma && !dto.borrador && origen !== 'lector') await exigirPuedeEmitirFinal(dto.companyId);
 
   const perfil = await perfilEmpresa(dto.companyId);
   let original: FacturaConLineas | null = interno.original ?? null;
@@ -1293,6 +1298,8 @@ export const incomeInvoicesService = {
   ): Promise<IncomeInvoiceResp> {
     const actual = await cargar(companyId, id);
     exigirBorrador(actual, 'volver a emitir');
+    // Red de seguridad de VERI*FACTU, fuera de la transaccion y antes de nada.
+    await exigirPuedeEmitirFinal(companyId);
     // Art. 6 RD 1619/2012: la factura lleva el nombre y el NIF del emisor.
     const emisor = await prisma.legalConfig.findUnique({ where: { companyId } });
     const perfil = perfilDesdeConfig(emisor);
