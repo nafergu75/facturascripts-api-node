@@ -223,6 +223,10 @@ async function asegurarSubcuenta(
  *  3. Generar el asiento con el motor de reglas (venta/compra).
  *  4. Asegurar las subcuentas implicadas (get-or-create) y mapear los apuntes.
  *  5. Crear la cabecera Asiento y sus Partidas via la API de FacturaScripts.
+ *
+ * @deprecated FacturaScripts ya no se usa: las facturas se contabilizan con el
+ * motor propio (accounting-engine) contra la subcuenta del tercero
+ * (services/terceros/subcuentas.ts). Sin llamadores; se borrara en otra tarea.
  */
 export async function crearAsientoEnFacturascriptsDesdeFactura(
   companyId: string,
