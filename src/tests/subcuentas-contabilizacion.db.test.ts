@@ -369,6 +369,15 @@ describe('el plan contable solo con contabilidad:read', () => {
   it('un contable si lo ve', async () => {
     expect((await request(app('contable', ['contabilidad:read'])).get('/accounting/chart-of-accounts/43000003')).status).toBe(200);
   });
+
+  it('la lista dice de que cliente o proveedor es cada subcuenta', async () => {
+    const r = await request(app('contable', ['contabilidad:read'])).get('/accounting/chart-of-accounts');
+    expect(r.status).toBe(200);
+    const cuentas = r.body.data.cuentas as Array<{ codigo: string; tercero: { tipo: string; id: string; nombre: string } | null }>;
+    const c = await prisma.customer.findFirstOrThrow({ where: { companyId: E, subcuenta430: '43000003' } });
+    expect(cuentas.find((x) => x.codigo === '43000003')?.tercero).toMatchObject({ tipo: 'cliente', id: c.id, nombre: c.nombreFiscal });
+    expect(cuentas.find((x) => x.codigo === '430')?.tercero).toBeNull();
+  });
 });
 
 describe('sugerencia de subcuenta de tercero', () => {
