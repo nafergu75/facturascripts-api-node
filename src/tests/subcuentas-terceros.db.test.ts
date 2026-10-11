@@ -162,3 +162,12 @@ describe('renombrar, retirar y consultar', () => {
     expect(mapa.get('41000001')).toEqual(mapa.get('40000001'));
   });
 });
+
+describe('plan base', () => {
+  it('asegurarPlanContableEmpresa trae 401, 407, 431, 436, 438 y 490 (bajo el subgrupo 49)', async () => {
+    const cuentas = await prisma.chartOfAccounts.findMany({ where: { companyId: EMPRESA, codigo: { in: ['401', '407', '431', '436', '438', '49', '490'] } } });
+    expect(cuentas.map((c) => c.codigo).sort()).toEqual(['401', '407', '431', '436', '438', '49', '490']);
+    const sub49 = cuentas.find((c) => c.codigo === '49')!;
+    expect(cuentas.find((c) => c.codigo === '490')).toMatchObject({ parentId: sub49.id, nivel: 3, esBasePGC: true });
+  });
+});
