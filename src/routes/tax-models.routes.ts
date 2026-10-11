@@ -35,23 +35,6 @@ router.get(
 );
 
 /**
- * POST /tax-models/303/presentado
- * Marcar modelo 303 como presentado
- *
- * Body:
- *   {
- *     ejercicio: number,
- *     trimestre: number, o periodo: '1T'..'4T' | '01'..'12',
- *     justificante: { numero: string, fecha: string }
- *   }
- */
-router.post(
-  '/303/presentado',
-  authorize('impuestos:write'),
-  taxModelsController.marcar303Presentado
-);
-
-/**
  * GET /tax-models/111
  * Generar modelo 111 (retenciones)
  *
@@ -63,55 +46,6 @@ router.get(
   '/111',
   authorize('impuestos:read'),
   taxModelsController.obtenerModelo111
-);
-
-/**
- * POST /tax-models/111/presentado
- * Marcar modelo 111 como presentado
- *
- * Body:
- *   {
- *     ejercicio: number,
- *     trimestre: number,
- *     justificante: { numero: string, fecha: string }
- *   }
- */
-router.post(
-  '/111/presentado',
-  authorize('impuestos:write'),
-  taxModelsController.marcar111Presentado
-);
-
-/**
- * POST /tax-models/200/presentado
- * Marcar modelo 200 como presentado
- *
- * Body:
- *   {
- *     ejercicio: number,
- *     justificante: { numero: string, fecha: string }
- *   }
- */
-router.post(
-  '/200/presentado',
-  authorize('impuestos:write'),
-  taxModelsController.marcar200Presentado
-);
-
-/**
- * POST /tax-models/347/presentado
- * Marcar modelo 347 como presentado
- *
- * Body:
- *   {
- *     ejercicio: number,
- *     justificante: { numero: string, fecha: string }
- *   }
- */
-router.post(
-  '/347/presentado',
-  authorize('impuestos:write'),
-  taxModelsController.marcar347Presentado
 );
 
 /**
@@ -129,39 +63,6 @@ router.get(
 );
 
 /**
- * POST /tax-models/115/presentado
- * Marcar modelo 115 como presentado
- *
- * Body:
- *   {
- *     ejercicio: number,
- *     trimestre: number,
- *     justificante: { numero: string, fecha: string }
- *   }
- */
-router.post(
-  '/115/presentado',
-  authorize('impuestos:write'),
-  taxModelsController.marcar115Presentado
-);
-
-/**
- * POST /tax-models/390/presentado
- * Marcar modelo 390 como presentado
- *
- * Body:
- *   {
- *     ejercicio: number,
- *     justificante: { numero: string, fecha: string }
- *   }
- */
-router.post(
-  '/390/presentado',
-  authorize('impuestos:write'),
-  taxModelsController.marcar390Presentado
-);
-
-/**
  * GET /tax-models/190
  * Generar modelo 190 (resumen anual de retenciones)
  *
@@ -172,22 +73,6 @@ router.get(
   '/190',
   authorize('impuestos:read'),
   taxModelsController.obtenerModelo190
-);
-
-/**
- * POST /tax-models/190/presentado
- * Marcar modelo 190 como presentado
- *
- * Body:
- *   {
- *     ejercicio: number,
- *     justificante: { numero: string, fecha: string }
- *   }
- */
-router.post(
-  '/190/presentado',
-  authorize('impuestos:write'),
-  taxModelsController.marcar190Presentado
 );
 
 /**

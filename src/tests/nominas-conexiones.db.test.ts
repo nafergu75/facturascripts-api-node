@@ -20,6 +20,7 @@ import { calcularModelo111 } from '../services/impuestosCalculo.service';
 import { autorrellenarModelo, generarTxtModelo } from '../services/impuestosModulo.service';
 import { taxModelsService } from '../services/tax-models.service';
 import { calcularModelo190, periodoFiscal, retencionesTrabajo } from '../services/nominas/fiscal';
+import { idVirtual } from '../services/impuestosModulo.service';
 import { generarFicheroModelo190 } from '../services/nominas/modelo190';
 import { anularPagoModelo111, anularPagoNominas, pagarModelo111, pagarNominas, pagoModelo111 } from '../services/nominas/tesoreria';
 import { anularPagoSegurosSociales, guardarSegurosSociales, listarSegurosSociales, obtenerSegurosSociales, pagarSegurosSociales } from '../services/nominas/segurosSociales';
@@ -125,12 +126,14 @@ describe('modelo 111: una sola fuente, por fecha de pago y con perceptores disti
     const pantalla = await taxModelsService.generarModelo111(COMPANY_ID, 2026, 1);
     expect(pantalla.casillas).toMatchObject({ '01': 3, '02': 12600, '03': 1500, '07': 1, '09': 150, '28': 1650 });
     expect(pantalla).toMatchObject({ totalRetenido: 1650, totalBase: 13600, estado: 'vigente' });
-    // Lo guardado tiene el formato del modulo Impuestos: casillas oficiales y datos del TXT.
-    const fila = await prisma.modeloImpuesto.findUniqueOrThrow({ where: { id: pantalla.id } });
+    // La pantalla no guarda (B6); «Recalcular importes» guarda con el formato del modulo Impuestos.
+    expect(pantalla.id).toBeFalsy();
+    await autorrellenarModelo(COMPANY_ID, idVirtual('111', 2026, '1T'));
+    const fila = await prisma.modeloImpuesto.findUniqueOrThrow({ where: { companyId_codigo_ejercicio_periodo: { companyId: COMPANY_ID, codigo: '111', ejercicio: 2026, periodo: '1T' } } });
     expect(fila.casillas).toMatchObject({ '01_perceptores_trabajo': 3, '28_total_retenciones': 1650 });
     expect(fila.datos).toMatchObject({ nPerceptoresTrabajo: 3, totalRetenciones: 1650 });
 
-    const txt = await generarTxtModelo(COMPANY_ID, pantalla.id);
+    const txt = await generarTxtModelo(COMPANY_ID, fila.id);
     const pagina = txt.contenido.slice(328, 328 + 1000);
     expect(pagina.slice(108, 116)).toBe('00000003'); // [01] pos 109
     expect(pagina.slice(116, 133)).toBe('00000000001260000'); // [02]
@@ -345,14 +348,16 @@ describe('modelo 190 por perceptor (ejercicio 2025, diseno de registro verificad
     // La pantalla de modelos fiscales y el modulo Impuestos guardan lo mismo, y solo totales (sin datos personales).
     const pantalla = await taxModelsService.generarModelo190(COMPANY_190, 2025);
     expect(pantalla).toMatchObject({ totalRetenido: 860, totalBase: 6250, cuadre111: { coincide: true }, casillas: { '01': 4 } });
-    const modulo = await autorrellenarModelo(COMPANY_190, pantalla.id);
+    // La pantalla no guarda (B6): la fila la crea «Recalcular importes» (id virtual del calendario).
+    expect(pantalla.id).toBeNull();
+    const modulo = await autorrellenarModelo(COMPANY_190, idVirtual('190', 2025, '0A'));
     expect(modulo.casillas).toMatchObject({ num_percepciones: 4, importe_percepciones: 6250, retenciones_ingresos_cuenta: 860, cuadra_con_111: 'si' });
     expect(modulo.resumen.fechaVencimiento).toBe('2026-01-31');
-    const fila = await prisma.modeloImpuesto.findUniqueOrThrow({ where: { id: pantalla.id } });
+    const fila = await prisma.modeloImpuesto.findUniqueOrThrow({ where: { companyId_codigo_ejercicio_periodo: { companyId: COMPANY_190, codigo: '190', ejercicio: 2025, periodo: '0A' } } });
     expect(JSON.stringify(fila)).not.toContain(nif(50000001));
     expect(JSON.stringify(fila)).not.toContain('Prueba Uno');
     // El fichero (con los datos de cada trabajador) no se descarga desde Impuestos.
-    await expect(generarTxtModelo(COMPANY_190, pantalla.id)).rejects.toMatchObject({ statusCode: 400 });
+    await expect(generarTxtModelo(COMPANY_190, fila.id)).rejects.toMatchObject({ statusCode: 400 });
     // Un ejercicio anterior al primer diseno verificado (2025) no se genera.
     await expect(Promise.resolve().then(() => generarFicheroModelo190(2024, { nif: 'B98765431', nombre: 'X' }, m.perceptores))).rejects.toMatchObject({ statusCode: 409 });
   });

@@ -28,7 +28,6 @@ import {
 } from './impuestosCalculo.service';
 import { calcularModelo200 } from './impuestoSociedadesCalculo.service';
 import { calcularModelo190 } from './nominas/fiscal';
-import { conservarNumeracion190 } from './nominas/numeracion190';
 import {
   casillasAGuardadas,
   casillasDeDatos111,
@@ -61,9 +60,23 @@ import {
   type OpcionesCalendario,
 } from '../domain/calendarioFiscal';
 import { AJUSTES_FISCALES_POR_DEFECTO, ajustesFiscalesDeFila, type AjustesFiscales } from '../domain/ajustes.model';
+import { contextoDeclaracion } from './declaracionesAeat/declaraciones.service';
 import { anioEspana } from '../utils/fechas';
 
 /**
+ * LOS GET NO ESCRIBEN (B6, igual en todos los modelos de la AEAT): el detalle,
+ * el TXT y el PDF de un modelo, los GET de /tax-models, los de los borradores
+ * (/impuestos/borradores, /tax-models/349|180|202), el del historial de
+ * declaraciones y el fichero del 190 calculan al momento y no guardan casillas,
+ * datos, opciones ni numeros. Solo guardan las rutas POST, PUT y DELETE con
+ * impuestos:write (o nominas:write en el 190).
+ * Una sola excepcion, a proposito: la lista del calendario
+ * (GET /impuestos/modelos) crea las filas vacias que faltan del ejercicio
+ * (sin importes), porque el cambio de periodicidad (ajustes fiscales) decide
+ * desde cuando aplica mirando esas filas. Ningun importe se guarda al leer.
+ * Un id de fila que aun no existe ("cal-<codigo>-<ejercicio>-<periodo>") se
+ * lee sin crearla; la crea la primera operacion de escritura.
+ *
  * Modulo "Impuestos" estilo Quipu:
  *  - Calendario fiscal por ejercicio (303/111/115/349 trimestrales; 390/347/200 anuales).
  *  - Estados: vigente (verde) / expirado (naranja) / omitido / presentado.
@@ -177,8 +190,9 @@ const clave = (companyId: string, codigo: string, ejercicio: number, periodo: st
   `${companyId}:${codigo}:${ejercicio}:${periodo}`;
 
 /**
- * Crea (si faltan) las filas del calendario del ejercicio. Una empresa no
- * establecida en Espana no presenta modelos de la AEAT: no se le crea nada.
+ * Crea (si faltan) las filas vacias del calendario del ejercicio, sin importes.
+ * Una empresa no establecida en Espana no presenta modelos de la AEAT: no se
+ * le crea nada.
  */
 async function asegurarCalendario(companyId: string, ejercicio: number): Promise<void> {
   if (!(await esEmpresaEspanolaFiscal(companyId))) return;
@@ -359,7 +373,54 @@ export async function aplicarCambioCalendario(
   return out;
 }
 
-async function cargarFila(companyId: string, modeloId: string): Promise<FilaModelo> {
+const PREFIJO_VIRTUAL = 'cal-';
+
+/** Id de una fila del calendario que aun no existe. */
+export const idVirtual = (codigo: string, ejercicio: number, periodo: string) => `${PREFIJO_VIRTUAL}${codigo}-${ejercicio}-${periodo}`;
+
+function filaVirtual(companyId: string, codigo: string, ejercicio: number, periodo: string): FilaModelo {
+  return { id: idVirtual(codigo, ejercicio, periodo), companyId, codigo, ejercicio, periodo, estado: 'vigente', casillas: null, datos: null, origen: null };
+}
+
+/** Modelo, ejercicio y periodo de un id virtual (null si no lo es o no esta en el calendario de la empresa). */
+async function deIdVirtual(companyId: string, modeloId: string): Promise<{ codigo: string; ejercicio: number; periodo: string } | null> {
+  const m = /^cal-(\d{3})-(\d{4})-([0-9A-Z]{2})$/.exec(modeloId);
+  if (!m) return null;
+  const [, codigo, ej, periodo] = m;
+  const ejercicio = Number(ej);
+  if (!(await esEmpresaEspanolaFiscal(companyId))) return null;
+  const deseado = calendarioEjercicio(ejercicio, await opcionesCalendarioEmpresa(companyId, ejercicio));
+  return deseado.some((d) => d.codigo === codigo && d.periodo === periodo) ? { codigo, ejercicio, periodo } : null;
+}
+
+/**
+ * Fila de un modelo por su id. Un id virtual se lee sin crear la fila; con
+ * `crear` (operaciones de escritura) se crea vigente si aun no existe.
+ */
+async function cargarFila(companyId: string, modeloId: string, opts: { crear?: boolean } = {}): Promise<FilaModelo> {
+  if (modeloId.startsWith(PREFIJO_VIRTUAL)) {
+    const v = await deIdVirtual(companyId, modeloId);
+    if (!v) throw notFound('Modelo de impuesto no encontrado.');
+    if (dbOk()) {
+      const clavePrisma = { companyId_codigo_ejercicio_periodo: { companyId, ...v } };
+      let f = await prisma.modeloImpuesto.findUnique({ where: clavePrisma });
+      if (!f && opts.crear) {
+        try {
+          f = await prisma.modeloImpuesto.create({ data: { companyId, ...v, estado: 'vigente' } });
+        } catch {
+          f = await prisma.modeloImpuesto.findUniqueOrThrow({ where: clavePrisma });
+        }
+      }
+      return f ? { ...f, casillas: (f.casillas as Casillas | null) ?? null, datos: f.datos ?? null } : filaVirtual(companyId, v.codigo, v.ejercicio, v.periodo);
+    }
+    const k = clave(companyId, v.codigo, v.ejercicio, v.periodo);
+    const f = memoria.get(k);
+    if (f) return f;
+    if (!opts.crear) return filaVirtual(companyId, v.codigo, v.ejercicio, v.periodo);
+    const nueva = { ...filaVirtual(companyId, v.codigo, v.ejercicio, v.periodo), id: k };
+    memoria.set(k, nueva);
+    return nueva;
+  }
   if (dbOk()) {
     const f = await prisma.modeloImpuesto.findUnique({ where: { id: modeloId } });
     if (!f || f.companyId !== companyId) throw notFound('Modelo de impuesto no encontrado.');
@@ -424,6 +485,7 @@ export async function listarModelosImpuesto(
 ): Promise<ModeloImpuestoResumen[]> {
   // Empresa no establecida en Espana: sin modelos de la AEAT ni calendario.
   if (!(await esEmpresaEspanolaFiscal(companyId))) return [];
+  // La excepcion de B6 (ver arriba): las filas vacias del calendario.
   await asegurarCalendario(companyId, ejercicio);
   let filas: FilaModelo[];
   if (dbOk()) {
@@ -442,7 +504,7 @@ export async function listarModelosImpuesto(
 }
 
 async function cambiarEstado(companyId: string, modeloId: string, estado: EstadoModeloImpuesto): Promise<ModeloImpuestoResumen> {
-  const fila = await cargarFila(companyId, modeloId);
+  const fila = await cargarFila(companyId, modeloId, { crear: true });
   fila.estado = estado;
   await guardarFila(fila);
   return aResumen(fila, new Date().toISOString().slice(0, 10));
@@ -451,7 +513,21 @@ async function cambiarEstado(companyId: string, modeloId: string, estado: Estado
 export const omitirModelo = (companyId: string, modeloId: string) => cambiarEstado(companyId, modeloId, 'omitido');
 /** Recupera un omitido: vuelve a vigente/expirado (se deriva por fecha). */
 export const recuperarModeloOmitido = (companyId: string, modeloId: string) => cambiarEstado(companyId, modeloId, 'vigente');
+/**
+ * Marca como presentado sin historial: solo para los modelos que no lo tienen
+ * (130) o sin la tabla de declaraciones (tests). Los demas pasan por
+ * declaracionesAeat/presentar (congelan su instantanea).
+ */
 export const marcarModeloListoParaPresentar = (companyId: string, modeloId: string) => cambiarEstado(companyId, modeloId, 'presentado');
+
+/** Modelo, ejercicio, periodo y estado de una fila por su id (tambien virtual). Solo lee. */
+export async function filaPorId(companyId: string, modeloId: string): Promise<Pick<FilaModelo, 'id' | 'codigo' | 'ejercicio' | 'periodo' | 'estado'>> {
+  const f = await cargarFila(companyId, modeloId);
+  return { id: f.id, codigo: f.codigo, ejercicio: f.ejercicio, periodo: f.periodo, estado: f.estado };
+}
+
+/** true si la BD tiene la tabla del historial de declaraciones (no en los tests en memoria). */
+export const hayHistorialDeclaraciones = (): boolean => dbOk() && typeof (prisma as { declaracionAeat?: { findMany?: unknown } }).declaracionAeat?.findMany === 'function';
 /** "No presentado": vuelve a la lista principal (vigente/expirado por fecha). */
 export const marcarModeloNoPresentado = (companyId: string, modeloId: string) => cambiarEstado(companyId, modeloId, 'vigente');
 
@@ -675,7 +751,7 @@ export async function obtenerDetalleModelo(companyId: string, modeloId: string):
  * manual previa (origen vuelve a 'autorrelleno').
  */
 export async function autorrellenarModelo(companyId: string, modeloId: string): Promise<ModeloImpuestoDetalle> {
-  const fila = await cargarFila(companyId, modeloId);
+  const fila = await cargarFila(companyId, modeloId, { crear: true });
 
   if (fila.estado === 'presentado' || fila.estado === 'omitido') {
     throw forbidden(`No puedes recalcular un modelo ${fila.estado}. Contacta administración.`);
@@ -687,11 +763,10 @@ export async function autorrellenarModelo(companyId: string, modeloId: string): 
   // (opc_*: complementaria, base a mano...).
   const opciones = Object.fromEntries(Object.entries(fila.casillas ?? {}).filter(([k]) => esOpcion(k)));
   fila.casillas = { ...conservarOpciones(fila.casillas), ...casillas, ...config, ...opciones };
-  // El 190 guarda en sus datos los numeros identificativos ya usados: no se pierden al recalcular.
-  fila.datos = fila.codigo === '190' ? conservarNumeracion190(fila.datos, datos) : datos;
+  fila.datos = datos;
   fila.origen = 'autorrelleno';
   await guardarFila(fila); // guardado automatico del autorrelleno
-  return obtenerDetalleModelo(companyId, modeloId);
+  return obtenerDetalleModelo(companyId, fila.id);
 }
 
 /**
@@ -705,14 +780,17 @@ export async function guardarModeloManual(
   modeloId: string,
   casillasParciales: Casillas,
 ): Promise<ModeloImpuestoDetalle> {
-  const fila = await cargarFila(companyId, modeloId);
+  const fila = await cargarFila(companyId, modeloId, { crear: true });
+  if (fila.estado === 'presentado') {
+    throw forbidden('Este modelo está presentado y sus casillas quedan como se presentaron: para cambiarlo, prepara una complementaria o una sustitutiva.');
+  }
   fila.casillas = { ...(fila.casillas ?? {}), ...casillasParciales };
   // Elegir la forma de pago o marcar la complementaria no es editar importes:
   // el modelo se sigue recalculando con la contabilidad.
   const soloOpciones = Object.keys(casillasParciales).length > 0 && Object.keys(casillasParciales).every(esOpcion);
   if (!soloOpciones) fila.origen = 'manual-mixto';
   await guardarFila(fila);
-  return obtenerDetalleModelo(companyId, modeloId);
+  return obtenerDetalleModelo(companyId, fila.id);
 }
 
 // --- 3) TXT (diseno AEAT) y PDF ---
@@ -907,11 +985,14 @@ export function periodo303De(valor: unknown): string {
   throw badRequest('El periodo del 303 es un trimestre (1T a 4T) o un mes (01 a 12).', { campo: 'periodo', valor: valor ?? null });
 }
 
+/** Lo que se guarda con el 303 presentado además del cálculo: tipo, IBAN de la DID y rectificativa. */
+type Guardado303 = DatosModelo303 & { tipoDeclaracion?: string; ibanPresentado?: string | null; rectificativa?: { justificanteAnterior: string } | null };
+
 /** Datos guardados del 303 presentado de un periodo (con sus casillas oficiales), o null. */
-async function presentado303(companyId: string, periodo: PeriodoFiscal): Promise<(DatosModelo303 & { tipoDeclaracion?: string }) | null> {
+async function presentado303(companyId: string, periodo: PeriodoFiscal): Promise<Guardado303 | null> {
   const fila = await fila303Guardada(companyId, periodo.ejercicio, periodo.periodo);
   if (fila?.estado !== 'presentado') return null;
-  const datos = fila.datos as (DatosModelo303 & { tipoDeclaracion?: string }) | null;
+  const datos = fila.datos as Guardado303 | null;
   // Los guardados antes del diseño 2026 sin desglose no sirven para el fichero.
   if (!datos?.casillasOficiales && !datos?.ivaDevengado) return null;
   return { ...datos, periodo };
@@ -928,11 +1009,13 @@ export async function calcularBorrador303(companyId: string, periodo: PeriodoFis
   const guardado = await presentado303(companyId, periodo);
   if (guardado) {
     const empresa = await contextoEmpresa303(companyId, periodo.ejercicio, opciones.cuentaBancariaId);
+    // Congelado: también el IBAN de la página DID y la marca de rectificativa con que se presentó.
+    const ctxPresentado = guardado.ibanPresentado !== undefined ? { ...empresa.ctx, iban: guardado.ibanPresentado } : empresa.ctx;
     const borrador = montarBorrador303(
       { ...guardado, casillasOficiales: casillasOficiales303De(guardado) },
-      empresa.ctx,
+      ctxPresentado,
       guardado.tipoDeclaracion,
-      { comoSePresento: true },
+      { comoSePresento: true, rectificativa: guardado.rectificativa ? { ...guardado.rectificativa, resultadoAnterior: 0 } : null },
     );
     borrador.advertencias.unshift('Modelo presentado: se muestran las casillas tal como se presentaron, aunque después hayan cambiado las facturas. El fichero sale de esas mismas casillas.');
     return {
@@ -951,12 +1034,16 @@ export async function calcularBorrador303(companyId: string, periodo: PeriodoFis
   const aCompensar = manual
     ? { importe: Math.round((opciones.aCompensar as number) * 100) / 100, origen: 'manual' as const }
     : await cuotasACompensar303(companyId, periodo);
-  const [datos, empresa] = await Promise.all([
+  const [datos, empresa, decl] = await Promise.all([
     calcularModelo303(companyId, periodo, aCompensar.importe),
     contextoEmpresa303(companyId, periodo.ejercicio, opciones.cuentaBancariaId),
+    contextoDeclaracion(companyId, '303', periodo.ejercicio, periodo.periodo),
   ]);
+  // Rectificativa en preparación (B4): [70] con el [69] de la anterior y su justificante.
+  const rectificativa =
+    decl.enCurso?.tipo === 'C' ? { justificanteAnterior: decl.justificanteAnterior ?? '', resultadoAnterior: decl.resultadoAnterior, devolucionAcordada: decl.devolucionAcordada } : null;
   return {
-    borrador: montarBorrador303(datos, empresa.ctx, opciones.tipoDeclaracion),
+    borrador: montarBorrador303(datos, empresa.ctx, opciones.tipoDeclaracion, { rectificativa }),
     aCompensar,
     cuentas: empresa.cuentas,
     cuentaBancariaId: empresa.cuentaBancariaId,
@@ -988,18 +1075,18 @@ export function generarTxt303Trimestre(companyId: string, ejercicio: number, tri
 
 /** Declaracion del 111 o del 115 de un periodo y de donde salen sus cifras. */
 export interface DeclaracionRetencionesPeriodo {
-  /** La fila de ModeloImpuesto (ya guardada si se ha recalculado). */
+  /** La fila de ModeloImpuesto (id '' si aun no existe: no se crea al leer). */
   fila: FilaModelo;
   declaracion: DeclaracionRetenciones;
-  /** Datos del calculo: los de ahora si se ha recalculado; si no, los guardados (o los de ahora si no hay). */
+  /** Datos del calculo: los de ahora si se calcula; si no, los guardados (o los de ahora si no hay). */
   datos: DatosModelo111 | DatosModelo115;
   /**
-   * 'recalculado': sin presentar, recalculado con la contabilidad de hoy y guardado.
+   * 'calculado': sin presentar, calculado con la contabilidad de hoy (no se guarda).
    * 'guardado': presentado, omitido o editado a mano (lo guardado manda).
    * 'guardado-antiguo': presentado antes de que se guardaran las casillas: se rehacen con los datos guardados.
    * 'calculado-sin-guardar': presentado sin casillas ni datos guardados: solo queda el calculo de hoy.
    */
-  fuente: 'recalculado' | 'guardado' | 'guardado-antiguo' | 'calculado-sin-guardar';
+  fuente: 'calculado' | 'guardado' | 'guardado-antiguo' | 'calculado-sin-guardar';
 }
 
 const datosDeRetenciones = (codigo: '111' | '115', d: unknown): DatosModelo111 | DatosModelo115 | null => {
@@ -1009,50 +1096,50 @@ const datosDeRetenciones = (codigo: '111' | '115', d: unknown): DatosModelo111 |
   return typeof x.retenciones === 'number' && typeof x.resultadoIngresar === 'number' ? (d as DatosModelo115) : null;
 };
 
-/** Fila de ModeloImpuesto de un modelo y periodo; se crea (vigente) si aun no existe. */
-async function filaDePeriodo(companyId: string, codigo: string, ejercicio: number, periodo: string): Promise<FilaModelo> {
+/** Fila de ModeloImpuesto de un modelo y periodo, sin crearla: si no existe, una vigente sin id. */
+async function filaDePeriodoSoloLectura(companyId: string, codigo: string, ejercicio: number, periodo: string): Promise<FilaModelo> {
   if (dbOk()) {
-    const clavePrisma = { companyId_codigo_ejercicio_periodo: { companyId, codigo, ejercicio, periodo } };
-    let f = await prisma.modeloImpuesto.findUnique({ where: clavePrisma });
-    if (!f) {
-      try {
-        f = await prisma.modeloImpuesto.create({ data: { companyId, codigo, ejercicio, periodo, estado: 'vigente' } });
-      } catch {
-        f = await prisma.modeloImpuesto.findUniqueOrThrow({ where: clavePrisma });
-      }
-    }
-    return { ...f, casillas: (f.casillas as Casillas | null) ?? null, datos: f.datos ?? null };
+    const f = await prisma.modeloImpuesto.findUnique({ where: { companyId_codigo_ejercicio_periodo: { companyId, codigo, ejercicio, periodo } } });
+    if (f) return { ...f, casillas: (f.casillas as Casillas | null) ?? null, datos: f.datos ?? null };
+  } else {
+    const f = memoria.get(clave(companyId, codigo, ejercicio, periodo));
+    if (f) return f;
   }
-  const k = clave(companyId, codigo, ejercicio, periodo);
-  if (!memoria.has(k)) memoria.set(k, { id: k, companyId, codigo, ejercicio, periodo, estado: 'vigente', casillas: null, datos: null, origen: null });
-  return memoria.get(k)!;
+  return { id: '', companyId, codigo, ejercicio, periodo, estado: 'vigente', casillas: null, datos: null, origen: null };
 }
 
 /**
  * LA fuente del 111 y del 115: la pantalla (tax-models) y el fichero (TXT del
  * modulo Impuestos) salen de aqui, tambien con filas antiguas o presentadas.
+ * Solo lee (B6): nunca crea ni guarda la fila; «Recalcular importes» (POST) es
+ * quien guarda.
  *  - Presentado (u omitido): lo guardado, con los datos de la empresa con que
  *    se guardo. Una fila presentada de antes del formato actual se rehace con
  *    sus datos guardados; si no los tiene, con el calculo de hoy (fuente
  *    'calculado-sin-guardar', con aviso).
  *  - Editado a mano (manual-mixto): sus casillas, con los datos de la empresa de hoy.
- *  - Si no: se recalcula con la contabilidad de hoy y se guarda (lo mismo que
- *    «Recalcular importes»), para no descargar cifras viejas.
+ *  - Si no: el calculo con la contabilidad de hoy y las opciones guardadas.
+ * Si se esta preparando una complementaria (historial de declaraciones), lleva
+ * la marca, el justificante de la anterior y lo ya ingresado en [29] o [04].
  */
 export async function declaracionRetenciones(
   companyId: string,
   codigo: '111' | '115',
   ejercicio: number,
   periodo: string,
-  opts: { auditoria?: Record<string, unknown> } = {},
 ): Promise<DeclaracionRetencionesPeriodo> {
   const p = String(periodo ?? '').toUpperCase();
   if (!PERIODO_111_115.test(p)) throw badRequest(`El ${codigo} es mensual (01 a 12) o trimestral (1T a 4T): el periodo "${periodo}" no es válido.`);
   if (!(await esEmpresaEspanolaFiscal(companyId))) throw badRequest(MENSAJE_SIN_MODELOS);
-  const [fila, config] = await Promise.all([filaDePeriodo(companyId, codigo, ejercicio, p), configuracionEmpresa(companyId)]);
+  const [fila, config, decl] = await Promise.all([
+    filaDePeriodoSoloLectura(companyId, codigo, ejercicio, p),
+    configuracionEmpresa(companyId),
+    contextoDeclaracion(companyId, codigo, ejercicio, p),
+  ]);
   const guardadas = (fila.casillas ?? {}) as Record<string, unknown>;
   const calculadasDe = (d: DatosModelo111 | DatosModelo115) => (codigo === '111' ? casillasDeDatos111(d as DatosModelo111) : casillasDeDatos115(d as DatosModelo115));
   const cerrado = fila.estado === 'presentado' || fila.estado === 'omitido';
+  const complementaria = decl.enCurso?.tipo === 'C' ? { justificanteAnterior: decl.justificanteAnterior ?? '', resultadoAnterior: decl.resultadoAnterior } : null;
 
   if (cerrado) {
     const guardados = datosDeRetenciones(codigo, fila.datos);
@@ -1068,18 +1155,20 @@ export async function declaracionRetenciones(
 
   if (fila.origen === 'manual-mixto' && tieneCasillasGuardadas(codigo, guardadas)) {
     const datos = datosDeRetenciones(codigo, fila.datos) ?? ((await calcularCasillas(companyId, fila)).datos as DatosModelo111 | DatosModelo115);
-    return { fila, datos, fuente: 'guardado', declaracion: declaracionDeGuardadas(codigo, { ...guardadas, ...config }, ejercicio, p, calculadasDe(datos)) };
+    return { fila, datos, fuente: 'guardado', declaracion: declaracionDeGuardadas(codigo, { ...guardadas, ...config }, ejercicio, p, calculadasDe(datos), complementaria) };
   }
 
-  // Sin presentar: el calculo de hoy, guardado (las opciones del borrador se conservan).
+  // Sin presentar: el calculo de hoy, con las opciones guardadas (no se guarda nada).
   const { casillas, datos } = await calcularCasillas(companyId, fila);
   const opciones = Object.fromEntries(Object.entries(guardadas).filter(([k]) => esOpcion(k)));
-  fila.casillas = { ...casillas, ...config, ...opciones } as Casillas;
-  fila.datos = opts.auditoria ? { ...(datos as object), auditoria: opts.auditoria } : datos;
-  fila.origen = 'autorrelleno';
-  await guardarFila(fila);
+  const actuales = { ...casillas, ...config, ...opciones } as Record<string, unknown>;
   const d = datos as DatosModelo111 | DatosModelo115;
-  return { fila, datos: d, fuente: 'recalculado', declaracion: declaracionDeGuardadas(codigo, fila.casillas as Record<string, unknown>, ejercicio, p, calculadasDe(d)) };
+  return {
+    fila: { ...fila, casillas: actuales as Casillas, datos },
+    datos: d,
+    fuente: 'calculado',
+    declaracion: declaracionDeGuardadas(codigo, actuales, ejercicio, p, calculadasDe(d), complementaria),
+  };
 }
 
 export async function generarTxtModelo(companyId: string, modeloId: string): Promise<{ nombre: string; contenido: string }> {
@@ -1100,15 +1189,8 @@ export async function generarTxtModelo(companyId: string, modeloId: string): Pro
     const t = await generarTxt303(companyId, fila.ejercicio, fila.periodo);
     return { nombre: t.nombre, contenido: t.contenido };
   }
-  if (!fila.datos) await autorrellenarModelo(companyId, modeloId);
-  const refrescada = await cargarFila(companyId, modeloId);
-  const datos = refrescada.datos;
-  const cas = refrescada.casillas ?? {};
-  const nif = String(cas.config_nif ?? '');
-  const razon = String(cas.config_razon_social ?? '');
-  const periodo = periodoFiscalDe(refrescada);
-  const nombre = `${refrescada.codigo}_${refrescada.ejercicio}_${refrescada.periodo}.txt`;
-
+  // Solo lee (B6): cada modelo calcula su fichero al momento (o sale de lo presentado).
+  const refrescada = fila;
   switch (refrescada.codigo) {
     // 349, 180 y 202: el fichero con el diseno oficial, calculado al momento.
     case '349':

@@ -59,6 +59,19 @@ jest.mock('../services/impuestosCalculo.service', () => {
 import { generarTxt303, generarTxt303Trimestre } from '../services/impuestosModulo.service';
 import { taxModelsService } from '../services/tax-models.service';
 import { campoDeCasilla303 } from '../domain/aeat/modelo303-2026';
+import { presentable } from '../services/declaracionesAeat/modelos';
+
+/**
+ * Lo que guarda «Marcar como presentado» en ModeloImpuesto (registrarPresentacion
+ * hace lo mismo dentro de su transacción): la fila del 303 con la instantánea.
+ */
+async function presentar(periodo: string, opciones: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
+  const { instantanea, errores } = await presentable('e1', '303', 2026, periodo, opciones);
+  expect(errores).toEqual([]);
+  const fila = { id: `m-${periodo}`, estado: 'presentado', casillas: instantanea.fila.casillas, datos: instantanea.fila.datos };
+  guardadas.set(periodo, fila);
+  return fila;
+}
 
 /** Importe de una casilla leido del fichero (pagina 1 o 3), con el diseno oficial. */
 function leerDelFichero(fichero: string, casilla: string): number {
@@ -122,8 +135,10 @@ describe('pantalla del 303 = fichero del 303', () => {
     expect(pantalla.resultado).toBe(168);
     expect(pantalla.tipoDeclaracion).toBe('I');
     expect(pantalla.tiposDeclaracion.map((t) => t.codigo)).toEqual(['I', 'U']);
-    // Guarda lo mismo que el modulo Impuestos (y lo que lee el 390 de Modelos fiscales).
-    const fila = guardadas.get('2T') as { datos: Record<string, unknown>; casillas: Record<string, unknown> };
+    // La pantalla no guarda nada (B6).
+    expect(guardadas.size).toBe(0);
+    // Al presentarlo se guarda lo mismo que el modulo Impuestos (y lo que lee el 390).
+    const fila = (await presentar('2T')) as { datos: Record<string, unknown>; casillas: Record<string, unknown> };
     expect(fila.casillas['71_resultado']).toBe(168);
     expect(fila.datos).toMatchObject({ ivaRepercutido: 210, ivaSoportado: 42, resultado: 168, tipoDeclaracion: 'I' });
     expect((fila.datos.casillasOficiales as Record<string, number>)['71']).toBe(168);
@@ -159,8 +174,9 @@ describe('303 presentado: el fichero sale de las casillas guardadas', () => {
   it('aunque cambien las facturas, pantalla y fichero llevan lo que se presentó (y su tipo)', async () => {
     compras = [{ base: 200, cuota: 42 }];
     await taxModelsService.generarModelo303('e1', 2026, 2, 'u1', { tipoDeclaracion: 'U' });
-    const fila = guardadas.get('2T') as Record<string, unknown>;
-    fila.estado = 'presentado';
+    const fila = await presentar('2T', { tipoDeclaracion: 'U' });
+    // Congelado también el IBAN de la página DID.
+    expect((fila.datos as Record<string, unknown>).ibanPresentado).toBe('ES9121000418450200051332');
 
     // Despues de presentar entra otra factura de compra del trimestre.
     compras = [{ base: 200, cuota: 42 }, { base: 500, cuota: 105 }];
@@ -185,8 +201,7 @@ describe('303 presentado: el fichero sale de las casillas guardadas', () => {
     expect(cuarto.tiposDeclaracion.map((t) => t.codigo)).toEqual(['N', 'D']);
     const de = (n: string) => cuarto.casillas303.find((c) => c.numero === n)?.valor;
     expect([de('110'), de('78'), de('87'), de('71')]).toEqual([300, 300, 0, -300]);
-    const fila = guardadas.get('4T') as Record<string, unknown>;
-    fila.estado = 'presentado';
+    const fila = await presentar('4T', { aCompensar: '300', tipoDeclaracion: 'D' });
     // El periodo siguiente lee esa fila como su 303 anterior.
     filaAnterior = fila;
     const siguiente = await taxModelsService.generarModelo303('e1', 2026, 2);
@@ -199,7 +214,7 @@ describe('303 mensual (REDEME, SII o periodicidad mensual)', () => {
     ajustes = { periodicidadIva: 'TRIMESTRAL', redeme: true, sii: false, granEmpresa: false, recargoEquivalencia: false, criterioCaja: false, prorrata: null, updatedAt: new Date('2026-01-02') };
     const mayo = await taxModelsService.generarModelo303('e1', 2026, '05', 'u1');
     expect(mayo).toMatchObject({ periodo: '05', trimestre: null, mensual: true, resultado: 210 });
-    expect(guardadas.get('05')).toBeDefined();
+    expect(guardadas.get('05')).toBeUndefined(); // leer no guarda (B6)
     const r = await generarTxt303('e1', 2026, '05');
     expect(r.nombre).toBe('303_2026_05.txt');
     expect(r.contenido.startsWith('<T3030202605' + '0000><AUX>')).toBe(true);

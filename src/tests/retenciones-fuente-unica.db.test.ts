@@ -13,7 +13,9 @@ import request from 'supertest';
 import { prisma } from '../config/database';
 import { expenseInvoicesService } from '../services/expense-invoices.service';
 import { generarTxtModelo } from '../services/impuestosModulo.service';
-import { taxModelsService } from '../services/tax-models.service';
+import { ficheroRetenciones, taxModelsService } from '../services/tax-models.service';
+import { presentarDeclaracion } from '../services/declaracionesAeat/presentar';
+import declaracionesAeatRoutes from '../routes/declaraciones-aeat.routes';
 import taxModelsRoutes from '../routes/tax-models.routes';
 import { errorMiddleware } from '../middleware/error.middleware';
 import { letraNif } from '../utils/nif';
@@ -59,6 +61,7 @@ function app() {
     req.companyId = E;
     next();
   });
+  a.use('/companies/:companyId/tax-models', declaracionesAeatRoutes);
   a.use('/companies/:companyId/tax-models', taxModelsRoutes);
   a.use(errorMiddleware);
   return a;
@@ -77,11 +80,12 @@ describe('115: pantalla y fichero, la misma fuente', () => {
   it('sin presentar: la descarga recalcula como la pantalla (no baja cifras viejas)', async () => {
     await alquiler('2026-02-01', 'A-02');
     const pantalla = await taxModelsService.generarModelo115(E, 2026, 1);
-    id = pantalla.id;
     expect(pantalla).toMatchObject({ retencion: 190, periodo: '1T', trimestre: 1 });
+    // Abrir la pantalla no guarda nada (B6).
+    expect(await prisma.modeloImpuesto.findUnique({ where: { companyId_codigo_ejercicio_periodo: { companyId: E, codigo: '115', ejercicio: 2026, periodo: '1T' } } })).toBeNull();
     // Otra factura despues de abrir la pantalla: el fichero ya la lleva.
     await alquiler('2026-03-01', 'A-03');
-    const txt = (await generarTxtModelo(E, id)).contenido;
+    const txt = (await ficheroRetenciones(E, '115', 2026, '1T')).contenido;
     expect(casilla(txt, 141)).toBe(380); // [03]
     const otraVez = await taxModelsService.generarModelo115(E, 2026, 1);
     expect(otraVez.formulario.total.length + otraVez.formulario.bloques.length).toBeGreaterThan(0);
@@ -90,9 +94,10 @@ describe('115: pantalla y fichero, la misma fuente', () => {
   });
 
   it('presentado: pantalla y fichero dan lo guardado aunque el calculo de hoy sea otro', async () => {
-    await taxModelsService.marcarPresentado(E, '115', 2026, '1T', { numero: '1150000000001', fecha: '2026-04-15' }, 'u-ret');
+    await presentarDeclaracion(E, 'u-ret', '115', 2026, '1T', { numero: '1150000000001', fecha: '2026-04-15' });
     // Lo que se presento no es lo que sale hoy (p. ej., se corrigio una factura despues).
-    const fila = await prisma.modeloImpuesto.findUniqueOrThrow({ where: { id } });
+    const fila = await prisma.modeloImpuesto.findUniqueOrThrow({ where: { companyId_codigo_ejercicio_periodo: { companyId: E, codigo: '115', ejercicio: 2026, periodo: '1T' } } });
+    id = fila.id;
     await prisma.modeloImpuesto.update({ where: { id }, data: { casillas: { ...(fila.casillas as object), '02_base': 1600, '03_retenciones': 304, '05_resultado': 304 } } });
     const pantalla = await taxModelsService.generarModelo115(E, 2026, 1);
     const txt = (await generarTxtModelo(E, id)).contenido;
@@ -129,7 +134,7 @@ describe('111: pantalla y fichero, y periodos mensuales', () => {
     expect(mayo).toMatchObject({ periodo: '05', trimestre: null, totalRetenido: 75 });
     expect(mayo.formulario.identificacion.periodo).toBe('05');
     await honorarios('2026-05-20', 'H-05B');
-    const txt = (await generarTxtModelo(E, mayo.id)).contenido;
+    const txt = (await ficheroRetenciones(E, '111', 2026, '05')).contenido;
     expect(txt.slice(328 + 106, 328 + 108)).toBe('05'); // periodo, posicion 107
     expect(casilla(txt, 487)).toBe(150); // [28]
     expect((await taxModelsService.generarModelo111(E, 2026, '5')).casillas['28']).toBe(150);

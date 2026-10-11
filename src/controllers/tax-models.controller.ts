@@ -52,34 +52,6 @@ export class TaxModelsController {
   });
 
   /**
-   * POST /tax-models/303/presentado
-   * Marcar modelo 303 como presentado
-   */
-  marcar303Presentado = asyncHandler(async (req: Request, res: Response) => {
-    const { companyId } = req.params;
-    const { ejercicio, trimestre, periodo, justificante } = req.body;
-    const userId = (req as any).user?.id || 'SYSTEM';
-
-    if (!justificante?.numero || !justificante?.fecha) {
-      return res.status(400).json({
-        error: 'Body must include justificante with numero and fecha',
-      });
-    }
-
-    // Trimestre (1-4) o, en el 303 mensual, periodo '01'..'12'.
-    const resultado = await taxModelsService.marcarPresentado(
-      companyId,
-      '303',
-      ejercicio,
-      periodo303De(periodo ?? trimestre),
-      justificante,
-      userId
-    );
-
-    sendOk(res, resultado, { message: 'Modelo 303 marcado como presentado' });
-  });
-
-  /**
    * GET /tax-models/111
    * Generar o recuperar modelo 111 (retenciones)
    */
@@ -100,87 +72,6 @@ export class TaxModelsController {
     );
 
     sendOk(res, resultado);
-  });
-
-  /**
-   * POST /tax-models/111/presentado
-   * Marcar modelo 111 como presentado
-   */
-  marcar111Presentado = asyncHandler(async (req: Request, res: Response) => {
-    const { companyId } = req.params;
-    const { ejercicio, trimestre, justificante } = req.body;
-    const userId = (req as any).user?.id || 'SYSTEM';
-
-    if (!justificante?.numero || !justificante?.fecha) {
-      return res.status(400).json({
-        error: 'Body must include justificante with numero and fecha',
-      });
-    }
-
-    const resultado = await taxModelsService.marcarPresentado(
-      companyId,
-      '111',
-      ejercicio,
-      periodoRetenciones(periodoDeConsulta(req.body.periodo, trimestre)),
-      justificante,
-      userId
-    );
-
-    sendOk(res, resultado, { message: 'Modelo 111 marcado como presentado' });
-  });
-
-  /**
-   * POST /tax-models/200/presentado
-   * Marcar modelo 200 como presentado
-   */
-  marcar200Presentado = asyncHandler(async (req: Request, res: Response) => {
-    const { companyId } = req.params;
-    const { ejercicio, justificante } = req.body;
-    const userId = (req as any).user?.id || 'SYSTEM';
-
-    if (!justificante?.numero || !justificante?.fecha) {
-      return res.status(400).json({
-        error: 'Body must include justificante with numero and fecha',
-      });
-    }
-
-    const resultado = await taxModelsService.marcarPresentado(
-      companyId,
-      '200',
-      ejercicio,
-      '0A',
-      justificante,
-      userId
-    );
-
-    sendOk(res, resultado, { message: 'Modelo 200 marcado como presentado' });
-  });
-
-  /**
-   * POST /tax-models/347/presentado
-   * Marcar modelo 347 como presentado
-   */
-  marcar347Presentado = asyncHandler(async (req: Request, res: Response) => {
-    const { companyId } = req.params;
-    const { ejercicio, justificante } = req.body;
-    const userId = (req as any).user?.id || 'SYSTEM';
-
-    if (!justificante?.numero || !justificante?.fecha) {
-      return res.status(400).json({
-        error: 'Body must include justificante with numero and fecha',
-      });
-    }
-
-    const resultado = await taxModelsService.marcarPresentado(
-      companyId,
-      '347',
-      ejercicio,
-      '0A',
-      justificante,
-      userId
-    );
-
-    sendOk(res, resultado, { message: 'Modelo 347 marcado como presentado' });
   });
 
   /**
@@ -213,60 +104,6 @@ export class TaxModelsController {
   });
 
   /**
-   * POST /tax-models/115/presentado
-   * Marcar modelo 115 como presentado
-   */
-  marcar115Presentado = asyncHandler(async (req: Request, res: Response) => {
-    const { companyId } = req.params;
-    const { ejercicio, trimestre, justificante } = req.body;
-    const userId = (req as any).user?.id || 'SYSTEM';
-
-    if (!justificante?.numero || !justificante?.fecha) {
-      return res.status(400).json({
-        error: 'Body must include justificante with numero and fecha',
-      });
-    }
-
-    const resultado = await taxModelsService.marcarPresentado(
-      companyId,
-      '115',
-      ejercicio,
-      periodoRetenciones(periodoDeConsulta(req.body.periodo, trimestre)),
-      justificante,
-      userId
-    );
-
-    sendOk(res, resultado, { message: 'Modelo 115 marcado como presentado' });
-  });
-
-  /**
-   * POST /tax-models/390/presentado
-   * Marcar modelo 390 como presentado
-   */
-  marcar390Presentado = asyncHandler(async (req: Request, res: Response) => {
-    const { companyId } = req.params;
-    const { ejercicio, justificante } = req.body;
-    const userId = (req as any).user?.id || 'SYSTEM';
-
-    if (!justificante?.numero || !justificante?.fecha) {
-      return res.status(400).json({
-        error: 'Body must include justificante with numero and fecha',
-      });
-    }
-
-    const resultado = await taxModelsService.marcarPresentado(
-      companyId,
-      '390',
-      ejercicio,
-      '0A',
-      justificante,
-      userId
-    );
-
-    sendOk(res, resultado, { message: 'Modelo 390 marcado como presentado' });
-  });
-
-  /**
    * GET /tax-models/190
    * Generar o recuperar modelo 190 (resumen anual de retenciones)
    */
@@ -288,33 +125,6 @@ export class TaxModelsController {
     );
 
     sendOk(res, resultado);
-  });
-
-  /**
-   * POST /tax-models/190/presentado
-   * Marcar modelo 190 como presentado
-   */
-  marcar190Presentado = asyncHandler(async (req: Request, res: Response) => {
-    const { companyId } = req.params;
-    const { ejercicio, justificante } = req.body;
-    const userId = (req as any).user?.id || 'SYSTEM';
-
-    if (!justificante?.numero || !justificante?.fecha) {
-      return res.status(400).json({
-        error: 'Body must include justificante with numero and fecha',
-      });
-    }
-
-    const resultado = await taxModelsService.marcarPresentado(
-      companyId,
-      '190',
-      ejercicio,
-      '0A',
-      justificante,
-      userId
-    );
-
-    sendOk(res, resultado, { message: 'Modelo 190 marcado como presentado' });
   });
 
   /**
