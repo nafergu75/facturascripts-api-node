@@ -21,7 +21,6 @@ import {
   generarCasillas303,
   generarCasillas200,
   generarCasillas347,
-  generarCasillas115,
   generarCasillas390,
   ModeloFiscalAuditoria,
 } from '../utils/aeat-models';
@@ -29,8 +28,20 @@ import type { DatosModelo111, DatosModelo115 } from '../domain/impuestos.model';
 import { calcularModelo115 } from './impuestosCalculo.service';
 import { periodoFiscal } from './nominas/fiscal';
 import { aparicionesEntre, importe347Gasto, whereGastosFiscales } from '../domain/factura-gasto.model';
-import { calcularCasillasModelo } from './impuestosModulo.service';
+import { calcularCasillasModelo, configuracionEmpresa } from './impuestosModulo.service';
+import { casillasDeDatos111, casillasDeDatos115, declaracionDeGuardadas, esOpcion, formularioDeclaracion, type FormularioRetenciones } from './aeatRetenciones/declaracion';
 import type { Modelo190 } from './nominas/fiscal';
+import { DR190 } from './aeatRetenciones/diseno';
+import { comprobarDiseno190 } from './nominas/modelo190';
+
+/** Aviso del diseño del 190 para la pantalla (null si esta publicado; sin error para ejercicios antiguos). */
+function avisoDiseno190(ejercicio: number): string | null {
+  try {
+    return comprobarDiseno190(ejercicio).aviso;
+  } catch (e) {
+    return e instanceof Error ? e.message : null;
+  }
+}
 
 type CasillasGuardadas = Record<string, unknown>;
 
@@ -82,6 +93,16 @@ function casillasPantalla111(oficiales: CasillasGuardadas, porTipo?: PorTipoActi
     totalBase: Math.round((v('02_percepciones_trabajo') + v('05_percepciones_especie') + v('08_percepciones_actividades')) * 100) / 100,
     totalRetenido: v('28_total_retenciones'),
   };
+}
+
+/**
+ * Casillas a guardar al recalcular el 111 o el 115: las calculadas, los datos
+ * actuales de la empresa (config_*) y las opciones del borrador que ya hubiera
+ * (forma de pago, complementaria), que no son importes.
+ */
+function casillasRecalculadas(oficiales: CasillasGuardadas, config: CasillasGuardadas, previas: CasillasGuardadas | null): CasillasGuardadas {
+  const opciones = Object.fromEntries(Object.entries(previas ?? {}).filter(([k]) => esOpcion(k)));
+  return { ...oficiales, ...config, ...opciones };
 }
 
 /** 400 si la empresa no esta establecida en Espana (no presenta modelos de la AEAT). */
@@ -275,6 +296,8 @@ export class TaxModelsService {
     estado: string;
     origen: string | null;
     avisos: string[];
+    /** Formulario oficial (identificacion, casillas 01-30, liquidacion): misma declaracion que el fichero. */
+    formulario: FormularioRetenciones;
     id: string;
   }> {
     // Una empresa no establecida en Espana no presenta modelos de la AEAT.
@@ -283,7 +306,7 @@ export class TaxModelsService {
       throw badRequest('Trimestre debe estar entre 1 y 4');
     }
     const periodo = `${trimestre}T`;
-    const calculo = await calcularCasillasModelo(companyId, '111', ejercicio, periodo);
+    const [calculo, config] = await Promise.all([calcularCasillasModelo(companyId, '111', ejercicio, periodo), configuracionEmpresa(companyId)]);
     const oficiales = calculo.casillas as CasillasGuardadas;
     const datos = calculo.datos as DatosModelo111;
     const auditoria: ModeloFiscalAuditoria = {
@@ -297,15 +320,12 @@ export class TaxModelsService {
     let modelo = await prisma.modeloImpuesto.findUnique({ where: clave });
     if (!modelo) {
       modelo = await prisma.modeloImpuesto.create({
-        data: { companyId, codigo: '111', ejercicio, periodo, estado: 'vigente', casillas: oficiales as never, datos: { ...datos, auditoria } as never, origen: 'autorrelleno' },
+        data: { companyId, codigo: '111', ejercicio, periodo, estado: 'vigente', casillas: { ...oficiales, ...config } as never, datos: { ...datos, auditoria } as never, origen: 'autorrelleno' },
       });
     } else if (modelo.estado !== 'presentado' && modelo.estado !== 'omitido' && modelo.origen !== 'manual-mixto') {
-      // Se conservan los datos de la empresa (config_*) que guarda el modulo Impuestos.
-      const previas = (modelo.casillas as CasillasGuardadas | null) ?? {};
-      const config = Object.fromEntries(Object.entries(previas).filter(([k]) => k.startsWith('config_')));
       modelo = await prisma.modeloImpuesto.update({
         where: { id: modelo.id },
-        data: { casillas: { ...oficiales, ...config } as never, datos: { ...datos, auditoria } as never, origen: 'autorrelleno' },
+        data: { casillas: casillasRecalculadas(oficiales, config, modelo.casillas as CasillasGuardadas | null) as never, datos: { ...datos, auditoria } as never, origen: 'autorrelleno' },
       });
     }
 
@@ -313,6 +333,8 @@ export class TaxModelsService {
     const guardadas = (modelo.casillas as CasillasGuardadas | null) ?? {};
     const base = '28_total_retenciones' in guardadas ? guardadas : oficiales;
     const pantalla = casillasPantalla111(base, datos.actividadesPorTipo);
+    // El formulario sale de la misma declaracion que el fichero de la AEAT.
+    const formulario = formularioDeclaracion(declaracionDeGuardadas('111', { ...config, ...guardadas }, ejercicio, periodo, casillasDeDatos111(datos)));
     const avisos = [...(datos.avisos ?? [])];
     if (modelo.estado === 'presentado') avisos.push('Modelo presentado: se muestran las casillas tal como se presentaron, aunque después hayan cambiado las nóminas o las facturas.');
     else if (modelo.origen === 'manual-mixto') avisos.push('Casillas editadas a mano en Impuestos: se muestran tal como se guardaron.');
@@ -336,6 +358,7 @@ export class TaxModelsService {
       estado: modelo.estado,
       origen: modelo.origen,
       avisos,
+      formulario,
     };
   }
 
@@ -737,6 +760,8 @@ export class TaxModelsService {
     casillasOficiales: CasillasGuardadas;
     perceptores: NonNullable<DatosModelo115['perceptores']>;
     avisos: string[];
+    /** Formulario oficial (identificacion, casillas 01-05, liquidacion): misma declaracion que el fichero. */
+    formulario: FormularioRetenciones;
   }> {
     // Una empresa no establecida en Espana no presenta modelos de la AEAT.
     await exigirEmpresaEspanola(companyId);
@@ -744,7 +769,7 @@ export class TaxModelsService {
       throw badRequest('Trimestre debe estar entre 1 y 4');
     }
     const periodo = `${trimestre}T`;
-    const calculo = await calcularCasillasModelo(companyId, '115', ejercicio, periodo);
+    const [calculo, config] = await Promise.all([calcularCasillasModelo(companyId, '115', ejercicio, periodo), configuracionEmpresa(companyId)]);
     const oficiales = calculo.casillas as CasillasGuardadas;
     const datos = calculo.datos as DatosModelo115;
     const auditoria: ModeloFiscalAuditoria = {
@@ -758,21 +783,20 @@ export class TaxModelsService {
     let modelo = await prisma.modeloImpuesto.findUnique({ where: clave });
     if (!modelo) {
       modelo = await prisma.modeloImpuesto.create({
-        data: { companyId, codigo: '115', ejercicio, periodo, estado: 'vigente', casillas: oficiales as never, datos: { ...datos, auditoria } as never, origen: 'autorrelleno' },
+        data: { companyId, codigo: '115', ejercicio, periodo, estado: 'vigente', casillas: { ...oficiales, ...config } as never, datos: { ...datos, auditoria } as never, origen: 'autorrelleno' },
       });
     } else if (modelo.estado !== 'presentado' && modelo.estado !== 'omitido' && modelo.origen !== 'manual-mixto') {
-      // Se conservan los datos de la empresa (config_*) que guarda el modulo Impuestos.
-      const previas = (modelo.casillas as CasillasGuardadas | null) ?? {};
-      const config = Object.fromEntries(Object.entries(previas).filter(([k]) => k.startsWith('config_')));
       modelo = await prisma.modeloImpuesto.update({
         where: { id: modelo.id },
-        data: { casillas: { ...oficiales, ...config } as never, datos: { ...datos, auditoria } as never, origen: 'autorrelleno' },
+        data: { casillas: casillasRecalculadas(oficiales, config, modelo.casillas as CasillasGuardadas | null) as never, datos: { ...datos, auditoria } as never, origen: 'autorrelleno' },
       });
     }
 
     // Lo guardado manda (presentado o editado a mano); si es de antes (otro formato), el calculo.
     const guardadas = (modelo.casillas as CasillasGuardadas | null) ?? {};
     const base = '03_retenciones' in guardadas ? guardadas : oficiales;
+    // El formulario sale de la misma declaracion que el fichero de la AEAT.
+    const formulario = formularioDeclaracion(declaracionDeGuardadas('115', { ...config, ...guardadas }, ejercicio, periodo, casillasDeDatos115(datos)));
     const v = (k: string) => Number(base[k] ?? 0) || 0;
     const avisos: string[] = [...(datos.avisos ?? [])];
     if (modelo.estado === 'presentado') avisos.push('Modelo presentado: se muestran las casillas tal como se presentaron, aunque después hayan cambiado las facturas.');
@@ -801,6 +825,7 @@ export class TaxModelsService {
       casillasOficiales: base,
       perceptores: datos.perceptores ?? [],
       avisos,
+      formulario,
     };
   }
 
@@ -1040,6 +1065,10 @@ export class TaxModelsService {
     desgloseTrimestral: any[];
     avisos: string[];
     cuadre111: { total: number; coincide: boolean };
+    /** Casillas del resumen del formulario oficial (las del registro de declarante del fichero). */
+    formulario: { titulo: string; fuente: string; resumen: Array<{ casilla: string; rotulo: string; valor: number; signo: 'N' | ' '; tipo: 'numero' | 'importe' }> };
+    /** Aviso fijo si el ejercicio no tiene aun diseño de registro publicado (se usa el ultimo). */
+    avisoDiseno: string | null;
     id: string;
   }> {
     // Una empresa no establecida en Espana no presenta modelos de la AEAT.
@@ -1127,6 +1156,16 @@ export class TaxModelsService {
       desgloseTrimestral,
       avisos: datos.avisos ?? [],
       cuadre111: { total: datos.cuadre111.total, coincide: datos.cuadre111.coincide },
+      formulario: {
+        titulo: DR190.formulario.titulo,
+        fuente: DR190.fuente,
+        // Mismos rotulos y casillas que el registro de tipo 1 del fichero.
+        resumen: (DR190.formulario.resumen ?? []).map((r) => {
+          const valor = r.campo === 'numeroPercepciones' ? v('num_percepciones') : r.campo === 'importePercepciones' ? v('importe_percepciones') : v('retenciones_ingresos_cuenta');
+          return { casilla: r.casilla, rotulo: r.rotulo, valor, signo: r.campo === 'importePercepciones' && valor < 0 ? ('N' as const) : (' ' as const), tipo: r.campo === 'numeroPercepciones' ? ('numero' as const) : ('importe' as const) };
+        }),
+      },
+      avisoDiseno: avisoDiseno190(ejercicio),
     };
   }
 
