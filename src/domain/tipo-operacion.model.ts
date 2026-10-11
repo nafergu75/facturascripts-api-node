@@ -425,7 +425,12 @@ export const REGLA_OPERACION: Readonly<Record<TipoOperacionVenta, ReglaOperacion
     casilla303: (ctx) => (['E3', 'E4'].includes(String(ctx.causaExencion)) ? '60' : null),
     clave349: () => null,
     causaLibro: (ctx) => causaValida(ctx.causaExencion) ?? 'E6',
-    verifactu: (ctx) => vf(null, causaValida(ctx.causaExencion) ?? 'E6'),
+    // E3 (art. 22 LIVA, operaciones asimiladas a la exportacion) va con la clave
+    // 02: la AEAT no admite E2 ni E3 con la 01 (Validaciones v1.2.2, 15.5; P8).
+    verifactu: (ctx) => {
+      const causa = causaValida(ctx.causaExencion) ?? 'E6';
+      return vf(null, causa, causa === 'E3' ? '02' : '01');
+    },
     mencion: (ctx) => ({
       es: `Operación exenta de IVA – ${ref(ctx) || 'indica el precepto'}`,
       en: `VAT-exempt supply – ${ref(ctx) || 'legal basis'}`,

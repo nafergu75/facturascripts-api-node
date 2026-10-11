@@ -79,6 +79,19 @@ describe('tabla de reglas', () => {
     expect(R.EMPRESA_EXTRANJERA.mencion(ctx(US))).toBeNull();
   });
 
+  it('P8 (VERI*FACTU): la exenta E3 va con la clave 02; E1, E4 y E6 siguen con la 01', () => {
+    const ctx = (cliente: object, extra: object = {}) => ({ cliente, ...extra });
+    const R = REGLA_OPERACION;
+    // La AEAT rechaza E2 y E3 con la clave 01 (Validaciones v1.2.2, 15.5).
+    expect(R.EXENTA.verifactu(ctx(ES, { causaExencion: 'E3' }))).toMatchObject({ operacionExenta: 'E3', claveRegimen: '02', calificacion: null });
+    for (const causa of ['E1', 'E4', 'E6']) {
+      expect(R.EXENTA.verifactu(ctx(ES, { causaExencion: causa }))).toMatchObject({ operacionExenta: causa, claveRegimen: '01' });
+    }
+    // Sin causa valida: E6 con la 01.
+    expect(R.EXENTA.verifactu(ctx(ES))).toMatchObject({ operacionExenta: 'E6', claveRegimen: '01' });
+    expect(R.EXPORTACION.verifactu(ctx(US))).toMatchObject({ operacionExenta: 'E2', claveRegimen: '02' });
+  });
+
   it('menciones del PDF en espanol e ingles', () => {
     const m = (t: keyof typeof REGLA_OPERACION, cliente: object, extra: object = {}) => REGLA_OPERACION[t].mencion({ cliente, ...extra });
     expect(m('NACIONAL', ES)).toBeNull();
