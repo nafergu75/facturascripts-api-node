@@ -9,6 +9,7 @@ jest.mock('@anthropic-ai/sdk', () => ({
   default: jest.fn().mockImplementation(() => ({ messages: { create: crear } })),
 }));
 
+import Anthropic from '@anthropic-ai/sdk';
 import { mapearFacturaAzure } from '../services/lectura/azure-factura.mapper';
 import type { AnalyzeResult } from '../services/lectura/azure-di.client';
 import { AVISO_SIN_COMPLEMENTO, completarConClaude, decidirComplemento, mensajeParaClaude, MOTIVO_TOTAL_SIN_RETENCION, prepararTexto } from '../services/lectura/claude-complemento';
@@ -108,6 +109,14 @@ describe('que se manda', () => {
     expect(datos).not.toContain('COMERCIAL');
     expect(datos).not.toContain('Calle Mayor');
     expect(JSON.stringify(peticion)).not.toMatch(/"type":"(document|image)"/);
+  });
+
+  it('el cliente tiene tiempo maximo y no reintenta (el SDK reintenta 2 veces y espera 10 min por defecto)', async () => {
+    crear.mockResolvedValueOnce(fixtureClaude('complemento-irpf'));
+    const { lectura, texto } = leer('resultado-irpf');
+    (Anthropic as unknown as jest.Mock).mockClear();
+    await completarConClaude(lectura, texto, decidirComplemento(lectura, texto, 'GASTO'), ctx);
+    expect((Anthropic as unknown as jest.Mock).mock.calls[0][0]).toMatchObject({ timeout: 30_000, maxRetries: 0 });
   });
 
   it('con menos de 40 caracteres de texto no se llama: hay que leer con vision', async () => {

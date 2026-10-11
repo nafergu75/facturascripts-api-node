@@ -324,7 +324,7 @@ interface LecturaClaude {
 /**
  * Lee un documento (PDF/imagen) con Claude Opus y vision.
  */
-export async function leerDocumentoConClaude(buffer: Buffer, mimeType: string): Promise<LecturaClaude> {
+export async function leerDocumentoConClaude(buffer: Buffer, mimeType: string, peticion?: { timeout?: number; maxRetries?: number }): Promise<LecturaClaude> {
   if (!anthropicClient) {
     // Sin la clave de la IA en el servidor. El usuario no puede arreglarlo: se le
     // dice que hacer (503, no 400) y la pantalla enlaza al alta manual.
@@ -360,7 +360,7 @@ export async function leerDocumentoConClaude(buffer: Buffer, mimeType: string): 
       ],
       tools: [HERRAMIENTA_EXTRACCION],
       tool_choice: { type: 'tool', name: 'registrar_extraccion_gasto' },
-    });
+    }, peticion);
   } catch (err) {
     const e = err as { status?: number; error?: { error?: { message?: string } } };
     const detalle = e.error?.error?.message ?? (err instanceof Error ? err.message : String(err));

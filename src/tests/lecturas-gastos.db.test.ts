@@ -40,7 +40,10 @@ import request from 'supertest';
 import { prisma } from '../config/database';
 import { errorMiddleware } from '../middleware/error.middleware';
 import gastosRoutes from '../routes/gastos-extractor.routes';
-import { _reiniciarPausa } from '../services/lectura/azure-di.client';
+import { _reiniciarPausa, TIEMPO_GET_MS } from '../services/lectura/azure-di.client';
+import { TIEMPO_COMPLEMENTO_MS } from '../services/lectura/claude-complemento';
+import { TIEMPO_CLAUDE_VISION_MS } from '../services/lectura/claude-vision.adapter';
+import { RESERVA_MS } from '../services/lectura/lectura.service';
 import { aceptado, CLAVE, ENDPOINT, error, fixtureClaude, NIF_EMISOR, NIF_EMPRESA, respuesta, resultado, RESULT_ID } from './fixtures/azure-di';
 
 const E = `lecturas-gastos-${Date.now()}`;
@@ -284,6 +287,14 @@ describe('respaldo y cortocircuito', () => {
     expect(grande.status).toBe(400);
     expect(grande.body.message).toBe('El archivo pesa más de 4 MB: redúcelo o hazle una foto con menos resolución.');
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('tiempos', () => {
+  it('la reserva de una lectura pasa de lo que puede tardar una consulta (GET a Azure mas Claude con vision o el complemento)', () => {
+    const margen = 10_000;
+    expect(RESERVA_MS).toBeGreaterThan(TIEMPO_GET_MS + TIEMPO_CLAUDE_VISION_MS + margen);
+    expect(RESERVA_MS).toBeGreaterThan(TIEMPO_GET_MS + TIEMPO_COMPLEMENTO_MS + margen);
   });
 });
 

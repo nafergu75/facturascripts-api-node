@@ -57,8 +57,12 @@ const MIME_ADMITIDOS = new Set(['application/pdf', 'image/jpeg', 'image/png', 'i
 
 /** Desde el POST a Azure: pasado este plazo, se lee con Claude. */
 export const PLAZO_AZURE_MS = 45_000;
-/** Reserva de la lectura mientras una peticion consulta a Azure (y quiza a Claude). */
-const RESERVA_MS = 90_000;
+/**
+ * Reserva de la lectura mientras una peticion consulta a Azure (y quiza a
+ * Claude). Tiene que pasar de lo que puede tardar esa peticion (GET a Azure
+ * mas Claude con vision); si no, otra pestana la reclamaria y pagaria otra vez.
+ */
+export const RESERVA_MS = 90_000;
 const DIA_MS = 24 * 60 * 60 * 1000;
 
 export const MENSAJE_NO_LEIDA = 'No se ha podido leer la factura ahora mismo. Prueba dentro de unos minutos o regístrala a mano.';

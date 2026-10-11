@@ -19,6 +19,8 @@ import { UMBRAL_OK, type Campo, type Lector, type LecturaNormalizada, type TipoD
 import { calcularCuadre, importesNegativos, validacionesSincronas, type ContextoValidacion } from './validaciones';
 
 const OCR_MODEL = 'claude-opus-4-8';
+/** Tiempo maximo del complemento, sin reintentos del SDK (seccion 7: no se reintenta). */
+export const TIEMPO_COMPLEMENTO_MS = 30_000;
 const MAX_TEXTO = 15_000;
 const MIN_TEXTO = 40;
 
@@ -283,7 +285,7 @@ export type ResultadoComplemento =
 /** Cliente de Anthropic, o null sin ANTHROPIC_API_KEY. Se crea en cada llamada (tests y redespliegues). */
 export function clienteAnthropic(): Anthropic | null {
   const clave = normalizarAnthropicKey(process.env.ANTHROPIC_API_KEY);
-  return clave ? new Anthropic({ apiKey: clave }) : null;
+  return clave ? new Anthropic({ apiKey: clave, timeout: TIEMPO_COMPLEMENTO_MS, maxRetries: 0 }) : null;
 }
 
 export async function completarConClaude(l: LecturaNormalizada, contenido: string | null, preguntas: Pregunta[], ctx: ContextoValidacion): Promise<ResultadoComplemento> {

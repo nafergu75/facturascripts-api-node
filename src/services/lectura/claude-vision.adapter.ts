@@ -26,6 +26,14 @@ import { lecturaVacia, type ArchivoLectura, type ArranqueLectura, type Campo, ty
 
 const MIME_ADMITIDOS = /^(application\/pdf|image\/(jpeg|png|webp|gif))$/i;
 
+/**
+ * Tiempo maximo de la lectura con vision, sin reintentos del SDK (por defecto
+ * 10 min y 2 reintentos): una peticion colgada dejaria la funcion esperando y
+ * otra pestana reclamaria la lectura y pagaria otra llamada.
+ */
+export const TIEMPO_CLAUDE_VISION_MS = 55_000;
+const PETICION_VISION = { timeout: TIEMPO_CLAUDE_VISION_MS, maxRetries: 0 };
+
 const deClaude = <T>(valor: T | null | undefined): Campo<T> => ({ valor: valor ?? null, confianza: null, fuente: 'claude' });
 const calculado = <T>(valor: T | null): Campo<T> => ({ valor, confianza: null, fuente: 'calculado' });
 const fechaValida = (f: string | null | undefined) => (f && esFechaReal(f) ? f : null);
@@ -112,10 +120,10 @@ export function claudeVisionExtractor(lector: Lector): ExtractorFacturas {
       if (!claudeConfigurado()) return { tipo: 'fallo', codigo: 'CLAUDE_SIN_CLAVE', reintentable: false };
       try {
         if (lector === 'GASTO') {
-          const g = await leerGastoConClaude(archivo.buffer, archivo.mime);
+          const g = await leerGastoConClaude(archivo.buffer, archivo.mime, PETICION_VISION);
           return { tipo: 'hecho', lectura: normalizarGastoClaude(g), texto: null, qr: null, confianzaLector: _construirGastoExtraido(g).confianza };
         }
-        const v = await leerVentaConClaude(archivo.buffer, archivo.mime);
+        const v = await leerVentaConClaude(archivo.buffer, archivo.mime, PETICION_VISION);
         return { tipo: 'hecho', lectura: normalizarVentaClaude(v, ctx?.monedaCuenta), texto: null, qr: null, confianzaLector: construirExtraccion(v).confidence };
       } catch (err) {
         // El texto del error puede llevar datos del documento: solo el estado.

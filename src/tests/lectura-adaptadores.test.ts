@@ -145,6 +145,8 @@ describe('respaldo con Claude con vision', () => {
     expect(r.lectura.totales.totalAPagar.valor).toBe(242);
     expect(r.confianzaLector).toBe(0.85);
     expect(r.qr).toBeNull();
+    // Con tiempo maximo y sin los reintentos del SDK.
+    expect(crear.mock.calls[0][1]).toEqual({ timeout: 55_000, maxRetries: 0 });
     // Se manda el documento, como hoy.
     expect(crear.mock.calls[0][0].messages[0].content[0].type).toBe('document');
     const v = await validarLectura(r.lectura, ctx());
