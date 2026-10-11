@@ -15,6 +15,7 @@ import { aCentimos, cuadraEnCentimos } from '../utils/money';
 import { esTipoOperacion, REGLA_OPERACION, type TipoOperacionVenta } from '../domain/tipo-operacion.model';
 import { tipoRetencionLibro } from '../domain/factura-gasto.model';
 import { esEmpresaEspanola } from './perfilEmpresa.service';
+import { logger } from '../config/logger';
 
 // Cliente compartido o el de una transaccion (los importes se leen como number).
 type DbClient = ClienteBD | TransaccionBD;
@@ -204,6 +205,12 @@ export async function contabilizarFacturaIngreso(
     clienteId: string;
     clienteNif: string;
     clienteNombre: string;
+    /**
+     * Subcuenta propia del cliente (430N, de services/terceros/subcuentas.ts) y
+     * su nombre. Sin ella, la 430 generica: solo tests antiguos (deja un aviso).
+     */
+    cuentaCliente?: string;
+    nombreCuentaCliente?: string;
     /** Sin el: factura anterior a los tipos de operacion (como NACIONAL, libro de IVA sin tipo). */
     tipoOperacion?: TipoOperacionVenta;
     /** Solo con EXENTA: E1, E3, E4 o E6. */
@@ -256,12 +263,15 @@ export async function contabilizarFacturaIngreso(
   let totalDebe = 0;
   let totalHaber = 0;
 
-  // Línea 1: Deudor cliente (DEBE)
+  // Línea 1: Deudor cliente (DEBE), en su subcuenta propia.
+  if (!invoiceData.cuentaCliente) {
+    logger.warn('venta contabilizada contra la 430 generica', { companyId, invoiceId, factura: invoiceData.numeroFactura });
+  }
   const lineaCliente = await db.journalEntryLine.create({
     data: {
       entryId: asiento.id,
-      accountCode: regla.clienteDeudor,
-      accountName: 'Clientes',
+      accountCode: invoiceData.cuentaCliente ?? regla.clienteDeudor,
+      accountName: (invoiceData.nombreCuentaCliente ?? 'Clientes').slice(0, 190),
       debe: invoiceData.totalFactura,
       haber: 0,
       referencia: invoiceData.numeroFactura,
@@ -417,8 +427,14 @@ export async function contabilizarFacturaGasto(
     gastoPorCuenta?: Array<{ cuenta: string; nombre?: string; base: number }>;
     /** Base y cuota por porcentaje de retencion. Sin el, una fila con los totales. */
     desgloseRetencion?: Array<{ porcentaje: number; base: number; cuota: number }>;
-    /** Cuenta del acreedor si no es la del tipo (la que ya usaron los pagos de la factura). */
+    /**
+     * Subcuenta del proveedor (400N o 410N, de services/terceros/subcuentas.ts)
+     * o la que ya usaron los pagos de la factura. Sin ella, la 400/410 generica
+     * del tipo: solo tests antiguos (deja un aviso).
+     */
     cuentaAcreedor?: string;
+    /** Nombre de esa cuenta (el nombre fiscal del proveedor en su subcuenta). */
+    nombreCuentaAcreedor?: string;
     /**
      * Sin libro de IVA. Por defecto, si la empresa no esta establecida en
      * Espana (sus facturas de gasto van sin IVA español y no presenta el 303).
@@ -515,9 +531,13 @@ export async function contabilizarFacturaGasto(
     await apunte(regla.irpfAsumido!, 'HP acreedora por retenciones practicadas', 0, invoiceData.retencionTotal);
   }
 
-  // Acreedor (HABER): 400 en compras, 410 en servicios.
+  // Acreedor (HABER): la subcuenta del proveedor en la 400 (compras) o la 410 (servicios).
+  if (!invoiceData.cuentaAcreedor) {
+    logger.warn('gasto contabilizado contra la 400/410 generica', { companyId, invoiceId, factura: invoiceData.numeroFactura });
+  }
   const acreedor = invoiceData.cuentaAcreedor ?? regla.proveedorAcreedor!;
-  await apunte(acreedor, NOMBRE_ACREEDOR[acreedor] ?? 'Proveedores', 0, invoiceData.totalFactura);
+  const nombreAcreedor = invoiceData.nombreCuentaAcreedor ?? NOMBRE_ACREEDOR[acreedor] ?? NOMBRE_ACREEDOR[acreedor.slice(0, 3)] ?? 'Proveedores';
+  await apunte(acreedor, nombreAcreedor.slice(0, 190), 0, invoiceData.totalFactura);
 
   // Validar equilibrio: DEBE (base+IVA) = HABER (retención+totalFactura)
   if (!cuadraEnCentimos(totalDebe, totalHaber)) {

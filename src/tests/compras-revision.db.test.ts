@@ -192,7 +192,7 @@ describe('Contabilizar una factura anterior', () => {
     await motor.contabilizarFacturaGasto(E, f.id);
     const asiento = await prisma.journalEntry.findFirstOrThrow({ where: { invoiceId: f.id, origen: 'FACTURA_GASTO' }, include: { lineas: true } });
     expect(asiento.fecha.toISOString().slice(0, 10)).toBe('2026-04-05');
-    expect(Object.fromEntries(asiento.lineas.map((l) => [l.accountCode, [l.debe, l.haber]]))).toEqual({ '629': [1000, 0], '472': [210, 0], '410': [0, 1210] });
+    expect(Object.fromEntries(asiento.lineas.map((l) => [l.accountCode, [l.debe, l.haber]]))).toEqual({ '629': [1000, 0], '472': [210, 0], '41000001': [0, 1210] });
     const libro = await prisma.vATBook.findFirstOrThrow({ where: { companyId: E } });
     expect(libro).toMatchObject({ numeroFacturaEmisor: 'ANT-1', observaciones: 'Fecha de expedición: 10/02/2026' });
     await esperarCuadre(expect, E, 2026, 1, 0, 0);
@@ -220,19 +220,32 @@ describe('Contabilizar una factura anterior', () => {
     const f = await anterior(E, sup);
     await registrarCobroFactura(E, 'GASTO', f.id, { fecha: '2026-02-20', importe: 1210, cuentaBancariaId: await banco(E) });
     await motor.contabilizarFacturaGasto(E, f.id);
-    expect(await saldos(E, ['400', '410'])).toEqual({ '400': 0, '410': 0 });
+    // El unico proveedor de la empresa: subcuentas 40000001 y 41000001.
+    expect(await saldos(E, ['40000001', '41000001'])).toEqual({ '40000001': 0, '41000001': 0 });
   });
 
-  it('pagos antiguos a la 400 de una factura de servicios: el asiento abona tambien la 400', async () => {
+  it('pagada como compra (a su 400N) y pasada luego a suministros: el asiento abona la misma subcuenta que el pago', async () => {
     const E = await nuevaEmpresa('anterior-pago400');
     const sup = await proveedor(E);
-    // Se paga como compra (a la 400, como antes de separar la 410) y luego pasa a suministros.
     const f = await anterior(E, sup, { tipoGasto: 'COMPRA' });
     await registrarCobroFactura(E, 'GASTO', f.id, { fecha: '2026-02-20', importe: 1210, cuentaBancariaId: await banco(E) });
     await prisma.expenseInvoice.update({ where: { id: f.id }, data: { tipoGasto: 'SUMINISTROS' } });
     await motor.contabilizarFacturaGasto(E, f.id);
     const asiento = await prisma.journalEntry.findFirstOrThrow({ where: { invoiceId: f.id, origen: 'FACTURA_GASTO' }, include: { lineas: true } });
-    expect(asiento.lineas.find((l) => l.haber > 0)?.accountCode).toBe('400');
+    expect(asiento.lineas.find((l) => l.haber > 0)?.accountCode).toBe('40000001');
+    expect(await saldos(E, ['40000001', '41000001'])).toEqual({ '40000001': 0, '41000001': 0 });
+  });
+
+  it('pagos antiguos a la 400 generica (anteriores a las subcuentas): el asiento respeta la generica', async () => {
+    const E = await nuevaEmpresa('anterior-pagogen');
+    const sup = await proveedor(E);
+    const f = await anterior(E, sup, { tipoGasto: 'SUMINISTROS' });
+    const { cobro } = await registrarCobroFactura(E, 'GASTO', f.id, { fecha: '2026-02-20', importe: 1210, cuentaBancariaId: await banco(E) });
+    // Como lo dejaba la version anterior: el pago contra la 400 generica.
+    await prisma.journalEntryLine.updateMany({ where: { entryId: cobro.asientoId!, debe: { gt: 0 } }, data: { accountCode: '400', accountName: 'Proveedores' } });
+    await motor.contabilizarFacturaGasto(E, f.id);
+    const asiento = await prisma.journalEntry.findFirstOrThrow({ where: { invoiceId: f.id, origen: 'FACTURA_GASTO' }, include: { lineas: true } });
+    expect(asiento.lineas.find((l) => l.haber > 0)).toMatchObject({ accountCode: '400', accountName: 'Proveedores' });
     expect(await saldos(E, ['400', '410'])).toEqual({ '400': 0, '410': 0 });
   });
 });

@@ -133,7 +133,7 @@ describe('confirmar', () => {
     facturaId = r.body.data.factura.id;
     asientoId = r.body.data.asientoId;
     const a = await prisma.journalEntry.findUniqueOrThrow({ where: { id: asientoId }, include: { lineas: true } });
-    expect(Object.fromEntries(a.lineas.map((l) => [l.accountCode, [l.debe, l.haber]]))).toEqual({ '629': [200, 0], '472': [42, 0], '410': [0, 242] });
+    expect(Object.fromEntries(a.lineas.map((l) => [l.accountCode, [l.debe, l.haber]]))).toEqual({ '629': [200, 0], '472': [42, 0], '41000001': [0, 242] });
     expect(await prisma.vATBook.count({ where: { companyId: E, asientoId } })).toBe(1);
     await esperarCuadre(expect, E, 2026, 1, 0, 0);
   });

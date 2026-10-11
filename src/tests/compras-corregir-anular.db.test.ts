@@ -227,7 +227,7 @@ describe('anular con el periodo cerrado', () => {
     expect(contra).toMatchObject({ numeroAsiento: `FAC-GAST-${f.numeroCompleto}-ANUL`, estado: 'POSTED', origen: 'FACTURA_GASTO', invoiceId: f.id, invoiceType: 'GASTO' });
     expect(contra.fecha.toISOString().slice(0, 10)).toBe('2026-04-05');
     expect(contra.descripcion).toBe(`Anulación de la factura P-1 (registro ${f.numeroCompleto}): Factura emitida por error`);
-    expect(Object.fromEntries(contra.lineas.map((l) => [l.accountCode, [l.debe, l.haber]]))).toEqual({ '623': [0, 1000], '472': [0, 210], '4751': [150, 0], '410': [1060, 0] });
+    expect(Object.fromEntries(contra.lineas.map((l) => [l.accountCode, [l.debe, l.haber]]))).toEqual({ '623': [0, 1000], '472': [0, 210], '4751': [150, 0], '41000001': [1060, 0] });
     expect((await prisma.journalEntry.findUniqueOrThrow({ where: { id: f.asiento.id } })).estado).toBe('POSTED');
   });
 

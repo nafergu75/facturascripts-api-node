@@ -169,7 +169,8 @@ describe('pagos y Contabilizar en borradores y anuladas', () => {
   it('una factura anterior (sin asiento) se sigue contabilizando con el boton', async () => {
     const r = await motor.contabilizarFacturaGasto(E, ids.l6);
     const a = await prisma.journalEntry.findUniqueOrThrow({ where: { id: r.journalEntryId }, include: { lineas: true } });
-    expect(a.lineas.find((l) => l.accountCode === '400')?.haber).toBe(121); // COMPRA por defecto en las anteriores
+    // COMPRA por defecto en las anteriores: la 400N del proveedor.
+    expect(a.lineas.find((l) => /^400\d{5}$/.test(l.accountCode))?.haber).toBe(121);
     expect((await prisma.expenseInvoice.findUniqueOrThrow({ where: { id: ids.l6 } })).estado).toBe('ACCOUNTED');
   });
 });

@@ -105,7 +105,7 @@ describe('alta de una factura de un profesional', () => {
 
   it('asiento 623 D 1000 / 472 D 210 / 4751 H 150 / 410 H 1060', async () => {
     const a = await prisma.journalEntry.findUniqueOrThrow({ where: { id: res.body.data.asiento.id }, include: { lineas: true } });
-    expect(porCuenta(a.lineas)).toEqual({ '623': [1000, 0], '472': [210, 0], '4751': [0, 150], '410': [0, 1060] });
+    expect(porCuenta(a.lineas)).toEqual({ '623': [1000, 0], '472': [210, 0], '4751': [0, 150], '41000001': [0, 1060] });
     expect(a).toMatchObject({ origen: 'FACTURA_GASTO', invoiceType: 'GASTO', invoiceId: res.body.data.id });
   });
 
@@ -151,7 +151,7 @@ describe('alta de una compra con IVA al 21 % y al 10 %', () => {
     const a = await prisma.journalEntry.findUniqueOrThrow({ where: { id: r.body.data.asiento.id }, include: { lineas: true } });
     expect(a.lineas.filter((l) => l.accountCode === '472').map((l) => l.debe).sort((x, y) => x - y)).toEqual([30, 210]);
     expect(a.lineas.find((l) => l.accountCode === '600')?.debe).toBe(1300);
-    expect(a.lineas.find((l) => l.accountCode === '400')?.haber).toBe(1540);
+    expect(a.lineas.find((l) => l.accountCode === '40000001')?.haber).toBe(1540);
     expect(await prisma.vATBook.count({ where: { companyId: E } })).toBe(2);
     await esperarCuadre(expect, E, 2026, 2, 240, 1300);
   });
@@ -310,7 +310,7 @@ describe('empresa no establecida en España', () => {
     expect(await contar(E)).toMatchObject({ facturas: 1, asientos: 1, libro: 0 });
     expect(await prisma.retentionBook.count({ where: { companyId: E } })).toBe(0);
     const lineas = await prisma.journalEntryLine.findMany({ where: { entry: { companyId: E } } });
-    expect(lineas.map((l) => l.accountCode).sort()).toEqual(['410', '623']);
+    expect(lineas.map((l) => l.accountCode).sort()).toEqual(['41000001', '623']);
 
     const put = await request(app(E, 'admin')).put(`/expense-invoices/${r.body.data.id}`).send(profesional(sup));
     expect(put.status).toBe(400);
