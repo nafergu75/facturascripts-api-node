@@ -193,16 +193,67 @@ export interface FilaSumasSaldos {
 
 export interface SumasYSaldos {
   filas: FilaSumasSaldos[];
+  /**
+   * Por subcuenta: total de cada cuenta de 3 digitos (430, 400, 410...) que
+   * tiene subcuentas, en el orden de las filas. Vacio en los niveles 3 y 4.
+   */
+  subtotales: FilaSumasSaldos[];
   totales: Omit<FilaSumasSaldos, 'cuenta' | 'nombre'>;
   /** Debe y haber del periodo iguales, y saldos deudores = acreedores. */
   cuadra: boolean;
+}
+
+export interface OpcionesSumas {
+  /** Solo las cuentas de ese prefijo o rango (430-430 = solo clientes). */
+  filtro?: FiltroCuentas;
+  /**
+   * Por subcuenta, cuentas del plan sin movimientos en el periodo (salen a
+   * cero). Sin ellas, solo salen las que tienen saldo o movimientos.
+   */
+  cuentasSinMovimiento?: string[];
+}
+
+const sumarFilas = (filas: FilaSumasSaldos[]) =>
+  filas.reduce(
+    (t, f) => ({
+      saldoInicial: round2(t.saldoInicial + f.saldoInicial),
+      debe: round2(t.debe + f.debe),
+      haber: round2(t.haber + f.haber),
+      saldoDeudor: round2(t.saldoDeudor + f.saldoDeudor),
+      saldoAcreedor: round2(t.saldoAcreedor + f.saldoAcreedor),
+    }),
+    { saldoInicial: 0, debe: 0, haber: 0, saldoDeudor: 0, saldoAcreedor: 0 },
+  );
+
+/**
+ * Subtotal por cuenta de 3 digitos de las filas (por subcuenta): uno por cada
+ * grupo que tiene alguna subcuenta (un grupo que es solo la propia cuenta de 3
+ * digitos no lo necesita). Las sumas son las de sus filas: el saldo deudor y el
+ * acreedor no se compensan entre subcuentas (un cliente con saldo acreedor
+ * sigue sumando en la columna acreedora).
+ */
+export function subtotalesPorCuenta(filas: FilaSumasSaldos[], nombre: (cuenta: string) => string): FilaSumasSaldos[] {
+  const grupos = new Map<string, FilaSumasSaldos[]>();
+  for (const f of filas) {
+    const g = f.cuenta.slice(0, 3);
+    if (!grupos.has(g)) grupos.set(g, []);
+    grupos.get(g)!.push(f);
+  }
+  const out: FilaSumasSaldos[] = [];
+  for (const [g, fs] of grupos) {
+    if (fs.length === 1 && fs[0].cuenta === g) continue;
+    out.push({ cuenta: g, nombre: nombre(g), ...sumarFilas(fs) });
+  }
+  return out;
 }
 
 export function calcularSumasYSaldos(
   mov: MovimientosPeriodo,
   nivel: NivelSumas,
   nombre: (cuenta: string) => string,
+  opciones: OpcionesSumas = {},
 ): SumasYSaldos {
+  const entra = (cuenta: string) => !opciones.filtro || cuentaEnFiltro(cuenta, opciones.filtro);
   const clave = (cuenta: string) => (nivel === 'subcuenta' ? cuenta : cuenta.slice(0, nivel));
   const mapa = new Map<string, { inicial: number; debe: number; haber: number }>();
   const fila = (c: string) => {
@@ -210,9 +261,10 @@ export function calcularSumasYSaldos(
     if (!f) mapa.set(c, (f = { inicial: 0, debe: 0, haber: 0 }));
     return f;
   };
-  for (const [cuenta, saldo] of mov.saldosIniciales) fila(clave(cuenta)).inicial += saldo;
+  for (const [cuenta, saldo] of mov.saldosIniciales) if (entra(cuenta)) fila(clave(cuenta)).inicial += saldo;
   for (const a of mov.asientos) {
     for (const l of a.lineas) {
+      if (!entra(l.cuenta)) continue;
       const f = fila(clave(l.cuenta));
       f.debe += l.debe;
       f.haber += l.haber;
@@ -232,21 +284,20 @@ export function calcularSumasYSaldos(
         saldoAcreedor: final < 0 ? -final : 0,
       };
     })
-    .filter((f) => f.saldoInicial || f.debe || f.haber)
-    .sort((a, b) => a.cuenta.localeCompare(b.cuenta));
+    .filter((f) => f.saldoInicial || f.debe || f.haber);
+  if (nivel === 'subcuenta') {
+    const ya = new Set(filas.map((f) => f.cuenta));
+    for (const c of opciones.cuentasSinMovimiento ?? []) {
+      if (ya.has(c) || !entra(c)) continue;
+      ya.add(c);
+      filas.push({ cuenta: c, nombre: nombre(c), saldoInicial: 0, debe: 0, haber: 0, saldoDeudor: 0, saldoAcreedor: 0 });
+    }
+  }
+  filas.sort((a, b) => a.cuenta.localeCompare(b.cuenta));
 
-  const totales = filas.reduce(
-    (t, f) => ({
-      saldoInicial: round2(t.saldoInicial + f.saldoInicial),
-      debe: round2(t.debe + f.debe),
-      haber: round2(t.haber + f.haber),
-      saldoDeudor: round2(t.saldoDeudor + f.saldoDeudor),
-      saldoAcreedor: round2(t.saldoAcreedor + f.saldoAcreedor),
-    }),
-    { saldoInicial: 0, debe: 0, haber: 0, saldoDeudor: 0, saldoAcreedor: 0 },
-  );
+  const totales = sumarFilas(filas);
   const cuadra = Math.abs(totales.debe - totales.haber) < 0.005 && Math.abs(totales.saldoDeudor - totales.saldoAcreedor) < 0.005;
-  return { filas, totales, cuadra };
+  return { filas, subtotales: nivel === 'subcuenta' ? subtotalesPorCuenta(filas, nombre) : [], totales, cuadra };
 }
 
 // ---------------------------------------------------------------------------
@@ -258,9 +309,12 @@ export interface FiltroCuentas {
   cuenta?: string;
   desde?: string;
   hasta?: string;
+  /** Solo estas cuentas exactas (las subcuentas de un cliente o proveedor). */
+  lista?: string[];
 }
 
 export function cuentaEnFiltro(cuenta: string, f: FiltroCuentas): boolean {
+  if (f.lista) return f.lista.includes(cuenta);
   if (f.cuenta) return cuenta.startsWith(f.cuenta);
   if (f.desde && cuenta.slice(0, f.desde.length) < f.desde) return false;
   if (f.hasta && cuenta.slice(0, f.hasta.length) > f.hasta) return false;
@@ -392,6 +446,8 @@ export interface FichaTercero {
   id: string;
   nombre: string;
   nif: string | null;
+  /** Subcuentas propias de la ficha (430N; 400N y 410N). */
+  subcuentas?: string[];
 }
 
 /**
@@ -413,24 +469,27 @@ export interface ResolvedorTercero {
 }
 
 /**
- * Criterio para saber de que cliente o proveedor es un apunte de 43x/40x/41x
- * (el motor contabiliza todas las facturas contra la 430 o la 400 generica, sin
- * subcuenta por tercero):
+ * Criterio para saber de que cliente o proveedor es un apunte de 43x/40x/41x:
  *
- *  1. El asiento esta enlazado a una factura (JournalEntry.invoiceId, con
+ *  1. La subcuenta es la propia de una ficha (430N, 400N, 410N): esa ficha.
+ *     Asi el saldo por tercero cuadra con el Libro mayor de su subcuenta,
+ *     aunque el asiento este enlazado a una factura de otro (mal imputado).
+ *  Para los apuntes en la generica (430, 400, 410, de antes de las subcuentas):
+ *  2. El asiento esta enlazado a una factura (JournalEntry.invoiceId, con
  *     invoiceType INGRESO para clientes y GASTO para proveedores): su tercero.
- *  2. La referencia del apunte es el numero o el id de una factura del tipo.
- *  3. El concepto del asiento menciona la factura ("Cobro factura X").
- *  4. La subcuenta es propia de un tercero (mas de 3 digitos y no todo ceros,
- *     p. ej. 4300000012, las que generaba FacturaScripts): se agrupa por
- *     subcuenta, aunque no se pueda enlazar con una ficha.
- *  5. Si no, "Sin identificar" (p. ej. un cobro de tesoreria sin factura).
+ *  3. La referencia del apunte es el numero o el id de una factura del tipo.
+ *  4. El concepto del asiento menciona la factura ("Cobro factura X").
+ *  5. La subcuenta es de un tercero sin ficha (mas de 3 digitos y no todo
+ *     ceros, p. ej. importada de otro programa): se agrupa por subcuenta.
+ *  6. Si no, "Sin identificar" (p. ej. un cobro de tesoreria sin factura).
  */
 export function crearResolvedorTercero(ctx: ContextoTerceros): ResolvedorTercero {
   const tipoFactura = ctx.tipo === 'clientes' ? 'INGRESO' : 'GASTO';
   const porId = new Map(ctx.facturas.map((f) => [f.id, f]));
   const porNumero = new Map(ctx.facturas.filter((f) => f.numero).map((f) => [f.numero!.toUpperCase(), f]));
   const fichas = new Map(ctx.fichas.map((f) => [f.id, f]));
+  const porSubcuenta = new Map<string, string>();
+  for (const f of ctx.fichas) for (const c of f.subcuentas ?? []) porSubcuenta.set(c, f.id);
 
   const buscarFactura = (a: AsientoInforme, l: LineaInforme): FacturaTercero | undefined => {
     if (a.invoiceId && (!a.invoiceType || a.invoiceType === tipoFactura)) {
@@ -453,6 +512,8 @@ export function crearResolvedorTercero(ctx: ContextoTerceros): ResolvedorTercero
 
   return {
     clave(a, l) {
+      const propia = porSubcuenta.get(l.cuenta);
+      if (propia) return propia;
       const f = buscarFactura(a, l);
       if (f) return f.terceroId;
       if (l.cuenta.length > 3 && /[1-9]/.test(l.cuenta.slice(3))) return `subcuenta:${l.cuenta}`;
