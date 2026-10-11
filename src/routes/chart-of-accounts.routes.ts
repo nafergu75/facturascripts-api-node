@@ -14,19 +14,20 @@ router.post('/init', authorize('admin:empresa'), chartOfAccountsController.inici
  * Listar plan contable con filtros.
  * GET /api/accounting/chart-of-accounts?grupo=7&naturaleza=INGRESO
  */
-router.get('/', chartOfAccountsController.listar);
+// El plan lleva el nombre fiscal de clientes y proveedores en sus subcuentas: solo con contabilidad:read.
+router.get('/', authorize('contabilidad:read'), chartOfAccountsController.listar);
 
 /**
  * Obtener estructura jerárquica completa (árbol).
  * GET /api/accounting/chart-of-accounts/arbol?grupo=7
  */
-router.get('/arbol', chartOfAccountsController.obtenerArbol);
+router.get('/arbol', authorize('contabilidad:read'), chartOfAccountsController.obtenerArbol);
 
 /**
  * Obtener una cuenta por código.
  * GET /api/accounting/chart-of-accounts/700
  */
-router.get('/:codigo', chartOfAccountsController.obtenerPorCodigo);
+router.get('/:codigo', authorize('contabilidad:read'), chartOfAccountsController.obtenerPorCodigo);
 
 /**
  * Crear subcuenta personalizada.
