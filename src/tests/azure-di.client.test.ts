@@ -12,6 +12,7 @@ import {
   consultarResultado,
   extraerResultId,
   leerRetryAfter,
+  TIEMPO_POST_MS,
 } from '../services/lectura/azure-di.client';
 import { aceptado, CLAVE, ENDPOINT, error, fixtureAzure, respuesta, resultado, RESULT_ID } from './fixtures/azure-di';
 
@@ -101,11 +102,37 @@ describe('POST :analyze', () => {
     expect(esperar).toHaveBeenCalledWith(2000);
   });
 
-  it('AbortError o TimeoutError: AZURE_TIEMPO', async () => {
-    const abort = Object.assign(new Error('aborted'), { name: 'AbortError' });
-    const timeout = Object.assign(new Error('timeout'), { name: 'TimeoutError' });
-    fetchMock.mockRejectedValueOnce(abort).mockRejectedValueOnce(timeout);
-    expect(await analizar(cfg, PDF, { esperar: sinEsperar })).toMatchObject({ tipo: 'fallo', codigo: 'AZURE_TIEMPO' });
+  it('AbortError o TimeoutError: AZURE_TIEMPO sin reintentar (el primer POST pudo llegar)', async () => {
+    for (const name of ['AbortError', 'TimeoutError']) {
+      fetchMock.mockReset();
+      fetchMock.mockRejectedValueOnce(Object.assign(new Error('x'), { name }));
+      expect(await analizar(cfg, PDF, { esperar: sinEsperar })).toEqual({ tipo: 'fallo', codigo: 'AZURE_TIEMPO', reintentable: false });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it('un fallo de red en el POST tampoco se reintenta', async () => {
+    fetchMock.mockRejectedValueOnce(new TypeError('fetch failed'));
+    expect(await analizar(cfg, PDF, { esperar: sinEsperar })).toMatchObject({ tipo: 'fallo', codigo: 'AZURE_SERVICIO', reintentable: false });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('el POST espera 10 s como mucho y ninguna llamada sigue redirecciones', async () => {
+    expect(TIEMPO_POST_MS).toBe(10_000);
+    fetchMock.mockResolvedValueOnce(aceptado()).mockResolvedValueOnce(resultado('resultado-running')).mockResolvedValueOnce(respuesta(null, 204));
+    await analizar(cfg, PDF);
+    await consultarResultado(cfg, RESULT_ID);
+    await borrarResultado(cfg, RESULT_ID);
+    for (let i = 0; i < 3; i++) expect(llamada(i).init.redirect).toBe('error');
+  });
+
+  it('una redireccion: AZURE_RESPUESTA_RARA, sin reintentar', async () => {
+    const redireccion = () => Object.assign(new TypeError('fetch failed'), { cause: new Error('unexpected redirect') });
+    fetchMock.mockRejectedValueOnce(redireccion());
+    expect(await analizar(cfg, PDF, { esperar: sinEsperar })).toMatchObject({ codigo: 'AZURE_RESPUESTA_RARA', reintentable: false });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    fetchMock.mockRejectedValueOnce(redireccion());
+    expect(await consultarResultado(cfg, RESULT_ID)).toMatchObject({ codigo: 'AZURE_RESPUESTA_RARA', reintentable: false });
   });
 });
 

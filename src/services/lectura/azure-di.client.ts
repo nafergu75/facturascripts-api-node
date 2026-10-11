@@ -15,6 +15,9 @@
  *    URL con parametros, el contenido ni el texto de los mensajes de Azure.
  *  - Se decide por el estado HTTP, no por el texto: el cuerpo de los 401, 403 y
  *    429 es de la pasarela y no esta en el contrato de Document Intelligence.
+ *  - Ninguna llamada sigue redirecciones (redirect: 'error'): fetch reenviaria
+ *    la cabecera con la clave, y en un 307/308 tambien el documento, al host
+ *    que diga Location.
  */
 import { logger } from '../../config/logger';
 import type { ConfigAzure } from '../../config/azure';
@@ -22,8 +25,9 @@ import type { CodigoFallo } from './tipos';
 
 export const API_VERSION = '2024-11-30';
 const MODELO = 'prebuilt-invoice';
-const TIEMPO_POST_MS = 20_000;
-const TIEMPO_GET_MS = 15_000;
+/** El POST solo sube el archivo (5,4 MB en base64 como mucho) y Azure responde 202 sin analizar. */
+export const TIEMPO_POST_MS = 10_000;
+export const TIEMPO_GET_MS = 15_000;
 /** Cortocircuito tras un 401 o un 403: una hora sin llamar a Azure en esta instancia. */
 export const PAUSA_TRAS_RECHAZO_MS = 60 * 60 * 1000;
 
@@ -177,7 +181,16 @@ function esTiempoAgotado(err: unknown): boolean {
   return nombre === 'AbortError' || nombre === 'TimeoutError';
 }
 
-function falloDeExcepcion(err: unknown, fase: 'POST' | 'GET'): FalloAzure {
+/** fetch con redirect: 'error' rechaza con TypeError('fetch failed') y la causa 'unexpected redirect'. */
+function esRedireccion(err: unknown): boolean {
+  return (err as { cause?: { message?: string } })?.cause?.message === 'unexpected redirect';
+}
+
+function falloDeExcepcion(err: unknown, fase: 'POST' | 'GET' | 'DELETE'): FalloAzure {
+  if (esRedireccion(err)) {
+    logger.error('[ocr-azure] Azure responde con una redireccion: no se sigue', { fase });
+    return { tipo: 'fallo', codigo: 'AZURE_RESPUESTA_RARA', reintentable: false };
+  }
   if (esTiempoAgotado(err)) {
     logger.warn('[ocr-azure] Azure no responde a tiempo', { fase });
     return { tipo: 'fallo', codigo: 'AZURE_TIEMPO', reintentable: true };
@@ -201,8 +214,10 @@ export interface OpcionesAnalizar {
 const esperarDeVerdad = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 /**
- * POST :analyze. Un 429 se reintenta una vez tras Retry-After (3 s como mucho)
- * y un 5xx o un tiempo agotado, una vez a los 2 s. Lo demas vuelve como fallo.
+ * POST :analyze. Solo se reintenta (una vez) cuando Azure dice que NO ha
+ * aceptado el documento: un 429 tras Retry-After (3 s como mucho) o un 5xx a
+ * los 2 s. Un tiempo agotado o un fallo de red no se reintentan: el primer
+ * POST pudo llegar y se pagarian dos analisis. Lo demas vuelve como fallo.
  */
 export async function analizar(cfg: ConfigAzure, archivo: Buffer, opciones: OpcionesAnalizar = {}): Promise<ResultadoAnalizar> {
   const esperar = opciones.esperar ?? esperarDeVerdad;
@@ -213,7 +228,7 @@ export async function analizar(cfg: ConfigAzure, archivo: Buffer, opciones: Opci
     let fallo: FalloAzure;
     let esperaMs = 2000;
     try {
-      const r = await fetch(url, { method: 'POST', headers: cabeceras(cfg, true), body: cuerpo, signal: AbortSignal.timeout(TIEMPO_POST_MS) });
+      const r = await fetch(url, { method: 'POST', headers: cabeceras(cfg, true), body: cuerpo, redirect: 'error', signal: AbortSignal.timeout(TIEMPO_POST_MS) });
       if (r.status === 202) {
         const resultId = extraerResultId(r.headers.get('operation-location'));
         if (!resultId) {
@@ -225,7 +240,7 @@ export async function analizar(cfg: ConfigAzure, archivo: Buffer, opciones: Opci
       fallo = r.ok ? { tipo: 'fallo', codigo: 'AZURE_RESPUESTA_RARA', reintentable: false, http: r.status } : await falloDeRespuesta(r, 'POST');
       if (r.status === 429) esperaMs = Math.min(leerRetryAfter(r.headers.get('retry-after')), 3) * 1000;
     } catch (err) {
-      fallo = falloDeExcepcion(err, 'POST');
+      return { ...falloDeExcepcion(err, 'POST'), reintentable: false };
     }
     if (!fallo.reintentable || intento >= 2) return fallo;
     await esperar(esperaMs);
@@ -236,7 +251,7 @@ export async function analizar(cfg: ConfigAzure, archivo: Buffer, opciones: Opci
 export async function consultarResultado(cfg: ConfigAzure, resultId: string): Promise<ResultadoConsulta> {
   let r: Response;
   try {
-    r = await fetch(urlResultado(cfg.endpoint, resultId), { method: 'GET', headers: cabeceras(cfg), signal: AbortSignal.timeout(TIEMPO_GET_MS) });
+    r = await fetch(urlResultado(cfg.endpoint, resultId), { method: 'GET', headers: cabeceras(cfg), redirect: 'error', signal: AbortSignal.timeout(TIEMPO_GET_MS) });
   } catch (err) {
     return falloDeExcepcion(err, 'GET');
   }
@@ -271,7 +286,7 @@ export async function consultarResultado(cfg: ConfigAzure, resultId: string): Pr
 /** DELETE analyzeResults/{resultId}. Nunca lanza: un fallo solo deja un aviso con el codigo. */
 export async function borrarResultado(cfg: ConfigAzure, resultId: string): Promise<void> {
   try {
-    const r = await fetch(urlResultado(cfg.endpoint, resultId), { method: 'DELETE', headers: cabeceras(cfg), signal: AbortSignal.timeout(TIEMPO_GET_MS) });
+    const r = await fetch(urlResultado(cfg.endpoint, resultId), { method: 'DELETE', headers: cabeceras(cfg), redirect: 'error', signal: AbortSignal.timeout(TIEMPO_GET_MS) });
     if (r.status !== 204 && !r.ok) logger.warn('[ocr-azure] No se ha podido borrar el resultado en Azure', { fase: 'DELETE', http: r.status });
   } catch (err) {
     logger.warn('[ocr-azure] No se ha podido borrar el resultado en Azure', { fase: 'DELETE', error: (err as { name?: string })?.name ?? 'Error' });
