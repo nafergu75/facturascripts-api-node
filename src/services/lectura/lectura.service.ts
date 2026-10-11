@@ -300,7 +300,8 @@ async function terminarConAzure(fila: FilaLectura, hecho: LecturaHecha): Promise
     l = c.lectura;
     if (c.tipo === 'completada') origen = 'AZURE_CLAUDE';
   }
-  // Y otra vez al final, por si Claude ha cambiado algun dato.
+  // Y otra vez al final, por si Claude ha cambiado algun dato. Lo sacado del QR en la
+  // primera sigue contando como sacado del QR (compararQr no lo da por cotejado).
   l = compararQr(hecho.qr ?? null, l);
   const val = await validar(fila, l);
   await guardarLista(fila, l, val, { origen, motivoRespaldo: null, confianza: confianzaLectura(l, lector) });

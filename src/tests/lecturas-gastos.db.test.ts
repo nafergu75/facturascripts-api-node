@@ -44,7 +44,8 @@ import { _reiniciarPausa, TIEMPO_GET_MS } from '../services/lectura/azure-di.cli
 import { TIEMPO_COMPLEMENTO_MS } from '../services/lectura/claude-complemento';
 import { TIEMPO_CLAUDE_VISION_MS } from '../services/lectura/claude-vision.adapter';
 import { purgarLecturas, RESERVA_MS } from '../services/lectura/lectura.service';
-import { aceptado, CLAVE, ENDPOINT, error, fixtureClaude, NIF_EMISOR, NIF_EMPRESA, respuesta, resultado, RESULT_ID } from './fixtures/azure-di';
+import { MOTIVO_DATO_DEL_QR } from '../services/lectura/verifactu-qr';
+import { aceptado, CLAVE, ENDPOINT, error, fixtureAzure, fixtureClaude, NIF_EMISOR, NIF_EMPRESA, respuesta, resultado, RESULT_ID } from './fixtures/azure-di';
 
 const E = `lecturas-gastos-${Date.now()}`;
 const OTRA = `${E}-otra`;
@@ -236,6 +237,43 @@ describe('POST y GET con Azure', () => {
     const r = await consultar(id);
     expect(r.body.data.estado).toBe('LEYENDO');
     expect(crear).not.toHaveBeenCalled();
+  });
+});
+
+describe('datos sacados del QR', () => {
+  /** El fixture del QR que coincide, sin los campos indicados (como si Azure no los hubiera leido). */
+  async function leerSin(...campos: string[]): Promise<Record<string, any>> {
+    const f = fixtureAzure<{ analyzeResult: { documents: Array<{ fields: Record<string, unknown> }> } }>('resultado-qr-ok');
+    for (const c of campos) delete f.analyzeResult.documents[0].fields[c];
+    colaPost.push(() => aceptado());
+    const id = (await subir()).body.data.lecturaId as string;
+    await yaToca(id);
+    colaGet.push(() => respuesta(f, 200));
+    const r = await consultar(id);
+    expect(r.status).toBe(200);
+    expect(r.body.data.estado).toBe('LISTA');
+    return r.body.data;
+  }
+
+  it('QR que coincide y sin numero leido: el numero sale del QR, llega en completados y queda para revisar', async () => {
+    const d = await leerSin('InvoiceId');
+    expect(d.gasto.numeroFactura).toBe('F2026/0012');
+    expect(d.lectura.qr).toMatchObject({ estado: 'COINCIDE', completados: ['numero'], diferencias: [] });
+    expect(d.lectura.qr.texto).toBe('QR VERI*FACTU: el NIF, la fecha y el importe coinciden con lo leído; el número se ha tomado del QR.');
+    expect(d.lectura.campos.numero).toMatchObject({ estado: 'revisar', fuente: 'qr', confianza: null, valorLeido: 'F2026/0012', motivos: [MOTIVO_DATO_DEL_QR] });
+    expect(d.lectura.campos['emisor.nif']).toMatchObject({ estado: 'ok', fuente: 'qr', confianza: 1 });
+    expect(d.lectura).toMatchObject({ estado: 'revisar', requiereRevision: true });
+    expect(crear).not.toHaveBeenCalled();
+  });
+
+  it('sin NIF del emisor ni fecha: los dos salen del QR, para revisar', async () => {
+    const d = await leerSin('VendorTaxId', 'InvoiceDate');
+    expect(d.gasto).toMatchObject({ nifProveedor: NIF_EMISOR, fecha: '2026-03-04' });
+    expect(d.lectura.qr).toMatchObject({ estado: 'COINCIDE', completados: ['nif', 'fecha'], diferencias: [] });
+    for (const id of ['emisor.nif', 'fechaEmision']) {
+      expect(d.lectura.campos[id]).toMatchObject({ estado: 'revisar', fuente: 'qr', confianza: null, motivos: [MOTIVO_DATO_DEL_QR] });
+    }
+    expect(d.lectura.requiereRevision).toBe(true);
   });
 });
 
