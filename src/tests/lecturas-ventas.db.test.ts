@@ -137,6 +137,20 @@ describe('lecturas del lector de ventas', () => {
     expect(r2.body.message).toContain('Es una factura rectificativa (rectifica a la A-12). Todavía no se puede registrar con el lector.');
   });
 
+  it('lo que la lectura dejo en error bloquea aunque el documento se corrija despues', async () => {
+    crear.mockResolvedValueOnce(fixtureClaude('complemento-recargo'));
+    const recargo = await leer('resultado-recargo');
+    // Como hace PUT /invoice-extractor/:id: rehace validation.errors y se pierden los nuevos.
+    const doc = await prisma.incomeReaderDocument.findUniqueOrThrow({ where: { id: recargo.ingreso.documentId } });
+    const parsed = doc.parsedData as Record<string, any>;
+    await prisma.incomeReaderDocument.update({ where: { id: doc.id }, data: { parsedData: { ...parsed, validation: { ...parsed.validation, errors: [] } } } });
+    const r = await request(app()).post('/ingresos-extractor/confirmar').send({ documentId: recargo.ingreso.documentId, revisado: true });
+    expect(r.status).toBe(400);
+    expect(r.body.details.codigo).toBe('VALIDACION_LECTURA');
+    expect(r.body.message).toContain('Las facturas con recargo de equivalencia aún no se pueden registrar con el lector.');
+    expect(await prisma.lecturaDocumento.findUniqueOrThrow({ where: { id: recargo.lecturaId } })).toMatchObject({ estado: 'LISTA' });
+  });
+
   it('una lectura con algo marcado necesita revisado al confirmar', async () => {
     const data = await leer('resultado-confianza-baja');
     expect(data.lectura.requiereRevision).toBe(true);

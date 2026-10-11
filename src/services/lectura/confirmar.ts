@@ -101,12 +101,21 @@ export async function comprobarLecturaParaConfirmar(companyId: string, lecturaId
   return fila;
 }
 
-/** Antes de registrar una venta leida: si la lectura tenia algo marcado, hace falta "He revisado". */
+/**
+ * Antes de registrar una venta leida: si la lectura tenia algo marcado, hace
+ * falta "He revisado"; y lo que la lectura dejo en error sigue bloqueando,
+ * aunque el documento se haya corregido despues por PUT /invoice-extractor/:id
+ * (que rehace validation.errors con las validaciones antiguas).
+ */
 export async function comprobarRevisionVenta(companyId: string, incomeReaderDocumentId: string, revisado: boolean): Promise<void> {
-  const fila = await prisma.lecturaDocumento.findFirst({ where: { companyId, incomeReaderDocumentId, lector: 'VENTA' }, select: { estado: true, estadoValidacion: true } });
+  const fila = await prisma.lecturaDocumento.findFirst({ where: { companyId, incomeReaderDocumentId, lector: 'VENTA' }, select: { estado: true, estadoValidacion: true, validaciones: true } });
   if (!fila) return; // Documento del lector de siempre (/extraer-ia): como hoy.
   if (fila.estado === 'CONFIRMADA') throw conflict('Esta factura ya se registró.', { codigo: 'LECTURA_YA_CONFIRMADA' });
   if (necesitaRevision(fila) && !revisado) throw badRequest(MENSAJE_FALTA_REVISION, { codigo: 'FALTA_REVISION' });
+  const errores = validacionesGuardadas(fila).filter((v) => v.nivel === 'error');
+  if (errores.length) {
+    throw badRequest(`No se puede registrar: ${[...new Set(errores.map((v) => v.mensaje))].join(' ')}`, { codigo: 'VALIDACION_LECTURA', validaciones: errores });
+  }
 }
 
 /** Tras registrar: la lectura queda CONFIRMADA. Nunca rompe el alta (lo que falle va al log). */
