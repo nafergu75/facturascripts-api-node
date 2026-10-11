@@ -32,7 +32,7 @@ import { aCentimos } from '../utils/money';
 import { copiaAlEmitir, leerAjustesFacturacion } from './ajustesFacturacion.service';
 import { FORMAS_PAGO, type FormaPago } from '../domain/ajustes.model';
 import { leerPais } from './clientes.service';
-import { exigirPuedeEmitirFinal } from './verifactu/redSeguridad';
+import { ahoraRedSeguridad, exigirPuedeEmitirFinal } from './verifactu/redSeguridad';
 
 /**
  * Facturas de venta.
@@ -764,8 +764,8 @@ async function exigirDatosEmisor(companyId: string): Promise<PerfilEmpresa> {
  * Una factura no se emite con fecha futura (spec verifactu, P3): la AEAT la
  * rechaza y, ademas, bloquearia la serie hasta ese dia. Hoy es el dia de Madrid.
  */
-function exigirFechaNoFutura(fechaEmision: string): void {
-  if (fechaEmision > hoyISO()) {
+function exigirFechaNoFutura(fechaEmision: string, hoy: string = hoyISO()): void {
+  if (fechaEmision > hoy) {
     throw badRequest(
       `La fecha de emisión (${fechaEmision}) no puede ser posterior a hoy. Guarda la factura como borrador y emítela ese día.`,
       { campo: 'fechaEmision' },
@@ -943,8 +943,18 @@ async function crear(dto: CrearFacturaIngresoDTO, opciones: { origen?: OrigenFac
   // Emitir aqui es la emision directa y la rectificativa emitida al momento; el
   // lector registra facturas que expidio otro programa y no se bloquea.
   const emiteLaApp = !dto.proforma && !dto.borrador && origen !== 'lector';
+  // Un solo instante para la red, la fecha por defecto y la de P3: si la red dio
+  // permiso el 31-12, la factura no puede salir con fecha del 1-1.
+  const ahora = new Date();
+  const hoy = hoyEspana(ahora);
   if (emiteLaApp) {
-    await exigirPuedeEmitirFinal(dto.companyId);
+    await exigirPuedeEmitirFinal(
+      dto.companyId,
+      ahoraRedSeguridad(ahora),
+      esRectificativa
+        ? 'Puedes guardar la rectificativa como borrador y emitirla cuando esté activo.'
+        : 'Puedes guardarla como borrador o como proforma y emitirla cuando esté activo.',
+    );
     await exigirDatosEmisor(dto.companyId);
   }
 
@@ -967,8 +977,8 @@ async function crear(dto: CrearFacturaIngresoDTO, opciones: { origen?: OrigenFac
   const moneda = original ? original.moneda : validarMoneda(dto.moneda ?? perfil.monedaCuenta, perfil.monedasFactura);
   comprobarMonedaLineas(dto.lineas, moneda, false);
 
-  const fechaEmision = validarFecha(dto.fechaEmision ?? hoyISO(), 'fecha de emisión');
-  if (emiteLaApp) exigirFechaNoFutura(fechaEmision);
+  const fechaEmision = validarFecha(dto.fechaEmision ?? hoy, 'fecha de emisión');
+  if (emiteLaApp) exigirFechaNoFutura(fechaEmision, hoy);
   // Sin forma de pago o sin vencimiento: los de Configuración > Facturación.
   const ajustes = await leerAjustesFacturacion(dto.companyId);
   const fechaVencimiento = validarFecha(dto.fechaVencimiento ?? sumarDiasISO(fechaEmision, ajustes.diasVencimiento), 'fecha de vencimiento');
@@ -1203,6 +1213,8 @@ export const incomeInvoicesService = {
     // Moneda: los precios no se convierten solos.
     const original = actual.esRectificativa && actual.facturaOriginalId ? await buscarConLineas(companyId, actual.facturaOriginalId) : null;
     if (original) comprobarHerencia(original, dto);
+    // P9: tambien al cambiar el tipo de un borrador de rectificativa.
+    if (dto.tipoFactura !== undefined) exigirR5SobreSimplificada(tipoFactura, original);
     let moneda = actual.moneda;
     if (!original && hayValor(dto.moneda)) {
       moneda = validarMoneda(dto.moneda, perfil.monedasFactura);
@@ -1413,16 +1425,23 @@ export const incomeInvoicesService = {
   ): Promise<IncomeInvoiceResp> {
     const actual = await cargar(companyId, id);
     exigirBorrador(actual, 'volver a emitir');
-    // Red de seguridad de VERI*FACTU, fuera de la transaccion y antes de nada.
-    await exigirPuedeEmitirFinal(companyId);
+    // Red de seguridad de VERI*FACTU, fuera de la transaccion y antes de nada. El
+    // mismo instante sirve para la fecha por defecto y para P3.
+    const ahora = new Date();
+    const hoy = hoyEspana(ahora);
+    await exigirPuedeEmitirFinal(
+      companyId,
+      ahoraRedSeguridad(ahora),
+      'El borrador sigue guardado: lo podrás pasar a factura cuando VERI*FACTU esté activo.',
+    );
     const perfil = await exigirDatosEmisor(companyId);
     if (actual.lineas.length === 0) throw badRequest('La factura no tiene líneas.');
     if (actual.esRectificativa && !actual.motivoRectificacion?.trim()) {
       throw badRequest('Indica el motivo de la rectificación antes de emitirla.');
     }
 
-    const fechaEmision = validarFecha(opciones.fechaEmision ?? hoyISO(), 'fecha de emisión');
-    exigirFechaNoFutura(fechaEmision);
+    const fechaEmision = validarFecha(opciones.fechaEmision ?? hoy, 'fecha de emisión');
+    exigirFechaNoFutura(fechaEmision, hoy);
     exigirSerieValidaAeat(actual.serie);
     // Ni en un mes bloqueado ni en un ejercicio cerrado (antes de numerarla).
     await comprobarFechaAbierta(companyId, fechaEmision, 'emitir la factura');
@@ -1432,6 +1451,8 @@ export const incomeInvoicesService = {
 
     // Tipo de operacion definitivo, con el cliente y la empresa de ahora.
     const original = actual.esRectificativa && actual.facturaOriginalId ? await buscarConLineas(companyId, actual.facturaOriginalId) : null;
+    // P9: una R5 solo rectifica una F2, aunque el tipo se cambiara en el borrador.
+    exigirR5SobreSimplificada(actual.tipoFactura, original);
     let lineas = lineasDocGuardadas(actual);
     const fiscal = await resolverFiscalidad(
       {
@@ -1547,11 +1568,15 @@ export const incomeInvoicesService = {
     const esProforma = o.estadoDocumento === ESTADO_PROFORMA;
     const plazo = plazoDias(o);
     const hoy = hoyISO();
+    // Una factura del lector (o de una serie que ya no se usa) esta en una serie
+    // desactivada: la copia va a la serie de facturas por defecto.
+    let serie: string | undefined = o.serie;
+    if (!esProforma && (o.origen === 'lector' || !(await buscarSeriePorCodigo(companyId, o.serie))?.activa)) serie = undefined;
     return crear(
       {
         companyId,
         customer: { id: o.customerId },
-        serie: o.serie,
+        serie,
         fechaEmision: hoy,
         fechaVencimiento: sumarDias(hoy, plazo),
         tipoFactura: o.tipoFactura as TipoFactura,
