@@ -171,7 +171,7 @@ function nifInvalido(nif: string | null): boolean {
  * Siempre valida que la cuenta exista en el plan contable.
  * Si no existe o no se puede determinar, retorna 629 (Otros servicios).
  */
-function sugerirCuentaParaGasto(concepto: string | null): { codigo: string; nombre: string } {
+export function sugerirCuentaParaGasto(concepto: string | null): { codigo: string; nombre: string } {
   const cuentasDisponibles = listarCuentasBase();
   const cuentasGastos = cuentasDisponibles.filter((c) => c.tipo === 'gasto');
 
@@ -324,7 +324,7 @@ interface LecturaClaude {
 /**
  * Lee un documento (PDF/imagen) con Claude Opus y vision.
  */
-async function leerDocumentoConClaude(buffer: Buffer, mimeType: string): Promise<LecturaClaude> {
+export async function leerDocumentoConClaude(buffer: Buffer, mimeType: string): Promise<LecturaClaude> {
   if (!anthropicClient) {
     // Sin la clave de la IA en el servidor. El usuario no puede arreglarlo: se le
     // dice que hacer (503, no 400) y la pantalla enlaza al alta manual.
