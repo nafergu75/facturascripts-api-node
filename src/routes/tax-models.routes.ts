@@ -55,7 +55,7 @@ router.post(
  *
  * Query params:
  *   - ejercicio: number (REQUERIDO)
- *   - trimestre: 1-4 (REQUERIDO)
+ *   - periodo: 1T-4T o 01-12 (mensual: grandes empresas), o trimestre: 1-4
  */
 router.get(
   '/111',
@@ -144,7 +144,7 @@ router.post(
  *
  * Query params:
  *   - ejercicio: number (REQUERIDO)
- *   - trimestre: 1-4. Sin el, el resumen anual por arrendador (los datos del 180), sin guardar nada.
+ *   - periodo: 1T-4T o 01-12 (mensual), o trimestre: 1-4. Sin ninguno, el resumen anual por arrendador (los datos del 180), sin guardar nada.
  */
 router.get(
   '/115',

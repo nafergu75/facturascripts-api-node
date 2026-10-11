@@ -3,10 +3,24 @@
  */
 
 import { Request, Response } from 'express';
-import { taxModelsService } from '../services/tax-models.service';
+import { periodoRetenciones, taxModelsService } from '../services/tax-models.service';
 import { asyncHandler } from '../utils/async-handler';
 import { sendOk } from '../utils/response';
 import { badRequest } from '../utils/http-errors';
+
+/**
+ * Periodo del 111 o del 115 en la consulta: `periodo` ('1T'..'4T' o '01'..'12')
+ * o, como antes, `trimestre` (1-4). 400 si no viene ninguno.
+ */
+function periodoDeConsulta(periodo: unknown, trimestre: unknown): string | number {
+  if (periodo !== undefined && periodo !== null && String(periodo).trim() !== '') return String(periodo);
+  if (trimestre !== undefined && trimestre !== null && String(trimestre).trim() !== '') {
+    const t = Number(trimestre);
+    if (!Number.isInteger(t)) throw badRequest('El trimestre va del 1 al 4.');
+    return t;
+  }
+  throw badRequest('Indica el periodo: un trimestre (1T a 4T) o un mes (01 a 12).');
+}
 
 export class TaxModelsController {
   /**
@@ -67,19 +81,17 @@ export class TaxModelsController {
    */
   obtenerModelo111 = asyncHandler(async (req: Request, res: Response) => {
     const { companyId } = req.params;
-    const { ejercicio, trimestre } = req.query;
+    const { ejercicio } = req.query;
     const userId = (req as any).user?.id || 'SYSTEM';
 
-    if (!ejercicio || !trimestre) {
-      return res.status(400).json({
-        error: 'Parameters "ejercicio" and "trimestre" required',
-      });
+    if (!ejercicio || !/^\d{4}$/.test(String(ejercicio))) {
+      throw badRequest('Indica el ejercicio (año con cuatro cifras).');
     }
 
     const resultado = await taxModelsService.generarModelo111(
       companyId,
       parseInt(ejercicio as string),
-      parseInt(trimestre as string),
+      periodoDeConsulta(req.query.periodo, req.query.trimestre),
       userId
     );
 
@@ -105,7 +117,7 @@ export class TaxModelsController {
       companyId,
       '111',
       ejercicio,
-      `${trimestre}T`,
+      periodoRetenciones(periodoDeConsulta(req.body.periodo, trimestre)),
       justificante,
       userId
     );
@@ -229,7 +241,7 @@ export class TaxModelsController {
     }
 
     // Sin trimestre: el resumen anual por arrendador (los datos del 180). No guarda nada.
-    if (!trimestre) {
+    if (!trimestre && !req.query.periodo) {
       sendOk(res, await taxModelsService.resumenAnual115(companyId, parseInt(ejercicio as string)));
       return;
     }
@@ -237,7 +249,7 @@ export class TaxModelsController {
     const resultado = await taxModelsService.generarModelo115(
       companyId,
       parseInt(ejercicio as string),
-      parseInt(trimestre as string),
+      periodoDeConsulta(req.query.periodo, trimestre),
       userId
     );
 
@@ -263,7 +275,7 @@ export class TaxModelsController {
       companyId,
       '115',
       ejercicio,
-      `${trimestre}T`,
+      periodoRetenciones(periodoDeConsulta(req.body.periodo, trimestre)),
       justificante,
       userId
     );

@@ -134,4 +134,24 @@ describe('111: pantalla y fichero, y periodos mensuales', () => {
     expect(casilla(txt, 487)).toBe(150); // [28]
     expect((await taxModelsService.generarModelo111(E, 2026, '5')).casillas['28']).toBe(150);
   });
+
+  it('GET /tax-models/111 y /115 con ?periodo=MM; un periodo que no existe es un 400', async () => {
+    const r = await request(app()).get(`/companies/${E}/tax-models/111?ejercicio=2026&periodo=05`);
+    expect(r.status).toBe(200);
+    expect(r.body.data).toMatchObject({ periodo: '05', trimestre: null });
+    const t = await request(app()).get(`/companies/${E}/tax-models/115?ejercicio=2026&periodo=2T`);
+    expect(t.status).toBe(200);
+    expect(t.body.data).toMatchObject({ periodo: '2T', trimestre: 2 });
+    const viejo = await request(app()).get(`/companies/${E}/tax-models/111?ejercicio=2026&trimestre=2`);
+    expect(viejo.body.data).toMatchObject({ periodo: '2T' });
+    const mal = await request(app()).get(`/companies/${E}/tax-models/111?ejercicio=2026&periodo=13`);
+    expect(mal.status).toBe(400);
+  });
+
+  it('marcar presentado un mes', async () => {
+    const r = await request(app()).post(`/companies/${E}/tax-models/111/presentado`).send({ ejercicio: 2026, periodo: '05', justificante: { numero: '1110000000005', fecha: '2026-06-15' } });
+    expect(r.status).toBe(200);
+    const fila = await prisma.modeloImpuesto.findUniqueOrThrow({ where: { companyId_codigo_ejercicio_periodo: { companyId: E, codigo: '111', ejercicio: 2026, periodo: '05' } } });
+    expect(fila.estado).toBe('presentado');
+  });
 });
