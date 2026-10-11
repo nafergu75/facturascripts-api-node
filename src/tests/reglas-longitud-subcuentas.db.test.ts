@@ -36,6 +36,15 @@ describe('longitud de las subcuentas', () => {
     expect(await cambiarLongitudSubcuentas(EMPRESA, 9)).toMatchObject({ longitud: 9 });
   });
 
+  it('PUT de reglas con la longitud en texto la guarda como numero', async () => {
+    const r = await guardarReglas(EMPRESA, { longitudSubcuentas: '10' as unknown as number });
+    expect(r.longitudSubcuentas).toBe(10);
+    expect(await estadoLongitudSubcuentas(EMPRESA)).toMatchObject({ longitud: 10, guardada: true });
+    await guardarReglas(EMPRESA, { longitudSubcuentas: '9' as unknown as number });
+    const fila = await prisma.reglasContables.findUniqueOrThrow({ where: { companyId: EMPRESA } });
+    expect((fila.data as { longitudSubcuentas: unknown }).longitudSubcuentas).toBe(9);
+  });
+
   it('con un cliente con subcuenta: 409 al cambiarla (tambien por PUT de reglas); la misma se acepta', async () => {
     const c = await crearClienteConSubcuenta({ companyId: EMPRESA, nombreFiscal: 'Bloquea SL', nifCif: 'B15151515' });
     expect(c.subcuenta430).toBe('430000001');

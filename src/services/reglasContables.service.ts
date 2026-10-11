@@ -27,8 +27,11 @@ export async function guardarReglas(
   companyId: string,
   reglas: Partial<ReglasContablesEmpresa>,
 ): Promise<ReglasContablesEmpresa> {
-  // La longitud de las subcuentas pasa por su comprobacion (7-10 y sin subcuentas asignadas).
-  if (reglas.longitudSubcuentas !== undefined) await comprobarCambioLongitud(companyId, reglas.longitudSubcuentas);
+  // La longitud de las subcuentas pasa por su comprobacion (7-10 y sin subcuentas
+  // asignadas) y se guarda como NUMERO: en texto ("9") se leeria como no guardada.
+  if (reglas.longitudSubcuentas !== undefined) {
+    reglas = { ...reglas, longitudSubcuentas: await comprobarCambioLongitud(companyId, reglas.longitudSubcuentas) };
+  }
   const actuales = await obtenerReglas(companyId);
   const merged: ReglasContablesEmpresa = { ...actuales, ...reglas };
 
