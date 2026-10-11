@@ -14,7 +14,7 @@ import { controlCif } from '../utils/nif';
 import { clientesService } from '../services/clientes.service';
 import { proveedoresService } from '../services/proveedores.service';
 import { incomeInvoicesService } from '../services/income-invoices.service';
-import { editarGasto, registrarGasto } from '../services/expense-invoices.service';
+import { anularGasto, editarGasto, registrarGasto } from '../services/expense-invoices.service';
 import { AccountingEngineController } from '../controllers/accounting-engine.controller';
 import { asegurarPlanContableEmpresa } from '../services/chart-of-accounts.service';
 import { crearSubcuentaLinea, listarCuentasLinea, proponerSubcuenta, siguienteCodigoBajo } from '../services/cuentasLinea.service';
@@ -280,5 +280,16 @@ describe('gastos con cuenta por linea', () => {
       statusCode: 400,
       details: { campo: 'lineas.1.cuenta' },
     });
+  });
+
+  // El ultimo del fichero: deja presentado el 303 del 1T de 2026.
+  it('anular con el 303 presentado: el contraasiento invierte cada cuenta de linea', async () => {
+    const alta = await registrarGasto(E, compra([l(100, '62800001'), l(40, '62800002'), l(10)], { fechaEmision: '2026-01-15' }), { contabilizar: 'POSTED' });
+    await prisma.modeloImpuesto.create({ data: { companyId: E, codigo: '303', ejercicio: 2026, periodo: '1T', estado: 'presentado' } });
+    const r = await anularGasto(E, alta.factura.id, { motivo: 'El proveedor la anuló', fecha: '2026-04-20' });
+    expect(r.contraasiento).toBe(true);
+    const c = await asiento(r.asientoAnulacionId!);
+    expect(porCuenta(c.lineas)).toMatchObject({ '62800001': [0, 100], '62800002': [0, 40], '628': [0, 10] });
+    expect(nombreDe(c.lineas, '62800001')).toBe('Luz oficina');
   });
 });
