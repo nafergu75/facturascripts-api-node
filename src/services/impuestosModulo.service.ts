@@ -44,9 +44,6 @@ import { calcularBorrador349, ficheroModelo349 } from './borradoresAeat/borrador
 import { calcularBorrador180, ficheroModelo180 } from './borradoresAeat/borrador180.service';
 import { calcularBorrador202, ficheroModelo202 } from './borradoresAeat/borrador202.service';
 import { conservarOpciones } from './borradoresAeat/comun';
-import {
-  envolverFichero,
-} from './impuestosExport.service';
 import { fichero200, fichero347, fichero390 } from './borradoresAeat.service';
 import {
   Borrador303,
@@ -1098,6 +1095,11 @@ export async function generarTxtModelo(companyId: string, modeloId: string): Pro
   if (fila.codigo === '347') return fichero347(companyId, fila.ejercicio);
   if (fila.codigo === '390') return fichero390(companyId, fila.ejercicio);
   if (fila.codigo === '200') return fichero200(companyId, fila.ejercicio);
+  // El 303, del mismo borrador que su pantalla (presentado: lo guardado).
+  if (fila.codigo === '303') {
+    const t = await generarTxt303(companyId, fila.ejercicio, fila.periodo);
+    return { nombre: t.nombre, contenido: t.contenido };
+  }
   if (!fila.datos) await autorrellenarModelo(companyId, modeloId);
   const refrescada = await cargarFila(companyId, modeloId);
   const datos = refrescada.datos;
@@ -1108,20 +1110,6 @@ export async function generarTxtModelo(companyId: string, modeloId: string): Pro
   const nombre = `${refrescada.codigo}_${refrescada.ejercicio}_${refrescada.periodo}.txt`;
 
   switch (refrescada.codigo) {
-    case '303': {
-      // Los datos del ultimo autorrelleno (los de antes del diseno 2026 se
-      // pasan a sus casillas oficiales) con la empresa de hoy.
-      const d = datos as DatosModelo303 & { tipoDeclaracion?: string };
-      const { ctx } = await contextoEmpresa303(companyId, periodo.ejercicio);
-      // Presentado: las casillas guardadas tal cual, con el tipo que se presento.
-      const borrador = montarBorrador303(
-        { ...d, periodo, casillasOficiales: casillasOficiales303De(d) },
-        { ...ctx, nif: nif || ctx.nif, razonSocial: razon || ctx.razonSocial },
-        d.tipoDeclaracion,
-        { comoSePresento: refrescada.estado === 'presentado' },
-      );
-      return { nombre, contenido: ficheroBorrador303(borrador) };
-    }
     // 349, 180 y 202: el fichero con el diseno oficial, calculado al momento.
     case '349':
       return ficheroModelo349(companyId, refrescada.ejercicio, refrescada.periodo);

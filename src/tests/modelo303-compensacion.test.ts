@@ -8,7 +8,13 @@
 // - El 390 sumaba compras NO deducibles que el 303 excluye: la suma de los 303
 //   del ano no cuadraba con el 390.
 import { agregar303, agregar390 } from '../services/impuestosCalculo.service';
-import { generarPaginaModelo303_03, importe } from '../services/impuestosExport.service';
+import { pagina3Modelo303 as generarPaginaModelo303_03 } from './aeat-ayudas';
+
+/** Importe en centimos con la longitud del campo ('N' delante si es negativo). */
+const importe = (euros: number, lon: number) => {
+  const c = Math.round(euros * 100);
+  return c < 0 ? 'N' + String(-c).padStart(lon - 1, '0') : String(c).padStart(lon, '0');
+};
 import { FacturaFiscal, PeriodoFiscal } from '../domain/impuestos.model';
 
 const T2: PeriodoFiscal = { ejercicio: 2026, periodo: '2T', tipo: 'trimestral', fechaInicio: '2026-04-01', fechaFin: '2026-06-30' };

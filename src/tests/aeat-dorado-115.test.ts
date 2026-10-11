@@ -5,9 +5,7 @@
  * arrendadores) en el trimestre, con la retencion del 19 %.
  */
 import { describe, it, expect } from '@jest/globals';
-import { generarFicheroModelo115 } from '../services/impuestosExport.service';
-import { generarFichero115Validado } from '../aeat';
-import { CAMPOS_115_DR11501 } from '../aeat/modelo115/modelo115.diseno';
+import { fichero115 as generarFicheroModelo115 } from './aeat-ayudas';
 import { casillasAGuardadas, casillasDeGuardadas, construirDeclaracion, ficheroDeclaracion, formularioDeclaracion, opcionesDeGuardadas } from '../services/aeatRetenciones/declaracion';
 import { DR115, registroDr } from '../services/aeatRetenciones/diseno';
 import type { DatosModelo115, PeriodoFiscal } from '../domain/impuestos.model';
@@ -37,13 +35,6 @@ describe('115: tabla del diseño oficial (DR115e15v13.xls)', () => {
     expect(PAG.campos).toHaveLength(22);
     const pos = Object.fromEntries(PAG.campos.filter((c) => c.casilla).map((c) => [c.casilla, [c.pos, c.lon]]));
     expect(pos).toEqual({ '01': [109, 15], '02': [124, 17], '03': [141, 17], '04': [158, 17], '05': [175, 17] });
-  });
-
-  it('la capa src/aeat documenta las mismas posiciones (denominacion de 60 y nombre de 20)', () => {
-    for (const c of CAMPOS_115_DR11501) {
-      const oficial = PAG.campos.find((x) => x.pos === c.posicionInicio);
-      expect({ campo: c.nombre, lon: oficial?.lon }).toEqual({ campo: c.nombre, lon: c.longitud });
-    }
   });
 
   it('el comprobador detecta un campo fuera de su sitio', () => {
@@ -120,12 +111,6 @@ describe('115: alquileres del trimestre (caso real)', () => {
     expect(() => generarFicheroModelo115(EMPRESA, { ...periodo, periodo: '0A' }, datos, { razonSocial: 'X SL' })).toThrow(/periodo "0A" no es válido/);
     const neg: DatosModelo115 = { periodo, nPerceptores: 0, baseRetenciones: -1000, retenciones: -190, resultadoAnteriores: 0, resultadoIngresar: -190 };
     expect(() => generarFicheroModelo115(EMPRESA, periodo, neg, { razonSocial: 'X SL' })).toThrow(/^El 115 sale con importes negativos/);
-  });
-
-  it('capa validada (Zod): mismo fichero y rechaza el periodo anual', () => {
-    const entrada = { nif: EMPRESA, razonSocial: 'Ifbiosoluciones SL', datos };
-    expect(generarFichero115Validado(entrada)).toBe(generarFicheroModelo115(EMPRESA, periodo, datos, { razonSocial: 'Ifbiosoluciones SL' }));
-    expect(() => generarFichero115Validado({ ...entrada, datos: { ...datos, periodo: { ...periodo, periodo: '0A' } } })).toThrow();
   });
 });
 

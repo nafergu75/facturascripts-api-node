@@ -10,7 +10,7 @@ jest.mock('../services/facturascripts-client', () => ({
 }));
 
 import { clasificarOperacion, agregar303 } from '../services/impuestosCalculo.service';
-import { generarPaginaModelo303_03 } from '../services/impuestosExport.service';
+import { pagina3Modelo303 as generarPaginaModelo303_03 } from './aeat-ayudas';
 import { parsearFacturaeXML } from '../services/income-reader.service';
 import { crearCuentaBancaria, importarMovimientosDesdeCSV } from '../services/bancos.service';
 import { conciliarMovimientoConCuenta } from '../services/conciliacionConfirmar.service';

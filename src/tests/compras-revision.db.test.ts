@@ -24,7 +24,6 @@ import { accountingEngineRoutes } from '../routes/accounting-engine.routes';
 import { registrarCobroFactura } from '../services/cobrosPagos.service';
 import { cambiarEstadoPeriodo } from '../services/periodos.service';
 import { calcularModelo303, calcularModelo347 } from '../services/impuestosCalculo.service';
-import { taxModelsService } from '../services/tax-models.service';
 import { periodoFiscal } from '../services/nominas/fiscal';
 import { controlCif } from '../utils/nif';
 import { esperarCuadre } from './ayuda-cuadre-recibidas';
@@ -293,11 +292,6 @@ describe('347 sin las compras con retencion', () => {
     expect(m.operaciones.map((o) => [o.nombre, o.baseAnual])).toEqual([
       ['Electrica del Turia SL', 4840],
       ['Asesoria Fiscal SL', 3630],
-    ]);
-    const fiscal = await taxModelsService.generarModelo347(E, 2026);
-    expect(fiscal.terceros.map((t: { nombre: string; totalOperaciones: number }) => [t.nombre, t.totalOperaciones]).sort()).toEqual([
-      ['Asesoria Fiscal SL', 3630],
-      ['Electrica del Turia SL', 4840],
     ]);
   });
 });

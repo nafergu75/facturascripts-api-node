@@ -38,7 +38,7 @@ import {
   obtenerFacturasFiscales,
 } from '../services/impuestosCalculo.service';
 import { calcularCasillasModelo, listarModelosImpuesto } from '../services/impuestosModulo.service';
-import { generarPaginaModelo303_03 } from '../services/impuestosExport.service';
+import { pagina3Modelo303 as generarPaginaModelo303_03 } from './aeat-ayudas';
 import { informeMayorTerceros } from '../services/informesContables.service';
 import { limpiarMemoTiposCambio } from '../services/tiposCambio.service';
 import { previsualizarCierre } from '../services/cierreEjercicio.service';

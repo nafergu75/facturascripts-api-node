@@ -130,30 +130,6 @@ export class TaxModelsController {
   });
 
   /**
-   * GET /tax-models/200
-   * Generar o recuperar modelo 200 (impuesto de sociedades)
-   */
-  obtenerModelo200 = asyncHandler(async (req: Request, res: Response) => {
-    const { companyId } = req.params;
-    const { ejercicio } = req.query;
-    const userId = (req as any).user?.id || 'SYSTEM';
-
-    if (!ejercicio) {
-      return res.status(400).json({
-        error: 'Parameter "ejercicio" required',
-      });
-    }
-
-    const resultado = await taxModelsService.generarModelo200(
-      companyId,
-      parseInt(ejercicio as string),
-      userId
-    );
-
-    sendOk(res, resultado);
-  });
-
-  /**
    * POST /tax-models/200/presentado
    * Marcar modelo 200 como presentado
    */
@@ -178,30 +154,6 @@ export class TaxModelsController {
     );
 
     sendOk(res, resultado, { message: 'Modelo 200 marcado como presentado' });
-  });
-
-  /**
-   * GET /tax-models/347
-   * Generar o recuperar modelo 347 (operaciones con terceros)
-   */
-  obtenerModelo347 = asyncHandler(async (req: Request, res: Response) => {
-    const { companyId } = req.params;
-    const { ejercicio } = req.query;
-    const userId = (req as any).user?.id || 'SYSTEM';
-
-    if (!ejercicio) {
-      return res.status(400).json({
-        error: 'Parameter "ejercicio" required',
-      });
-    }
-
-    const resultado = await taxModelsService.generarModelo347(
-      companyId,
-      parseInt(ejercicio as string),
-      userId
-    );
-
-    sendOk(res, resultado);
   });
 
   /**
@@ -285,30 +237,6 @@ export class TaxModelsController {
     );
 
     sendOk(res, resultado, { message: 'Modelo 115 marcado como presentado' });
-  });
-
-  /**
-   * GET /tax-models/390
-   * Generar o recuperar modelo 390 (resumen anual de IVA)
-   */
-  obtenerModelo390 = asyncHandler(async (req: Request, res: Response) => {
-    const { companyId } = req.params;
-    const { ejercicio } = req.query;
-    const userId = (req as any).user?.id || 'SYSTEM';
-
-    if (!ejercicio) {
-      return res.status(400).json({
-        error: 'Parameter "ejercicio" required',
-      });
-    }
-
-    const resultado = await taxModelsService.generarModelo390(
-      companyId,
-      parseInt(ejercicio as string),
-      userId
-    );
-
-    sendOk(res, resultado);
   });
 
   /**

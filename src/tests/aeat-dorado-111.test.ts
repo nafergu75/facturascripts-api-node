@@ -6,7 +6,7 @@
  */
 import { describe, it, expect } from '@jest/globals';
 import { agregarTrabajo111, type NominaFiscal } from '../services/nominas/fiscal';
-import { generarFicheroModelo111 } from '../services/impuestosExport.service';
+import { fichero111 as generarFicheroModelo111 } from './aeat-ayudas';
 import {
   casillasAGuardadas,
   casillasDeDatos111,

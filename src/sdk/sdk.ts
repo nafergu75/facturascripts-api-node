@@ -79,10 +79,10 @@ export class ContaApiClient {
 
   // --- AEAT / impuestos ---
   getModelo303Preview(companyId: string, ejercicio: number, periodo: string): Promise<unknown> {
-    return this.get(`/companies/${companyId}/aeat/modelo-303/preview`, { ejercicio, periodo });
+    return this.get(`/companies/${companyId}/tax-models/303`, { ejercicio, periodo });
   }
   getModelo200Preview(companyId: string, ejercicio: number): Promise<unknown> {
-    return this.get(`/companies/${companyId}/modelo-200/preview`, { ejercicio });
+    return this.get(`/companies/${companyId}/impuestos/borradores/200`, { ejercicio });
   }
   getCuentasAnuales(companyId: string, ejercicio: number): Promise<unknown> {
     return this.get(`/companies/${companyId}/cuentas-anuales/preview`, { ejercicio });

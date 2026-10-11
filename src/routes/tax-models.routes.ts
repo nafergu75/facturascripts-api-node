@@ -2,13 +2,8 @@
  * RUTAS DE MODELOS FISCALES - /api/companies/:companyId/tax-models
  *
  * Endpoints para:
- * - Generar modelo 303 (IVA trimestral)
- * - Generar modelo 111 (retenciones trimestral)
- * - Generar modelo 200 (impuesto de sociedades anual)
- * - Generar modelo 347 (operaciones con terceros anual)
- * - Generar modelo 115 (arrendamientos locales trimestral)
- * - Generar modelo 390 (resumen anual de IVA)
- * - Generar modelo 190 (resumen anual de retenciones)
+ * - Borrador del 303, 111, 115 y 190 (los del 347, 390 y 200 estan en
+ *   /impuestos/borradores; los del 349, 180 y 202, en borradores-aeat.routes)
  * - Marcar modelos como presentados
  */
 
@@ -88,19 +83,6 @@ router.post(
 );
 
 /**
- * GET /tax-models/200
- * Generar modelo 200 (impuesto de sociedades)
- *
- * Query params:
- *   - ejercicio: number (REQUERIDO)
- */
-router.get(
-  '/200',
-  authorize('impuestos:read'),
-  taxModelsController.obtenerModelo200
-);
-
-/**
  * POST /tax-models/200/presentado
  * Marcar modelo 200 como presentado
  *
@@ -114,19 +96,6 @@ router.post(
   '/200/presentado',
   authorize('impuestos:write'),
   taxModelsController.marcar200Presentado
-);
-
-/**
- * GET /tax-models/347
- * Generar modelo 347 (operaciones con terceros)
- *
- * Query params:
- *   - ejercicio: number (REQUERIDO)
- */
-router.get(
-  '/347',
-  authorize('impuestos:read'),
-  taxModelsController.obtenerModelo347
 );
 
 /**
@@ -174,19 +143,6 @@ router.post(
   '/115/presentado',
   authorize('impuestos:write'),
   taxModelsController.marcar115Presentado
-);
-
-/**
- * GET /tax-models/390
- * Generar modelo 390 (resumen anual de IVA)
- *
- * Query params:
- *   - ejercicio: number (REQUERIDO)
- */
-router.get(
-  '/390',
-  authorize('impuestos:read'),
-  taxModelsController.obtenerModelo390
 );
 
 /**

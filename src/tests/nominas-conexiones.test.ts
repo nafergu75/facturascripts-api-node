@@ -12,7 +12,7 @@ import request from 'supertest';
 import { letraNif } from '../utils/nif';
 import { agregarTrabajo111, codigoProvincia, perceptoresDeNominas, perceptoresProfesionales, periodoFiscal, type NominaFiscal, type Perceptor190 } from '../services/nominas/fiscal';
 import { comprobarDiseno190, erroresFichero190, generarFicheroModelo190, LONGITUD_REGISTRO_190, registroPerceptor190, textoAeat } from '../services/nominas/modelo190';
-import { generarFicheroModelo111 } from '../services/impuestosExport.service';
+import { fichero111 as generarFicheroModelo111 } from './aeat-ayudas';
 import { vencimiento111 } from '../services/nominas/informes';
 import { fechaCargoPorDefecto } from '../services/nominas/segurosSociales';
 import { cuentasNominasPorDefecto } from '../services/nominas/calculo';
