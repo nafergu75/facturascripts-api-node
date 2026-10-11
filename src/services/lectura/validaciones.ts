@@ -293,12 +293,21 @@ function v18Qr(l: LecturaNormalizada): ResultadoValidacion[] {
   });
 }
 
+export const MENSAJE_IMPORTES_NEGATIVOS = 'Los importes son negativos: parece una rectificativa o un abono y aún no se puede registrar con el lector.';
+
+/** Alguna base o algun total en negativo: un abono, aunque no diga "rectificativa". */
+export function importesNegativos(l: LecturaNormalizada): boolean {
+  const importes = [...l.desglose.map((t) => t.base.valor), l.totales.totalFactura.valor, l.totales.totalAPagar.valor];
+  return importes.some((x) => typeof x === 'number' && aCentimos(x) < 0);
+}
+
 function v19v20TipoDocumento(l: LecturaNormalizada): ResultadoValidacion[] {
   const tipo = l.tipoDocumento.valor;
   if (tipo === 'rectificativa') {
     const n = l.rectificativa?.numeroRectificada.valor;
     return [v('RECTIFICATIVA', 'error', ['tipoDocumento'], `Es una factura rectificativa${n ? ` (rectifica a la ${n})` : ''}. Todavía no se puede registrar con el lector.`)];
   }
+  if (importesNegativos(l)) return [v('RECTIFICATIVA', 'error', ['tipoDocumento', 'totales.totalAPagar'], MENSAJE_IMPORTES_NEGATIVOS)];
   if (tipo === 'nomina' || tipo === 'seguros_sociales') return [v('NO_FACTURA', 'revisar', ['tipoDocumento'], AVISO_NO_FACTURA[tipo])];
   return [];
 }

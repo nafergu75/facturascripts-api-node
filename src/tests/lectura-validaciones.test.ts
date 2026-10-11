@@ -216,6 +216,19 @@ describe('V14-V22', () => {
     expect(nomina[0].mensaje).toMatch(/Es una nómina/);
   });
 
+  it('V19 importes negativos sin la palabra rectificativa: error en ventas y en gastos', async () => {
+    const abono = con((l) => {
+      l.desglose[0].base.valor = -200;
+      l.desglose[0].cuota.valor = -42;
+      l.totales.totalFactura.valor = -242;
+      l.totales.totalAPagar.valor = -242;
+    });
+    expect(abono.tipoDocumento.valor).toBe('factura');
+    const venta = de(await codigos(abono, ctx({ lector: 'VENTA', nifEmpresa: 'B12345674' })), 'RECTIFICATIVA');
+    expect(venta[0]).toMatchObject({ nivel: 'error', mensaje: 'Los importes son negativos: parece una rectificativa o un abono y aún no se puede registrar con el lector.' });
+    expect(de(await codigos(abono), 'RECTIFICATIVA')[0].nivel).toBe('error');
+  });
+
   it('V21 paginas sin leer y V22 descuento y saldo anterior', async () => {
     const l = con((x) => {
       x.paginas = { archivo: 3, leidas: 2 };

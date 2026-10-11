@@ -15,7 +15,7 @@ import { aCentimos, redondear2 } from '../../utils/money';
 import { normalizarNif } from '../../utils/nif';
 import { confianzaBaja, MOTIVO_BASE_DUDOSA, nifLeido } from './azure-factura.mapper';
 import { UMBRAL_OK, type Campo, type Lector, type LecturaNormalizada, type TipoDocumentoLeido, type TramoLeido } from './tipos';
-import { calcularCuadre, validacionesSincronas, type ContextoValidacion } from './validaciones';
+import { calcularCuadre, importesNegativos, validacionesSincronas, type ContextoValidacion } from './validaciones';
 
 const OCR_MODEL = 'claude-opus-4-8';
 const MAX_TEXTO = 15_000;
@@ -33,7 +33,7 @@ const TIPOS_DOCUMENTO: TipoDocumentoLeido[] = ['factura', 'simplificada', 'recti
 
 const RE_RETENCION = /retenci[oó]n|IRPF|I\.R\.P\.F/i;
 const RE_RECARGO = /recargo|\bR\.\s?E\.(?=\s|$)|equivalencia/i;
-const RE_TIPO_DOCUMENTO = /rectificativ|abono|nota de cr[eé]dito|n[oó]mina|recibo de salarios|\bRLC\b|\bTC-?1\b|liquidaci[oó]n de cotizaciones|ticket|simplificada/i;
+const RE_TIPO_DOCUMENTO = /rectificativ|abono|nota de cr[eé]dito|credit note|credit memo|n[oó]mina|recibo de salarios|\bRLC\b|\bTC-?1\b|liquidaci[oó]n de cotizaciones|ticket|simplificada/i;
 
 /** Datos clave del lector (en ventas, el NIF que importa es el del cliente). */
 const camposClave = (l: LecturaNormalizada, lector: Lector): Array<[string, Campo<unknown>]> => [
@@ -52,7 +52,7 @@ export function decidirComplemento(l: LecturaNormalizada, contenido: string | nu
   const cuadre = calcularCuadre(l);
   if (cuadre && cuadre.diferencia > 0) p.push({ disparador: 'C3', texto: 'Desglose completo (base, tipo y cuota de cada IVA) y los dos totales: los importes leídos no cuadran.' });
   if (!l.desglose.length || l.desglose.some((x) => x.base.motivo === MOTIVO_BASE_DUDOSA)) p.push({ disparador: 'C4', texto: 'Desglose completo: base, tipo y cuota de cada IVA.' });
-  if (RE_TIPO_DOCUMENTO.test(t) || (!l.receptor.nif.valor && !l.receptor.nombre.valor)) {
+  if (RE_TIPO_DOCUMENTO.test(t) || (!l.receptor.nif.valor && !l.receptor.nombre.valor) || importesNegativos(l)) {
     p.push({ disparador: 'C5', texto: 'Tipo de documento y, si es una factura rectificativa, el número de la factura que rectifica y el motivo.' });
   }
   for (const [nombre, c] of camposClave(l, lector)) {

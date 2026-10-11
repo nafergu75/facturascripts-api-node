@@ -62,6 +62,16 @@ describe('cuando se llama', () => {
     expect(decidirComplemento(compararQr(qr ?? null, lectura), texto, 'GASTO')).toEqual([]);
   });
 
+  it('una nota de abono en ingles o con importes negativos pregunta el tipo de documento (C5)', () => {
+    const l = leer('resultado-simple').lectura;
+    expect(decidirComplemento(l, 'CREDIT NOTE 12', 'VENTA').map((p) => p.disparador)).toContain('C5');
+    l.totales.totalAPagar.valor = -242;
+    l.totales.totalFactura.valor = -242;
+    l.desglose[0].base.valor = -200;
+    l.desglose[0].cuota.valor = -42;
+    expect(decidirComplemento(l, 'INVOICE', 'VENTA').map((p) => p.disparador)).toContain('C5');
+  });
+
   it('cuadre fallido (C3) y base dudosa o sin desglose (C4)', () => {
     const l = leer('resultado-simple').lectura;
     l.totales.totalAPagar.valor = 250;
