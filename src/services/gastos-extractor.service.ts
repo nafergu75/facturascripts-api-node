@@ -69,6 +69,11 @@ export interface GastoExtraidoEmpresa extends GastoExtraido {
   proveedorExistente: { id: string; nombreFiscal: string; nifCif: string } | null;
   /** La factura ya registrada de ese proveedor con ese numero, o null. */
   duplicada: { facturaId: string; numeroCompleto: string } | null;
+  /**
+   * Cuenta de gasto que suele llevar ese proveedor en sus facturas (la mas
+   * repetida en sus lineas), para proponerla en cada linea; null si no hay.
+   */
+  cuentaHabitual: { codigo: string; nombre: string } | null;
 }
 
 export type TipoDocumentoGasto = 'factura' | 'nomina' | 'seguros_sociales';

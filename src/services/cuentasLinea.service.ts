@@ -310,3 +310,28 @@ export function basePorCuenta(lineas: Array<{ cuenta: string | null | undefined;
   }
   return [...mapa].map(([cuenta, centimos]) => ({ cuenta, base: centimos / 100 }));
 }
+
+/**
+ * Cuenta de gasto habitual de un proveedor: la que mas se repite en las lineas
+ * de sus ultimas facturas (como mucho 10), si sigue activa en el plan. El
+ * lector de gastos la propone para las lineas (p. ej. 6280001 «Luz oficina»
+ * para la compania electrica). null si no tiene facturas con cuenta.
+ */
+export async function cuentaHabitualDeProveedor(companyId: string, supplierId: string): Promise<{ codigo: string; nombre: string } | null> {
+  const facturas = await prisma.expenseInvoice.findMany({
+    where: { companyId, supplierId, estado: { not: 'ANULADA' } },
+    orderBy: { createdAt: 'desc' },
+    take: 10,
+    select: { lineas: { select: { accountCode: true } } },
+  });
+  const veces = new Map<string, number>();
+  for (const f of facturas) for (const l of f.lineas) if (l.accountCode && esCuentaDeTipo(l.accountCode, 'gasto')) veces.set(l.accountCode, (veces.get(l.accountCode) ?? 0) + 1);
+  const ordenadas = [...veces].sort((a, b) => b[1] - a[1]).map(([c]) => c);
+  for (const codigo of ordenadas) {
+    const enPlan = await prisma.chartOfAccounts.findFirst({ where: { companyId, codigo, activo: true }, select: { nombre: true } });
+    if (enPlan) return { codigo, nombre: enPlan.nombre };
+    const base = NOMBRE_BASE.get(codigo);
+    if (base) return { codigo, nombre: base };
+  }
+  return null;
+}
