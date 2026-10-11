@@ -37,8 +37,21 @@ describe('siguienteNumeroTercero', () => {
   });
 
   it('agotado el rango de 7 digitos, 400 con un mensaje claro', () => {
-    expect(() => siguienteNumeroTercero(['4309999'], ['430'], 7)).toThrow(/No quedan subcuentas libres de 7 dígitos/);
-    expect(siguienteNumeroTercero(['4309998'], ['430'], 7)).toBe(9999);
+    expect(() => siguienteNumeroTercero(['4308999'], ['430'], 7)).toThrow(/No quedan subcuentas libres de 7 dígitos/);
+    expect(siguienteNumeroTercero(['4308998'], ['430'], 7)).toBe(8999);
+  });
+
+  it('las cuentas 4009, 4309... (facturas pendientes, moneda extranjera) no mueven la numeracion', () => {
+    // 40090000 «Proveedores, facturas pendientes de recibir» y 43090000 son habituales en un plan traido.
+    expect(siguienteNumeroTercero(['40000001', '40090000', '41090003', '40040007'], ['400', '410'], 8)).toBe(2);
+    expect(siguienteNumeroTercero(['43000001', '43090000', '43099999', '43040002'], ['430'], 8)).toBe(2);
+  });
+
+  it('nunca asigna un numero que caiga en 4004/4009/4104/4109/4304/4309', () => {
+    // Con 8 digitos, tras el 39999 viene el 50000 (los 4xxxx serian 4304xxxx o 4004xxxx).
+    expect(siguienteNumeroTercero(['43039999'], ['430'], 8)).toBe(50000);
+    expect(siguienteNumeroTercero(['41039999'], ['400', '410'], 8)).toBe(50000);
+    expect(() => siguienteNumeroTercero(['43089999'], ['430'], 8)).toThrow(/No quedan subcuentas libres/);
   });
 });
 
@@ -60,6 +73,8 @@ describe('codigos', () => {
     expect(esSubcuentaDeTercero('43000001')).toBe(true);
     expect(esSubcuentaDeTercero('43000000')).toBe(false);
     expect(esSubcuentaDeTercero('4310001')).toBe(false);
+    for (const c of ['40090000', '41090001', '43090001', '43040001', '40040001', '41040001', '4309']) expect(esSubcuentaDeTercero(c)).toBe(false);
+    expect(esSubcuentaDeTercero('43010001')).toBe(true);
   });
 
   it('longitud valida 7-10, por defecto 8', () => {

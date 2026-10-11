@@ -50,28 +50,48 @@ export function esSubcuentaGenerica(codigo: string): boolean {
   return /^(430|400|410)0*$/.test(codigo);
 }
 
-/** Subcuenta de tercero: 430/400/410 seguida de digitos con algun correlativo distinto de 0. */
+/**
+ * Cuentas del PGC de 4 digitos bajo 400, 410 y 430 que NO son de un tercero
+ * concreto: moneda extranjera (4004, 4104, 4304) y facturas pendientes de
+ * recibir o de formalizar (4009, 4109, 4309). Sus subcuentas (40090000...) se
+ * traen como cuentas normales: no se enlazan a fichas, no cuentan para la
+ * numeracion de clientes y proveedores y nunca se asigna un numero que caiga
+ * dentro de ellas.
+ */
+export const PREFIJOS_NO_TERCERO = ['4004', '4009', '4104', '4109', '4304', '4309'];
+
+const enPrefijoNoTercero = (codigo: string) => PREFIJOS_NO_TERCERO.some((p) => codigo.startsWith(p));
+
+/**
+ * Subcuenta de tercero: 430/400/410 seguida de digitos con algun correlativo
+ * distinto de 0, fuera de las cuentas 4004/4009/4104/4109/4304/4309.
+ */
 export function esSubcuentaDeTercero(codigo: string): boolean {
-  return /^(430|400|410)\d+$/.test(codigo) && !esSubcuentaGenerica(codigo);
+  return /^(430|400|410)\d+$/.test(codigo) && !esSubcuentaGenerica(codigo) && !enPrefijoNoTercero(codigo);
 }
 
 /**
  * Siguiente correlativo libre para esos prefijos (clientes ['430'];
- * proveedores ['400','410']), saltando el 0. Solo cuentan para el maximo los
- * codigos de la longitud de la empresa; los de otra longitud (importados de 10
- * digitos, por ejemplo) no se pisan porque tienen otro codigo. Sin hueco, 400.
+ * proveedores ['400','410']), saltando el 0. Solo cuentan para el maximo las
+ * subcuentas de tercero de la longitud de la empresa: las de otra longitud
+ * (importadas de 10 digitos, por ejemplo) no se pisan porque tienen otro
+ * codigo, y las de 4009, 4309... (facturas pendientes, moneda extranjera) no
+ * son de terceros. Tampoco se asigna un numero que caiga en esas cuentas
+ * (con 8 digitos, del 40000 al 49999 y del 90000 al 99999). Sin hueco, 400.
  */
 export function siguienteNumeroTercero(ocupadas: Iterable<string>, prefijos: string[], longitud: number): number {
   const usadas = new Set(ocupadas);
   let max = 0;
   for (const c of usadas) {
-    if (c.length !== longitud || !prefijos.some((p) => c.startsWith(p))) continue;
+    if (c.length !== longitud || !prefijos.some((p) => c.startsWith(p)) || !esSubcuentaDeTercero(c)) continue;
     const n = numeroDeSubcuenta(c);
     if (n !== null && n > max) max = n;
   }
   const tope = 10 ** (longitud - 3);
   for (let n = max + 1; n < tope; n++) {
-    if (prefijos.every((p) => !usadas.has(codigoSubcuenta(p, n, longitud)))) return n;
+    const codigos = prefijos.map((p) => codigoSubcuenta(p, n, longitud));
+    if (codigos.some(enPrefijoNoTercero)) continue;
+    if (codigos.every((c) => !usadas.has(c))) return n;
   }
   throw badRequest(
     `No quedan subcuentas libres de ${longitud} dígitos para dar de alta más ${prefijos.includes('430') ? 'clientes' : 'proveedores'}. Habla con tu asesor.`,
