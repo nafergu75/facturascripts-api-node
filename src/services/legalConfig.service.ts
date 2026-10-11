@@ -373,7 +373,12 @@ export const legalConfigService = {
    * Lo que ya estaba guardado y no se toca no se vuelve a comprobar: una
    * empresa antigua puede seguir guardando el resto de sus datos.
    */
-  async actualizar(companyId: string, datos: Record<string, unknown>) {
+  async actualizar(
+    companyId: string,
+    datos: Record<string, unknown>,
+    /** Quien guarda y si es administrador de la empresa (lo decide el controlador, nunca el cuerpo). */
+    quien: { userId?: string; esAdministrador?: boolean } = {},
+  ) {
     const actual = await prisma.legalConfig.findUnique({
       where: { companyId },
       select: { pais: true, tipoSociedad: true, nif: true, codigoPostal: true, provincia: true, monedaCuenta: true },
@@ -404,6 +409,46 @@ export const legalConfigService = {
     const cambiaCp = (despues.codigoPostal ?? '') !== (antes.codigoPostal ?? '');
     const cambiaProvincia = (despues.provincia ?? '') !== (antes.provincia ?? '');
     const espana = despues.pais === 'ES';
+
+    // P10 (spec verifactu): con VERI*FACTU en marcha los registros van encadenados
+    // al NIF de la empresa, que no puede cambiar. La denominacion si: solo afecta
+    // a las facturas nuevas. (En F1 tambien se mirara si ya hay registros.)
+    const cambiaNifGuardado = cambiaNif && !!normalizarNif(antes.nif);
+    if (cambiaNifGuardado) {
+      const vf = await prisma.verifactuConfig.findUnique({ where: { companyId }, select: { estado: true } });
+      if (vf && vf.estado !== 'DESACTIVADO') {
+        throw conflict(
+          'Esta empresa tiene VERI*FACTU en marcha y sus registros van ligados a este NIF, así que no se puede cambiar. ' +
+            'Si el NIF está mal, habla con el administrador antes de seguir facturando.',
+          { campo: 'nif' },
+        );
+      }
+    }
+    // Con facturas ya emitidas, el NIF (y pasar a autonomo o dejar de serlo, que
+    // cambia la fecha de VERI*FACTU) solo lo cambia un administrador, confirmandolo:
+    // hasta que cada factura guarde su copia de los datos del emisor (F1), su PDF
+    // se vuelve a dibujar con el NIF de ahora.
+    const cambiaAutonomo = cambiaForma && (antes.tipoSociedad === 'AUTONOMO' || despues.tipoSociedad === 'AUTONOMO');
+    let facturasEmitidas = 0;
+    if (cambiaNifGuardado || cambiaAutonomo) {
+      facturasEmitidas = await prisma.incomeInvoice.count({ where: { companyId, estadoDocumento: 'FINAL' } });
+      const campo = cambiaNifGuardado ? 'nif' : 'tipoSociedad';
+      const que = cambiaNifGuardado ? 'el NIF' : 'la forma jurídica (autónomo o sociedad)';
+      if (facturasEmitidas > 0 && !quien.esAdministrador) {
+        throw conflict(
+          `Esta empresa ya ha emitido facturas, así que ${que} solo lo puede cambiar un administrador de la empresa. Pídeselo si está mal.`,
+          { campo, codigo: 'NIF_CON_FACTURAS' },
+        );
+      }
+      if (facturasEmitidas > 0 && datos.confirmarCambioNif !== true) {
+        const n = facturasEmitidas === 1 ? 'Ya hay 1 factura emitida' : `Ya hay ${facturasEmitidas} facturas emitidas`;
+        throw conflict(
+          `${n} con los datos actuales de la empresa. Cambia ${que} solo si estaba mal: ` +
+            'en la app, el PDF de esas facturas saldrá con el dato nuevo. ¿Quieres cambiarlo de todas formas?',
+          { campo, codigo: 'CONFIRMAR_CAMBIO_NIF', facturasEmitidas },
+        );
+      }
+    }
 
     if (cambiaPais || cambiaForma) {
       const libros = librosObligatorios(despues.tipoSociedad, despues.pais);
@@ -452,6 +497,23 @@ export const legalConfigService = {
         update: limpio,
         create: { companyId, ...limpio },
       });
+      // El NIF y la forma juridica dejan rastro con el valor anterior y el nuevo.
+      if (quien.userId && ((cambiaNif && limpio.nif !== undefined) || cambiaForma)) {
+        await db.auditLog.create({
+          data: {
+            userId: quien.userId,
+            companyId,
+            action: 'NIF_EMPRESA_CAMBIADO',
+            resourceType: 'LEGAL_CONFIG',
+            resourceId: cfg.id,
+            meta: {
+              nif: { antes: antes.nif, despues: cfg.nif },
+              tipoSociedad: { antes: antes.tipoSociedad, despues: cfg.tipoSociedad },
+              facturasEmitidas,
+            },
+          },
+        });
+      }
       // Sin facturas ni asientos se puede cambiar la moneda de la contabilidad: las
       // cuentas bancarias, que se dieron de alta en la anterior, pasan a la nueva.
       if (cambiaMoneda) {
@@ -464,8 +526,9 @@ export const legalConfigService = {
       monedaCuentaEditable: !(await tieneDocumentos(companyId)),
     });
     if (!cambiaNif || !limpio.nif) {
-      // Sin NIF nuevo: una transaccion solo si tambien hay que pasar las cuentas bancarias de moneda.
-      return conMoneda(cambiaMoneda ? await prisma.$transaction((tx) => guardar(tx)) : await guardar(prisma));
+      // Sin NIF nuevo: una transaccion solo si tambien hay que pasar las cuentas bancarias
+      // de moneda o dejar el rastro del cambio de forma juridica.
+      return conMoneda(cambiaMoneda || cambiaForma ? await prisma.$transaction((tx) => guardar(tx)) : await guardar(prisma));
     }
     // NIF nuevo: se comprueba que este libre y se guarda en la misma transaccion.
     const nifNuevo = limpio.nif;

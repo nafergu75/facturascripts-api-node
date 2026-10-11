@@ -18,12 +18,15 @@ jest.mock('../config/database', () => {
     prisma: {
       legalConfig: { findUnique: jest.fn(), upsert },
       // Facturas y asientos de la empresa (tieneDocumentos): por defecto, ninguno.
-      incomeInvoice: { findFirst: jest.fn(async () => null) },
+      // count: facturas emitidas (P10); por defecto, ninguna.
+      incomeInvoice: { findFirst: jest.fn(async () => null), count: jest.fn(async () => 0) },
       expenseInvoice: { findFirst: jest.fn(async () => null) },
       journalEntry: { findFirst: jest.fn(async () => null) },
       // Nominas y seguros sociales (tieneDocumentos): por defecto, ninguno.
       nomina: { findFirst: jest.fn(async () => null) },
       liquidacionSS: { findFirst: jest.fn(async () => null) },
+      // VERI*FACTU (P10): sin configuracion, el NIF se puede corregir.
+      verifactuConfig: { findUnique: jest.fn(async () => null) },
       $transaction: jest.fn(async (fn: (t: typeof tx) => unknown) => fn(tx)),
       __tx: tx,
     },

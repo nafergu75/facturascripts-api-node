@@ -2,7 +2,7 @@ import { asyncHandler } from '../utils/async-handler';
 import { sendOk, sendMessage } from '../utils/response';
 import { badRequest, notImplemented } from '../utils/http-errors';
 import { incomeInvoicesService, CrearFacturaIngresoDTO, ESTADOS_COBRO } from '../services/income-invoices.service';
-import { avisosFactura, generarPdfFactura } from '../services/facturaPdf.service';
+import { avisosFactura, pdfParaDescargar } from '../services/facturaPdf.service';
 import { registrarAuditoria } from '../services/auditoria.service';
 import { accountingHooksService, type ResultadoContabilizacion } from '../services/accounting-hooks.service';
 import { archivarVentaSinRomper } from '../services/archivoFacturas.service';
@@ -160,9 +160,12 @@ export const incomeInvoicesController = {
     sendOk(res, { avisos: await avisosFactura(req.companyId!, req.params.id) });
   }),
 
-  /** GET /:id/pdf — la factura en PDF (o el borrador, marcado como tal). */
+  /**
+   * GET /:id/pdf — la factura en PDF (o el borrador, marcado como tal). Una
+   * factura del lector da su original o la copia de registro marcada.
+   */
   pdf: asyncHandler(async (req, res) => {
-    const { nombre, contenido } = await generarPdfFactura(req.companyId!, req.params.id);
+    const { nombre, contenido } = await pdfParaDescargar(req.companyId!, req.params.id);
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="${nombre}"`);
     res.send(contenido);

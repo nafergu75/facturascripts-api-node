@@ -122,8 +122,8 @@ describe('Pasar a factura', () => {
     await expect(incomeInvoicesService.actualizarBorrador(COMPANY_ID, p.id, { observaciones: 'x' })).rejects.toThrow(/aceptada/);
     await expect(incomeInvoicesService.eliminarBorrador(COMPANY_ID, p.id)).rejects.toThrow(/aceptada/);
 
-    // La factura sigue su camino normal: al emitirla recibe numero de la serie A.
-    const emitida = await incomeInvoicesService.finalizar(COMPANY_ID, f.id, { fechaEmision: '2026-12-01' });
+    // La factura sigue su camino normal: al emitirla (hoy; nunca con fecha futura) recibe numero de la serie A.
+    const emitida = await incomeInvoicesService.finalizar(COMPANY_ID, f.id);
     expect(emitida.estadoDocumento).toBe('FINAL');
     expect(emitida.numeroCompleto).toMatch(/^A-\d+$/);
   });

@@ -1,24 +1,7 @@
-import { calcularHashFactura, generarCadenaOriginalFactura, registrarHuellaFactura } from '../services/verifactu.service';
+// El esbozo antiguo de huellas de Veri*Factu (verifactu.service.ts) se retiro:
+// lo sustituye services/verifactu/ (spec verifactu, P12).
 import { crearCuentaBancaria, importarMovimientosDesdeCSV } from '../services/bancos.service';
 import { sugerirSubcuentaParaTercero } from '../services/sugerenciasContables.service';
-
-describe('Veri*Factu (huellas)', () => {
-  it('hash SHA-256 determinista (64 hex)', () => {
-    const cadena = generarCadenaOriginalFactura({ cifnif: 'B1', codigo: 'F1', fecha: '2026-06-10', total: 121 });
-    const h1 = calcularHashFactura(cadena);
-    const h2 = calcularHashFactura(cadena);
-    expect(h1).toBe(h2);
-    expect(h1).toMatch(/^[0-9a-f]{64}$/);
-  });
-
-  it('encadena la huella con la anterior (inalterabilidad)', async () => {
-    const empresa = 'cVF';
-    const h1 = await registrarHuellaFactura(empresa, { idfactura: 1, codigo: 'F1', cifnif: 'B1', fecha: '2026-06-10', total: 100 });
-    const h2 = await registrarHuellaFactura(empresa, { idfactura: 2, codigo: 'F2', cifnif: 'B1', fecha: '2026-06-11', total: 200 });
-    expect(h2.hashAnterior).toBe(h1.hash);
-    expect(h1.algoritmo).toBe('SHA256');
-  });
-});
 
 describe('Bancos (importacion CSV)', () => {
   it('parsea movimientos de un CSV simple', async () => {

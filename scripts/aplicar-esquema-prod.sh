@@ -51,6 +51,9 @@ MARCAS=(
   'subcuenta400'
   'subcuenta410'
   'model LecturaDocumento'
+  'model VerifactuConfig'
+  'model AjustePlataforma'
+  'pantalla | api | copia | lector'
 )
 for marca in "${MARCAS[@]}"; do
   grep -q "$marca" prisma/schema.prisma || {

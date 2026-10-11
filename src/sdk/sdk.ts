@@ -73,9 +73,6 @@ export class ContaApiClient {
   contabilizarFactura(companyId: string, facturaId: string): Promise<unknown> {
     return this.post(`/companies/${companyId}/facturas/${facturaId}/contabilizar`);
   }
-  getHuellasFactura(companyId: string, facturaId: string): Promise<unknown> {
-    return this.get(`/companies/${companyId}/facturas/${facturaId}/huellas`);
-  }
 
   // --- AEAT / impuestos ---
   getModelo303Preview(companyId: string, ejercicio: number, periodo: string): Promise<unknown> {
