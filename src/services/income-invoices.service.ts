@@ -734,6 +734,24 @@ async function asignarNumero(
   return s.ultimoNumero;
 }
 
+/**
+ * Art. 6 RD 1619/2012: la factura lleva el nombre y el NIF del emisor. Lo
+ * comprueban los dos caminos que emiten (finalizar y la emision directa de
+ * crear), antes de numerar. Devuelve el perfil de la empresa.
+ */
+async function exigirDatosEmisor(companyId: string): Promise<PerfilEmpresa> {
+  const emisor = await prisma.legalConfig.findUnique({ where: { companyId } });
+  const perfil = perfilDesdeConfig(emisor);
+  if (!emisor?.nif?.trim() || !emisor?.denominacion?.trim()) {
+    throw badRequest(
+      perfil.espanola
+        ? 'Antes de emitir facturas rellena la denominación y el NIF de tu empresa en Registro Mercantil > Datos para la memoria.'
+        : 'Antes de emitir facturas rellena la denominación y la identificación fiscal de tu empresa en Registro Mercantil > Datos para la memoria.',
+    );
+  }
+  return perfil;
+}
+
 /** Transaccion de facturas: el tipo de cambio ya esta resuelto; dentro no se consulta la red. */
 function transaccion<T>(fn: (tx: Tx) => Promise<T>): Promise<T> {
   return prisma.$transaction((tx) => marcarTransaccion(() => fn(tx)));
@@ -849,7 +867,11 @@ async function crear(dto: CrearFacturaIngresoDTO, opciones: { origen?: OrigenFac
   // Red de seguridad de VERI*FACTU: antes de crear nada (cliente, numero...).
   // Emitir aqui es la emision directa y la rectificativa emitida al momento; el
   // lector registra facturas que expidio otro programa y no se bloquea.
-  if (!dto.proforma && !dto.borrador && origen !== 'lector') await exigirPuedeEmitirFinal(dto.companyId);
+  const emiteLaApp = !dto.proforma && !dto.borrador && origen !== 'lector';
+  if (emiteLaApp) {
+    await exigirPuedeEmitirFinal(dto.companyId);
+    await exigirDatosEmisor(dto.companyId);
+  }
 
   const perfil = await perfilEmpresa(dto.companyId);
   let original: FacturaConLineas | null = interno.original ?? null;
@@ -1311,16 +1333,7 @@ export const incomeInvoicesService = {
     exigirBorrador(actual, 'volver a emitir');
     // Red de seguridad de VERI*FACTU, fuera de la transaccion y antes de nada.
     await exigirPuedeEmitirFinal(companyId);
-    // Art. 6 RD 1619/2012: la factura lleva el nombre y el NIF del emisor.
-    const emisor = await prisma.legalConfig.findUnique({ where: { companyId } });
-    const perfil = perfilDesdeConfig(emisor);
-    if (!emisor?.nif?.trim() || !emisor?.denominacion?.trim()) {
-      throw badRequest(
-        perfil.espanola
-          ? 'Antes de emitir facturas rellena la denominación y el NIF de tu empresa en Registro Mercantil > Datos para la memoria.'
-          : 'Antes de emitir facturas rellena la denominación y la identificación fiscal de tu empresa en Registro Mercantil > Datos para la memoria.',
-      );
-    }
+    const perfil = await exigirDatosEmisor(companyId);
     if (actual.lineas.length === 0) throw badRequest('La factura no tiene líneas.');
     if (actual.esRectificativa && !actual.motivoRectificacion?.trim()) {
       throw badRequest('Indica el motivo de la rectificación antes de emitirla.');
