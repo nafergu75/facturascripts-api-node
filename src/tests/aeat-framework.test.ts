@@ -1,5 +1,4 @@
 import {
-  generarFichero303Validado,
   generarFichero390Validado,
   generarFichero349Validado,
   generarFichero111Validado,
@@ -17,44 +16,6 @@ const periodo2T: PeriodoFiscal = {
 };
 
 describe('Framework AEAT (Punto 1) - validacion Zod + delegacion al generador', () => {
-  it('303: valida y genera fichero de 1581 chars con NIF en posicion', () => {
-    const f = generarFichero303Validado({
-      nif: 'B12345678',
-      razonSocial: 'MI EMPRESA SL',
-      datos: {
-        periodo: periodo2T,
-        ivaDevengado: [{ tipo: 21, base: 1000, cuota: 210 }],
-        totalBaseDevengada: 1000,
-        totalCuotaDevengada: 210,
-        ivaDeducible: [],
-        totalBaseDeducible: 0,
-        totalCuotaDeducible: 0,
-        resultado: 210,
-      },
-    });
-    const reg = f.replace(/\r\n$/, '');
-    expect(reg).toHaveLength(1581);
-    expect(reg.slice(13, 22)).toBe('B12345678'); // NIF pos 14
-  });
-
-  it('303: rechaza NIF invalido (Zod)', () => {
-    expect(() =>
-      generarFichero303Validado({
-        nif: 'malo',
-        datos: {
-          periodo: periodo2T,
-          ivaDevengado: [],
-          totalBaseDevengada: 0,
-          totalCuotaDevengada: 0,
-          ivaDeducible: [],
-          totalBaseDeducible: 0,
-          totalCuotaDeducible: 0,
-          resultado: 0,
-        },
-      }),
-    ).toThrow();
-  });
-
   it('390: genera fichero validado', () => {
     const f = generarFichero390Validado({
       nif: 'B12345678',

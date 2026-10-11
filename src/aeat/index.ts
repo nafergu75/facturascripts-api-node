@@ -3,8 +3,11 @@
  * VALIDADO (`generarFicheroXXXValidado`) que valida la entrada con Zod (schema
  * por modelo) y delega en el generador de layout verificado. Los `*.diseno.ts`
  * documentan las posiciones oficiales como CampoDiseno[].
+ *
+ * El 303 no esta aqui: su fichero completo (cabecera, paginas 1 y 3, DID y
+ * cierre) sale del diseno oficial 2026 en services/modelo303.service
+ * (ficheroBorrador303). El generador de solo la pagina 1 se retiro.
  */
-export { generarFichero303Validado } from './modelo303/modelo303.file';
 export { generarFichero390Validado } from './modelo390/modelo390.file';
 export { generarFichero349Validado } from './modelo349/modelo349.file';
 export { generarFichero111Validado } from './modelo111/modelo111.file';
