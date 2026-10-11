@@ -52,6 +52,7 @@ model Company {
   memberships Membership[]
   reglas      ReglasContables?
   movements   Movement[]       @relation("movements")
+  verifactuConfig VerifactuConfig?
 }
 
 /// Reglas contables configurables por empresa (ReglasContablesEmpresa serializada como JSON).
@@ -249,6 +250,10 @@ model IncomeInvoice {
   ibanCobro           String?
   /// Copia, al emitir, del texto legal al pie ('' = sin texto). null: como ibanCobro.
   textoPie            String?               @db.Text
+  /// De donde nace la factura: pantalla | api | copia | lector (VERI*FACTU, spec 2.8).
+  /// Lo pone el servidor en todos los caminos de alta, nunca el cuerpo. null:
+  /// factura anterior a esta columna (se trata como anterior a la activacion).
+  origen              String?               @db.VarChar(10)
   createdAt           DateTime              @default(now())
   updatedAt           DateTime              @updatedAt
   lineas              IncomeInvoiceLine[]
@@ -1598,4 +1603,35 @@ model TipoCambioBce {
   createdAt      DateTime @default(now())
 
   @@id([moneda, fecha])
+}
+
+/// VERI*FACTU: configuracion y activacion por empresa (spec verifactu, 2.1).
+/// Version minima de la fase F0: solo lo que lee la red de seguridad. El resto
+/// de campos (obligado, instalacion, certificado...) llega en F1 como columnas
+/// nuevas. Sin fila = VERI*FACTU no activo.
+model VerifactuConfig {
+  id              String    @id @default(cuid())
+  companyId       String    @unique
+  /// DESACTIVADO | PRUEBAS | ACTIVO
+  estado          String    @default("DESACTIVADO") @db.VarChar(12)
+  /// PRUEBAS | PRODUCCION
+  entorno         String    @default("PRUEBAS") @db.VarChar(12)
+  /// Instante desde el que se generan registros (se puede programar a futuro).
+  activaDesde     DateTime?
+  activadaPor     String?
+  activadaEn      DateTime?
+  /// SII | FORAL | null. Si esta informado, VERI*FACTU no aplica y la red de seguridad no bloquea.
+  motivoExclusion String?   @db.VarChar(10)
+  updatedAt       DateTime  @updatedAt
+  updatedBy       String?
+  company         Company   @relation(fields: [companyId], references: [id], onDelete: Restrict)
+}
+
+/// Ajustes de toda la plataforma (no de una empresa), por clave (spec verifactu, 2.7).
+/// 'verifactu.redSeguridad' -> { activa, motivo?, referenciaBoe? }. Sin fila, la red esta activa.
+model AjustePlataforma {
+  clave       String   @id @db.VarChar(64)
+  valor       Json
+  cambiadoPor String?
+  cambiadoEn  DateTime @updatedAt
 }
