@@ -155,6 +155,8 @@ describe('ventas', () => {
   it('la conciliacion contra una cuenta exige que exista y este activa; el banco va con su codigo real', async () => {
     const [mov] = await importarMovimientosDesdeCSV(E, bancoId, '2026-03-21;-15,00;Comisión');
     await expect(conciliarMovimientoConCuenta(E, mov.id, '5550000000')).rejects.toThrow(/no está en el plan contable/);
+    // Los grupos y subgrupos (4, 43...) estan en el plan pero no llevan apuntes.
+    for (const g of ['4', '43', '55']) await expect(conciliarMovimientoConCuenta(E, mov.id, g)).rejects.toMatchObject({ statusCode: 400, message: expect.stringContaining('grupo o subgrupo') });
     const r = await conciliarMovimientoConCuenta(E, mov.id);
     const lineas = await prisma.journalEntryLine.findMany({ where: { entryId: String((r.asiento as Record<string, unknown>).idasiento) } });
     expect(porCuenta(lineas)).toEqual({ '555': [15, 0], '5720001': [0, 15] });
@@ -283,6 +285,42 @@ describe('ajustar linea de un borrador', () => {
     await expect(motor.ajustarLineaAsiento(E, asientoId, lineaProveedor, { accountCode: propio.subcuenta410! }, 'u1')).resolves.toMatchObject({
       lineaActualizada: { accountCode: propio.subcuenta410, accountName: 'Ajustes SL' },
     });
+  });
+
+  it('rechaza los grupos y subgrupos del plan (4, 40, 43)', async () => {
+    for (const g of ['4', '40', '43']) {
+      await expect(motor.ajustarLineaAsiento(E, asientoId, lineaProveedor, { accountCode: g }, 'u1')).rejects.toThrow(/grupo o subgrupo/);
+    }
+  });
+
+  it('otra linea del asiento (gasto, IVA) no pasa a la subcuenta de otro proveedor o cliente', async () => {
+    const lineas = (await asiento(asientoId)).lineas;
+    const lineaIva = lineas.find((l) => l.accountCode === '472')!;
+    await expect(motor.ajustarLineaAsiento(E, asientoId, lineaIva.id, { accountCode: otro.subcuenta400! }, 'u1')).rejects.toThrow(
+      /es de Otro Proveedor SL, no del cliente o proveedor de este asiento/,
+    );
+    const deCliente = await prisma.customer.findFirstOrThrow({ where: { companyId: E, subcuenta430: '43000003' } });
+    await expect(motor.ajustarLineaAsiento(E, asientoId, lineaIva.id, { accountCode: deCliente.subcuenta430! }, 'u1')).rejects.toThrow(/no del cliente o proveedor de este asiento/);
+    // A una cuenta que no es de nadie, si.
+    await expect(motor.ajustarLineaAsiento(E, asientoId, lineaIva.id, { accountCode: '473' }, 'u1')).resolves.toBeDefined();
+    await motor.ajustarLineaAsiento(E, asientoId, lineaIva.id, { accountCode: '472' }, 'u1');
+  });
+
+  it('en un asiento sin cliente ni proveedor la contrapartida puede ir a la subcuenta de cualquiera', async () => {
+    const a = await prisma.journalEntry.create({
+      data: {
+        companyId: E,
+        fecha: new Date('2026-06-02'),
+        numeroAsiento: `SINT-${SUFIJO}`,
+        descripcion: 'Cobro sin factura',
+        origen: 'TESORERIA',
+        estado: 'DRAFT',
+        lineas: { create: [{ companyId: E, accountCode: '5720001', accountName: 'Banco', debe: 30, haber: 0 }, { companyId: E, accountCode: '555', accountName: 'Partidas pendientes', debe: 0, haber: 30 }] },
+      },
+      include: { lineas: true },
+    });
+    const l555 = a.lineas.find((l) => l.accountCode === '555')!;
+    await expect(motor.ajustarLineaAsiento(E, a.id, l555.id, { accountCode: '43000003' }, 'u1')).resolves.toMatchObject({ lineaActualizada: { accountCode: '43000003' } });
   });
 
   it('un ajuste que descuadra no se guarda', async () => {

@@ -70,6 +70,9 @@ export async function conciliarMovimientoConCuenta(
   await comprobarFechaAbierta(companyId, mov.fecha, 'conciliar el movimiento');
 
   const codigo = String(subcuenta ?? '').trim();
+  if (/^\d{1,2}$/.test(codigo)) {
+    throw badRequest(`La ${codigo} es un grupo o subgrupo del plan y no lleva apuntes: elige una cuenta de 3 o más dígitos.`, { campo: 'subcuenta' });
+  }
   const enPlan = codigo ? await prisma.chartOfAccounts.findFirst({ where: { companyId, codigo }, select: { activo: true } }) : null;
   if (!enPlan) throw badRequest(`La cuenta ${codigo || '(vacía)'} no está en el plan contable de la empresa: elige una que exista.`, { campo: 'subcuenta' });
   if (!enPlan.activo) throw badRequest(`La cuenta ${codigo} está desactivada en el plan contable: elige otra o actívala antes.`, { campo: 'subcuenta' });

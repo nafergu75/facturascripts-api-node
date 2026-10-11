@@ -34,20 +34,25 @@ const mismaFicha = (a: { tipo: string; id: string } | null | undefined, b: { tip
  * de un borrador, la nueva tiene que ser del mismo grupo y del MISMO tercero:
  * la deuda no se pasa a otro cliente o proveedor desde aqui. En proveedores,
  * su subcuenta (400N o 410N) o la generica; en clientes, una 43x que no sea de
- * otro cliente. Devuelve el texto del error o null.
+ * otro cliente. Y cualquier otra linea (700, 477, 572...) solo puede pasar a la
+ * subcuenta de un cliente o proveedor si es el del asiento (el de su factura o
+ * el de otra de sus lineas); en un asiento sin tercero, a la de cualquiera.
+ * Devuelve el texto del error o null.
  */
 async function problemaCuentaTercero(
   companyId: string,
-  asiento: { invoiceId: string | null; invoiceType: string | null; origen: string },
+  asiento: { invoiceId: string | null; invoiceType: string | null; origen: string; lineas: Array<{ id: string; accountCode: string }> },
+  lineaId: string,
   original: string,
   nueva: string,
 ): Promise<string | null> {
   const esCliente = original.startsWith('43');
   const esProveedor = /^4[01]/.test(original);
-  if (!esCliente && !esProveedor) return null;
   if (esCliente && !nueva.startsWith('43')) return `Esta línea es la del cliente (${original}): solo puede ir a una cuenta de clientes (43).`;
   if (esProveedor && !/^4[01]/.test(nueva)) return `Esta línea es la del proveedor (${original}): solo puede ir a una cuenta de proveedores o acreedores (400 o 410).`;
   const fichas = await fichaDeSubcuenta(companyId);
+  const deLaNueva: FichaDeSubcuenta | undefined = fichas.get(nueva);
+  if (!esCliente && !esProveedor && !deLaNueva) return null;
   let deLaLinea: { tipo: string; id: string } | null = fichas.get(original) ?? null;
   if (!deLaLinea && asiento.invoiceId) {
     if (asiento.invoiceType === 'GASTO' || asiento.origen === 'FACTURA_GASTO') {
@@ -58,7 +63,13 @@ async function problemaCuentaTercero(
       if (f) deLaLinea = { tipo: 'cliente', id: f.customerId };
     }
   }
-  const deLaNueva: FichaDeSubcuenta | undefined = fichas.get(nueva);
+  if (!esCliente && !esProveedor) {
+    // Linea que no es de tercero: el tercero del asiento sale de la factura o de otra linea.
+    const delAsiento = deLaLinea ?? asiento.lineas.filter((l) => l.id !== lineaId).map((l) => fichas.get(l.accountCode)).find((f) => !!f) ?? null;
+    return delAsiento && !mismaFicha(deLaNueva, delAsiento)
+      ? `La subcuenta ${nueva} es de ${deLaNueva!.nombre}, no del cliente o proveedor de este asiento.`
+      : null;
+  }
   if (esCliente) {
     if (deLaNueva && deLaLinea && !mismaFicha(deLaNueva, deLaLinea)) return `La subcuenta ${nueva} es de ${deLaNueva.nombre}, no del cliente de este asiento.`;
     return null;
@@ -684,10 +695,13 @@ export class AccountingEngineController {
       const data: { accountCode?: string; accountName?: string; debe?: number; haber?: number } = {};
       if (cambios.accountCode !== undefined && String(cambios.accountCode).trim() !== linea.accountCode) {
         const codigo = String(cambios.accountCode).trim();
+        if (/^\d{1,2}$/.test(codigo)) {
+          throw badRequest(`La ${codigo} es un grupo o subgrupo del plan y no lleva apuntes: elige una cuenta de 3 o más dígitos.`);
+        }
         const cuenta = codigo ? await prisma.chartOfAccounts.findFirst({ where: { companyId, codigo }, select: { nombre: true, activo: true } }) : null;
         if (!cuenta) throw badRequest(`La cuenta ${codigo || '(vacía)'} no está en el plan contable de la empresa.`);
         if (!cuenta.activo) throw badRequest(`La cuenta ${codigo} está desactivada en el plan contable.`);
-        const problema = await problemaCuentaTercero(companyId, asiento, linea.accountCode, codigo);
+        const problema = await problemaCuentaTercero(companyId, asiento, lineId, linea.accountCode, codigo);
         if (problema) throw badRequest(problema);
         data.accountCode = codigo;
         data.accountName = cuenta.nombre.slice(0, 190);
