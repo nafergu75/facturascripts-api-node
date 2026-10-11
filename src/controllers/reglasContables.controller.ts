@@ -1,7 +1,7 @@
 import { asyncHandler } from '../utils/async-handler';
 import { sendOk } from '../utils/response';
 import { badRequest } from '../utils/http-errors';
-import { obtenerReglas, guardarReglas } from '../services/reglasContables.service';
+import { cambiarLongitudSubcuentas, estadoLongitudSubcuentas, obtenerReglas, guardarReglas } from '../services/reglasContables.service';
 import { registrarAuditoria } from '../services/auditoria.service';
 
 export const reglasContablesController = {
@@ -24,5 +24,25 @@ export const reglasContablesController = {
       after: reglas,
     });
     sendOk(res, reglas);
+  }),
+
+  // GET /companies/:companyId/reglas-contables/longitud-subcuentas
+  getLongitudSubcuentas: asyncHandler(async (req, res) => {
+    sendOk(res, await estadoLongitudSubcuentas(req.companyId!));
+  }),
+
+  // PUT /companies/:companyId/reglas-contables/longitud-subcuentas  { longitud }
+  putLongitudSubcuentas: asyncHandler(async (req, res) => {
+    const antes = await estadoLongitudSubcuentas(req.companyId!);
+    const estado = await cambiarLongitudSubcuentas(req.companyId!, (req.body ?? {}).longitud);
+    await registrarAuditoria({
+      userId: req.user!.userId,
+      companyId: req.companyId,
+      action: 'UPDATE_LONGITUD_SUBCUENTAS',
+      resourceType: 'REGLAS_CONTABLES',
+      before: { longitud: antes.longitud },
+      after: { longitud: estado.longitud },
+    });
+    sendOk(res, estado);
   }),
 };
