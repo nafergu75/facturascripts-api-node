@@ -836,6 +836,9 @@ interface Interno {
  */
 async function crear(dto: CrearFacturaIngresoDTO, opciones: { origen?: OrigenFactura }, interno: Interno): Promise<IncomeInvoiceResp> {
   const origen: OrigenFactura = opciones.origen ?? 'pantalla';
+  if (dto.numero !== undefined && dto.numero !== null && origen !== 'lector') {
+    throw badRequest('El número de la factura lo pone la serie al emitirla: no se puede indicar.', { campo: 'numero' });
+  }
   let lineas = validarLineas(dto.lineas);
   if (dto.proforma && dto.facturaOriginalId) throw badRequest('Una proforma no puede ser una rectificativa.');
   const esRectificativa = !!dto.facturaOriginalId;
@@ -977,25 +980,30 @@ async function crear(dto: CrearFacturaIngresoDTO, opciones: { origen?: OrigenFac
   // Al emitir se copian el IBAN y el pie de ahora: el PDF ya no cambia con los ajustes.
   const copia = await copiaAlEmitir(dto.companyId, moneda);
 
-  // Factura emitida fuera de la app (lector): conserva su numero original.
+  // Factura emitida fuera de la app (lector): conserva su numero original. La
+  // comprobacion, el alta y el contador de su serie (historica) van juntos.
   if (dto.numero) {
-    const existe = await prisma.incomeInvoice.findFirst({ where: { companyId: dto.companyId, serie, numero: dto.numero } });
-    if (existe) throw badRequest(`La factura ${serie}-${dto.numero} ya existe.`);
-    const factura = await prisma.incomeInvoice.create({
-      data: {
-        ...comunes,
-        ...copia,
-        numero: dto.numero,
-        numeroCompleto: `${serie}-${dto.numero}`,
-        estadoDocumento: ESTADO_FINAL,
-        finalizadaEn: new Date(),
-        estado: determinarEstado(fechaVencimiento),
-      },
-      include: INCLUIR,
-    });
-    await prisma.invoiceSeries.updateMany({
-      where: { companyId: dto.companyId, codigo: serie, ultimoNumero: { lt: dto.numero } },
-      data: { ultimoNumero: dto.numero },
+    const numero = dto.numero;
+    const factura = await transaccion(async (tx) => {
+      const existe = await tx.incomeInvoice.findFirst({ where: { companyId: dto.companyId, serie, numero } });
+      if (existe) throw badRequest(`La factura ${serie}-${numero} ya existe.`);
+      const creada = await tx.incomeInvoice.create({
+        data: {
+          ...comunes,
+          ...copia,
+          numero,
+          numeroCompleto: `${serie}-${numero}`,
+          estadoDocumento: ESTADO_FINAL,
+          finalizadaEn: new Date(),
+          estado: determinarEstado(fechaVencimiento),
+        },
+        include: INCLUIR,
+      });
+      await tx.invoiceSeries.updateMany({
+        where: { companyId: dto.companyId, codigo: serie, ultimoNumero: { lt: numero } },
+        data: { ultimoNumero: numero },
+      });
+      return creada;
     });
     return aRespuesta(factura, ctx);
   }
@@ -1039,6 +1047,9 @@ export const incomeInvoicesService = {
     ]) {
       delete limpio[campo];
     }
+    // El numero solo lo trae una factura del lector (la expidio otro programa).
+    // Desde la pantalla o la API lo pone siempre la serie, dentro de la transaccion.
+    if (opciones.origen !== 'lector') delete limpio.numero;
     return crear(limpio, { origen: opciones.origen }, {});
   },
 
