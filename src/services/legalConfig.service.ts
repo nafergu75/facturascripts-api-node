@@ -405,6 +405,20 @@ export const legalConfigService = {
     const cambiaProvincia = (despues.provincia ?? '') !== (antes.provincia ?? '');
     const espana = despues.pais === 'ES';
 
+    // P10 (spec verifactu): con VERI*FACTU en marcha los registros van encadenados
+    // al NIF de la empresa, que no puede cambiar. La denominacion si: solo afecta
+    // a las facturas nuevas. (En F1 tambien se mirara si ya hay registros.)
+    if (cambiaNif && normalizarNif(antes.nif)) {
+      const vf = await prisma.verifactuConfig.findUnique({ where: { companyId }, select: { estado: true } });
+      if (vf && vf.estado !== 'DESACTIVADO') {
+        throw conflict(
+          'Esta empresa tiene VERI*FACTU en marcha y sus registros van ligados a este NIF, así que no se puede cambiar. ' +
+            'Si el NIF está mal, habla con el administrador antes de seguir facturando.',
+          { campo: 'nif' },
+        );
+      }
+    }
+
     if (cambiaPais || cambiaForma) {
       const libros = librosObligatorios(despues.tipoSociedad, despues.pais);
       if (limpio.obligaLibroSocios === undefined) limpio.obligaLibroSocios = libros.obligaLibroSocios;
