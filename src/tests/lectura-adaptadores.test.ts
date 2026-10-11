@@ -147,6 +147,22 @@ describe('aInvoiceExtraction', () => {
       expect(tramosGasto(l)).toEqual([{ tipoIva: 21, base: 200, cuota: 42, descripcion: 'Tóner y papel' }]);
     });
 
+    it('con un solo tipo y sin partidas: el concepto si lo hay (no "Base al 21 %"); con varios tipos, el texto neutro', () => {
+      const l = leer('resultado-simple');
+      l.lineas = [linea(null, 21), linea('   ', null)];
+      l.concepto = { valor: null, confianza: null, fuente: 'azure' };
+      expect(tramosGasto(l)[0].descripcion).toBe('Base al 21 %');
+      // El concepto que completa la IA.
+      l.concepto = { valor: '  Servicio de   mantenimiento ', confianza: null, fuente: 'claude' };
+      expect(tramosGasto(l)[0].descripcion).toBe('Servicio de mantenimiento');
+      l.concepto.valor = 'y'.repeat(400);
+      expect(tramosGasto(l)[0].descripcion).toHaveLength(150);
+      const varios = leer('resultado-iva-multiple');
+      varios.lineas = [];
+      varios.concepto = { valor: 'Material de imprenta', confianza: null, fuente: 'claude' };
+      expect(tramosGasto(varios).map((t) => t.descripcion)).toEqual(['Base al 21 %', 'Base al 10 %']);
+    });
+
     it('no pasa de 150 caracteres', () => {
       const l = leer('resultado-simple');
       l.lineas = [linea('x'.repeat(400), 21)];
@@ -192,6 +208,8 @@ describe('respaldo con Claude con vision', () => {
     expect(r.lectura.numero).toEqual({ valor: 'F2026/0012', confianza: null, fuente: 'claude' });
     expect(r.lectura.desglose).toEqual([{ tipoIva: 21, base: { valor: 200, confianza: null, fuente: 'claude' }, cuota: { valor: 42, confianza: null, fuente: 'claude' }, tipoRecargo: null, cuotaRecargo: null }]);
     expect(r.lectura.totales.totalAPagar.valor).toBe(242);
+    // La IA no saca partidas: la linea del formulario lleva el concepto, no "Base al 21 %".
+    expect(tramosGasto(r.lectura)).toEqual([{ tipoIva: 21, base: 200, cuota: 42, descripcion: 'material de imprenta' }]);
     expect(r.confianzaLector).toBe(0.85);
     expect(r.qr).toBeNull();
     // Con tiempo maximo y sin los reintentos del SDK.

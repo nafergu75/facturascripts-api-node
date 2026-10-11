@@ -57,7 +57,7 @@ export interface TramoGasto {
   tipoIva: number;
   base: number;
   cuota: number;
-  /** Texto de la linea del formulario: las partidas de ese tipo ("Tóner", "Libros y revistas") o uno neutro ("Base al 10 %", "Base exenta"). */
+  /** Texto de la linea del formulario: las partidas de ese tipo ("Tóner", "Libros y revistas"), con un solo tipo y sin partidas el concepto, o uno neutro ("Base al 10 %", "Base exenta"). */
   descripcion: string;
 }
 
@@ -84,7 +84,15 @@ function unirPartidas(partidas: string[]): string {
   return `${lista.slice(0, -1).join(', ')} y ${lista[lista.length - 1]}`;
 }
 
-/** Descripcion de un tramo con las partidas de su tipo de IVA (todas, si solo hay un tipo). */
+/** Corta un texto largo a lo que admite la descripcion de un tramo. */
+const recortar = (texto: string) => (texto.length > MAX_DESCRIPCION_TRAMO ? `${texto.slice(0, MAX_DESCRIPCION_TRAMO - 1).trimEnd()}…` : texto);
+
+/**
+ * Descripcion de un tramo con las partidas de su tipo de IVA (todas, si solo
+ * hay un tipo). Sin partidas, con un solo tipo, el concepto de la factura
+ * ("material de imprenta"; es lo que da la lectura con IA, que no saca
+ * partidas); con varios, o sin concepto, el texto neutro.
+ */
 function descripcionTramo(l: LecturaNormalizada, tipoIva: number): string {
   const unSoloTipo = l.desglose.length === 1;
   const vistas = new Set<string>();
@@ -98,9 +106,9 @@ function descripcionTramo(l: LecturaNormalizada, tipoIva: number): string {
     vistas.add(clave);
     partidas.push(d);
   }
-  if (!partidas.length) return descripcionNeutraTramo(tipoIva);
-  const texto = unirPartidas(partidas);
-  return texto.length > MAX_DESCRIPCION_TRAMO ? `${texto.slice(0, MAX_DESCRIPCION_TRAMO - 1).trimEnd()}…` : texto;
+  if (partidas.length) return recortar(unirPartidas(partidas));
+  const concepto = l.concepto.valor?.replace(/\s+/g, ' ').trim();
+  return unSoloTipo && concepto ? recortar(concepto) : descripcionNeutraTramo(tipoIva);
 }
 
 /** Un tramo por tipo de IVA, para que el formulario ponga una linea por tipo en vez de juntarlos. */
