@@ -342,7 +342,8 @@ describe('Fichero del 303 contra el diseño oficial 2026', () => {
     });
     expect(campo(p1, 107, 2)).toBe('05');
     expect(campo(p1, 110, 1)).toBe('1'); // REDEME
-    expect(campo(p1, 127, 4)).toBe('1002'); // SII; 390 y volumen "0" fuera del último periodo; carburantes "2" desde el 02
+    // Con REDEME el SII es obligatorio: «SII voluntario» = 2; 390 y volumen "0" fuera del último periodo; carburantes "2" desde el 02.
+    expect(campo(p1, 127, 4)).toBe('2002');
     expect(borrador.tiposDeclaracion).toEqual(['C', 'D']);
   });
 
@@ -476,3 +477,22 @@ describe('303 con devolución: el saldo a devolver incluye todo [110]', () => {
     expect(b.casillas).toEqual(datos.casillasOficiales);
   });
 });
+
+describe('Indicadores de la página 1: SII voluntario (campo 22) y volumen anual (campo 24)', () => {
+  const ind = (periodo: PeriodoFiscal, ctx: Partial<ContextoEmpresa303>) => campo(generar([venta(100, 21, {}, periodo.fechaInicio)], periodo, { ctx }).p1, 127, 3);
+
+  it('SII voluntario = 1 solo si lleva el SII sin estar obligada; con REDEME o gran empresa va 2', () => {
+    expect(ind(P05, { sii: true })[0]).toBe('1');
+    expect(ind(P05, { sii: true, redeme: true })[0]).toBe('2');
+    expect(ind(P05, { sii: true, granEmpresa: true })[0]).toBe('2');
+    expect(ind(P05, { sii: false })[0]).toBe('2');
+  });
+
+  it('volumen anual: "0" fuera del último periodo y para quien no está exonerado; en el 4T del exonerado, según el volumen real', () => {
+    expect(ind(P2T, { sii: true, volumenAnual: 5000 })).toBe('100'); // 2T: 390 y volumen "0"
+    expect(ind(P4T, { sii: false, volumenAnual: 5000 })).toBe('220'); // no exonerado: 390 "2" y volumen "0" (Nota 3)
+    expect(ind(P4T, { sii: true, volumenAnual: 5000 })).toBe('111'); // exonerado con volumen: "1"
+    expect(ind(P4T, { sii: true, volumenAnual: 0 })).toBe('112'); // exonerado sin volumen: "2" (antes salía siempre "1")
+  });
+});
+

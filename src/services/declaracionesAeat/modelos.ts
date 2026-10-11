@@ -66,7 +66,7 @@ export async function presentable(companyId: string, codigo: CodigoAeat, ejercic
           casillas: b.casillas,
           fila: {
             casillas: { ...casillasGuardadas303(b.datos), ...Object.fromEntries(Object.entries(cfg).filter(([k]) => k.startsWith('config_'))) },
-            datos: datosGuardados303(b.datos, { tipoDeclaracion: b.tipoDeclaracion, ibanPresentado: b.iban, rectificativa: b.rectificativa }),
+            datos: datosGuardados303(b.datos, { tipoDeclaracion: b.tipoDeclaracion, ibanPresentado: b.iban, rectificativa: b.rectificativa, indicadores: b.indicadores }),
           },
           fichero: b.errores.length ? null : ficheroBorrador303(b),
           resultado: Math.max(0, b.casillas['71'] ?? 0),

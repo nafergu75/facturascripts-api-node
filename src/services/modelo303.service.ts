@@ -43,6 +43,16 @@ export interface ContextoEmpresa303 {
   sii: boolean;
   /** Acogida al criterio de caja. */
   criterioCaja: boolean;
+  /**
+   * Gran empresa (más de 6.010.121,04 € de volumen): con REDEME, el SII es
+   * obligatorio y no voluntario (campo 22 de la página 1).
+   */
+  granEmpresa?: boolean;
+  /**
+   * Volumen anual de operaciones del ejercicio (art. 121 LIVA). Solo hace falta
+   * en el último periodo de quien está exonerado del 390 (campo 24, Nota 3).
+   */
+  volumenAnual?: number | null;
   /** IBAN para domiciliar o para la devolución. */
   iban?: string | null;
 }
@@ -112,14 +122,25 @@ export function tiposDeclaracion303(
  * Indicadores de identificación de la página 1 (campos 11 a 25, posiciones
  * 109 a 130), para una sociedad de territorio común en régimen general:
  * foral, conjunta y concurso, "2"; régimen simplificado, "3" (solo RG);
- * REDEME, criterio de caja y SII según los ajustes; prorrata especial, en
- * blanco salvo en el último periodo ("2", Nota 6); exonerado del 390 y
- * volumen, "0" salvo en el último periodo (Notas 3 y 4); carburantes, "0" en
- * los trimestres y en el mes 01, "2" desde el 02 (Notas 8 y 9).
+ * REDEME y criterio de caja según los ajustes; prorrata especial, en blanco
+ * salvo en el último periodo ("2", Nota 6); carburantes, "0" en los trimestres
+ * y en el mes 01, "2" desde el 02 (Notas 8 y 9).
+ *  - Campo 22, SII VOLUNTARIO: "1" solo si lleva el SII sin estar obligada. Con
+ *    REDEME o siendo gran empresa el SII es obligatorio (art. 62.6 RIVA), así
+ *    que va "2".
+ *  - Campo 23, exonerado del 390 (Nota 4): "0" salvo en el último periodo.
+ *  - Campo 24, volumen anual distinto de cero (Nota 3): "0" salvo en el último
+ *    periodo de quien está exonerado; entonces "1" si el volumen del año no es
+ *    cero y "2" si lo es.
  */
-export function indicadoresPagina1_303(periodo: PeriodoFiscal, ctx: Pick<ContextoEmpresa303, 'redeme' | 'sii' | 'criterioCaja'>): Record<number, string | null> {
+export function indicadoresPagina1_303(
+  periodo: PeriodoFiscal,
+  ctx: Pick<ContextoEmpresa303, 'redeme' | 'sii' | 'criterioCaja' | 'granEmpresa' | 'volumenAnual'>,
+): Record<number, string | null> {
   const ultimo = esUltimoPeriodo303(periodo.periodo);
   const exonerado390 = ctx.sii; // Quien lleva los libros por el SII no presenta el 390 (art. 71.7 RIVA).
+  const siiVoluntario = ctx.sii && !ctx.redeme && !ctx.granEmpresa;
+  const conVolumen = Math.round((ctx.volumenAnual ?? 0) * 100) !== 0;
   const mensualDesde02 = periodo.tipo === 'mensual' && periodo.periodo >= '02';
   return {
     11: '2', // tributación exclusivamente foral
@@ -131,9 +152,9 @@ export function indicadoresPagina1_303(periodo: PeriodoFiscal, ctx: Pick<Context
     17: ultimo ? '2' : null, // opción por la prorrata especial
     18: ultimo ? '2' : null, // revocación de la prorrata especial
     19: '2', // concurso de acreedores
-    22: ctx.sii ? '1' : '2', // SII voluntario
+    22: siiVoluntario ? '1' : '2', // SII voluntario
     23: ultimo ? (exonerado390 ? '1' : '2') : '0', // exonerado del 390
-    24: ultimo && exonerado390 ? '1' : '0', // volumen anual distinto de cero
+    24: ultimo && exonerado390 ? (conVolumen ? '1' : '2') : '0', // volumen anual distinto de cero
     25: mensualDesde02 ? '2' : '0', // pago a cuenta de carburantes
   };
 }
@@ -190,6 +211,8 @@ export interface OpcionesMontar303 {
    * recalcula la página 3) y el tipo de declaración es el que se presentó.
    */
   comoSePresento?: boolean;
+  /** Indicadores de la página 1 guardados al presentar (congelados); sin ellos, se calculan. */
+  indicadores?: Record<number, string | null> | null;
   /**
    * Autoliquidación rectificativa de la presentada (B4). Sede de la AEAT,
    * «Modelo 303. Autoliquidación rectificativa» (manual práctico de IVA 2025):
@@ -313,7 +336,7 @@ export function montarBorrador303(
     casillas,
     tipoDeclaracion,
     tiposDeclaracion,
-    indicadores: indicadoresPagina1_303(periodo, ctx),
+    indicadores: opciones.comoSePresento && opciones.indicadores ? { ...opciones.indicadores } : indicadoresPagina1_303(periodo, ctx),
     sinActividad: datos.sinActividad === true,
     iban: tipoDeclaracion === 'U' || tipoDeclaracion === 'D' ? iban : null,
     rectificativa: rect ? { justificanteAnterior: rect.justificanteAnterior } : null,
