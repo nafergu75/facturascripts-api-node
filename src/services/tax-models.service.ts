@@ -18,18 +18,26 @@ import { registrarAuditoria } from './auditoria.service';
 import { esEmpresaEspanolaFiscal, MENSAJE_SIN_MODELOS, ventasQuePuedenDevengarseEntre } from './impuestosCalculo.service';
 import { esTipoOperacion, fechaDevengoVenta, paisLegacy } from '../domain/tipo-operacion.model';
 import {
-  generarCasillas303,
   generarCasillas200,
   generarCasillas347,
   generarCasillas115,
   generarCasillas390,
   ModeloFiscalAuditoria,
 } from '../utils/aeat-models';
-import type { DatosModelo111, DatosModelo115 } from '../domain/impuestos.model';
+import type { DatosModelo111, DatosModelo115, DatosModelo303 } from '../domain/impuestos.model';
 import { calcularModelo115 } from './impuestosCalculo.service';
 import { periodoFiscal } from './nominas/fiscal';
 import { aparicionesEntre, importe347Gasto, whereGastosFiscales } from '../domain/factura-gasto.model';
-import { calcularCasillasModelo } from './impuestosModulo.service';
+import {
+  calcularBorrador303,
+  calcularCasillasModelo,
+  casillasGuardadas303,
+  datosGuardados303,
+  periodoFiscalDe,
+  type OpcionesBorrador303,
+  type ResultadoBorrador303,
+} from './impuestosModulo.service';
+import { casillasOficiales303De, casillasPantalla303, NOMBRE_TIPO_DECLARACION_303, type CasillaPantalla303 } from './modelo303.service';
 import type { Modelo190 } from './nominas/fiscal';
 
 type CasillasGuardadas = Record<string, unknown>;
@@ -93,16 +101,21 @@ export class TaxModelsService {
   /**
    * MODELO 303: IVA TRIMESTRAL
    *
-   * Genera modelo 303 a partir de:
-   * - IVA repercutido (facturas emitidas)
-   * - IVA soportado (facturas recibidas)
-   * - Casillas completas AEAT 303
+   * Borrador del 303 con el diseño de registro oficial 2026: las casillas que
+   * enseña la pantalla salen del mismo cálculo que el fichero que se importa en
+   * la sede (calcularBorrador303), con su número y la descripción de la AEAT.
+   * Guarda en ModeloImpuesto lo mismo que "Recalcular importes" de Impuestos
+   * (casillas con nombre y datos del fichero), para que las dos pantallas no se
+   * pisen. Un modelo presentado, omitido o editado a mano no se recalcula: si
+   * está presentado se enseñan las casillas guardadas.
+   * Las listas de facturas de abajo salen de los libros de IVA (informativas).
    */
   async generarModelo303(
     companyId: string,
     ejercicio: number,
     trimestre: number,
-    userId?: string
+    userId?: string,
+    opciones: OpcionesBorrador303 = {},
   ): Promise<{
     ejercicio: number;
     trimestre: number;
@@ -110,120 +123,77 @@ export class TaxModelsService {
     ivaSoportado: { total: number; desglose: any[] };
     resultado: number;
     estado: string;
-    casillas: any;
+    origen: string | null;
+    casillas: CasillasGuardadas;
+    casillas303: CasillaPantalla303[];
+    tipoDeclaracion: string;
+    tiposDeclaracion: Array<{ codigo: string; nombre: string }>;
+    aCompensar: ResultadoBorrador303['aCompensar'];
+    cuentas: ResultadoBorrador303['cuentas'];
+    cuentaBancariaId: string | null;
+    sinActividad: boolean;
+    errores: string[];
+    advertencias: string[];
     id: string;
   }> {
     // Una empresa no establecida en Espana no presenta modelos de la AEAT.
     await exigirEmpresaEspanola(companyId);
-    // Validar trimestre
     if (trimestre < 1 || trimestre > 4) {
       throw badRequest('Trimestre debe estar entre 1 y 4');
     }
+    const periodo = `${trimestre}T`;
+    const periodoFiscal = periodoFiscalDe({ ejercicio, periodo });
+    const { borrador, aCompensar, cuentas, cuentaBancariaId } = await calcularBorrador303(companyId, periodoFiscal, opciones);
 
+    // Listas de facturas del periodo (libros de IVA), solo para consultar.
     const period = `Q${trimestre}-${ejercicio}`;
+    const [emitidas, recibidas] = await Promise.all([
+      taxDocumentsService.obtenerLibroIVAEmitidas(companyId, period),
+      taxDocumentsService.obtenerLibroIVARecibidas(companyId, period),
+    ]);
 
-    // Obtener datos de libros de IVA
-    const emitidas = await taxDocumentsService.obtenerLibroIVAEmitidas(
-      companyId,
-      period
-    );
-    const recibidas = await taxDocumentsService.obtenerLibroIVARecibidas(
-      companyId,
-      period
-    );
-
-    // Calcular totales. La base repercutida es la de las ventas que devengan IVA:
-    // las del libro sin tipo de operacion (anteriores) como siempre y las
-    // NACIONAL; las exentas, intracomunitarias, exportaciones, no sujetas e ISP
-    // van a la informacion adicional ([59], [60], [120], [122]).
-    const ivaRepercutido = emitidas.totalCuotas;
-    const ivaSoportado = recibidas.totalCuotas;
-    const resultado = ivaRepercutido - ivaSoportado;
-    const baseRepercutido = emitidas.baseDevengada;
-
-    // Generar casillas AEAT completas
-    const casillas: Record<string, any> = generarCasillas303({
-      baseRepercutido,
-      cuotaRepercutido: ivaRepercutido,
-      baseSoportado: recibidas.totalBases,
-      cuotaSoportado: ivaSoportado,
-      resultado,
-    });
-    const DESCRIPCION_INFORMATIVA: Record<keyof typeof emitidas.informativas, string> = {
-      '59': 'Entregas intracomunitarias de bienes y servicios',
-      '60': 'Exportaciones y operaciones asimiladas',
-      '120': 'Operaciones no sujetas por reglas de localización',
-      '122': 'Operaciones sujetas con inversión del sujeto pasivo',
-    };
-    for (const [numero, valor] of Object.entries(emitidas.informativas) as Array<[keyof typeof emitidas.informativas, number]>) {
-      // Solo si hay importe: los libros anteriores (sin tipo) no cambian.
-      if (valor !== 0) casillas[numero] = { numero, descripcion: DESCRIPCION_INFORMATIVA[numero], valor, tipo: 'informativa' };
-    }
-
-    // Auditoría
     const auditoria: ModeloFiscalAuditoria = {
       generadoPor: userId || 'SYSTEM',
       generadoEn: new Date().toISOString(),
       origen: 'autorrelleno',
       version: `${ejercicio}.Q${trimestre}`,
     };
+    const casillas = casillasGuardadas303(borrador.datos) as CasillasGuardadas;
+    const datos = datosGuardados303(borrador.datos, { tipoDeclaracion: borrador.tipoDeclaracion, auditoria });
 
-    // Buscar modelo existente
-    let modelo = await prisma.modeloImpuesto.findUnique({
-      where: {
-        companyId_codigo_ejercicio_periodo: {
-          companyId,
-          codigo: '303',
-          ejercicio,
-          periodo: `${trimestre}T`,
-        },
-      },
-    });
-
-    // Crear o actualizar modelo
+    const clave = { companyId_codigo_ejercicio_periodo: { companyId, codigo: '303', ejercicio, periodo } };
+    let modelo = await prisma.modeloImpuesto.findUnique({ where: clave });
     if (!modelo) {
       modelo = await prisma.modeloImpuesto.create({
-        data: {
-          companyId,
-          codigo: '303',
-          ejercicio,
-          periodo: `${trimestre}T`,
-          estado: 'vigente',
-          casillas,
-          datos: {
-            ivaRepercutido,
-            ivaSoportado,
-            resultado,
-            periodoDescription: `Q${trimestre}-${ejercicio}`,
-            baseRepercutido,
-            baseSoportado: recibidas.totalBases,
-            auditoria,
-          },
-          origen: 'autorrelleno',
-        },
+        data: { companyId, codigo: '303', ejercicio, periodo, estado: 'vigente', casillas: casillas as never, datos: datos as never, origen: 'autorrelleno' },
       });
-    } else if (modelo.estado !== 'presentado' && modelo.estado !== 'omitido') {
-      // Un modelo presentado u omitido no se recalcula: lo guardado tiene que
-      // seguir siendo lo que se presento, aunque luego cambie una factura.
+    } else if (modelo.estado !== 'presentado' && modelo.estado !== 'omitido' && modelo.origen !== 'manual-mixto') {
+      // Se conservan los datos de la empresa (config_*) que guarda el modulo Impuestos.
+      const previas = (modelo.casillas as CasillasGuardadas | null) ?? {};
+      const config = Object.fromEntries(Object.entries(previas).filter(([k]) => k.startsWith('config_')));
       modelo = await prisma.modeloImpuesto.update({
         where: { id: modelo.id },
-        data: {
-          casillas,
-          datos: {
-            ivaRepercutido,
-            ivaSoportado,
-            resultado,
-            periodoDescription: `Q${trimestre}-${ejercicio}`,
-            baseRepercutido,
-            baseSoportado: recibidas.totalBases,
-            auditoria,
-          },
-          origen: 'autorrelleno',
-        },
+        data: { casillas: { ...casillas, ...config } as never, datos: datos as never, origen: 'autorrelleno' },
       });
     }
 
-    // Registrar auditoría
+    // Presentado: se enseña lo que se presentó (las casillas oficiales guardadas).
+    const avisos = [...borrador.advertencias];
+    let oficiales = borrador.casillas;
+    let tipoDeclaracion: string = borrador.tipoDeclaracion;
+    if (modelo.estado === 'presentado') {
+      const guardados = (modelo.datos ?? null) as (DatosModelo303 & { tipoDeclaracion?: string }) | null;
+      if (guardados?.periodo && guardados.ivaDevengado) {
+        oficiales = casillasOficiales303De(guardados);
+        tipoDeclaracion = guardados.tipoDeclaracion ?? tipoDeclaracion;
+        avisos.push('Modelo presentado: se muestran las casillas tal como se presentaron, aunque después hayan cambiado las facturas.');
+      } else {
+        avisos.push('Modelo presentado antes de guardar sus casillas oficiales: se muestran las de las facturas de hoy.');
+      }
+    } else if (modelo.origen === 'manual-mixto') {
+      avisos.push('Casillas editadas a mano en Impuestos: aquí se ven las calculadas de las facturas; el fichero de Impuestos lleva las del último cálculo.');
+    }
+
     await registrarAuditoria({
       userId: userId || 'SYSTEM',
       companyId,
@@ -236,17 +206,21 @@ export class TaxModelsService {
       id: modelo.id,
       ejercicio,
       trimestre,
-      ivaRepercutido: {
-        total: ivaRepercutido,
-        desglose: emitidas.facturas,
-      },
-      ivaSoportado: {
-        total: ivaSoportado,
-        desglose: recibidas.facturas,
-      },
-      resultado,
+      ivaRepercutido: { total: oficiales['27'] ?? 0, desglose: emitidas.facturas },
+      ivaSoportado: { total: oficiales['45'] ?? 0, desglose: recibidas.facturas },
+      resultado: oficiales['71'] ?? 0,
       estado: modelo.estado,
-      casillas,
+      origen: modelo.origen,
+      casillas: (modelo.casillas as CasillasGuardadas | null) ?? casillas,
+      casillas303: casillasPantalla303({ casillas: oficiales }),
+      tipoDeclaracion,
+      tiposDeclaracion: borrador.tiposDeclaracion.map((codigo) => ({ codigo, nombre: NOMBRE_TIPO_DECLARACION_303[codigo] })),
+      aCompensar,
+      cuentas,
+      cuentaBancariaId,
+      sinActividad: borrador.sinActividad,
+      errores: borrador.errores,
+      advertencias: avisos,
     };
   }
 

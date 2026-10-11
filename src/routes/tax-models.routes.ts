@@ -25,6 +25,13 @@ const router = Router({ mergeParams: true });
  * Query params:
  *   - ejercicio: number (REQUERIDO)
  *   - trimestre: 1-4 (REQUERIDO)
+ *   - tipoDeclaracion: I, U, C, D o N (opcional; por defecto el que toca por el resultado)
+ *   - aCompensar: cuotas a compensar de periodos anteriores [110] (opcional; por defecto las del 303 anterior)
+ *   - cuentaBancariaId: cuenta para domiciliar o para la devolucion (opcional; por defecto la primera activa)
+ *
+ * Devuelve el borrador con el diseno oficial 2026: casillas303 (numero,
+ * descripcion de la AEAT e importe, las mismas que el fichero), tipo de
+ * declaracion y los posibles, cuotas a compensar, cuentas, errores y avisos.
  */
 router.get(
   '/303',

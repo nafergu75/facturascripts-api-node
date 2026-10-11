@@ -2,90 +2,13 @@
  * UTILIDADES AEAT - Casillas y estructura de modelos fiscales
  *
  * Mapeo completo de casillas para:
- * - Modelo 303 (IVA Trimestral)
+ * (el 303 va con su diseno oficial 2026 en services/modelo303.service):
  * - Modelo 111 (Retenciones)
  * - Modelo 200 (Impuesto Sociedades)
  */
 
-/**
- * MODELO 303: IVA TRIMESTRAL
- *
- * Estructura de casillas simplificada pero completa:
- * - Operaciones interiores (bases y cuotas)
- * - Entregas de bienes y servicios
- * - Operaciones sujetas a régimen especial
- * - Cálculo del IVA a ingresar/devolver
- */
-export function generarCasillas303(datos: {
-  baseRepercutido: number;
-  cuotaRepercutido: number;
-  baseSoportado: number;
-  cuotaSoportado: number;
-  resultado: number;
-}): Record<string, any> {
-  return {
-    // Operaciones Interiores de Entregas de Bienes y Servicios
-    '01': {
-      numero: '01',
-      descripcion: 'Base de operaciones con IVA (entregas de bienes)',
-      valor: datos.baseRepercutido,
-      tipo: 'base',
-    },
-    '02': {
-      numero: '02',
-      descripcion: 'IVA repercutido (cuota)',
-      valor: datos.cuotaRepercutido,
-      tipo: 'cuota',
-    },
-
-    // Operaciones Soportadas (Adquisiciones)
-    '05': {
-      numero: '05',
-      descripcion: 'Base de adquisiciones de bienes y servicios',
-      valor: datos.baseSoportado,
-      tipo: 'base',
-    },
-    '06': {
-      numero: '06',
-      descripcion: 'IVA soportado (cuota)',
-      valor: datos.cuotaSoportado,
-      tipo: 'cuota',
-    },
-
-    // Operaciones Intracomunitarias (Simplificado)
-    '09': {
-      numero: '09',
-      descripcion: 'Base de adquisiciones intracomunitarias',
-      valor: 0,
-      tipo: 'base',
-    },
-    '10': {
-      numero: '10',
-      descripcion: 'IVA sobre adquisiciones intracomunitarias',
-      valor: 0,
-      tipo: 'cuota',
-    },
-
-    // Cálculo Final
-    '13': {
-      numero: '13',
-      descripcion: 'Resultado IVA (cuota a ingresar/devolver)',
-      valor: Math.abs(datos.resultado),
-      tipo: 'resultado',
-    },
-    '14': {
-      numero: '14',
-      descripcion: 'Tipo de resultado (1=ingresar, 0=devolver)',
-      valor: datos.resultado > 0 ? 1 : 0,
-      tipo: 'indicador',
-    },
-
-    // Campos adicionales para exportación
-    totalRepercutido: datos.cuotaRepercutido,
-    totalSoportado: datos.cuotaSoportado,
-    resultadoFinal: datos.resultado,
-  };
-}
+// El 303 ya no tiene casillas aqui: salen del diseno oficial 2026
+// (services/modelo303.service, casillasPantalla303), las mismas que el fichero.
 
 /**
  * MODELO 111: RETENCIONES E INGRESOS A CUENTA

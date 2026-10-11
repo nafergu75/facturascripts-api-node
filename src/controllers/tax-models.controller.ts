@@ -7,6 +7,7 @@ import { taxModelsService } from '../services/tax-models.service';
 import { asyncHandler } from '../utils/async-handler';
 import { sendOk } from '../utils/response';
 import { badRequest } from '../utils/http-errors';
+import { opcionesBorrador303DeQuery } from '../services/impuestosModulo.service';
 
 export class TaxModelsController {
   /**
@@ -24,11 +25,13 @@ export class TaxModelsController {
       });
     }
 
+    // Opciones del borrador: tipo de declaracion, cuotas a compensar y cuenta bancaria.
     const resultado = await taxModelsService.generarModelo303(
       companyId,
       parseInt(ejercicio as string),
       parseInt(trimestre as string),
-      userId
+      userId,
+      opcionesBorrador303DeQuery(req.query as Record<string, unknown>)
     );
 
     sendOk(res, resultado);
