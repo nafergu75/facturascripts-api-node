@@ -195,6 +195,10 @@ const fiable = (c: Campo<unknown>) =>
 function mezclarCampo<T>(azure: Campo<T>, ia: T | null, iguales: (a: T, b: T) => boolean, mostrar: (x: T) => string = String): Campo<T> {
   if (ia === null) return azure;
   if (azure.valor !== null && iguales(azure.valor, ia)) return azure;
+  // Sacado del QR (no se leyo en la factura): se queda el del QR, que es el que consta en la AEAT, para revisar.
+  if (azure.fuente === 'qr' && azure.confianza !== 1 && azure.valor !== null) {
+    return { ...azure, motivo: `Se ha sacado del QR (${mostrar(azure.valor)}) y la IA lee «${mostrar(ia)}» en la factura: compruébalo con el documento.` };
+  }
   if (fiable(azure)) return { ...azure, motivo: `Azure y la IA no coinciden (Azure: ${mostrar(azure.valor as T)}; IA: ${mostrar(ia)}).` };
   if (azure.valor === null || azure.fuente === 'calculado') return deClaude(ia);
   return { ...deClaude(ia), motivo: `Azure leyó «${mostrar(azure.valor)}» con poca seguridad y la IA lee «${mostrar(ia)}»: compruébalo.` };

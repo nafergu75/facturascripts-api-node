@@ -215,6 +215,21 @@ describe('como se mezcla', () => {
     expect(r.lectura.numero).toEqual({ valor: 'F2026/0021', confianza: null, fuente: 'claude' });
   });
 
+  it('un numero sacado del QR que la IA lee distinto: se queda el del QR, para revisar', async () => {
+    crear.mockResolvedValueOnce(fixtureClaude('complemento-contradice'));
+    const { lectura, texto, qr } = leer('resultado-irpf');
+    lectura.numero = { valor: null, confianza: null, fuente: 'azure' };
+    const l = compararQr(qr ?? { estado: 'VALIDO', verifactu: true, datos: { nif: 'B12345674', numserie: 'F2026/0012', fecha: '2026-03-04', importe: 1210 } }, lectura);
+    expect(l.numero).toMatchObject({ valor: 'F2026/0012', fuente: 'qr', confianza: null });
+    const r = await completarConClaude(l, texto, decidirComplemento(l, texto, 'GASTO'), ctx);
+    if (r.tipo !== 'completada') throw new Error(r.tipo);
+    expect(r.lectura.numero).toEqual({ valor: 'F2026/0012', confianza: null, fuente: 'qr', motivo: 'Se ha sacado del QR (F2026/0012) y la IA lee «F2026/0021» en la factura: compruébalo con el documento.' });
+    // Y la segunda comparacion con el QR lo deja como sacado del QR, con ese motivo.
+    const otra = compararQr(qr ?? { estado: 'VALIDO', verifactu: true, datos: { nif: 'B12345674', numserie: 'F2026/0012', fecha: '2026-03-04', importe: 1210 } }, r.lectura);
+    expect(otra.qr?.completados).toContain('numero');
+    expect(otra.numero.motivo).toMatch(/^Se ha sacado del QR \(F2026\/0012\) y la IA lee/);
+  });
+
   /** Respuesta de la herramienta con este input. */
   const respuestaIa = (input: Record<string, unknown>) => ({ ...fixtureClaude('complemento-irpf'), content: [{ type: 'tool_use', id: 't', name: 'completar_factura', input }] });
   const ventas: ContextoValidacion = { ...ctx, lector: 'VENTA', nifEmpresa: 'B12345674' };
