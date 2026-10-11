@@ -2,7 +2,7 @@
  * QR de VERI*FACTU (AEAT v0.5.0): se interpreta sin abrir la URL y se compara
  * con lo leido de la factura.
  */
-import { compararQr, interpretarValorQr, leerQrDeCodigos, textoQr } from '../services/lectura/verifactu-qr';
+import { compararQr, interpretarValorQr, leerQrDeCodigos, MOTIVO_DATO_DEL_QR, textoQr } from '../services/lectura/verifactu-qr';
 import { lecturaVacia, type LecturaNormalizada } from '../services/lectura/tipos';
 import { fixtureAzure } from './fixtures/azure-di';
 
@@ -105,12 +105,33 @@ describe('comparar con lo leido', () => {
       x.fechaEmision = { valor: null, confianza: null, fuente: 'azure' };
       x.emisor.nif = { valor: null, confianza: null, fuente: 'azure' };
     }));
-    expect(l.fechaEmision).toMatchObject({ valor: '2026-03-04', fuente: 'qr', confianza: 1 });
-    expect(l.emisor.nif).toMatchObject({ valor: 'B12345674', fuente: 'qr' });
+    // Sacados del QR: sin confianza y con motivo, para que se pidan revisar.
+    expect(l.fechaEmision).toEqual({ valor: '2026-03-04', fuente: 'qr', confianza: null, motivo: MOTIVO_DATO_DEL_QR });
+    expect(l.emisor.nif).toEqual({ valor: 'B12345674', fuente: 'qr', confianza: null, motivo: MOTIVO_DATO_DEL_QR });
     expect(l.qr?.estado).toBe('COINCIDE');
     // No se dice que coinciden datos que no se han cotejado.
     expect(l.qr?.completados).toEqual(['nif', 'fecha']);
     expect(textoQr(l.qr)).toBe('QR VERI*FACTU: el número y el importe coinciden con lo leído; el NIF y la fecha se han tomado del QR.');
+  });
+
+  it('comparar otra vez (tras el complemento) no pierde lo sacado del QR', () => {
+    const primera = compararQr(interpretarValorQr(QR), leida((x) => (x.numero = { valor: null, confianza: null, fuente: 'azure' })));
+    const segunda = compararQr(interpretarValorQr(QR), primera);
+    expect(segunda.qr).toMatchObject({ estado: 'COINCIDE', completados: ['numero'], diferencias: [] });
+    expect(segunda.numero).toEqual({ valor: 'F2026/0012', fuente: 'qr', confianza: null, motivo: MOTIVO_DATO_DEL_QR });
+    expect(segunda.emisor.nif).toMatchObject({ fuente: 'qr', confianza: 1 });
+    expect(textoQr(segunda.qr)).toBe('QR VERI*FACTU: el NIF, la fecha y el importe coinciden con lo leído; el número se ha tomado del QR.');
+  });
+
+  it('el total sacado del QR sigue sacado del QR en la segunda comparacion, con su motivo', () => {
+    const sinTotal = leida((x) => {
+      x.totales.totalFactura = { valor: null, confianza: null, fuente: 'azure' };
+      x.totales.totalAPagar = { valor: null, confianza: null, fuente: 'azure' };
+    });
+    const segunda = compararQr(interpretarValorQr(QR), compararQr(interpretarValorQr(QR), sinTotal));
+    expect(segunda.qr?.completados).toEqual(['importe']);
+    expect(segunda.totales.totalFactura).toMatchObject({ valor: 242, fuente: 'qr', confianza: null, motivo: expect.stringMatching(/compruébalo/) });
+    expect(segunda.totales.totalAPagar).toMatchObject({ valor: 242, fuente: 'qr', confianza: null });
   });
 
   it('nada leido: todo del QR y el texto lo dice', () => {

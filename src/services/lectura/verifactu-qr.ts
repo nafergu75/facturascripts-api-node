@@ -27,6 +27,7 @@ const CLAVES_ADMITIDAS = new Set(['nif', 'numserie', 'fecha', 'importe', 'idioma
 export const MOTIVO_QR_PRUEBAS = 'El QR es del entorno de pruebas de la AEAT; una factura real no debería llevarlo.';
 export const MOTIVO_QR_ILEGIBLE = 'El QR VERI*FACTU está mal formado; no se ha podido comprobar.';
 export const MOTIVO_TOTAL_DEL_QR = 'Se ha tomado el total del QR, que no trae el desglose: compruébalo.';
+export const MOTIVO_DATO_DEL_QR = 'No se ha podido leer en la factura: se ha sacado del QR. Compruébalo con el documento.';
 
 export interface CodigoBarras {
   kind?: string;
@@ -88,9 +89,23 @@ const normalNumero = (s: string) => s.toUpperCase().replace(/\s+/g, '');
 const sinSignos = (s: string) => normalNumero(s).replace(/[-/._]/g, '');
 
 /** El campo confirmado por el QR: fuente 'qr' y confianza 1 (aunque Azure lo leyera con poca seguridad). */
-function confirmado<T>(c: Campo<T>, valor?: T): Campo<T> {
+function confirmado<T>(c: Campo<T>): Campo<T> {
   const { motivo: _motivo, ...resto } = c;
-  return { ...resto, valor: valor !== undefined ? valor : c.valor, fuente: 'qr', confianza: 1 };
+  return { ...resto, fuente: 'qr', confianza: 1 };
+}
+
+/**
+ * Dato que no se leyo en la factura y se ha sacado del QR: no se ha cotejado
+ * con nada, asi que va sin confianza y con motivo (queda para revisar).
+ */
+const sacadoDelQr = (c: Campo<unknown>): boolean => c.fuente === 'qr' && c.confianza !== 1;
+
+/**
+ * El dato sacado del QR. Si ya lo estaba (segunda comparacion, tras el
+ * complemento), conserva su motivo: el de la IA, si leia otra cosa.
+ */
+function completado<T>(c: Campo<T>, valor: T, motivo = MOTIVO_DATO_DEL_QR): Campo<T> {
+  return { ...c, valor, fuente: 'qr', confianza: null, motivo: sacadoDelQr(c) && c.motivo ? c.motivo : motivo };
 }
 
 const euros = (n: number) => n.toFixed(2);
@@ -115,19 +130,21 @@ export function compararQr(qr: QrInterpretado | null, original: LecturaNormaliza
   const diferencias: DiferenciaQr[] = [];
   const completados: Array<DiferenciaQr['campo']> = [];
 
+  // Lo que ya se saco del QR en una comparacion anterior se trata como no leido:
+  // si no, en la segunda coincidiria consigo mismo y dejaria de contar como sacado del QR.
   // NIF del emisor (el obligado a expedir).
-  const nifLeido = l.emisor.nif.valor;
+  const nifLeido = sacadoDelQr(l.emisor.nif) ? null : l.emisor.nif.valor;
   if (!nifLeido) {
-    l.emisor.nif = confirmado(l.emisor.nif, d.nif);
+    l.emisor.nif = completado(l.emisor.nif, d.nif);
     completados.push('nif');
   }
   else if (normalizarNif(nifLeido) === d.nif) l.emisor.nif = confirmado(l.emisor.nif);
   else diferencias.push({ campo: 'nif', enQr: d.nif, leido: nifLeido, nivel: 'error' });
 
   // Serie y numero.
-  const numLeido = l.numero.valor;
+  const numLeido = sacadoDelQr(l.numero) ? null : l.numero.valor;
   if (!numLeido) {
-    l.numero = confirmado(l.numero, d.numserie);
+    l.numero = completado(l.numero, d.numserie);
     completados.push('numero');
   }
   else if (normalNumero(numLeido) === normalNumero(d.numserie) || sinSignos(numLeido) === sinSignos(d.numserie)) l.numero = confirmado(l.numero);
@@ -135,20 +152,20 @@ export function compararQr(qr: QrInterpretado | null, original: LecturaNormaliza
   else diferencias.push({ campo: 'numero', enQr: d.numserie, leido: numLeido, nivel: 'error' });
 
   // Fecha de expedicion.
-  const fechaLeida = l.fechaEmision.valor;
+  const fechaLeida = sacadoDelQr(l.fechaEmision) ? null : l.fechaEmision.valor;
   if (!fechaLeida) {
-    l.fechaEmision = confirmado(l.fechaEmision, d.fecha);
+    l.fechaEmision = completado(l.fechaEmision, d.fecha);
     completados.push('fecha');
   }
   else if (fechaLeida === d.fecha) l.fechaEmision = confirmado(l.fechaEmision);
   else diferencias.push({ campo: 'fecha', enQr: d.fecha, leido: fechaLeida, nivel: 'error' });
 
   // Importe: el total bruto (sin restar la retencion; no verificado en la AEAT).
-  const bruto = l.totales.totalFactura.valor;
-  const aPagar = l.totales.totalAPagar.valor;
+  const bruto = sacadoDelQr(l.totales.totalFactura) ? null : l.totales.totalFactura.valor;
+  const aPagar = sacadoDelQr(l.totales.totalAPagar) ? null : l.totales.totalAPagar.valor;
   if (bruto === null) {
-    l.totales.totalFactura = { valor: d.importe, confianza: null, fuente: 'qr', motivo: MOTIVO_TOTAL_DEL_QR };
-    if (aPagar === null) l.totales.totalAPagar = { valor: d.importe, confianza: null, fuente: 'qr', motivo: MOTIVO_TOTAL_DEL_QR };
+    l.totales.totalFactura = completado(l.totales.totalFactura, d.importe, MOTIVO_TOTAL_DEL_QR);
+    if (aPagar === null) l.totales.totalAPagar = completado(l.totales.totalAPagar, d.importe, MOTIVO_TOTAL_DEL_QR);
     completados.push('importe');
   } else if (aCentimos(bruto) === aCentimos(d.importe)) {
     l.totales.totalFactura = confirmado(l.totales.totalFactura);
