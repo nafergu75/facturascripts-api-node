@@ -856,16 +856,49 @@ async function contextoEmpresa303(
 
 export interface ResultadoBorrador303 {
   borrador: Borrador303;
-  aCompensar: { importe: number; origen: 'manual' | 'periodo-anterior' | 'sin-dato'; periodo?: string; estado?: string };
+  aCompensar: { importe: number; origen: 'manual' | 'periodo-anterior' | 'sin-dato' | 'presentado'; periodo?: string; estado?: string };
   cuentas: CuentaBorrador303[];
   cuentaBancariaId: string | null;
+  /** El borrador es el del 303 presentado (casillas guardadas), no un calculo de hoy. */
+  presentado: boolean;
+}
+
+/** Datos guardados del 303 presentado de un periodo (con sus casillas oficiales), o null. */
+async function presentado303(companyId: string, periodo: PeriodoFiscal): Promise<(DatosModelo303 & { tipoDeclaracion?: string }) | null> {
+  const fila = await fila303Guardada(companyId, periodo.ejercicio, periodo.periodo);
+  if (fila?.estado !== 'presentado') return null;
+  const datos = fila.datos as (DatosModelo303 & { tipoDeclaracion?: string }) | null;
+  // Los guardados antes del diseño 2026 sin desglose no sirven para el fichero.
+  if (!datos?.casillasOficiales && !datos?.ivaDevengado) return null;
+  return { ...datos, periodo };
 }
 
 /**
- * Borrador del 303 de un periodo, calculado al momento: el que enseña la
- * pantalla y el que va al fichero (una sola fuente para los dos).
+ * Borrador del 303 de un periodo: el que enseña la pantalla y el que va al
+ * fichero (una sola fuente para los dos). Si el 303 del periodo está
+ * presentado, sale de las casillas guardadas (las que se presentaron) con el
+ * tipo de declaración que se presentó, aunque después cambien las facturas;
+ * si no, se calcula al momento.
  */
 export async function calcularBorrador303(companyId: string, periodo: PeriodoFiscal, opciones: OpcionesBorrador303 = {}): Promise<ResultadoBorrador303> {
+  const guardado = await presentado303(companyId, periodo);
+  if (guardado) {
+    const empresa = await contextoEmpresa303(companyId, periodo.ejercicio, opciones.cuentaBancariaId);
+    const borrador = montarBorrador303(
+      { ...guardado, casillasOficiales: casillasOficiales303De(guardado) },
+      empresa.ctx,
+      guardado.tipoDeclaracion,
+      { comoSePresento: true },
+    );
+    borrador.advertencias.unshift('Modelo presentado: se muestran las casillas tal como se presentaron, aunque después hayan cambiado las facturas. El fichero sale de esas mismas casillas.');
+    return {
+      borrador,
+      aCompensar: { importe: borrador.casillas['110'] ?? 0, origen: 'presentado', estado: 'presentado' },
+      cuentas: empresa.cuentas,
+      cuentaBancariaId: empresa.cuentaBancariaId,
+      presentado: true,
+    };
+  }
   const manual = opciones.aCompensar !== undefined && opciones.aCompensar !== null;
   if (manual && (!Number.isFinite(opciones.aCompensar) || (opciones.aCompensar as number) < 0)) {
     throw badRequest('Las cuotas a compensar de periodos anteriores son un importe positivo o cero.', { campo: 'aCompensar' });
@@ -882,6 +915,7 @@ export async function calcularBorrador303(companyId: string, periodo: PeriodoFis
     aCompensar,
     cuentas: empresa.cuentas,
     cuentaBancariaId: empresa.cuentaBancariaId,
+    presentado: false,
   };
 }
 
@@ -918,10 +952,12 @@ export async function generarTxtModelo(companyId: string, modeloId: string): Pro
       // pasan a sus casillas oficiales) con la empresa de hoy.
       const d = datos as DatosModelo303 & { tipoDeclaracion?: string };
       const { ctx } = await contextoEmpresa303(companyId, periodo.ejercicio);
+      // Presentado: las casillas guardadas tal cual, con el tipo que se presento.
       const borrador = montarBorrador303(
         { ...d, periodo, casillasOficiales: casillasOficiales303De(d) },
         { ...ctx, nif: nif || ctx.nif, razonSocial: razon || ctx.razonSocial },
         d.tipoDeclaracion,
+        { comoSePresento: refrescada.estado === 'presentado' },
       );
       return { nombre, contenido: ficheroBorrador303(borrador) };
     }

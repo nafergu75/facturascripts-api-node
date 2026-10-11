@@ -151,3 +151,42 @@ describe('pantalla del 303 = fichero del 303', () => {
     await expect(generarTxt303Trimestre('e1', 2026, 2, { tipoDeclaracion: 'D' })).rejects.toThrow(/puede ser I \(ingreso\) o U/);
   });
 });
+
+describe('303 presentado: el fichero sale de las casillas guardadas', () => {
+  it('aunque cambien las facturas, pantalla y fichero llevan lo que se presentó (y su tipo)', async () => {
+    compras = [{ base: 200, cuota: 42 }];
+    await taxModelsService.generarModelo303('e1', 2026, 2, 'u1', { tipoDeclaracion: 'U' });
+    const fila = guardadas.get('2T') as Record<string, unknown>;
+    fila.estado = 'presentado';
+
+    // Despues de presentar entra otra factura de compra del trimestre.
+    compras = [{ base: 200, cuota: 42 }, { base: 500, cuota: 105 }];
+    const pantalla = await taxModelsService.generarModelo303('e1', 2026, 2);
+    expect(pantalla.estado).toBe('presentado');
+    expect(pantalla.resultado).toBe(168); // no 63, el de las facturas de hoy
+    expect(pantalla.tipoDeclaracion).toBe('U');
+    expect(pantalla.aCompensar).toMatchObject({ origen: 'presentado' });
+    expect(pantalla.advertencias.join(' ')).toMatch(/tal como se presentaron/);
+
+    const { contenido } = await generarTxt303Trimestre('e1', 2026, 2, { tipoDeclaracion: 'I', aCompensar: 999 });
+    expect(contenido.slice(contenido.indexOf('<T30301000>') + 12, contenido.indexOf('<T30301000>') + 13)).toBe('U');
+    expect([leerDelFichero(contenido, '45'), leerDelFichero(contenido, '71'), leerDelFichero(contenido, '110')]).toEqual([42, 168, 0]);
+    for (const c of pantalla.casillas303) {
+      expect({ casilla: c.numero, valor: c.valor }).toEqual({ casilla: c.numero, valor: leerDelFichero(contenido, c.numero) });
+    }
+  });
+
+  it('una devolución presentada en el 4T no deja nada por compensar al periodo siguiente', async () => {
+    // Sin facturas en el 4T y 300 pendientes: se pide la devolucion de todo [110].
+    const cuarto = await taxModelsService.generarModelo303('e1', 2026, 4, 'u1', { aCompensar: 300, tipoDeclaracion: 'D' });
+    expect(cuarto.tiposDeclaracion.map((t) => t.codigo)).toEqual(['N', 'D']);
+    const de = (n: string) => cuarto.casillas303.find((c) => c.numero === n)?.valor;
+    expect([de('110'), de('78'), de('87'), de('71')]).toEqual([300, 300, 0, -300]);
+    const fila = guardadas.get('4T') as Record<string, unknown>;
+    fila.estado = 'presentado';
+    // El periodo siguiente lee esa fila como su 303 anterior.
+    filaAnterior = fila;
+    const siguiente = await taxModelsService.generarModelo303('e1', 2026, 2);
+    expect(siguiente.aCompensar.importe).toBe(0);
+  });
+});

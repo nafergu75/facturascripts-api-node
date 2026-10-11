@@ -37,7 +37,7 @@ import {
   type OpcionesBorrador303,
   type ResultadoBorrador303,
 } from './impuestosModulo.service';
-import { casillasOficiales303De, casillasPantalla303, NOMBRE_TIPO_DECLARACION_303, type CasillaPantalla303 } from './modelo303.service';
+import { casillasPantalla303, NOMBRE_TIPO_DECLARACION_303, type CasillaPantalla303 } from './modelo303.service';
 import type { Modelo190 } from './nominas/fiscal';
 
 type CasillasGuardadas = Record<string, unknown>;
@@ -107,7 +107,7 @@ export class TaxModelsService {
    * Guarda en ModeloImpuesto lo mismo que "Recalcular importes" de Impuestos
    * (casillas con nombre y datos del fichero), para que las dos pantallas no se
    * pisen. Un modelo presentado, omitido o editado a mano no se recalcula: si
-   * está presentado se enseñan las casillas guardadas.
+   * está presentado se enseñan las casillas guardadas (las mismas que el fichero).
    * Las listas de facturas de abajo salen de los libros de IVA (informativas).
    */
   async generarModelo303(
@@ -143,7 +143,7 @@ export class TaxModelsService {
     }
     const periodo = `${trimestre}T`;
     const periodoFiscal = periodoFiscalDe({ ejercicio, periodo });
-    const { borrador, aCompensar, cuentas, cuentaBancariaId } = await calcularBorrador303(companyId, periodoFiscal, opciones);
+    const { borrador, aCompensar, cuentas, cuentaBancariaId, presentado } = await calcularBorrador303(companyId, periodoFiscal, opciones);
 
     // Listas de facturas del periodo (libros de IVA), solo para consultar.
     const period = `Q${trimestre}-${ejercicio}`;
@@ -177,19 +177,13 @@ export class TaxModelsService {
       });
     }
 
-    // Presentado: se enseña lo que se presentó (las casillas oficiales guardadas).
+    // Presentado: el borrador ya sale de las casillas guardadas (las mismas
+    // que el fichero), con su aviso.
     const avisos = [...borrador.advertencias];
-    let oficiales = borrador.casillas;
-    let tipoDeclaracion: string = borrador.tipoDeclaracion;
-    if (modelo.estado === 'presentado') {
-      const guardados = (modelo.datos ?? null) as (DatosModelo303 & { tipoDeclaracion?: string }) | null;
-      if (guardados?.periodo && guardados.ivaDevengado) {
-        oficiales = casillasOficiales303De(guardados);
-        tipoDeclaracion = guardados.tipoDeclaracion ?? tipoDeclaracion;
-        avisos.push('Modelo presentado: se muestran las casillas tal como se presentaron, aunque después hayan cambiado las facturas.');
-      } else {
-        avisos.push('Modelo presentado antes de guardar sus casillas oficiales: se muestran las de las facturas de hoy.');
-      }
+    const oficiales = borrador.casillas;
+    const tipoDeclaracion: string = borrador.tipoDeclaracion;
+    if (modelo.estado === 'presentado' && !presentado) {
+      avisos.push('Modelo presentado antes de guardar sus casillas oficiales: se muestran las de las facturas de hoy.');
     } else if (modelo.origen === 'manual-mixto') {
       avisos.push('Casillas editadas a mano en Impuestos: aquí se ven las calculadas de las facturas; el fichero de Impuestos lleva las del último cálculo.');
     }
