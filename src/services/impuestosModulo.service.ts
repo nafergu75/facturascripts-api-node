@@ -1162,6 +1162,12 @@ async function filaDePeriodoSoloLectura(companyId: string, codigo: string, ejerc
   return { id: '', companyId, codigo, ejercicio, periodo, estado: 'vigente', casillas: null, datos: null, origen: null };
 }
 
+/** Periodo para los textos: «1T» -> «del 1T»; «05» -> «de mayo». */
+function delPeriodo(p: string): string {
+  const MESES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
+  return /^\d{2}$/.test(p) ? `de ${MESES[Number(p) - 1]}` : `del ${p}`;
+}
+
 /**
  * LA fuente del 111 y del 115: la pantalla (tax-models) y el fichero (TXT del
  * modulo Impuestos) salen de aqui, tambien con filas antiguas o presentadas.
@@ -1203,8 +1209,15 @@ export async function declaracionRetenciones(
       // Los datos de la empresa con que se presento mandan (los de hoy solo si no se guardaron).
       return { fila, datos, fuente, declaracion: declaracionDeGuardadas(codigo, { ...config, ...guardadas }, ejercicio, p, calculadasDe(datos)) };
     }
+    // Presentado sin casillas ni datos guardados: la pantalla enseña el cálculo
+    // de hoy con aviso, pero el fichero NO se inventa con esas cifras (podrían
+    // no ser las presentadas): es un error que impide descargarlo.
     const datos = (await calcularCasillas(companyId, fila)).datos as DatosModelo111 | DatosModelo115;
-    return { fila, datos, fuente: 'calculado-sin-guardar', declaracion: declaracionDeGuardadas(codigo, { ...config, ...guardadas }, ejercicio, p, calculadasDe(datos)) };
+    const declaracion = declaracionDeGuardadas(codigo, { ...config, ...guardadas }, ejercicio, p, calculadasDe(datos));
+    declaracion.errores.push(
+      `El ${codigo} ${delPeriodo(p)} de ${ejercicio} consta como presentado, pero la app no guardó lo que se presentó. No se rehace el fichero con las cifras de hoy porque podrían no coincidir. La copia está en la sede de la AEAT (justificante de la presentación); si hay que corregirlo, prepara una complementaria.`,
+    );
+    return { fila, datos, fuente: 'calculado-sin-guardar', declaracion };
   }
 
   if (fila.origen === 'manual-mixto' && tieneCasillasGuardadas(codigo, guardadas)) {

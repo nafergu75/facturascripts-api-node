@@ -17,6 +17,7 @@ import { ficheroRetenciones, taxModelsService } from '../services/tax-models.ser
 import { presentarDeclaracion } from '../services/declaracionesAeat/presentar';
 import declaracionesAeatRoutes from '../routes/declaraciones-aeat.routes';
 import taxModelsRoutes from '../routes/tax-models.routes';
+import borradoresAeatRoutes from '../routes/borradores-aeat.routes';
 import { errorMiddleware } from '../middleware/error.middleware';
 import { letraNif } from '../utils/nif';
 
@@ -62,6 +63,7 @@ function app() {
     next();
   });
   a.use('/companies/:companyId/tax-models', declaracionesAeatRoutes);
+  a.use('/companies/:companyId/tax-models', borradoresAeatRoutes);
   a.use('/companies/:companyId/tax-models', taxModelsRoutes);
   a.use(errorMiddleware);
   return a;
@@ -124,6 +126,20 @@ describe('115: pantalla y fichero, la misma fuente', () => {
     const txt = (await generarTxtModelo(E, fila.id)).contenido;
     expect(pantalla.casillas).toMatchObject({ '01': 1, '02': 500, '03': 95, '05': 95 });
     expect([casilla(txt, 124), casilla(txt, 141), casilla(txt, 175)]).toEqual([500, 95, 95]);
+  });
+});
+
+describe('115 presentado sin nada guardado', () => {
+  it('la pantalla enseña el cálculo de hoy con aviso, pero el fichero no se inventa: error claro', async () => {
+    await alquiler('2026-08-01', 'A-08');
+    const fila = await prisma.modeloImpuesto.create({ data: { companyId: E, codigo: '115', ejercicio: 2026, periodo: '3T', estado: 'presentado' } });
+    const pantalla = await taxModelsService.generarModelo115(E, 2026, 3);
+    expect(pantalla.avisos).toContainEqual(expect.stringMatching(/antes de que la app guardara/));
+    expect(JSON.stringify(pantalla)).toMatch(/no guardó lo que se presentó/);
+    await expect(ficheroRetenciones(E, '115', 2026, '3T')).rejects.toThrow(/115 del 3T de 2026 consta como presentado.*no guardó lo que se presentó/);
+    await expect(generarTxtModelo(E, fila.id)).rejects.toThrow(/no guardó lo que se presentó/);
+    const r = await request(app()).get(`/companies/${E}/tax-models/115/fichero?ejercicio=2026&periodo=3T`);
+    expect([r.status, r.body.message ?? r.body.error?.message ?? JSON.stringify(r.body)]).toEqual([400, expect.stringMatching(/no guardó lo que se presentó/)]);
   });
 });
 
