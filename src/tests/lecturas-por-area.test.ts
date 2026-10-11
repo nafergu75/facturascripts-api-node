@@ -34,7 +34,6 @@ const LECTURAS_ABIERTAS: Record<string, string> = {
   'plantillasDocumento.routes.ts GET /': 'plantillas de factura',
   'plantillasDocumento.routes.ts GET /tipo/:tipoDocumento/predeterminada': 'plantilla de factura predeterminada',
   'plantillasDocumento.routes.ts GET /:plantillaId': 'plantilla de factura',
-  'planContable.routes.ts GET /subcuentas': 'elegir subcuenta en un formulario; sin saldos',
   'bancos.routes.ts GET /cuentas': 'cuentas del banco (sin saldos) del formulario de cobros de una factura',
   'reglasContables.routes.ts GET /': 'reglas de contabilizacion que aplican los formularios',
   'ocr.routes.ts GET /ocr/status': 'si el lector esta disponible',
