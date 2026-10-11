@@ -182,6 +182,9 @@ export function casillasOficiales303De(d: DatosModelo303): Record<string, number
 
 const IBAN_ES = /^ES\d{22}$/;
 
+/** Longitud del campo "Apellidos y nombre o Razón social" de la página 1 (campo 8, An 80). */
+export const LONGITUD_RAZON_SOCIAL_303 = 80;
+
 export interface OpcionesMontar303 {
   /**
    * Modelo presentado: las casillas son las guardadas tal cual (no se
@@ -229,7 +232,10 @@ export function montarBorrador303(
   const casillas = elegidos.casillasOficiales ?? guardadas;
 
   const nif = nifAn303(ctx.nif);
-  const razonSocial = textoAn303(ctx.razonSocial);
+  // El diseño da 80 posiciones a la razón social y no prevé otra cosa: si es
+  // más larga, en el fichero van las 80 primeras (se avisa).
+  const razonCompleta = textoAn303(ctx.razonSocial);
+  const razonSocial = razonCompleta.slice(0, LONGITUD_RAZON_SOCIAL_303).trimEnd();
   const iban = (ctx.iban ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '') || null;
   const errores: string[] = [];
   if (!nif) errores.push('Falta el NIF de la empresa. Rellénalo en Registro Mercantil > Datos para la memoria y vuelve a descargar el fichero.');
@@ -248,6 +254,11 @@ export function montarBorrador303(
   }
 
   const advertencias = [...(datos.advertencias ?? [])];
+  if (razonSocial.length < razonCompleta.length) {
+    advertencias.push(
+      `La razón social tiene más de ${LONGITUD_RAZON_SOCIAL_303} caracteres y el fichero del 303 solo admite ${LONGITUD_RAZON_SOCIAL_303}: va como «${razonSocial}».`,
+    );
+  }
   if (esUltimoPeriodo303(periodo.periodo) && ctx.sii) {
     advertencias.push(
       'En el último periodo, quien lleva los libros por el SII rellena la página 4 del 303 (actividades y volumen de operaciones). La app todavía no la genera: complétala en el formulario de la sede después de importar el fichero.',

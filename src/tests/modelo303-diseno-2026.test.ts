@@ -346,6 +346,20 @@ describe('Fichero del 303 contra el diseño oficial 2026', () => {
     expect(borrador.tiposDeclaracion).toEqual(['C', 'D']);
   });
 
+  it('razón social de más de 80 caracteres: van las 80 primeras, con aviso (antes era un 500)', () => {
+    const larga = 'Sociedad de Servicios Integrales de Mantenimiento y Limpieza Industrial del Mediterráneo, S.L.';
+    const { p1, borrador } = generar([venta(100, 21)], P2T, { ctx: { razonSocial: larga } });
+    const esperada = 'SOCIEDAD DE SERVICIOS INTEGRALES DE MANTENIMIENTO Y LIMPIEZA INDUSTRIAL DEL MEDI';
+    expect(esperada).toHaveLength(80);
+    expect(campo(p1, 23, 80)).toBe(esperada);
+    expect(borrador.razonSocial).toBe(esperada);
+    expect(borrador.advertencias.join(' ')).toMatch(/más de 80 caracteres/);
+    // Si el corte cae en un blanco, no se deja al final.
+    const conBlanco = generar([venta(100, 21)], P2T, { ctx: { razonSocial: `${'A'.repeat(79)} BCD` } });
+    expect(campo(conBlanco.p1, 23, 80)).toBe('A'.repeat(79) + ' ');
+    expect(conBlanco.borrador.razonSocial).toBe('A'.repeat(79));
+  });
+
   it('NIF y razón social en An: mayúsculas, sin signos ni tildes (la Ñ se queda)', () => {
     const { p1 } = generar([venta(100, 21)], P2T, { ctx: { nif: 'b-1234567.8', razonSocial: 'Ñandú & Cía., S.L.' } });
     expect(campo(p1, 14, 9)).toBe('B12345678');
