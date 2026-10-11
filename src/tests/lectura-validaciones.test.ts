@@ -6,7 +6,7 @@ import { mapearFacturaAzure } from '../services/lectura/azure-factura.mapper';
 import type { AnalyzeResult } from '../services/lectura/azure-di.client';
 import { lecturaVacia, type LecturaNormalizada, type ResultadoValidacion } from '../services/lectura/tipos';
 import { compararQr, interpretarValorQr } from '../services/lectura/verifactu-qr';
-import { estadoPorConfianza, validarLectura, type ContextoValidacion } from '../services/lectura/validaciones';
+import { estadoPorConfianza, motivoNifNoValido, validarLectura, type ContextoValidacion } from '../services/lectura/validaciones';
 import { controlCif, letraDni } from '../utils/nif';
 import { fixtureAzure, NIF_EMPRESA } from './fixtures/azure-di';
 
@@ -112,6 +112,14 @@ describe('V07-V09 NIF y empresa', () => {
 
   it.each(['12345678A', 'X1234567A', 'B12345670', '1234'])('NIF del proveedor %s no valido: error', async (nif) => {
     expect(de(await codigos(con((l) => (l.emisor.nif.valor = nif))), 'NIF_EMISOR')[0].nivel).toBe('error');
+  });
+
+  it('empresa de fuera: un EIN con o sin guion no se valida como NIF espanol; un CIF mal formado si', async () => {
+    const fuera = ctx({ empresaEspanola: false, nifEmpresa: null });
+    for (const ein of ['123456789', '12-3456789']) expect(de(await codigos(con((l) => (l.emisor.nif.valor = ein)), fuera), 'NIF_EMISOR')).toEqual([]);
+    expect(motivoNifNoValido('123456789', false)).toBeNull();
+    expect(motivoNifNoValido('B12345670', false)).not.toBeNull();
+    expect(motivoNifNoValido('123456789', true)).not.toBeNull();
   });
 
   it('sin NIF del proveedor: error en gastos; en ventas no se pide', async () => {

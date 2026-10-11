@@ -171,11 +171,15 @@ function v06Irpf(l: LecturaNormalizada): ResultadoValidacion[] {
 // NIF y empresa
 // ---------------------------------------------------------------------------
 
+/** DNI (8 cifras y letra), NIE o NIF especial (X, Y, Z, K, L, M) y CIF (letra, 7 cifras y control). */
+const FORMA_NIF_ESPANOL = /^(ES)?(\d{8}[A-Z]|[XYZKLM]\d{7}[A-Z]|[ABCDEFGHJNPQRSUVW]\d{7}[0-9A-J])$/i;
+
 /** Motivo por el que el NIF no vale, o null. Un NIF-IVA de otro pais de la UE solo se mira el formato. */
 export function motivoNifNoValido(nif: string, empresaEspanola: boolean): string | null {
   const ue = prefijoNifIvaUe(nif);
   if (ue && ue.pais !== 'ES') return validarFormatoNifIvaUe(nif) ? null : `El NIF-IVA ${nif} no tiene un formato válido.`;
-  if (!empresaEspanola && !/^(ES)?[0-9XYZKLMA-HJNPQRSUVW]\d{7}[0-9A-Z]$/i.test(nif)) return null; // NIF de fuera (EIN...)
+  // Empresa de fuera: solo se valida lo que tiene forma de NIF espanol (DNI, NIE o CIF). Nueve cifras son un EIN.
+  if (!empresaEspanola && !FORMA_NIF_ESPANOL.test(nif)) return null;
   const r = validarNifEspanol(nif);
   return r.valido ? null : (r.motivo ?? 'El NIF no es válido.');
 }
