@@ -32,6 +32,7 @@ import {
 } from './impuestosCalculo.service';
 import { calcularModelo200 } from './impuestoSociedadesCalculo.service';
 import { calcularModelo190 } from './nominas/fiscal';
+import { conservarNumeracion190 } from './nominas/numeracion190';
 import { casillasAGuardadas, casillasDeDatos111, casillasDeDatos115, declaracionDeGuardadas, esOpcion, ficheroDeclaracion } from './aeatRetenciones/declaracion';
 import {
   envolverFichero,
@@ -642,7 +643,8 @@ export async function autorrellenarModelo(companyId: string, modeloId: string): 
   // Las opciones del borrador (forma de pago, complementaria) no son importes: se conservan.
   const opciones = Object.fromEntries(Object.entries(fila.casillas ?? {}).filter(([k]) => esOpcion(k)));
   fila.casillas = { ...casillas, ...config, ...opciones };
-  fila.datos = datos;
+  // El 190 guarda en sus datos los numeros identificativos ya usados: no se pierden al recalcular.
+  fila.datos = fila.codigo === '190' ? conservarNumeracion190(fila.datos, datos) : datos;
   fila.origen = 'autorrelleno';
   await guardarFila(fila); // guardado automatico del autorrelleno
   return obtenerDetalleModelo(companyId, modeloId);

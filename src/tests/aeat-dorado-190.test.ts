@@ -64,7 +64,7 @@ function perceptoresReales(): Perceptor190[] {
   return [...perceptoresDeNominas(2026, nominas, empleados as never), ...profesionales];
 }
 
-const declarante = { nif: EMPRESA, nombre: 'Newzeland Center, S.L.', telefono: '963 000 000', contacto: 'Fernández Gil, Ignacio', email: 'contabilidad@example.com' };
+const declarante = { nif: EMPRESA, nombre: 'Newzeland Center, S.L.', telefono: '963 000 000', contacto: 'Fernández Gil, Ignacio', email: 'contabilidad@example.com', numeroDeclaracion: '1902026000001' };
 
 describe('190: tabla del diseño oficial de 2025', () => {
   it('registros de 500 posiciones, campos seguidos y sin huecos', () => {
@@ -192,8 +192,14 @@ describe('190 de 2026: nominas, atrasos, reintegro y profesionales (caso real)',
     expect(codigoProvincia('38001', null)).toBe('38');
   });
 
-  it('avisos: diseño de 2025 en borrador y numero de declaracion provisional', () => {
-    expect(avisosFichero190(2026, declarante)).toEqual([expect.stringMatching(/^Borrador con el diseño de registro de 2025/), expect.stringMatching(/^Número identificativo provisional \(1902026000001\)/)]);
+  it('avisos: diseño de 2025 en borrador y el numero identificativo que pone el fichero (no se cambia en la sede)', () => {
+    const avisos = avisosFichero190(2026, declarante);
+    expect(avisos).toEqual([expect.stringMatching(/^Borrador con el diseño de registro de 2025/), expect.stringMatching(/^Número identificativo de esta declaración: 1902026000001\. Lo genera la app/)]);
+    expect(avisos.join(' ')).not.toMatch(/sustitúyelo|provisional/);
+  });
+
+  it('sin numero identificativo no se compone el fichero (nunca uno fijo)', () => {
+    expect(() => generarFicheroModelo190(2026, { ...declarante, numeroDeclaracion: null }, perceptores)).toThrow(/número identificativo/);
   });
 });
 
@@ -209,6 +215,12 @@ describe('190: complementaria, sustitutiva y datos que faltan', () => {
     const f = generarFicheroModelo190(2026, { ...declarante, tipoDeclaracion: 'C', numeroAnterior: '1902026123456' }, perceptores);
     comprobarRegistro(f.split('\r\n')[0], T1, { complementaria: 'C', sustitutiva: ' ', numeroDeclaracionAnterior: '1902026123456' });
     expect(() => generarFicheroModelo190(2026, { ...declarante, tipoDeclaracion: 'C' }, perceptores)).toThrow(/número de la declaración anterior/);
+  });
+
+  it('la declaracion anterior no puede tener el mismo numero que la nueva', () => {
+    expect(erroresFichero190({ ...declarante, tipoDeclaracion: 'S', numeroAnterior: declarante.numeroDeclaracion }, perceptores)).toEqual([
+      'El número de la declaración anterior (1902026000001) no puede ser el mismo que el de esta declaración sustitutiva.',
+    ]);
   });
 
   it('persona de contacto, subclave y reintegro sin ejercicio: errores claros', () => {

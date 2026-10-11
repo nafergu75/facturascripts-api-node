@@ -64,7 +64,10 @@ export interface Declarante190 {
   /** Apellidos y nombre de la persona de contacto. */
   contacto?: string | null;
   email?: string | null;
-  /** Numero identificativo de la declaracion (13 digitos, empieza por 190). */
+  /**
+   * Numero identificativo de la declaracion (13 digitos, empieza por 190). Lo
+   * genera la app (services/nominas/numeracion190.ts): sin el no se compone el fichero.
+   */
   numeroDeclaracion?: string | null;
   /** 'C' complementaria o 'S' sustitutiva (segunda presentacion del mismo ejercicio). */
   tipoDeclaracion?: 'C' | 'S' | null;
@@ -136,6 +139,16 @@ export function valoresPerceptor190(ejercicio: number, nifDeclarante: string, p:
   };
 }
 
+/**
+ * Identificador estable de un registro de perceptor (para elegir cuales van en
+ * una complementaria y para la huella del numero de declaracion): origen,
+ * trabajador o proveedor, clave y subclave, ejercicio de devengo y reintegro.
+ */
+export function idRegistro190(p: Perceptor190): string {
+  const quien = p.empleadoId ?? p.proveedorId ?? p.nif;
+  return `${p.origen}:${quien}:${p.clave}${p.subclave ?? ''}:${p.ejercicioDevengo ?? ''}${p.percepcionIntegra < 0 ? ':R' : ''}`;
+}
+
 /** Registro de tipo 2 (perceptor). */
 export function registroPerceptor190(ejercicio: number, nifDeclarante: string, p: Perceptor190): string {
   return componerRegistroDr(T2, valoresPerceptor190(ejercicio, nifDeclarante, p));
@@ -165,8 +178,14 @@ export function erroresFichero190(declarante: Declarante190, perceptores: Percep
   if (declarante.numeroDeclaracion && !/^190\d{10}$/.test(declarante.numeroDeclaracion)) {
     errores.push('El número identificativo de la declaración tiene 13 dígitos y empieza por 190.');
   }
-  if (declarante.tipoDeclaracion && !/^190\d{10}$/.test(String(declarante.numeroAnterior ?? ''))) {
-    errores.push(`En una declaración ${declarante.tipoDeclaracion === 'C' ? 'complementaria' : 'sustitutiva'} hay que indicar el número de la declaración anterior (13 dígitos, empieza por 190).`);
+  if (declarante.tipoDeclaracion) {
+    const anterior = String(declarante.numeroAnterior ?? '');
+    const tipo = declarante.tipoDeclaracion === 'C' ? 'complementaria' : 'sustitutiva';
+    if (!/^190\d{10}$/.test(anterior)) {
+      errores.push(`En una declaración ${tipo} hay que indicar el número de la declaración anterior: los 13 dígitos (empiezan por 190) del justificante de la que presentaste.`);
+    } else if (anterior === declarante.numeroDeclaracion) {
+      errores.push(`El número de la declaración anterior (${anterior}) no puede ser el mismo que el de esta declaración ${tipo}.`);
+    }
   }
   if (!perceptores.length) errores.push('No hay ningún perceptor en el ejercicio.');
   for (const p of perceptores) {
@@ -190,13 +209,19 @@ export function erroresFichero190(declarante: Declarante190, perceptores: Percep
   return errores;
 }
 
-/** Avisos del fichero: diseño en borrador y numero de declaracion provisional. */
+/**
+ * Avisos del fichero: el diseño en borrador y el numero identificativo que
+ * lleva (lo pone el propio fichero: no hay que cambiarlo en la sede).
+ */
 export function avisosFichero190(ejercicio: number, declarante: Declarante190): string[] {
   const avisos: string[] = [];
   const diseno = comprobarDiseno190(ejercicio);
   if (diseno.aviso) avisos.push(diseno.aviso);
-  if (!declarante.numeroDeclaracion) {
-    avisos.push(`Número identificativo provisional (190${ejercicio}000001): sustitúyelo por el que te dé la sede al presentar.`);
+  if (declarante.numeroDeclaracion) {
+    avisos.push(
+      `Número identificativo de esta declaración: ${declarante.numeroDeclaracion}. Lo genera la app y no se repite en el ejercicio. ` +
+        'Si después presentas una complementaria o una sustitutiva, te pedirá el número del justificante de esta.',
+    );
   }
   return avisos;
 }
@@ -208,6 +233,10 @@ export function avisosFichero190(ejercicio: number, declarante: Declarante190): 
  */
 export function generarFicheroModelo190(ejercicio: number, declarante: Declarante190, perceptores: Perceptor190[]): string {
   comprobarDiseno190(ejercicio);
+  if (!/^190\d{10}$/.test(String(declarante.numeroDeclaracion ?? ''))) {
+    // Lo asigna asignarNumero190 antes de componer el fichero: nunca uno fijo.
+    throw new Error('Falta el número identificativo de la declaración del 190');
+  }
   const errores = erroresFichero190(declarante, perceptores);
   if (errores.length) {
     throw badRequest(`No se puede generar el fichero del 190: ${errores.slice(0, 5).join(' ')}${errores.length > 5 ? ` (y ${errores.length - 5} más)` : ''}`, { errores });
@@ -219,7 +248,7 @@ export function generarFicheroModelo190(ejercicio: number, declarante: Declarant
     nombreDeclarante: declarante.nombre,
     telefono: String(declarante.telefono ?? '').replace(/\D/g, ''),
     contacto: declarante.contacto,
-    numeroDeclaracion: declarante.numeroDeclaracion || `190${String(ejercicio).padStart(4, '0')}000001`,
+    numeroDeclaracion: declarante.numeroDeclaracion,
     complementaria: declarante.tipoDeclaracion === 'C' ? 'C' : '',
     sustitutiva: declarante.tipoDeclaracion === 'S' ? 'S' : '',
     numeroDeclaracionAnterior: declarante.tipoDeclaracion ? declarante.numeroAnterior : 0,

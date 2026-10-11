@@ -33,6 +33,7 @@ import { casillasDeDatos111, casillasDeDatos115, declaracionDeGuardadas, esOpcio
 import type { Modelo190 } from './nominas/fiscal';
 import { DR190 } from './aeatRetenciones/diseno';
 import { comprobarDiseno190 } from './nominas/modelo190';
+import { conservarNumeracion190 } from './nominas/numeracion190';
 
 /** Aviso del diseño del 190 para la pantalla (null si esta publicado; sin error para ejercicios antiguos). */
 function avisoDiseno190(ejercicio: number): string | null {
@@ -1118,7 +1119,8 @@ export class TaxModelsService {
       const config = Object.fromEntries(Object.entries(previas).filter(([k]) => k.startsWith('config_')));
       modelo = await prisma.modeloImpuesto.update({
         where: { id: modelo.id },
-        data: { casillas: { ...oficiales, ...config } as never, datos: { ...datos, auditoria } as never, origen: 'autorrelleno' },
+        // Los numeros identificativos ya usados en el fichero se conservan.
+        data: { casillas: { ...oficiales, ...config } as never, datos: conservarNumeracion190(modelo.datos, { ...datos, auditoria }) as never, origen: 'autorrelleno' },
       });
     }
 

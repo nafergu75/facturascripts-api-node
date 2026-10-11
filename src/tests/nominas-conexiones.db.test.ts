@@ -335,7 +335,7 @@ describe('modelo 190 por perceptor (ejercicio 2025, diseno de registro verificad
     // Solo el aviso de lo que el fichero aun no recoge (descendientes, IT).
     expect(m.avisos).toEqual([expect.stringMatching(/modelo 145/)]);
 
-    const f = generarFicheroModelo190(2025, { nif: 'B98765432', nombre: 'Empresa 190 SL', telefono: '600000000', contacto: 'Contacto' }, m.perceptores);
+    const f = generarFicheroModelo190(2025, { nif: 'B98765432', nombre: 'Empresa 190 SL', telefono: '600000000', contacto: 'Contacto', numeroDeclaracion: '1902025000001' }, m.perceptores);
     const regs = f.replace(/\r\n$/, '').split('\r\n');
     expect(regs).toHaveLength(5);
     for (const r of regs) expect(r).toHaveLength(500);

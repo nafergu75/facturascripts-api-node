@@ -230,7 +230,7 @@ describe('fichero del 190 (diseno de registro del ejercicio 2025)', () => {
   };
   const perceptorL: Perceptor190 = { ...perceptorA, clave: 'L', subclave: '01', percepcionIntegra: 600, retenciones: 0, valoracionEspecie: 0, ingresosACuentaEfectuados: 0, gastosDeducibles: 0, anioNacimiento: null, situacionFamiliar: null, nifConyuge: null, discapacidad: null, contrato: null, movilidadGeografica: false };
   const perceptorG: Perceptor190 = { ...perceptorL, clave: 'G', subclave: '01', nif: 'B12345674', nombre: 'Asesoría Muñoz, S.L.', provincia: '03', percepcionIntegra: 1500, retenciones: 225, origen: 'profesional' };
-  const declarante = { nif: 'B98765432', nombre: 'Empresa de Prueba, S.L.', telefono: '600000000', contacto: 'Persona Contacto', email: 'contacto@example.com' };
+  const declarante = { nif: 'B98765432', nombre: 'Empresa de Prueba, S.L.', telefono: '600000000', contacto: 'Persona Contacto', email: 'contacto@example.com', numeroDeclaracion: '1902025000001' };
 
   it('ejercicio anterior al diseno verificado: 409; posterior: borrador con el diseno de 2025', () => {
     expect(() => comprobarDiseno190(2024)).toThrow(expect.objectContaining({ statusCode: 409, message: expect.stringMatching(/2024 no está verificado/) }));
