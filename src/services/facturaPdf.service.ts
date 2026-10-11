@@ -1,6 +1,8 @@
 import { degrees, rgb, type PDFFont, type PDFPage, type RGB } from 'pdf-lib';
 import { prisma } from '../config/database';
 import { notFound } from '../utils/http-errors';
+import { getObject } from '../utils/storage';
+import { logger } from '../config/logger';
 import { crearDocumentoPdfA, guardarPdfA } from '../utils/pdf-a';
 import { textoInscripcionRegistral } from './legalConfig.service';
 import { desgloseIvaPorTipo } from './accounting-engine.service';
@@ -85,6 +87,12 @@ export interface DatosFacturaPdf {
   id: string;
   numeroCompleto: string | null;
   estadoDocumento: string; // 'BORRADOR' | 'FINAL' | 'PROFORMA'
+  /**
+   * Factura que expidio OTRO programa y se registro con el lector. La app no la
+   * expide: su PDF sale marcado como copia de registro, nunca como una factura
+   * de la app (si no, desde 2027 se emitiria sin VERI*FACTU por esta via).
+   */
+  registroLector?: boolean;
   tipoFactura: string; // F1, F2, R1-R5
   formaPago: string; // TRANSFERENCIA | GIRO | CONTADO
   tipoRectificativa: string | null; // S | I
@@ -174,6 +182,8 @@ const COL_B = 300; // segunda columna: cliente y forma de pago
 
 /** Nota que lleva la proforma bajo el titulo. */
 export const AVISO_PROFORMA = 'Documento sin validez fiscal. No es una factura.';
+/** Nota de la copia de una factura registrada con el lector (la expidio otro programa). */
+export const AVISO_REGISTRO_LECTOR = 'Registro de una factura expedida por otro programa. No es una factura.';
 
 // ---------- Textos (espanol / ingles) ----------
 
@@ -181,6 +191,8 @@ interface TextosPdf {
   titulo: Record<string, string>;
   proforma: string;
   avisoProforma: string;
+  avisoRegistro: string;
+  marcaRegistro: string;
   borradorDe: (tipoDoc: string) => string;
   borradorCabecera: string;
   marcaAgua: string;
@@ -247,6 +259,8 @@ const TEXTOS: Record<Idioma, TextosPdf> = {
     },
     proforma: 'Factura proforma',
     avisoProforma: AVISO_PROFORMA,
+    avisoRegistro: AVISO_REGISTRO_LECTOR,
+    marcaRegistro: 'REGISTRO',
     borradorDe: (t) => `Borrador de ${t.toLowerCase()}`,
     borradorCabecera: 'Borrador · sin número ni validez fiscal',
     marcaAgua: 'BORRADOR',
@@ -313,6 +327,8 @@ const TEXTOS: Record<Idioma, TextosPdf> = {
     },
     proforma: 'Proforma invoice',
     avisoProforma: 'This is not an invoice and has no tax validity.',
+    avisoRegistro: 'Record of an invoice issued by another program. This is not an invoice.',
+    marcaRegistro: 'RECORD',
     borradorDe: (t) => `Draft ${t.toLowerCase()}`,
     borradorCabecera: 'Draft · not numbered, not valid as an invoice',
     marcaAgua: 'DRAFT',
@@ -604,6 +620,8 @@ export async function renderizarFactura(f: DatosFacturaPdf): Promise<Buffer> {
   // con una nota de que no es una factura.
   const esProforma = f.estadoDocumento === 'PROFORMA';
   const esBorrador = !esProforma && f.estadoDocumento !== 'FINAL';
+  const esRegistro = !esProforma && !esBorrador && f.registroLector === true;
+  const marcaAgua = esBorrador ? T.marcaAgua : esRegistro ? T.marcaRegistro : null;
   const tipoDoc = esProforma ? T.proforma : (T.titulo[f.tipoFactura] ?? T.titulo.F1);
   const tituloDoc = esBorrador ? T.borradorDe(tipoDoc) : `${tipoDoc} ${f.numeroCompleto ?? ''}`.trim();
 
@@ -633,14 +651,14 @@ export async function renderizarFactura(f: DatosFacturaPdf): Promise<Buffer> {
   const nuevaPagina = (): PDFPage => {
     const pg = doc.addPage([ancho, alto]);
     paginas.push(pg);
-    if (esBorrador) {
+    if (marcaAgua) {
       // Centrada en la hoja: el punto de origen se desplaza medio texto a lo largo del giro.
       const tam = 100;
-      const w = negrita.widthOfTextAtSize(T.marcaAgua, tam);
+      const w = negrita.widthOfTextAtSize(marcaAgua, tam);
       const a = (35 * Math.PI) / 180;
       const x = ancho / 2 - (w / 2) * Math.cos(a) + (tam * 0.35) * Math.sin(a);
       const y = alto / 2 - (w / 2) * Math.sin(a) - (tam * 0.35) * Math.cos(a);
-      pg.drawText(T.marcaAgua, { x, y, size: tam, font: negrita, color: MARCA_AGUA, rotate: degrees(35) });
+      pg.drawText(marcaAgua, { x, y, size: tam, font: negrita, color: MARCA_AGUA, rotate: degrees(35) });
     }
     return pg;
   };
@@ -684,6 +702,7 @@ export async function renderizarFactura(f: DatosFacturaPdf): Promise<Buffer> {
   // El borrador es igual que la factura: solo cambian el numero (aun no lo tiene) y la marca de agua.
   texto(p, tipoDoc, MARGEN, y, { tam: 24, fuente: negrita });
   if (esProforma) texto(p, T.avisoProforma, MARGEN, y - 17, { tam: 8.5, color: GRIS });
+  if (esRegistro) texto(p, T.avisoRegistro, MARGEN, y - 17, { tam: 8.5, color: GRIS });
   if (esBorrador) {
     texto(p, T.borradorCabecera, derecha, yNumero, { tam: 10, fuente: negrita, color: GRIS, alinear: 'der' });
   } else {
@@ -1113,13 +1132,38 @@ export async function generarPdfFactura(companyId: string, id: string): Promise<
   return { nombre, contenido: await renderizarFactura(datos) };
 }
 
+/**
+ * Lo que descarga el boton «PDF» de una factura. Si la registro el lector (la
+ * expidio otro programa), su PDF original tal cual; si el original no es un PDF
+ * o no se puede leer, la copia de registro marcada (nunca la plantilla de
+ * factura de la app). El resto, el PDF de la app.
+ */
+export async function pdfParaDescargar(companyId: string, id: string): Promise<{ nombre: string; contenido: Buffer }> {
+  const f = await prisma.incomeInvoice.findFirst({
+    where: { id, companyId },
+    select: { origen: true, numeroCompleto: true, readerDocument: { select: { storagePath: true, mimeType: true } } },
+  });
+  if (!f) throw notFound('Factura no encontrada.');
+  const doc = f.readerDocument;
+  if ((f.origen === 'lector' || doc) && doc?.storagePath && doc.mimeType === 'application/pdf') {
+    try {
+      return { nombre: `factura_${f.numeroCompleto ?? id}_original.pdf`.replace(/[^\w.-]/g, '_'), contenido: await getObject(doc.storagePath) };
+    } catch (err) {
+      logger.warn(`[pdf] Original de la factura ${id} ilegible; se da la copia de registro: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  return generarPdfFactura(companyId, id);
+}
+
 /** Lo que se dibuja en el PDF de una factura (y el nombre del fichero), leido de la BD. */
 export async function datosPdfFactura(companyId: string, id: string): Promise<{ datos: DatosFacturaPdf; nombre: string }> {
   const factura = await prisma.incomeInvoice.findFirst({
     where: { id, companyId },
-    include: { lineas: true, customer: true },
+    include: { lineas: true, customer: true, readerDocument: { select: { id: true } } },
   });
   if (!factura) throw notFound('Factura no encontrada.');
+  // Las antiguas del lector no tienen origen, pero si su documento leido.
+  const registroLector = factura.origen === 'lector' || !!factura.readerDocument;
 
   const [empresa, original, todasCuentas, compania, ajustes] = await Promise.all([
     prisma.legalConfig.findUnique({ where: { companyId } }).catch(() => null),
@@ -1187,6 +1231,7 @@ export async function datosPdfFactura(companyId: string, id: string): Promise<{ 
     id: factura.id,
     numeroCompleto: factura.numeroCompleto,
     estadoDocumento: factura.estadoDocumento,
+    registroLector,
     tipoFactura: factura.tipoFactura,
     formaPago: factura.formaPago,
     tipoRectificativa: factura.tipoRectificativa,
@@ -1256,7 +1301,9 @@ export async function datosPdfFactura(companyId: string, id: string): Promise<{ 
       ? `proforma_${factura.numeroCompleto}.pdf`
       : factura.estadoDocumento !== 'FINAL'
         ? `borrador_factura_${factura.id.slice(-6)}.pdf`
-        : `factura_${factura.numeroCompleto}.pdf`;
+        : registroLector
+          ? `registro_factura_${factura.numeroCompleto}.pdf`
+          : `factura_${factura.numeroCompleto}.pdf`;
   return { nombre: nombre.replace(/[^\w.-]/g, '_'), datos };
 }
 
