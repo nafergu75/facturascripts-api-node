@@ -36,7 +36,7 @@ const disparadores = (nombre: string) => decidirComplemento(leer(nombre).lectura
 
 const antes = process.env.ANTHROPIC_API_KEY;
 beforeEach(() => {
-  process.env.ANTHROPIC_API_KEY = 'sk-ant-prueba';
+  process.env.ANTHROPIC_API_KEY = 'sk-ant-prueba-0123456789abcdefghijklmnopqrstuv';
   crear.mockReset();
 });
 afterAll(() => {

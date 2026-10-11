@@ -9,6 +9,7 @@
  * Al log solo van el estado HTTP y error.type, nunca el texto mandado.
  */
 import Anthropic from '@anthropic-ai/sdk';
+import { normalizarAnthropicKey } from '../../config/env';
 import { logger } from '../../config/logger';
 import { aCentimos, redondear2 } from '../../utils/money';
 import { normalizarNif } from '../../utils/nif';
@@ -240,7 +241,7 @@ export type ResultadoComplemento =
 
 /** Cliente de Anthropic, o null sin ANTHROPIC_API_KEY. Se crea en cada llamada (tests y redespliegues). */
 export function clienteAnthropic(): Anthropic | null {
-  const clave = process.env.ANTHROPIC_API_KEY;
+  const clave = normalizarAnthropicKey(process.env.ANTHROPIC_API_KEY);
   return clave ? new Anthropic({ apiKey: clave }) : null;
 }
 
