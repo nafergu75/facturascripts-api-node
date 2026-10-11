@@ -392,7 +392,7 @@ async function analizar(
         ...base,
         accion: 'no-se-enlaza',
         ficha: { id: ficha.id, nombre: ficha.nombreFiscal },
-        motivo: `${ficha.nombreFiscal} ya tiene la subcuenta ${actual} con movimientos: la ${c.codigo} queda sin enlazar.`,
+        motivo: `${ficha.nombreFiscal} ya tiene la subcuenta ${actual} con movimientos, así que la ${c.codigo} se trae sin enlazar. Lo que importes en la ${c.codigo} (como su saldo de apertura) quedará ahí y sus facturas nuevas seguirán en la ${actual}.`,
       });
       continue;
     }
@@ -408,7 +408,7 @@ async function analizar(
     if (quedan.length && ctx.longitudActual !== delPlan) {
       longitud = {
         ...longitud,
-        motivo: `Ya hay clientes o proveedores con subcuenta de ${ctx.longitudActual} dígitos (${quedan.slice(0, 3).join(', ')}): las nuevas seguirán con ${ctx.longitudActual}. Las del plan se traen tal cual.`,
+        motivo: `Tu plan anterior usa subcuentas de ${delPlan} dígitos y aquí ya hay clientes o proveedores con ${ctx.longitudActual} (${quedan.slice(0, 3).join(', ')}). Si sigues, convivirán las dos longitudes: las subcuentas del plan anterior se traen con ${delPlan} dígitos y las de los clientes y proveedores nuevos seguirán con ${ctx.longitudActual}.`,
       };
       avisos.push(longitud.motivo!);
     } else if (ctx.longitudGuardada !== delPlan) {
