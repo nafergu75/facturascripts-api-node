@@ -34,6 +34,7 @@ import { badRequest, notFound } from '../utils/http-errors';
 import { randomUUID as uuid } from 'crypto';
 import Anthropic from '@anthropic-ai/sdk';
 import { prisma } from '../config/database';
+import { hoyEspana } from '../utils/fechas';
 import { logger } from '../config/logger';
 import { config } from '../config/env';
 import { putObject, getObject } from '../utils/storage';
@@ -751,14 +752,18 @@ export const incomeReaderService = {
       throw badRequest('No hay líneas en los datos extraídos.');
     }
 
-    // Numeracion: la de la factura leida si se pudo leer; si no, el siguiente
-    // correlativo de la serie del ano. (Antes era un numero ALEATORIO: rompia la
-    // numeracion correlativa y podia repetirse.)
+    // Numeracion: siempre la de la factura leida (la expidio otro programa).
+    // Sin numero no se registra: la app nunca numera una factura del lector,
+    // porque gastaria numeros de sus series (spec verifactu, P4).
+    if (!String(parsed.numero ?? '').trim()) {
+      throw badRequest('Falta el número de la factura leída. Escríbelo (tal como aparece en la factura) antes de registrarla.', {
+        campo: 'numero',
+      });
+    }
     const { separarNumero } = await import('./ingresos-extractor.service');
-    const fechaEmision = parsed.fecha ?? new Date().toISOString().slice(0, 10);
-    const numeracion = parsed.numero
-      ? separarNumero(null, parsed.numero, fechaEmision)
-      : { serie: fechaEmision.slice(0, 4), numero: undefined };
+    // Sin fecha leida, hoy en Espana (no el dia UTC: de 00:00 a 02:00 seria ayer). P6.
+    const fechaEmision = parsed.fecha ?? hoyEspana();
+    const numeracion = separarNumero(null, String(parsed.numero), fechaEmision);
 
     // Crear factura de ingreso
     // Origen lector: la fiscalidad avisa en vez de rechazar (y en una empresa no
