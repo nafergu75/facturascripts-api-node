@@ -12,7 +12,8 @@
 import dr347 from '../../domain/aeat/dr347-2025.json';
 import type { DatosModelo347 } from '../../domain/impuestos.model';
 import { aCentimos } from '../../utils/money';
-import { exigirDiseno, nifAjustado, nifConForma, PaginaOficial, RegistroAeat, textoAeat } from './diseno';
+import { exigirDiseno, PaginaOficial, RegistroAeat } from './diseno';
+import { errorNifDeclarante, importeAeat, motivoNifNoValido, nifDerecha, telefonoAeat, textoAeat } from '../common/normalizacion';
 
 interface Diseno347 {
   version: string;
@@ -110,7 +111,7 @@ export function declarados347Desde(datos: DatosModelo347): Declarado347[] {
 function signoImporte(r: RegistroAeat, posSigno: number, euros: number): void {
   const c = aCentimos(euros);
   r.crudo(posSigno, c < 0 ? 'N' : ' ');
-  r.crudo(posSigno + 1, String(Math.abs(c)).padStart(15, '0'));
+  r.crudo(posSigno + 1, importeAeat(Math.abs(c) / 100, 15));
 }
 
 /** Provincia del 347 (01-52): La Palma (53 en otros modelos) va con Santa Cruz de Tenerife (38). */
@@ -135,12 +136,12 @@ export function construirModelo347(ejercicio: number, declarante: Declarante347,
   const errores: string[] = [];
   const advertencias: string[] = [];
 
-  const nifDecl = nifAjustado(declarante.nif);
-  if (!nifDecl) errores.push('Falta el NIF de la empresa. Rellénalo en Registro Mercantil > Datos para la memoria.');
-  else if (!nifConForma(declarante.nif)) errores.push(`El NIF de la empresa (${declarante.nif}) no tiene la forma de un NIF español.`);
+  const nifDecl = nifDerecha(declarante.nif);
+  const errorNif = errorNifDeclarante(declarante.nif);
+  if (errorNif) errores.push(errorNif);
   const razon = textoAeat(declarante.razonSocial);
   if (!razon) errores.push('Falta la razón social de la empresa. Rellénala en Registro Mercantil > Datos para la memoria.');
-  const telefono = String(declarante.telefono ?? '').replace(/\D/g, '').slice(-9);
+  const telefono = telefonoAeat(declarante.telefono);
   if (!telefono) advertencias.push('Falta el teléfono de la persona de contacto (posiciones 59-67): se deja a ceros.');
   const contacto = textoAeat(declarante.contacto);
   if (!contacto) advertencias.push('Falta la persona de contacto (posiciones 68-107). Indícala al descargar el fichero.');
@@ -158,8 +159,9 @@ export function construirModelo347(ejercicio: number, declarante: Declarante347,
   let totalCent = 0;
   for (const d of ordenados) {
     const etiqueta = `${d.nombre || 'Sin nombre'} (${d.nif || 'sin NIF'})`;
-    const nif = nifAjustado(d.nif);
-    if (!nif || !nifConForma(d.nif)) errores.push(`${etiqueta}: falta el NIF o no es un NIF español válido. Corrígelo en su ficha.`);
+    const nif = nifDerecha(d.nif);
+    const motivoNif = motivoNifNoValido(d.nif);
+    if (motivoNif) errores.push(`${etiqueta}: ${motivoNif === 'falta' ? 'falta el NIF' : `el NIF no es válido (${motivoNif})`}. Corrígelo en su ficha.`);
     if (!textoAeat(d.nombre)) errores.push(`${etiqueta}: falta el nombre o razón social.`);
     const provincia = provincia347(d.provincia);
     if (!provincia) errores.push(`${etiqueta}: falta la provincia del domicilio fiscal (código postal o provincia en su ficha).`);

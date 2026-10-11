@@ -137,7 +137,7 @@ describe('modelo 111: una sola fuente, por fecha de pago y con perceptores disti
     expect(pagina.slice(192, 200)).toBe('00000001'); // [07] pos 193
     expect(pagina.slice(486, 503)).toBe('00000000000165000'); // [28] pos 487
     expect(pagina.slice(13, 22)).toBe('B12345674'); // NIF pos 14
-    expect(pagina.slice(22, 82).trimEnd()).toBe('NOMINAS PRUEBA S L'); // denominacion pos 23, solo letras, cifras y blancos
+    expect(pagina.slice(22, 82).trimEnd()).toBe('NOMINAS PRUEBA SL'); // denominacion pos 23, solo letras, cifras y blancos
   });
 });
 

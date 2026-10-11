@@ -1,7 +1,7 @@
 // El boton "Descargar fichero AEAT" de la pantalla del 303 tiene que dar el
 // fichero OFICIAL (diseno de registro 2026), no un resumen legible; y la
 // pantalla tiene que ensenar las mismas casillas que van en ese fichero.
-let nif: string | null = 'B12345678';
+let nif: string | null = 'B12345674';
 let compras: Array<{ base: number; cuota: number }> = [];
 let filaAnterior: Record<string, unknown> | null = null;
 let ajustes: Record<string, unknown> | null = null;
@@ -76,7 +76,7 @@ function leerDelFichero(fichero: string, casilla: string): number {
 }
 
 beforeEach(() => {
-  nif = 'B12345678';
+  nif = 'B12345674';
   compras = [];
   filaAnterior = null;
   ajustes = null;
@@ -90,7 +90,7 @@ describe('fichero del 303 desde la pantalla', () => {
     expect(r.contenido.startsWith('<T30302026' + '2T0000><AUX>')).toBe(true);
     expect(r.contenido.endsWith('</T30302026' + '2T0000>')).toBe(true); // sin salto de linea
     expect(r.contenido).toHaveLength(328 + 1581 + 1017 + 18);
-    expect(r.contenido).toContain('B12345678');
+    expect(r.contenido).toContain('B12345674');
     expect(r.contenido).toContain('EJEMPLO SL');
     expect(r.contenido).not.toMatch(/MODELO 303 -|borrador/i); // ya no es el resumen legible
     const pag1 = r.contenido.slice(r.contenido.indexOf('<T30301000>'));

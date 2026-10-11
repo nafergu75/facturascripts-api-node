@@ -18,8 +18,8 @@ import dr111Json from '../../domain/aeat/dr111-v2.json';
 import dr115Json from '../../domain/aeat/dr115-v13.json';
 import dr190Json from '../../domain/aeat/dr190-2025.json';
 import { badRequest } from '../../utils/http-errors';
-import { normalizarNif, validarNifEspanol } from '../../utils/nif';
-import { validateIban } from '../../utils/validateIban';
+import { normalizarNif } from '../../utils/nif';
+import { errorNifDeclarante, ErrorImporteAeat, importeAeat, textoAeat } from '../../aeat/common/normalizacion';
 
 export type TipoCampoDr = 'An' | 'A' | 'Num' | 'N';
 
@@ -103,66 +103,11 @@ export function campoDeCasilla(registro: RegistroDr, casilla: string): CampoDr {
 // Formato
 // ---------------------------------------------------------------------------
 
-/**
- * Texto para un campo An o A: mayusculas, sin acentos, solo letras, cifras y
- * blancos (la Ñ y la Ç se quedan), sin blancos dobles. "Mi Empresa, S.L." ->
- * "MI EMPRESA S L"; "Muñoz & Cía" -> "MUÑOZ CIA".
- */
-export function sanearAN(valor: unknown): string {
-  return String(valor ?? '')
-    .toUpperCase()
-    .replace(/Ñ/g, '\u0000')
-    .replace(/Ç/g, '\u0001')
-    .normalize('NFD')
-    .replace(/[̀-ͯ]/g, '')
-    .replace(/\u0000/g, 'Ñ')
-    .replace(/\u0001/g, 'Ç')
-    .replace(/[^A-Z0-9ÑÇ ]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-/** Persona fisica: NIF que empieza por cifra (DNI) o por K, L, M, X, Y o Z. */
-export function esPersonaFisica(nif: string): boolean {
-  return /^[0-9KLMXYZ]/.test(normalizarNif(nif));
-}
-
-/**
- * Por que un NIF no vale para un fichero de la AEAT (letra o digito de control
- * incluidos), o null si vale. Con `persona`, un CIF de sociedad tampoco vale
- * (trabajadores y conyuges del 190).
- */
-export function motivoNifNoValido(valor: unknown, opts: { persona?: boolean } = {}): string | null {
-  const nif = normalizarNif(valor);
-  if (!nif) return 'falta';
-  const r = validarNifEspanol(nif);
-  if (r.valido) return opts.persona && r.tipo === 'CIF' ? 'es el NIF de una sociedad, no el de una persona' : null;
-  if (r.tipo === 'CIF') return 'el dígito de control no corresponde a sus cifras';
-  if (r.tipo) return 'la letra no corresponde a sus cifras';
-  return 'no tiene la forma de un NIF español (8 cifras y una letra; X, Y o Z, 7 cifras y una letra; o una letra, 7 cifras y el control)';
-}
-
-/** Error del NIF de la empresa declarante (111, 115 y 190), con el NIF y donde se corrige; null si vale. */
-export function errorNifDeclarante(valor: unknown): string | null {
-  const nif = normalizarNif(valor);
-  if (!nif) return 'Falta el NIF de la empresa. Rellénalo en Registro Mercantil > Datos para la memoria y vuelve a descargar el fichero.';
-  const motivo = motivoNifNoValido(nif);
-  return motivo ? `El NIF de la empresa (${nif}) no es válido: ${motivo}. Corrígelo en Registro Mercantil > Datos para la memoria.` : null;
-}
-
 /** NIF del declarante normalizado y validado; error claro si falta o no es valido. */
 export function nifDeclarante(valor: unknown): string {
   const error = errorNifDeclarante(valor);
   if (error) throw badRequest(error);
   return normalizarNif(valor);
-}
-
-/** IBAN sin espacios y en mayusculas, o null si no es valido. */
-export function ibanNormalizado(valor: unknown): string | null {
-  const iban = String(valor ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '');
-  if (!iban) return null;
-  const r = validateIban(iban);
-  return r.valid ? (r.normalized ?? iban) : null;
 }
 
 /** Periodo valido del 111 y del 115: '01'...'12' o '1T'...'4T' (no tienen periodo anual). */
@@ -177,13 +122,6 @@ export type ValoresDr = Record<string, ValorDr>;
 
 const etiqueta = (registro: RegistroDr, c: CampoDr) => (c.casilla ? `casilla [${c.casilla}]` : `"${c.desc}"`) + ` (posición ${c.pos} del registro ${registro.id})`;
 
-function cifras(registro: RegistroDr, c: CampoDr, valor: ValorDr): string {
-  if (typeof valor === 'string' && /^\d+$/.test(valor.trim())) return valor.trim().replace(/^0+(?=\d)/, '');
-  const n = Number(valor);
-  if (!Number.isFinite(n)) throw badRequest(`El valor de la ${etiqueta(registro, c)} no es un número.`);
-  return String(c.decimales ? Math.round(Math.abs(n) * 10 ** c.decimales) : Math.trunc(Math.abs(n)));
-}
-
 /** Contenido de un campo segun su tipo (siempre de longitud c.lon). */
 export function formatearCampoDr(registro: RegistroDr, c: CampoDr, valor: ValorDr): string {
   if (c.constante !== undefined) {
@@ -196,7 +134,7 @@ export function formatearCampoDr(registro: RegistroDr, c: CampoDr, valor: ValorD
     case 'An':
     case 'A': {
       if (vacio || valor === false) return ' '.repeat(c.lon);
-      const texto = c.libre ? String(valor).replace(/[^\x20-\x7e]/g, '').trim() : sanearAN(valor);
+      const texto = c.libre ? String(valor).replace(/[^\x20-\x7e]/g, '').trim() : textoAeat(valor);
       if (c.alinear === 'derecha') {
         const v = texto.replace(/ /g, '');
         if (!v) return ' '.repeat(c.lon);
@@ -205,22 +143,23 @@ export function formatearCampoDr(registro: RegistroDr, c: CampoDr, valor: ValorD
       }
       return texto.slice(0, c.lon).padEnd(c.lon, ' ');
     }
-    case 'Num': {
-      if (vacio) return '0'.repeat(c.lon);
-      if (typeof valor === 'number' && Math.round(valor * 10 ** (c.decimales ?? 0)) < 0) {
-        throw badRequest(`La ${etiqueta(registro, c)} no admite importes negativos.`);
-      }
-      const d = cifras(registro, c, valor);
-      if (d.length > c.lon) throw badRequest(`El importe de la ${etiqueta(registro, c)} no cabe en ${c.lon} cifras.`);
-      return d.padStart(c.lon, '0');
-    }
+    case 'Num':
     case 'N': {
       if (vacio) return '0'.repeat(c.lon);
-      const negativo = Math.round(Number(valor) * 10 ** (c.decimales ?? 0)) < 0;
-      const d = cifras(registro, c, valor);
-      const ancho = negativo ? c.lon - 1 : c.lon;
-      if (d.length > ancho) throw badRequest(`El importe de la ${etiqueta(registro, c)} no cabe en ${c.lon} posiciones.`);
-      return (negativo ? 'N' : '') + d.padStart(ancho, '0');
+      // Codigos y contadores que ya vienen en cifras ('0002'): tal cual, a la derecha.
+      if (typeof valor === 'string' && /^\d+$/.test(valor.trim()) && !c.decimales) {
+        const d = valor.trim().replace(/^0+(?=\d)/, '');
+        if (d.length > c.lon) throw badRequest(`El valor de la ${etiqueta(registro, c)} no cabe en ${c.lon} cifras.`);
+        return d.padStart(c.lon, '0');
+      }
+      try {
+        return importeAeat(c.decimales ? valor : Math.trunc(Number(valor)), c.lon, { signo: c.tipo === 'N', decimales: c.decimales ?? 0, etiqueta: `La ${etiqueta(registro, c)}` });
+      } catch (e) {
+        if (!(e instanceof ErrorImporteAeat)) throw e;
+        if (e.motivo === 'negativo') throw badRequest(`La ${etiqueta(registro, c)} no admite importes negativos.`);
+        if (e.motivo === 'no-cabe') throw badRequest(`El importe de la ${etiqueta(registro, c)} no cabe en ${c.lon} ${c.tipo === 'N' ? 'posiciones' : 'cifras'}.`);
+        throw badRequest(`El valor de la ${etiqueta(registro, c)} no es un número.`);
+      }
     }
   }
 }

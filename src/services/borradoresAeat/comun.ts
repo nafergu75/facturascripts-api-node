@@ -10,7 +10,7 @@
 import type { Response } from 'express';
 import { prisma } from '../../config/database';
 import { badRequest, forbidden } from '../../utils/http-errors';
-import { telefonoAeat } from '../../aeat/common/disenoRegistro';
+import { telefonoAeat } from '../../aeat/common/normalizacion';
 import { registrarAuditoria } from '../auditoria.service';
 
 export interface DeclaranteEmpresa {

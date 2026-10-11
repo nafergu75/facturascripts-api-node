@@ -11,7 +11,8 @@ import express from 'express';
 import request from 'supertest';
 import { letraNif } from '../utils/nif';
 import { agregarTrabajo111, codigoProvincia, perceptoresDeNominas, perceptoresProfesionales, periodoFiscal, type NominaFiscal, type Perceptor190 } from '../services/nominas/fiscal';
-import { comprobarDiseno190, erroresFichero190, generarFicheroModelo190, LONGITUD_REGISTRO_190, registroPerceptor190, textoAeat } from '../services/nominas/modelo190';
+import { comprobarDiseno190, erroresFichero190, generarFicheroModelo190, LONGITUD_REGISTRO_190, registroPerceptor190 } from '../services/nominas/modelo190';
+import { textoAeat } from '../aeat/common/normalizacion';
 import { fichero111 as generarFicheroModelo111 } from './aeat-ayudas';
 import { vencimiento111 } from '../services/nominas/informes';
 import { fechaCargoPorDefecto } from '../services/nominas/segurosSociales';
@@ -253,7 +254,7 @@ describe('fichero del 190 (diseno de registro del ejercicio 2025)', () => {
     expect(c(t1, 2, 4)).toBe('190');
     expect(c(t1, 5, 8)).toBe('2025');
     expect(c(t1, 9, 17)).toBe('B98765431');
-    expect(c(t1, 18, 57)).toBe('EMPRESA DE PRUEBA S L'.padEnd(40, ' '));
+    expect(c(t1, 18, 57)).toBe('EMPRESA DE PRUEBA SL'.padEnd(40, ' '));
     expect(c(t1, 58, 58)).toBe('T');
     expect(c(t1, 59, 67)).toBe('600000000');
     expect(c(t1, 68, 107)).toBe('PERSONA CONTACTO'.padEnd(40, ' '));
@@ -301,7 +302,7 @@ describe('fichero del 190 (diseno de registro del ejercicio 2025)', () => {
 
     const g = regs[3];
     expect(c(g, 18, 26)).toBe('E12345674');
-    expect(c(g, 36, 75)).toBe('ASESORIA MUÑOZ C B'.padEnd(40, ' '));
+    expect(c(g, 36, 75)).toBe('ASESORIA MUÑOZ CB'.padEnd(40, ' '));
     expect(c(g, 76, 80)).toBe('03G01');
   });
 

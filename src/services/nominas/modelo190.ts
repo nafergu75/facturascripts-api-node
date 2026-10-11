@@ -15,7 +15,8 @@
 import * as XLSX from 'xlsx';
 import { badRequest, conflict } from '../../utils/http-errors';
 import { aCentimos } from '../../utils/money';
-import { componerRegistroDr, DR190, errorNifDeclarante, motivoNifNoValido, registroDr, sanearAN, type ValoresDr } from '../aeatRetenciones/diseno';
+import { componerRegistroDr, DR190, registroDr, type ValoresDr } from '../aeatRetenciones/diseno';
+import { errorNifDeclarante, motivoNifNoValido, textoAeat } from '../../aeat/common/normalizacion';
 import type { Modelo190, Perceptor190 } from './fiscal';
 
 /** Ejercicios cuyo diseño de registro se ha comprobado con el publicado por la AEAT. */
@@ -74,9 +75,6 @@ export interface Declarante190 {
   /** Numero identificativo de la declaracion a la que complementa o sustituye. */
   numeroAnterior?: string | null;
 }
-
-/** Texto en mayusculas, sin acentos ni caracteres especiales (se quedan la Ñ y la Ç). */
-export const textoAeat = sanearAN;
 
 /** Subclaves validas de cada clave (diseño de 2025). Las claves A, D y J no llevan subclave. */
 export const SUBCLAVES_190: Readonly<Record<string, readonly string[]>> = {

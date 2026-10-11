@@ -55,7 +55,7 @@ describe('115: alquileres del trimestre (caso real)', () => {
     comprobarRegistro(pag, PAG, {
       tipoDeclaracion: 'I',
       nif: EMPRESA,
-      apellidosODenominacion: 'IFBIOSOLUCIONES S L'.padEnd(60, ' '),
+      apellidosODenominacion: 'IFBIOSOLUCIONES SL'.padEnd(60, ' '),
       nombre: ' '.repeat(20),
       ejercicio: '2027',
       periodo: '1T',

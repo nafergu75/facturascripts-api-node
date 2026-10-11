@@ -37,7 +37,7 @@ const pyg = (partidas: Array<[string, number]>, agregados: Partial<Entrada200['p
 const p = (codigo: string, importe: number) => ({ codigo, descripcion: codigo, importe });
 
 const ID: Entrada200['identificacion'] = {
-  nif: 'B98765432',
+  nif: 'B98765431',
   razonSocial: 'Cerámicas Peña, S.L.',
   cnae: '4646',
   telefono: '+34 961 23 45 67',
@@ -73,7 +73,7 @@ const BENEFICIO: Entrada200 = {
   pagosFraccionados: [1000, 1000, 1000],
   retenciones: 120,
   iban: 'ES91 2100 0418 4502 0005 1332',
-  programa: { versionPrograma: 'CA01', nifEmpresaDesarrollo: 'B11111111' },
+  programa: { versionPrograma: 'CA01', nifEmpresaDesarrollo: 'B11111119' },
 };
 
 /** S.L. con pérdidas: resultado -18.500 €, retenciones de 50 €. */
@@ -141,7 +141,7 @@ describe('200 dorado: diseño oficial vers. 1.02 (ejercicio 2025)', () => {
       expect(campo(cabecera, 18, 5)).toBe('<AUX>');
       expect(campo(cabecera, 23, 70).trim()).toBe('');
       expect(campo(cabecera, 93, 4)).toBe('CA01');
-      expect(campo(cabecera, 101, 9)).toBe('B11111111');
+      expect(campo(cabecera, 101, 9)).toBe('B11111119');
       expect(campo(cabecera, 110, 213).trim()).toBe('');
       expect(campo(cabecera, 323, 6)).toBe('</AUX>');
       expect(cierre).toBe('</T200020250A0000>');
@@ -159,7 +159,7 @@ describe('200 dorado: diseño oficial vers. 1.02 (ejercicio 2025)', () => {
     it('página 1: identificación, periodo, CNAE y caracteres de una pyme', () => {
       const l = pg['01000'];
       expect(campo(l, 13, 1)).toBe('I');
-      expect(campo(l, 14, 9)).toBe('B98765432');
+      expect(campo(l, 14, 9)).toBe('B98765431');
       expect(campo(l, 23, 80)).toBe('CERAMICAS PEÑA SL'.padEnd(80));
       expect(campo(l, 103, 4)).toBe('2025');
       expect(campo(l, 107, 2)).toBe('0A');
@@ -273,7 +273,7 @@ describe('200 dorado: diseño oficial vers. 1.02 (ejercicio 2025)', () => {
       expect(campo(l, 18, 1)).toBe('1');
       expect(campo(l, 19, 2)).toBe('0A');
       expect(campo(l, 21, 12)).toBe('010125311225');
-      expect(campo(l, 33, 9)).toBe('B98765432');
+      expect(campo(l, 33, 9)).toBe('B98765431');
       expect(campo(l, 42, 80)).toBe('CERAMICAS PEÑA SL'.padEnd(80));
       expect(campo(l, 122, 17)).toBe(n17(39000));
       expect(campo(l, 139, 17)).toBe(n17(8190));

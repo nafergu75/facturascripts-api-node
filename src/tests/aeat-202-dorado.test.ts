@@ -78,7 +78,7 @@ describe('202 dorado: modalidad A en los tres periodos de 2027', () => {
     expect(p1(12, 12)).toBe(' ');
     expect(p1(13, 13)).toBe('I');
     expect(p1(14, 22)).toBe(NIF);
-    expect(p1(23, 82)).toBe('BIOSOLUCIONES DEL TURIA S L'.padEnd(60));
+    expect(p1(23, 82)).toBe('BIOSOLUCIONES DEL TURIA SL'.padEnd(60));
     expect(p1(83, 103)).toBe(' '.repeat(21));
     expect(p1(104, 107)).toBe('2027');
     expect(p1(108, 109)).toBe(periodo);

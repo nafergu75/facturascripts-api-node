@@ -143,7 +143,7 @@ describe('180 de 2027 desde las facturas de alquiler', () => {
     const fichero = (r.body as Buffer).toString('latin1');
     const lineas = comprobarFicheroPorLineas(DISENO_180, fichero, (_l, i) => (i === 0 ? 'declarante' : 'perceptor'));
     const [t1, ...t2] = lineas.map((l) => l.linea);
-    expect(posiciones(t1, 1, 58)).toBe(`11802027${NIF}${'INQUILINA S L'.padEnd(40)}T`);
+    expect(posiciones(t1, 1, 58)).toBe(`11802027${NIF}${'INQUILINA SL'.padEnd(40)}T`);
     expect(posiciones(t1, 59, 107)).toBe('963000111' + 'PEREZ GIL LUIS'.padEnd(40));
     expect(posiciones(t1, 136, 175)).toBe('000000003' + ' ' + '000000001850000' + '000000000351500');
     expect(t2.map((l) => [posiciones(l, 18, 26), posiciones(l, 76, 78), posiciones(l, 80, 113), posiciones(l, 114, 134)])).toEqual([

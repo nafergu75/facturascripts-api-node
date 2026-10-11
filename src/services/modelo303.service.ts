@@ -10,13 +10,12 @@
 import { conResultadoPagina3_303, DatosModelo303, filasRegimenGeneral303, PeriodoFiscal } from '../domain/impuestos.model';
 import {
   componerPagina303,
-  nifAn303,
   paginaDiseno303,
-  textoAn303,
   type CampoDr303,
   type ValorCampo303,
 } from '../domain/aeat/modelo303-2026';
 import { cabeceraAux, cierreAux, programaAeat, type ProgramaAeat } from '../aeat/common/cabeceraAux';
+import { errorNifDeclarante, ibanAeat, nifAeat, textoAeat } from '../aeat/common/normalizacion';
 import { badRequest } from '../utils/http-errors';
 
 /**
@@ -229,15 +228,16 @@ export function montarBorrador303(
   const elegidos = tipoDeclaracion === 'D' && devolviendo ? devolviendo : compensando;
   const casillas = elegidos.casillasOficiales ?? guardadas;
 
-  const nif = nifAn303(ctx.nif);
+  const nif = nifAeat(ctx.nif);
   // El diseño da 80 posiciones a la razón social y no prevé otra cosa: si es
   // más larga, en el fichero van las 80 primeras (se avisa).
-  const razonCompleta = textoAn303(ctx.razonSocial);
+  const razonCompleta = textoAeat(ctx.razonSocial);
   const razonSocial = razonCompleta.slice(0, LONGITUD_RAZON_SOCIAL_303).trimEnd();
-  const iban = (ctx.iban ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '') || null;
+  const ibanEscrito = (ctx.iban ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '') || null;
+  const iban = ibanAeat(ibanEscrito);
   const errores: string[] = [];
-  if (!nif) errores.push('Falta el NIF de la empresa. Rellénalo en Registro Mercantil > Datos para la memoria y vuelve a descargar el fichero.');
-  else if (nif.length !== 9) errores.push(`El NIF de la empresa (${nif}) no tiene 9 caracteres. Corrígelo en Registro Mercantil > Datos para la memoria.`);
+  const errorNif = errorNifDeclarante(ctx.nif);
+  if (errorNif) errores.push(errorNif);
   if (!razonSocial) errores.push('Falta la razón social de la empresa. Rellénala en Registro Mercantil > Datos para la memoria y vuelve a descargar el fichero.');
   const { sinFila } = filasRegimenGeneral303(datos.ivaDevengado ?? []);
   if (sinFila.length) {
@@ -247,7 +247,8 @@ export function montarBorrador303(
   }
   if (tipoDeclaracion === 'U' || tipoDeclaracion === 'D') {
     const para = tipoDeclaracion === 'U' ? 'domiciliar el pago' : 'pedir la devolución';
-    if (!iban) errores.push(`Para ${para} hace falta una cuenta bancaria de la empresa con IBAN. Añádela en Tesorería > Cuentas bancarias.`);
+    if (!ibanEscrito) errores.push(`Para ${para} hace falta una cuenta bancaria de la empresa con IBAN. Añádela en Tesorería > Cuentas bancarias.`);
+    else if (!iban) errores.push(`Para ${para} hace falta un IBAN válido: el de la cuenta ${ibanEscrito.slice(0, 4)}... no pasa la comprobación de sus dígitos de control (Tesorería > Cuentas bancarias).`);
     else if (!IBAN_ES.test(iban)) errores.push(`Para ${para} la app solo admite una cuenta española (IBAN que empieza por ES y 24 caracteres): ${iban.slice(0, 4)}... no vale.`);
   }
 

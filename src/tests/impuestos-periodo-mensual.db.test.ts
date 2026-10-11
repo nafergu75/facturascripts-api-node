@@ -31,7 +31,7 @@ const COMPANY_ID = `imp-mensual-${Date.now()}`;
 
 beforeAll(async () => {
   await prisma.company.create({ data: { id: COMPANY_ID, name: 'Mensual SL', fsBaseUrl: 'http://localhost:8080', fsApiKeyEnc: 'k' } });
-  await prisma.legalConfig.create({ data: { companyId: COMPANY_ID, denominacion: 'Mensual SL', nif: 'B13000000' } });
+  await prisma.legalConfig.create({ data: { companyId: COMPANY_ID, denominacion: 'Mensual SL', nif: 'B13000005' } });
 });
 
 describe('periodoFiscalDe', () => {

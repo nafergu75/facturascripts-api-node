@@ -5,16 +5,8 @@
  */
 import { describe, it, expect } from '@jest/globals';
 import { DISENO_180, DISENO_202, DISENO_349 } from '../domain/aeat/disenos';
-import {
-  componerRegistroDr,
-  erroresTablaDr,
-  formatearCampoDr,
-  nifDerecha,
-  registroDe,
-  telefonoAeat,
-  textoAeat,
-  type CampoDr,
-} from '../aeat/common/disenoRegistro';
+import { componerRegistroDr, erroresTablaDr, formatearCampoDr, registroDe, type CampoDr } from '../aeat/common/disenoRegistro';
+import { nifDerecha, telefonoAeat, textoAeat } from '../aeat/common/normalizacion';
 
 describe('tablas de los disenos oficiales', () => {
   it.each([
@@ -61,9 +53,9 @@ describe('formato de campos', () => {
   });
 
   it('texto en mayusculas, sin acentos ni signos, con la Ñ y la Ç', () => {
-    expect(textoAeat('Peñíscola Açores, S.L.')).toBe('PEÑISCOLA AÇORES S L');
+    expect(textoAeat('Peñíscola Açores, S.L.')).toBe('PEÑISCOLA AÇORES SL');
     expect(formatearCampoDr(alfa, 'muñoz')).toBe('MUÑOZ       ');
-    expect(textoAeat('S/N', true)).toBe('S/N');
+    expect(textoAeat('S/N', { admite: './-' })).toBe('S/N');
   });
 
   it('un registro con un campo que no existe en el diseno es un error', () => {

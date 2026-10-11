@@ -19,6 +19,8 @@
  *    el tipo de numeración del 180).
  */
 
+import { ADMITE_LITERAL, ErrorImporteAeat, importeAeat, textoAeat } from './normalizacion';
+
 export type TipoCampoDr = 'Num' | 'N' | 'An' | 'A' | 'Blanco';
 
 export interface CampoDr {
@@ -65,22 +67,6 @@ export function registroDe(diseno: DisenoDr, id: string): RegistroDr {
   return r;
 }
 
-/** Mayusculas, sin acentos ni caracteres especiales; se quedan la Ñ y la Ç. */
-export function textoAeat(valor: ValorDr, literal = false): string {
-  const permitidos = literal ? /[^A-Z0-9ÑÇ ./-]/g : /[^A-Z0-9ÑÇ ]/g;
-  return String(valor ?? '')
-    .toUpperCase()
-    .replace(/Ñ/g, '\u0000')
-    .replace(/Ç/g, '\u0001')
-    .normalize('NFD')
-    .replace(/[̀-ͯ]/g, '')
-    .replace(/\u0000/g, 'Ñ')
-    .replace(/\u0001/g, 'Ç')
-    .replace(permitidos, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
 const enCampo = (c: CampoDr) => `${c.id} (posiciones ${c.pos}-${c.pos + c.lon - 1})`;
 
 /** Valor de un campo con la longitud exacta del diseno. */
@@ -94,27 +80,22 @@ export function formatearCampoDr(c: CampoDr, valor: ValorDr): string {
       return ' '.repeat(c.lon);
     case 'Num':
     case 'N': {
-      let negativo = false;
-      let cifras: string;
-      if (valor === null || valor === undefined || valor === '') {
-        cifras = '0';
-      } else if (typeof valor === 'number' || c.decimales) {
-        const n = Number(valor);
-        if (!Number.isFinite(n)) throw new ErrorDisenoRegistro(`${enCampo(c)}: "${valor}" no es un número.`);
-        negativo = n < 0;
-        cifras = String(Math.round(Math.abs(n) * 10 ** (c.decimales ?? 0)));
-      } else {
-        cifras = String(valor).trim();
-        if (!/^\d+$/.test(cifras)) throw new ErrorDisenoRegistro(`${enCampo(c)}: "${valor}" no son solo cifras.`);
+      if (valor === null || valor === undefined || valor === '') return '0'.repeat(c.lon);
+      if (typeof valor === 'number' || c.decimales) {
+        try {
+          return importeAeat(valor, c.lon, { signo: c.tipo === 'N', decimales: c.decimales ?? 0, etiqueta: enCampo(c) });
+        } catch (e) {
+          throw e instanceof ErrorImporteAeat ? new ErrorDisenoRegistro(e.message) : e;
+        }
       }
-      if (negativo && c.tipo === 'Num') throw new ErrorDisenoRegistro(`${enCampo(c)} no admite importes negativos.`);
-      const hueco = negativo ? c.lon - 1 : c.lon;
-      if (cifras.length > hueco) throw new ErrorDisenoRegistro(`${enCampo(c)}: ${valor} no cabe en ${c.lon} posiciones.`);
-      return (negativo ? 'N' : '') + cifras.padStart(hueco, '0');
+      const cifras = String(valor).trim();
+      if (!/^\d+$/.test(cifras)) throw new ErrorDisenoRegistro(`${enCampo(c)}: "${valor}" no son solo cifras.`);
+      if (cifras.length > c.lon) throw new ErrorDisenoRegistro(`${enCampo(c)}: ${valor} no cabe en ${c.lon} posiciones.`);
+      return cifras.padStart(c.lon, '0');
     }
     case 'A':
     case 'An': {
-      const t = textoAeat(valor, c.literal);
+      const t = textoAeat(valor, { admite: c.literal ? ADMITE_LITERAL : '' });
       if (c.tipo === 'A' && /[^A-ZÑÇ ]/.test(t)) throw new ErrorDisenoRegistro(`${enCampo(c)} es alfabético y lleva "${t}".`);
       // Los codigos cortos (clave, pais, marcas) no se recortan: un valor que no cabe es un error.
       if (t.length > c.lon && c.lon <= 2) throw new ErrorDisenoRegistro(`${enCampo(c)}: "${t}" no cabe en ${c.lon} posiciones.`);
@@ -198,25 +179,4 @@ export function erroresTablaDr(registro: RegistroDr): string[] {
   }
   if (pos - 1 !== registro.longitud) errores.push(`${registro.id}: los campos suman ${pos - 1} y el registro mide ${registro.longitud}.`);
   return errores;
-}
-
-/**
- * NIF espanol para los campos de NIF de 9 posiciones: sin espacios ni guiones,
- * en mayusculas, sin el prefijo ES de un NIF-IVA, a la derecha y con ceros a la
- * izquierda. Vacio si no hay NIF.
- */
-export function nifDerecha(nif: ValorDr): string {
-  let n = String(nif ?? '')
-    .toUpperCase()
-    .replace(/[^A-Z0-9]/g, '');
-  if (n.length === 11 && n.startsWith('ES')) n = n.slice(2);
-  return n ? n.slice(-9).padStart(9, '0') : '';
-}
-
-/** Solo las cifras de un telefono espanol, sin el prefijo +34 / 0034 (9 cifras o vacio). */
-export function telefonoAeat(telefono: ValorDr): string {
-  let t = String(telefono ?? '').replace(/\D/g, '');
-  if (t.length > 9 && t.startsWith('0034')) t = t.slice(4);
-  else if (t.length > 9 && t.startsWith('34')) t = t.slice(2);
-  return t.length === 9 ? t : '';
 }

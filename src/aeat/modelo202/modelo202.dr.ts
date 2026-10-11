@@ -12,8 +12,8 @@
  * La pantalla lee el fichero generado con la misma tabla (leerFichero202).
  */
 import { DISENO_202 } from '../../domain/aeat/disenos';
-import { componerRegistroDr, leerRegistroDr, nifDerecha, registroDe, textoAeat, type CampoLeidoDr, type ValorDr } from '../common/disenoRegistro';
-import { esNifEspanolValido } from '../../utils/nif';
+import { componerRegistroDr, leerRegistroDr, registroDe, type CampoLeidoDr, type ValorDr } from '../common/disenoRegistro';
+import { errorNifDeclarante, ibanAeat, nifDerecha, textoAeat } from '../common/normalizacion';
 import { cabeceraAux, cierreAux, programaAeat, type ProgramaAeat } from '../common/cabeceraAux';
 
 export type Periodo202 = '1P' | '2P' | '3P';
@@ -84,7 +84,6 @@ export function calcularModalidadA202(base: number, anterior = 0): { '01': numbe
 }
 
 const ddmmaaaa = (iso: string) => (/^\d{4}-\d{2}-\d{2}$/.test(iso) ? `${iso.slice(8, 10)}${iso.slice(5, 7)}${iso.slice(0, 4)}` : '');
-const limpiarIban = (iban?: string | null) => String(iban ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '');
 
 /** Campos de casilla (con su numero oficial) de una pagina. */
 const camposCasilla = (pagina: string) => registroDe(DISENO_202, pagina).campos.filter((c) => c.casilla);
@@ -92,11 +91,12 @@ const camposCasilla = (pagina: string) => registroDe(DISENO_202, pagina).campos.
 /** Lo que impide generar el fichero; vacio si se puede. */
 export function erroresEntrada202(e: Entrada202): string[] {
   const errores: string[] = [];
-  if (!esNifEspanolValido(nifDerecha(e.nif))) errores.push('Falta el NIF de la empresa o no es válido: complétalo en Registro Mercantil > Datos.');
+  const errorNif = errorNifDeclarante(e.nif);
+  if (errorNif) errores.push(errorNif);
   if (!textoAeat(e.denominacion)) errores.push('Falta la razón social de la empresa: complétala en Registro Mercantil > Datos.');
   if (!PERIODOS_202.includes(e.periodo)) errores.push(`El periodo "${e.periodo}" no es válido: el 202 tiene 1P, 2P y 3P.`);
   if (!ddmmaaaa(e.fechaInicioPeriodo)) errores.push('Falta la fecha de inicio del periodo impositivo.');
-  if (e.tipoDeclaracion === 'U' && !/^[A-Z]{2}\d{2}[A-Z0-9]{10,30}$/.test(limpiarIban(e.iban))) errores.push('Para domiciliar el pago hace falta el IBAN de la cuenta.');
+  if (e.tipoDeclaracion === 'U' && !ibanAeat(e.iban)) errores.push('Para domiciliar el pago hace falta un IBAN válido: revisa la cuenta bancaria activa de la empresa (Tesorería > Cuentas bancarias).');
   if (e.complementaria && !textoAeat(e.justificanteAnterior)) errores.push('Una complementaria necesita el número de justificante de la declaración anterior.');
   for (const pagina of ['pagina01', 'pagina02']) {
     for (const c of camposCasilla(pagina)) {
@@ -143,7 +143,7 @@ export function generarFichero202(e: Entrada202, { comprobar = true }: { comprob
     complementaria: e.complementaria ? 'X' : '',
     justificanteAnterior: e.complementaria ? e.justificanteAnterior ?? '' : '',
     // IBAN espanol: solo las 24 primeras posiciones (nota 7 del diseno).
-    iban: e.tipoDeclaracion === 'U' ? (limpiarIban(e.iban).startsWith('ES') ? limpiarIban(e.iban).slice(0, 24) : limpiarIban(e.iban)) : '',
+    iban: e.tipoDeclaracion === 'U' ? ibanAeat(e.iban) ?? '' : '',
   });
   const cierre = cierreAux('202', e.ejercicio, e.periodo);
   return cabecera + pagina01 + pagina02 + cierre + '\r\n';

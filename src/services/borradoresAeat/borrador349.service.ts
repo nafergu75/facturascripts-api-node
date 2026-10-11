@@ -22,7 +22,7 @@
 import { prisma } from '../../config/database';
 import { badRequest } from '../../utils/http-errors';
 import { aparicionesEntre, fechaContableGasto, whereGastosFiscales } from '../../domain/factura-gasto.model';
-import { fechaDevengoVenta, limpiarNif, paisDelCliente, PAISES_UE } from '../../domain/tipo-operacion.model';
+import { fechaDevengoVenta, paisDelCliente, PAISES_UE } from '../../domain/tipo-operacion.model';
 import { clasificarOperacion, clave349De, exigirModelosAeat, obtenerFacturasFiscales } from '../impuestosCalculo.service';
 import { periodoFiscal } from '../nominas/fiscal';
 import type { PeriodoFiscal } from '../../domain/impuestos.model';
@@ -32,7 +32,6 @@ import {
   generarFichero349,
   leerFichero349,
   numeroDeclaracion349,
-  separarNifIva,
   type Clave349,
   type Entrada349,
   type Operador349,
@@ -40,6 +39,7 @@ import {
   type Rectificacion349,
 } from '../../aeat/modelo349/modelo349.dr';
 import { ErrorDisenoRegistro } from '../../aeat/common/disenoRegistro';
+import { separarNifIva } from '../../aeat/common/normalizacion';
 import { avisoPresentado, avisosContacto, declaranteEmpresa, filaModelo, opcionesDe, presentacionDe, type FilaCalendario } from './comun';
 
 /** Desde este dia las compras se clasifican por el pais ISO-2 y llevan A o I. */
@@ -85,7 +85,7 @@ function periodoDeFecha(fecha: string, tipo: PeriodoFiscal['tipo']): { ejercicio
 /** Clave de agrupacion de un operador: pais + numero del NIF-IVA (o el NIF limpio) y clave. */
 function claveOperador(m: { nifIva: string; pais?: string | null; clave: string }): string {
   const s = separarNifIva(m.nifIva, m.pais);
-  return `${s ? s.pais + s.numero : limpiarNif(m.nifIva)}|${m.clave}`;
+  return `${s ? s.pais + s.numero : String(m.nifIva ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '')}|${m.clave}`;
 }
 
 /** Ventas y compras del periodo que van al 349, cada una con su clave y su base en euros. */

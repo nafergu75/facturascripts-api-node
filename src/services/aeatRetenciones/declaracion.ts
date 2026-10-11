@@ -14,15 +14,12 @@ import {
   componerRegistroDr,
   DR111,
   DR115,
-  errorNifDeclarante,
-  esPersonaFisica,
-  ibanNormalizado,
   PERIODO_111_115,
   registroDr,
-  sanearAN,
   type DisenoDr,
 } from './diseno';
 import { cabeceraAux, cierreAux, programaAeat, type ProgramaAeat } from '../../aeat/common/cabeceraAux';
+import { errorNifDeclarante, esPersonaFisica, ibanAeat, textoAeat } from '../../aeat/common/normalizacion';
 
 export type ModeloRetenciones = '111' | '115';
 export type Casillas = Record<string, number>;
@@ -233,7 +230,7 @@ export function construirDeclaracion(modelo: ModeloRetenciones, e: EntradaDeclar
   } else if (personaFisica && denominacion) {
     avisos.push('Persona física: escribe la denominación como "Apellidos, Nombre" para separar los apellidos y el nombre, como pide el modelo.');
   }
-  if (!sanearAN(apellidos)) errores.push('Falta la razón social de la empresa (Registro Mercantil > Datos para la memoria).');
+  if (!textoAeat(apellidos)) errores.push('Falta la razón social de la empresa (Registro Mercantil > Datos para la memoria).');
   if (!PERIODO_111_115.test(e.periodo)) errores.push(`El ${modelo} es mensual (01 a 12) o trimestral (1T a 4T): el periodo "${e.periodo}" no es válido.`);
 
   // --- Casillas que dependen de otras ---
@@ -276,7 +273,7 @@ export function construirDeclaracion(modelo: ModeloRetenciones, e: EntradaDeclar
   let tipoDeclaracion: TipoDeclaracion = resultado === 0 ? 'N' : formaPago;
   let iban = '';
   if (tipoDeclaracion === 'U') {
-    const valido = ibanNormalizado(o.iban);
+    const valido = ibanAeat(o.iban);
     if (!valido) errores.push('Para domiciliar el pago hace falta un IBAN válido: revisa la cuenta bancaria activa de la empresa (Tesorería > Bancos).');
     else iban = valido;
   }

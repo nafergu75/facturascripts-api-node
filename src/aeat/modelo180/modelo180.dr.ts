@@ -11,7 +11,8 @@
  * La pantalla lee el fichero generado con la misma tabla (leerFichero180).
  */
 import { DISENO_180 } from '../../domain/aeat/disenos';
-import { componerRegistroDr, leerRegistroDr, nifDerecha, registroDe, telefonoAeat, textoAeat, type CampoLeidoDr } from '../common/disenoRegistro';
+import { componerRegistroDr, leerRegistroDr, registroDe, type CampoLeidoDr } from '../common/disenoRegistro';
+import { errorNifDeclarante, nifDerecha, telefonoAeat, textoAeat } from '../common/normalizacion';
 import { esNifEspanolValido } from '../../utils/nif';
 import type { ColumnaDr } from '../modelo349/modelo349.dr';
 
@@ -92,7 +93,8 @@ const quien = (p: Perceptor180) => `${p.nombre || 'Arrendador sin nombre'} (${p.
 export function erroresEntrada180(e: Entrada180): string[] {
   const errores: string[] = [];
   const d = e.declarante;
-  if (!esNifEspanolValido(nifDerecha(d.nif))) errores.push('Falta el NIF de la empresa o no es válido: complétalo en Registro Mercantil > Datos.');
+  const errorNif = errorNifDeclarante(d.nif);
+  if (errorNif) errores.push(errorNif);
   if (!textoAeat(d.nombre)) errores.push('Falta la razón social de la empresa: complétala en Registro Mercantil > Datos.');
   if (d.numeroDeclaracion && !/^180\d{10}$/.test(d.numeroDeclaracion)) errores.push('El número de la declaración tiene que tener 13 cifras y empezar por 180.');
   if (d.tipoDeclaracion && !/^180\d{10}$/.test(d.declaracionAnterior ?? '')) {

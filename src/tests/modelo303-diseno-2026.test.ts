@@ -141,13 +141,13 @@ const P2T: PeriodoFiscal = { ejercicio: 2026, periodo: '2T', tipo: 'trimestral',
 const P4T: PeriodoFiscal = { ejercicio: 2026, periodo: '4T', tipo: 'trimestral', fechaInicio: '2026-10-01', fechaFin: '2026-12-31' };
 const P05: PeriodoFiscal = { ejercicio: 2026, periodo: '05', tipo: 'mensual', fechaInicio: '2026-05-01', fechaFin: '2026-05-31' };
 
-const EMPRESA: ContextoEmpresa303 = { nif: 'B12345678', razonSocial: 'Ejemplo, S.L.', redeme: false, sii: false, criterioCaja: false, iban: 'ES9121000418450200051332' };
+const EMPRESA: ContextoEmpresa303 = { nif: 'B12345674', razonSocial: 'Ejemplo, S.L.', redeme: false, sii: false, criterioCaja: false, iban: 'ES9121000418450200051332' };
 
 let id = 0;
 const venta = (base: number, tipoIva: number, extra: Partial<FacturaFiscal> = {}, fecha = '2026-05-10'): FacturaFiscal => ({
   idFactura: `V${++id}`,
   tipo: 'venta',
-  cifnif: 'B11111111',
+  cifnif: 'B11111119',
   nombreTercero: 'Cliente',
   fecha,
   operacion: 'interior',
@@ -157,7 +157,7 @@ const venta = (base: number, tipoIva: number, extra: Partial<FacturaFiscal> = {}
 const compra = (base: number, tipoIva: number, extra: Partial<FacturaFiscal> = {}, fecha = '2026-05-12', inversion = false): FacturaFiscal => ({
   idFactura: `C${++id}`,
   tipo: 'compra',
-  cifnif: 'B22222222',
+  cifnif: 'B22222228',
   nombreTercero: 'Proveedor',
   fecha,
   operacion: 'interior',
@@ -218,7 +218,7 @@ describe('Fichero del 303 contra el diseño oficial 2026', () => {
     expect([l('64'), l('65'), l('66'), l('69'), l('71')]).toEqual([163, 100, 163, 163, 163]);
     // Identificación
     expect(campo(p1, 13, 1)).toBe('I'); // a ingresar
-    expect(campo(p1, 14, 9)).toBe('B12345678');
+    expect(campo(p1, 14, 9)).toBe('B12345674');
     expect(campo(p1, 23, 80).trimEnd()).toBe('EJEMPLO SL');
     expect(campo(p1, 103, 4) + campo(p1, 107, 2)).toBe('20262T');
     expect(campo(p1, 109, 9)).toBe('223222  2'); // foral, REDEME, solo RG, conjunta, caja x2, prorrata en blanco, concurso
@@ -361,8 +361,8 @@ describe('Fichero del 303 contra el diseño oficial 2026', () => {
   });
 
   it('NIF y razón social en An: mayúsculas, sin signos ni tildes (la Ñ se queda)', () => {
-    const { p1 } = generar([venta(100, 21)], P2T, { ctx: { nif: 'b-1234567.8', razonSocial: 'Ñandú & Cía., S.L.' } });
-    expect(campo(p1, 14, 9)).toBe('B12345678');
+    const { p1 } = generar([venta(100, 21)], P2T, { ctx: { nif: 'b-1234567.4', razonSocial: 'Ñandú & Cía., S.L.' } });
+    expect(campo(p1, 14, 9)).toBe('B12345674');
     expect(campo(p1, 23, 80).trimEnd()).toBe('ÑANDU CIA SL');
   });
 

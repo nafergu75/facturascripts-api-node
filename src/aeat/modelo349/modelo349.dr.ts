@@ -10,17 +10,9 @@
  * tabla el fichero generado, asi lo que se ve es lo que se presenta.
  */
 import { DISENO_349 } from '../../domain/aeat/disenos';
-import {
-  componerRegistroDr,
-  leerRegistroDr,
-  nifDerecha,
-  registroDe,
-  telefonoAeat,
-  textoAeat,
-  type CampoLeidoDr,
-} from '../common/disenoRegistro';
-import { limpiarNif, normalizarPais, PAISES_UE, prefijoNifIvaUe } from '../../domain/tipo-operacion.model';
-import { esNifEspanolValido } from '../../utils/nif';
+import { componerRegistroDr, leerRegistroDr, registroDe, type CampoLeidoDr } from '../common/disenoRegistro';
+import { errorNifDeclarante, nifDerecha, separarNifIva, telefonoAeat, textoAeat } from '../common/normalizacion';
+import { PAISES_UE } from '../../domain/tipo-operacion.model';
 
 /** E entregas, M entregas tras importacion exenta, H idem por representante fiscal, A adquisiciones de bienes,
  * T triangulares, S servicios prestados, I servicios recibidos, R/D/C ventas en consigna. */
@@ -83,24 +75,6 @@ export class ErrorEntrada349 extends Error {
 const PERIODO_349 = /^(0[1-9]|1[0-2]|[1-4]T)$/;
 
 /**
- * Pais (codigo del NIF-IVA: EL para Grecia) y numero de un operador de la UE.
- * Si el NIF lleva el prefijo de un Estado, ese; si no, el pais de la ficha.
- * null si no es un operador de otro Estado de la UE.
- */
-export function separarNifIva(nif: string | null | undefined, paisFicha?: string | null): { pais: string; numero: string } | null {
-  const limpio = limpiarNif(nif).replace(/[^A-Z0-9]/g, '');
-  if (!limpio) return null;
-  const pref = prefijoNifIvaUe(limpio);
-  if (pref) {
-    if (pref.prefijo === 'ES') return null;
-    return { pais: pref.prefijo, numero: limpio.slice(2) };
-  }
-  const pais = normalizarPais(paisFicha);
-  if (!pais || pais === 'ES' || !PAISES_UE.has(pais)) return null;
-  return { pais: pais === 'GR' ? 'EL' : pais, numero: limpio };
-}
-
-/**
  * Numero identificativo de la declaracion: 349 + ejercicio + periodo (mes, o
  * 21-24 para los trimestres) + secuencia de 4 cifras. Distinto por periodo, y
  * con la secuencia se distingue una complementaria o sustitutiva.
@@ -116,7 +90,8 @@ const etiqueta = (o: { nombre: string; nifIva: string }) => `${o.nombre || 'Oper
 export function erroresEntrada349(e: Entrada349): string[] {
   const errores: string[] = [];
   const d = e.declarante;
-  if (!esNifEspanolValido(nifDerecha(d.nif))) errores.push('Falta el NIF de la empresa o no es válido: complétalo en Registro Mercantil > Datos.');
+  const errorNif = errorNifDeclarante(d.nif);
+  if (errorNif) errores.push(errorNif);
   if (!textoAeat(d.nombre)) errores.push('Falta la razón social de la empresa: complétala en Registro Mercantil > Datos.');
   if (!Number.isInteger(e.ejercicio) || e.ejercicio < 2000 || e.ejercicio > 9999) errores.push(`El ejercicio ${e.ejercicio} no es válido.`);
   if (!PERIODO_349.test(e.periodo)) errores.push(`El periodo "${e.periodo}" no es válido: usa 01-12 o 1T-4T.`);
@@ -183,7 +158,7 @@ export function generarFichero349(e: Entrada349, { comprobar = true }: { comprob
   });
 
   const operador = (o: Operador349 | Rectificacion349) => {
-    const nifIva = separarNifIva(o.nifIva, o.pais) ?? { pais: '', numero: limpiarNif(o.nifIva) };
+    const nifIva = separarNifIva(o.nifIva, o.pais) ?? { pais: '', numero: String(o.nifIva ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '') };
     const sustituto = o.clave === 'C' && o.sustituto ? separarNifIva(o.sustituto.nifIva, o.sustituto.pais) : null;
     return {
       ...comunes,

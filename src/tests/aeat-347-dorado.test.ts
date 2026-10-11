@@ -40,18 +40,18 @@ const compra = (cifnif: string, nombre: string, fecha: string, base: number, cuo
 
 const FACTURAS: FacturaFiscal[] = [
   // Cliente con ventas en tres trimestres: 2.420 + 1.815 + 0 + 1.210 = 5.445 €.
-  venta('B12345678', 'Distribuciones Turia, S.L.', '2025-02-10', 2000, 420, { cpTercero: '46001' }),
-  venta('B12345678', 'Distribuciones Turia, S.L.', '2025-05-20', 1500, 315, { cpTercero: '46001' }),
-  venta('B12345678', 'Distribuciones Turia, S.L.', '2025-11-03', 1000, 210, { cpTercero: '46001' }),
+  venta('B12345674', 'Distribuciones Turia, S.L.', '2025-02-10', 2000, 420, { cpTercero: '46001' }),
+  venta('B12345674', 'Distribuciones Turia, S.L.', '2025-05-20', 1500, 315, { cpTercero: '46001' }),
+  venta('B12345674', 'Distribuciones Turia, S.L.', '2025-11-03', 1000, 210, { cpTercero: '46001' }),
   // El mismo cliente con el NIF escrito de dos formas: cuenta como uno (3.630 €).
-  venta('b-87654321', 'Peña y Cía, S.L.', '2025-01-15', 1500, 315, { provinciaTercero: 'Madrid' }),
-  venta('B87654321', 'Peña y Cía, S.L.', '2025-03-15', 1500, 315, { provinciaTercero: 'Madrid' }),
+  venta('b-87654323', 'Peña y Cía, S.L.', '2025-01-15', 1500, 315, { provinciaTercero: 'Madrid' }),
+  venta('B87654323', 'Peña y Cía, S.L.', '2025-03-15', 1500, 315, { provinciaTercero: 'Madrid' }),
   // Por debajo del umbral: no se declara.
   venta('B11223344', 'Pequeño Cliente SL', '2025-06-01', 2000, 420, { cpTercero: '03001' }),
   // Proveedor con una compra anulada en el 4T de otra del 3T: 3.025 €, con el 4T en negativo.
-  compra('A11111111', 'Cerámicas del Mijares, S.A.', '2025-03-01', 2500, 525, { cpTercero: '12001' }),
-  compra('A11111111', 'Cerámicas del Mijares, S.A.', '2025-08-01', 500, 105, { cpTercero: '12001' }),
-  compra('A11111111', 'Cerámicas del Mijares, S.A.', '2025-10-05', -500, -105, { cpTercero: '12001' }),
+  compra('A11111119', 'Cerámicas del Mijares, S.A.', '2025-03-01', 2500, 525, { cpTercero: '12001' }),
+  compra('A11111119', 'Cerámicas del Mijares, S.A.', '2025-08-01', 500, 105, { cpTercero: '12001' }),
+  compra('A11111119', 'Cerámicas del Mijares, S.A.', '2025-10-05', -500, -105, { cpTercero: '12001' }),
   // Profesional con retención: va al 190, no al 347.
   {
     ...compra('12345678Z', 'Asesor Fiscal', '2025-04-01', 6000, 1260, { cpTercero: '46002' }),
@@ -59,7 +59,7 @@ const FACTURAS: FacturaFiscal[] = [
   },
 ];
 
-const DECLARANTE = { nif: 'B98765432', razonSocial: 'Ifbiosoluciones, S.L.', telefono: '+34 961 23 45 67', contacto: 'García Pérez Ana', numeroIdentificativo: '3470000000001' };
+const DECLARANTE = { nif: 'B98765431', razonSocial: 'Ifbiosoluciones, S.L.', telefono: '+34 961 23 45 67', contacto: 'García Pérez Ana', numeroIdentificativo: '3470000000001' };
 
 describe('347 dorado: diseño oficial "Ejercicio 2025 y siguientes"', () => {
   it('la tabla del diseño cubre las 500 posiciones de cada registro sin huecos', () => {
@@ -79,9 +79,9 @@ describe('347 dorado: diseño oficial "Ejercicio 2025 y siguientes"', () => {
 
   it('agrupa por NIF limpio, aplica el umbral y deja fuera al profesional con retención', () => {
     expect(datos.operaciones.map((o) => [o.cifnif, o.tipo, o.baseAnual])).toEqual([
-      ['B12345678', 'cliente', 5445],
-      ['B87654321', 'cliente', 3630],
-      ['A11111111', 'proveedor', 3025],
+      ['B12345674', 'cliente', 5445],
+      ['B87654323', 'cliente', 3630],
+      ['A11111119', 'proveedor', 3025],
     ]);
     expect(datos.operaciones[0].trimestres).toEqual([2420, 1815, 0, 1210]);
     expect(datos.operaciones[2].trimestres).toEqual([3025, 0, 605, -605]);
@@ -101,7 +101,7 @@ describe('347 dorado: diseño oficial "Ejercicio 2025 y siguientes"', () => {
     expect(campo(t1, 1, 1)).toBe('1');
     expect(campo(t1, 2, 4)).toBe('347');
     expect(campo(t1, 5, 8)).toBe('2025');
-    expect(campo(t1, 9, 17)).toBe('B98765432');
+    expect(campo(t1, 9, 17)).toBe('B98765431');
     expect(campo(t1, 18, 57)).toBe('IFBIOSOLUCIONES SL'.padEnd(40));
     expect(campo(t1, 58, 58)).toBe('T');
     expect(campo(t1, 59, 67)).toBe('961234567');
@@ -121,7 +121,7 @@ describe('347 dorado: diseño oficial "Ejercicio 2025 y siguientes"', () => {
     // Ordenados por clave (A antes que B) y por importe.
     expect(campo(prov, 82, 82)).toBe('A');
     expect(campo(cli1, 82, 82)).toBe('B');
-    expect(campo(cli1, 18, 26)).toBe('B12345678');
+    expect(campo(cli1, 18, 26)).toBe('B12345674');
     expect(campo(cli1, 27, 35)).toBe(' '.repeat(9));
     expect(campo(cli1, 36, 75)).toBe('DISTRIBUCIONES TURIA SL'.padEnd(40));
     expect(campo(cli1, 76, 76)).toBe('D');
@@ -143,7 +143,7 @@ describe('347 dorado: diseño oficial "Ejercicio 2025 y siguientes"', () => {
     expect(campo(cli1, 306, 500).trim()).toBe('');
 
     // Ñ conservada; NIF normalizado; provincia por el nombre (Madrid = 28).
-    expect(campo(cli2, 18, 26)).toBe('B87654321');
+    expect(campo(cli2, 18, 26)).toBe('B87654323');
     expect(campo(cli2, 36, 75)).toBe('PEÑA Y CIA SL'.padEnd(40));
     expect(campo(cli2, 77, 78)).toBe('28');
     expect(Buffer.from(cli2, 'latin1')[35 + 2]).toBe(0xd1); // 'Ñ' en ISO-8859-1
@@ -159,16 +159,16 @@ describe('347 dorado: diseño oficial "Ejercicio 2025 y siguientes"', () => {
       const anual = Number(campo(l, 84, 98)) * (campo(l, 83, 83) === 'N' ? -1 : 1);
       const trimestres = [136, 168, 200, 232].map((p) => Number(campo(l, p + 1, p + 15)) * (campo(l, p, p) === 'N' ? -1 : 1));
       expect(trimestres.reduce((a, b) => a + b, 0)).toBe(anual);
-      expect(campo(l, 9, 17)).toBe('B98765432');
+      expect(campo(l, 9, 17)).toBe('B98765431');
     }
   });
 
   it('la pantalla enseña los mismos importes que el fichero', () => {
     expect(decl.resumen).toEqual({ numeroDeclarados: 3, importeTotal: 12100, numeroInmuebles: 0, importeArrendamientos: 0 });
     expect(decl.declarados.map((d) => [d.nifFichero, d.clave, d.provincia, d.importeAnual, d.trimestres])).toEqual([
-      ['A11111111', 'A', '12', 3025, [3025, 0, 605, -605]],
-      ['B12345678', 'B', '46', 5445, [2420, 1815, 0, 1210]],
-      ['B87654321', 'B', '28', 3630, [3630, 0, 0, 0]],
+      ['A11111119', 'A', '12', 3025, [3025, 0, 605, -605]],
+      ['B12345674', 'B', '46', 5445, [2420, 1815, 0, 1210]],
+      ['B87654323', 'B', '28', 3630, [3630, 0, 0, 0]],
     ]);
   });
 

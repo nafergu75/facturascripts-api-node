@@ -15,6 +15,7 @@
  * El fichero es una cadena continua: cabecera <T3030EEEEPP0000><AUX>...</AUX>,
  * las páginas y el cierre </T3030EEEEPP0000>, sin saltos de línea.
  */
+import { ErrorImporteAeat, importeAeat } from '../../aeat/common/normalizacion';
 import disenoJson from './dr303-2026.json';
 import { badRequest } from '../../utils/http-errors';
 
@@ -72,35 +73,6 @@ export function casillasDePagina303(pagina: PaginaDr303): string[] {
 }
 
 // ---------------------------------------------------------------------------
-// Texto para campos An (letras, números y blancos)
-// ---------------------------------------------------------------------------
-
-/**
- * Texto apto para un campo An: mayúsculas, sin tildes (la Ñ y la Ç se
- * conservan: el fichero va en ISO-8859-1), sin signos (los puntos se quitan y
- * el resto pasa a blanco) y sin blancos repetidos. "Ejemplo, S.L." -> "EJEMPLO SL".
- */
-export function textoAn303(valor: string): string {
-  return (valor ?? '')
-    .toUpperCase()
-    .replace(/Ñ/g, '\u0001')
-    .replace(/Ç/g, '\u0002')
-    .normalize('NFD')
-    .replace(/[̀-ͯ]/g, '')
-    .replace(/\u0001/g, 'Ñ')
-    .replace(/\u0002/g, 'Ç')
-    .replace(/\./g, '')
-    .replace(/[^A-Z0-9ÑÇ ]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-/** NIF para el fichero: mayúsculas, sin blancos ni signos. */
-export function nifAn303(nif: string): string {
-  return (nif ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '');
-}
-
-// ---------------------------------------------------------------------------
 // Formato de un campo
 // ---------------------------------------------------------------------------
 
@@ -114,16 +86,15 @@ function formatearCampo(pagina: PaginaDr303, c: CampoDr303, valor: ValorCampo303
   if (valor === null) return ' '.repeat(lon);
   if (typeof valor === 'number') {
     if (c.tipo !== 'Num' && c.tipo !== 'N') throw new Error(`${etiqueta(pagina, c)} es de texto y se le ha pasado un número.`);
-    const centimos = Math.round(valor * 100);
-    if (centimos < 0 && c.tipo === 'Num') {
-      throw badRequest(
-        `El 303 no admite un importe negativo en ${etiqueta(pagina, c)} (${valor.toFixed(2)} €): revisa las facturas del periodo.`,
-      );
+    try {
+      return importeAeat(valor, lon, { signo: c.tipo === 'N', etiqueta: etiqueta(pagina, c) });
+    } catch (e) {
+      if (!(e instanceof ErrorImporteAeat)) throw e;
+      if (e.motivo === 'negativo') {
+        throw badRequest(`El 303 no admite un importe negativo en ${etiqueta(pagina, c)} (${valor.toFixed(2)} €): revisa las facturas del periodo.`);
+      }
+      throw badRequest(`El importe de ${etiqueta(pagina, c)} (${valor.toFixed(2)} €) no cabe en el fichero del 303.`);
     }
-    const digitos = String(Math.abs(centimos));
-    const espacio = centimos < 0 ? lon - 1 : lon;
-    if (digitos.length > espacio) throw badRequest(`El importe de ${etiqueta(pagina, c)} (${valor.toFixed(2)} €) no cabe en el fichero del 303.`);
-    return (centimos < 0 ? 'N' : '') + digitos.padStart(espacio, '0');
   }
   if (valor.length > lon) throw new Error(`"${valor}" no cabe en ${etiqueta(pagina, c)} (${lon} posiciones).`);
   return c.tipo === 'Num' || c.tipo === 'N' ? valor.padStart(lon, '0') : valor.padEnd(lon, ' ');

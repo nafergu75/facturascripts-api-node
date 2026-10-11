@@ -162,7 +162,7 @@ describe('349 de 2027 desde las facturas', () => {
     const lineas = comprobarFicheroPorLineas(DISENO_349, fichero, (l, i) => (i === 0 ? 'declarante' : posiciones(l, 134, 146).trim() ? 'operador' : 'rectificacion'));
     const [t1, ...t2] = lineas.map((l) => l.linea);
     expect(posiciones(t1, 1, 17)).toBe(`13492027${NIF}`);
-    expect(posiciones(t1, 18, 57)).toBe('EXPORTADORA TURIA S L'.padEnd(40));
+    expect(posiciones(t1, 18, 57)).toBe('EXPORTADORA TURIA SL'.padEnd(40));
     expect(posiciones(t1, 59, 107)).toBe('963123456' + 'GARCIA MUÑOZ ANA'.padEnd(40));
     expect(posiciones(t1, 136, 185)).toBe('2T' + '000000003' + '000000000880000' + '000000002' + '000000000900000');
     expect(t2.map((l) => [posiciones(l, 76, 92), posiciones(l, 133, 133), posiciones(l, 134, 146)])).toEqual([

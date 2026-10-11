@@ -82,7 +82,7 @@ describe('180 dorado: fichero con el diseño oficial', () => {
   it('tipo 1, posiciones del PDF', () => {
     expect(posiciones(t1, 1, 8)).toBe('11802027');
     expect(posiciones(t1, 9, 17)).toBe(NIF);
-    expect(posiciones(t1, 18, 57)).toBe('BIOSOLUCIONES DEL TURIA S L'.padEnd(40));
+    expect(posiciones(t1, 18, 57)).toBe('BIOSOLUCIONES DEL TURIA SL'.padEnd(40));
     expect(posiciones(t1, 58, 58)).toBe('T');
     expect(posiciones(t1, 59, 67)).toBe('963123456');
     expect(posiciones(t1, 68, 107)).toBe('GARCIA MUÑOZ ANA'.padEnd(40));
@@ -128,7 +128,7 @@ describe('180 dorado: fichero con el diseño oficial', () => {
   it('tipo 2 de la sociedad: S/N, complemento y el registro con ejercicio de devengo', () => {
     const [, sociedad, devengo] = t2;
     expect(posiciones(sociedad, 18, 26)).toBe(CIF_ARRENDADORA);
-    expect(posiciones(sociedad, 36, 75)).toBe('INMUEBLES ÑORA S L'.padEnd(40));
+    expect(posiciones(sociedad, 36, 75)).toBe('INMUEBLES ÑORA SL'.padEnd(40));
     expect(posiciones(sociedad, 190, 192)).toBe('S/N');
     expect(posiciones(sociedad, 193, 197)).toBe(' '.repeat(5));
     expect(posiciones(sociedad, 216, 255)).toBe('CENTRO COMERCIAL LAS ROSAS LOCAL 14'.padEnd(40));

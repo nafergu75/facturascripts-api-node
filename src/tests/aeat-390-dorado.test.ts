@@ -20,7 +20,7 @@ let n = 0;
 const venta = (fecha: string, lineas: FacturaFiscal['lineas'], extra: Partial<FacturaFiscal> = {}): FacturaFiscal => ({
   idFactura: `V${++n}`,
   tipo: 'venta',
-  cifnif: 'B12345678',
+  cifnif: 'B12345674',
   nombreTercero: 'Cliente',
   fecha,
   operacion: 'interior',
@@ -31,7 +31,7 @@ const venta = (fecha: string, lineas: FacturaFiscal['lineas'], extra: Partial<Fa
 const compra = (fecha: string, lineas: FacturaFiscal['lineas'], extra: Partial<FacturaFiscal> = {}): FacturaFiscal => ({
   idFactura: `C${++n}`,
   tipo: 'compra',
-  cifnif: 'A11111111',
+  cifnif: 'A11111119',
   nombreTercero: 'Proveedor',
   fecha,
   operacion: 'interior',
@@ -67,7 +67,7 @@ const FACTURAS: FacturaFiscal[] = [
   compra('2025-03-01', [{ tipoIva: 21, base: 300, cuota: 63 }], { deducible: false }),
 ];
 
-const ID = { nif: 'b98765432', razonSocial: 'Ifbiosoluciones, S.L.', actividad: 'Comercio al por mayor', presenta347: true };
+const ID = { nif: 'b98765431', razonSocial: 'Ifbiosoluciones, S.L.', actividad: 'Comercio al por mayor', presenta347: true };
 
 describe('390 dorado: diseño oficial vers. 1.02 (ejercicio 2025)', () => {
   it('la tabla del diseño cubre cada página sin huecos y con su longitud', () => {
@@ -81,7 +81,7 @@ describe('390 dorado: diseño oficial vers. 1.02 (ejercicio 2025)', () => {
     }
   });
 
-  const { entrada } = entrada390Desde(FACTURAS, 2025, ID, { compensarEjercicioAnterior: 200, ultimoPeriodo: 'compensar', programa: { versionPrograma: 'CA01', nifEmpresaDesarrollo: 'B11111111' } });
+  const { entrada } = entrada390Desde(FACTURAS, 2025, ID, { compensarEjercicioAnterior: 200, ultimoPeriodo: 'compensar', programa: { versionPrograma: 'CA01', nifEmpresaDesarrollo: 'B11111119' } });
   const decl = construirModelo390(entrada);
   const f = decl.fichero;
 
@@ -99,7 +99,7 @@ describe('390 dorado: diseño oficial vers. 1.02 (ejercicio 2025)', () => {
     expect(campo(cab, 23, 70).trim()).toBe('');
     expect(campo(cab, 93, 4)).toBe('CA01');
     expect(campo(cab, 97, 4)).toBe('    ');
-    expect(campo(cab, 101, 9)).toBe('B11111111');
+    expect(campo(cab, 101, 9)).toBe('B11111119');
     expect(campo(cab, 110, 213).trim()).toBe('');
     expect(campo(cab, 323, 6)).toBe('</AUX>');
     expect(f.slice(-18)).toBe('</T390020250A0000>');
@@ -128,7 +128,7 @@ describe('390 dorado: diseño oficial vers. 1.02 (ejercicio 2025)', () => {
   it('página 1: sujeto pasivo, devengo y datos estadísticos', () => {
     const p = pagina('01000');
     expect(campo(p, 13, 1)).toBe(' ');
-    expect(campo(p, 14, 9)).toBe('B98765432');
+    expect(campo(p, 14, 9)).toBe('B98765431');
     expect(campo(p, 23, 60)).toBe('IFBIOSOLUCIONES SL'.padEnd(60));
     expect(campo(p, 83, 20)).toBe(' '.repeat(20));
     expect(campo(p, 103, 4)).toBe('2025');

@@ -24,7 +24,8 @@ import { cabeceraAux, cierreAux, programaAeat, type ProgramaAeat } from '../comm
 import dr200 from '../../domain/aeat/dr200-2025.json';
 import type { BalanceSituacion, CuentaPerdidasGanancias } from '../../domain/impuesto-sociedades.model';
 import { aCentimos } from '../../utils/money';
-import { CampoOficial, exigirDiseno, nifLimpio, PaginaOficial, RegistroAeat, textoAeat } from './diseno';
+import { CampoOficial, exigirDiseno, PaginaOficial, RegistroAeat } from './diseno';
+import { errorNifDeclarante, ibanAeat, nifAeat, telefonoAeat, textoAeat } from '../common/normalizacion';
 
 interface Diseno200 {
   version: string;
@@ -220,9 +221,9 @@ export function construirModelo200(e: Entrada200): Declaracion200 {
   const errores: string[] = [];
   const advertencias: string[] = [];
   const id = e.identificacion;
-  const nif = nifLimpio(id.nif);
-  if (!nif) errores.push('Falta el NIF de la empresa. Rellénalo en Registro Mercantil > Datos para la memoria.');
-  else if (!/^[0-9A-Z]{9}$/.test(nif)) errores.push(`El NIF de la empresa (${id.nif}) no tiene 9 caracteres.`);
+  const nif = nifAeat(id.nif);
+  const errorNif = errorNifDeclarante(id.nif);
+  if (errorNif) errores.push(errorNif);
   if (!textoAeat(id.razonSocial)) errores.push('Falta la razón social de la empresa. Rellénala en Registro Mercantil > Datos para la memoria.');
   if (e.ejercicio !== DISENO_200.ejercicio) {
     advertencias.push(`Se usa el diseño ${DISENO_200.version} del ejercicio ${DISENO_200.ejercicio}: la AEAT aún no ha publicado el del ${e.ejercicio}. Revísalo cuando salga.`);
@@ -286,7 +287,7 @@ export function construirModelo200(e: Entrada200): Declaracion200 {
     .entero(123, fin.d)
     .entero(125, anoNatural ? 1 : 2) // TODO confirmar la tabla de "tipo de ejercicio" en la ayuda de Sociedades WEB
     .crudo(126, cnae.length === 4 ? cnae : '0000')
-    .texto(131, String(id.telefono ?? '').replace(/\D/g, '').slice(-9), false);
+    .texto(131, telefonoAeat(id.telefono), false);
   if (incn !== null && incn < 10_000_000) p1.crudo(193, '1'); // [00006] incentivos de reducida dimensión
   if (c552 <= 0) p1.crudo(219, '1'); // [00027] base imponible negativa o cero
   if (tg.clave === 'micro') p1.crudo(227, '1'); // [00088] INCN del año anterior < 1 M€
@@ -295,7 +296,7 @@ export function construirModelo200(e: Entrada200): Declaracion200 {
   else if (incn < 60_000_000) p1.crudo(242, '1');
   else p1.crudo(243, '1');
   if (id.contacto) p1.texto(285, id.contacto);
-  const tel = String(id.telefono ?? '').replace(/\D/g, '').slice(-9);
+  const tel = telefonoAeat(id.telefono);
   if (tel) p1.crudo(tel.startsWith('6') || tel.startsWith('7') ? 344 : 335, tel.padStart(9, '0'));
   const email = String(id.email ?? '').trim().replace(/[^A-Za-z0-9@._-]/g, '').slice(0, 50);
   if (email) p1.crudo(353, email.padEnd(50, ' '));
@@ -404,11 +405,11 @@ export function construirModelo200(e: Entrada200): Declaracion200 {
     .importe(139, eur(c562))
     .importe(156, eur(c1586))
     .importe(173, eur(c621));
-  const iban = String(e.iban ?? '').replace(/\s/g, '').toUpperCase();
+  const iban = ibanAeat(e.iban) ?? '';
   if (tipoDeclaracion === 'D') {
     did.crudo(207, 'D').importe(208, eur(-c621));
     if (iban) did.crudo(242, iban.startsWith('ES') ? '1' : '2').texto(243, iban, false);
-    else advertencias.push('Sale a devolver y falta el IBAN de la empresa (Tesorería > Cuentas bancarias).');
+    else advertencias.push('Sale a devolver y falta un IBAN válido de la empresa (Tesorería > Cuentas bancarias).');
   } else if (tipoDeclaracion === 'I') {
     did.crudo(425, 'I').importe(426, eur(c621));
   } else {

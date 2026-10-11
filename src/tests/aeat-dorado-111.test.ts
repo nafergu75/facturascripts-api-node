@@ -125,7 +125,7 @@ describe('111: fichero con nominas y profesionales (caso real)', () => {
     comprobarRegistro(pag, PAG, {
       tipoDeclaracion: 'I',
       nif: EMPRESA,
-      apellidosODenominacion: 'NEWZELAND CENTER S L'.padEnd(60, ' '),
+      apellidosODenominacion: 'NEWZELAND CENTER SL'.padEnd(60, ' '),
       nombre: ' '.repeat(20),
       ejercicio: '2026',
       periodo: '2T',

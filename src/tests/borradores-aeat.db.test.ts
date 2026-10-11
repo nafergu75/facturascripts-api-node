@@ -74,7 +74,7 @@ async function venta(companyId: string, customerId: string, fecha: string, base:
 
 beforeAll(async () => {
   for (const [id, nif, pais] of [
-    [ES, 'B46000001', 'ES'],
+    [ES, 'B46000006', 'ES'],
     [SIN_NIF, '', 'ES'],
     [US, '', 'US'],
   ] as const) {
@@ -83,10 +83,10 @@ beforeAll(async () => {
       data: { companyId: id, denominacion: nif ? 'Borradores Turia, S.L.' : '', nif, pais, telefono: '961 23 45 67', cnae: '4646' },
     });
   }
-  const cli = await prisma.customer.create({ data: { companyId: ES, nombreFiscal: 'Distribuciones Peña, S.L.', nifCif: 'B12345678', pais: 'ES', cp: '46001' } });
+  const cli = await prisma.customer.create({ data: { companyId: ES, nombreFiscal: 'Distribuciones Peña, S.L.', nifCif: 'B12345674', pais: 'ES', cp: '46001' } });
   await venta(ES, cli.id, '2025-02-10', 4000, 840);
   await venta(ES, cli.id, '2025-08-10', 1000, 210);
-  const sin = await prisma.customer.create({ data: { companyId: SIN_NIF, nombreFiscal: 'Sin datos', nifCif: 'B87654321', pais: 'ES' } });
+  const sin = await prisma.customer.create({ data: { companyId: SIN_NIF, nombreFiscal: 'Sin datos', nifCif: 'B87654323', pais: 'ES' } });
   await venta(SIN_NIF, sin.id, '2025-03-10', 5000, 1050);
 });
 
@@ -96,9 +96,9 @@ describe('borrador del 347', () => {
     expect(r.status).toBe(200);
     const b = r.body.data ?? r.body;
     expect(b.errores).toEqual([]);
-    expect(b.declarante).toMatchObject({ nif: 'B46000001', razonSocial: 'BORRADORES TURIA SL', telefono: '961234567' });
+    expect(b.declarante).toMatchObject({ nif: 'B46000006', razonSocial: 'BORRADORES TURIA SL', telefono: '961234567' });
     expect(b.resumen).toMatchObject({ numeroDeclarados: 1, importeTotal: 6050 });
-    expect(b.declarados[0]).toMatchObject({ nifFichero: 'B12345678', clave: 'B', provincia: '46', importeAnual: 6050, trimestres: [4840, 0, 1210, 0] });
+    expect(b.declarados[0]).toMatchObject({ nifFichero: 'B12345674', clave: 'B', provincia: '46', importeAnual: 6050, trimestres: [4840, 0, 1210, 0] });
     expect(b.fichero).toBeUndefined();
   });
 

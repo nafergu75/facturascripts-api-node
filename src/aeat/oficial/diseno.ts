@@ -10,7 +10,7 @@
  * salen de la misma página construida (`casillas()`).
  */
 import { badRequest } from '../../utils/http-errors';
-import { aCentimos } from '../../utils/money';
+import { ErrorImporteAeat, importeAeat, textoAeat } from '../common/normalizacion';
 
 export type TipoCampoAeat = 'A' | 'An' | 'Num' | 'N';
 
@@ -38,66 +38,20 @@ export interface PaginaOficial {
 
 
 // ---------------------------------------------------------------------------
-// Normalización de textos (Nota 3.2 del 390, reglas del 347 y del 200)
-// ---------------------------------------------------------------------------
-
-/**
- * Texto para un campo alfanumérico: mayúsculas, sin vocales acentuadas y sin
- * caracteres especiales, CONSERVANDO la Ñ y la Ç (existen en ISO-8859-1 y la
- * AEAT las admite). Puntos, comas y apóstrofos se quitan ("S.L." -> "SL"); lo
- * demás que no sea letra, número o blanco pasa a blanco; los
- * blancos seguidos se juntan.
- */
-export function textoAeat(valor: string | null | undefined): string {
-  return String(valor ?? '')
-    .toUpperCase()
-    .replace(/Ñ/g, '\u0001')
-    .replace(/Ç/g, '\u0002')
-    .normalize('NFD')
-    .replace(/[̀-ͯ]/g, '')
-    .replace(/\u0001/g, 'Ñ')
-    .replace(/\u0002/g, 'Ç')
-    .replace(/[.,'´`]/g, '') // "S.L." -> "SL"
-    .replace(/[^A-Z0-9ÑÇ ]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-/** NIF limpio (sin espacios, puntos ni guiones; sin prefijo ES), en mayúsculas. */
-export function nifLimpio(nif: string | null | undefined): string {
-  let n = String(nif ?? '').toUpperCase().replace(/[\s.\-/]/g, '');
-  if (n.length > 9 && n.startsWith('ES')) n = n.slice(2);
-  return n;
-}
-
-/** NIF de 9 posiciones ajustado a la derecha con ceros a la izquierda (347). */
-export function nifAjustado(nif: string | null | undefined): string {
-  const n = nifLimpio(nif);
-  return n ? n.padStart(9, '0').slice(-9) : '';
-}
-
-/** NIF español con forma válida (9 caracteres, letras y cifras). No comprueba el dígito de control. */
-export function nifConForma(nif: string | null | undefined): boolean {
-  return /^[0-9A-Z]{9}$/.test(nifAjustado(nif)) && /\d/.test(nifAjustado(nif));
-}
-
-// ---------------------------------------------------------------------------
 // Formateo de un valor según el tipo del campo
 // ---------------------------------------------------------------------------
 
-/** Importe en céntimos con signo 'N' (campo N) o sin signo (campo Num). */
+/** Importe en céntimos con signo 'N' (campo N) o sin signo (campo Num): importeAeat común. */
 export function formatearImporte(campo: Pick<CampoOficial, 'tipo' | 'len' | 'desc' | 'casilla'>, euros: number): string {
-  const c = aCentimos(Number(euros) || 0);
-  const abs = String(Math.abs(c));
-  if (c < 0) {
-    if (campo.tipo !== 'N') {
-      throw badRequest(`La casilla ${campo.casilla ? `[${campo.casilla}]` : campo.desc} no admite importes negativos (${(c / 100).toFixed(2)} €).`);
-    }
-    if (abs.length > campo.len - 1) throw badRequest(`El importe ${(c / 100).toFixed(2)} € no cabe en la casilla ${campo.casilla ?? campo.desc}.`);
-    return 'N' + abs.padStart(campo.len - 1, '0');
+  const nombre = `La casilla ${campo.casilla ? `[${campo.casilla}]` : campo.desc}`;
+  try {
+    return importeAeat(Number(euros) || 0, campo.len, { signo: campo.tipo === 'N', etiqueta: nombre });
+  } catch (e) {
+    if (!(e instanceof ErrorImporteAeat)) throw e;
+    const importe = `${(Math.round((Number(euros) || 0) * 100) / 100).toFixed(2)} €`;
+    if (e.motivo === 'negativo') throw badRequest(`${nombre} no admite importes negativos (${importe}).`);
+    throw badRequest(`El importe ${importe} no cabe en la casilla ${campo.casilla ?? campo.desc}.`);
   }
-  if (abs.length > campo.len) throw badRequest(`El importe ${(c / 100).toFixed(2)} € no cabe en la casilla ${campo.casilla ?? campo.desc}.`);
-  return abs.padStart(campo.len, '0');
 }
 
 /** Entero sin signo alineado a la derecha con ceros. */

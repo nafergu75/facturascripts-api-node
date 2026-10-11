@@ -5,7 +5,7 @@
  */
 import { prisma } from '../../config/database';
 import { badRequest, notFound } from '../../utils/http-errors';
-import { textoAeat } from '../../aeat/common/disenoRegistro';
+import { ADMITE_LITERAL, textoAeat } from '../../aeat/common/normalizacion';
 
 const PROVINCIA = /^(0[1-9]|[1-4]\d|5[0-3])$/;
 
@@ -65,7 +65,7 @@ type DatosInmueble = {
 export function validarInmueble(e: InmuebleEntrada): DatosInmueble {
   const errores: string[] = [];
   const txt = (v: unknown, max: number, campo: string, obligatorio = false, literal = false): string | null => {
-    const t = textoAeat(v as string, literal);
+    const t = textoAeat(v as string, { admite: literal ? ADMITE_LITERAL : '' });
     if (!t) {
       if (obligatorio) errores.push(`Falta ${campo}.`);
       return null;

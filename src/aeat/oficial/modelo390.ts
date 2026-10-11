@@ -16,7 +16,8 @@ import { cabeceraAux, cierreAux, programaAeat, type ProgramaAeat } from '../comm
 import dr390 from '../../domain/aeat/dr390-v102.json';
 import type { DesgloseIva, VolumenOperaciones390 } from '../../domain/impuestos.model';
 import { aCentimos } from '../../utils/money';
-import { CampoOficial, exigirDiseno, nifLimpio, PaginaOficial, RegistroAeat, textoAeat } from './diseno';
+import { CampoOficial, exigirDiseno, PaginaOficial, RegistroAeat } from './diseno';
+import { errorNifDeclarante, nifAeat, textoAeat } from '../common/normalizacion';
 
 interface Diseno390 {
   version: string;
@@ -181,9 +182,9 @@ export function construirModelo390(e: Entrada390): Declaracion390 {
   const errores: string[] = [];
   const advertencias: string[] = [];
   const id = e.identificacion;
-  const nif = nifLimpio(id.nif);
-  if (!nif) errores.push('Falta el NIF de la empresa. Rellénalo en Registro Mercantil > Datos para la memoria.');
-  else if (!/^[0-9A-Z]{9}$/.test(nif)) errores.push(`El NIF de la empresa (${id.nif}) no tiene 9 caracteres.`);
+  const nif = nifAeat(id.nif);
+  const errorNif = errorNifDeclarante(id.nif);
+  if (errorNif) errores.push(errorNif);
   if (!textoAeat(id.razonSocial)) errores.push('Falta la razón social de la empresa. Rellénala en Registro Mercantil > Datos para la memoria.');
   if (e.ejercicio !== DISENO_390.ejercicio) {
     advertencias.push(`Se usa el diseño ${DISENO_390.version} del ejercicio ${DISENO_390.ejercicio}: la AEAT aún no ha publicado el del ${e.ejercicio}. Revísalo cuando salga.`);

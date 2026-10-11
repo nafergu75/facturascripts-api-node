@@ -18,9 +18,9 @@ import {
   generarFichero349,
   leerFichero349,
   numeroDeclaracion349,
-  separarNifIva,
   type Entrada349,
 } from '../aeat/modelo349/modelo349.dr';
+import { separarNifIva } from '../aeat/common/normalizacion';
 
 const NIF = `B4612345${controlCif('4612345').cifra}`;
 
@@ -68,7 +68,7 @@ describe('349 dorado: fichero con el diseño oficial', () => {
     expect(posiciones(t1, 2, 4)).toBe('349');
     expect(posiciones(t1, 5, 8)).toBe('2027');
     expect(posiciones(t1, 9, 17)).toBe(NIF);
-    expect(posiciones(t1, 18, 57)).toBe('BIOSOLUCIONES DEL TURIA S L'.padEnd(40));
+    expect(posiciones(t1, 18, 57)).toBe('BIOSOLUCIONES DEL TURIA SL'.padEnd(40));
     expect(posiciones(t1, 58, 58)).toBe(' ');
     expect(posiciones(t1, 59, 67)).toBe('963123456');
     expect(posiciones(t1, 68, 107)).toBe('GARCIA MUÑOZ ANA'.padEnd(40));
@@ -87,8 +87,8 @@ describe('349 dorado: fichero con el diseño oficial', () => {
   it('tipo 2 de operador: país y número del NIF-IVA separados, clave y base', () => {
     const esperado = [
       ['DE', '123456789', 'MULLER HANDELS GMBH', 'E', '0000001250000'],
-      ['FR', '12345678901', 'SOCIETE GENERALE D EQUIPEMENTS', 'E', '0000000320050'],
-      ['IT', '12345678901', 'ROSSI S P A', 'A', '0000000800000'],
+      ['FR', '12345678901', 'SOCIETE GENERALE DEQUIPEMENTS', 'E', '0000000320050'],
+      ['IT', '12345678901', 'ROSSI SPA', 'A', '0000000800000'],
       ['PT', '123456789', 'PEÑAS FILHOS LDA', 'S', '0000000095000'],
       ['EL', '123456789', 'PAPADOPOULOS AE', 'I', '0000000040010'],
     ];

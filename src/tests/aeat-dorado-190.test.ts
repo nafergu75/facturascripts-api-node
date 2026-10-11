@@ -120,7 +120,7 @@ describe('190 de 2026: nominas, atrasos, reintegro y profesionales (caso real)',
     comprobarRegistro(regs[0], T1, {
       ejercicio: '2026',
       nifDeclarante: EMPRESA,
-      nombreDeclarante: 'NEWZELAND CENTER S L'.padEnd(40, ' '),
+      nombreDeclarante: 'NEWZELAND CENTER SL'.padEnd(40, ' '),
       telefono: '963000000',
       contacto: 'FERNANDEZ GIL IGNACIO'.padEnd(40, ' '),
       numeroDeclaracion: '1902026000001',
@@ -188,7 +188,7 @@ describe('190 de 2026: nominas, atrasos, reintegro y profesionales (caso real)',
   });
 
   it('profesionales: G.01 al 15 % y G.03 al 7 % (La Palma = 53)', () => {
-    comprobarRegistro(reg('G', ASESORIA), T2, { nombrePerceptor: 'ASESORIA MUÑOZ C B'.padEnd(40, ' '), provincia: '46', clave: 'G', subclave: '01', percepcionIntegra: cents(1000, 13), retenciones: cents(150, 13), anioNacimiento: '0000', contrato: '0' });
+    comprobarRegistro(reg('G', ASESORIA), T2, { nombrePerceptor: 'ASESORIA MUÑOZ CB'.padEnd(40, ' '), provincia: '46', clave: 'G', subclave: '01', percepcionIntegra: cents(1000, 13), retenciones: cents(150, 13), anioNacimiento: '0000', contrato: '0' });
     comprobarRegistro(reg('G', nif(30000004)), T2, { nombrePerceptor: 'LUCIA DIAZ SANZ'.padEnd(40, ' '), provincia: '53', subclave: '03', percepcionIntegra: cents(1200, 13), retenciones: cents(84, 13) });
     expect(codigoProvincia('38700', null)).toBe('53');
     expect(codigoProvincia('38001', null)).toBe('38');
