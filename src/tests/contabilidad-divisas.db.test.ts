@@ -356,7 +356,9 @@ describe('facturas EUR anteriores (sin tipo de operacion): exactamente lo de ant
       ['L-2', 'intracomunitaria', 'cifnif,fecha,idFactura,lineas,nombreTercero,operacion,tipo'],
       ['L-3', 'exportacion', 'cifnif,fecha,idFactura,lineas,nombreTercero,operacion,tipo'],
     ]);
-    expect(agregar303(fiscales, T1)).toEqual(agregar303Anterior(fiscales, T1));
+    // El 303 anade las casillas oficiales del diseno 2026; lo de siempre, igual.
+    const { casillasOficiales: _co, sinActividad: _sa, ...a303 } = agregar303(fiscales, T1);
+    expect(a303).toEqual(agregar303Anterior(fiscales, T1));
     expect(agregar347(fiscales, 2026)).toEqual(agregar347Anterior(fiscales, 2026));
     expect(agregar349(fiscales, T1)).toEqual(agregar349Anterior(fiscales, T1));
     const { volumen: _v, advertencias: _a, ...a390 } = agregar390(fiscales, 2026);

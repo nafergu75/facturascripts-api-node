@@ -89,7 +89,9 @@ describe('facturas anteriores (sin tipo): exactamente lo de siempre', () => {
     // Nada nuevo: ni [120], ni [122], ni avisos.
     expect(m).not.toHaveProperty('noSujetasLocalizacion');
     expect(m).not.toHaveProperty('inversionSujetoPasivo');
-    expect(m).not.toHaveProperty('advertencias');
+    // Lo unico nuevo es el diseno 2026: la compra intracomunitaria sin IVA va en
+    // [10] y [36] (autodevengo) con un aviso para autoliquidar su cuota.
+    expect(m.advertencias).toEqual([expect.stringMatching(/proveedores de otros países de la UE sin IVA \(base 50\.00 €\).*\[10\]\/\[11\]/)]);
     expect(Object.keys(m.casillas).sort()).toEqual(
       [
         '04_base_devengada_10',
@@ -98,6 +100,8 @@ describe('facturas anteriores (sin tipo): exactamente lo de siempre', () => {
         '07_base_devengada_21',
         '08_tipo',
         '09_cuota_devengada_21',
+        '10_base_adquisiciones_intracomunitarias',
+        '36_base_adquisiciones_intracomunitarias',
         '27_total_devengado',
         '28_base_deducible',
         '29_cuota_deducible',
@@ -164,12 +168,37 @@ describe('facturas anteriores al azar: igual que la copia congelada de los agreg
     });
   }
 
-  it('303, 347 y 390 dan lo mismo; el 349, los mismos importes agrupados por operador y clave', () => {
+  it('303 con lo de siempre (mas el autodevengo del diseno 2026), 347 y 390 iguales; el 349, los mismos importes agrupados por operador y clave', () => {
     for (let vuelta = 0; vuelta < 40; vuelta++) {
       const fs = facturasAlAzar(25);
       for (const periodo of [T3, { ...T3, periodo: '1T', fechaInicio: '2026-01-01', fechaFin: '2026-03-31' }]) {
         const compensar = vuelta % 3 === 0 ? 150 : 0;
-        expect(agregar303(fs, periodo, compensar)).toEqual(agregar303Anterior(fs, periodo, compensar));
+        const ahora = agregar303(fs, periodo, compensar);
+        const antes = agregar303Anterior(fs, periodo, compensar);
+        // Con el diseno 2026: el mismo devengado por tipo, el mismo deducible y la
+        // misma informacion adicional...
+        const deSiempre = (d: typeof ahora) => ({
+          ivaDevengado: d.ivaDevengado,
+          totalBaseDevengada: d.totalBaseDevengada,
+          ivaDeducible: d.ivaDeducible,
+          totalBaseDeducible: d.totalBaseDeducible,
+          totalCuotaDeducible: d.totalCuotaDeducible,
+          cuotasACompensarAnteriores: d.cuotasACompensarAnteriores,
+          entregasIntracomunitarias: d.entregasIntracomunitarias,
+          exportaciones: d.exportaciones,
+        });
+        expect(deSiempre(ahora)).toEqual(deSiempre(antes));
+        // ...y el devengado [27] solo cambia por el autodevengo de las compras
+        // intracomunitarias ([11]) y por las ventas a tipos sin fila (al 5 %),
+        // que no van en ninguna casilla (y bloquean el fichero).
+        const cent = (n: number | undefined) => Math.round((n ?? 0) * 100);
+        const sinFila = antes.ivaDevengado.filter((d) => ![0, 4, 10, 21].includes(d.tipo)).reduce((a, d) => a + cent(d.cuota), 0);
+        const c = ahora.casillasOficiales ?? {};
+        const autodevengo = fs
+          .filter((f) => f.tipo === 'compra' && f.operacion === 'intracomunitaria' && f.fecha >= periodo.fechaInicio && f.fecha <= periodo.fechaFin)
+          .reduce((a, f) => a + f.lineas.reduce((x, l) => x + cent(l.cuota), 0), 0);
+        expect(cent(c['27'])).toBe(cent(antes.totalCuotaDevengada) - sinFila + autodevengo);
+        expect(cent(c['46'])).toBe(cent(c['27']) - cent(c['45']));
 
         const antes349 = agregar349Anterior(fs, periodo);
         const ahora349 = agregar349(fs, periodo);

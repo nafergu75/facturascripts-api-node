@@ -45,10 +45,24 @@ export interface FacturaFiscal {
   /** Categoria del ingreso/gasto (informativa, para deducibilidad futura). */
   categoria?: string;
   /**
+   * Rectificacion: venta rectificativa o aparicion en negativo de una compra
+   * anulada con contraasiento. En el 303 va en las casillas de modificaciones
+   * ([14]/[15] y [40]/[41]), que admiten signo.
+   */
+  rectificativa?: boolean;
+  /**
+   * Compra con inversion del sujeto pasivo (la cuota la declara la empresa):
+   * autodevengo en [12]/[13] y deduccion en [28]/[29] o [30]/[31]. Hoy las
+   * compras no llevan esta marca: queda listo para cuando la tengan.
+   */
+  isp?: boolean;
+  /**
    * Desglose por tipo de IVA. `conRetencion`: linea de una compra con
    * retencion de IRPF; cuenta en el 303 pero no en el 347 (va en el 190/180).
+   * `inversion`: linea de una compra de bien de inversion (cuenta 2xx del PGC),
+   * que en el 303 va en las casillas de bienes de inversion.
    */
-  lineas: Array<{ tipoIva: number; base: number; cuota: number; conRetencion?: boolean }>;
+  lineas: Array<{ tipoIva: number; base: number; cuota: number; conRetencion?: boolean; inversion?: boolean }>;
 }
 
 /** Desglose de base y cuota para un tipo de IVA. */
@@ -88,6 +102,14 @@ export interface DatosModelo303 {
   exentasSinDeduccion?: number;
   /** Importes pre-calculados por casilla (para UI tipo formulario AEAT). */
   casillas: Record<string, number>;
+  /**
+   * Casillas OFICIALES del diseño 2026 por su numero ('01', '27', '71'...), en
+   * euros: lo que va al fichero y lo que enseña la pantalla. Falta en los
+   * datos guardados antes del diseño 2026 (ver casillasOficiales303De).
+   */
+  casillasOficiales?: Record<string, number>;
+  /** Periodo sin operaciones: casilla "Declaracion sin actividad" de la pagina 3. */
+  sinActividad?: boolean;
   /** Avisos que hay que revisar antes de presentar (tipos de IVA sin casilla...). */
   advertencias?: string[];
 }
