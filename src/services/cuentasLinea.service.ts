@@ -292,7 +292,8 @@ export async function nombresDeCuentas(db: Db, companyId: string, codigos: strin
     if (base) out.set(c, base);
   }
   if (!lista.length || typeof (db as { chartOfAccounts?: { findMany?: unknown } }).chartOfAccounts?.findMany !== 'function') return out;
-  const filas = await db.chartOfAccounts.findMany({ where: { companyId, codigo: { in: lista } }, select: { codigo: true, nombre: true } });
+  // Con una BD simulada (tests sin MySQL) puede no devolver nada: se quedan los del plan base.
+  const filas = (await db.chartOfAccounts.findMany({ where: { companyId, codigo: { in: lista } }, select: { codigo: true, nombre: true } })) ?? [];
   for (const f of filas) out.set(f.codigo, f.nombre);
   return out;
 }
