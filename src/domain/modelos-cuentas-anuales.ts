@@ -78,7 +78,12 @@ const REGLAS_BALANCE: ReglaBalance[] = [
   // Activo corriente
   { prefijos: ['58', '599'], partida: 'B.I' },
   { prefijos: ['3', '407'], partida: 'B.II' },
-  { prefijos: ['43', '490', '493'], partida: 'B.III.1', siNegativo: 'D.IV.2' },
+  // Cada subcuenta de cliente se clasifica por su saldo: un cliente con saldo
+  // acreedor (anticipo, cobro de mas) va al pasivo, sin compensarse con los demas.
+  { prefijos: ['43'], partida: 'B.III.1', siNegativo: 'D.IV.2' },
+  // El deterioro (490, 493) tiene saldo acreedor por naturaleza: resta dentro de
+  // clientes, nunca pasa al pasivo.
+  { prefijos: ['490', '493'], partida: 'B.III.1' },
   { prefijos: ['5580'], partida: 'B.III.2' },
   { prefijos: ['44', '460', '470', '471', '472', '473', '544'], partida: 'B.III.3', siNegativo: 'D.IV.2' },
   {
