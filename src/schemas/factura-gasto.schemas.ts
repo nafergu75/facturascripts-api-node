@@ -112,7 +112,10 @@ const error = (mensaje: string, campo: string, errores?: unknown) => badRequest(
  * campos. `paisProveedor` es el del proveedor elegido o el del nuevo (ISO-2).
  * Acepta el alias antiguo `provider` como `proveedor`.
  */
-export function validarFacturaGasto(cuerpo: unknown, opciones: { paisProveedor?: string | null; permitirSerie?: boolean } = {}): FacturaGastoBody {
+export function validarFacturaGasto(
+  cuerpo: unknown,
+  opciones: { paisProveedor?: string | null; permitirSerie?: boolean; empresaEspanola?: boolean } = {},
+): FacturaGastoBody {
   const bruto = { ...((cuerpo ?? {}) as Record<string, unknown>) };
   if (bruto.proveedor === undefined && bruto.provider !== undefined) bruto.proveedor = bruto.provider;
   if (!opciones.permitirSerie) delete bruto.serie;
@@ -141,6 +144,17 @@ export function validarFacturaGasto(cuerpo: unknown, opciones: { paisProveedor?:
       );
     }
   });
+  // Una empresa no establecida en Espana no lleva IVA español ni retenciones
+  // (no presenta el 303, el 111 ni el 115), igual que en ventas.
+  if (opciones.empresaEspanola === false) {
+    const i = d.lineas.findIndex((l) => l.tipoIva !== 0 || l.tipoRetencion !== 0);
+    if (i >= 0) {
+      throw error(
+        'La empresa no está establecida en España: sus facturas de gasto no llevan IVA español ni retención de IRPF. Pon el IVA y la retención al 0 % y, si la factura trae impuestos de otro país, inclúyelos en la base.',
+        `lineas.${i}.${d.lineas[i].tipoIva !== 0 ? 'tipoIva' : 'tipoRetencion'}`,
+      );
+    }
+  }
   const pais = String(opciones.paisProveedor ?? 'ES').trim().toUpperCase() || 'ES';
   if (pais !== 'ES' && pais !== 'ESP') {
     const i = d.lineas.findIndex((l) => l.tipoIva !== 0 || l.tipoRetencion !== 0);

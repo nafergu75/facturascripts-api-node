@@ -14,6 +14,7 @@ import { prisma, type ClienteBD, type TransaccionBD } from '../config/database';
 import { aCentimos, cuadraEnCentimos } from '../utils/money';
 import { esTipoOperacion, REGLA_OPERACION, type TipoOperacionVenta } from '../domain/tipo-operacion.model';
 import { tipoRetencionLibro } from '../domain/factura-gasto.model';
+import { esEmpresaEspanola } from './perfilEmpresa.service';
 
 // Cliente compartido o el de una transaccion (los importes se leen como number).
 type DbClient = ClienteBD | TransaccionBD;
@@ -418,6 +419,11 @@ export async function contabilizarFacturaGasto(
     desgloseRetencion?: Array<{ porcentaje: number; base: number; cuota: number }>;
     /** Cuenta del acreedor si no es la del tipo (la que ya usaron los pagos de la factura). */
     cuentaAcreedor?: string;
+    /**
+     * Sin libro de IVA. Por defecto, si la empresa no esta establecida en
+     * Espana (sus facturas de gasto van sin IVA español y no presenta el 303).
+     */
+    sinLibroIva?: boolean;
   },
   tx?: TransaccionBD,
 ): Promise<{ asientoId: string; lineas: any[] }> {
@@ -523,7 +529,8 @@ export async function contabilizarFacturaGasto(
   // VATBook: un apunte por tipo de IVA, vinculado al asiento. Informes filtran por asientos POSTED.
   const expedicion =
     invoiceData.fechaExpedicion && invoiceData.fechaExpedicion !== invoiceData.fechaEmision ? invoiceData.fechaExpedicion : null;
-  for (const a of apuntesIva) {
+  const sinLibroIva = invoiceData.sinLibroIva ?? !(await esEmpresaEspanola(companyId, db));
+  for (const a of sinLibroIva ? [] : apuntesIva) {
     await db.vATBook.create({
       data: {
         companyId,

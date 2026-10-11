@@ -736,7 +736,9 @@ export async function registrarGasto(companyId: string, cuerpo: unknown, opcione
   if (bruto.proveedor === undefined && bruto.provider !== undefined) bruto.proveedor = bruto.provider;
 
   const prov = await prepararProveedor(companyId, bruto.proveedor);
-  const v = validarFacturaGasto(bruto, { paisProveedor: prov.pais, permitirSerie: true });
+  // Empresa no establecida en Espana: sin IVA español ni retenciones (como en ventas).
+  const { espanola } = await perfilEmpresa(companyId);
+  const v = validarFacturaGasto(bruto, { paisProveedor: prov.pais, permitirSerie: true, empresaEspanola: espanola });
   const { lineas, baseTotal, ivaTotal, retencionTotal, totalFactura, cabecera } = lineasParaGuardar(v);
   await comprobarCuentas(companyId, lineas.map((l) => l.accountCode).filter((c): c is string => !!c));
   await comprobarCuentasNomina(companyId, v, lineas.map((l) => l.accountCode));
@@ -988,7 +990,8 @@ export async function editarGasto(
   const bruto = { ...((cuerpo ?? {}) as Record<string, unknown>) };
   if (bruto.proveedor === undefined && bruto.provider !== undefined) bruto.proveedor = bruto.provider;
   const prov = await prepararProveedor(companyId, bruto.proveedor);
-  const v = validarFacturaGasto(bruto, { paisProveedor: prov.pais, permitirSerie: false });
+  const { espanola } = await perfilEmpresa(companyId);
+  const v = validarFacturaGasto(bruto, { paisProveedor: prov.pais, permitirSerie: false, empresaEspanola: espanola });
   const { lineas, baseTotal, ivaTotal, retencionTotal, totalFactura, cabecera } = lineasParaGuardar(v);
   await comprobarCuentas(companyId, lineas.map((l) => l.accountCode).filter((c): c is string => !!c));
   await comprobarCuentasNomina(companyId, v, lineas.map((l) => l.accountCode));

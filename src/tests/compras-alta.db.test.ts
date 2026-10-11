@@ -278,3 +278,43 @@ describe('permisos y empresa', () => {
     expect(r.body.message).toBe('Proveedor no encontrado.');
   });
 });
+
+describe('empresa no establecida en España', () => {
+  let E: string;
+  let sup: string;
+  beforeAll(async () => {
+    E = `compras-alta-us-${SUFIJO}`;
+    await prisma.company.create({ data: { id: E, name: 'Purchases Inc', fsBaseUrl: 'http://localhost:8080', fsApiKeyEnc: 'k' } });
+    await prisma.legalConfig.create({ data: { companyId: E, denominacion: 'Purchases Inc', nif: '12-3456789', pais: 'US', monedaCuenta: 'USD' } });
+    sup = await proveedor(E);
+  });
+
+  it('con IVA o retención: 400 en la línea, sin factura ni libros', async () => {
+    const r = await request(app(E, 'admin')).post('/expense-invoices').send(profesional(sup));
+    expect(r.status).toBe(400);
+    expect(r.body.message).toMatch(/^La empresa no está establecida en España: sus facturas de gasto no llevan IVA español ni retención de IRPF/);
+    expect(r.body.details).toMatchObject({ campo: 'lineas.0.tipoIva' });
+    const soloRetencion = await request(app(E, 'admin'))
+      .post('/expense-invoices')
+      .send(profesional(sup, { lineas: [{ descripcion: 'Asesoría', cantidad: 1, precioUnitario: 1000, tipoIva: 0, tipoRetencion: 15 }] }));
+    expect(soloRetencion.status).toBe(400);
+    expect(soloRetencion.body.details).toMatchObject({ campo: 'lineas.0.tipoRetencion' });
+    expect(await contar(E)).toMatchObject({ facturas: 0, asientos: 0, libro: 0 });
+    expect(await prisma.retentionBook.count({ where: { companyId: E } })).toBe(0);
+  });
+
+  it('sin IVA ni retención: 201 con su asiento, sin libro de IVA ni de retenciones; y no se le puede poner IVA al modificarla', async () => {
+    const sinImpuestos = { lineas: [{ descripcion: 'Asesoría', cantidad: 1, precioUnitario: 1000, tipoIva: 0, tipoRetencion: 0 }] };
+    const r = await request(app(E, 'admin')).post('/expense-invoices').send(profesional(sup, sinImpuestos));
+    expect(r.status).toBe(201);
+    expect(await contar(E)).toMatchObject({ facturas: 1, asientos: 1, libro: 0 });
+    expect(await prisma.retentionBook.count({ where: { companyId: E } })).toBe(0);
+    const lineas = await prisma.journalEntryLine.findMany({ where: { entry: { companyId: E } } });
+    expect(lineas.map((l) => l.accountCode).sort()).toEqual(['410', '623']);
+
+    const put = await request(app(E, 'admin')).put(`/expense-invoices/${r.body.data.id}`).send(profesional(sup));
+    expect(put.status).toBe(400);
+    expect(put.body.details).toMatchObject({ campo: 'lineas.0.tipoIva' });
+    expect(await prisma.vATBook.count({ where: { companyId: E } })).toBe(0);
+  });
+});
