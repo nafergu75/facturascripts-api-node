@@ -1,3 +1,4 @@
+import { Prisma } from '@prisma/client';
 import { prisma } from '../config/database';
 import { badRequest, conflict } from '../utils/http-errors';
 import { EstadoPeriodo, PeriodoContable } from '../domain/periodos.model';
@@ -39,14 +40,23 @@ const aDom = (p: PeriodoDb): PeriodoContable => ({
 export async function listarPeriodos(companyId: string, ejercicio: number): Promise<PeriodoContable[]> {
   if (dbOk()) {
     let existentes = await prisma.periodo.findMany({ where: { companyId, ejercicio } });
-    if (existentes.length < 12) {
+    // MySQL 8 y TiDB pueden abortar uno de los INSERT simultaneos con un
+    // conflicto de escritura o un interbloqueo (P2034) aunque lleve
+    // skipDuplicates: se vuelve a leer y, si aun faltan meses, se reintenta.
+    for (let intento = 0; existentes.length < 12; intento++) {
       const hay = new Set(existentes.map((p) => p.mes));
       const fechaApertura = new Date().toISOString();
       const faltan = Array.from({ length: 12 }, (_, i) => i + 1).filter((mes) => !hay.has(mes));
-      await prisma.periodo.createMany({
-        data: faltan.map((mes) => ({ companyId, ejercicio, mes, estado: 'abierto', fechaApertura })),
-        skipDuplicates: true,
-      });
+      try {
+        await prisma.periodo.createMany({
+          data: faltan.map((mes) => ({ companyId, ejercicio, mes, estado: 'abierto', fechaApertura })),
+          skipDuplicates: true,
+        });
+      } catch (e) {
+        const conflicto = e instanceof Prisma.PrismaClientKnownRequestError && (e.code === 'P2034' || e.code === 'P2002');
+        if (!conflicto || intento >= 3) throw e;
+        await new Promise((r) => setTimeout(r, 20 + Math.floor(Math.random() * 60)));
+      }
       existentes = await prisma.periodo.findMany({ where: { companyId, ejercicio } });
     }
     const porMes = new Map(existentes.map((p) => [p.mes, p]));
