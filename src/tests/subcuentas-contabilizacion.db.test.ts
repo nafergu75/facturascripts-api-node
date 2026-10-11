@@ -370,3 +370,15 @@ describe('el plan contable solo con contabilidad:read', () => {
     expect((await request(app('contable', ['contabilidad:read'])).get('/accounting/chart-of-accounts/43000003')).status).toBe(200);
   });
 });
+
+describe('sugerencia de subcuenta de tercero', () => {
+  it('con la ficha ya dada de alta: su subcuenta; sin ficha: la que recibira', async () => {
+    const { sugerirSubcuentaParaTercero } = await import('../services/sugerenciasContables.service');
+    const c = await prisma.customer.findFirstOrThrow({ where: { companyId: E, subcuenta430: '43000003' } });
+    expect(await sugerirSubcuentaParaTercero(E, { tipo: 'cliente', nombre: 'x', nif: c.nifCif })).toMatchObject({ codigoPropuesto: '43000003', cuentaBaseCodigo: '430' });
+    const libre = await sugerirSubcuentaParaTercero(E, { tipo: 'proveedor', nombre: 'Nuevo', nif: 'B00000000' });
+    expect(libre.codigoPropuesto).toMatch(/^400\d{5}$/);
+    // Solo lee: no da de alta nada.
+    expect(await prisma.supplier.count({ where: { companyId: E, OR: [{ subcuenta400: libre.codigoPropuesto }] } })).toBe(0);
+  });
+});

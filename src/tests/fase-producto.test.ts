@@ -33,14 +33,15 @@ describe('Bancos (importacion CSV)', () => {
 });
 
 describe('Sugerencias contables', () => {
+  // La que recibira al darlo de alta: la primera libre con la longitud de la empresa (8 sin plan previo).
   it('propone subcuenta de cliente sobre la cuenta base 430', async () => {
-    const s = await sugerirSubcuentaParaTercero('cSug', { tipo: 'cliente', nombre: 'Cliente Nuevo', nif: 'B9' });
+    const s = await sugerirSubcuentaParaTercero(`cSug-${Date.now()}`, { tipo: 'cliente', nombre: 'Cliente Nuevo', nif: 'B9' });
     expect(s.cuentaBaseCodigo).toBe('430');
-    expect(s.codigoPropuesto).toBe('4300000001');
+    expect(s.codigoPropuesto).toBe('43000001');
   });
   it('propone subcuenta de proveedor sobre la 400', async () => {
-    const s = await sugerirSubcuentaParaTercero('cSug2', { tipo: 'proveedor', nombre: 'Prov Nuevo', nif: 'B8' });
+    const s = await sugerirSubcuentaParaTercero(`cSug2-${Date.now()}`, { tipo: 'proveedor', nombre: 'Prov Nuevo', nif: 'B8' });
     expect(s.cuentaBaseCodigo).toBe('400');
-    expect(s.codigoPropuesto).toBe('4000000001');
+    expect(s.codigoPropuesto).toBe('40000001');
   });
 });
