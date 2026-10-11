@@ -15,7 +15,6 @@ import {
   DatosModelo115,
   DatosModelo303,
   DatosModelo347,
-  DatosModelo349,
   DatosModelo390,
   PeriodoFiscal,
 } from '../domain/impuestos.model';
@@ -25,13 +24,16 @@ import {
   calcularModelo115,
   calcularModelo303,
   calcularModelo347,
-  calcularModelo349,
   calcularModelo390,
   esEmpresaEspanolaFiscal,
   MENSAJE_SIN_MODELOS,
 } from './impuestosCalculo.service';
 import { calcularModelo200 } from './impuestoSociedadesCalculo.service';
 import { calcularModelo190 } from './nominas/fiscal';
+import { calcularBorrador349, ficheroModelo349 } from './borradoresAeat/borrador349.service';
+import { calcularBorrador180, ficheroModelo180 } from './borradoresAeat/borrador180.service';
+import { calcularBorrador202, ficheroModelo202 } from './borradoresAeat/borrador202.service';
+import { conservarOpciones } from './borradoresAeat/comun';
 import {
   envolverFichero,
   generarFicheroModelo111,
@@ -39,7 +41,6 @@ import {
   generarFicheroModelo200,
   generarFicheroModelo303,
   generarFicheroModelo347,
-  generarFicheroModelo349,
   generarFicheroModelo390,
   generarPaginaModelo303_03,
 } from './impuestosExport.service';
@@ -95,12 +96,17 @@ const DESCRIPCIONES: Record<string, string> = {
   '200': 'Impuesto sobre Sociedades',
   '130': 'Pago fraccionado del IRPF (autónomos)',
   '190': 'Retenciones: resumen anual (trabajo y profesionales)',
+  '180': 'Retenciones por alquileres: resumen anual',
+  '202': 'Pago fraccionado del Impuesto sobre Sociedades',
 };
 
 /** Fecha limite de presentacion del modelo/periodo (plazos generales AEAT). */
 export function fechaVencimientoModelo(codigo: string, ejercicio: number, periodo: string): string {
   const TRIM: Record<string, string> = { '1T': `${ejercicio}-04-20`, '2T': `${ejercicio}-07-20`, '3T': `${ejercicio}-10-20` };
   if (periodo in TRIM) return TRIM[periodo];
+  // 202: del 1 al 20 de abril, octubre y diciembre.
+  const PAGO: Record<string, string> = { '1P': `${ejercicio}-04-20`, '2P': `${ejercicio}-10-20`, '3P': `${ejercicio}-12-20` };
+  if (periodo in PAGO) return PAGO[periodo];
   if (/^(0[1-9]|1[0-2])$/.test(periodo)) {
     const mes = Number(periodo);
     const siguiente = String(mes + 1).padStart(2, '0');
@@ -113,6 +119,10 @@ export function fechaVencimientoModelo(codigo: string, ejercicio: number, period
       if (mes === 12) return `${ejercicio + 1}-01-30`;
       return `${ejercicio}-${siguiente}-30`;
     }
+    // 349 mensual (art. 81 RIVA): el de julio, hasta el 20 de septiembre; el de
+    // diciembre, hasta el 30 de enero.
+    if (codigo === '349' && mes === 7) return `${ejercicio}-09-20`;
+    if (codigo === '349' && mes === 12) return `${ejercicio + 1}-01-30`;
     // 111 y 115 mensuales (gran empresa): hasta el dia 20 del mes siguiente;
     // el de diciembre, hasta el 20 de enero.
     if (mes === 12) return `${ejercicio + 1}-01-20`;
@@ -126,7 +136,7 @@ export function fechaVencimientoModelo(codigo: string, ejercicio: number, period
   if (codigo === '390') return `${ejercicio + 1}-01-30`;
   if (codigo === '347') return `${ejercicio + 1}-02-28`;
   if (codigo === '200') return `${ejercicio + 1}-07-25`;
-  if (codigo === '190') return `${ejercicio + 1}-01-31`;
+  if (codigo === '190' || codigo === '180') return `${ejercicio + 1}-01-31`;
   return `${ejercicio + 1}-01-30`;
 }
 
@@ -375,7 +385,8 @@ function aResumen(f: FilaModelo, hoy: string): ModeloImpuestoResumen {
   let estado = f.estado as EstadoModeloImpuesto;
   if (estado === 'vigente' || estado === 'expirado') estado = dias >= 0 ? 'vigente' : 'expirado';
   // 2026 (anual), 2026Q1 (trimestre) o 2026-05 (mes).
-  const etiqueta = f.periodo === '0A' ? String(f.ejercicio) : /^\d{2}$/.test(f.periodo) ? `${f.ejercicio}-${f.periodo}` : `${f.ejercicio}Q${f.periodo[0]}`;
+  const etiqueta =
+    f.periodo === '0A' ? String(f.ejercicio) : /^\d{2}$/.test(f.periodo) || /^[1-3]P$/.test(f.periodo) ? `${f.ejercicio}-${f.periodo}` : `${f.ejercicio}Q${f.periodo[0]}`;
   return {
     id: f.id,
     companyId: f.companyId,
@@ -460,7 +471,10 @@ export function periodoFiscalDe(fila: Pick<FilaModelo, 'ejercicio' | 'periodo'>)
     const ultimo = new Date(Date.UTC(ej, mes, 0)).getUTCDate(); // dia 0 del mes siguiente = ultimo de este
     return { ejercicio: ej, periodo, tipo: 'mensual', fechaInicio: `${ej}-${periodo}-01`, fechaFin: `${ej}-${periodo}-${String(ultimo).padStart(2, '0')}` };
   }
-  throw badRequest(`Periodo no válido: "${fila.periodo}". Usa 0A (anual), 1T a 4T (trimestres) o 01 a 12 (meses).`);
+  // Pagos fraccionados del 202: acumulados desde el 1 de enero.
+  const P: Record<string, string> = { '1P': '03-31', '2P': '09-30', '3P': '11-30' };
+  if (P[periodo]) return { ejercicio: ej, periodo, tipo: 'trimestral', fechaInicio: `${ej}-01-01`, fechaFin: `${ej}-${P[periodo]}` };
+  throw badRequest(`Periodo no válido: "${fila.periodo}". Usa 0A (anual), 1T a 4T (trimestres), 01 a 12 (meses) o 1P a 3P (pagos fraccionados).`);
 }
 
 /** Configuracion de la empresa para el autorrelleno (NIF, razon social, IBAN). */
@@ -560,14 +574,42 @@ async function calcularCasillas(companyId: string, fila: FilaModelo): Promise<{ 
       };
     }
     case '349': {
-      const d = await calcularModelo349(companyId, periodo);
+      // Borrador con el diseno oficial: las mismas cifras que el fichero.
+      const b = await calcularBorrador349(companyId, fila.ejercicio, fila.periodo);
+      const leido = Object.fromEntries((b.pantalla?.declarante ?? []).map((c) => [c.id, c.valor]));
       return {
         casillas: {
-          num_operadores: d.operaciones.length,
-          total_base: d.totalBase,
-          ...(d.advertencias?.length ? { advertencias: d.advertencias.join(' · ') } : {}),
+          num_operadores: b.entrada.operadores.length,
+          total_base: Number(leido.importeOperaciones ?? 0),
+          num_rectificaciones: b.entrada.rectificaciones?.length ?? 0,
+          importe_rectificaciones: Number(leido.importeRectificaciones ?? 0),
+          ...(b.errores.length || b.avisos.length ? { advertencias: [...b.errores, ...b.avisos].join(' · ') } : {}),
         },
-        datos: d,
+        datos: { entrada: b.entrada },
+      };
+    }
+    case '180': {
+      const b = await calcularBorrador180(companyId, fila.ejercicio);
+      return {
+        casillas: {
+          num_perceptores: b.entrada.perceptores.length,
+          base_retenciones: b.cuadre.base180,
+          retenciones: b.cuadre.retenciones180,
+          ...(b.errores.length || b.avisos.length ? { advertencias: [...b.errores, ...b.avisos].join(' · ') } : {}),
+        },
+        datos: { entrada: b.entrada },
+      };
+    }
+    case '202': {
+      const b = await calcularBorrador202(companyId, fila.ejercicio, fila.periodo);
+      return {
+        casillas: {
+          '01': b.entrada.casillas['01'] ?? 0,
+          '02': b.entrada.casillas['02'] ?? 0,
+          '03': b.entrada.casillas['03'] ?? 0,
+          ...(b.errores.length || b.avisos.length ? { advertencias: [...b.errores, ...b.avisos].join(' · ') } : {}),
+        },
+        datos: { entrada: b.entrada },
       };
     }
     case '111': {
@@ -663,7 +705,8 @@ export async function autorrellenarModelo(companyId: string, modeloId: string): 
   }
 
   const [{ casillas, datos }, config] = await Promise.all([calcularCasillas(companyId, fila), configuracionEmpresa(companyId)]);
-  fila.casillas = { ...casillas, ...config };
+  // Las opciones de la declaracion (opc_*: complementaria, base a mano...) se conservan.
+  fila.casillas = { ...conservarOpciones(fila.casillas), ...casillas, ...config };
   fila.datos = datos;
   fila.origen = 'autorrelleno';
   await guardarFila(fila); // guardado automatico del autorrelleno
@@ -743,8 +786,13 @@ export async function generarTxtModelo(companyId: string, modeloId: string): Pro
     }
     case '347':
       return { nombre, contenido: generarFicheroModelo347(nif, refrescada.ejercicio, datos as DatosModelo347, razon) };
+    // 349, 180 y 202: el fichero con el diseno oficial, calculado al momento.
     case '349':
-      return { nombre, contenido: generarFicheroModelo349(nif, periodo, datos as DatosModelo349, razon) };
+      return ficheroModelo349(companyId, refrescada.ejercicio, refrescada.periodo);
+    case '180':
+      return ficheroModelo180(companyId, refrescada.ejercicio);
+    case '202':
+      return ficheroModelo202(companyId, refrescada.ejercicio, refrescada.periodo);
     case '111':
       return { nombre, contenido: generarFicheroModelo111(nif, periodo, datos as DatosModelo111, { denominacion: razon }) };
     case '115':
