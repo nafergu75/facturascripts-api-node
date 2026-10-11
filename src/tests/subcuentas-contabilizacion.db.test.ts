@@ -17,7 +17,7 @@ import { proveedoresService } from '../services/proveedores.service';
 import { incomeInvoicesService } from '../services/income-invoices.service';
 import { editarGasto, expenseInvoicesService, registrarGasto } from '../services/expense-invoices.service';
 import { AccountingEngineController } from '../controllers/accounting-engine.controller';
-import { registrarCobroFactura } from '../services/cobrosPagos.service';
+import { listarCobros, registrarCobroFactura } from '../services/cobrosPagos.service';
 import { conciliarMovimientoConCuenta, conciliarMovimientoConFactura } from '../services/conciliacionConfirmar.service';
 import { importarMovimientosDesdeCSV } from '../services/bancos.service';
 import { actualizarCuenta, asegurarPlanContableEmpresa, crearSubcuentaPersonalizada } from '../services/chart-of-accounts.service';
@@ -128,6 +128,13 @@ describe('ventas', () => {
     expect(nombreDe(a.lineas, '43000003')).toBe('Bar Pepe SL');
   });
 
+  it('los cobros de la factura dicen contra que subcuenta van (para la pantalla)', async () => {
+    expect((await listarCobros(E, 'INGRESO', facturaId)).cuentaTercero).toBe('43000003');
+    // Sin asiento: la subcuenta de la ficha, sin asignar nada nuevo.
+    const f = await incomeInvoicesService.crearIngreso({ companyId: E, customer: { id: clienteId }, fechaEmision: '2026-03-04', fechaVencimiento: '2099-12-31', lineas: [lineaVenta(5)] });
+    expect((await listarCobros(E, 'INGRESO', f.id)).cuentaTercero).toBe('43000003');
+  });
+
   it('cobro de una factura aun sin asiento: a la subcuenta del cliente', async () => {
     const f = await incomeInvoicesService.crearIngreso({ companyId: E, customer: { id: clienteId }, fechaEmision: '2026-03-04', fechaVencimiento: '2099-12-31', lineas: [lineaVenta(50)] });
     const { cobro } = await registrarCobroFactura(E, 'INGRESO', f.id, { fecha: '2026-03-11', caja: true });
@@ -221,6 +228,7 @@ describe('gastos', () => {
     const pago = await asiento(cobro.asientoId!);
     expect(porCuenta(pago.lineas)).toEqual({ '41000002': [50, 0], '5720001': [0, 50] });
     expect(nombreDe(pago.lineas, '41000002')).toBe('Suministros Valencia SL');
+    expect((await listarCobros(E, 'GASTO', g.id)).cuentaTercero).toBe('41000002');
     const r = await motor.contabilizarFacturaGasto(E, g.id);
     expect(porCuenta((await asiento(r.journalEntryId)).lineas)['41000002']).toEqual([0, 121]);
   });
