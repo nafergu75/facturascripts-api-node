@@ -1,0 +1,33 @@
+{
+  "id": "msg_01PRUEBA",
+  "type": "message",
+  "role": "assistant",
+  "model": "claude-opus-4-8",
+  "content": [
+    {
+      "type": "tool_use",
+      "id": "toolu_01PRUEBA",
+      "name": "completar_factura",
+      "input": {
+        "tipo_documento": "factura",
+        "desglose": [
+          {
+            "tipo_iva": 21,
+            "base": 200,
+            "cuota": 42,
+            "tipo_recargo": 5.2,
+            "cuota_recargo": 10.4
+          }
+        ],
+        "total_factura": 252.4,
+        "total_a_pagar": 252.4
+      }
+    }
+  ],
+  "stop_reason": "tool_use",
+  "stop_sequence": null,
+  "usage": {
+    "input_tokens": 1200,
+    "output_tokens": 150
+  }
+}

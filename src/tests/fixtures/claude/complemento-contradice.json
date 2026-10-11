@@ -1,0 +1,27 @@
+{
+  "id": "msg_01PRUEBA",
+  "type": "message",
+  "role": "assistant",
+  "model": "claude-opus-4-8",
+  "content": [
+    {
+      "type": "tool_use",
+      "id": "toolu_01PRUEBA",
+      "name": "completar_factura",
+      "input": {
+        "tipo_documento": "factura",
+        "numero": "F2026/0021",
+        "retencion": {
+          "porcentaje": 15,
+          "importe": 150
+        }
+      }
+    }
+  ],
+  "stop_reason": "tool_use",
+  "stop_sequence": null,
+  "usage": {
+    "input_tokens": 1200,
+    "output_tokens": 150
+  }
+}
