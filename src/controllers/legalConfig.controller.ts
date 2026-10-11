@@ -2,6 +2,7 @@ import { asyncHandler } from '../utils/async-handler';
 import { sendMessage, sendOk } from '../utils/response';
 import { legalConfigService } from '../services/legalConfig.service';
 import { registrarAuditoria } from '../services/auditoria.service';
+import { autorizado } from '../services/rbac.service';
 
 /** Rutas montadas bajo /companies/:companyId/legal-config (companyScope puebla req.companyId). */
 export const legalConfigController = {
@@ -10,7 +11,11 @@ export const legalConfigController = {
   }),
 
   actualizar: asyncHandler(async (req, res) => {
-    const cfg = await legalConfigService.actualizar(req.companyId!, req.body ?? {});
+    // Cambiar el NIF con facturas emitidas es cosa del administrador de la empresa (P10).
+    const cfg = await legalConfigService.actualizar(req.companyId!, req.body ?? {}, {
+      userId: req.user!.userId,
+      esAdministrador: autorizado(req.user!, req.companyId, ['admin:empresa']),
+    });
     await registrarAuditoria({
       userId: req.user!.userId,
       companyId: req.companyId,
