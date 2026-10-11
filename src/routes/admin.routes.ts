@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { adminController } from '../controllers/admin.controller';
+import { verifactuController } from '../controllers/verifactu.controller';
 import { authorize } from '../middleware/authorize.middleware';
 import { validate } from '../middleware/validation.middleware';
 
@@ -32,6 +33,10 @@ router.patch('/usuarios/:userId', authorize('admin:global'), adminController.act
 
 // --- Permisos a medida: catalogo de la matriz (areas, niveles y perfiles) ---
 router.get('/permisos/catalogo', authorize('admin:global'), adminController.catalogoPermisos);
+
+// --- VERI*FACTU: red de seguridad (bloqueo de emision sin VERI*FACTU desde el 1-1-2027) ---
+router.get('/verifactu/red-seguridad', authorize('admin:global'), verifactuController.leerInterruptor);
+router.put('/verifactu/red-seguridad', authorize('admin:global'), verifactuController.cambiarInterruptor);
 
 // --- Accesos de un usuario a una empresa ---
 router.put('/usuarios/:userId/empresas/:companyId', authorize('admin:global'), validate(accesoSchema), adminController.asignarRol);

@@ -54,6 +54,7 @@ import tiposCambioRoutes from './tiposCambio.routes';
 import ajustesFacturacionRoutes from './ajustesFacturacion.routes';
 import ajustesFiscalesRoutes from './ajustesFiscales.routes';
 import miembrosRoutes from './miembros.routes';
+import verifactuRoutes from './verifactu.routes';
 
 const router = Router();
 
@@ -121,6 +122,7 @@ scoped.use('/fiscal-years', fiscalYearsRoutes);
 scoped.use('/ajustes-facturacion', ajustesFacturacionRoutes);
 scoped.use('/ajustes-fiscales', ajustesFiscalesRoutes);
 scoped.use('/miembros', miembrosRoutes);
+scoped.use('/verifactu', verifactuRoutes);
 scoped.use('/movements', movementsRoutes);
 scoped.use('/archivo', archivoRoutes);
 scoped.use('', ocrRoutes);
