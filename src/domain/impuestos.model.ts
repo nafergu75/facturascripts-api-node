@@ -44,6 +44,13 @@ export interface FacturaFiscal {
   deducible?: boolean;
   /** Categoria del ingreso/gasto (informativa, para deducibilidad futura). */
   categoria?: string;
+  /** Codigo postal y provincia del tercero (provincia del 347). */
+  cpTercero?: string | null;
+  provinciaTercero?: string | null;
+  /** Tipo de gasto (solo compras): COMPRA | SERVICIO_PROFESIONAL | ALQUILER | SUMINISTROS. */
+  tipoGasto?: string;
+  /** Forma de pago de la venta (TRANSFERENCIA | GIRO | CONTADO): cobros en metalico del 347. */
+  formaPago?: string;
   /**
    * Rectificacion: venta rectificativa o aparicion en negativo de una compra
    * anulada con contraasiento. En el 303 va en las casillas de modificaciones
@@ -224,13 +231,21 @@ export interface VolumenOperaciones390 {
   total: number;
 }
 
-/** Operacion con un tercero para el Modelo 347. */
+/** Operacion con un tercero para el Modelo 347 (un registro de declarado). */
 export interface OperacionTercero {
   cifnif: string;
   nombre: string;
   tipo: 'cliente' | 'proveedor';
   /** Importe anual de las operaciones CON IVA incluido (el nombre es historico). */
   baseAnual: number;
+  /** Importes de 1T a 4T con IVA (suman baseAnual al centimo). */
+  trimestres?: [number, number, number, number];
+  /** Provincia del domicilio fiscal (dos digitos) o null si falta. */
+  provincia?: string | null;
+  /** Arrendamiento de local de negocio: va en un registro aparte con 'X' (art. 34.1 RD 1065/2007). */
+  arrendamiento?: boolean;
+  /** Cobros en metalico del ano si pasan de 6.000 € (solo clientes). */
+  metalico?: number;
 }
 
 /** Modelo 347 — operaciones con terceros > umbral anual. */
@@ -238,6 +253,8 @@ export interface DatosModelo347 {
   ejercicio: number;
   umbral: number;
   operaciones: OperacionTercero[];
+  /** Avisos del calculo (cobros en metalico estimados, terceros sin provincia...). */
+  advertencias?: string[];
 }
 
 /** Operacion intracomunitaria para el Modelo 349. */

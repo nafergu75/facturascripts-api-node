@@ -1,7 +1,7 @@
 import type { Prisma } from '@prisma/client';
 import { prisma } from '../config/database';
 import { badRequest } from '../utils/http-errors';
-import { avisoRetencionAnulada, retencionDeclaradaEn, retencionesActividades, retencionesTrabajo } from './nominas/fiscal';
+import { avisoRetencionAnulada, codigoProvincia, retencionDeclaradaEn, retencionesActividades, retencionesTrabajo } from './nominas/fiscal';
 import { normalizarNif } from '../utils/nif';
 import { obtenerAsientosEjercicio, calcularSaldosPorSubcuenta } from './contabilidadDatos.service';
 import {
@@ -478,7 +478,15 @@ export function agregar347(
   umbral: number = UMBRAL_347,
 ): DatosModelo347 {
   const delAno = facturas.filter((f) => f.fecha.startsWith(String(ejercicio)) && entraEn347(f));
-  const acumulado = new Map<string, OperacionTercero>();
+  // Todo en centimos: los cuatro trimestres tienen que sumar el anual exacto.
+  interface Acum {
+    op: OperacionTercero;
+    trim: [number, number, number, number];
+    contado: number;
+  }
+  const acumulado = new Map<string, Acum>();
+  const totalTercero = new Map<string, number>();
+  const cent = (n: number) => Math.round(n * 100);
 
   for (const f of delAno) {
     // Las compras con retencion de IRPF no van al 347: ya estan en el 190 o en
@@ -486,20 +494,52 @@ export function agregar347(
     const lineas = f.lineas.filter((l) => !l.conRetencion);
     if (!lineas.length) continue;
     // El 347 se declara con IVA incluido (antes se sumaba solo la base).
-    const base = round2(lineas.reduce((a, l) => a + l.base + l.cuota, 0));
-    const key = `${f.tipo}:${f.cifnif}`;
-    const prev =
+    const importe = lineas.reduce((a, l) => a + cent(l.base) + cent(l.cuota), 0);
+    const nif = limpiarNif(f.cifnif);
+    const tipo: OperacionTercero['tipo'] = f.tipo === 'venta' ? 'cliente' : 'proveedor';
+    // El arrendamiento de local de negocio va en un registro aparte con 'X' (art. 34.1 RD 1065/2007).
+    const arrendamiento = f.tipo === 'compra' && f.tipoGasto === 'ALQUILER';
+    const key = `${tipo}:${nif}:${arrendamiento ? 'X' : ''}`;
+    const a =
       acumulado.get(key) ??
-      ({ cifnif: f.cifnif, nombre: f.nombreTercero, tipo: f.tipo === 'venta' ? 'cliente' : 'proveedor', baseAnual: 0 } as OperacionTercero);
-    prev.baseAnual = round2(prev.baseAnual + base);
-    acumulado.set(key, prev);
+      ({
+        op: {
+          cifnif: nif,
+          nombre: f.nombreTercero,
+          tipo,
+          baseAnual: 0,
+          provincia: codigoProvincia(f.cpTercero, f.provinciaTercero),
+          ...(arrendamiento && { arrendamiento: true }),
+        },
+        trim: [0, 0, 0, 0],
+        contado: 0,
+      } as Acum);
+    const t = Math.min(3, Math.floor((Number(f.fecha.slice(5, 7)) - 1) / 3));
+    a.trim[t] += importe;
+    if (f.tipo === 'venta' && f.formaPago === 'CONTADO') a.contado += importe;
+    acumulado.set(key, a);
+    totalTercero.set(`${tipo}:${nif}`, (totalTercero.get(`${tipo}:${nif}`) ?? 0) + importe);
   }
 
-  const operaciones = [...acumulado.values()]
-    .filter((o) => o.baseAnual > umbral)
-    .sort((a, b) => b.baseAnual - a.baseAnual);
+  const advertencias: string[] = [];
+  const operaciones: OperacionTercero[] = [];
+  for (const a of acumulado.values()) {
+    // El umbral se mira con todo lo del tercero en el ano; si lo supera, se declaran todos sus registros.
+    if ((totalTercero.get(`${a.op.tipo}:${a.op.cifnif}`) ?? 0) <= cent(umbral)) continue;
+    const anual = a.trim.reduce((x, y) => x + y, 0);
+    const op: OperacionTercero = { ...a.op, baseAnual: anual / 100, trimestres: a.trim.map((c) => c / 100) as OperacionTercero['trimestres'] };
+    if (a.contado > cent(6000)) {
+      op.metalico = a.contado / 100;
+      advertencias.push(
+        `${op.nombre} (${op.cifnif}): ${eur(op.metalico)} en facturas con forma de pago al contado. Si se cobraron en efectivo, van en "importe percibido en metálico"; si no, quítalo antes de presentar.`,
+      );
+    }
+    if (!op.provincia) advertencias.push(`${op.nombre} (${op.cifnif}): falta la provincia de su domicilio fiscal (código postal en su ficha).`);
+    operaciones.push(op);
+  }
+  operaciones.sort((x, y) => y.baseAnual - x.baseAnual);
 
-  return { ejercicio, umbral, operaciones };
+  return { ejercicio, umbral, operaciones, ...(advertencias.length && { advertencias }) };
 }
 
 /**
@@ -656,6 +696,10 @@ export async function obtenerFacturasFiscales(companyId: string, desde: string, 
       nombreTercero: f.customer?.nombreFiscal ?? '',
       fecha: devengo,
       operacion: tipo ? operacionDeTipo(tipo, ctx) : OPERACION_DE_TIPO[tipoOperacionLegacy(pais, nif) as keyof typeof OPERACION_DE_TIPO],
+      // Datos del 347 (provincia y cobros al contado): solo si los hay.
+      ...(f.customer?.cp && { cpTercero: f.customer.cp }),
+      ...(f.customer?.provincia && { provinciaTercero: f.customer.provincia }),
+      ...(f.formaPago === 'CONTADO' && { formaPago: 'CONTADO' }),
       // Solo las ventas con tipo llevan los campos nuevos: las anteriores salen igual que siempre.
       ...(tipo && {
         tipoOperacion: tipo,
@@ -685,6 +729,9 @@ export async function obtenerFacturasFiscales(companyId: string, desde: string, 
         operacion: clasificarOperacion(f.supplier?.pais, f.supplier?.nifCif),
         // La anulacion (en negativo) es una rectificacion de deducciones ([40]/[41]).
         ...(signo < 0 && { rectificativa: true }),
+        ...(f.supplier?.cp && { cpTercero: f.supplier.cp }),
+        ...(f.supplier?.provincia && { provinciaTercero: f.supplier.provincia }),
+        ...(f.tipoGasto && f.tipoGasto !== 'COMPRA' && { tipoGasto: f.tipoGasto }),
         lineas: f.lineas.length
           ? f.lineas.map((l) => ({
               tipoIva: l.tipoIva,

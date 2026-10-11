@@ -14,9 +14,7 @@ import {
   DatosModelo111,
   DatosModelo115,
   DatosModelo303,
-  DatosModelo347,
   DatosModelo349,
-  DatosModelo390,
   PeriodoFiscal,
 } from '../domain/impuestos.model';
 import { DatosModelo200 } from '../domain/impuesto-sociedades.model';
@@ -46,11 +44,9 @@ import {
 import { PERIODO_111_115 } from './aeatRetenciones/diseno';
 import {
   envolverFichero,
-  generarFicheroModelo200,
-  generarFicheroModelo347,
   generarFicheroModelo349,
-  generarFicheroModelo390,
 } from './impuestosExport.service';
+import { fichero200, fichero347, fichero390 } from './borradoresAeat.service';
 import {
   Borrador303,
   casillasOficiales303De,
@@ -1052,6 +1048,12 @@ export async function generarTxtModelo(companyId: string, modeloId: string): Pro
     const r = await declaracionRetenciones(companyId, fila.codigo, fila.ejercicio, fila.periodo);
     return { nombre: `${fila.codigo}_${fila.ejercicio}_${fila.periodo}.txt`, contenido: ficheroDeclaracion(r.declaracion) };
   }
+  // El 347, el 390 y el 200 salen siempre al momento con el diseño oficial
+  // (borradoresAeat.service), igual que su pantalla, nunca del JSON guardado:
+  // /tax-models lo escribía con otra forma y el TXT fallaba o salía en blanco.
+  if (fila.codigo === '347') return fichero347(companyId, fila.ejercicio);
+  if (fila.codigo === '390') return fichero390(companyId, fila.ejercicio);
+  if (fila.codigo === '200') return fichero200(companyId, fila.ejercicio);
   if (!fila.datos) await autorrellenarModelo(companyId, modeloId);
   const refrescada = await cargarFila(companyId, modeloId);
   const datos = refrescada.datos;
@@ -1076,16 +1078,8 @@ export async function generarTxtModelo(companyId: string, modeloId: string): Pro
       );
       return { nombre, contenido: ficheroBorrador303(borrador) };
     }
-    case '390': {
-      const paginas = generarFicheroModelo390(nif, refrescada.ejercicio, datos as DatosModelo390).replace(/\r\n$/, '');
-      return { nombre, contenido: envolverFichero('390', refrescada.ejercicio, '0A', paginas, { versionPrograma: '0102' }) };
-    }
-    case '347':
-      return { nombre, contenido: generarFicheroModelo347(nif, refrescada.ejercicio, datos as DatosModelo347, razon) };
     case '349':
       return { nombre, contenido: generarFicheroModelo349(nif, periodo, datos as DatosModelo349, razon) };
-    case '200':
-      return { nombre, contenido: generarFicheroModelo200(nif, refrescada.ejercicio, { razonSocial: razon }) };
     case '130':
       throw badRequest('La app todavía no genera el fichero del modelo 130: preséntalo con el formulario de la sede de la AEAT.');
     case '190':
