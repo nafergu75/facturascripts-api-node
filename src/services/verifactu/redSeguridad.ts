@@ -62,10 +62,12 @@ export function inicioRedSeguridad(tipoSociedad: string | null | undefined): str
   return String(tipoSociedad ?? '').trim().toUpperCase() === 'AUTONOMO' ? INICIO_RESTO : INICIO_SOCIEDADES;
 }
 
-/** «2027-01-01» -> «1-1-2027», como se escribe en los avisos. */
-function fechaCorta(iso: string): string {
+const MESES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
+
+/** «2027-01-01» -> «1 de enero de 2027», como se escribe en los avisos (no se parte en dos lineas). */
+export function fechaLarga(iso: string): string {
   const [a, m, d] = iso.split('-');
-  return `${Number(d)}-${Number(m)}-${a}`;
+  return `${Number(d)} de ${MESES[Number(m) - 1]} de ${a}`;
 }
 
 /** Regla unica de «activo en este instante» (spec 2.1). */
@@ -73,18 +75,24 @@ export function verifactuActivo(config: { estado: string; activaDesde: Date | nu
   return !!config && config.estado === 'ACTIVO' && config.activaDesde != null && ahora.getTime() >= config.activaDesde.getTime();
 }
 
-/** SII o FORAL, si la empresa esta fuera de VERI*FACTU. */
+/**
+ * SII o FORAL, si la empresa esta fuera de VERI*FACTU. Solo cuenta la exclusion
+ * que aprobo un administrador de la empresa (VerifactuConfig.motivoExclusion,
+ * con su rastro en AuditLog). Marcar el SII en los ajustes fiscales, que puede
+ * hacer quien lleva los impuestos, no abre la red por si solo. Y una exclusion
+ * SII deja de valer si el SII se desmarca en los ajustes fiscales (spec 9.2:
+ * «copia AjustesFiscales.sii»).
+ */
 export function exclusionDe(d: Pick<DatosRedSeguridad, 'sii' | 'config'>): Exclusion | null {
   const anotada = String(d.config?.motivoExclusion ?? '').trim().toUpperCase();
-  if ((EXCLUSIONES as readonly string[]).includes(anotada)) return anotada as Exclusion;
-  return d.sii ? 'SII' : null;
+  if (anotada === 'FORAL') return 'FORAL';
+  if (anotada === 'SII' && d.sii) return 'SII';
+  return null;
 }
 
+/** Texto comun del bloqueo. Quien lo usa añade la salida que tiene sentido donde esta el usuario. */
 export function motivoBloqueo(inicio: string): string {
-  return (
-    `Esta empresa todavía no tiene VERI*FACTU activo. Desde el ${fechaCorta(inicio)} no se pueden emitir facturas sin él. ` +
-    'Puedes guardar la factura como borrador o como proforma.'
-  );
+  return `Esta empresa todavía no tiene VERI*FACTU activo y desde el ${fechaLarga(inicio)} no se pueden emitir facturas sin él.`;
 }
 
 /** La regla, sin base de datos. `ahora` es el instante en que se emite. */
@@ -104,12 +112,12 @@ export function evaluarRedSeguridad(d: DatosRedSeguridad, ahora: Date): Resultad
  * los tests de facturas no empiecen a fallar el 1-1-2027 y los de la red puedan
  * situarse a un lado y otro de la fecha.
  */
-export function ahoraRedSeguridad(): Date {
+export function ahoraRedSeguridad(real: Date = new Date()): Date {
   if (process.env.NODE_ENV === 'test' && process.env.VERIFACTU_RED_RELOJ_PRUEBAS) {
     const fijo = new Date(process.env.VERIFACTU_RED_RELOJ_PRUEBAS);
     if (!Number.isNaN(fijo.getTime())) return fijo;
   }
-  return new Date();
+  return real;
 }
 
 // --- Interruptor del administrador global (AjustePlataforma) ---
@@ -238,16 +246,19 @@ export function errorVerifactuInactivo(motivo: string): HttpError {
  * Para los caminos que emiten (finalizar, emision directa de crear y la
  * rectificativa emitida al momento). Se llama FUERA de la transaccion y antes
  * de tocar nada: una emision bloqueada no crea clientes ni gasta numeros.
+ * `salida`: lo que puede hacer el usuario desde ahi (se añade al motivo).
  */
-export async function exigirPuedeEmitirFinal(companyId: string, ahora: Date = ahoraRedSeguridad()): Promise<void> {
+export async function exigirPuedeEmitirFinal(companyId: string, ahora: Date = ahoraRedSeguridad(), salida?: string): Promise<void> {
   const r = await puedeEmitirFinal(companyId, ahora);
-  if (!r.ok) throw errorVerifactuInactivo(r.motivo);
+  if (!r.ok) throw errorVerifactuInactivo(salida ? `${r.motivo} ${salida}` : r.motivo);
 }
 
 export interface EstadoRedEmpresa {
   /** false: empresa extranjera, en el SII o foral (la red no le afecta). */
   aplica: boolean;
   exclusion: Exclusion | null;
+  /** El SII esta marcado en los ajustes fiscales, pero ningun administrador ha aprobado la exclusion. */
+  siiSinAprobar: boolean;
   /** Desde cuando bloquea (AAAA-MM-DD, hora de Madrid). */
   inicio: string;
   redActiva: boolean;
@@ -272,13 +283,102 @@ export async function estadoRedEmpresa(companyId: string, ahora: Date = ahoraRed
   return {
     aplica,
     exclusion,
+    siiSinAprobar: d.espanola && d.sii && exclusion !== 'SII',
     inicio,
     redActiva: d.redActiva,
     verifactuActivo: activo,
     bloquea: !r.ok,
     motivo: r.ok ? null : r.motivo,
     aviso: avisar
-      ? `Desde el ${fechaCorta(inicio)} no podrás emitir facturas desde aquí sin VERI*FACTU. Los borradores y las proformas se podrán seguir guardando.`
+      ? `Desde el ${fechaLarga(inicio)} no podrás emitir facturas desde aquí sin VERI*FACTU. Los borradores y las proformas se podrán seguir guardando.`
       : null,
   };
+}
+
+// --- Exclusion de la empresa (spec 9.2) ---
+
+export interface EstadoExclusion {
+  motivoExclusion: Exclusion | null;
+  /** AjustesFiscales.sii, para que la pantalla explique por que una exclusion SII no vale. */
+  sii: boolean;
+}
+
+/**
+ * Fija o quita la exclusion de la empresa (SII o FORAL). Solo un administrador
+ * de la empresa (la ruta pide admin:empresa; el administrador global tambien
+ * pasa). El cambio y su rastro en AuditLog (VERIFACTU_EXCLUSION_CAMBIADA, con
+ * el valor anterior, el nuevo y el motivo) van en la misma transaccion.
+ *
+ * - SII: solo si los ajustes fiscales dicen que la empresa lleva el SII
+ *   (RD 1007/2023, art. 3.3). Si despues se desmarca alli, la exclusion deja de valer.
+ * - FORAL: domicilio fiscal en el Pais Vasco o Navarra (art. 1.3).
+ * - Con VERI*FACTU ya activo no se excluye: hay que seguir hasta fin de año
+ *   (Orden HAC/1177/2024, art. 17).
+ */
+export async function fijarExclusion(
+  companyId: string,
+  userId: string,
+  datos: { motivoExclusion?: unknown; motivo?: unknown },
+  ahora: Date = new Date(),
+): Promise<EstadoExclusion> {
+  const pedido = datos.motivoExclusion === null || datos.motivoExclusion === '' ? null : String(datos.motivoExclusion ?? '').trim().toUpperCase();
+  if (pedido !== null && !(EXCLUSIONES as readonly string[]).includes(pedido)) {
+    throw badRequest('Elige SII (la empresa lleva los libros por el SII) o FORAL (domicilio fiscal en el País Vasco o Navarra), o quita la exclusión.', {
+      campo: 'motivoExclusion',
+    });
+  }
+  const motivo = typeof datos.motivo === 'string' ? datos.motivo.trim() : '';
+  if (motivo.length > MOTIVO_MAX) throw badRequest(`El motivo admite como máximo ${MOTIVO_MAX} caracteres.`, { campo: 'motivo' });
+  if (pedido && !motivo) {
+    throw badRequest('Explica en una frase por qué la empresa queda fuera de VERI*FACTU (por ejemplo, quién lo ha confirmado).', { campo: 'motivo' });
+  }
+
+  return prisma.$transaction(async (tx) => {
+    const [legal, ajustes, config] = await Promise.all([
+      tx.legalConfig.findUnique({ where: { companyId }, select: { pais: true, monedaCuenta: true } }),
+      tx.ajustesFiscales.findUnique({ where: { companyId }, select: { sii: true } }),
+      tx.verifactuConfig.findUnique({ where: { companyId }, select: { estado: true, motivoExclusion: true } }),
+    ]);
+    if (!perfilDesdeConfig(legal).espanola) {
+      throw badRequest('VERI*FACTU solo se aplica a empresas españolas: esta empresa no necesita exclusión.');
+    }
+    const sii = ajustes?.sii === true;
+    if (pedido === 'SII' && !sii) {
+      throw badRequest('Para excluirla por el SII, antes marca en Impuestos > Ajustes fiscales que la empresa lleva los libros por el SII.', {
+        campo: 'motivoExclusion',
+      });
+    }
+    if (pedido && config?.estado === 'ACTIVO') {
+      throw conflict('Esta empresa ya tiene VERI*FACTU activo y tiene que seguir con él hasta el 31 de diciembre: no se puede excluir ahora.', {
+        campo: 'motivoExclusion',
+      });
+    }
+    const antes = config?.motivoExclusion ?? null;
+    await tx.verifactuConfig.upsert({
+      where: { companyId },
+      create: { companyId, motivoExclusion: pedido, updatedBy: userId },
+      update: { motivoExclusion: pedido, updatedBy: userId },
+    });
+    await tx.auditLog.create({
+      data: {
+        userId,
+        companyId,
+        action: 'VERIFACTU_EXCLUSION_CAMBIADA',
+        resourceType: 'VERIFACTU_CONFIG',
+        resourceId: companyId,
+        meta: { antes, despues: pedido, motivo: motivo || null, sii, instante: formatearHusoMadrid(ahora) } as Prisma.InputJsonValue,
+      },
+    });
+    return { motivoExclusion: pedido as Exclusion | null, sii };
+  });
+}
+
+/** Exclusion guardada y el SII de los ajustes fiscales. */
+export async function leerExclusion(companyId: string): Promise<EstadoExclusion> {
+  const [ajustes, config] = await Promise.all([
+    prisma.ajustesFiscales.findUnique({ where: { companyId }, select: { sii: true } }),
+    prisma.verifactuConfig.findUnique({ where: { companyId }, select: { motivoExclusion: true } }),
+  ]);
+  const anotada = String(config?.motivoExclusion ?? '').toUpperCase();
+  return { motivoExclusion: (EXCLUSIONES as readonly string[]).includes(anotada) ? (anotada as Exclusion) : null, sii: ajustes?.sii === true };
 }
