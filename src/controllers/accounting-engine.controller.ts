@@ -12,7 +12,8 @@
 import { badRequest, conflict, notFound, notImplemented } from '../utils/http-errors';
 import { registrarAuditoria } from '../services/auditoria.service';
 import { accountingEngineService, desgloseIvaPorTipo } from '../services/accounting-engine.service';
-import { prisma } from '../config/database';
+import { prisma, type TransaccionBD } from '../config/database';
+import { basePorCuenta, nombresDeCuentas } from '../services/cuentasLinea.service';
 import { cuadraEnCentimos } from '../utils/money';
 import { asegurarPlanContableEmpresa } from '../services/chart-of-accounts.service';
 import { comprobarFechaAbierta, periodoNoAbierto } from '../services/periodos.service';
@@ -66,6 +67,22 @@ async function problemaCuentaTercero(
   return deLaNueva
     ? `La subcuenta ${nueva} es de ${deLaNueva.nombre}, no del proveedor de este asiento.`
     : `La cuenta ${nueva} no es una subcuenta del proveedor de este asiento: usa la suya (400 o 410) o la genérica.`;
+}
+
+/**
+ * Base de la venta por cuenta de ingresos (la de cada linea; sin ella, la 700),
+ * con el nombre del plan. undefined si ninguna linea lleva cuenta: el asiento
+ * de siempre, todo a la 700 «Ventas».
+ */
+async function ingresosPorCuenta(
+  tx: TransaccionBD,
+  companyId: string,
+  lineas: Array<{ accountCode: string | null; baseLine: number }>,
+): Promise<Array<{ cuenta: string; nombre: string; base: number }> | undefined> {
+  if (!lineas.some((l) => l.accountCode)) return undefined;
+  const reparto = basePorCuenta(lineas.map((l) => ({ cuenta: l.accountCode, base: Number(l.baseLine) })), '700');
+  const nombres = await nombresDeCuentas(tx, companyId, reparto.map((r) => r.cuenta));
+  return reparto.map((r) => ({ ...r, nombre: nombres.get(r.cuenta) ?? 'Ventas' }));
 }
 
 export class AccountingEngineController {
@@ -143,6 +160,7 @@ export class AccountingEngineController {
       // cliente de la original (es el mismo customerId).
       const result = await conReintentoSubcuenta(() => prisma.$transaction(async (tx) => {
         const cliente = await subcuentaClienteParaApunte(tx, companyId, factura.customerId);
+        const ingresoPorCuenta = await ingresosPorCuenta(tx, companyId, factura.lineas);
         const asiento = await accountingEngineService.contabilizarFacturaIngreso(
           companyId,
           invoiceId,
@@ -162,6 +180,7 @@ export class AccountingEngineController {
             clienteNombre: factura.customer.nombreFiscal,
             cuentaCliente: cliente.codigo,
             nombreCuentaCliente: cliente.nombre,
+            ...(ingresoPorCuenta ? { ingresoPorCuenta } : {}),
             clientePais: factura.customer.pais,
             // El tipo guardado; las facturas anteriores (sin tipo) se contabilizan como siempre.
             tipoOperacion: esTipoOperacion(factura.tipoOperacion) ? factura.tipoOperacion : undefined,

@@ -211,6 +211,11 @@ export async function contabilizarFacturaIngreso(
      */
     cuentaCliente?: string;
     nombreCuentaCliente?: string;
+    /**
+     * Base por cuenta de ingresos (la cuenta de cada linea: 700, 705,
+     * 7050001...). Sin el, o si no suma la base, todo a la 700.
+     */
+    ingresoPorCuenta?: Array<{ cuenta: string; nombre?: string; base: number }>;
     /** Sin el: factura anterior a los tipos de operacion (como NACIONAL, libro de IVA sin tipo). */
     tipoOperacion?: TipoOperacionVenta;
     /** Solo con EXENTA: E1, E3, E4 o E6. */
@@ -281,20 +286,26 @@ export async function contabilizarFacturaIngreso(
   lineas.push(lineaCliente);
   totalDebe += invoiceData.totalFactura;
 
-  // Línea 2: Ingresos (HABER)
-  const lineaIngreso = await db.journalEntryLine.create({
-    data: {
-      entryId: asiento.id,
-      accountCode: regla.ingreso,
-      accountName: 'Ventas',
-      debe: 0,
-      haber: invoiceData.baseTotal,
-      referencia: invoiceData.numeroFactura,
-      companyId,
-    },
-  });
-  lineas.push(lineaIngreso);
-  totalHaber += invoiceData.baseTotal;
+  // Línea 2: Ingresos (HABER), una por cuenta. Si el reparto por lineas no
+  // suma la base de la factura (datos antiguos), todo a la 700.
+  const porCuenta = invoiceData.ingresoPorCuenta?.filter((g) => aCentimos(g.base) !== 0) ?? [];
+  const repartoCuadra = porCuenta.length > 0 && porCuenta.reduce((a, g) => a + aCentimos(g.base), 0) === aCentimos(invoiceData.baseTotal);
+  const ingresos = repartoCuadra ? porCuenta : [{ cuenta: regla.ingreso, nombre: 'Ventas', base: invoiceData.baseTotal }];
+  for (const g of ingresos) {
+    const lineaIngreso = await db.journalEntryLine.create({
+      data: {
+        entryId: asiento.id,
+        accountCode: g.cuenta,
+        accountName: (g.nombre ?? 'Ventas').slice(0, 190),
+        debe: 0,
+        haber: g.base,
+        referencia: invoiceData.numeroFactura,
+        companyId,
+      },
+    });
+    lineas.push(lineaIngreso);
+    totalHaber += g.base;
+  }
 
   // Línea 3: IVA repercutido (HABER), si hay cuota. Una rectificativa la lleva
   // negativa, como la 430 y la 700 (antes no se apuntaba y el asiento no cuadraba).
