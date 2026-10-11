@@ -16,6 +16,31 @@ export function hoyEspana(ahora: Date = new Date()): string {
   return FORMATO_MADRID.format(ahora);
 }
 
+const FORMATO_HUSO_MADRID = new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'Europe/Madrid',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
+  hourCycle: 'h23',
+  timeZoneName: 'longOffset',
+});
+
+/**
+ * Instante con la fecha, la hora y el huso de Madrid: AAAA-MM-DDThh:mm:ss+01:00
+ * en invierno y +02:00 en verano. Es el formato de FechaHoraHusoGenRegistro de
+ * VERI*FACTU (spec verifactu, 3.6). Nunca toISOString(): da la hora en UTC.
+ */
+export function formatearHusoMadrid(instante: Date): string {
+  const p: Record<string, string> = {};
+  for (const parte of FORMATO_HUSO_MADRID.formatToParts(instante)) p[parte.type] = parte.value;
+  // longOffset da «GMT+01:00» o «GMT+02:00» (solo «GMT» con desfase cero, que en Madrid no se da).
+  const huso = p.timeZoneName.replace('GMT', '') || '+00:00';
+  return `${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute}:${p.second}${huso}`;
+}
+
 /**
  * Dias de plazo de una factura cuando no se indica el vencimiento: los mismos en
  * el servidor (API, lector, gastos) y en la pantalla de nueva factura. Antes el
