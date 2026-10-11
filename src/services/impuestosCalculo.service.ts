@@ -14,6 +14,7 @@ import {
   FacturaFiscal,
   FILA_303_POR_TIPO,
   OperacionIntracomunitaria,
+  resultadoPagina3_303,
   OperacionTercero,
   PeriodoFiscal,
 } from '../domain/impuestos.model';
@@ -180,6 +181,12 @@ const NOMBRES_CASILLAS_303: Readonly<Record<string, string>> = {
   '41': '41_cuota_rectificacion_deducciones',
 };
 
+/** Opciones del calculo del 303. */
+export interface OpcionesAgregar303 {
+  /** La autoliquidacion pide la devolucion (tipo D): se aplica todo [110] en [78]. */
+  devolucion?: boolean;
+}
+
 /**
  * Modelo 303 con las casillas OFICIALES del diseno 2026 (paginas 1 y 3).
  *
@@ -195,16 +202,18 @@ const NOMBRES_CASILLAS_303: Readonly<Record<string, string>> = {
  * intracomunitarias [36]-[39] y rectificacion de deducciones [40]/[41] (las
  * compras anuladas con contraasiento restan aqui, con signo).
  * Resultado: [46] = [27] - [45]; pagina 3: [64] = [46], [66] = [64] (100 %
- * Estado), [78] = lo que se aplica de [110] (como mucho el resultado positivo),
- * [87] = [110] - [78] y [71] = [66] - [78].
+ * Estado) y [78], [87], [69] y [71] segun resultadoPagina3_303.
  *
  * `cuotasACompensar` = cuotas pendientes de compensar de periodos anteriores
- * [110] (patron Quipu "303 a compensar").
+ * [110] (patron Quipu "303 a compensar"). `opciones.devolucion`: la
+ * autoliquidacion pide la devolucion (tipo D), y entonces el saldo a devolver
+ * incluye todo [110].
  */
 export function agregar303(
   facturas: FacturaFiscal[],
   periodo: PeriodoFiscal,
   cuotasACompensar = 0,
+  opciones: OpcionesAgregar303 = {},
 ): DatosModelo303 {
   const delPeriodo = facturas.filter((f) => enRango(f.fecha, periodo.fechaInicio, periodo.fechaFin));
 
@@ -301,13 +310,8 @@ export function agregar303(
   c['64'] = v('46'); // [46] + [58] (simplificado, 0) + [76] (0)
   c['65'] = 10000; // 100,00 % atribuible a la Administracion del Estado
   c['66'] = v('64');
-  // Las cuotas a compensar [110] solo se aplican [78] hasta dejar el resultado en
-  // cero: con resultado negativo no se aplica nada y todo pasa a [87].
   c['110'] = Math.round(Math.abs(cuotasACompensar) * 100);
-  c['78'] = Math.min(v('110'), Math.max(v('66'), 0));
-  c['87'] = v('110') - v('78');
-  c['69'] = v('66') + v('77') - v('78') + v('68') + v('108');
-  c['71'] = v('69') - v('70') + v('109') - v('112');
+  Object.assign(c, resultadoPagina3_303(c, opciones.devolucion === true));
 
   const casillasOficiales: Record<string, number> = {};
   for (const [k, centimos] of Object.entries(c)) casillasOficiales[k] = centimos / 100;
@@ -754,10 +758,11 @@ export async function calcularModelo303(
   companyId: string,
   periodo: PeriodoFiscal,
   cuotasACompensar = 0,
+  opciones: OpcionesAgregar303 = {},
 ): Promise<DatosModelo303> {
   await exigirModelosAeat(companyId, periodo.fechaInicio, periodo.fechaFin);
   const facturas = await obtenerFacturasFiscales(companyId, periodo.fechaInicio, periodo.fechaFin);
-  return agregar303(facturas, periodo, cuotasACompensar);
+  return agregar303(facturas, periodo, cuotasACompensar, opciones);
 }
 
 export async function calcularModelo390(companyId: string, ejercicio: number): Promise<DatosModelo390> {

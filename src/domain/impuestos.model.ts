@@ -137,6 +137,56 @@ export function filasRegimenGeneral303(ivaDevengado: DesgloseIva[]): {
   return { filas, sinFila };
 }
 
+/**
+ * Cuotas a compensar y resultado de la pagina 3 del 303, en centimos, a partir
+ * de [66], [77], [68], [108], [70], [109], [112] y [110] (las que faltan, 0).
+ * Instrucciones 2026 de la AEAT (G414):
+ *  - Si se compensa o se ingresa, [78] es lo que se aplica de [110], como
+ *    mucho [66] + [77]: el resultado no baja de cero por lo de antes y lo que
+ *    sobra pasa a [87].
+ *  - Si se pide la devolucion (ultimo periodo, o cualquier mes con REDEME),
+ *    "se consignara la totalidad del saldo a su favor, que debera incluir el
+ *    importe total de la casilla (110)": [78] = [110] y [87] = 0.
+ * [87] = [110] - [78]; [69] = [66] + [77] - [78] + [68] + [108];
+ * [71] = [69] - [70] + [109] - [112].
+ */
+export function resultadoPagina3_303(
+  centimos: Readonly<Record<string, number>>,
+  devolucion: boolean,
+): { '78': number; '87': number; '69': number; '71': number } {
+  const v = (k: string) => centimos[k] ?? 0;
+  const pendientes = Math.max(v('110'), 0);
+  const c78 = devolucion ? pendientes : Math.min(pendientes, Math.max(v('66') + v('77'), 0));
+  const c69 = v('66') + v('77') - c78 + v('68') + v('108');
+  return { '78': c78, '87': pendientes - c78, '69': c69, '71': c69 - v('70') + v('109') - v('112') };
+}
+
+/**
+ * Los mismos datos del 303 con [78], [87], [69] y [71] recalculados para
+ * compensar/ingresar (`devolucion` false) o para pedir la devolucion (true),
+ * tambien en el mapa de casillas con nombre y en los totales. `oficiales` son
+ * las casillas oficiales de los datos, en euros.
+ */
+export function conResultadoPagina3_303(d: DatosModelo303, oficiales: Readonly<Record<string, number>>, devolucion: boolean): DatosModelo303 {
+  const centimos: Record<string, number> = {};
+  for (const [k, eur] of Object.entries(oficiales)) centimos[k] = Math.round(eur * 100);
+  const r = resultadoPagina3_303(centimos, devolucion);
+  const casillasOficiales = { ...oficiales, '78': r['78'] / 100, '87': r['87'] / 100, '69': r['69'] / 100, '71': r['71'] / 100 };
+  return {
+    ...d,
+    cuotasAplicadas: casillasOficiales['78'],
+    cuotasPendientesPosteriores: casillasOficiales['87'],
+    resultadoFinal: casillasOficiales['71'],
+    casillas: {
+      ...d.casillas,
+      '78_cuotas_a_compensar': casillasOficiales['78'],
+      '87_pendientes_periodos_posteriores': casillasOficiales['87'],
+      '71_resultado': casillasOficiales['71'],
+    },
+    casillasOficiales,
+  };
+}
+
 /** Modelo 390 — resumen anual de IVA. */
 export interface DatosModelo390 {
   ejercicio: number;

@@ -7,7 +7,7 @@
  * Todo es puro (sin BD): la empresa (NIF, ajustes fiscales, IBAN) llega en el
  * contexto. Lo lee calcularBorrador303 en impuestosModulo.service.
  */
-import { DatosModelo303, filasRegimenGeneral303, PeriodoFiscal } from '../domain/impuestos.model';
+import { conResultadoPagina3_303, DatosModelo303, filasRegimenGeneral303, PeriodoFiscal } from '../domain/impuestos.model';
 import {
   cierre303,
   componerCabecera303,
@@ -87,16 +87,26 @@ export interface Borrador303 {
 
 export const esUltimoPeriodo303 = (periodo: string): boolean => periodo === '4T' || periodo === '12';
 
+/** Se puede pedir la devolución: en el último periodo (4T o 12) o, con REDEME, en cualquiera. */
+export const puedePedirDevolucion303 = (periodo: string, redeme: boolean): boolean => esUltimoPeriodo303(periodo) || redeme;
+
 /**
- * Tipos de declaración posibles según el resultado [71] (Nota 1): a ingresar,
- * ingreso o domiciliación; a devolver, compensar o, en el último periodo o con
- * REDEME, devolución; a cero, N.
+ * Tipos de declaración posibles (Nota 1) según el resultado [71] compensando
+ * y el [71] pidiendo la devolución (con todo [110] aplicado en [78]; sin él,
+ * el mismo): a ingresar, ingreso o domiciliación; a devolver, compensar; a
+ * cero, N; y la devolución (D) en el último periodo o con REDEME si el saldo a
+ * su favor, con [110], sale negativo.
  */
-export function tiposDeclaracion303(resultado71: number, periodo: string, redeme: boolean): TipoDeclaracion303[] {
+export function tiposDeclaracion303(
+  resultado71: number,
+  periodo: string,
+  redeme: boolean,
+  resultado71Devolucion: number = resultado71,
+): TipoDeclaracion303[] {
   const centimos = Math.round(resultado71 * 100);
-  if (centimos > 0) return ['I', 'U'];
-  if (centimos < 0) return esUltimoPeriodo303(periodo) || redeme ? ['C', 'D'] : ['C'];
-  return ['N'];
+  const tipos: TipoDeclaracion303[] = centimos > 0 ? ['I', 'U'] : centimos < 0 ? ['C'] : ['N'];
+  if (puedePedirDevolucion303(periodo, redeme) && Math.round(resultado71Devolucion * 100) < 0) tipos.push('D');
+  return tipos;
 }
 
 /**
@@ -172,25 +182,51 @@ export function casillasOficiales303De(d: DatosModelo303): Record<string, number
 
 const IBAN_ES = /^ES\d{22}$/;
 
+export interface OpcionesMontar303 {
+  /**
+   * Modelo presentado: las casillas son las guardadas tal cual (no se
+   * recalcula la página 3) y el tipo de declaración es el que se presentó.
+   */
+  comoSePresento?: boolean;
+}
+
 /**
  * Monta el borrador: casillas, tipo de declaración (el pedido, si vale para el
  * resultado; si no, 400), indicadores y lo que falta para poder generar el
  * fichero (que la pantalla enseña sin bloquear el cálculo).
+ *
+ * La página 3 depende del tipo: compensando o ingresando, [78] aplica [110]
+ * como mucho hasta dejar el resultado a cero; pidiendo la devolución (D), el
+ * saldo a devolver incluye todo [110] ([78] = [110], [87] = 0). Por eso se
+ * calculan las dos y se queda la del tipo elegido.
  */
-export function montarBorrador303(datos: DatosModelo303, ctx: ContextoEmpresa303, tipoPedido?: string | null): Borrador303 {
+export function montarBorrador303(
+  datos: DatosModelo303,
+  ctx: ContextoEmpresa303,
+  tipoPedido?: string | null,
+  opciones: OpcionesMontar303 = {},
+): Borrador303 {
   const periodo = datos.periodo;
-  const casillas = casillasOficiales303De(datos);
-  const resultado71 = casillas['71'] ?? 0;
-  const tiposDeclaracion = tiposDeclaracion303(resultado71, periodo.periodo, ctx.redeme);
+  const guardadas = casillasOficiales303De(datos);
+  const devolver = puedePedirDevolucion303(periodo.periodo, ctx.redeme);
+  const compensando = opciones.comoSePresento ? { ...datos, casillasOficiales: guardadas } : conResultadoPagina3_303(datos, guardadas, false);
+  const devolviendo = !opciones.comoSePresento && devolver ? conResultadoPagina3_303(datos, guardadas, true) : null;
+  const resultado71 = compensando.casillasOficiales?.['71'] ?? 0;
+  const tiposDeclaracion = tiposDeclaracion303(resultado71, periodo.periodo, ctx.redeme, devolviendo?.casillasOficiales?.['71']);
   let tipoDeclaracion = tiposDeclaracion[0];
   if (tipoPedido) {
     const pedido = tipoPedido.toUpperCase() as TipoDeclaracion303;
-    if (!tiposDeclaracion.includes(pedido)) {
+    if (opciones.comoSePresento && pedido in NOMBRE_TIPO_DECLARACION_303) {
+      tipoDeclaracion = pedido;
+    } else if (!tiposDeclaracion.includes(pedido)) {
       const posibles = tiposDeclaracion.map((t) => `${t} (${NOMBRE_TIPO_DECLARACION_303[t].toLowerCase()})`).join(' o ');
       throw badRequest(`Con este resultado el tipo de declaración del 303 puede ser ${posibles}.`, { campo: 'tipoDeclaracion', pedido: tipoPedido });
+    } else {
+      tipoDeclaracion = pedido;
     }
-    tipoDeclaracion = pedido;
   }
+  const elegidos = tipoDeclaracion === 'D' && devolviendo ? devolviendo : compensando;
+  const casillas = elegidos.casillasOficiales ?? guardadas;
 
   const nif = nifAn303(ctx.nif);
   const razonSocial = textoAn303(ctx.razonSocial);
@@ -222,7 +258,7 @@ export function montarBorrador303(datos: DatosModelo303, ctx: ContextoEmpresa303
     periodo,
     nif,
     razonSocial,
-    datos: { ...datos, casillasOficiales: casillas },
+    datos: { ...elegidos, casillasOficiales: casillas },
     casillas,
     tipoDeclaracion,
     tiposDeclaracion,

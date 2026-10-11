@@ -386,3 +386,79 @@ describe('Fichero del 303 contra el diseño oficial 2026', () => {
     expect(() => ficheroBorrador303(montarBorrador303(d5, EMPRESA))).toThrow(/ventas al 5 %/);
   });
 });
+
+// Instrucciones 2026 del 303 (sede, G414), casilla 71: "Si opta por solicitar
+// devolución, se consignará la totalidad del saldo a su favor, que deberá
+// incluir el importe total de la casilla (110)". Antes la devolución solo
+// devolvía [46] y [110] se quedaba en [87], pendiente para el año siguiente.
+describe('303 con devolución: el saldo a devolver incluye todo [110]', () => {
+  const l = (r: { p1: string; p3: string }, c: string) => leer({ '01': r.p1, '03': r.p3 }, c);
+  const cinco = (r: { p1: string; p3: string }) => [l(r, '110'), l(r, '78'), l(r, '87'), l(r, '69'), l(r, '71')];
+  const facturas4T = () => [venta(1000, 21, {}, '2026-11-02'), compra(2000, 21, {}, '2026-11-03')];
+
+  it('agregar303 con devolucion: [78] = [110], [87] = 0 y [71] = [66] - [110]', () => {
+    const compensa = agregar303(facturas4T(), P4T, 300);
+    expect([compensa.cuotasAplicadas, compensa.cuotasPendientesPosteriores, compensa.resultadoFinal]).toEqual([0, 300, -210]);
+    const devuelve = agregar303(facturas4T(), P4T, 300, { devolucion: true });
+    expect([devuelve.cuotasAplicadas, devuelve.cuotasPendientesPosteriores, devuelve.resultadoFinal]).toEqual([300, 0, -510]);
+    expect(devuelve.casillasOficiales).toMatchObject({ '110': 300, '78': 300, '87': 0, '69': -510, '71': -510 });
+    expect(devuelve.casillas).toMatchObject({ '78_cuotas_a_compensar': 300, '87_pendientes_periodos_posteriores': 0, '71_resultado': -510 });
+  });
+
+  it('4T a devolver con cuotas pendientes: con D se devuelve [46] más todo [110]; compensando, [110] pasa a [87]', () => {
+    const compensa = generar(facturas4T(), P4T, { aCompensar: 300 });
+    expect(compensa.borrador.tiposDeclaracion).toEqual(['C', 'D']);
+    expect(campo(compensa.p1, 13, 1)).toBe('C');
+    expect(cinco(compensa)).toEqual([300, 0, 300, -210, -210]);
+
+    const devuelve = generar(facturas4T(), P4T, { aCompensar: 300, tipo: 'D' });
+    expect(campo(devuelve.p1, 13, 1)).toBe('D');
+    expect(cinco(devuelve)).toEqual([300, 300, 0, -510, -510]);
+    expect(campo(devuelve.p3, 408, 17)).toBe('N0000000000051000');
+    expect(devuelve.paginas.DID).toBeDefined();
+    // Lo que se guarda (y lee el periodo siguiente) es lo del tipo elegido.
+    expect(devuelve.borrador.datos).toMatchObject({ cuotasAplicadas: 300, cuotasPendientesPosteriores: 0, resultadoFinal: -510 });
+    expect(devuelve.borrador.datos.casillas['87_pendientes_periodos_posteriores']).toBe(0);
+  });
+
+  it('4T con el resultado a cero tras compensar: se puede pedir la devolución de lo que queda en [110]', () => {
+    const cero = generar([venta(1000, 21, {}, '2026-11-02')], P4T, { aCompensar: 300 });
+    expect(cero.borrador.tiposDeclaracion).toEqual(['N', 'D']);
+    expect(campo(cero.p1, 13, 1)).toBe('N');
+    expect(cinco(cero)).toEqual([300, 210, 90, 0, 0]);
+
+    const devuelve = generar([venta(1000, 21, {}, '2026-11-02')], P4T, { aCompensar: 300, tipo: 'D' });
+    expect(cinco(devuelve)).toEqual([300, 300, 0, -90, -90]);
+  });
+
+  it('4T a ingresar aunque se aplique todo [110]: no hay devolución', () => {
+    const r = generar([venta(1000, 21, {}, '2026-11-02')], P4T, { aCompensar: 100 });
+    expect(r.borrador.tiposDeclaracion).toEqual(['I', 'U']);
+    expect(cinco(r)).toEqual([100, 100, 0, 110, 110]);
+    expect(() => generar([venta(1000, 21, {}, '2026-11-02')], P4T, { aCompensar: 100, tipo: 'D' })).toThrow(/puede ser I/);
+  });
+
+  it('mes 05 con REDEME: la devolución también incluye [110]; sin REDEME, en el 2T solo se compensa', () => {
+    const facturas = [venta(100, 21, {}, '2026-05-03'), compra(1000, 21, {}, '2026-05-04')];
+    const redeme = generar(facturas, P05, { aCompensar: 100, tipo: 'D', ctx: { redeme: true } });
+    expect(cinco(redeme)).toEqual([100, 100, 0, -289, -289]);
+    const trimestre = generar(facturas, P2T, { aCompensar: 100 });
+    expect(trimestre.borrador.tiposDeclaracion).toEqual(['C']);
+    expect(cinco(trimestre)).toEqual([100, 0, 100, -189, -189]);
+  });
+
+  it('montar el borrador es idempotente: con los datos ya calculados para devolver, compensar vuelve a dejar [110] en [87]', () => {
+    const datos = agregar303(facturas4T(), P4T, 300, { devolucion: true });
+    const compensa = montarBorrador303(datos, EMPRESA, 'C');
+    expect(compensa.casillas).toMatchObject({ '78': 0, '87': 300, '71': -210 });
+    const devuelve = montarBorrador303(datos, EMPRESA, 'D');
+    expect(devuelve.casillas).toMatchObject({ '78': 300, '87': 0, '71': -510 });
+  });
+
+  it('como se presentó: las casillas guardadas van tal cual y el tipo es el presentado', () => {
+    const datos = agregar303(facturas4T(), P4T, 300, { devolucion: true });
+    const b = montarBorrador303(datos, EMPRESA, 'D', { comoSePresento: true });
+    expect(b.tipoDeclaracion).toBe('D');
+    expect(b.casillas).toEqual(datos.casillasOficiales);
+  });
+});
