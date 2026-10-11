@@ -120,6 +120,21 @@ export function erroresEntrada180(e: Entrada180): string[] {
 
 const centimos = (n: number) => Math.round(n * 100);
 
+/**
+ * Totales del registro de tipo 1, en céntimos (DR_Mod_180_2023, págs. 5-6), los
+ * mismos para el fichero, la pantalla y el cuadre con los 115:
+ *  - bases (145-160): la suma de las bases de los registros de tipo 2, y los
+ *    reintegros (N en la posición 79) restan;
+ *  - retenciones (161-175): «sin signo la suma» de las retenciones de los
+ *    registros de tipo 2; el diseño no las resta en los reintegros.
+ */
+export function totales180(perceptores: Perceptor180[]): { bases: number; retenciones: number } {
+  return {
+    bases: perceptores.reduce((a, p) => a + (p.reintegro ? -1 : 1) * centimos(p.base), 0),
+    retenciones: perceptores.reduce((a, p) => a + centimos(p.retenciones), 0),
+  };
+}
+
 /** Fichero del 180 (ISO-8859-1 al enviarlo). Lanza ErrorEntrada180 si faltan datos. */
 /**
  * Con `comprobar: false` no se exigen los datos (sirve para enseñar el
@@ -131,7 +146,8 @@ export function generarFichero180(e: Entrada180, { comprobar = true }: { comprob
   if (errores.length) throw new ErrorEntrada180(errores);
   const d = e.declarante;
   const nif = nifDerecha(d.nif);
-  const sumaBases = e.perceptores.reduce((a, p) => a + (p.reintegro ? -1 : 1) * centimos(p.base), 0);
+  const totales = totales180(e.perceptores);
+  const sumaBases = totales.bases;
 
   const declarante = componerRegistroDr(registroDe(DISENO_180, 'declarante'), {
     ejercicio: e.ejercicio,
@@ -147,7 +163,7 @@ export function generarFichero180(e: Entrada180, { comprobar = true }: { comprob
     numeroPerceptores: e.perceptores.length,
     signoBases: sumaBases < 0 ? 'N' : '',
     importeBases: Math.abs(sumaBases) / 100,
-    importeRetenciones: e.perceptores.reduce((a, p) => a + centimos(p.retenciones), 0) / 100,
+    importeRetenciones: totales.retenciones / 100,
   });
 
   const perceptores = e.perceptores.map((p) => {
@@ -203,11 +219,11 @@ export interface Cuadre180 {
 /**
  * Cuadre con los 115 del año (en centimos): las bases y retenciones del 180
  * tienen que ser la suma de las de los 115 (cuatro trimestres o doce meses).
+ * Del lado del 180 se usan los mismos totales que el registro de tipo 1
+ * (totales180), para que lo que cuadra sea lo que va en el fichero.
  */
 export function cuadre180Con115(e: Entrada180, periodos115: Array<{ periodo: string; base: number; retenciones: number }>): Cuadre180 {
-  const signo = (p: Perceptor180) => (p.reintegro ? -1 : 1);
-  const b180 = e.perceptores.reduce((a, p) => a + signo(p) * centimos(p.base), 0);
-  const r180 = e.perceptores.reduce((a, p) => a + signo(p) * centimos(p.retenciones), 0);
+  const { bases: b180, retenciones: r180 } = totales180(e.perceptores);
   const b115 = periodos115.reduce((a, p) => a + centimos(p.base), 0);
   const r115 = periodos115.reduce((a, p) => a + centimos(p.retenciones), 0);
   const mensual = periodos115.some((p) => /^\d{2}$/.test(p.periodo));

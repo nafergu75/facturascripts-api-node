@@ -181,6 +181,19 @@ describe('180: reintegros, complementaria y lo que impide el fichero', () => {
     expect(posiciones(t1, 161, 175)).toBe('000000000005700');
   });
 
+  it('con un reintegro, el cuadre con los 115 usa los mismos totales que el registro de tipo 1 (bases con signo, retenciones sin signo)', () => {
+    const e = entrada();
+    const normal = { ...e.perceptores[1], base: 1000, retenciones: 190, ejercicioDevengo: null };
+    const reintegro = { ...e.perceptores[1], base: 200, retenciones: 38, reintegro: true, ejercicioDevengo: 2026 };
+    e.perceptores = [normal, reintegro];
+    const t1 = generarFichero180(e).split('\r\n')[0];
+    expect(posiciones(t1, 145, 160)).toBe(' 000000000080000'); // 1.000 - 200
+    expect(posiciones(t1, 161, 175)).toBe('000000000022800'); // 190 + 38: «sin signo la suma»
+    const c = cuadre180Con115(e, ['1T', '2T', '3T', '4T'].map((periodo, i) => ({ periodo, base: i === 0 ? 800 : 0, retenciones: i === 0 ? 228 : 0 })));
+    // Antes el cuadre restaba la retención del reintegro (152 €) y no casaba con lo que lleva el fichero (228 €).
+    expect(c).toMatchObject({ coincide: true, base180: 800, retenciones180: 228 });
+  });
+
   it('sustitutiva: S en 122 y la anterior en 123-135', () => {
     const e = entrada();
     e.declarante.tipoDeclaracion = 'S';
