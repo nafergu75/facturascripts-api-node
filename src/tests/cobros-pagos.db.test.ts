@@ -14,6 +14,7 @@ import { AccountingEngineController } from '../controllers/accounting-engine.con
 import { anularCobroFactura, listarCobros, registrarCobroFactura } from '../services/cobrosPagos.service';
 import { informeDetalleTercero, informeMayorTerceros } from '../services/informesContables.service';
 import { cambiarEstadoPeriodo } from '../services/periodos.service';
+import { hoyEspana } from '../utils/fechas';
 
 const COMPANY_ID = `cobros-test-${Date.now()}`;
 const motor = new AccountingEngineController();
@@ -167,7 +168,7 @@ describe('cobros de facturas de venta', () => {
     expect(r.estado).toBe('PAID');
     const c = await listarCobros(COMPANY_ID, 'INGRESO', f.id);
     expect(c.cobros).toHaveLength(1);
-    expect(c.cobros[0]).toMatchObject({ importe: 363, cuentaTesoreria: '5720001', fecha: new Date().toISOString().slice(0, 10) });
+    expect(c.cobros[0]).toMatchObject({ importe: 363, cuentaTesoreria: '5720001', fecha: hoyEspana() });
     // Marcar PAID otra vez no duplica el cobro.
     await incomeInvoicesService.cambiarEstado(COMPANY_ID, f.id, 'PAID');
     expect((await listarCobros(COMPANY_ID, 'INGRESO', f.id)).cobros).toHaveLength(1);
