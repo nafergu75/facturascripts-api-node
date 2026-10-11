@@ -1,26 +1,11 @@
-import { CampoDiseno } from '../common/aeat-encoder';
-
 /**
- * Diseno de registro del Modelo 303 (IVA) — PAGINA 01, longitud 1581.
- * Solo se documentan las casillas principales (el resto van a ceros). Los
- * importes son 'N' con 2 decimales (centimos) salvo el tipo% que va *100.
- * Fuente: diseno oficial AEAT 303 v1.01 (303.xlsx).
+ * Diseño de registro del Modelo 303 (IVA). Ya no se copia aquí a mano: es la
+ * tabla OFICIAL de la AEAT para las presentaciones a partir de 2026 (v1.01,
+ * DR303e26v101.xlsx), en src/domain/aeat/dr303-2026.json, con todos los campos
+ * de la cabecera y de las páginas 01 a 05 y DID. El generador del fichero la
+ * usa directamente (services/modelo303.service).
  */
-export const LONGITUD_REGISTRO_303 = 1581;
+export { DR303_2026, paginaDiseno303, campoDeCasilla303 } from '../../domain/aeat/modelo303-2026';
 
-export const CAMPOS_303_PAGINA01: CampoDiseno[] = [
-  { nombre: 'nif', posicionInicio: 14, longitud: 9, tipo: 'AN' },
-  { nombre: 'razonSocial', posicionInicio: 23, longitud: 80, tipo: 'AN' },
-  { nombre: 'ejercicio', posicionInicio: 103, longitud: 4, tipo: 'N' },
-  { nombre: 'periodo', posicionInicio: 107, longitud: 2, tipo: 'AN' },
-  // Devengado regimen general
-  { nombre: 'base01', posicionInicio: 209, longitud: 17, tipo: 'N', decimales: 2 },
-  { nombre: 'tipo02', posicionInicio: 226, longitud: 5, tipo: 'N', decimales: 2 },
-  { nombre: 'cuota03', posicionInicio: 231, longitud: 17, tipo: 'N', decimales: 2 },
-  { nombre: 'totalCuotaDevengada27', posicionInicio: 696, longitud: 17, tipo: 'N', decimales: 2 },
-  // Deducible
-  { nombre: 'base28', posicionInicio: 713, longitud: 17, tipo: 'N', decimales: 2 },
-  { nombre: 'cuota29', posicionInicio: 730, longitud: 17, tipo: 'N', decimales: 2 },
-  { nombre: 'totalDeducir45', posicionInicio: 1002, longitud: 17, tipo: 'N', decimales: 2 },
-  { nombre: 'resultadoRegimenGeneral46', posicionInicio: 1019, longitud: 17, tipo: 'N', decimales: 2 },
-];
+/** Longitud de la página 01 (identificación y liquidación del régimen general). */
+export const LONGITUD_REGISTRO_303 = 1581;

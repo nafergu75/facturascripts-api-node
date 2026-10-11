@@ -19,7 +19,7 @@ describe('Helpers de formato BOE', () => {
 });
 
 describe('generarFicheroModelo303', () => {
-  it('produce el registro de pagina 01 (1581 chars) con tag y casillas en su posicion', () => {
+  it('produce la pagina 01 del diseno 2026 (1581 posiciones, sin salto de linea) con las casillas en su posicion', () => {
     const periodo: PeriodoFiscal = { ejercicio: 2026, periodo: '2T', tipo: 'trimestral', fechaInicio: '2026-04-01', fechaFin: '2026-06-30' };
     const datos: DatosModelo303 = {
       periodo,
@@ -28,9 +28,10 @@ describe('generarFicheroModelo303', () => {
       resultado: 63, casillas: {},
     };
     const fichero = generarFicheroModelo303('B12345678', periodo, datos);
-    expect(fichero.length).toBe(1581 + 2); // registro + CRLF
-    expect(fichero.startsWith('<T303')).toBe(true);
-    expect(fichero.endsWith('</T30301000>\r\n')).toBe(true);
+    expect(fichero.length).toBe(1581); // sin salto de linea: el fichero es una cadena continua
+    expect(fichero.startsWith('<T30301000>')).toBe(true);
+    expect(fichero.endsWith('</T30301000>')).toBe(true);
+    expect(fichero.slice(12, 13)).toBe('I'); // tipo de declaracion: a ingresar
     // NIF en posicion 14 (len 9)
     expect(fichero.slice(13, 22)).toBe('B12345678');
     // Ejercicio (pos 103) y periodo (pos 107)
@@ -71,16 +72,15 @@ describe('generarFicheroModelo347', () => {
 });
 
 describe('envolverFichero (cabecera + paginas + cierre)', () => {
-  it('cabecera 328 + contenido + cierre 18, con tag/ejercicio/periodo', () => {
-    const f = envolverFichero('303', 2026, '2T', 'PAGINAS', { versionPrograma: '0101' });
-    expect(f.startsWith('<T303')).toBe(true);
-    expect(f.slice(6, 10)).toBe('2026'); // ejercicio pos 7
-    expect(f.slice(10, 12)).toBe('2T'); // periodo pos 11
-    expect(f.slice(92, 96)).toBe('0101'); // version programa pos 93
+  it('cabecera 328 + contenido + cierre 18, con las constantes del diseno (390)', () => {
+    const f = envolverFichero('390', 2026, '0A', 'PAGINAS', { versionPrograma: '0102' });
+    expect(f.slice(0, 22)).toBe('<T3900' + '2026' + '0A' + '0000>' + '<AUX>'); // discriminante 0, tipo y cierre, <AUX>
+    expect(f.slice(92, 96)).toBe('0102'); // version programa pos 93
+    expect(f.slice(322, 328)).toBe('</AUX>'); // pos 323
     expect(f.includes('PAGINAS')).toBe(true);
     const sinCrlf = f.replace(/\r\n$/, '');
     expect(sinCrlf.length).toBe(328 + 'PAGINAS'.length + 18);
-    expect(sinCrlf.slice(-18).startsWith('</T303')).toBe(true);
+    expect(sinCrlf.slice(-18)).toBe('</T3900' + '2026' + '0A' + '0000>');
   });
 });
 

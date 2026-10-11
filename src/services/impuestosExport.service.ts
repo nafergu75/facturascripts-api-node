@@ -1,5 +1,6 @@
 import { DatosModelo111, DatosModelo115, DatosModelo303, DatosModelo347, DatosModelo349, DatosModelo390, filasRegimenGeneral303, PeriodoFiscal } from '../domain/impuestos.model';
 import { badRequest } from '../utils/http-errors';
+import { ContextoEmpresa303, montarBorrador303, pagina1Borrador303, pagina3Borrador303 } from './modelo303.service';
 
 /**
  * Generacion de ficheros BOE (ancho fijo) para importar en la Sede AEAT.
@@ -86,47 +87,17 @@ export function componerRegistro(layout: CampoLayout[], valores: unknown[]): str
   return out;
 }
 
-/**
- * Layout PROVISIONAL del Modelo 303 (sustituir posiciones/longitudes por el
- * diseno de registros OFICIAL de la AEAT). Es la unica tabla a tocar cuando se
- * disponga del PDF/XLSX oficial.
- */
-export const LAYOUT_303: CampoLayout[] = [
-  { nombre: 'modelo', posicion: 1, longitud: 3, tipo: 'A' },
-  { nombre: 'ejercicio', posicion: 4, longitud: 4, tipo: 'N' },
-  { nombre: 'periodo', posicion: 8, longitud: 2, tipo: 'A' },
-  { nombre: 'nif', posicion: 10, longitud: 9, tipo: 'A' },
-  { nombre: 'razonSocial', posicion: 19, longitud: 40, tipo: 'A' },
-  { nombre: 'baseDevengada', posicion: 59, longitud: 17, tipo: 'I' },
-  { nombre: 'cuotaDevengada', posicion: 76, longitud: 17, tipo: 'I' },
-  { nombre: 'baseDeducible', posicion: 93, longitud: 17, tipo: 'I' },
-  { nombre: 'cuotaDeducible', posicion: 110, longitud: 17, tipo: 'I' },
-  { nombre: 'resultado', posicion: 127, longitud: 17, tipo: 'I' },
-];
-
-// --- Generadores por modelo (layout PROVISIONAL, ajustar al oficial) ---
+// --- Generadores por modelo ---
+// El 303 ya no tiene layout provisional: sale de la tabla del diseno oficial
+// 2026 (domain/aeat/dr303-2026.json, services/modelo303.service).
 
 /**
- * Modelo 303 (autoliquidacion IVA). Layout representativo:
- * [modelo(3)][ejercicio(4)][periodo(2)][nif(9)][razonSocial(40)]
- * [baseDevengada][cuotaDevengada][baseDeducible][cuotaDeducible][resultado]
- * TODO: reemplazar por el diseño de registros oficial del 303.
- */
-/**
- * Modelo 303 — registro de PAGINA 01 (identificacion + liquidacion regimen
- * general), segun el diseno de registros OFICIAL de la AEAT (v1.01, 2026).
- *
- * Registro de ancho fijo de 1581 caracteres, envuelto en el tag
- *   <T303 01000 > ... </T30301000>
- * Campos numericos rellenos con ceros; alfanumericos con blancos. Importes en
- * formato AEAT: signo (' '/'N') + 16 digitos en centimos (validacion 39).
- *
- * Se rellenan las casillas que calculamos; el resto quedan a cero. El IVA
- * devengado se vuelca en el bloque [01]/[02]/[03] (si hay varios tipos, se usa
- * el tipo dominante; TODO: repartir por casilla segun cada tipo).
- *
- * PENDIENTE para fichero 100% completo: registro de cabecera del fichero
- * (hoja "cabecera" del diseno) y resto de paginas (resultado final, casilla 71).
+ * Modelo 303 — PAGINA 01 (identificacion + liquidacion del regimen general)
+ * con el diseno de registro OFICIAL 2026 (v1.01), sin salto de linea. La
+ * compone services/modelo303.service a partir de la tabla del diseno
+ * (domain/aeat/dr303-2026.json); el fichero completo lo da ficheroBorrador303.
+ * Aqui se usa el contexto por defecto (sociedad en regimen general, sin REDEME
+ * ni SII) y el tipo de declaracion que corresponde al resultado.
  */
 export function generarFicheroModelo303(
   nif: string,
@@ -134,79 +105,28 @@ export function generarFicheroModelo303(
   datos: DatosModelo303,
   razonSocial = '',
 ): string {
-  const LEN = 1581;
-  const buf: string[] = new Array(LEN).fill(' ');
-
-  // zero-fill de los bloques numericos (ejercicio; flags; liquidacion hasta [46])
-  const zero = (desde: number, hasta: number): void => {
-    for (let i = desde; i <= hasta; i++) buf[i - 1] = '0';
-  };
-  zero(103, 106); // ejercicio
-  zero(109, 117); // flags identificacion
-  zero(127, 1035); // flags + liquidacion (importes/tipos) hasta casilla [46]
-
-  // escribe `valor` (ya formateado a longitud) en la posicion (1-based)
-  const put = (pos: number, valor: string): void => {
-    for (let i = 0; i < valor.length; i++) buf[pos - 1 + i] = valor[i];
-  };
-
-  // Constantes del tag de pagina
-  put(1, '<T');
-  put(3, '303');
-  put(6, '01000');
-  put(11, '>');
-  put(1570, '</T30301000>');
-
-  // Identificacion
-  put(14, texto(nif, 9));
-  put(23, texto(razonSocial, 80));
-  put(103, numero(periodo.ejercicio, 4));
-  put(107, texto(periodo.periodo, 2));
-
-  // IVA devengado regimen general: una fila FIJA por tipo (diseno oficial)
-  //   [01]base@209 [02]tipo@226 [03]cuota@231   4 %
-  //   [04]base@287 [05]tipo@304 [06]cuota@309   10 %
-  //   [07]base@326 [08]tipo@343 [09]cuota@348   21 %
-  // Antes se rellenaban por orden descendente y el 21 % caia en la fila del 4 %.
-  const FILAS: Array<[number, number, number]> = [
-    [209, 226, 231],
-    [287, 304, 309],
-    [326, 343, 348],
-  ];
-  const { filas, sinFila } = filasRegimenGeneral303(datos.ivaDevengado);
+  const { sinFila } = filasRegimenGeneral303(datos.ivaDevengado);
   if (sinFila.length) {
     // Un fichero que se deja importes fuera se presentaria mal: mejor no generarlo.
     throw badRequest(
       `No se puede generar el fichero del 303: hay ventas al ${sinFila.map((d) => `${d.tipo} %`).join(', ')}, que no tiene fila en el régimen general. Revisa esas facturas.`,
     );
   }
-  filas.forEach((d, i) => {
-    if (!d) return;
-    const [pBase, pTipo, pCuota] = FILAS[i];
-    put(pBase, importe(d.base, 17)); // base
-    put(pTipo, numero(Math.round(d.tipo * 100), 5)); // tipo% (21% -> 02100)
-    put(pCuota, importe(d.cuota, 17)); // cuota
-  });
-  put(696, importe(datos.totalCuotaDevengada, 17)); // [27] total cuota devengada
+  return pagina1Borrador303(montarBorrador303({ ...datos, periodo }, contextoPorDefecto303(nif, razonSocial)));
+}
 
-  // IVA deducible operaciones interiores corrientes -> [28] base / [29] cuota
-  put(713, importe(datos.totalBaseDeducible, 17)); // [28]
-  put(730, importe(datos.totalCuotaDeducible, 17)); // [29]
-  put(1002, importe(datos.totalCuotaDeducible, 17)); // [45] total a deducir
-  put(1019, importe(datos.resultado, 17)); // [46] resultado regimen general
-
-  return buf.join('') + '\r\n';
+/** Sociedad de territorio comun en regimen general, sin REDEME, SII ni criterio de caja. */
+function contextoPorDefecto303(nif = '', razonSocial = ''): ContextoEmpresa303 {
+  return { nif, razonSocial, redeme: false, sii: false, criterioCaja: false, iban: null };
 }
 
 /**
- * Cabecera/envoltura del fichero (modelos 303/390): registro de 328 posiciones
- * + contenido (paginas) + cierre de 18 posiciones, segun hoja DP30300/DP39000.
- *
- * NOTA: las constantes de las posiciones 13 (tipo y cierre), 18 y 323 referencian
- * codigos de validacion (181/14/17) de las TABLAS de validacion de la AEAT, que
- * NO vienen en el xlsx del diseno; se dejan en blanco (TODO: literal oficial).
- * El resto (tag <T, modelo, ejercicio, periodo, version, NIF ED, cierre) si es
- * determinable. discriminante por defecto ' '.
+ * Cabecera/envoltura del fichero (390): registro de 328 posiciones + contenido
+ * (paginas) + cierre de 18 posiciones, con las constantes del diseno (las de
+ * la hoja DP30300 del 303 v1.01, iguales en el 390): discriminante "0",
+ * "0000>" en la 13, "<AUX>" en la 18, "</AUX>" en la 323 y el cierre
+ * "</T" + modelo + "0" + ejercicio + periodo + "0000>". Antes las constantes
+ * iban en blanco. El 303 tiene su propia envoltura (ficheroBorrador303).
  */
 export function envolverFichero(
   modelo: string,
@@ -215,78 +135,27 @@ export function envolverFichero(
   contenidoPaginas: string,
   opts: { discriminante?: string; versionPrograma?: string; nifEmpresaDesarrollo?: string } = {},
 ): string {
-  const disc = (opts.discriminante ?? ' ').slice(0, 1);
-  const cab: string[] = new Array(328).fill(' ');
-  // pos1-2 "<T"; pos3-5 modelo; pos6 discriminante; pos7-10 ejercicio; pos11-12 periodo
-  for (let i = 0; i < 2; i++) cab[i] = '<T'[i];
-  for (let i = 0; i < 3; i++) cab[2 + i] = modelo[i];
-  cab[5] = disc;
+  const disc = (opts.discriminante ?? '0').slice(0, 1);
   const ej = numero(ejercicio, 4);
-  for (let i = 0; i < 4; i++) cab[6 + i] = ej[i];
   const per = texto(periodo, 2);
-  for (let i = 0; i < 2; i++) cab[10 + i] = per[i];
-  // pos13(5) tipo y cierre, pos18(5) const, pos323(6) const -> blancos (TODO validacion)
-  // pos93(4) version del programa
-  const ver = texto(opts.versionPrograma ?? '', 4);
-  for (let i = 0; i < 4; i++) cab[92 + i] = ver[i];
-  // pos101(9) NIF Empresa Desarrollo
-  const nifED = texto(opts.nifEmpresaDesarrollo ?? '', 9);
-  for (let i = 0; i < 9; i++) cab[100 + i] = nifED[i];
-
-  // cierre (18): </T + modelo + discriminante + ejercicio + periodo + blancos
-  const cierre = ('</T' + modelo + disc + ej + per).padEnd(18, ' ').slice(0, 18);
-
+  const cab: string[] = new Array(328).fill(' ');
+  escribir(cab, 1, '<T' + modelo + disc + ej + per + '0000>');
+  escribir(cab, 18, '<AUX>');
+  escribir(cab, 93, texto(opts.versionPrograma ?? '', 4));
+  escribir(cab, 101, texto(opts.nifEmpresaDesarrollo ?? '', 9));
+  escribir(cab, 323, '</AUX>');
+  const cierre = '</T' + modelo + disc + ej + per + '0000>';
   return cab.join('') + contenidoPaginas + cierre + '\r\n';
 }
 
 /**
- * Modelo 303 — PAGINA 3 (DP30303, diseno oficial v1.01 para 2026): informacion
- * adicional + resultado final. Longitud 1017, tag <T30303000>, cierre
- * </T30303000>@1006. Casillas: [59]@12 entregas intracomunitarias de bienes y
- * servicios (con los servicios de clave S), [60]@29 exportaciones y
- * asimiladas, [120]@46 no sujetas por reglas de localizacion, [122]@63
- * operaciones con inversion del sujeto pasivo (todas de 17, tipo N: posiciones
- * comprobadas en la hoja DP30303 del diseno de registro), [64]@199 suma,
- * [65]@216 %estado (100,00), [66]@221 atribuible, [110]@255 a compensar
- * pendientes, [78]@272 a compensar aplicadas, [87]@289 pendientes futuras,
- * [69]@340 resultado autoliquidacion, [71]@408 RESULTADO FINAL.
+ * Modelo 303 — PAGINA 3 (informacion adicional y resultado) con el diseno
+ * OFICIAL 2026 (v1.01): ver services/modelo303.service (pagina3Borrador303).
+ * Los campos An (sin actividad, rectificativa) van en blanco o "X"; los
+ * numericos, a cero salvo las casillas calculadas.
  */
 export function generarPaginaModelo303_03(datos: DatosModelo303): string {
-  const LEN = 1017;
-  const buf: string[] = new Array(LEN).fill(' ');
-  const put = (pos: number, valor: string): void => {
-    for (let i = 0; i < valor.length; i++) buf[pos - 1 + i] = valor[i];
-  };
-  const zero = (desde: number, hasta: number): void => {
-    for (let i = desde; i <= hasta; i++) buf[i - 1] = '0';
-  };
-
-  put(1, '<T303' + '03000' + '>');
-  // Bloques numericos a cero por defecto (info adicional + resultado)
-  zero(12, 459);
-
-  put(12, importe(datos.entregasIntracomunitarias ?? 0, 17)); // [59]
-  put(29, importe(datos.exportaciones ?? 0, 17)); // [60]
-  put(46, importe(datos.noSujetasLocalizacion ?? 0, 17)); // [120]
-  put(63, importe(datos.inversionSujetoPasivo ?? 0, 17)); // [122]
-  put(182, importe(0, 17)); // [76]
-  put(199, importe(datos.resultado, 17)); // [64] = [46]+[58]+[76]
-  put(216, numero(10000, 5)); // [65] % Estado = 100,00
-  put(221, importe(datos.resultado, 17)); // [66] atribuible al Estado
-
-  const pendientes = datos.cuotasACompensarAnteriores ?? 0;
-  const aplicadas = datos.cuotasAplicadas ?? pendientes;
-  put(255, importe(pendientes, 17)); // [110] pendientes de periodos anteriores
-  put(272, importe(aplicadas, 17)); // [78] aplicadas en este periodo
-  put(289, importe(datos.cuotasPendientesPosteriores ?? pendientes - aplicadas, 17)); // [87] = [110]-[78]
-
-  const resultadoFinal = datos.resultadoFinal ?? datos.resultado;
-  put(340, importe(resultadoFinal, 17)); // [69] = [66]+[77]-[78]+[68]+[108]
-  put(357, importe(0, 17)); // [70] resultados anteriores
-  put(408, importe(resultadoFinal, 17)); // [71] RESULTADO
-
-  put(1006, '</T30303000>');
-  return buf.join('');
+  return pagina3Borrador303(montarBorrador303(datos, contextoPorDefecto303()));
 }
 
 /**
