@@ -213,3 +213,33 @@ describe('la lectura (sin BD)', () => {
     expect(_construirGastoExtraido({ ...lectura, total: 121, concepto: 'alquiler del local' })).toMatchObject({ cuentaContableBase: '621', tipoGastoSugerido: 'ALQUILER' });
   });
 });
+
+describe('cuenta habitual del proveedor', () => {
+  it('el lector propone para las lineas la cuenta que mas usa ese proveedor', async () => {
+    const otro = await prisma.supplier.create({ data: { companyId: E, nombreFiscal: 'Taller Habitual SL', nifCif: `B3939393${controlCif('3939393').cifra}` } });
+    for (const [i, cuenta] of [['1', '622'], ['2', '622'], ['3', '629']] as const) {
+      await prisma.expenseInvoice.create({
+        data: {
+          companyId: E,
+          supplierId: otro.id,
+          serie: 'H',
+          numero: Number(i),
+          numeroCompleto: `H-${i}-${otro.id}`,
+          fechaEmision: '2026-02-01',
+          fechaVencimiento: '2026-03-01',
+          estado: 'ACCOUNTED',
+          lineas: { create: [{ descripcion: 'Reparacion', cantidad: 1, precioUnitario: 10, baseLine: 10, accountCode: cuenta }] },
+        },
+      });
+    }
+    mockExtraer.mockResolvedValueOnce(leido({ nifProveedor: otro.nifCif, numeroFactura: 'NUEVA-1' }));
+    const r = await request(app()).post('/gastos-extractor/extraer-ia').attach('archivo', Buffer.from('%PDF-1.4 prueba'), 'f.pdf');
+    expect(r.status).toBe(201);
+    expect(r.body.data.cuentaHabitual).toEqual({ codigo: '622', nombre: expect.any(String) });
+    // El de las facturas de antes (Imprenta, a la 629) tiene la suya; uno que no esta dado de alta, ninguna.
+    mockExtraer.mockResolvedValueOnce(leido());
+    expect((await request(app()).post('/gastos-extractor/extraer-ia').attach('archivo', Buffer.from('%PDF-1.4 prueba'), 'f.pdf')).body.data.cuentaHabitual).toMatchObject({ codigo: '629' });
+    mockExtraer.mockResolvedValueOnce(leido({ nifProveedor: `B4848484${controlCif('4848484').cifra}` }));
+    expect((await request(app()).post('/gastos-extractor/extraer-ia').attach('archivo', Buffer.from('%PDF-1.4 prueba'), 'f.pdf')).body.data.cuentaHabitual).toBeNull();
+  });
+});
