@@ -15,7 +15,7 @@ import { esFechaReal } from '../../schemas/factura-gasto.schemas';
 import { aCentimos, redondear2 } from '../../utils/money';
 import { normalizarNif } from '../../utils/nif';
 import { isValidIban } from '../../utils/validateIban';
-import { confianzaBaja, MOTIVO_BASE_DUDOSA, nifLeido } from './azure-factura.mapper';
+import { confianzaBaja, MOTIVO_BASE_DUDOSA, nifLeido, totalConfirmadoPorQr } from './azure-factura.mapper';
 import { UMBRAL_OK, type Campo, type Lector, type LecturaNormalizada, type TipoDocumentoLeido, type TramoLeido } from './tipos';
 import { calcularCuadre, importesNegativos, validacionesSincronas, type ContextoValidacion } from './validaciones';
 
@@ -44,8 +44,9 @@ const camposClave = (l: LecturaNormalizada, lector: Lector): Array<[string, Camp
   lector === 'VENTA' ? ['el NIF del cliente', l.receptor.nif, 'nif_cliente'] : ['el NIF del emisor', l.emisor.nif, 'nif_emisor'],
   ['el número de factura', l.numero, 'numero'],
   ['la fecha de la factura', l.fechaEmision, 'fecha'],
-  // Sin total a pagar leido, se calcula con el total de la factura (completarTotalAPagar): cuenta la seguridad de ese total.
-  ['el total a pagar', l.totales.totalAPagar.valor === null && l.totales.totalFactura.valor !== null ? l.totales.totalFactura : l.totales.totalAPagar, 'total_a_pagar'],
+  // Sin total a pagar leido, solo se deja de preguntar si el QR confirma el total de la factura: de ahi sale
+  // (completarTotalAPagar). Un total sumado con las bases no se ha cotejado con nada y se pregunta (C6).
+  ['el total a pagar', l.totales.totalAPagar.valor === null && totalConfirmadoPorQr(l) ? l.totales.totalFactura : l.totales.totalAPagar, 'total_a_pagar'],
 ];
 
 /** Las preguntas que hay que hacer a Claude. Vacia: no se le llama. */

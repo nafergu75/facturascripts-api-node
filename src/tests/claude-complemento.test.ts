@@ -47,14 +47,31 @@ afterAll(() => {
 });
 
 describe('cuando se llama', () => {
-  it('sin InvoiceTotal ni AmountDue no se pregunta el total a pagar: sale del total calculado con las bases', () => {
-    const a = fixtureAzure<{ analyzeResult: AnalyzeResult }>('resultado-simple').analyzeResult;
+  /** El fixture sin InvoiceTotal ni AmountDue (ningun total impreso). */
+  function sinTotales(nombre: string): LecturaHecha {
+    const a = fixtureAzure<{ analyzeResult: AnalyzeResult }>(nombre).analyzeResult;
     const f = a.documents![0].fields as Record<string, unknown>;
     delete f.InvoiceTotal;
     delete f.AmountDue;
     const r = mapearFacturaAzure(a);
     if (r.tipo !== 'hecho') throw new Error('x');
-    expect(decidirComplemento(r.lectura, r.texto, 'GASTO')).toEqual([]);
+    return r;
+  }
+
+  it('sin InvoiceTotal ni AmountDue y sin QR se pregunta el total a pagar (C6): el total sumado con las bases no se ha cotejado con nada', () => {
+    const r = sinTotales('resultado-simple');
+    expect(r.lectura.totales.totalFactura).toMatchObject({ valor: 242, fuente: 'calculado' });
+    expect(decidirComplemento(r.lectura, r.texto, 'GASTO')).toEqual([{ disparador: 'C6', texto: 'No se ha leído el total a pagar: búscalo. Contesta en total_a_pagar.' }]);
+  });
+
+  it('sin InvoiceTotal ni AmountDue, con un QR que confirma el total de la factura, no se pregunta', () => {
+    const { lectura, texto, qr } = sinTotales('resultado-qr-ok');
+    const l = compararQr(qr ?? null, lectura);
+    expect(l.totales.totalFactura).toMatchObject({ valor: 242, fuente: 'qr', confianza: 1 });
+    expect(decidirComplemento(l, texto, 'GASTO')).toEqual([]);
+    // Un QR que no coincide con ese total no lo confirma: se pregunta.
+    const otro = compararQr({ estado: 'VALIDO', verifactu: true, datos: { ...qr!.datos!, importe: 250 } }, lectura);
+    expect(decidirComplemento(otro, texto, 'GASTO').map((p) => p.texto)).toContain('No se ha leído el total a pagar: búscalo. Contesta en total_a_pagar.');
   });
 
   it('la factura simple no necesita a Claude', () => {

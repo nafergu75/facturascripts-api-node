@@ -30,6 +30,11 @@ export const MOTIVO_BASE_CALCULADA = 'Base calculada a partir de la cuota: compr
 export const MOTIVO_RETENCION_CALCULADA = 'Retención calculada a partir del total a pagar: compruébala.';
 export const AVISO_VARIAS_FACTURAS = 'El archivo parece tener varias facturas; solo se ha leído la primera.';
 export const MOTIVO_A_PAGAR_SIN_TOTAL = 'No se ha leído el total a pagar: se ha calculado restando la retención al total de la factura. Compruébalo.';
+/** Sin ningun total impreso ni QR que lo confirme: el total sale de sumar lo leido, asi que siempre cuadra y no prueba nada. */
+export const MOTIVO_TOTAL_SUMADO = 'No se ha leído el total de la factura: se ha calculado sumando las bases y el IVA. Compruébalo con el documento.';
+export const MOTIVO_TOTAL_SUMADO_CON_RETENCION =
+  'No se ha leído el total de la factura: se ha calculado sumando las bases y el IVA y restando la retención. Compruébalo con el documento.';
+export const MOTIVO_A_PAGAR_DEL_TOTAL = 'No se ha leído el total a pagar: se ha tomado el total de la factura. Compruébalo con el documento.';
 
 // ---------------------------------------------------------------------------
 // Lectura de un DocumentField
@@ -312,18 +317,29 @@ export function mapearFacturaAzure(ar: AnalyzeResult, opciones: { paginasArchivo
   };
 }
 
+/** true si el QR VERI*FACTU confirma el total de la factura (se ha cotejado con el importe del QR). */
+export const totalConfirmadoPorQr = (l: LecturaNormalizada): boolean => l.totales.totalFactura.fuente === 'qr' && l.totales.totalFactura.confianza === 1;
+
 /**
  * Sin total a pagar leido (ni InvoiceTotal ni AmountDue, y la IA tampoco lo da),
- * se toma el total de la factura, calculado con las bases o cotejado con el QR.
- * Con retencion, ese total menos la retencion, para revisar. Se llama al final,
- * cuando ya se sabe si hay retencion. Si ya traia un motivo (p. ej. que no se
- * pudo completar con la IA), lo conserva.
+ * se toma el total de la factura (menos la retencion, si la lleva). Se llama al
+ * final, cuando ya se sabe si hay retencion.
+ *
+ * Solo queda sin revisar si el QR confirma ese total y no hay retencion. Si no,
+ * va a "revisar" con su motivo: un total sumado con las bases leidas siempre
+ * cuadra con ellas (V01), asi que no se ha cotejado con nada del documento. Si
+ * ya traia un motivo (p. ej. que no se pudo completar con la IA), lo conserva.
  */
 export function completarTotalAPagar(l: LecturaNormalizada): void {
   const total = l.totales.totalFactura.valor;
   if (l.totales.totalAPagar.valor !== null || total === null) return;
   const retencion = Math.max(l.retencion?.importe.valor ?? l.totales.retencion.valor ?? 0, 0);
-  const motivo = l.totales.totalAPagar.motivo ?? (retencion > 0 ? MOTIVO_A_PAGAR_SIN_TOTAL : undefined);
+  const sumado = l.totales.totalFactura.fuente === 'calculado';
+  let propio: string | undefined;
+  if (totalConfirmadoPorQr(l)) propio = retencion > 0 ? MOTIVO_A_PAGAR_SIN_TOTAL : undefined;
+  else if (sumado) propio = retencion > 0 ? MOTIVO_TOTAL_SUMADO_CON_RETENCION : MOTIVO_TOTAL_SUMADO;
+  else propio = retencion > 0 ? MOTIVO_A_PAGAR_SIN_TOTAL : MOTIVO_A_PAGAR_DEL_TOTAL;
+  const motivo = l.totales.totalAPagar.motivo ?? propio;
   l.totales.totalAPagar = { valor: redondear2(total - retencion), confianza: null, fuente: 'calculado', ...(motivo ? { motivo } : {}) };
 }
 

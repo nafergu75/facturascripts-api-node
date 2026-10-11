@@ -44,7 +44,7 @@ import { _reiniciarPausa, TIEMPO_GET_MS } from '../services/lectura/azure-di.cli
 import { TIEMPO_COMPLEMENTO_MS } from '../services/lectura/claude-complemento';
 import { TIEMPO_CLAUDE_VISION_MS } from '../services/lectura/claude-vision.adapter';
 import { purgarLecturas, RESERVA_MS } from '../services/lectura/lectura.service';
-import { MOTIVO_A_PAGAR_SIN_TOTAL } from '../services/lectura/azure-factura.mapper';
+import { MOTIVO_TOTAL_SUMADO, MOTIVO_TOTAL_SUMADO_CON_RETENCION } from '../services/lectura/azure-factura.mapper';
 import { MOTIVO_DATO_DEL_QR } from '../services/lectura/verifactu-qr';
 import { aceptado, CLAVE, ENDPOINT, error, fixtureAzure, fixtureClaude, NIF_EMISOR, NIF_EMPRESA, respuesta, resultado, RESULT_ID } from './fixtures/azure-di';
 
@@ -313,7 +313,29 @@ describe('sin total leido', () => {
     expect(crear).toHaveBeenCalledTimes(1);
     expect(d.gasto).toMatchObject({ base: 1000, iva: 210, total: 1060, errores: [] });
     expect(d.lectura.campos['totales.totalFactura']).toMatchObject({ fuente: 'calculado', valorLeido: 1210 });
-    expect(d.lectura.campos['totales.totalAPagar']).toMatchObject({ estado: 'revisar', fuente: 'calculado', confianza: null, valorLeido: 1060, motivos: [MOTIVO_A_PAGAR_SIN_TOTAL] });
+    // Sin QR, el total de la factura sale de sumar las bases: se pregunta a la IA y, si no lo da, se revisa.
+    expect(JSON.stringify(crear.mock.calls[0][0].messages)).toContain('Contesta en total_a_pagar');
+    expect(d.lectura.campos['totales.totalAPagar']).toMatchObject({ estado: 'revisar', fuente: 'calculado', confianza: null, valorLeido: 1060, motivos: [MOTIVO_TOTAL_SUMADO_CON_RETENCION] });
+  });
+
+  it('sin QR ni ningun total impreso: se pregunta a la IA el total y, si no lo da, el total sumado con las bases queda para revisar', async () => {
+    const ia = fixtureClaude<{ content: Array<{ input: Record<string, unknown> }> }>('complemento-irpf');
+    crear.mockResolvedValueOnce({ ...ia, content: [{ ...ia.content[0], input: { numero: 'F2026/0012' } }] });
+    const d = await leerSin('resultado-simple', 'InvoiceTotal', 'AmountDue');
+    expect(crear).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(crear.mock.calls[0][0].messages)).toContain('No se ha leído el total a pagar: búscalo. Contesta en total_a_pagar.');
+    expect(d.gasto).toMatchObject({ base: 200, iva: 42, total: 242 });
+    expect(d.lectura.campos['totales.totalAPagar']).toMatchObject({ estado: 'revisar', fuente: 'calculado', valorLeido: 242, motivos: [MOTIVO_TOTAL_SUMADO] });
+    expect(d.lectura).toMatchObject({ estado: 'revisar', requiereRevision: true });
+  });
+
+  it('sin QR ni ningun total impreso: si la IA da el total a pagar, se usa ese', async () => {
+    const ia = fixtureClaude<{ content: Array<{ input: Record<string, unknown> }> }>('complemento-irpf');
+    crear.mockResolvedValueOnce({ ...ia, content: [{ ...ia.content[0], input: { total_a_pagar: 242 } }] });
+    const d = await leerSin('resultado-simple', 'InvoiceTotal', 'AmountDue');
+    expect(crear).toHaveBeenCalledTimes(1);
+    expect(d.gasto).toMatchObject({ total: 242 });
+    expect(d.lectura.campos['totales.totalAPagar']).toMatchObject({ fuente: 'claude', valorLeido: 242 });
   });
 });
 

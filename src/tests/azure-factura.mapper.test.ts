@@ -3,7 +3,18 @@
  * campos, confianzas, desglose por tipo, recargo, retencion propuesta y que
  * no se cuela nada bruto (content, polygon, spans, words).
  */
-import { completarTotalAPagar, confianzaLectura, contarPaginasPdf, leerTipo, mapearFacturaAzure, MOTIVO_A_PAGAR_SIN_TOTAL, MOTIVO_BASE_DUDOSA } from '../services/lectura/azure-factura.mapper';
+import {
+  completarTotalAPagar,
+  confianzaLectura,
+  contarPaginasPdf,
+  leerTipo,
+  mapearFacturaAzure,
+  MOTIVO_A_PAGAR_DEL_TOTAL,
+  MOTIVO_A_PAGAR_SIN_TOTAL,
+  MOTIVO_BASE_DUDOSA,
+  MOTIVO_TOTAL_SUMADO,
+  MOTIVO_TOTAL_SUMADO_CON_RETENCION,
+} from '../services/lectura/azure-factura.mapper';
 import type { AnalyzeResult } from '../services/lectura/azure-di.client';
 import type { LecturaHecha } from '../services/lectura/tipos';
 import { fixtureAzure } from './fixtures/azure-di';
@@ -214,17 +225,42 @@ describe('sin total a pagar leido (completarTotalAPagar)', () => {
     expect(l.totales.totalAPagar.valor).toBeNull();
   });
 
-  it('sin retencion: el total a pagar es el total de la factura, calculado y sin motivo', () => {
+  /** Como queda tras cotejar el total con el importe del QR. */
+  const confirmadoPorQr = (l: ReturnType<typeof sinTotales>) => {
+    l.totales.totalFactura = { ...l.totales.totalFactura, fuente: 'qr', confianza: 1 };
+  };
+
+  it('sin retencion y con el total confirmado por el QR: el total a pagar es el total de la factura, calculado y sin motivo', () => {
     const l = sinTotales('resultado-qr-ok');
+    confirmadoPorQr(l);
     completarTotalAPagar(l);
     expect(l.totales.totalAPagar).toEqual({ valor: 242, confianza: null, fuente: 'calculado' });
   });
 
-  it('con retencion: el total menos la retencion, con su motivo', () => {
-    const l = sinTotales('resultado-irpf');
-    l.retencion = { tipo: { valor: 15, confianza: null, fuente: 'claude' }, importe: { valor: 150, confianza: null, fuente: 'claude' } };
+  it('sin retencion y sin QR que lo confirme: el total sumado con las bases va a revisar con su motivo', () => {
+    const l = sinTotales('resultado-qr-ok');
+    completarTotalAPagar(l);
+    expect(l.totales.totalAPagar).toEqual({ valor: 242, confianza: null, fuente: 'calculado', motivo: MOTIVO_TOTAL_SUMADO });
+    // Un total de la factura que no es la suma (p. ej. el que da la IA) tampoco se ha cotejado.
+    const ia = sinTotales('resultado-qr-ok');
+    ia.totales.totalFactura = { valor: 242, confianza: null, fuente: 'claude' };
+    completarTotalAPagar(ia);
+    expect(ia.totales.totalAPagar.motivo).toBe(MOTIVO_A_PAGAR_DEL_TOTAL);
+  });
+
+  it('con retencion: el total menos la retencion, con su motivo (el de la suma si el QR no confirma el total)', () => {
+    const conRetencion = () => {
+      const l = sinTotales('resultado-irpf');
+      l.retencion = { tipo: { valor: 15, confianza: null, fuente: 'claude' }, importe: { valor: 150, confianza: null, fuente: 'claude' } };
+      return l;
+    };
+    const l = conRetencion();
+    confirmadoPorQr(l);
     completarTotalAPagar(l);
     expect(l.totales.totalAPagar).toEqual({ valor: 1060, confianza: null, fuente: 'calculado', motivo: MOTIVO_A_PAGAR_SIN_TOTAL });
+    const sinQr = conRetencion();
+    completarTotalAPagar(sinQr);
+    expect(sinQr.totales.totalAPagar).toEqual({ valor: 1060, confianza: null, fuente: 'calculado', motivo: MOTIVO_TOTAL_SUMADO_CON_RETENCION });
   });
 
   it('conserva el motivo que ya tuviera y no toca un total a pagar leido', () => {
