@@ -59,7 +59,7 @@ export const INTENCIONES: Intencion[] = [
     permisos: ['ventas:read', 'contabilidad:read'],
     conceptos: {
       obligatorios: [['__cliente'], ['debe', 'deben', 'me debe', 'nos debe', 'adeuda', 'pendiente*', 'pagado', 'ha pagado', 'pago*', 'cobr*', 'deuda*', 'factura*', 'saldo']],
-      excluyentes: ['le debo', 'debo', 'tengo que pagar'],
+      excluyentes: ['le debo', 'debo', 'tengo que pagar', 'saldo contable', 'contabilidad', 'contable', 'mayor', 'subcuenta', '__subcuenta'],
     },
     huecos: [{ nombre: 'tercero', obligatorio: true, roles: ['cliente'] }],
     paginas: ['/dashboard/clientes', '/dashboard/facturas'],
@@ -174,7 +174,7 @@ export const INTENCIONES: Intencion[] = [
         ['debo', 'le debo', 'les debo', 'deber', 'por pagar', 'sin pagar', 'pendiente*', 'vencid*', 'tengo que pagar', 'toca pagar', 'hay que pagar', 'proximos pagos', 'adeud*', 'deuda*'],
         ['proveedor*', 'acreedor*', 'pagar', 'pago*', 'le debo', 'les debo', '__proveedor', 'compra', 'compras', 'facturas de compra', 'factura de compra'],
       ],
-      excluyentes: ['cobr*', 'me debe', 'me deben', 'impuesto*', 'iva', 'hacienda', 'modelo*', 'asiento*', 'seguridad social', 'nomina*', '__soloCliente'],
+      excluyentes: ['cobr*', 'me debe', 'me deben', 'impuesto*', 'iva', 'hacienda', 'modelo*', 'asiento*', 'seguridad social', 'nomina*', '__soloCliente', 'saldo contable', 'contabilidad', 'contable', 'mayor', 'subcuenta', '__subcuenta'],
     },
     huecos: [
       { nombre: 'tercero', obligatorio: false, roles: ['proveedor'] },
@@ -195,6 +195,36 @@ export const INTENCIONES: Intencion[] = [
       'deudas con proveedores',
     ],
     ejecutar: EJECUTORES.deudaConProveedores,
+  },
+  {
+    id: 'INT-07',
+    titulo: 'Saldo contable de un cliente o proveedor',
+    pregunta: '¿Qué saldo tiene un cliente en la contabilidad?',
+    area: 'contabilidad',
+    permisos: ['contabilidad:read'],
+    conceptos: {
+      obligatorios: [
+        ['__cliente', '__proveedor'],
+        ['saldo contable', 'contabilidad', 'contable', 'contables', 'mayor', 'subcuenta', '__subcuenta', 'cuenta contable', 'saldo de su cuenta', 'saldo de la cuenta', 'apuntes'],
+      ],
+      excluyentes: ['como', 'que es', 'donde', 'para que sirve', 'factura*', 'vencid*', '__banco'],
+    },
+    huecos: [{ nombre: 'tercero', obligatorio: true, roles: ['cliente', 'proveedor'] }],
+    paginas: ['/dashboard/mayor-terceros', '/dashboard/informes', '/dashboard/clientes', '/dashboard/proveedores'],
+    ejemplos: [
+      'saldo contable del cliente',
+      'que saldo tiene en contabilidad',
+      'saldo contable del proveedor',
+      'mayor del cliente',
+      'mayor del proveedor',
+      'saldo de su subcuenta',
+      'cuanto debe segun la contabilidad',
+      'que dice la contabilidad de este cliente',
+      'movimientos contables del proveedor',
+      'saldo de la cuenta contable del cliente',
+      'apuntes de la subcuenta',
+    ],
+    ejecutar: EJECUTORES.saldoContableTercero,
   },
   {
     id: 'INT-09',
@@ -340,7 +370,7 @@ export const INTENCIONES: Intencion[] = [
     permisos: ['tesoreria:read'],
     conceptos: {
       obligatorios: [['movimiento*', 'cargos', 'cargo', 'cargado', 'cargados', 'han cargado', 'ha entrado', 'han entrado', 'entrado', 'ha salido', 'salido', 'apuntes del banco', 'transferencia*', 'recibos', 'recibo']],
-      excluyentes: ['asiento*', 'como', 'importar', 'subir', 'categoria*', 'concilia*', 'que es'],
+      excluyentes: ['asiento*', 'como', 'importar', 'subir', 'categoria*', 'concilia*', 'que es', 'contables', 'contabilidad', 'subcuenta', 'mayor'],
     },
     huecos: [
       { nombre: 'periodo', obligatorio: false },
