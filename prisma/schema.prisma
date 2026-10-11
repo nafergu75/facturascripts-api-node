@@ -1599,3 +1599,62 @@ model TipoCambioBce {
 
   @@id([moneda, fecha])
 }
+
+/// Lectura de una factura con el lector (Azure, Claude o XML), desde que se sube hasta que se registra o se descarta.
+/// Guarda el resultado NORMALIZADO y las validaciones; nunca la respuesta bruta de Azure ni la de Claude.
+model LecturaDocumento {
+  id                     String    @id @default(cuid())
+  companyId              String
+  userId                 String?
+  /// VENTA | GASTO
+  lector                 String    @db.VarChar(10)
+  /// LEYENDO | LISTA | ERROR | CONFIRMADA | DESCARTADA
+  estado                 String    @default("LEYENDO") @db.VarChar(12)
+  /// AZURE | AZURE_CLAUDE | CLAUDE | FACTURAE (null mientras lee)
+  origen                 String?   @db.VarChar(14)
+  /// Por que se leyo con Claude en lugar de Azure (AZURE_NO_CONFIGURADO, AZURE_CUOTA...). null si leyo Azure.
+  motivoRespaldo         String?   @db.VarChar(40)
+  archivoNombre          String    @db.VarChar(255)
+  archivoTipo            String    @db.VarChar(100)
+  archivoTamanio         Int
+  /// SHA-256 del archivo, en hexadecimal: detecta el mismo archivo subido dos veces
+  archivoHash            String    @db.Char(64)
+  /// Referencia en Blob (privado). null cuando se borra el archivo.
+  archivoRef             String?   @db.Text
+  paginasArchivo         Int?
+  paginasLeidas          Int?
+  /// resultId de Azure (UUID). Nunca la URL de Operation-Location.
+  azureResultId          String?   @db.VarChar(64)
+  azureProximaConsulta   DateTime?
+  /// Consultas hechas a Azure; tambien sirve de version para el bloqueo optimista
+  azureConsultas         Int       @default(0)
+  iniciadaEn             DateTime  @default(now())
+  terminadaEn            DateTime?
+  /// Confianza de la lectura de 0 a 1; null si el lector no la da
+  confianza              Float?
+  /// ok | revisar | error
+  estadoValidacion       String?   @db.VarChar(8)
+  /// SIN_QR | COINCIDE | NO_COINCIDE | ILEGIBLE | AJENO (null si no se leyo el QR)
+  qrEstado               String?   @db.VarChar(12)
+  /// LecturaNormalizada + estado por campo. Se vacia al purgar.
+  resultado              Json?
+  /// [{ codigo, nivel, campos, mensaje }]
+  validaciones           Json?
+  /// Textos para el usuario (string[])
+  avisos                 Json?
+  errorCodigo            String?   @db.VarChar(40)
+  /// El usuario marco "He revisado los datos marcados"
+  revisada               Boolean   @default(false)
+  confirmadaPor          String?
+  confirmadaEn           DateTime?
+  expenseInvoiceId       String?
+  incomeInvoiceId        String?
+  incomeReaderDocumentId String?
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
+
+  @@index([companyId, estado])
+  @@index([companyId, archivoHash])
+  @@index([expenseInvoiceId])
+  @@index([incomeInvoiceId])
+}
