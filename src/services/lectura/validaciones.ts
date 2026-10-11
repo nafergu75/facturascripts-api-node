@@ -185,6 +185,8 @@ function v08NifReceptor(l: LecturaNormalizada, ctx: ContextoValidacion): Resulta
   const nif = l.receptor.nif.valor;
   if (!nif) {
     if (ctx.lector === 'VENTA') return [v('NIF_RECEPTOR', 'error', ['receptor.nif'], 'Falta el NIF del cliente: es obligatorio en una factura de ingreso.')];
+    // La lectura de gastos con Claude no pregunta por el cliente: que falte no dice nada.
+    if (l.receptor.nif.fuente === 'claude') return [];
     if (['simplificada', 'ticket', 'recibo'].includes(l.tipoDocumento.valor ?? '')) return [];
     return [v('NIF_RECEPTOR', 'revisar', ['receptor.nif'], 'La factura no lleva el NIF de la empresa como cliente: compruébalo.')];
   }
