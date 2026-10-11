@@ -139,6 +139,9 @@ describe('borrador del 390', () => {
     expect(d.errores).toEqual([]);
     expect(d.casillas).toMatchObject({ '05': 5000, '06': 1050, '34': 1050, '47': 1050, '65': 1050, '99': 5000, '108': 5000 });
     expect(d.paginas.map((p: { codigo: string }) => p.codigo)).toEqual(['01000', '02000', '02B00', '03000', '04000', '06000']);
+    // Cada casilla con su descripción del diseño oficial, en el orden de la página.
+    const p2 = d.paginas.find((p: { codigo: string }) => p.codigo === '02000');
+    expect(p2.detalle[0]).toEqual({ casilla: '05', descripcion: 'Base Imponible y cuota - Reg. ordin. - Tipo 21% - Base imponible', valor: 5000 });
     const f = await descargar('/borradores/390/fichero?ejercicio=2025');
     expect(f.status).toBe(200);
     const contenido = latin1(f);

@@ -13,6 +13,9 @@ import {
   type Opciones347,
   type Opciones390,
 } from '../services/borradoresAeat.service';
+import { DISENO_390 } from '../aeat/oficial/modelo390';
+import { DISENO_200 } from '../aeat/oficial/modelo200';
+import type { PaginaOficial } from '../aeat/oficial/diseno';
 
 /**
  * Borradores de los modelos 347, 390 y 200 con el diseño oficial de la AEAT
@@ -74,6 +77,23 @@ function opciones200(req: Request): Opciones200 {
   };
 }
 
+/** Texto corto de una casilla para la pantalla: sin el apartado inicial ni el número entre corchetes. */
+function descripcionCorta(desc: string): string {
+  const partes = desc.replace(/\s*\[\d+\]\.?\s*$/, '').split(' - ');
+  return (partes.length > 2 ? partes.slice(1) : partes).join(' - ').trim();
+}
+
+/** Casillas de cada página con su descripción oficial, en el orden del diseño. */
+function conDetalle<P extends { codigo: string; casillas: Record<string, number | string> }>(paginas: P[], disenos: Record<string, PaginaOficial>) {
+  return paginas.map((p) => {
+    const vistas = new Set<string>();
+    const detalle = disenos[p.codigo].campos
+      .filter((c) => c.casilla !== undefined && p.casillas[c.casilla] !== undefined && !vistas.has(c.casilla) && vistas.add(c.casilla))
+      .map((c) => ({ casilla: c.casilla!, descripcion: descripcionCorta(c.desc), valor: p.casillas[c.casilla!] }));
+    return { ...p, detalle };
+  });
+}
+
 function enviarFichero(res: Response, nombre: string, contenido: string): void {
   res.setHeader('Content-Type', 'text/plain; charset=ISO-8859-1');
   res.setHeader('Content-Disposition', `attachment; filename="${nombre}"`);
@@ -93,6 +113,11 @@ export const borradoresAeatController = {
           : await borrador200(req.companyId!, ejercicio, opciones200(req));
     // El fichero se descarga aparte: no hace falta repetirlo en la respuesta.
     const { fichero: _fichero, ...resto } = b;
+    if ('paginas' in resto) {
+      const disenos = modelo === '390' ? DISENO_390.paginas : DISENO_200.paginas;
+      sendOk(res, { modelo, ...resto, paginas: conDetalle(resto.paginas, disenos) });
+      return;
+    }
     sendOk(res, { modelo, ...resto });
   }),
 
