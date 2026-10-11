@@ -1,7 +1,14 @@
 import { asyncHandler } from '../utils/async-handler';
 import { sendOk } from '../utils/response';
 import { prisma } from '../config/database';
-import { cambiarInterruptorRed, estadoRedEmpresa, leerInterruptorRed, type EstadoInterruptor } from '../services/verifactu/redSeguridad';
+import {
+  cambiarInterruptorRed,
+  estadoRedEmpresa,
+  fijarExclusion,
+  leerExclusion,
+  leerInterruptorRed,
+  type EstadoInterruptor,
+} from '../services/verifactu/redSeguridad';
 
 /** Estado del interruptor con el email de quien lo cambio (no su id). */
 async function conQuien(estado: EstadoInterruptor) {
@@ -15,6 +22,20 @@ export const verifactuController = {
   /** GET /companies/:companyId/verifactu/red-seguridad: si la red bloquea la emision y el aviso previo. */
   estadoRedEmpresa: asyncHandler(async (req, res) => {
     sendOk(res, await estadoRedEmpresa(req.companyId!));
+  }),
+
+  /** GET /companies/:companyId/verifactu/exclusion (administrador de la empresa). */
+  leerExclusion: asyncHandler(async (req, res) => {
+    sendOk(res, await leerExclusion(req.companyId!));
+  }),
+
+  /**
+   * PUT /companies/:companyId/verifactu/exclusion (administrador de la empresa).
+   * { motivoExclusion: 'SII' | 'FORAL' | null, motivo }. La auditoria va dentro del servicio.
+   */
+  fijarExclusion: asyncHandler(async (req, res) => {
+    const b = req.body ?? {};
+    sendOk(res, await fijarExclusion(req.companyId!, req.user!.userId, { motivoExclusion: b.motivoExclusion, motivo: b.motivo }));
   }),
 
   /** GET /admin/verifactu/red-seguridad (solo administrador global). */
