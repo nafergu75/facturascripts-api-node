@@ -22,6 +22,7 @@ export const ingresosExtractorController = {
   confirmar: asyncHandler(async (req: Request, res: Response) => {
     const documentId = (req.body ?? {}).documentId;
     if (typeof documentId !== 'string' || !documentId) throw badRequest('Falta documentId.');
-    sendOk(res, await ingresosExtractorService.confirmar(req.companyId!, documentId), undefined, 201);
+    const revisado = (req.body ?? {}).revisado === true;
+    sendOk(res, await ingresosExtractorService.confirmar(req.companyId!, documentId, { revisado, userId: req.user?.userId }), undefined, 201);
   }),
 };
