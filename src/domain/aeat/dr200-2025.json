@@ -29,7 +29,7 @@
    {"n": 7, "pos": 14, "len": 9, "tipo": "An", "desc": "Identificación - NIF"},
    {"n": 8, "pos": 23, "len": 80, "tipo": "An", "desc": "Identificación - Apellidos y nombre o Razón Social"},
    {"n": 9, "pos": 103, "len": 4, "tipo": "Num", "desc": "Ejercicio"},
-   {"n": 10, "pos": 107, "len": 2, "tipo": "An", "desc": "Periodo", "contenido": "Constante 0A"},
+   {"n": 10, "pos": 107, "len": 2, "tipo": "An", "desc": "Periodo", "contenido": "Constante 0A", "constante": "0A"},
    {"n": 11, "pos": 109, "len": 4, "tipo": "Num", "desc": "Periodo Impositivo - Año inicio"},
    {"n": 12, "pos": 113, "len": 2, "tipo": "Num", "desc": "Periodo Impositivo - Mes inicio"},
    {"n": 13, "pos": 115, "len": 2, "tipo": "Num", "desc": "Periodo Impositivo - Día Inicio"},
