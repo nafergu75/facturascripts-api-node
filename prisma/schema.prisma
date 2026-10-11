@@ -135,6 +135,49 @@ model ModeloImpuesto {
   @@unique([companyId, codigo, ejercicio, periodo])
 }
 
+/// Historial de declaraciones de un modelo y periodo (B4 y B5 de la
+/// integracion AEAT): la normal y sus complementarias o sustitutivas, con el
+/// numero identificativo que pone la app (informativas), el justificante de la
+/// sede y la instantanea de lo presentado. Nunca se borra una fila: lo que se
+/// abandona queda 'anulada' (asi un numero no se vuelve a usar).
+model DeclaracionAeat {
+  id                   String    @id @default(cuid())
+  companyId            String
+  codigo               String    @db.VarChar(3)
+  ejercicio            Int
+  periodo              String    @db.VarChar(2)
+  /// 1, 2, 3... dentro del modelo y periodo.
+  secuencia            Int
+  /// N normal, C complementaria (rectificativa en el 303 y el 200), S sustitutiva.
+  tipo                 String    @db.VarChar(1)
+  /// preparada | presentada | anulada
+  estado               String    @default("preparada") @db.VarChar(10)
+  /// Numero identificativo (modelo + ejercicio + contador): 347, 349, 180 y 190.
+  numero               String?   @db.VarChar(13)
+  anteriorId           String?
+  /// Numero de la anterior que va en el fichero (justificante o numero identificativo).
+  justificanteAnterior String?   @db.VarChar(20)
+  /// Autoliquidaciones: lo ya ingresado de las presentadas ([29] del 111, [04] del 115...).
+  resultadoAnterior    Decimal?  @db.Decimal(14, 2)
+  /// Informativas: claves de los registros elegidos para la complementaria.
+  registros            Json?
+  /// Justificante que da la sede al presentar.
+  justificante         String?   @db.VarChar(20)
+  fechaPresentacion    String?   @db.VarChar(10)
+  /// Instantanea al presentar: casillas.
+  casillas             Json?
+  /// Instantanea al presentar: fila de ModeloImpuesto, fichero, IBAN, tipo, resultado, registros...
+  datos                Json?
+  creadoPor            String?
+  presentadoPor        String?
+  creadoEn             DateTime  @default(now())
+  presentadoEn         DateTime?
+
+  @@unique([companyId, numero])
+  @@unique([companyId, codigo, ejercicio, periodo, secuencia])
+  @@index([companyId, codigo, ejercicio, periodo])
+}
+
 /// Relacion usuario <-> empresa con rol por empresa.
 model Membership {
   id        String  @id @default(cuid())
