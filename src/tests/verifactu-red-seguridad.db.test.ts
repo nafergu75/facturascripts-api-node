@@ -31,6 +31,8 @@ const clientes: Record<string, string> = {};
 let tokenAdminEmpresa = '';
 let tokenAdminGlobal = '';
 let idAdminGlobal = '';
+let idAdminEmpresa = '';
+let tokenContable = '';
 
 // 31-12-2026 a las 23:59:59 y 1-1-2027 a las 00:00:00, hora de Madrid.
 const ANTES = '2026-12-31T22:59:59Z';
@@ -77,7 +79,13 @@ beforeAll(async () => {
   const u = await prisma.user.create({ data: { email: `vfred-${SUFIJO}@test.local`, passwordHash: hashPassword(randomBytes(18).toString('base64url')) } });
   await prisma.membership.create({ data: { userId: u.id, companyId: ES, role: 'admin' } });
   await prisma.membership.create({ data: { userId: u.id, companyId: US, role: 'admin' } });
+  await prisma.membership.create({ data: { userId: u.id, companyId: SII, role: 'admin' } });
+  idAdminEmpresa = u.id;
   tokenAdminEmpresa = authService.generateToken({ userId: u.id, email: u.email, roles: [], companies: [] });
+  // Contable de la empresa SII: lleva los impuestos (impuestos:write), pero no es administrador.
+  const c = await prisma.user.create({ data: { email: `vfred-c-${SUFIJO}@test.local`, passwordHash: hashPassword(randomBytes(18).toString('base64url')) } });
+  await prisma.membership.create({ data: { userId: c.id, companyId: SII, role: 'contable' } });
+  tokenContable = authService.generateToken({ userId: c.id, email: c.email, roles: [], companies: [] });
   const g = await prisma.user.create({
     data: { email: `vfred-g-${SUFIJO}@test.local`, isGlobalAdmin: true, passwordHash: hashPassword(randomBytes(18).toString('base64url')) },
   });
@@ -92,9 +100,11 @@ afterEach(() => {
 
 afterAll(async () => {
   await prisma.ajustePlataforma.deleteMany({ where: { clave: CLAVE_RED_SEGURIDAD } });
-  await prisma.auditLog.deleteMany({ where: { userId: idAdminGlobal } });
+  await prisma.auditLog.deleteMany({ where: { userId: { in: [idAdminGlobal, idAdminEmpresa] } } });
   await prisma.verifactuConfig.deleteMany({ where: { companyId: { in: EMPRESAS } } });
-  await prisma.user.deleteMany({ where: { email: { in: [`vfred-${SUFIJO}@test.local`, `vfred-g-${SUFIJO}@test.local`] } } });
+  await prisma.user.deleteMany({
+    where: { email: { in: [`vfred-${SUFIJO}@test.local`, `vfred-g-${SUFIJO}@test.local`, `vfred-c-${SUFIJO}@test.local`] } },
+  });
 });
 
 describe('fecha por hora de Madrid', () => {
@@ -148,7 +158,9 @@ describe('los tres caminos que emiten', () => {
       .send({ fechaEmision: HOY });
     expect(res.status).toBe(409);
     expect(res.body.details).toMatchObject({ codigo: CODIGO_VERIFACTU_INACTIVO, code: CODIGO_VERIFACTU_INACTIVO });
-    expect(res.body.message).toMatch(/borrador o como proforma/);
+    // Ya es un borrador: no se le dice que lo guarde como borrador ni como proforma.
+    expect(res.body.message).toMatch(/El borrador sigue guardado/);
+    expect(res.body.message).not.toMatch(/proforma/);
   });
 });
 
@@ -177,10 +189,57 @@ describe('lo que nunca se bloquea', () => {
     expect((await emitir(US, { lineas: [{ ...linea(), tipoIva: 0, moneda: 'USD' }] })).estadoDocumento).toBe('FINAL');
   });
 
-  it('empresa en el SII y empresa foral', async () => {
+  it('empresa foral (exclusión aprobada)', async () => {
     relojRed(DESDE);
-    expect((await emitir(SII)).estadoDocumento).toBe('FINAL');
     expect((await emitir(FORAL)).estadoDocumento).toBe('FINAL');
+  });
+
+  it('empresa en el SII: marcarlo en los ajustes fiscales no basta; el contable no puede excluirla y el administrador sí, con rastro', async () => {
+    relojRed(DESDE);
+    // Los ajustes fiscales dicen SII, pero nadie ha aprobado la exclusion: sigue bloqueando.
+    await esperarBloqueo(emitir(SII));
+    const estado = await request(app).get(`/companies/${SII}/verifactu/red-seguridad`).set('Authorization', `Bearer ${tokenAdminEmpresa}`);
+    expect(estado.body.data).toMatchObject({ bloquea: true, exclusion: null, siiSinAprobar: true });
+
+    const ruta = `/companies/${SII}/verifactu/exclusion`;
+    const porContable = await request(app)
+      .put(ruta)
+      .set('Authorization', `Bearer ${tokenContable}`)
+      .send({ motivoExclusion: 'SII', motivo: 'Lo dice la gestoría' });
+    expect(porContable.status).toBe(403);
+
+    const sinMotivo = await request(app).put(ruta).set('Authorization', `Bearer ${tokenAdminEmpresa}`).send({ motivoExclusion: 'SII' });
+    expect(sinMotivo.status).toBe(400);
+    expect(sinMotivo.body.details).toEqual({ campo: 'motivo' });
+
+    const ok = await request(app)
+      .put(ruta)
+      .set('Authorization', `Bearer ${tokenAdminEmpresa}`)
+      .send({ motivoExclusion: 'SII', motivo: 'La gestoría confirma que lleva el SII' });
+    expect(ok.status).toBe(200);
+    expect(ok.body.data).toEqual({ motivoExclusion: 'SII', sii: true });
+    const rastro = await prisma.auditLog.findFirst({ where: { companyId: SII, action: 'VERIFACTU_EXCLUSION_CAMBIADA' }, orderBy: { timestamp: 'desc' } });
+    expect(rastro?.userId).toBe(idAdminEmpresa);
+    expect(rastro?.meta).toMatchObject({ antes: null, despues: 'SII', motivo: 'La gestoría confirma que lleva el SII' });
+    expect((await emitir(SII)).estadoDocumento).toBe('FINAL');
+
+    // Si despues se desmarca el SII en los ajustes fiscales, la exclusion deja de valer.
+    await prisma.ajustesFiscales.update({ where: { companyId: SII }, data: { sii: false } });
+    try {
+      await esperarBloqueo(emitir(SII));
+    } finally {
+      await prisma.ajustesFiscales.update({ where: { companyId: SII }, data: { sii: true } });
+    }
+  });
+
+  it('exclusión SII sin el SII marcado en los ajustes fiscales: 400', async () => {
+    const res = await request(app)
+      .put(`/companies/${ES}/verifactu/exclusion`)
+      .set('Authorization', `Bearer ${tokenAdminEmpresa}`)
+      .send({ motivoExclusion: 'SII', motivo: 'Prueba' });
+    expect(res.status).toBe(400);
+    expect(res.body.details).toEqual({ campo: 'motivoExclusion' });
+    expect(await prisma.verifactuConfig.findUnique({ where: { companyId: ES } })).toBeNull();
   });
 });
 
@@ -199,14 +258,16 @@ describe('aviso previo para Ventas (GET /verifactu/red-seguridad)', () => {
     relojRed('2026-11-30T23:00:00Z'); // 1-12 a las 00:00 en Madrid
     const res = await estado(ES);
     expect(res.body.data).toMatchObject({ bloquea: false, motivo: null });
-    expect(res.body.data.aviso).toMatch(/Desde el 1-1-2027 no podrás emitir facturas desde aquí sin VERI\*FACTU/);
+    expect(res.body.data.aviso).toMatch(/Desde el 1 de enero de 2027 no podrás emitir facturas desde aquí sin VERI\*FACTU/);
   });
 
   it('desde el 1-1-2027: bloquea, con el motivo para el botón «Emitir»', async () => {
     relojRed(DESDE);
     const res = await estado(ES);
     expect(res.body.data).toMatchObject({ bloquea: true, aviso: null });
-    expect(res.body.data.motivo).toMatch(/borrador o como proforma/);
+    // Solo el motivo: cada pantalla pone la salida que tiene sentido alli.
+    expect(res.body.data.motivo).toMatch(/desde el 1 de enero de 2027 no se pueden emitir facturas/);
+    expect(res.body.data.motivo).not.toMatch(/proforma/);
   });
 
   it('empresa extranjera: no le aplica', async () => {
