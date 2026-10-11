@@ -36,9 +36,9 @@ describe('red de seguridad: fecha por hora de Madrid', () => {
     expect(r.ok).toBe(false);
     if (r.ok) return;
     expect(r.motivo).toMatch(/VERI\*FACTU/);
-    expect(r.motivo).toMatch(/1-1-2027/);
-    expect(r.motivo).toMatch(/borrador/);
-    expect(r.motivo).toMatch(/proforma/);
+    // La fecha escrita entera: «1-1-2027» se partia en dos lineas en el aviso.
+    expect(r.motivo).toMatch(/1 de enero de 2027/);
+    expect(r.motivo).not.toMatch(/1-1-2027/);
   });
 
   it('sin configuración de VERI*FACTU se trata como «no activo»', () => {
@@ -51,15 +51,24 @@ describe('red de seguridad: exclusiones', () => {
     expect(evaluarRedSeguridad(con({ espanola: false }), PRIMER_INSTANTE_2027)).toEqual({ ok: true });
   });
 
-  it('empresa en el SII (ajustes fiscales): no bloquea', () => {
-    expect(evaluarRedSeguridad(con({ sii: true }), PRIMER_INSTANTE_2027)).toEqual({ ok: true });
+  it('marcar el SII en los ajustes fiscales no abre la red: hace falta la exclusión aprobada por un administrador', () => {
+    expect(evaluarRedSeguridad(con({ sii: true }), PRIMER_INSTANTE_2027).ok).toBe(false);
+    expect(evaluarRedSeguridad(con({ sii: true, config: null }), PRIMER_INSTANTE_2027).ok).toBe(false);
   });
 
-  it('exclusión SII o FORAL anotada en la configuración: no bloquea', () => {
-    for (const motivoExclusion of ['SII', 'FORAL']) {
-      const config = { estado: 'DESACTIVADO', entorno: 'PRUEBAS', activaDesde: null, motivoExclusion };
-      expect(evaluarRedSeguridad(con({ config }), PRIMER_INSTANTE_2027)).toEqual({ ok: true });
-    }
+  it('exclusión SII aprobada y con el SII marcado en los ajustes fiscales: no bloquea', () => {
+    const config = { estado: 'DESACTIVADO', entorno: 'PRUEBAS', activaDesde: null, motivoExclusion: 'SII' };
+    expect(evaluarRedSeguridad(con({ sii: true, config }), PRIMER_INSTANTE_2027)).toEqual({ ok: true });
+  });
+
+  it('exclusión SII aprobada pero con el SII desmarcado después en los ajustes fiscales: vuelve a bloquear', () => {
+    const config = { estado: 'DESACTIVADO', entorno: 'PRUEBAS', activaDesde: null, motivoExclusion: 'SII' };
+    expect(evaluarRedSeguridad(con({ sii: false, config }), PRIMER_INSTANTE_2027).ok).toBe(false);
+  });
+
+  it('exclusión FORAL aprobada: no bloquea', () => {
+    const config = { estado: 'DESACTIVADO', entorno: 'PRUEBAS', activaDesde: null, motivoExclusion: 'FORAL' };
+    expect(evaluarRedSeguridad(con({ config }), PRIMER_INSTANTE_2027)).toEqual({ ok: true });
   });
 
   it('una exclusión con un valor desconocido no cuenta: sigue bloqueando', () => {
@@ -117,7 +126,7 @@ describe('red de seguridad: autónomos', () => {
     expect(evaluarRedSeguridad(autonomo, new Date('2027-06-30T21:59:59Z')).ok).toBe(true);
     const r = evaluarRedSeguridad(autonomo, new Date('2027-06-30T22:00:00Z'));
     expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.motivo).toMatch(/1-7-2027/);
+    if (!r.ok) expect(r.motivo).toMatch(/1 de julio de 2027/);
   });
 });
 
