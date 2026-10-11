@@ -14,6 +14,7 @@ import { logger } from '../../config/logger';
 import { esFechaReal } from '../../schemas/factura-gasto.schemas';
 import { aCentimos, redondear2 } from '../../utils/money';
 import { normalizarNif } from '../../utils/nif';
+import { isValidIban } from '../../utils/validateIban';
 import { confianzaBaja, MOTIVO_BASE_DUDOSA, nifLeido } from './azure-factura.mapper';
 import { UMBRAL_OK, type Campo, type Lector, type LecturaNormalizada, type TipoDocumentoLeido, type TramoLeido } from './tipos';
 import { calcularCuadre, importesNegativos, validacionesSincronas, type ContextoValidacion } from './validaciones';
@@ -65,14 +66,50 @@ export function decidirComplemento(l: LecturaNormalizada, contenido: string | nu
   return p;
 }
 
-/** El texto para Claude: sin marcas de codigos, cortado y con los datos personales tapados. */
+/** Posible IBAN: dos letras, dos cifras y de 11 a 32 caracteres mas, con espacios, puntos o guiones entre medias. */
+const RE_CANDIDATO_IBAN = /\b[A-Z]{2}\d{2}(?:[ .-]{0,2}[A-Z0-9]){11,32}/gi;
+/** Delante de un IBAN mal leido (no pasa el control): "IBAN", "cuenta", "c/c"... */
+const RE_ETIQUETA_CUENTA = /(IBAN|cuenta|c\/c|\bccc\b|account)[^\n]{0,20}$/i;
+/** Cuenta en formato CCC (20 cifras: entidad, oficina, control y cuenta). */
+const RE_CCC = /\b\d{4}[ .-]?\d{4}[ .-]?\d{2}[ .-]?\d{10}\b/g;
+const RE_TELEFONO = /\b(Tel[eé]f(?:ono)?|Tel|Tfno|Tlf|Tf|T|M[oó]vil|Phone|Fax)\.?\s*:?\s*[+\d][\d\s().-]{6,}\d/gi;
+/** Numeros con prefijo internacional (+34 600 123 456), con o sin etiqueta. */
+const RE_TELEFONO_INTERNACIONAL = /\+\d{2,3}(?:[ .-]?\d){8,12}\b/g;
+
+/**
+ * Tapa los IBAN: los que pasan el control mod-97 (asi un numero de factura
+ * como FV2026000000123 no se tapa) y, aunque no lo pasen, los que van detras
+ * de "IBAN" o "cuenta" (un digito mal leido no deja ver el resto).
+ */
+function taparIbans(texto: string): string {
+  return texto.replace(RE_CANDIDATO_IBAN, (m: string, desde: number) => {
+    const pos: number[] = [];
+    for (let i = 0; i < m.length; i++) if (/[A-Z0-9]/i.test(m[i])) pos.push(i);
+    const limpio = pos.map((i) => m[i]).join('').toUpperCase();
+    // El IBAN puede ir seguido de una palabra pegada al ultimo grupo: se prueba de largo a corto.
+    for (let n = Math.min(limpio.length, 34); n >= 15; n--) {
+      if (isValidIban(limpio.slice(0, n))) return `[IBAN]${m.slice(pos[n - 1] + 1)}`;
+    }
+    if (RE_ETIQUETA_CUENTA.test(texto.slice(Math.max(0, desde - 25), desde))) {
+      const ultimaCifra = Math.max(...[...m].map((c, i) => (/\d/.test(c) ? i : -1)));
+      return `[IBAN]${m.slice(ultimaCifra + 1)}`;
+    }
+    return m;
+  });
+}
+
+/**
+ * El texto para Claude: sin marcas de codigos, con los datos personales
+ * tapados (antes de cortar, para que un IBAN partido en el corte no quede a
+ * la vista) y cortado.
+ */
 export function prepararTexto(contenido: string): string {
-  return contenido
-    .replace(/:barcode:/g, '')
-    .slice(0, MAX_TEXTO)
-    .replace(/\b[A-Z]{2}\d{2}(?:\s?[A-Z0-9]{4}){2,7}(?:\s?[A-Z0-9]{1,4})?\b/g, '[IBAN]')
+  return taparIbans(contenido.replace(/:barcode:/g, ''))
+    .replace(RE_CCC, '[CUENTA]')
     .replace(/[\w.+-]+@[\w-]+\.[\w.-]+/g, '[CORREO]')
-    .replace(/\b(Tel[eé]f(?:ono)?|Tel|Tlf|M[oó]vil|Phone|Fax)\.?\s*:?\s*[+\d][\d\s().-]{6,}\d/gi, '$1 [TELÉFONO]');
+    .replace(RE_TELEFONO, '$1 [TELÉFONO]')
+    .replace(RE_TELEFONO_INTERNACIONAL, '[TELÉFONO]')
+    .slice(0, MAX_TEXTO);
 }
 
 /** Lo leido por Azure, sin nombres ni direcciones. */

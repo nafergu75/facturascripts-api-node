@@ -94,6 +94,39 @@ describe('que se manda', () => {
     expect(t).not.toContain(':barcode:');
   });
 
+  it.each([
+    ['IBAN con guiones', 'IBAN: ES91-2100-0418-4502-0005-1332 Total'],
+    ['IBAN con puntos', 'Pago a ES91.2100.0418.4502.0005.1332'],
+    ['IBAN en minusculas y con dobles espacios', 'iban es91  2100  0418  4502  0005  1332'],
+    ['IBAN seguido de una palabra', 'ES9121000418450200051332TOTAL 1.210,00'],
+    ['IBAN mal leido detras de "IBAN"', 'IBAN ES91 2100 0418 4502 0005 1333'],
+  ])('tapa el %s', (_caso, texto) => {
+    const t = prepararTexto(texto);
+    expect(t).toContain('[IBAN]');
+    expect(t).not.toMatch(/2100.?0418/);
+  });
+
+  it('tapa la cuenta CCC de 20 cifras y los telefonos con Tfno, T. o prefijo internacional', () => {
+    const t = prepararTexto('Cuenta 2100 0418 45 0200051332. Tfno: 963 123 456. T. 961 234 567. Móvil del comercial +34 600 123 456.');
+    expect(t).toContain('[CUENTA]');
+    expect(t).not.toContain('0200051332');
+    for (const tel of ['963 123 456', '961 234 567', '600 123 456']) expect(t).not.toContain(tel);
+  });
+
+  it('no tapa numeros de factura que parecen un IBAN ni importes', () => {
+    const t = prepararTexto('Factura FV2026000000123 y FA20240001234. Total 1.210,00 €');
+    expect(t).toContain('FV2026000000123');
+    expect(t).toContain('FA20240001234');
+    expect(t).toContain('1.210,00');
+  });
+
+  it('tapa antes de cortar: un IBAN partido por el corte no queda a la vista', () => {
+    const relleno = 'x'.repeat(15_000 - 10);
+    const t = prepararTexto(`${relleno} IBAN ES91 2100 0418 4502 0005 1332`);
+    expect(t).not.toMatch(/ES91 ?21/);
+    expect(t.length).toBeLessThanOrEqual(15_000);
+  });
+
   it('sin documento ni imagen, con [IBAN] y sin los nombres en los datos del lector', async () => {
     crear.mockResolvedValueOnce(fixtureClaude('complemento-irpf'));
     const { lectura, texto } = leer('resultado-irpf');
