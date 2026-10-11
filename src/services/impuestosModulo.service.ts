@@ -48,6 +48,7 @@ import {
   Borrador303,
   casillasOficiales303De,
   ContextoEmpresa303,
+  esUltimoPeriodo303,
   ficheroBorrador303,
   montarBorrador303,
 } from './modelo303.service';
@@ -882,18 +883,51 @@ async function fila303Guardada(companyId: string, ejercicio: number, periodo: st
 }
 
 /**
+ * Periodo anterior con la OTRA periodicidad, cuando la empresa cambia de
+ * trimestral a mensual o al reves y los dos periodos acaban el mismo dia:
+ * 01 -> 4T del ano anterior, 04 -> 1T, 07 -> 2T, 10 -> 3T; y al reves,
+ * 1T -> 12 del ano anterior, 2T -> 03, 3T -> 06, 4T -> 09. En los demas
+ * meses no hay (el trimestre anterior acabo antes del mes anterior).
+ */
+export function periodoAnteriorOtraPeriodicidad303(periodo: Pick<PeriodoFiscal, 'ejercicio' | 'periodo'>): { ejercicio: number; periodo: string } | null {
+  const p = periodo.periodo;
+  const t = /^([1-4])T$/.exec(p);
+  if (t) {
+    const trimestre = Number(t[1]);
+    return trimestre === 1 ? { ejercicio: periodo.ejercicio - 1, periodo: '12' } : { ejercicio: periodo.ejercicio, periodo: String((trimestre - 1) * 3).padStart(2, '0') };
+  }
+  if (/^(01|04|07|10)$/.test(p)) {
+    const mes = Number(p);
+    return mes === 1 ? { ejercicio: periodo.ejercicio - 1, periodo: '4T' } : { ejercicio: periodo.ejercicio, periodo: `${(mes - 1) / 3}T` };
+  }
+  return null;
+}
+
+/**
  * Cuotas a compensar [110] del periodo: lo que dejo pendiente el 303 del
  * periodo anterior guardado (su [87]) mas su resultado negativo, salvo que se
  * pidiera la devolucion (tipo D). Sin 303 anterior guardado, 0: la pantalla
  * deja ponerlo a mano.
+ *
+ * Si la empresa cambio de periodicidad (trimestral <-> mensual), el periodo
+ * anterior es el de la otra: se mira el de la misma periodicidad y el de la
+ * otra que acaba el dia antes, y manda el presentado; si ninguno lo esta, el
+ * primero que tenga importes guardados. Asi el arrastre no depende de con que
+ * periodicidad se abrio la pantalla.
  */
 export async function cuotasACompensar303(
   companyId: string,
   periodo: Pick<PeriodoFiscal, 'ejercicio' | 'periodo'>,
 ): Promise<{ importe: number; origen: 'periodo-anterior' | 'sin-dato'; periodo?: string; estado?: string }> {
-  const anterior = periodoAnterior303(periodo);
-  const fila = anterior ? await fila303Guardada(companyId, anterior.ejercicio, anterior.periodo) : null;
-  if (!anterior || !fila || fila.estado === 'omitido') return { importe: 0, origen: 'sin-dato' };
+  const candidatos = [periodoAnterior303(periodo), periodoAnteriorOtraPeriodicidad303(periodo)].filter((p): p is { ejercicio: number; periodo: string } => p !== null);
+  const filas: Array<{ anterior: { ejercicio: number; periodo: string }; fila: FilaModelo }> = [];
+  for (const anterior of candidatos) {
+    const fila = await fila303Guardada(companyId, anterior.ejercicio, anterior.periodo);
+    if (fila && fila.estado !== 'omitido' && (fila.datos || fila.casillas)) filas.push({ anterior, fila });
+  }
+  const elegida = filas.find((f) => f.fila.estado === 'presentado') ?? filas[0];
+  if (!elegida) return { importe: 0, origen: 'sin-dato' };
+  const { anterior, fila } = elegida;
   const datos = (fila.datos ?? {}) as Partial<DatosModelo303> & { tipoDeclaracion?: string };
   const cas = fila.casillas ?? {};
   let pendiente: number;
@@ -939,12 +973,20 @@ async function contextoEmpresa303(
   companyId: string,
   ejercicio: number,
   cuentaBancariaId?: string | null,
+  periodo?: string,
 ): Promise<{ ctx: ContextoEmpresa303; cuentas: CuentaBorrador303[]; cuentaBancariaId: string | null; mensual: boolean }> {
   const [cfg, ajustes, todas] = await Promise.all([
     configuracionEmpresa(companyId),
     ajustesFiscales303(companyId, ejercicio),
     listarCuentasBancarias(companyId).catch(() => []),
   ]);
+  // Campo 24 de la página 1: en el último periodo, quien está exonerado del 390
+  // (SII) dice si su volumen del año es distinto de cero (art. 121 LIVA).
+  let volumenAnual: number | null = null;
+  if (periodo && esUltimoPeriodo303(periodo) && ajustes.sii) {
+    const anual = await calcularModelo390(companyId, ejercicio);
+    volumenAnual = anual.volumen?.total ?? anual.volumenOperaciones;
+  }
   const activas = todas.filter((c) => c.activa && c.iban);
   const elegida = cuentaBancariaId ? activas.find((c) => c.id === cuentaBancariaId) : activas[0];
   if (cuentaBancariaId && !elegida) throw badRequest('Esa cuenta bancaria no es de la empresa o no está activa.', { campo: 'cuentaBancariaId' });
@@ -954,6 +996,8 @@ async function contextoEmpresa303(
       razonSocial: String(cfg.config_razon_social ?? '').trim(),
       redeme: ajustes.redeme,
       sii: ajustes.sii,
+      granEmpresa: ajustes.granEmpresa,
+      volumenAnual,
       criterioCaja: ajustes.criterioCaja,
       iban: elegida?.iban ?? null,
     },
@@ -986,7 +1030,13 @@ export function periodo303De(valor: unknown): string {
 }
 
 /** Lo que se guarda con el 303 presentado además del cálculo: tipo, IBAN de la DID y rectificativa. */
-type Guardado303 = DatosModelo303 & { tipoDeclaracion?: string; ibanPresentado?: string | null; rectificativa?: { justificanteAnterior: string } | null };
+type Guardado303 = DatosModelo303 & {
+  tipoDeclaracion?: string;
+  ibanPresentado?: string | null;
+  rectificativa?: { justificanteAnterior: string } | null;
+  /** Indicadores de la página 1 con que se presentó (SII voluntario, volumen...). */
+  indicadores?: Record<number, string | null> | null;
+};
 
 /** Datos guardados del 303 presentado de un periodo (con sus casillas oficiales), o null. */
 async function presentado303(companyId: string, periodo: PeriodoFiscal): Promise<Guardado303 | null> {
@@ -1008,14 +1058,18 @@ async function presentado303(companyId: string, periodo: PeriodoFiscal): Promise
 export async function calcularBorrador303(companyId: string, periodo: PeriodoFiscal, opciones: OpcionesBorrador303 = {}): Promise<ResultadoBorrador303> {
   const guardado = await presentado303(companyId, periodo);
   if (guardado) {
-    const empresa = await contextoEmpresa303(companyId, periodo.ejercicio, opciones.cuentaBancariaId);
+    const empresa = await contextoEmpresa303(companyId, periodo.ejercicio, opciones.cuentaBancariaId, guardado.indicadores ? undefined : periodo.periodo);
     // Congelado: también el IBAN de la página DID y la marca de rectificativa con que se presentó.
     const ctxPresentado = guardado.ibanPresentado !== undefined ? { ...empresa.ctx, iban: guardado.ibanPresentado } : empresa.ctx;
     const borrador = montarBorrador303(
       { ...guardado, casillasOficiales: casillasOficiales303De(guardado) },
       ctxPresentado,
       guardado.tipoDeclaracion,
-      { comoSePresento: true, rectificativa: guardado.rectificativa ? { ...guardado.rectificativa, resultadoAnterior: 0 } : null },
+      {
+        comoSePresento: true,
+        indicadores: guardado.indicadores ?? null,
+        rectificativa: guardado.rectificativa ? { ...guardado.rectificativa, resultadoAnterior: 0 } : null,
+      },
     );
     borrador.advertencias.unshift('Modelo presentado: se muestran las casillas tal como se presentaron, aunque después hayan cambiado las facturas. El fichero sale de esas mismas casillas.');
     return {
@@ -1036,7 +1090,7 @@ export async function calcularBorrador303(companyId: string, periodo: PeriodoFis
     : await cuotasACompensar303(companyId, periodo);
   const [datos, empresa, decl] = await Promise.all([
     calcularModelo303(companyId, periodo, aCompensar.importe),
-    contextoEmpresa303(companyId, periodo.ejercicio, opciones.cuentaBancariaId),
+    contextoEmpresa303(companyId, periodo.ejercicio, opciones.cuentaBancariaId, periodo.periodo),
     contextoDeclaracion(companyId, '303', periodo.ejercicio, periodo.periodo),
   ]);
   // Rectificativa en preparación (B4): [70] con el [69] de la anterior y su justificante.

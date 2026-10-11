@@ -56,7 +56,7 @@ jest.mock('../services/impuestosCalculo.service', () => {
   };
 });
 
-import { generarTxt303, generarTxt303Trimestre } from '../services/impuestosModulo.service';
+import { generarTxt303, generarTxt303Trimestre, periodoAnteriorOtraPeriodicidad303 } from '../services/impuestosModulo.service';
 import { taxModelsService } from '../services/tax-models.service';
 import { campoDeCasilla303 } from '../domain/aeat/modelo303-2026';
 import { presentable } from '../services/declaracionesAeat/modelos';
@@ -233,3 +233,16 @@ describe('303 mensual (REDEME, SII o periodicidad mensual)', () => {
     await expect(taxModelsService.generarModelo303('e1', 2026, 5)).rejects.toThrow(/trimestre \(1T a 4T\) o un mes/);
   });
 });
+
+describe('[110] al cambiar de periodicidad', () => {
+  it('periodo anterior de la otra periodicidad: solo cuando acaba el día antes', () => {
+    const otro = (ejercicio: number, periodo: string) => periodoAnteriorOtraPeriodicidad303({ ejercicio, periodo });
+    expect(otro(2027, '01')).toEqual({ ejercicio: 2026, periodo: '4T' });
+    expect(otro(2026, '04')).toEqual({ ejercicio: 2026, periodo: '1T' });
+    expect(otro(2026, '10')).toEqual({ ejercicio: 2026, periodo: '3T' });
+    expect(otro(2026, '05')).toBeNull();
+    expect(otro(2027, '1T')).toEqual({ ejercicio: 2026, periodo: '12' });
+    expect(otro(2026, '3T')).toEqual({ ejercicio: 2026, periodo: '06' });
+  });
+});
+
