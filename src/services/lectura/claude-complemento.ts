@@ -266,7 +266,7 @@ export async function completarConClaude(l: LecturaNormalizada, contenido: strin
     logger.warn('[ocr-claude] El complemento con Claude ha fallado', { http: e.status ?? null, tipo: e.error?.error?.type ?? null });
     return { tipo: 'sin_complemento', lectura: sinComplemento(l, preguntas) };
   }
-  const uso = respuesta.content.find((b): b is Anthropic.ToolUseBlock => b.type === 'tool_use');
+  const uso = (respuesta?.content ?? []).find((b): b is Anthropic.ToolUseBlock => b.type === 'tool_use');
   if (!uso) return { tipo: 'sin_complemento', lectura: sinComplemento(l, preguntas) };
   return { tipo: 'completada', lectura: mezclarComplemento(l, uso.input as Record<string, unknown>, ctx) };
 }
