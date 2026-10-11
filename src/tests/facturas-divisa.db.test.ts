@@ -252,7 +252,8 @@ describe('tipo de operacion', () => {
     const mezclada = { companyId, customer: { id: extranjero }, fechaEmision: '2026-09-03', lineas: [linea(100), linea(50, 0)], origen: 'lector' };
     await expect(incomeInvoicesService.crearIngreso(mezclada as never)).rejects.toThrow(/tipo de operación/);
     // Desde el lector (lo decide el servidor) no se rechaza: queda para revisar.
-    const leida = await incomeInvoicesService.crearIngreso(mezclada as never, { origen: 'lector' });
+    // El lector siempre trae la serie y el numero de la factura leida (P4 de VERI*FACTU).
+    const leida = await incomeInvoicesService.crearIngreso({ ...mezclada, serie: 'LEIDA', numero: 1 } as never, { origen: 'lector' });
     expect(leida.estadoDocumento).toBe('FINAL');
     expect(leida.avisosFiscales?.length).toBeGreaterThan(0);
   });
