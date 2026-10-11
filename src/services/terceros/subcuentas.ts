@@ -59,6 +59,8 @@ export function nombreDeSubcuenta(nombreFiscal: string, codigo: string): string 
 
 /** Longitud guardada en las reglas contables de la empresa, o null si no se ha fijado. */
 export async function longitudSubcuentasGuardada(companyId: string, db: Db = prisma): Promise<number | null> {
+  // Los tests con prisma simulado no tienen la tabla de reglas: sin longitud guardada.
+  if (typeof (db as { reglasContables?: { findUnique?: unknown } }).reglasContables?.findUnique !== 'function') return null;
   const fila = await db.reglasContables.findUnique({ where: { companyId }, select: { data: true } });
   const n = (fila?.data as { longitudSubcuentas?: unknown } | null)?.longitudSubcuentas;
   return esLongitudSubcuentasValida(n) ? n : null;
