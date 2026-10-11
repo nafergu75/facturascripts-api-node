@@ -22,6 +22,8 @@ export interface LineaEntrada {
   tipoIva?: number;
   tipoRetencion?: number;
   productoServicioId?: string;
+  /** Cuenta de ingresos de la linea (700, 705, 7050001...). Sin ella, la generica. */
+  cuentaContable?: string;
 }
 
 /** Importes de una linea en una moneda. */
@@ -47,6 +49,7 @@ export interface LineaCalculada {
   tipoIva: number;
   tipoRetencion: number;
   productoServicioId?: string;
+  cuentaContable?: string;
   doc: ImportesLinea;
   cuenta: ImportesLinea;
 }
@@ -97,6 +100,7 @@ export function calcularLineasDoc(lineas: LineaEntrada[]): {
       tipoIva,
       tipoRetencion,
       productoServicioId: l.productoServicioId,
+      ...(l.cuentaContable ? { cuentaContable: l.cuentaContable } : {}),
       importes: { precioUnitario: l.precioUnitario, baseLine, descuentoImporte, ivaImporte, retencionImporte },
     };
   });
