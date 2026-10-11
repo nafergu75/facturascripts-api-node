@@ -351,6 +351,17 @@ describe('confirmar con lecturaId', () => {
     expect(r.body).toMatchObject({ message: 'Parece una factura emitida por la empresa: léela en el lector de ventas.', details: { codigo: 'VALIDACION_LECTURA', campo: 'emisor.nif' } });
   });
 
+  it('una rectificativa no se registra aunque se marque He revisado (seria un gasto positivo)', async () => {
+    crear.mockResolvedValueOnce(fixtureClaude('complemento-rectificativa'));
+    const { id, body } = await leerConAzure('resultado-rectificativa');
+    expect(body.lectura.estado).toBe('error');
+    const r = await request(app()).post('/gastos-extractor/confirmar').send(cuerpo(id, { revisado: true, numeroFacturaProveedor: 'R-3' }));
+    expect(r.status).toBe(400);
+    expect(r.body).toMatchObject({ message: 'Es una factura rectificativa (rectifica a la A-12). Todavía no se puede registrar con el lector.', details: { codigo: 'RECTIFICATIVA_NO_ADMITIDA' } });
+    expect(await prisma.expenseInvoice.count({ where: { companyId: E, numeroFacturaProveedor: 'R-3' } })).toBe(0);
+    expect(await prisma.lecturaDocumento.findUniqueOrThrow({ where: { id } })).toMatchObject({ estado: 'LISTA' });
+  });
+
   it('una lectura que no existe: 404', async () => {
     expect((await request(app()).post('/gastos-extractor/confirmar').send(cuerpo('no-existe'))).status).toBe(404);
   });

@@ -19,7 +19,7 @@ import { badRequest, conflict, notFound } from '../../utils/http-errors';
 import { deleteObject, getObject } from '../../utils/storage';
 import { archivarGastoSinRomper } from '../archivoFacturas.service';
 import { perfilEmpresa } from '../perfilEmpresa.service';
-import { lecturaVacia, type Lector, type LecturaNormalizada, type OrigenLectura } from './tipos';
+import { lecturaVacia, type Lector, type LecturaNormalizada, type OrigenLectura, type ResultadoValidacion } from './tipos';
 import { validacionesSincronas } from './validaciones';
 
 export const MENSAJE_FALTA_REVISION = 'Marca que has revisado los datos señalados antes de registrar.';
@@ -44,6 +44,9 @@ export function prefijoObservaciones(origen: string | null, confianza: number | 
 }
 
 const necesitaRevision = (fila: { estadoValidacion: string | null }) => fila.estadoValidacion !== null && fila.estadoValidacion !== 'ok';
+
+/** Las validaciones que se guardaron al terminar la lectura. */
+const validacionesGuardadas = (fila: { validaciones: unknown }): ResultadoValidacion[] => (Array.isArray(fila.validaciones) ? (fila.validaciones as ResultadoValidacion[]) : []);
 
 /** Validaciones que se repiten sobre lo que llega al confirmar un gasto (V14 la sigue haciendo registrarGasto, con su 409). */
 const REVALIDAR_GASTO = new Set(['TIPO_IVA', 'NIF_EMISOR', 'EMPRESA', 'FECHA']);
@@ -76,6 +79,9 @@ export async function comprobarLecturaParaConfirmar(companyId: string, lecturaId
   if (fila.estado === 'CONFIRMADA') throw conflict('Esta factura ya se registró.', { codigo: 'LECTURA_YA_CONFIRMADA' });
   if (fila.estado !== 'LISTA') throw badRequest('Esta lectura ya no se puede registrar: está descartada o no ha terminado. Vuelve a leer la factura.', { codigo: 'LECTURA_NO_LISTA' });
   if (necesitaRevision(fila) && cuerpo.revisado !== true) throw badRequest(MENSAJE_FALTA_REVISION, { codigo: 'FALTA_REVISION' });
+  // Una rectificativa (o un abono) no se arregla en el formulario: el gasto subiria en vez de bajar.
+  const rectificativa = validacionesGuardadas(fila).find((v) => v.codigo === 'RECTIFICATIVA' && v.nivel === 'error');
+  if (rectificativa) throw badRequest(rectificativa.mensaje, { codigo: 'RECTIFICATIVA_NO_ADMITIDA' });
 
   const guardada = ((fila.resultado as { lectura?: LecturaNormalizada } | null)?.lectura ?? null) as LecturaNormalizada | null;
   const l = await lecturaDelCuerpo(companyId, cuerpo, guardada);
