@@ -17,6 +17,15 @@ import { normalizarNif, validarNifEspanol } from '../utils/nif';
 import { esCodigoPais, problemaCodigoPostal } from '../utils/geografia';
 import { limpiarNif, normalizarPais, prefijoNifIvaUe } from '../domain/tipo-operacion.model';
 import { logCreate, logDelete, logUpdate } from './suppliers/supplierAudit.service';
+import { hoyEspana } from '../utils/fechas';
+import {
+  apuntesEnSubcuentas,
+  conReintentoSubcuenta,
+  crearProveedorConSubcuenta,
+  retirarSubcuentasDeFicha,
+  sincronizarNombreSubcuentas,
+  subcuentasEnPlan,
+} from './terceros/subcuentas';
 
 /** Proveedor tal como lo devuelve la API. */
 export interface Proveedor {
@@ -31,6 +40,11 @@ export interface Proveedor {
   cp: string;
   pais: string;
   activo: boolean;
+  /** Subcuentas propias con el mismo numero: 400N (compras) y 410N (servicios). */
+  subcuenta400: string | null;
+  subcuenta410: string | null;
+  /** Las que ya estan dadas de alta en el plan (las demas, "sin movimientos todavia"). */
+  subcuentasEnPlan: string[];
 }
 
 /** Proveedor en formato ligero para selectores (espejo de ClienteResumen). */
@@ -56,10 +70,12 @@ type SupplierRow = {
   cp: string | null;
   pais: string;
   activo: boolean;
+  subcuenta400?: string | null;
+  subcuenta410?: string | null;
 };
 
 /** Supplier (Prisma) -> forma de respuesta del recurso proveedores (todos los campos). */
-function aProveedor(s: SupplierRow): Proveedor {
+function aProveedor(s: SupplierRow, enPlan: string[] = []): Proveedor {
   return {
     id: s.id,
     nombreFiscal: s.nombreFiscal,
@@ -72,7 +88,16 @@ function aProveedor(s: SupplierRow): Proveedor {
     cp: s.cp ?? '',
     pais: s.pais || 'ES',
     activo: s.activo,
+    subcuenta400: s.subcuenta400 ?? null,
+    subcuenta410: s.subcuenta410 ?? null,
+    subcuentasEnPlan: enPlan.filter((c) => c === s.subcuenta400 || c === s.subcuenta410),
   };
+}
+
+/** Respuesta de varios proveedores con sus subcuentas ya dadas de alta en el plan (una consulta). */
+async function aProveedores(companyId: string, filas: SupplierRow[]): Promise<Proveedor[]> {
+  const enPlan = await subcuentasEnPlan(prisma, companyId, filas.flatMap((s) => [s.subcuenta400, s.subcuenta410]));
+  return filas.map((s) => aProveedor(s, enPlan));
 }
 
 /** P2002 del indice (companyId, nifCif). */
@@ -104,18 +129,26 @@ export const proveedoresService = {
     const { limit, offset, page } = parsePagination(params);
     const where: Prisma.SupplierWhereInput = { companyId: String(companyId) };
     const q = typeof params.q === 'string' ? params.q.trim() : '';
-    if (q) where.OR = [{ nombreFiscal: { contains: q } }, { nifCif: { contains: q } }, { email: { contains: q } }];
+    if (q) {
+      where.OR = [
+        { nombreFiscal: { contains: q } },
+        { nifCif: { contains: q } },
+        { email: { contains: q } },
+        { subcuenta400: { startsWith: q } },
+        { subcuenta410: { startsWith: q } },
+      ];
+    }
     if (params.activo === 'true' || params.activo === true) where.activo = true;
     if (params.activo === 'false' || params.activo === false) where.activo = false;
     const [items, total] = await Promise.all([
       prisma.supplier.findMany({ where, skip: offset, take: limit, orderBy: [{ nombreFiscal: 'asc' }, { id: 'asc' }] }),
       prisma.supplier.count({ where }),
     ]);
-    return { items: (items as SupplierRow[]).map(aProveedor), total, limit, offset, page };
+    return { items: await aProveedores(String(companyId), items as SupplierRow[]), total, limit, offset, page };
   },
 
   async getById(companyId: ID, id: ID): Promise<Proveedor> {
-    return aProveedor(await buscarDeLaEmpresa(String(companyId), String(id)));
+    return (await aProveedores(String(companyId), [await buscarDeLaEmpresa(String(companyId), String(id))]))[0];
   },
 
   /** Proveedor de la empresa con ese NIF (normalizado), o 404. */
@@ -123,7 +156,7 @@ export const proveedoresService = {
     const nifs = [...new Set([normalizarNif(nif), limpiarNif(nif)].filter(Boolean))];
     const s = (await prisma.supplier.findFirst({ where: { companyId: String(companyId), nifCif: { in: nifs } } })) as SupplierRow | null;
     if (!s) throw notFound('No hay ningún proveedor con ese NIF.');
-    return aProveedor(s);
+    return (await aProveedores(String(companyId), [s]))[0];
   },
 
   async create(companyId: ID, data: Record<string, unknown>, usuarioEmail?: string): Promise<Proveedor> {
@@ -132,8 +165,13 @@ export const proveedoresService = {
     if (ya) throw await errorNifRepetido(String(companyId), d.nifCif!);
     let s: SupplierRow;
     try {
-      s = (await prisma.supplier.create({
-        data: { companyId: String(companyId), ...d, nombreFiscal: d.nombreFiscal!, nifCif: d.nifCif!, pais: d.pais ?? 'ES' },
+      // Las subcuentas 400N y 410N se asignan en la misma transaccion que el alta.
+      s = (await crearProveedorConSubcuenta({
+        companyId: String(companyId),
+        ...d,
+        nombreFiscal: d.nombreFiscal!,
+        nifCif: d.nifCif!,
+        pais: d.pais ?? 'ES',
       })) as SupplierRow;
     } catch (e) {
       if (nifRepetido(e)) throw await errorNifRepetido(String(companyId), d.nifCif!);
@@ -148,30 +186,50 @@ export const proveedoresService = {
     const existe = await buscarDeLaEmpresa(String(companyId), String(id));
     const d = datosProveedor(data ?? {}, existe);
     const cambios = CAMPOS_HISTORIAL.filter((k) => d[k] !== undefined && (existe[k] ?? null) !== (d[k] ?? null));
-    if (!cambios.length) return aProveedor(existe);
+    if (!cambios.length) return (await aProveedores(String(companyId), [existe]))[0];
     if (d.nifCif) {
       const ya = await prisma.supplier.findFirst({ where: { companyId: String(companyId), nifCif: d.nifCif, id: { not: existe.id } }, select: { id: true } });
       if (ya) throw await errorNifRepetido(String(companyId), d.nifCif, existe.id);
     }
     let s: SupplierRow;
     try {
-      s = (await prisma.supplier.update({ where: { id: existe.id }, data: Object.fromEntries(cambios.map((k) => [k, d[k]])) })) as SupplierRow;
+      s = (await prisma.$transaction(async (tx) => {
+        // La subcuenta del plan lleva el nombre fiscal: cambia con el. Los apuntes ya grabados no se tocan.
+        if (cambios.includes('nombreFiscal')) {
+          await sincronizarNombreSubcuentas(tx, String(companyId), [existe.subcuenta400, existe.subcuenta410], d.nombreFiscal!);
+        }
+        return tx.supplier.update({ where: { id: existe.id }, data: Object.fromEntries(cambios.map((k) => [k, d[k]])) });
+      })) as SupplierRow;
     } catch (e) {
       if (nifRepetido(e)) throw await errorNifRepetido(String(companyId), d.nifCif ?? '', existe.id);
       throw e;
     }
     for (const k of cambios) await logUpdate(existe.id, k, existe[k], d[k], usuarioEmail);
-    return aProveedor(s);
+    return (await aProveedores(String(companyId), [s]))[0];
   },
 
-  /** Borra el proveedor si no tiene facturas; con facturas, 409 (se puede desactivar). */
+  /**
+   * Borra el proveedor si no tiene facturas ni apuntes en sus subcuentas; si
+   * no, 409 (se puede desactivar). Sus subcuentas quedan en el plan inactivas:
+   * el numero no se le da a otro proveedor.
+   */
   async remove(companyId: ID, id: ID, usuarioEmail?: string): Promise<void> {
     const existe = await buscarDeLaEmpresa(String(companyId), String(id));
     const facturas = await prisma.expenseInvoice.count({ where: { companyId: String(companyId), supplierId: existe.id } });
     if (facturas > 0) {
       throw conflict(`No se puede borrar: tiene ${facturas} factura(s). Puedes desactivarlo para que no salga al registrar gastos.`, { facturas });
     }
-    await prisma.supplier.delete({ where: { id: existe.id } });
+    const subcuentas = [existe.subcuenta400, existe.subcuenta410];
+    const apuntes = await apuntesEnSubcuentas(prisma, String(companyId), subcuentas);
+    if (apuntes > 0) {
+      throw conflict('No se puede borrar: tiene movimientos contables en su subcuenta. Puedes desactivarlo para que no salga al registrar gastos.', { apuntes });
+    }
+    await conReintentoSubcuenta(() =>
+      prisma.$transaction(async (tx) => {
+        await retirarSubcuentasDeFicha(tx, String(companyId), subcuentas, { tipo: 'proveedor', id: existe.id, nombreFiscal: existe.nombreFiscal }, hoyEspana());
+        await tx.supplier.delete({ where: { id: existe.id } });
+      }),
+    );
     await logDelete(existe.id, usuarioEmail, `Proveedor eliminado: ${existe.nombreFiscal} (${existe.nifCif})`);
   },
 };
