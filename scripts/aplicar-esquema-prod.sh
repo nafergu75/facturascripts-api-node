@@ -10,8 +10,11 @@
 #
 # Usa la DATABASE_URL que dejo configurar-vercel-prod.sh en .env.vercel-prod.local
 # (sin mostrarla). Antes de aplicar nada ensena el SQL que va a ejecutar y pide
-# confirmacion. NO acepta perdida de datos: si el cambio borra o modifica
-# columnas, se para; y si algo borrara datos, Prisma tampoco lo aplica.
+# confirmacion. NO acepta perdida de datos: si el cambio borra, renombra o
+# modifica algo, se para. Lo que aplica es exactamente el SQL que ha ensenado
+# (prisma db execute). Antes se usaba prisma db push, que se paraba con un
+# aviso de «data loss» por cualquier indice UNICO nuevo en una tabla con filas
+# (esta version anade uno en ExpenseInvoice) y entonces no aplicaba nada.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -59,6 +62,8 @@ FICHERO="${ENV_PROD:-.env.vercel-prod.local}"
 DATABASE_URL="$(grep -m1 '^DATABASE_URL=' "$FICHERO" | cut -d= -f2- || true)"
 [ -n "$DATABASE_URL" ] || { echo "Falta DATABASE_URL en $FICHERO. Abortado."; exit 1; }
 export DATABASE_URL
+# Sin el aviso de "Update available" de Prisma: nada que no sea SQL en la vista previa.
+export PRISMA_HIDE_UPDATE_MESSAGE=1
 
 # 1) Vista previa, solo lectura: el SQL que llevaria la BD al esquema de esta copia.
 PREVIA="$(mktemp)"
@@ -89,8 +94,17 @@ case "$RESPUESTA" in
   *) echo "Cancelado. No se ha cambiado nada."; exit 1 ;;
 esac
 
-# 2) Aplicarlo.
+# 2) Aplicar exactamente el SQL que se ha ensenado y revisado.
 echo "Aplicando el esquema a la base de datos de produccion..."
-npx prisma db push --skip-generate
+npx prisma db execute --file "$PREVIA" --schema prisma/schema.prisma
 
-echo "LISTO: esquema aplicado. Siguiente paso: scripts/aplicar-arreglos-datos.sh desde esta misma copia."
+# 3) Comprobarlo: la base ya tiene que coincidir con el esquema de esta copia.
+npx prisma migrate diff --from-url "$DATABASE_URL" --to-schema-datamodel prisma/schema.prisma --script > "$PREVIA"
+if grep -qiE '^[[:space:]]*(CREATE|ALTER|DROP|RENAME)' "$PREVIA"; then
+  echo "ATENCION: despues de aplicarlo, todavia quedan cambios pendientes:"
+  cat "$PREVIA"
+  echo "No subas el backend todavia: revisalo antes."
+  exit 1
+fi
+
+echo "LISTO: esquema aplicado y comprobado. Siguiente paso: scripts/aplicar-arreglos-datos.sh desde esta misma copia."
