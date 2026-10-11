@@ -173,6 +173,35 @@ describe('como se mezcla', () => {
     expect(r.lectura.numero).toEqual({ valor: 'F2026/0021', confianza: null, fuente: 'claude' });
   });
 
+  /** Respuesta de la herramienta con este input. */
+  const respuestaIa = (input: Record<string, unknown>) => ({ ...fixtureClaude('complemento-irpf'), content: [{ type: 'tool_use', id: 't', name: 'completar_factura', input }] });
+  const ventas: ContextoValidacion = { ...ctx, lector: 'VENTA', nifEmpresa: 'B12345674' };
+
+  it('ventas: el NIF del cliente dudoso se pregunta en nif_cliente y la respuesta va al cliente, no al emisor', async () => {
+    const { lectura, texto } = leer('resultado-simple');
+    lectura.receptor.nif = { valor: 'B8765432', confianza: 0.4, fuente: 'azure' };
+    const preguntas = decidirComplemento(lectura, texto, 'VENTA');
+    expect(preguntas.find((p) => p.disparador === 'C6')?.texto).toBe('Se leyó el NIF del cliente con poca seguridad (B8765432): confírmalo o corrígelo. Contesta en nif_cliente.');
+    expect(JSON.stringify(mensajeParaClaude(lectura, texto!, preguntas))).toContain('\\"nif_cliente\\":\\"B8765432\\"');
+    crear.mockResolvedValueOnce(respuestaIa({ nif_cliente: 'ES-B87654323' }));
+    const r = await completarConClaude(lectura, texto, preguntas, ventas);
+    if (r.tipo !== 'completada') throw new Error(r.tipo);
+    expect(r.lectura.receptor.nif).toMatchObject({ valor: 'B87654323', fuente: 'claude' });
+    expect(r.lectura.emisor.nif).toMatchObject({ valor: 'B12345674', fuente: 'azure' });
+  });
+
+  it('una fecha de la IA que no es AAAA-MM-DD no pisa la de Azure; la retencion con signo se toma en positivo', async () => {
+    const { lectura, texto } = leer('resultado-irpf');
+    lectura.fechaEmision = { valor: '2026-03-04', confianza: 0.6, fuente: 'azure' };
+    crear.mockResolvedValueOnce(respuestaIa({ fecha: '04/03/2026', retencion: { porcentaje: -15, importe: -150 } }));
+    const r = await completarConClaude(lectura, texto, decidirComplemento(lectura, texto, 'GASTO'), ctx);
+    if (r.tipo !== 'completada') throw new Error(r.tipo);
+    expect(r.lectura.fechaEmision).toEqual({ valor: '2026-03-04', confianza: 0.6, fuente: 'azure' });
+    expect(r.lectura.retencion?.importe.valor).toBe(150);
+    expect(r.lectura.retencion?.tipo.valor).toBe(15);
+    expect((await validarLectura(r.lectura, ctx)).validaciones.map((x) => x.codigo)).not.toContain('CUADRE');
+  });
+
   describe('IRPF con un solo total impreso', () => {
     /** resultado-irpf con los totales cambiados. */
     function irpf(cambio: (f: Record<string, any>) => void): LecturaHecha {

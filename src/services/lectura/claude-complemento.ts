@@ -11,6 +11,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { normalizarAnthropicKey } from '../../config/env';
 import { logger } from '../../config/logger';
+import { esFechaReal } from '../../schemas/factura-gasto.schemas';
 import { aCentimos, redondear2 } from '../../utils/money';
 import { normalizarNif } from '../../utils/nif';
 import { confianzaBaja, MOTIVO_BASE_DUDOSA, nifLeido } from './azure-factura.mapper';
@@ -35,12 +36,12 @@ const RE_RETENCION = /retenci[oó]n|IRPF|I\.R\.P\.F/i;
 const RE_RECARGO = /recargo|\bR\.\s?E\.(?=\s|$)|equivalencia/i;
 const RE_TIPO_DOCUMENTO = /rectificativ|abono|nota de cr[eé]dito|credit note|credit memo|n[oó]mina|recibo de salarios|\bRLC\b|\bTC-?1\b|liquidaci[oó]n de cotizaciones|ticket|simplificada/i;
 
-/** Datos clave del lector (en ventas, el NIF que importa es el del cliente). */
-const camposClave = (l: LecturaNormalizada, lector: Lector): Array<[string, Campo<unknown>]> => [
-  [lector === 'VENTA' ? 'el NIF del cliente' : 'el NIF del emisor', lector === 'VENTA' ? l.receptor.nif : l.emisor.nif],
-  ['el número de factura', l.numero],
-  ['la fecha de la factura', l.fechaEmision],
-  ['el total a pagar', l.totales.totalAPagar],
+/** Datos clave del lector (en ventas, el NIF que importa es el del cliente), con el campo de la herramienta en que se contestan. */
+const camposClave = (l: LecturaNormalizada, lector: Lector): Array<[string, Campo<unknown>, string]> => [
+  lector === 'VENTA' ? ['el NIF del cliente', l.receptor.nif, 'nif_cliente'] : ['el NIF del emisor', l.emisor.nif, 'nif_emisor'],
+  ['el número de factura', l.numero, 'numero'],
+  ['la fecha de la factura', l.fechaEmision, 'fecha'],
+  ['el total a pagar', l.totales.totalAPagar, 'total_a_pagar'],
 ];
 
 /** Las preguntas que hay que hacer a Claude. Vacia: no se le llama. */
@@ -55,8 +56,9 @@ export function decidirComplemento(l: LecturaNormalizada, contenido: string | nu
   if (RE_TIPO_DOCUMENTO.test(t) || (!l.receptor.nif.valor && !l.receptor.nombre.valor) || importesNegativos(l)) {
     p.push({ disparador: 'C5', texto: 'Tipo de documento y, si es una factura rectificativa, el número de la factura que rectifica y el motivo.' });
   }
-  for (const [nombre, c] of camposClave(l, lector)) {
-    if (confianzaBaja(c)) p.push({ disparador: 'C6', texto: c.valor === null ? `No se ha leído ${nombre}: búscalo.` : `Se leyó ${nombre} con poca seguridad (${String(c.valor)}): confírmalo o corrígelo.` });
+  for (const [nombre, c, campo] of camposClave(l, lector)) {
+    const pregunta = c.valor === null ? `No se ha leído ${nombre}: búscalo.` : `Se leyó ${nombre} con poca seguridad (${String(c.valor)}): confírmalo o corrígelo.`;
+    if (confianzaBaja(c)) p.push({ disparador: 'C6', texto: `${pregunta} Contesta en ${campo}.` });
   }
   return p;
 }
@@ -77,6 +79,7 @@ export function resumenParaClaude(l: LecturaNormalizada): Record<string, unknown
     numero: l.numero.valor,
     fecha: l.fechaEmision.valor,
     nif_emisor: l.emisor.nif.valor,
+    nif_cliente: l.receptor.nif.valor,
     moneda: l.moneda.valor,
     desglose: l.desglose.map((t) => ({ tipo_iva: t.tipoIva, base: t.base.valor, cuota: t.cuota.valor, tipo_recargo: t.tipoRecargo, cuota_recargo: t.cuotaRecargo?.valor ?? null })),
     base_total: l.totales.base.valor,
@@ -108,7 +111,8 @@ export const HERRAMIENTA_COMPLETAR: Anthropic.Tool = {
       },
       numero: { type: 'string' },
       fecha: { type: 'string' },
-      nif_emisor: { type: 'string' },
+      nif_emisor: { type: 'string', description: 'NIF de quien emite la factura' },
+      nif_cliente: { type: 'string', description: 'NIF del cliente (destinatario de la factura)' },
       total_factura: { type: 'number', description: 'Base + IVA + recargo, sin restar la retención' },
       total_a_pagar: { type: 'number', description: 'Lo que hay que pagar, ya restada la retención' },
       concepto: { type: 'string', description: 'Concepto principal, en pocas palabras' },
@@ -202,8 +206,10 @@ export function mezclarComplemento(original: LecturaNormalizada, input: Record<s
   }
 
   const ret = input.retencion as Record<string, unknown> | undefined;
-  const pct = num(ret?.porcentaje);
-  const importeRet = num(ret?.importe);
+  // Sin signo: un "-150" copiado del documento haria que el cuadre sumara en vez de restar.
+  const absoluto = (x: number | null) => (x === null ? null : Math.abs(x));
+  const pct = absoluto(num(ret?.porcentaje));
+  const importeRet = absoluto(num(ret?.importe));
   if (pct !== null || importeRet !== null) {
     const base = l.desglose.reduce((s, t) => s + (t.base.valor ?? 0), 0);
     const imp = importeRet ?? (pct !== null ? redondear2((base * pct) / 100) : null);
@@ -212,8 +218,12 @@ export function mezclarComplemento(original: LecturaNormalizada, input: Record<s
   }
 
   l.numero = mezclarCampo(l.numero, cad(input.numero), igualesTexto);
-  l.fechaEmision = mezclarCampo(l.fechaEmision, cad(input.fecha), (a, b) => a === b);
-  l.emisor.nif = mezclarCampo(l.emisor.nif, nifLeido(cad(input.nif_emisor)), (a, b) => normalizarNif(a) === normalizarNif(b));
+  // Una fecha que no es AAAA-MM-DD real no pisa la de Azure.
+  const fecha = cad(input.fecha);
+  l.fechaEmision = mezclarCampo(l.fechaEmision, fecha && /^\d{4}-\d{2}-\d{2}$/.test(fecha) && esFechaReal(fecha) ? fecha : null, (a, b) => a === b);
+  const mismoNif = (a: string, b: string) => normalizarNif(a) === normalizarNif(b);
+  l.emisor.nif = mezclarCampo(l.emisor.nif, nifLeido(cad(input.nif_emisor)), mismoNif);
+  l.receptor.nif = mezclarCampo(l.receptor.nif, nifLeido(cad(input.nif_cliente)), mismoNif);
   l.totales.totalFactura = mezclarCampo(l.totales.totalFactura, num(input.total_factura), igualesImporte, (x) => x.toFixed(2));
   l.totales.totalAPagar = mezclarCampo(l.totales.totalAPagar, num(input.total_a_pagar), igualesImporte, (x) => x.toFixed(2));
   const concepto = cad(input.concepto);
