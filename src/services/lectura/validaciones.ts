@@ -112,6 +112,7 @@ function v02CuotaTipo(l: LecturaNormalizada): ResultadoValidacion[] {
     const lineas = Math.max(l.lineas.filter((x) => x.tipoIva === t.tipoIva).length, 1);
     const sale = (t.base.valor * t.tipoIva) / 100;
     if (Math.abs(aCentimos(sale) - aCentimos(t.cuota.valor)) <= lineas) return [];
+    if (t.tipoIva === 0) return [v('CUOTA_TIPO', 'revisar', [`desglose.${i}.cuota`], `La base exenta no lleva IVA y pone ${eur(t.cuota.valor)}.`)];
     return [v('CUOTA_TIPO', 'revisar', [`desglose.${i}.cuota`], `El IVA del ${pct(t.tipoIva)} no corresponde a su base (sale ${eur(sale)} y pone ${eur(t.cuota.valor)}).`)];
   });
 }
@@ -146,7 +147,8 @@ function v04Recargo(l: LecturaNormalizada): ResultadoValidacion[] {
 function v23VariosTipos(l: LecturaNormalizada, ctx: ContextoValidacion): ResultadoValidacion[] {
   const tipos = [...new Set(l.desglose.map((t) => t.tipoIva))];
   if (ctx.lector !== 'GASTO' || tipos.length < 2) return [];
-  const lista = tipos.map((t) => `del ${pct(t)}`);
+  // La parte exenta, al final y sin "del 0 %": "IVA del 21 % y una parte exenta".
+  const lista = [...tipos.filter((t) => t !== 0).map((t) => `del ${pct(t)}`), ...(tipos.includes(0) ? ['una parte exenta'] : [])];
   const texto = `${lista.slice(0, -1).join(', ')} y ${lista[lista.length - 1]}`;
   return [v('VARIOS_TIPOS_IVA', 'revisar', l.desglose.map((_, i): CampoId => `desglose.${i}.base`), `La factura lleva IVA ${texto}: comprueba que hay una línea por cada tipo, con su base.`)];
 }
