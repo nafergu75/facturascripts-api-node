@@ -24,6 +24,8 @@ jest.mock('../config/database', () => {
       // Nominas y seguros sociales (tieneDocumentos): por defecto, ninguno.
       nomina: { findFirst: jest.fn(async () => null) },
       liquidacionSS: { findFirst: jest.fn(async () => null) },
+      // VERI*FACTU (P10): sin configuracion, el NIF se puede corregir.
+      verifactuConfig: { findUnique: jest.fn(async () => null) },
       $transaction: jest.fn(async (fn: (t: typeof tx) => unknown) => fn(tx)),
       __tx: tx,
     },
