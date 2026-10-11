@@ -152,8 +152,13 @@ export function erroresEntrada349(e: Entrada349): string[] {
 const centimos = (n: number) => Math.round(n * 100);
 
 /** Fichero del 349 (ISO-8859-1 al enviarlo). Lanza ErrorEntrada349 si faltan datos. */
-export function generarFichero349(e: Entrada349): string {
-  const errores = erroresEntrada349(e);
+/**
+ * Con `comprobar: false` no se exigen los datos (sirve para enseñar el
+ * borrador en pantalla aunque falte algo); el fichero que se descarga siempre
+ * se comprueba.
+ */
+export function generarFichero349(e: Entrada349, { comprobar = true }: { comprobar?: boolean } = {}): string {
+  const errores = comprobar ? erroresEntrada349(e) : [];
   if (errores.length) throw new ErrorEntrada349(errores);
   const d = e.declarante;
   const nif = nifDerecha(d.nif);
@@ -178,7 +183,7 @@ export function generarFichero349(e: Entrada349): string {
   });
 
   const operador = (o: Operador349 | Rectificacion349) => {
-    const nifIva = separarNifIva(o.nifIva, o.pais)!;
+    const nifIva = separarNifIva(o.nifIva, o.pais) ?? { pais: '', numero: limpiarNif(o.nifIva) };
     const sustituto = o.clave === 'C' && o.sustituto ? separarNifIva(o.sustituto.nifIva, o.sustituto.pais) : null;
     return {
       ...comunes,

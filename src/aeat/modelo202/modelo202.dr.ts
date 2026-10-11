@@ -109,8 +109,13 @@ export function erroresEntrada202(e: Entrada202): string[] {
 }
 
 /** Fichero del 202. Lanza ErrorEntrada202 si faltan datos. */
-export function generarFichero202(e: Entrada202): string {
-  const errores = erroresEntrada202(e);
+/**
+ * Con `comprobar: false` no se exigen los datos (sirve para enseñar el
+ * borrador en pantalla aunque falte algo); el fichero que se descarga siempre
+ * se comprueba.
+ */
+export function generarFichero202(e: Entrada202, { comprobar = true }: { comprobar?: boolean } = {}): string {
+  const errores = comprobar ? erroresEntrada202(e) : [];
   if (errores.length) throw new ErrorEntrada202(errores);
   const tag = { ejercicio: String(e.ejercicio), periodo: e.periodo };
   const casillas = (pagina: string): Record<string, ValorDr> =>

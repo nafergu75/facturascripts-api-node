@@ -123,8 +123,13 @@ export function erroresEntrada180(e: Entrada180): string[] {
 const centimos = (n: number) => Math.round(n * 100);
 
 /** Fichero del 180 (ISO-8859-1 al enviarlo). Lanza ErrorEntrada180 si faltan datos. */
-export function generarFichero180(e: Entrada180): string {
-  const errores = erroresEntrada180(e);
+/**
+ * Con `comprobar: false` no se exigen los datos (sirve para enseñar el
+ * borrador en pantalla aunque falte algo); el fichero que se descarga siempre
+ * se comprueba.
+ */
+export function generarFichero180(e: Entrada180, { comprobar = true }: { comprobar?: boolean } = {}): string {
+  const errores = comprobar ? erroresEntrada180(e) : [];
   if (errores.length) throw new ErrorEntrada180(errores);
   const d = e.declarante;
   const nif = nifDerecha(d.nif);
