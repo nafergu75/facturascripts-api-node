@@ -1,6 +1,7 @@
 import { prisma } from '../config/database';
 import { badRequest, notFound } from '../utils/http-errors';
 import { aCentimos } from '../utils/money';
+import { hoyEspana } from '../utils/fechas';
 import { incomeInvoicesService, type CrearLineaIngresoDTO } from './income-invoices.service';
 import { invoiceExtractorService, type InvoiceExtraction } from './invoice-extractor.service';
 import { archivarVentaSinRomper } from './archivoFacturas.service';
@@ -87,7 +88,7 @@ export function separarNumero(
   const numero = Number.parseInt(m[2], 10);
   if (!Number.isSafeInteger(numero) || numero <= 0) throw badRequest(`Numero de factura no valido: "${texto}".`);
   const prefijo = m[1].replace(/[\s/._-]+$/, '').trim();
-  const serie = prefijo || (fecha ? fecha.slice(0, 4) : String(new Date().getFullYear()));
+  const serie = prefijo || (fecha ? fecha.slice(0, 4) : hoyEspana().slice(0, 4));
   return { serie, numero };
 }
 
