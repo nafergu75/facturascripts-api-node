@@ -47,6 +47,7 @@ import puestaEnMarchaRoutes from './puestaEnMarcha.routes';
 import ocrRoutes from './ocr.routes';
 import ocrSessionsRoutes from './ocr-sessions.routes';
 import ocrAnalyticsRoutes from './ocr-analytics.routes';
+import declaracionesAeatRoutes from './declaraciones-aeat.routes';
 import taxModelsRoutes from './tax-models.routes';
 import borradoresAeatRoutes from './borradores-aeat.routes';
 import treasuryRoutes from './treasury.routes';
@@ -112,6 +113,8 @@ scoped.use('/accounting', accountingEngineRoutes);
 scoped.use('/reports', reportsRoutes);
 scoped.use('/informes-contables', informesContablesRoutes);
 scoped.use('/tax', taxRoutes);
+// Historial de declaraciones (presentar, complementarias, numero): antes que las de cada modelo.
+scoped.use('/tax-models', declaracionesAeatRoutes);
 scoped.use('/tax-models', taxModelsRoutes);
 scoped.use('/tax-models', borradoresAeatRoutes);
 scoped.use('/treasury', treasuryRoutes);
