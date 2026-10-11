@@ -18,6 +18,8 @@ function dbFalsa() {
     journalEntryLine: { create: jest.fn(async ({ data }: { data: unknown }) => data) },
     vATBook: { create: jest.fn(async ({ data }: { data: Record<string, unknown> }) => libroIva.push(data)) },
     retentionBook: { create: jest.fn(async () => ({})) },
+    // Sin configuracion legal: empresa española (el gasto lleva libro de IVA).
+    legalConfig: { findUnique: jest.fn(async () => null) },
   };
   return { db, libroIva };
 }
