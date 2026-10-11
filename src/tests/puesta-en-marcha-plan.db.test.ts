@@ -13,13 +13,14 @@ import { controlCif } from '../utils/nif';
 import { clientesService } from '../services/clientes.service';
 import { proveedoresService } from '../services/proveedores.service';
 import { asegurarPlanContableEmpresa } from '../services/chart-of-accounts.service';
-import { longitudSubcuentasEmpresa, longitudSubcuentasGuardada } from '../services/terceros/subcuentas';
+import { crearClienteConSubcuenta, crearProveedorConSubcuenta, longitudSubcuentasEmpresa, longitudSubcuentasGuardada } from '../services/terceros/subcuentas';
 import { esSubcuentaDeTercero } from '../services/terceros/numeracion';
 import {
   confirmarPlan,
   enlazarSubcuenta,
   leerPlanDeFilas,
   longitudDelPlan,
+  nombreComparable,
   previsualizarPlan,
   subcuentasSinEnlazar,
   type CuentaDelPlan,
@@ -193,10 +194,13 @@ describe('empresa con fichas ya dadas de alta en la app', () => {
     // La 40000001 de 8 digitos con apuntes se queda: las nuevas siguen con 8.
     expect(v.longitud).toMatchObject({ delPlan: 7, actual: 8, seFija: false });
     expect(v.longitud.motivo).toMatch(/seguirán con 8/);
+    // El motivo va en su recuadro, no repetido en los avisos.
+    expect(v.avisos).not.toContain(v.longitud.motivo);
 
     const r = await confirmarPlan(E, { cuentas });
-    // Se guarda la que ya usaba la empresa (8), para que las subcuentas de 7 traidas no la cambien.
-    expect(r).toMatchObject({ fichasEnlazadas: 1, longitudFijada: 8 });
+    // La 8 ya quedo guardada al asignar la primera subcuenta: el plan de 7 no la cambia.
+    expect(r).toMatchObject({ fichasEnlazadas: 1, longitudFijada: null });
+    expect(await longitudSubcuentasGuardada(E)).toBe(8);
     expect(await prisma.customer.findUniqueOrThrow({ where: { id: sinMovimientos.id } })).toMatchObject({ subcuenta430: '4300005' });
     expect(await prisma.chartOfAccounts.findFirst({ where: { companyId: E, codigo: '4300005' } })).toMatchObject({ nombre: 'Ya Estaba SL', activo: true });
     expect(await prisma.supplier.findUniqueOrThrow({ where: { id: conMovimientos.id } })).toMatchObject({ subcuenta400: conMovimientos.sub });
@@ -209,6 +213,105 @@ describe('empresa con fichas ya dadas de alta en la app', () => {
     const otro = cif();
     const v = await previsualizarPlan(E, { cuentas: [{ codigo: conMovimientos.sub, nombre: 'Otro', nif: otro }] });
     expect(v.terceros[0]).toMatchObject({ accion: 'no-se-enlaza', motivo: expect.stringContaining('revísalo') });
+  });
+});
+
+describe('plan PGC completo: subcuentas bajo 4300, 4000 y 4100', () => {
+  const E = `plan-ant4-${SUFIJO}`;
+  const nifCliente = cif();
+  const nifProveedor = cif();
+  beforeAll(() => empresa(E));
+
+  it('enlaza por NIF las que cuelgan de 4300/4000/4100 y no las de 4009/4309', async () => {
+    const cuentas: CuentaDelPlan[] = [
+      { codigo: '4300', nombre: 'Clientes (euros)' },
+      { codigo: '43000001', nombre: 'Cliente Euros SL', nif: nifCliente },
+      { codigo: '43000003', nombre: 'Cliente Sin Nif SL' },
+      { codigo: '4000', nombre: 'Proveedores (euros)' },
+      { codigo: '40000001', nombre: 'Proveedor Euros SL', nif: nifProveedor },
+      { codigo: '4009', nombre: 'Proveedores, facturas pendientes de recibir' },
+      { codigo: '40090000', nombre: 'Facturas pendientes de recibir' },
+      { codigo: '4309', nombre: 'Clientes, facturas pendientes de formalizar' },
+      { codigo: '43090000', nombre: 'Facturas pendientes de formalizar' },
+    ];
+    const v = await previsualizarPlan(E, { cuentas });
+    expect(v.terceros.map((t) => [t.codigo, t.accion])).toEqual([
+      ['40000001', 'crear'],
+      ['43000001', 'crear'],
+      ['43000003', 'pendiente'],
+    ]);
+    expect(v.longitud).toMatchObject({ delPlan: 8, seFija: true });
+    expect(v.avisos.join(' ')).toMatch(/40090000, 43090000\) se traen como cuentas, sin enlazarlas/);
+
+    const r = await confirmarPlan(E, { cuentas });
+    expect(r).toMatchObject({ fichasCreadas: 2, pendientes: 1, longitudFijada: 8 });
+    expect(await prisma.customer.findFirstOrThrow({ where: { companyId: E, nifCif: nifCliente } })).toMatchObject({ subcuenta430: '43000001' });
+    expect(await prisma.supplier.findFirstOrThrow({ where: { companyId: E, nifCif: nifProveedor } })).toMatchObject({ subcuenta400: '40000001', subcuenta410: '41000001' });
+    expect(await prisma.chartOfAccounts.findFirstOrThrow({ where: { companyId: E, codigo: '43000001' } })).toMatchObject({ parentCodigo: '4300' });
+    // La que no trae NIF queda para enlazarla a mano, aunque cuelgue de la 4300.
+    expect((await subcuentasSinEnlazar(E)).map((x) => x.codigo)).toEqual(['43000003']);
+    // Las fichas nuevas siguen la numeracion: ni 43090001 ni 40090001.
+    expect((await crearClienteConSubcuenta({ companyId: E, nombreFiscal: 'Cliente 2027 SL', nifCif: cif() })).subcuenta430).toBe('43000004');
+    expect(await crearProveedorConSubcuenta({ companyId: E, nombreFiscal: 'Proveedor 2027 SL', nifCif: cif() })).toMatchObject({ subcuenta400: '40000002' });
+  });
+});
+
+describe('sin NIF: propuesta por nombre', () => {
+  const E = `plan-ant5-${SUFIJO}`;
+  beforeAll(async () => {
+    await empresa(E);
+    await proveedoresService.create(E, { nombreFiscal: 'Suministros Valencia SL', nifCif: cif() });
+    await clientesService.create(E, { nombreFiscal: 'Bar Repetido SL', nifCif: cif() });
+    await clientesService.create(E, { nombreFiscal: 'BAR REPETIDO, S.L.', nifCif: cif() });
+  });
+
+  it('nombre comparable: sin tildes, signos ni forma juridica', () => {
+    expect(nombreComparable('Suministros Valencia, S.L.')).toBe('SUMINISTROS VALENCIA');
+    expect(nombreComparable('Ferretería López SLU')).toBe('FERRETERIA LOPEZ');
+    expect(nombreComparable('Talleres Pérez Sociedad Limitada')).toBe('TALLERES PEREZ');
+    expect(nombreComparable('SL')).toBe('SL');
+  });
+
+  it('una sola ficha con ese nombre: se propone enlazarla, avisando; varias: pendiente', async () => {
+    const v = await previsualizarPlan(E, {
+      cuentas: [
+        { codigo: '4000000001', nombre: 'Suministros Valencia, S.L.' },
+        { codigo: '4300000001', nombre: 'Bar Repetido SL' },
+        { codigo: '4300000002', nombre: 'Nadie Con Este Nombre SL' },
+      ],
+    });
+    const porCodigo = new Map(v.terceros.map((t) => [t.codigo, t]));
+    expect(porCodigo.get('4000000001')).toMatchObject({
+      accion: 'enlazar',
+      ficha: { nombre: 'Suministros Valencia SL' },
+      motivo: 'Coincide por nombre con la ficha Suministros Valencia SL: compruébalo antes de confirmar.',
+    });
+    expect(porCodigo.get('4300000001')).toMatchObject({ accion: 'pendiente', motivo: expect.stringContaining('hay 2 fichas con ese nombre') });
+    expect(porCodigo.get('4300000002')).toMatchObject({ accion: 'pendiente', motivo: 'Sin NIF: enlázala a una ficha después.' });
+  });
+});
+
+describe('dar de alta fichas exige ventas:write o compras:write', () => {
+  const E = `plan-ant6-${SUFIJO}`;
+  beforeAll(() => empresa(E));
+
+  it('sin permiso de alta, las que se crearian quedan pendientes; enlazar con ficha nueva da 403', async () => {
+    const cuentas: CuentaDelPlan[] = [
+      { codigo: '43000001', nombre: 'Cliente Permiso SL', nif: cif() },
+      { codigo: '40000001', nombre: 'Proveedor Permiso SL', nif: cif() },
+    ];
+    const v = await previsualizarPlan(E, { cuentas, permisos: { cliente: false, proveedor: true } });
+    const porCodigo = new Map(v.terceros.map((t) => [t.codigo, t]));
+    expect(porCodigo.get('43000001')).toMatchObject({ accion: 'pendiente', motivo: expect.stringContaining('No tienes permiso para dar de alta clientes (Ventas)') });
+    expect(porCodigo.get('40000001')).toMatchObject({ accion: 'crear' });
+    const r = await confirmarPlan(E, { cuentas, permisos: { cliente: false, proveedor: true } });
+    expect(r).toMatchObject({ fichasCreadas: 1, pendientes: 1 });
+    expect(await prisma.customer.count({ where: { companyId: E } })).toBe(0);
+    await expect(enlazarSubcuenta(E, { codigo: '43000001', nueva: { nombreFiscal: 'Cliente Permiso SL', nifCif: cif() } }, { cliente: false, proveedor: true })).rejects.toMatchObject({
+      statusCode: 403,
+      message: expect.stringContaining('No tienes permiso para dar de alta clientes'),
+    });
+    expect(await prisma.customer.count({ where: { companyId: E } })).toBe(0);
   });
 });
 
@@ -231,7 +334,12 @@ describe('rutas', () => {
 
   it('fichero CSV: vista previa y confirmacion con contabilidad:write; solo lectura no importa', async () => {
     const csv = Buffer.from(`Cuenta;Nombre;NIF\n4300001;Cliente Csv SL;${cif()}\n6280001;Luz\n`, 'utf8');
-    const c = app(['contabilidad:write', 'contabilidad:read']);
+    // Solo contabilidad: trae el plan, pero no da de alta al cliente (eso es de Ventas).
+    const soloContabilidad = await request(app(['contabilidad:write', 'contabilidad:read'])).post('/puesta-en-marcha/plan/vista-previa').attach('archivo', csv, 'plan.csv');
+    expect((soloContabilidad.body.data ?? soloContabilidad.body).terceros.map((t: { accion: string }) => t.accion)).toEqual(['pendiente']);
+    const sinAlta = await request(app(['contabilidad:write'])).post('/puesta-en-marcha/plan/enlazar').send({ codigo: '4300001', nueva: { nifCif: cif() } });
+    expect(sinAlta.status).toBe(403);
+    const c = app(['contabilidad:write', 'contabilidad:read', 'ventas:write']);
     const v = await request(c).post('/puesta-en-marcha/plan/vista-previa').attach('archivo', csv, 'plan.csv');
     expect(v.status).toBe(200);
     expect((v.body.data ?? v.body).terceros.map((t: { accion: string }) => t.accion)).toEqual(['crear']);

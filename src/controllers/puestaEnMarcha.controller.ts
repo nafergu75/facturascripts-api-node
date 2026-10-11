@@ -3,6 +3,7 @@ import { asyncHandler } from '../utils/async-handler';
 import { sendOk } from '../utils/response';
 import { badRequest, HttpError } from '../utils/http-errors';
 import { registrarAuditoria } from '../services/auditoria.service';
+import { autorizado } from '../services/rbac.service';
 import {
   leerBalance,
   leerDiario,
@@ -110,13 +111,23 @@ async function conMapeo<T>(fn: () => Promise<T>): Promise<T | { necesitaMapeo: t
   }
 }
 
+/**
+ * El traslado del plan exige contabilidad:write; dar de alta una ficha de
+ * cliente o de proveedor, ademas, ventas:write o compras:write, como en
+ * Clientes y Proveedores (el administrador siempre puede).
+ */
+function permisosAlta(req: Request) {
+  return { cliente: autorizado(req.user!, req.companyId, ['ventas:write']), proveedor: autorizado(req.user!, req.companyId, ['compras:write']) };
+}
+
 /** Plan del ejercicio anterior: del fichero (campo "archivo" o "subidaId") o ya mapeado (campo "cuentas"), con el listado de terceros opcional. */
 async function entradaPlan(req: ConFichero) {
   const body = (req.body ?? {}) as Record<string, unknown>;
   const terceros = tercerosDesdeJson(body.terceros);
+  const permisos = permisosAlta(req);
   const f = await ficheroDe(req);
-  if (f) return { lectura: leerPlan(f.buffer, f.originalname), terceros };
-  if (body.cuentas !== undefined) return { cuentas: cuentasPlanDesdeJson(body.cuentas), terceros };
+  if (f) return { lectura: leerPlan(f.buffer, f.originalname), terceros, permisos };
+  if (body.cuentas !== undefined) return { cuentas: cuentasPlanDesdeJson(body.cuentas), terceros, permisos };
   throw badRequest('Adjunta el fichero del plan de cuentas en el campo "archivo".');
 }
 
@@ -269,7 +280,11 @@ export const puestaEnMarchaController = {
   /** POST /plan/enlazar — { codigo, fichaId } o { codigo, nueva: { nombreFiscal, nifCif } }. */
   enlazar: asyncHandler(async (req, res) => {
     const b = (req.body ?? {}) as Record<string, unknown>;
-    const r = await enlazarSubcuenta(req.companyId!, { codigo: b.codigo, fichaId: b.fichaId, nueva: (b.nueva as { nombreFiscal?: unknown; nifCif?: unknown } | undefined) ?? null });
+    const r = await enlazarSubcuenta(
+      req.companyId!,
+      { codigo: b.codigo, fichaId: b.fichaId, nueva: (b.nueva as { nombreFiscal?: unknown; nifCif?: unknown } | undefined) ?? null },
+      permisosAlta(req),
+    );
     await registrarAuditoria({
       userId: req.user!.userId,
       companyId: req.companyId,

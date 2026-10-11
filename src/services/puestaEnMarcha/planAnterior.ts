@@ -11,11 +11,16 @@
  *    entre todas sus subcuentas de 7 a 10 digitos) si aun no hay subcuentas de
  *    tercero de otra longitud que lo impidan. Las nuevas fichas siguen la misma
  *    numeracion (siguiente libre).
- *  - Las subcuentas 430/400/410 se enlazan a fichas por NIF (del fichero o de
- *    los listados de clientes y proveedores): a la ficha que ya existe o a una
- *    nueva creada con ese NIF. Sin NIF quedan en el plan para enlazarlas despues
- *    (enlazarSubcuenta). Una ficha que ya tenia una subcuenta sin movimientos la
- *    cambia por la del plan; la antigua queda inactiva.
+ *  - Las subcuentas de clientes y proveedores (las que cuelgan de 430, 400 o
+ *    410, o de sus cuentas en euros 4300, 4000 y 4100) se enlazan a fichas por
+ *    NIF (del fichero o de los listados de clientes y proveedores): a la ficha
+ *    que ya existe o a una nueva creada con ese NIF (solo si el usuario puede
+ *    dar de alta clientes o proveedores). Sin NIF se propone la ficha con el
+ *    mismo nombre (sin tildes ni forma juridica) si hay una sola; si no, quedan
+ *    en el plan para enlazarlas despues (enlazarSubcuenta). Una ficha que ya
+ *    tenia una subcuenta sin movimientos la cambia por la del plan; la antigua
+ *    queda inactiva. Las de 4009, 4309... (facturas pendientes, moneda
+ *    extranjera) se traen como cuentas y no se enlazan.
  *
  * Sin estado entre peticiones: la vista previa y la confirmacion hacen el mismo
  * calculo con los mismos datos.
@@ -24,7 +29,7 @@ import { randomUUID } from 'crypto';
 import { prisma, type TransaccionBD } from '../../config/database';
 import { PGC_BASE } from '../../domain/pgc-model';
 import { paisDelCliente } from '../../domain/tipo-operacion.model';
-import { badRequest, conflict, notFound } from '../../utils/http-errors';
+import { badRequest, conflict, forbidden, notFound } from '../../utils/http-errors';
 import { normalizarNif } from '../../utils/nif';
 import { leerFilasArchivo } from '../extractoBancario.service';
 import { asegurarPlanContableEmpresa } from '../chart-of-accounts.service';
@@ -200,6 +205,63 @@ export interface VistaPlan {
 
 const PREFIJO_TIPO: Record<string, TipoFicha> = { '430': 'cliente', '400': 'proveedor', '410': 'proveedor' };
 
+/**
+ * Cuentas de las que cuelgan las subcuentas de clientes y proveedores: las de 3
+ * digitos y, en un plan PGC completo, sus cuentas «en euros» de 4 digitos.
+ */
+export const MADRES_TERCERO = ['430', '400', '410', '4300', '4000', '4100'];
+
+/** Si el usuario puede dar de alta fichas de cliente (ventas:write) y de proveedor (compras:write). */
+export interface PermisosAlta {
+  cliente: boolean;
+  proveedor: boolean;
+}
+const TODOS_PERMISOS: PermisosAlta = { cliente: true, proveedor: true };
+const TEXTO_SIN_PERMISO: Record<TipoFicha, string> = {
+  cliente: 'No tienes permiso para dar de alta clientes (Ventas)',
+  proveedor: 'No tienes permiso para dar de alta proveedores (Compras)',
+};
+
+const FORMAS_JURIDICAS = new Set([
+  'SL', 'SA', 'SLU', 'SAU', 'SLL', 'SLP', 'SLNE', 'SAL', 'SC', 'SCP', 'CB', 'SCOOP', 'SCCL', 'COOP', 'SRL',
+  'SOCIEDADLIMITADA', 'SOCIEDADANONIMA', 'SOCIEDADLIMITADAUNIPERSONAL', 'SOCIEDADANONIMAUNIPERSONAL',
+]);
+
+/** Nombre para comparar: sin tildes, mayusculas, sin signos y sin la forma juridica final («Valencia, S.L.» = «VALENCIA»). */
+export function nombreComparable(nombre: string | null | undefined): string {
+  let palabras = String(nombre ?? '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toUpperCase()
+    .replace(/\./g, '')
+    .replace(/[^A-Z0-9]+/g, ' ')
+    .trim()
+    .split(' ')
+    .filter(Boolean);
+  for (let quitada = true; quitada && palabras.length > 1; ) {
+    quitada = false;
+    for (const k of [3, 2, 1]) {
+      if (palabras.length > k && FORMAS_JURIDICAS.has(palabras.slice(-k).join(''))) {
+        palabras = palabras.slice(0, -k);
+        quitada = true;
+        break;
+      }
+    }
+  }
+  return palabras.join(' ');
+}
+
+function porNombre<T extends { nombreFiscal: string }>(fichas: T[]): Map<string, T[]> {
+  const m = new Map<string, T[]>();
+  for (const f of fichas) {
+    const k = nombreComparable(f.nombreFiscal);
+    if (!k) continue;
+    if (!m.has(k)) m.set(k, []);
+    m.get(k)!.push(f);
+  }
+  return m;
+}
+
 type FichaCliente = { id: string; nombreFiscal: string; nifCif: string; subcuenta430: string | null };
 type FichaProveedor = { id: string; nombreFiscal: string; nifCif: string; subcuenta400: string | null; subcuenta410: string | null };
 
@@ -270,6 +332,7 @@ async function analizar(
   cuentasEntrada: CuentaDelPlan[],
   listado: TerceroDelListado[],
   lectura: Omit<LecturaPlan, 'cuentas'> | null,
+  permisos: PermisosAlta = TODOS_PERMISOS,
 ): Promise<Analisis> {
   const errores: string[] = [];
   const avisos: string[] = [...(lectura?.avisos ?? [])];
@@ -315,11 +378,11 @@ async function analizar(
     avisos.push(`${existentesConOtroNombre.length} subcuenta(s) ya estaban en el plan con otro nombre: se deja el nombre que tienen (${existentesConOtroNombre.slice(0, 5).join(', ')}${existentesConOtroNombre.length > 5 ? '…' : ''}).`);
   }
 
-  // 2. Subcuentas de clientes y proveedores: las 430/400/410 que cuelgan directamente de ellas.
+  // 2. Subcuentas de clientes y proveedores: las 430/400/410 que cuelgan de ellas o de 4300/4000/4100.
   const madreFinal = new Map<string, string | null>();
   const todas = new Set([...ctx.plan.keys(), ...validas.map((c) => c.codigo)]);
   for (const c of validas) madreFinal.set(c.codigo, madreDe(c.codigo, todas));
-  const esTercero = (codigo: string) => esSubcuentaDeTercero(codigo) && ['430', '400', '410'].includes(madreFinal.get(codigo) ?? codigo.slice(0, 3));
+  const esTercero = (codigo: string) => esSubcuentaDeTercero(codigo) && MADRES_TERCERO.includes(madreFinal.get(codigo) ?? codigo.slice(0, 3));
   const subcuentas = validas.filter((c) => esTercero(c.codigo));
 
   // 3. Longitud: la del plan, si no la impiden las subcuentas que ya tienen las fichas.
@@ -330,6 +393,8 @@ async function analizar(
   for (const t of listado) if (t.subcuenta) nifDeListado.set(t.subcuenta, t);
   const clientesPorNif = new Map(ctx.clientes.map((c) => [normalizarNif(c.nifCif), c]));
   const proveedoresPorNif = new Map(ctx.proveedores.map((p) => [normalizarNif(p.nifCif), p]));
+  const clientesPorNombre = porNombre(ctx.clientes);
+  const proveedoresPorNombre = porNombre(ctx.proveedores);
   const fichaDeCodigo = new Map<string, { tipo: TipoFicha; id: string; nombre: string }>();
   for (const c of ctx.clientes) if (c.subcuenta430) fichaDeCodigo.set(c.subcuenta430, { tipo: 'cliente', id: c.id, nombre: c.nombreFiscal });
   for (const p of ctx.proveedores) {
@@ -365,13 +430,35 @@ async function analizar(
       terceros.push({ ...base, accion: 'ya-enlazada', ficha: { id: ya.id, nombre: ya.nombre } });
       continue;
     }
+    let ficha: FichaCliente | FichaProveedor | undefined;
+    let motivoNombre: string | undefined;
     if (!nifValido(nif)) {
-      terceros.push({ ...base, accion: 'pendiente', ficha: null, motivo: nif ? `El NIF «${nif}» no es válido: enlázala a mano.` : 'Sin NIF: enlázala a una ficha después.' });
-      continue;
+      // Sin NIF (o con uno no valido): la ficha con el mismo nombre, si solo hay una.
+      const nombreFichero = c.nombre || extra?.nombre || '';
+      const candidatas: Array<FichaCliente | FichaProveedor> = nombreFichero
+        ? ((tipo === 'cliente' ? clientesPorNombre : proveedoresPorNombre).get(nombreComparable(nombreFichero)) ?? [])
+        : [];
+      if (candidatas.length !== 1) {
+        const sinNif = nif ? `El NIF «${nif}» no es válido` : 'Sin NIF';
+        terceros.push({
+          ...base,
+          accion: 'pendiente',
+          ficha: null,
+          motivo: candidatas.length > 1 ? `${sinNif} y hay ${candidatas.length} fichas con ese nombre: enlázala a mano.` : nif ? `${sinNif}: enlázala a mano.` : 'Sin NIF: enlázala a una ficha después.',
+        });
+        continue;
+      }
+      ficha = candidatas[0];
+      motivoNombre = `Coincide por nombre con la ficha ${ficha.nombreFiscal}: compruébalo antes de confirmar.`;
+    } else {
+      ficha = tipo === 'cliente' ? clientesPorNif.get(nif) : proveedoresPorNif.get(nif);
     }
-    const ficha = tipo === 'cliente' ? clientesPorNif.get(nif) : proveedoresPorNif.get(nif);
     const clave = (id: string) => `${tipo}:${id}:${prefijo}`;
-    if (!ficha) {
+    if (!ficha && nifValido(nif)) {
+      if (!permisos[tipo]) {
+        terceros.push({ ...base, accion: 'pendiente', ficha: null, motivo: `${TEXTO_SIN_PERMISO[tipo]}: enlázala a una ficha que ya exista o pide al administrador que la cree.` });
+        continue;
+      }
       const claveNueva = `${tipo}:${nif}`;
       const otra = nuevasPorNif.get(`${claveNueva}:${prefijo}`);
       if (otra) {
@@ -382,6 +469,7 @@ async function analizar(
       terceros.push({ ...base, accion: 'crear', ficha: { id: null, nombre } });
       continue;
     }
+    if (!ficha) continue;
     if (usado.has(clave(ficha.id))) {
       terceros.push({ ...base, accion: 'no-se-enlaza', ficha: { id: ficha.id, nombre: ficha.nombreFiscal }, motivo: `${ficha.nombreFiscal} ya va con la subcuenta ${usado.get(clave(ficha.id))}: queda sin enlazar.` });
       continue;
@@ -397,7 +485,13 @@ async function analizar(
       continue;
     }
     usado.set(clave(ficha.id), c.codigo);
-    terceros.push({ ...base, accion: 'enlazar', ficha: { id: ficha.id, nombre: ficha.nombreFiscal }, ...(actual && actual !== c.codigo ? { sustituye: actual } : {}) });
+    terceros.push({
+      ...base,
+      accion: 'enlazar',
+      ficha: { id: ficha.id, nombre: ficha.nombreFiscal },
+      ...(actual && actual !== c.codigo ? { sustituye: actual } : {}),
+      ...(motivoNombre ? { motivo: motivoNombre } : {}),
+    });
   }
 
   // Longitud: se fija si, tras los enlaces, ninguna ficha se queda con una subcuenta de otra longitud.
@@ -410,12 +504,18 @@ async function analizar(
         ...longitud,
         motivo: `Tu plan anterior usa subcuentas de ${delPlan} dígitos y aquí ya hay clientes o proveedores con ${ctx.longitudActual} (${quedan.slice(0, 3).join(', ')}). Si sigues, convivirán las dos longitudes: las subcuentas del plan anterior se traen con ${delPlan} dígitos y las de los clientes y proveedores nuevos seguirán con ${ctx.longitudActual}.`,
       };
-      avisos.push(longitud.motivo!);
+      // Sin repetirlo en avisos: la pantalla ya ensena longitud.motivo en su recuadro.
     } else if (ctx.longitudGuardada !== delPlan) {
       longitud = { ...longitud, seFija: true };
     }
   } else {
     longitud.motivo = `El plan no trae subcuentas de 7 a 10 dígitos: la longitud sigue en ${ctx.longitudActual}.`;
+  }
+  const noTercero = validas.filter((c) => /^(4004|4009|4104|4109|4304|4309)\d+$/.test(c.codigo)).map((c) => c.codigo);
+  if (noTercero.length) {
+    avisos.push(
+      `${noTercero.length} subcuenta(s) de 4004, 4009, 4104, 4109, 4304 o 4309 (${noTercero.slice(0, 3).join(', ')}${noTercero.length > 3 ? '…' : ''}) se traen como cuentas, sin enlazarlas a ningún cliente ni proveedor.`,
+    );
   }
   const otrasLongitudes = delPlan ? subcuentas.filter((c) => c.codigo.length !== delPlan).map((c) => c.codigo) : [];
   if (otrasLongitudes.length) {
@@ -450,13 +550,18 @@ async function analizar(
   };
 }
 
-export async function previsualizarPlan(
-  companyId: string,
-  entrada: { lectura?: LecturaPlan; cuentas?: CuentaDelPlan[]; terceros?: TerceroDelListado[] },
-): Promise<VistaPlan> {
+export interface EntradaPlan {
+  lectura?: LecturaPlan;
+  cuentas?: CuentaDelPlan[];
+  terceros?: TerceroDelListado[];
+  /** Si puede crear fichas de cliente o proveedor (por defecto, si). */
+  permisos?: PermisosAlta;
+}
+
+export async function previsualizarPlan(companyId: string, entrada: EntradaPlan): Promise<VistaPlan> {
   await asegurarPlanContableEmpresa(companyId);
   const { cuentas, lectura } = separar(entrada);
-  return (await analizar(prisma, companyId, cuentas, entrada.terceros ?? [], lectura)).vista;
+  return (await analizar(prisma, companyId, cuentas, entrada.terceros ?? [], lectura, entrada.permisos)).vista;
 }
 
 function separar(entrada: { lectura?: LecturaPlan; cuentas?: CuentaDelPlan[] }) {
@@ -574,15 +679,12 @@ async function enlazarEnTx(tx: TransaccionBD, companyId: string, codigo: string,
   return { sustituida: antigua };
 }
 
-export async function confirmarPlan(
-  companyId: string,
-  entrada: { lectura?: LecturaPlan; cuentas?: CuentaDelPlan[]; terceros?: TerceroDelListado[] },
-): Promise<ResultadoPlan> {
+export async function confirmarPlan(companyId: string, entrada: EntradaPlan): Promise<ResultadoPlan> {
   await asegurarPlanContableEmpresa(companyId);
   const { cuentas, lectura } = separar(entrada);
   return conReintentoSubcuenta(() =>
     prisma.$transaction(async (tx) => {
-      const { vista } = await analizar(tx, companyId, cuentas, entrada.terceros ?? [], lectura);
+      const { vista } = await analizar(tx, companyId, cuentas, entrada.terceros ?? [], lectura, entrada.permisos);
       if (!vista.puedeConfirmar) throw badRequest(vista.errores[0], { errores: vista.errores });
 
       const cuentasCreadas = await crearCuentas(tx, companyId, vista.cuentasNuevas);
@@ -657,7 +759,7 @@ export async function subcuentasSinEnlazar(companyId: string): Promise<Subcuenta
   ]);
   const enlazadas = new Set([...clientes.map((c) => c.subcuenta430), ...proveedores.flatMap((p) => [p.subcuenta400, p.subcuenta410])].filter(Boolean));
   const sueltas = plan.filter(
-    (c) => esSubcuentaDeTercero(c.codigo) && !enlazadas.has(c.codigo) && (!c.parentCodigo || ['430', '400', '410'].includes(c.parentCodigo)),
+    (c) => esSubcuentaDeTercero(c.codigo) && !enlazadas.has(c.codigo) && (!c.parentCodigo || MADRES_TERCERO.includes(c.parentCodigo)),
   );
   if (!sueltas.length) return [];
   const apuntes = new Map(
@@ -678,12 +780,18 @@ export async function subcuentasSinEnlazar(companyId: string): Promise<Subcuenta
 export async function enlazarSubcuenta(
   companyId: string,
   datos: { codigo?: unknown; fichaId?: unknown; nueva?: { nombreFiscal?: unknown; nifCif?: unknown } | null },
+  permisos: PermisosAlta = TODOS_PERMISOS,
 ): Promise<{ codigo: string; tipo: TipoFicha; fichaId: string; fichaCreada: boolean; sustituida: string | null }> {
   const codigo = normalizarCuenta(datos.codigo);
   if (!codigo || !esSubcuentaDeTercero(codigo)) throw badRequest('Indica una subcuenta de clientes (430) o de proveedores (400 o 410).', { campo: 'codigo' });
   const tipo = PREFIJO_TIPO[codigo.slice(0, 3)];
   const fichaId = typeof datos.fichaId === 'string' && datos.fichaId.trim() ? datos.fichaId.trim() : null;
   if (!fichaId && !datos.nueva) throw badRequest(`Elige el ${tipo} o escribe los datos del nuevo.`, { campo: 'fichaId' });
+  if (!fichaId && !permisos[tipo]) {
+    throw forbidden(`${TEXTO_SIN_PERMISO[tipo]}. Enlázala a uno que ya exista o pídeselo al administrador.`, {
+      permisos: [tipo === 'cliente' ? 'ventas:write' : 'compras:write'],
+    });
+  }
   return conReintentoSubcuenta(() =>
     prisma.$transaction(async (tx) => {
       const enPlan = await tx.chartOfAccounts.findFirst({ where: { companyId, codigo } });
