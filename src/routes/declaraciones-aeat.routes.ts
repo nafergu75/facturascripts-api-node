@@ -91,8 +91,9 @@ router.delete('/:codigo(190)/declaraciones/rectificacion', authorize('impuestos:
 
 /**
  * POST /:codigo/presentado { ejercicio, periodo (o trimestre), justificante: { numero, fecha }, opciones? }
- * `opciones` solo en el 303: el tipo de declaración, las cuotas a compensar y
- * la cuenta bancaria elegidos en la pantalla (lo que se presenta).
+ * `opciones`: lo elegido en la pantalla que no se guarda, para presentar lo
+ * mismo que se ve (303: tipo de declaración, cuotas a compensar y cuenta; 390:
+ * último periodo; 200: bases negativas, pagos fraccionados y retenciones).
  */
 const presentado = asyncHandler(async (req, res) => {
   const d = await declaracionDe(req, cuerpo(req));

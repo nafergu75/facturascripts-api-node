@@ -23,7 +23,7 @@ import { calcularBorrador349, claveOperador, claveRectificacion349 } from '../bo
 import { calcularBorrador180, clavePerceptor180 } from '../borradoresAeat/borrador180.service';
 import { calcularBorrador202 } from '../borradoresAeat/borrador202.service';
 import { conservarOpciones } from '../borradoresAeat/comun';
-import { borrador200, borrador347, borrador390 } from '../borradoresAeat.service';
+import { borrador200, borrador347, borrador390, opciones200De, opciones390De } from '../borradoresAeat.service';
 import { generarFichero349 } from '../../aeat/modelo349/modelo349.dr';
 import { generarFichero180 } from '../../aeat/modelo180/modelo180.dr';
 import { generarFichero202 } from '../../aeat/modelo202/modelo202.dr';
@@ -51,7 +51,8 @@ async function config(companyId: string) {
 /**
  * Lo que se presentaría ahora del modelo y periodo. `opciones`: las de la
  * pantalla que no se guardan (303: tipo de declaración, cuotas a compensar y
- * cuenta bancaria).
+ * cuenta bancaria; 390: último periodo y compensación del año anterior; 200:
+ * bases negativas, pagos fraccionados, retenciones y nueva creación).
  */
 export async function presentable(companyId: string, codigo: CodigoAeat, ejercicio: number, periodo: string, opciones: Record<string, unknown> = {}): Promise<Presentable> {
   switch (codigo) {
@@ -161,7 +162,7 @@ export async function presentable(companyId: string, codigo: CodigoAeat, ejercic
       };
     }
     case '390': {
-      const b = await borrador390(companyId, ejercicio);
+      const b = await borrador390(companyId, ejercicio, opciones390De(opciones));
       return {
         errores: b.errores,
         instantanea: {
@@ -173,7 +174,7 @@ export async function presentable(companyId: string, codigo: CodigoAeat, ejercic
       };
     }
     case '200': {
-      const b = await borrador200(companyId, ejercicio);
+      const b = await borrador200(companyId, ejercicio, opciones200De(opciones));
       return {
         errores: b.errores,
         instantanea: {

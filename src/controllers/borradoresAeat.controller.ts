@@ -9,6 +9,8 @@ import {
   fichero200,
   fichero347,
   fichero390,
+  opciones200De,
+  opciones390De,
   type Opciones200,
   type Opciones390,
 } from '../services/borradoresAeat.service';
@@ -39,32 +41,8 @@ function ejercicioDe(req: Request): number {
   return e;
 }
 
-const texto = (v: unknown): string | undefined => (v === undefined || v === null || String(v).trim() === '' ? undefined : String(v).trim().slice(0, 120));
-
-function importe(req: Request, nombre: string): number | undefined {
-  const v = texto(req.query[nombre]);
-  if (v === undefined) return undefined;
-  const n = Number(v.replace(',', '.'));
-  if (!Number.isFinite(n) || n < 0) throw badRequest(`El importe "${nombre}" no es válido: escribe una cifra positiva.`);
-  return n;
-}
-
-function opciones390(req: Request): Opciones390 {
-  const ultimo = texto(req.query.ultimoPeriodo);
-  if (ultimo && ultimo !== 'compensar' && ultimo !== 'devolver') throw badRequest('El último periodo puede ser "compensar" o "devolver".');
-  return { ultimoPeriodo: ultimo as Opciones390['ultimoPeriodo'], compensarEjercicioAnterior: importe(req, 'compensarAnterior') };
-}
-
-function opciones200(req: Request): Opciones200 {
-  const pf = ['pf1', 'pf2', 'pf3'].map((k) => importe(req, k));
-  const nueva = texto(req.query.nuevaCreacion);
-  return {
-    binsPendientes: importe(req, 'bins'),
-    pagosFraccionados: pf.some((x) => x !== undefined) ? (pf.map((x) => x ?? 0) as [number, number, number]) : undefined,
-    retenciones: importe(req, 'retenciones'),
-    nuevaCreacion: nueva === undefined ? undefined : nueva === '1' || nueva === 'true',
-  };
-}
+const opciones390 = (req: Request): Opciones390 => opciones390De(req.query as Record<string, unknown>);
+const opciones200 = (req: Request): Opciones200 => opciones200De(req.query as Record<string, unknown>);
 
 /** Texto corto de una casilla para la pantalla: sin el apartado inicial ni el número entre corchetes. */
 function descripcionCorta(desc: string): string {

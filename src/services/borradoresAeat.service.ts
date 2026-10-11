@@ -219,6 +219,35 @@ async function compensarDelAnoAnterior(companyId: string, ejercicio: number): Pr
   return clave ? Math.abs(Number(cas[clave]) || 0) : 0;
 }
 
+const textoOpcion = (v: unknown): string | undefined => (v === undefined || v === null || String(v).trim() === '' ? undefined : String(v).trim().slice(0, 120));
+
+function importeOpcion(q: Record<string, unknown>, nombre: string): number | undefined {
+  const v = textoOpcion(q[nombre]);
+  if (v === undefined) return undefined;
+  const n = Number(v.replace(',', '.'));
+  if (!Number.isFinite(n) || n < 0) throw badRequest(`El importe "${nombre}" no es válido: escribe una cifra positiva.`);
+  return n;
+}
+
+/** Opciones del 390 de la pantalla (query del borrador, o `opciones` al presentarlo). */
+export function opciones390De(q: Record<string, unknown>): Opciones390 {
+  const ultimo = textoOpcion(q.ultimoPeriodo);
+  if (ultimo && ultimo !== 'compensar' && ultimo !== 'devolver') throw badRequest('El último periodo puede ser "compensar" o "devolver".');
+  return { ultimoPeriodo: ultimo as Opciones390['ultimoPeriodo'], compensarEjercicioAnterior: importeOpcion(q, 'compensarAnterior') };
+}
+
+/** Opciones del 200 de la pantalla (query del borrador, o `opciones` al presentarlo). */
+export function opciones200De(q: Record<string, unknown>): Opciones200 {
+  const pf = ['pf1', 'pf2', 'pf3'].map((k) => importeOpcion(q, k));
+  const nueva = textoOpcion(q.nuevaCreacion);
+  return {
+    binsPendientes: importeOpcion(q, 'bins'),
+    pagosFraccionados: pf.some((x) => x !== undefined) ? (pf.map((x) => x ?? 0) as [number, number, number]) : undefined,
+    retenciones: importeOpcion(q, 'retenciones'),
+    nuevaCreacion: nueva === undefined ? undefined : nueva === '1' || nueva === 'true',
+  };
+}
+
 export interface Opciones390 {
   ultimoPeriodo?: 'compensar' | 'devolver';
   compensarEjercicioAnterior?: number;
