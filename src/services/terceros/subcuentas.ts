@@ -100,6 +100,40 @@ export async function longitudSubcuentasEmpresa(companyId: string, db: Db = pris
   return longitudEnUso(await codigosDeTerceros(db, companyId)) ?? LONGITUD_SUBCUENTAS_DEFECTO;
 }
 
+/**
+ * Guarda la longitud en las reglas de la empresa si aun no hay ninguna y
+ * devuelve la que queda guardada (la de otro proceso, si se adelanto). Es una
+ * sola sentencia (INSERT ... ON DUPLICATE KEY UPDATE) para que dos altas a la
+ * vez no choquen al crear la fila de reglas. Con una BD simulada sin la tabla
+ * de reglas no guarda nada.
+ */
+export async function guardarLongitudSiFalta(tx: Db, companyId: string, longitud: number): Promise<number> {
+  if (typeof (tx as { reglasContables?: { findUnique?: unknown } }).reglasContables?.findUnique !== 'function') return longitud;
+  await tx.$executeRaw`
+    INSERT INTO ReglasContables (companyId, data, updatedAt)
+    VALUES (${companyId}, JSON_OBJECT('longitudSubcuentas', ${longitud}), NOW(3))
+    ON DUPLICATE KEY UPDATE
+      data = IF(JSON_EXTRACT(data, '$.longitudSubcuentas') IS NULL, JSON_SET(data, '$.longitudSubcuentas', ${longitud}), data),
+      updatedAt = NOW(3)`;
+  // Lectura con bloqueo: ve lo ultimo confirmado aunque la transaccion ya tuviera su foto.
+  const filas = await tx.$queryRaw<Array<{ l: unknown }>>`
+    SELECT JSON_EXTRACT(data, '$.longitudSubcuentas') AS l FROM ReglasContables WHERE companyId = ${companyId} FOR UPDATE`;
+  const n = Number(String(filas[0]?.l ?? '').replace(/"/g, ''));
+  return esLongitudSubcuentasValida(n) ? n : longitud;
+}
+
+/**
+ * Longitud con la que se asigna una subcuenta NUEVA. Si la empresa aun no la
+ * tiene guardada, se guarda ahora, en la misma transaccion que la asignacion:
+ * desde la primera subcuenta la longitud queda fija, y una cuenta importada
+ * despues con otra longitud (apertura, diario) ya no la cambia.
+ */
+async function longitudParaAsignar(tx: TransaccionBD, companyId: string): Promise<number> {
+  const guardada = await longitudSubcuentasGuardada(companyId, tx);
+  if (guardada) return guardada;
+  return guardarLongitudSiFalta(tx, companyId, await longitudSubcuentasEmpresa(companyId, tx));
+}
+
 /** Hay alguna subcuenta de tercero asignada (en una ficha o en el plan). */
 export async function haySubcuentasDeTercero(companyId: string, db: Db = prisma): Promise<boolean> {
   return (await codigosDeTerceros(db, companyId)).some(esSubcuentaDeTercero);
@@ -132,7 +166,7 @@ export async function asignarSubcuentaCliente(tx: TransaccionBD, companyId: stri
     cliente.subcuenta430 = filas[0].subcuenta430;
     return filas[0].subcuenta430;
   }
-  const longitud = await longitudSubcuentasEmpresa(companyId, tx);
+  const longitud = await longitudParaAsignar(tx, companyId);
   const n = siguienteNumeroTercero(await codigosDeTerceros(tx, companyId, ['430']), ['430'], longitud);
   const codigo = codigoSubcuenta('430', n, longitud);
   await tx.customer.update({ where: { id: cliente.id }, data: { subcuenta430: codigo } });
@@ -167,7 +201,7 @@ export async function asignarSubcuentasProveedor(
       if (s400) s410 = gemela;
       else s400 = gemela;
     } else {
-      const longitud = await longitudSubcuentasEmpresa(companyId, tx);
+      const longitud = await longitudParaAsignar(tx, companyId);
       const n = siguienteNumeroTercero(ocupadas, PREFIJOS_PROVEEDOR, longitud);
       s400 = codigoSubcuenta('400', n, longitud);
       s410 = codigoSubcuenta('410', n, longitud);

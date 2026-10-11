@@ -24,6 +24,15 @@ const SUFIJO = Date.now();
 const EMPRESA = `subc-${SUFIJO}`;
 const EMPRESA_10 = `subc10-${SUFIJO}`;
 const EMPRESA_7 = `subc7-${SUFIJO}`;
+const EMPRESA_FIJA = `subcfija-${SUFIJO}`;
+const EMPRESA_4009 = `subc4009-${SUFIJO}`;
+
+/** Cuenta de un plan traido (apertura, diario o plan anterior) colgando de `madre`. */
+async function cuentaImportada(companyId: string, codigo: string, madre: string, nombre = `Importada ${codigo}`) {
+  await prisma.chartOfAccounts.create({
+    data: { companyId, codigo, nombre, grupo: 4, nivel: 4, naturaleza: codigo.startsWith('43') ? 'ACTIVO' : 'PASIVO', tipoUso: 'BALANCE', esBasePGC: false, esPersonalizadaEmpresa: true, parentCodigo: madre },
+  });
+}
 
 async function crearEmpresa(id: string) {
   await prisma.company.create({ data: { id, name: `Empresa ${id}`, fsBaseUrl: 'http://localhost', fsApiKeyEnc: 'k' } });
@@ -34,6 +43,8 @@ beforeAll(async () => {
   await crearEmpresa(EMPRESA);
   await crearEmpresa(EMPRESA_10);
   await crearEmpresa(EMPRESA_7);
+  await crearEmpresa(EMPRESA_FIJA);
+  await crearEmpresa(EMPRESA_4009);
 });
 
 describe('alta de fichas', () => {
@@ -127,6 +138,46 @@ describe('longitud por empresa', () => {
     expect(await longitudSubcuentasEmpresa(EMPRESA_7)).toBe(7);
     const p = await crearProveedorConSubcuenta({ companyId: EMPRESA_7, nombreFiscal: 'Corto SL', nifCif: 'B12121212' });
     expect(p).toMatchObject({ subcuenta400: '4000001', subcuenta410: '4100001' });
+  });
+});
+
+describe('longitud fijada desde la primera subcuenta', () => {
+  it('la primera asignacion guarda la longitud y una cuenta importada despues de otra longitud ya no la cambia', async () => {
+    const c1 = await crearClienteConSubcuenta({ companyId: EMPRESA_FIJA, nombreFiscal: 'Primero Fijo SL', nifCif: 'B10101010' });
+    expect(c1.subcuenta430).toBe('43000001');
+    const reglas = await prisma.reglasContables.findUniqueOrThrow({ where: { companyId: EMPRESA_FIJA } });
+    expect((reglas.data as { longitudSubcuentas?: number }).longitudSubcuentas).toBe(8);
+    // Una apertura o un diario traen despues subcuentas de 10 digitos.
+    await cuentaImportada(EMPRESA_FIJA, '4300000001', '430');
+    await cuentaImportada(EMPRESA_FIJA, '4300000002', '430');
+    expect(await longitudSubcuentasEmpresa(EMPRESA_FIJA)).toBe(8);
+    const c2 = await crearClienteConSubcuenta({ companyId: EMPRESA_FIJA, nombreFiscal: 'Segundo Fijo SL', nifCif: 'B20202020' });
+    expect(c2.subcuenta430).toBe('43000002');
+  });
+
+  it('las demas reglas guardadas se conservan al fijar la longitud', async () => {
+    const id = `subcreglas-${SUFIJO}`;
+    await crearEmpresa(id);
+    await prisma.reglasContables.create({ data: { companyId: id, data: { cuentasVentasPorFamilia: { SERVICIOS: '705' } } } });
+    await crearProveedorConSubcuenta({ companyId: id, nombreFiscal: 'Con Reglas SL', nifCif: 'B30303030' });
+    const reglas = await prisma.reglasContables.findUniqueOrThrow({ where: { companyId: id } });
+    expect(reglas.data).toMatchObject({ cuentasVentasPorFamilia: { SERVICIOS: '705' }, longitudSubcuentas: 8 });
+  });
+});
+
+describe('cuentas 4009, 4309... de un plan traido', () => {
+  it('40090000 y 43090000 (facturas pendientes) no mueven la numeracion ni la longitud', async () => {
+    await cuentaImportada(EMPRESA_4009, '4009', '400', 'Proveedores, facturas pendientes de recibir');
+    await cuentaImportada(EMPRESA_4009, '4309', '430', 'Clientes, facturas pendientes de formalizar');
+    await cuentaImportada(EMPRESA_4009, '40000001', '400', 'Proveedor importado');
+    await cuentaImportada(EMPRESA_4009, '40090000', '4009');
+    await cuentaImportada(EMPRESA_4009, '43090000', '4309');
+    await cuentaImportada(EMPRESA_4009, '4309000001', '4309');
+    expect(await longitudSubcuentasEmpresa(EMPRESA_4009)).toBe(8);
+    const p = await crearProveedorConSubcuenta({ companyId: EMPRESA_4009, nombreFiscal: 'Proveedor Nuevo SL', nifCif: 'B40404040' });
+    expect(p).toMatchObject({ subcuenta400: '40000002', subcuenta410: '41000002' });
+    const c = await crearClienteConSubcuenta({ companyId: EMPRESA_4009, nombreFiscal: 'Cliente Nuevo SL', nifCif: 'B50505050' });
+    expect(c.subcuenta430).toBe('43000001');
   });
 });
 
