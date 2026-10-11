@@ -81,6 +81,17 @@ export function periodoFiscal(ejercicio: number, periodo: string): PeriodoFiscal
   throw badRequest(`Periodo "${periodo}" no válido: usa 1T, 2T, 3T, 4T, un mes (01-12) o 0A.`);
 }
 
+/**
+ * La empresa presenta el 111 (y el 115) cada mes: gran empresa en los ajustes
+ * fiscales, como el calendario (calendarioEjercicio). Solo lee.
+ */
+export async function presenta111Mensual(companyId: string): Promise<boolean> {
+  const tabla = (prisma as unknown as Record<string, { findUnique?: unknown } | undefined>).ajustesFiscales;
+  if (typeof tabla?.findUnique !== 'function') return false;
+  const fila = await prisma.ajustesFiscales.findUnique({ where: { companyId } }).catch(() => null);
+  return fila?.granEmpresa === true;
+}
+
 /** Meses (1-12) del ejercicio que cubre un periodo. */
 function mesesDe(p: PeriodoFiscal): number[] {
   const desde = Number(p.fechaInicio.slice(5, 7));

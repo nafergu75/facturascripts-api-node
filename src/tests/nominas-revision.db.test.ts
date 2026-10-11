@@ -121,6 +121,15 @@ describe('cuadre del 190 con el 111 mensual (gran empresa)', () => {
     expect(m.cuadre111).toMatchObject({ total: 280, coincide: false });
     expect(m.avisos.join(' ')).toMatch(/3T \(meses 08\) con lo presentado/);
   });
+
+  it('Nóminas pide el 111 de un mes y sabe si la empresa lo presenta cada mes (gran empresa)', async () => {
+    const antes = await request(app(R6)).get('/nominas/retenciones/2026/09');
+    expect(antes.status).toBe(200);
+    expect(antes.body.data).toMatchObject({ periodo: { periodo: '09', tipo: 'mensual' }, mensual: false });
+    expect(antes.body.data.casillas['03']).toBe(180);
+    await prisma.ajustesFiscales.create({ data: { companyId: R6, periodicidadIva: 'MENSUAL', sii: true, granEmpresa: true } });
+    expect((await request(app(R6)).get('/nominas/retenciones/2026/3T')).body.data.mensual).toBe(true);
+  });
 });
 
 describe('fecha de pago y 111 presentado (el IRPF no se declara dos veces)', () => {

@@ -30,7 +30,7 @@ import {
   obtenerSegurosSociales,
   pagarSegurosSociales,
 } from '../services/nominas/segurosSociales';
-import { calcularModelo190, periodoFiscal, retencionesTrabajo } from '../services/nominas/fiscal';
+import { calcularModelo190, periodoFiscal, presenta111Mensual, retencionesTrabajo } from '../services/nominas/fiscal';
 import { comprobarDiseno190, idRegistro190, informe190Excel, resumen190 } from '../services/nominas/modelo190';
 import { ficheroModelo190 } from '../services/nominas/fichero190';
 import { contextoDeclaracion } from '../services/declaracionesAeat/declaraciones.service';
@@ -136,14 +136,17 @@ export const nominasConexionesController = {
     const periodo = periodo111De(req);
     // Una empresa no establecida en Espana no presenta el 111 (como en Impuestos).
     if (!(await esEmpresaEspanolaFiscal(req.companyId!))) throw badRequest(MENSAJE_SIN_MODELOS);
-    const [d, trabajo, pago, aPagar] = await Promise.all([
+    const [d, trabajo, pago, aPagar, mensual] = await Promise.all([
       calcularModelo111(req.companyId!, periodo),
       retencionesTrabajo(req.companyId!, periodo),
       pagoModelo111(req.companyId!, periodo.ejercicio, periodo.periodo),
       importePago111(req.companyId!, periodo),
+      presenta111Mensual(req.companyId!),
     ]);
     sendOk(res, {
       periodo,
+      // Gran empresa: el 111 se presenta cada mes (la pantalla de Nóminas abre el mes).
+      mensual,
       casillas: {
         '01': d.nPerceptoresTrabajo,
         '02': d.percepcionesTrabajo,
