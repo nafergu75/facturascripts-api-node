@@ -35,7 +35,12 @@ export interface Tercero {
   /** Nombre normalizado sin forma jurídica, en palabras. */
   tokens: string[];
   nif?: string;
+  /** Subcuentas contables propias (430N; 400N y 410N): «¿cuánto debe la 43000012?». */
+  subcuentas?: string[];
 }
+
+/** Subcuenta de cliente o proveedor escrita en la pregunta (430, 400 o 410 y de 7 a 10 cifras). */
+export const RE_SUBCUENTA = /\b((?:430|400|410)\d{4,7})\b/;
 
 export interface CandidatoTercero {
   tercero: Tercero;
@@ -201,6 +206,13 @@ export function buscarEnIndice(textoBase: string, indice: Tercero[], roles?: Rol
   const candidatosIndice = roles ? indice.filter((t) => roles.includes(t.rol)) : indice;
   if (!candidatosIndice.length) return null;
 
+  // Subcuenta exacta: es de un solo cliente o proveedor.
+  const subcuenta = textoBase.match(RE_SUBCUENTA)?.[1];
+  if (subcuenta) {
+    const suya = candidatosIndice.find((t) => t.subcuentas?.includes(subcuenta));
+    if (suya) return { tipo: 'unico', tercero: suya, puntuacion: 1, trozo: subcuenta };
+  }
+
   // NIF exacto.
   const nif = textoBase.match(RE_NIF)?.[1]?.toUpperCase();
   if (nif) {
@@ -272,13 +284,27 @@ const cache = new Map<string, { indice: Tercero[]; en: number }>();
 
 async function cargarIndice(companyId: string): Promise<Tercero[]> {
   const [clientes, proveedores, bancos] = await Promise.all([
-    prisma.customer.findMany({ where: { companyId }, select: { id: true, nombreFiscal: true, nifCif: true } }),
-    prisma.supplier.findMany({ where: { companyId }, select: { id: true, nombreFiscal: true, nifCif: true } }),
+    prisma.customer.findMany({ where: { companyId }, select: { id: true, nombreFiscal: true, nifCif: true, subcuenta430: true } }),
+    prisma.supplier.findMany({ where: { companyId }, select: { id: true, nombreFiscal: true, nifCif: true, subcuenta400: true, subcuenta410: true } }),
     prisma.bankAccount.findMany({ where: { companyId, activa: true }, select: { id: true, bancoNombre: true, iban: true } }),
   ]);
   return [
-    ...clientes.map((c) => ({ id: c.id, rol: 'cliente' as const, nombre: c.nombreFiscal, tokens: tokensNombre(c.nombreFiscal), nif: c.nifCif?.toUpperCase() })),
-    ...proveedores.map((p) => ({ id: p.id, rol: 'proveedor' as const, nombre: p.nombreFiscal, tokens: tokensNombre(p.nombreFiscal), nif: p.nifCif?.toUpperCase() })),
+    ...clientes.map((c) => ({
+      id: c.id,
+      rol: 'cliente' as const,
+      nombre: c.nombreFiscal,
+      tokens: tokensNombre(c.nombreFiscal),
+      nif: c.nifCif?.toUpperCase(),
+      subcuentas: c.subcuenta430 ? [c.subcuenta430] : [],
+    })),
+    ...proveedores.map((p) => ({
+      id: p.id,
+      rol: 'proveedor' as const,
+      nombre: p.nombreFiscal,
+      tokens: tokensNombre(p.nombreFiscal),
+      nif: p.nifCif?.toUpperCase(),
+      subcuentas: [p.subcuenta400, p.subcuenta410].filter((x): x is string => !!x),
+    })),
     ...bancos
       .filter((b) => b.bancoNombre)
       .map((b) => ({ id: b.id, rol: 'banco' as const, nombre: `${b.bancoNombre} …${b.iban.replace(/\s/g, '').slice(-4)}`, tokens: tokensBanco(b.bancoNombre ?? '') })),
@@ -299,7 +325,7 @@ const REFRESCO_MIN_MS = 60_000;
 
 /** Busca un tercero en la pregunta; si no lo encuentra, refresca el índice (una vez por minuto como mucho). */
 export async function buscarTercero(companyId: string, textoBase: string, roles?: RolTercero[]): Promise<ResultadoTercero | null> {
-  if (!trozosCandidatos(textoBase).length && !RE_NIF.test(textoBase) && !PISTA_BANCO.test(textoBase)) return null;
+  if (!trozosCandidatos(textoBase).length && !RE_NIF.test(textoBase) && !RE_SUBCUENTA.test(textoBase) && !PISTA_BANCO.test(textoBase)) return null;
   const r = buscarEnIndice(textoBase, await indiceTerceros(companyId), roles);
   if (r && r.tipo !== 'ninguno') return r;
   const enCache = cache.get(companyId);
