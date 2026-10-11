@@ -2,7 +2,9 @@
  * Borradores de los modelos 347, 390 y 200 con el diseño OFICIAL de la AEAT
  * (src/aeat/oficial). Una sola fuente para la pantalla y para el fichero: el
  * borrador (casillas, registros y avisos) y la descarga salen del mismo cálculo,
- * hecho al momento con las facturas y la contabilidad de la empresa.
+ * hecho al momento con las facturas y la contabilidad de la empresa. Si la
+ * declaración está presentada (y no se prepara otra), los dos salen de la
+ * instantánea guardada al presentarla (B4). Nada de aquí escribe (B6).
  */
 import { prisma } from '../config/database';
 import { badRequest } from '../utils/http-errors';
@@ -15,6 +17,9 @@ import { agregar303, agregar347, agregar390, exigirModelosAeat, esEmpresaEspanol
 import { calcularEstadosFinancieros } from './impuestoSociedadesCalculo.service';
 import { listarCuentasBancarias } from './bancos.service';
 import { periodoFiscal } from './nominas/fiscal';
+import { claveDeclarado347 } from '../aeat/oficial/modelo347';
+import { AVISO_SIN_NUMERO, contactoEmpresa, declaracionInformativa, erroresContacto, exigirNumero, registrosElegidos } from './borradoresAeat/comun';
+import { avisoCongelada, contextoDeclaracion, datosDe } from './declaracionesAeat/declaraciones.service';
 
 const round2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100;
 
@@ -40,36 +45,76 @@ async function datosSociedad(companyId: string) {
 // 347
 // ---------------------------------------------------------------------------
 
-export interface Opciones347 {
-  contacto?: string | null;
-  telefono?: string | null;
-  complementaria?: { tipo: 'C' | 'S'; numeroAnterior: string } | null;
-  numeroIdentificativo?: string;
-}
+/** Borrador del 347 con lo que lo identifica en el historial (B4) y todos sus registros. */
+export type Borrador347 = Declaracion347 & {
+  datos: DatosModelo347;
+  /** Número identificativo (B5); null hasta que se descarga o se presenta. */
+  numeroDeclaracion: string | null;
+  /** Todos los declarados del año con su clave (para elegir los de una complementaria). */
+  registrosDeclaracion: Array<{ clave: string; nombre: string; importe: number }>;
+  /** Presentado: lo que se enseña es la instantánea. */
+  congelada?: boolean;
+};
 
-export async function borrador347(companyId: string, ejercicio: number, opciones: Opciones347 = {}): Promise<Declaracion347 & { datos: DatosModelo347 }> {
+/**
+ * Borrador del 347. Contacto y teléfono, de Registro Mercantil > Datos (B3);
+ * tipo, anterior, número y registros elegidos, del historial (B4 y B5).
+ */
+export async function borrador347(companyId: string, ejercicio: number, opts: { calcular?: boolean } = {}): Promise<Borrador347> {
   await exigirModelosAeat(companyId, `${ejercicio}-01-01`, `${ejercicio}-12-31`);
-  const [facturas, soc] = await Promise.all([obtenerFacturasFiscales(companyId, `${ejercicio}-01-01`, `${ejercicio}-12-31`), datosSociedad(companyId)]);
+  const [facturas, soc, contacto, decl] = await Promise.all([
+    obtenerFacturasFiscales(companyId, `${ejercicio}-01-01`, `${ejercicio}-12-31`),
+    datosSociedad(companyId),
+    contactoEmpresa(companyId),
+    declaracionInformativa(companyId, '347', ejercicio, '0A'),
+  ]);
+  // Presentado: la pantalla es la que se guardó al presentarlo.
+  // `calcular`: lo de hoy aunque este presentado (para proponer los registros de una complementaria).
+  const congelado = decl.ctx.congelada && !opts.calcular ? (datosDe(decl.ctx.ultimaPresentada).pantalla as Borrador347 | null) : null;
+  if (congelado) return { ...congelado, congelada: true, advertencias: [avisoCongelada(decl.ctx.ultimaPresentada!), ...(congelado.advertencias ?? [])] };
   const datos = agregar347(facturas, ejercicio);
-  const decl = construirModelo347(
+  const todos = declarados347Desde(datos);
+  const elegidos = registrosElegidos(todos, claveDeclarado347, decl.seleccion);
+  const d = construirModelo347(
     ejercicio,
     {
       nif: soc.nif,
       razonSocial: soc.razonSocial,
-      telefono: opciones.telefono ?? soc.telefono,
-      contacto: opciones.contacto ?? null,
-      complementaria: opciones.complementaria ?? null,
-      numeroIdentificativo: opciones.numeroIdentificativo,
+      telefono: contacto.telefono,
+      contacto: contacto.personaContacto,
+      complementaria: decl.tipoDeclaracion ? { tipo: decl.tipoDeclaracion, numeroAnterior: decl.declaracionAnterior ?? '' } : null,
+      numeroIdentificativo: decl.numeroDeclaracion ?? undefined,
     },
-    declarados347Desde(datos),
+    elegidos,
   );
-  return { ...decl, advertencias: [...(datos.advertencias ?? []), ...decl.advertencias], datos };
+  const advertencias = [...(datos.advertencias ?? []), ...d.advertencias];
+  if (!decl.numeroDeclaracion) advertencias.push(AVISO_SIN_NUMERO);
+  const errores = [...d.errores];
+  if (decl.seleccion && !elegidos.length) errores.push('La complementaria no lleva ningún declarado: marca los que se quedaron fuera de la declaración anterior.');
+  return {
+    ...d,
+    advertencias,
+    errores,
+    datos,
+    numeroDeclaracion: decl.numeroDeclaracion,
+    registrosDeclaracion: todos.map((x) => ({ clave: claveDeclarado347(x), nombre: x.nombre, importe: x.importeAnual })),
+  };
 }
 
-export async function fichero347(companyId: string, ejercicio: number, opciones: Opciones347 = {}) {
-  const b = await borrador347(companyId, ejercicio, opciones);
-  if (b.errores.length) throw badRequest(`No se puede generar el fichero del 347: ${b.errores.join(' ')}`);
+export async function fichero347(companyId: string, ejercicio: number) {
+  const b = await borrador347(companyId, ejercicio);
+  if (b.congelada) return { nombre: `347_${ejercicio}.txt`, contenido: await ficheroCongelado(companyId, '347', ejercicio, '0A'), advertencias: b.advertencias, numeroIdentificativo: b.declarante.numeroIdentificativo };
+  if (b.errores.length) throw badRequest(`No se puede generar el fichero del 347: ${b.errores.join(' ')}`, { errores: b.errores });
+  exigirNumero(b.numeroDeclaracion, '347');
   return { nombre: `347_${ejercicio}.txt`, contenido: b.fichero, advertencias: b.advertencias, numeroIdentificativo: b.declarante.numeroIdentificativo };
+}
+
+/** Fichero guardado al presentar (el que se descarga mientras la declaración está congelada). */
+async function ficheroCongelado(companyId: string, codigo: string, ejercicio: number, periodo: string): Promise<string> {
+  const ctx = await contextoDeclaracion(companyId, codigo, ejercicio, periodo);
+  const f = datosDe(ctx.ultimaPresentada).fichero;
+  if (!f) throw badRequest(`El ${codigo} está presentado pero no se guardó su fichero: descárgalo de la sede.`);
+  return f;
 }
 
 // ---------------------------------------------------------------------------
@@ -179,8 +224,12 @@ export interface Opciones390 {
   compensarEjercicioAnterior?: number;
 }
 
-export async function borrador390(companyId: string, ejercicio: number, opciones: Opciones390 = {}): Promise<Declaracion390> {
+export async function borrador390(companyId: string, ejercicio: number, opciones: Opciones390 = {}): Promise<Declaracion390 & { congelada?: boolean }> {
   await exigirModelosAeat(companyId, `${ejercicio}-01-01`, `${ejercicio}-12-31`);
+  // Presentado: la pantalla es la que se guardó al presentarlo (B4).
+  const ctx = await contextoDeclaracion(companyId, '390', ejercicio, '0A');
+  const congelado = ctx.congelada ? (datosDe(ctx.ultimaPresentada).pantalla as Declaracion390 | null) : null;
+  if (congelado) return { ...congelado, congelada: true, advertencias: [avisoCongelada(ctx.ultimaPresentada!), ...(congelado.advertencias ?? [])] };
   const [facturas, soc, ajustes] = await Promise.all([
     obtenerFacturasFiscales(companyId, `${ejercicio}-01-01`, `${ejercicio}-12-31`),
     datosSociedad(companyId),
@@ -203,12 +252,15 @@ export async function borrador390(companyId: string, ejercicio: number, opciones
     },
     { compensarEjercicioAnterior: compensar, ultimoPeriodo: opciones.ultimoPeriodo ?? 'compensar' },
   );
+  // Sustitutiva en preparación: marca y justificante de la anterior.
+  if (ctx.enCurso?.tipo === 'S') entrada.sustitutiva = { justificanteAnterior: ctx.justificanteAnterior ?? '' };
   const decl = construirModelo390(entrada);
   return { ...decl, advertencias: [...advertencias, ...decl.advertencias] };
 }
 
 export async function fichero390(companyId: string, ejercicio: number, opciones: Opciones390 = {}) {
   const b = await borrador390(companyId, ejercicio, opciones);
+  if (b.congelada) return { nombre: `390_${ejercicio}.txt`, contenido: await ficheroCongelado(companyId, '390', ejercicio, '0A'), advertencias: b.advertencias };
   if (b.errores.length) throw badRequest(`No se puede generar el fichero del 390: ${b.errores.join(' ')}`);
   return { nombre: `390_${ejercicio}.txt`, contenido: b.fichero, advertencias: b.advertencias };
 }
@@ -222,18 +274,22 @@ export interface Opciones200 {
   pagosFraccionados?: [number, number, number];
   retenciones?: number;
   nuevaCreacion?: boolean;
-  contacto?: string | null;
 }
 
-export async function borrador200(companyId: string, ejercicio: number, opciones: Opciones200 = {}): Promise<Declaracion200> {
+export async function borrador200(companyId: string, ejercicio: number, opciones: Opciones200 = {}): Promise<Declaracion200 & { congelada?: boolean }> {
   if (!(await esEmpresaEspanolaFiscal(companyId))) throw badRequest(MENSAJE_SIN_MODELOS);
-  const [estados, soc, cuentas, fy] = await Promise.all([
+  // Presentado: la pantalla es la que se guardó al presentarlo (B4).
+  const ctx = await contextoDeclaracion(companyId, '200', ejercicio, '0A');
+  const congelado = ctx.congelada ? (datosDe(ctx.ultimaPresentada).pantalla as Declaracion200 | null) : null;
+  if (congelado) return { ...congelado, congelada: true, advertencias: [avisoCongelada(ctx.ultimaPresentada!), ...(congelado.advertencias ?? [])] };
+  const [estados, soc, cuentas, fy, contacto] = await Promise.all([
     calcularEstadosFinancieros(companyId, ejercicio),
     datosSociedad(companyId),
     listarCuentasBancarias(companyId).catch(() => []),
     Promise.resolve()
       .then(() => prisma.fiscalYear.findFirst({ where: { companyId, label: String(ejercicio) } }))
       .catch(() => null),
+    contactoEmpresa(companyId),
   ]);
   const anterior = estados.anterior.pyg;
   const hayAnterior = (anterior.partidas ?? []).some((x) => x.importe !== 0) || anterior.importeNetoCifraNegocios !== 0;
@@ -244,9 +300,10 @@ export async function borrador200(companyId: string, ejercicio: number, opciones
       nif: soc.nif,
       razonSocial: soc.razonSocial,
       cnae: soc.cnae,
-      telefono: soc.telefono,
+      // Persona de contacto y teléfono (B3): los de Registro Mercantil > Datos.
+      telefono: contacto.telefono || soc.telefono,
       email: soc.email,
-      contacto: opciones.contacto ?? null,
+      contacto: contacto.personaContacto || null,
       fechaInicio: fy?.fechaInicio ?? `${ejercicio}-${soc.ejercicioInicio}`,
       fechaFin: fy?.fechaFin ?? `${ejercicio}-${soc.ejercicioFin}`,
       fechaConstitucion: soc.fechaConstitucion,
@@ -261,7 +318,10 @@ export async function borrador200(companyId: string, ejercicio: number, opciones
     retenciones: opciones.retenciones,
     nuevaCreacion: opciones.nuevaCreacion,
     iban: cuentas.find((c) => c.activa)?.iban ?? null,
+    rectificativa: ctx.enCurso?.tipo === 'C' ? { justificanteAnterior: ctx.justificanteAnterior ?? '' } : null,
   });
+  // Sin persona de contacto o teléfono no hay fichero (B3).
+  decl.errores.unshift(...erroresContacto(contacto));
   // Lo que hay en la 473 (retenciones y pagos a cuenta) ayuda a rellenar las casillas de la página 14 bis.
   let saldo473 = 0;
   for (const [cuenta, saldo] of estados.saldos.balance) if (cuenta.startsWith('473')) saldo473 += saldo;
@@ -276,6 +336,7 @@ export async function borrador200(companyId: string, ejercicio: number, opciones
 
 export async function fichero200(companyId: string, ejercicio: number, opciones: Opciones200 = {}) {
   const b = await borrador200(companyId, ejercicio, opciones);
+  if (b.congelada) return { nombre: `200_${ejercicio}.txt`, contenido: await ficheroCongelado(companyId, '200', ejercicio, '0A'), advertencias: b.advertencias };
   if (b.errores.length) throw badRequest(`No se puede generar el fichero del 200: ${b.errores.join(' ')}`);
   return { nombre: `200_${ejercicio}.txt`, contenido: b.fichero, advertencias: b.advertencias };
 }

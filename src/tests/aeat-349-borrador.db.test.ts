@@ -19,6 +19,7 @@ import { incomeInvoicesService } from '../services/income-invoices.service';
 import { expenseInvoicesService } from '../services/expense-invoices.service';
 import { cambiarEstadoPeriodo } from '../services/periodos.service';
 import borradoresAeatRoutes from '../routes/borradores-aeat.routes';
+import declaracionesAeatRoutes from '../routes/declaraciones-aeat.routes';
 import { errorMiddleware } from '../middleware/error.middleware';
 import { controlCif } from '../utils/nif';
 import { DISENO_349 } from '../domain/aeat/disenos';
@@ -36,6 +37,7 @@ function app(companyId: string) {
     req.companyId = companyId;
     next();
   });
+  a.use('/companies/:companyId/tax-models', declaracionesAeatRoutes);
   a.use('/companies/:companyId/tax-models', borradoresAeatRoutes);
   a.use(errorMiddleware);
   return a;
@@ -151,6 +153,12 @@ describe('349 de 2027 desde las facturas', () => {
   });
 
   it('GET /349/fichero: el fichero oficial del 2T, en ISO-8859-1', async () => {
+    // Sin número todavía: el GET no lo pone (B5), lo pone la operación de escritura.
+    const sinNumero = await request(app(E)).get(`/companies/${E}/tax-models/349/fichero?ejercicio=2027&periodo=2T`);
+    expect(sinNumero.status).toBe(409);
+    const n = await request(app(E)).post(`/companies/${E}/tax-models/349/declaraciones/numero`).send({ ejercicio: 2027, periodo: '2T' });
+    expect(n.status).toBe(200);
+    expect(n.body.data.enCurso).toMatchObject({ tipo: 'N', numero: '3492027000001' });
     const r = await request(app(E)).get(`/companies/${E}/tax-models/349/fichero?ejercicio=2027&periodo=2T`).buffer(true).parse((res, cb) => {
       const trozos: Buffer[] = [];
       res.on('data', (c: Buffer) => trozos.push(c));
@@ -164,6 +172,7 @@ describe('349 de 2027 desde las facturas', () => {
     expect(posiciones(t1, 1, 17)).toBe(`13492027${NIF}`);
     expect(posiciones(t1, 18, 57)).toBe('EXPORTADORA TURIA SL'.padEnd(40));
     expect(posiciones(t1, 59, 107)).toBe('963123456' + 'GARCIA MUÑOZ ANA'.padEnd(40));
+    expect(posiciones(t1, 108, 120)).toBe('3492027000001');
     expect(posiciones(t1, 136, 185)).toBe('2T' + '000000003' + '000000000880000' + '000000002' + '000000000900000');
     expect(t2.map((l) => [posiciones(l, 76, 92), posiciones(l, 133, 133), posiciones(l, 134, 146)])).toEqual([
       ['IT' + '12345678901'.padEnd(15), 'A', '0000000300000'],
@@ -177,14 +186,12 @@ describe('349 de 2027 desde las facturas', () => {
     expect(posiciones(t2[2], 93, 132)).toBe('PEÑAS CONSULTORIA LDA'.padEnd(40));
   });
 
-  it('PUT /349/opciones: sustitutiva con la declaración anterior', async () => {
+  it('PUT /349/opciones ya no pone la sustitutiva: va por el historial de declaraciones', async () => {
     const r = await request(app(E)).put(`/companies/${E}/tax-models/349/opciones`).send({ ejercicio: 2027, periodo: '2T', tipoDeclaracion: 'S', declaracionAnterior: '3492027220001' });
-    expect(r.status).toBe(200);
-    const t1 = Object.fromEntries(r.body.data.pantalla.declarante.map((c: { id: string; valor: unknown }) => [c.id, c.valor]));
-    expect(t1).toMatchObject({ sustitutiva: 'S', complementaria: '', declaracionAnterior: '3492027220001', numeroDeclaracion: '3492027220002' });
-    const mal = await request(app(E)).put(`/companies/${E}/tax-models/349/opciones`).send({ ejercicio: 2027, periodo: '2T', declaracionAnterior: '1234' });
-    expect(mal.status).toBe(400);
-    await request(app(E)).put(`/companies/${E}/tax-models/349/opciones`).send({ ejercicio: 2027, periodo: '2T', tipoDeclaracion: null, declaracionAnterior: null });
+    expect(r.status).toBe(400);
+    expect(r.body.message).toMatch(/historial de declaraciones/);
+    const ok = await request(app(E)).put(`/companies/${E}/tax-models/349/opciones`).send({ ejercicio: 2027, periodo: '2T', cambioPeriodicidad: false });
+    expect(ok.status).toBe(200);
   });
 
   it('PUT /349/compras/:id/clave: un servicio marcado como bien pasa a A', async () => {
@@ -202,8 +209,10 @@ describe('349 de 2027 desde las facturas', () => {
       .post(`/companies/${E}/tax-models/349/presentado`)
       .send({ ejercicio: 2027, periodo: '1T', justificante: { numero: '3492027210001', fecha: '2027-04-18' } });
     expect(r.status).toBe(200);
-    expect(r.body.data.estado).toBe('presentado');
-    expect(r.body.data.avisos[0]).toMatch(/^Presentado \(justificante 3492027210001, 2027-04-18\)/);
+    expect(r.body.data.estado).toBe('presentada');
+    expect(r.body.data.declaraciones[0]).toMatchObject({ secuencia: 1, tipo: 'N', estado: 'presentada', justificante: '3492027210001', numero: '3492027000002' });
+    const b1 = await calcularBorrador349(E, 2027, '1T');
+    expect(b1.avisos[0]).toMatch(/^Presentado \(justificante 3492027210001, 2027-04-18\)/);
     // Rossi estaba en lo presentado: su anulacion deja la base rectificada a cero, sin error.
     const b = await calcularBorrador349(E, 2027, '2T');
     expect(b.errores).toEqual([]);
@@ -213,9 +222,29 @@ describe('349 de 2027 desde las facturas', () => {
     ]);
     expect(b.avisos.some((x) => /no consta como presentado/.test(x))).toBe(false);
     // Ya presentado: ni otra vez ni opciones.
-    expect((await request(app(E)).post(`/companies/${E}/tax-models/349/presentado`).send({ ejercicio: 2027, periodo: '1T', justificante: { numero: '3492027210001', fecha: '2027-04-18' } })).status).toBe(400);
-    expect((await request(app(E)).put(`/companies/${E}/tax-models/349/opciones`).send({ ejercicio: 2027, periodo: '1T', tipoDeclaracion: 'C' })).status).toBe(403);
+    expect((await request(app(E)).post(`/companies/${E}/tax-models/349/presentado`).send({ ejercicio: 2027, periodo: '1T', justificante: { numero: '3492027210001', fecha: '2027-04-18' } })).status).toBe(409);
+    expect((await request(app(E)).put(`/companies/${E}/tax-models/349/opciones`).send({ ejercicio: 2027, periodo: '1T', cambioPeriodicidad: true })).status).toBe(403);
     expect((await request(app(E)).post(`/companies/${E}/tax-models/349/presentado`).send({ ejercicio: 2027, periodo: '2T', justificante: { numero: '', fecha: '' } })).status).toBe(400);
+  });
+
+  it('complementaria del 1T: sin operadores nuevos no lleva nada; la sustitutiva los lleva todos y cita la anterior', async () => {
+    const c = await request(app(E)).post(`/companies/${E}/tax-models/349/declaraciones/rectificacion`).send({ ejercicio: 2027, periodo: '1T', tipo: 'C' });
+    expect(c.status).toBe(201);
+    expect(c.body.data.enCurso).toMatchObject({ tipo: 'C', justificanteAnterior: '3492027000002', registros: [] });
+    const b = await calcularBorrador349(E, 2027, '1T');
+    expect(b.errores).toContainEqual(expect.stringMatching(/complementaria no lleva ningún registro/));
+    // Se eligen los operadores a mano.
+    const sel = await request(app(E)).put(`/companies/${E}/tax-models/349/declaraciones/rectificacion/registros`).send({ ejercicio: 2027, periodo: '1T', registros: ['FR12345678901|E'] });
+    expect(sel.status).toBe(200);
+    expect(sel.body.data.registros.find((r: { clave: string }) => r.clave === 'FR12345678901|E')).toMatchObject({ presentado: true, incluido: true });
+    expect((await calcularBorrador349(E, 2027, '1T')).entrada.operadores.map((o) => o.nombre)).toEqual(['Société Lyon SARL']);
+    await request(app(E)).delete(`/companies/${E}/tax-models/349/declaraciones/rectificacion?ejercicio=2027&periodo=1T`);
+    const s = await request(app(E)).post(`/companies/${E}/tax-models/349/declaraciones/rectificacion`).send({ ejercicio: 2027, periodo: '1T', tipo: 'S' });
+    expect(s.body.data.enCurso).toMatchObject({ tipo: 'S', numero: '3492027000004' });
+    const sus = await calcularBorrador349(E, 2027, '1T');
+    expect(sus.entrada.operadores).toHaveLength(3);
+    expect(sus.entrada.declarante).toMatchObject({ tipoDeclaracion: 'S', declaracionAnterior: '3492027000002', numeroDeclaracion: '3492027000004' });
+    await request(app(E)).delete(`/companies/${E}/tax-models/349/declaraciones/rectificacion?ejercicio=2027&periodo=1T`);
   });
 
   it('sin NIF de la empresa no hay fichero: 400 con lo que falta', async () => {

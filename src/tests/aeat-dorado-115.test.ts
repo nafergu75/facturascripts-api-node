@@ -83,7 +83,7 @@ describe('115: alquileres del trimestre (caso real)', () => {
   });
 
   it('casillas editadas a mano: el fichero lleva lo que se ve en pantalla', () => {
-    const guardadas = { ...casillasAGuardadas('115', { '01': 2, '02': 5190, '03': 990, '04': 0, '05': 990 }), config_nif: EMPRESA, config_razon_social: 'Ifbiosoluciones SL', config_iban: 'ES9121000418450200051332', opcion_forma_pago: 'U' };
+    const guardadas = { ...casillasAGuardadas('115', { '01': 2, '02': 5190, '03': 990, '04': 0, '05': 990 }), config_nif: EMPRESA, config_razon_social: 'Ifbiosoluciones SL', config_iban: 'ES9121000418450200051332', opc_forma_pago: 'U' };
     const decl = construirDeclaracion('115', { nif: EMPRESA, denominacion: 'Ifbiosoluciones SL', ejercicio: 2027, periodo: '1T', casillas: casillasDeGuardadas('115', guardadas), opciones: opcionesDeGuardadas(guardadas) });
     comprobarRegistro(partes(ficheroDeclaracion(decl)).pag, PAG, { '03': cents(990, 17), '05': cents(990, 17), tipoDeclaracion: 'U', iban: 'ES9121000418450200051332'.padEnd(34, ' ') });
     const form = formularioDeclaracion(decl);

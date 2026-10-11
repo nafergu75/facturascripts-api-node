@@ -4,9 +4,12 @@
  *
  * Cada modelo tiene:
  *  - GET  /<modelo>            borrador: las casillas y registros que lleva el fichero, errores y avisos
- *  - GET  /<modelo>/fichero    fichero para importar en la sede (ISO-8859-1); 400 si falta algo
- *  - PUT  /<modelo>/opciones   complementaria, sustitutiva, domiciliacion, base a mano...
- *  - POST /<modelo>/presentado marcarlo como presentado: se guarda lo presentado (justificante)
+ *  - GET  /<modelo>/fichero    fichero para importar en la sede (ISO-8859-1); 400 si falta algo;
+ *                              409 si una informativa aun no tiene numero (lo pone POST .../declaraciones/numero)
+ *  - PUT  /<modelo>/opciones   cambio de periodicidad (349), domiciliacion y base a mano (202),
+ *                              forma de pago (111 y 115)
+ * Los GET calculan y no guardan nada (B6). Presentar, complementarias y
+ * sustitutivas: declaraciones-aeat.routes (comun a todos los modelos).
  * Y los datos que piden por factura:
  *  - /180/inmuebles (GET, POST, PUT /:id) inmuebles alquilados de cada proveedor
  *  - PUT /180/facturas/:invoiceId/inmueble   inmueble de una factura de alquiler
@@ -20,7 +23,8 @@ import { badRequest } from '../utils/http-errors';
 import { calcularBorrador349, ficheroModelo349 } from '../services/borradoresAeat/borrador349.service';
 import { calcularBorrador180, ficheroModelo180 } from '../services/borradoresAeat/borrador180.service';
 import { calcularBorrador202, ficheroModelo202, opcionesEntrada202 } from '../services/borradoresAeat/borrador202.service';
-import { ejercicioDe, enviarFicheroAeat, guardarOpciones, guardarPresentacion, justificanteDe } from '../services/borradoresAeat/comun';
+import { ejercicioDe, enviarFicheroAeat, guardarOpciones } from '../services/borradoresAeat/comun';
+import { ficheroRetenciones, periodoRetenciones, taxModelsService } from '../services/tax-models.service';
 import {
   actualizarInmueble,
   asignarClave349Compra,
@@ -36,22 +40,6 @@ const periodoDe = (raw: unknown) => {
   if (!p) throw badRequest('Indica el periodo.');
   return p;
 };
-
-/** Complementaria o sustitutiva con el numero de la anterior (349 y 180). */
-function opcionesDeclaracion(body: Record<string, unknown>, modelo: '349' | '180') {
-  const out: Record<string, string | boolean | null> = {};
-  if ('tipoDeclaracion' in body) {
-    const t = body.tipoDeclaracion;
-    if (t !== null && t !== '' && t !== 'C' && t !== 'S') throw badRequest('El tipo de declaración es C (complementaria), S (sustitutiva) o vacío.');
-    out.tipoDeclaracion = t || null;
-  }
-  if ('declaracionAnterior' in body) {
-    const n = String(body.declaracionAnterior ?? '').replace(/\D/g, '');
-    if (n && !new RegExp(`^${modelo}\\d{10}$`).test(n)) throw badRequest(`El número de la declaración anterior tiene 13 cifras y empieza por ${modelo}.`);
-    out.declaracionAnterior = n || null;
-  }
-  return out;
-}
 
 // --- 349 ---
 router.get(
@@ -73,7 +61,10 @@ router.put(
   asyncHandler(async (req, res) => {
     const ejercicio = ejercicioDe(req.body?.ejercicio);
     const periodo = periodoDe(req.body?.periodo);
-    const opciones: Record<string, string | boolean | null> = opcionesDeclaracion(req.body ?? {}, '349');
+    const opciones: Record<string, string | boolean | null> = {};
+    if ('tipoDeclaracion' in (req.body ?? {}) || 'declaracionAnterior' in (req.body ?? {})) {
+      throw badRequest('La complementaria o sustitutiva del 349 se prepara desde su historial de declaraciones, después de marcar la anterior como presentada.');
+    }
     if ('cambioPeriodicidad' in (req.body ?? {})) {
       if (typeof req.body.cambioPeriodicidad !== 'boolean') throw badRequest('"cambioPeriodicidad" tiene que ser sí o no.');
       opciones.cambioPeriodicidad = req.body.cambioPeriodicidad || null;
@@ -100,15 +91,6 @@ router.get(
   asyncHandler(async (req, res) => {
     const { nombre, contenido } = await ficheroModelo180(empresa(req), ejercicioDe(req.query.ejercicio));
     enviarFicheroAeat(res, nombre, contenido);
-  }),
-);
-router.put(
-  '/180/opciones',
-  authorize('impuestos:write'),
-  asyncHandler(async (req, res) => {
-    const ejercicio = ejercicioDe(req.body?.ejercicio);
-    await guardarOpciones(empresa(req), '180', ejercicio, '0A', opcionesDeclaracion(req.body ?? {}, '180'));
-    sendOk(res, await calcularBorrador180(empresa(req), ejercicio));
   }),
 );
 router.get(
@@ -160,29 +142,28 @@ router.put(
   }),
 );
 
-// --- Presentados: se guarda lo que se presento (base de rectificaciones y complementarias) ---
-router.post(
-  '/:codigo(349|180|202)/presentado',
+// --- 111 y 115: fichero (solo lee) ---
+router.get(
+  '/:codigo(111|115)/fichero',
+  authorize('impuestos:read'),
+  asyncHandler(async (req, res) => {
+    const { nombre, contenido } = await ficheroRetenciones(empresa(req), req.params.codigo as '111' | '115', ejercicioDe(req.query.ejercicio), String(req.query.periodo ?? ''));
+    enviarFicheroAeat(res, nombre, contenido);
+  }),
+);
+
+// --- 111 y 115: forma de pago (la complementaria la pone el historial de declaraciones) ---
+router.put(
+  '/:codigo(111|115)/opciones',
   authorize('impuestos:write'),
   asyncHandler(async (req, res) => {
-    const companyId = empresa(req);
-    const userId = (req.user as { userId?: string } | undefined)?.userId ?? 'SYSTEM';
+    const codigo = req.params.codigo as '111' | '115';
     const ejercicio = ejercicioDe(req.body?.ejercicio);
-    const justificante = justificanteDe(req.body ?? {});
-    const codigo = req.params.codigo;
-    const periodo = codigo === '180' ? '0A' : periodoDe(req.body?.periodo ?? (req.body?.trimestre ? `${req.body.trimestre}T` : ''));
-    const b = codigo === '349' ? await calcularBorrador349(companyId, ejercicio, periodo) : codigo === '180' ? await calcularBorrador180(companyId, ejercicio) : await calcularBorrador202(companyId, ejercicio, periodo);
-    if (b.errores.length) throw badRequest(`Corrige esto antes de marcarlo como presentado: ${b.errores.join(' ')}`, { errores: b.errores });
-    const resumen: Record<string, number> =
-      codigo === '349'
-        ? { num_operadores: (b as Awaited<ReturnType<typeof calcularBorrador349>>).entrada.operadores.length }
-        : codigo === '180'
-          ? { num_perceptores: (b as Awaited<ReturnType<typeof calcularBorrador180>>).entrada.perceptores.length }
-          : { '03': (b as Awaited<ReturnType<typeof calcularBorrador202>>).entrada.casillas['03'] ?? 0 };
-    // El periodo normalizado del borrador ('05', '2T'...); el 180 es anual.
-    const periodoGuardado = 'periodo' in b ? b.periodo : periodo;
-    await guardarPresentacion(companyId, userId, codigo, ejercicio, periodoGuardado, b.entrada, justificante, resumen);
-    sendOk(res, codigo === '349' ? await calcularBorrador349(companyId, ejercicio, periodo) : codigo === '180' ? await calcularBorrador180(companyId, ejercicio) : await calcularBorrador202(companyId, ejercicio, periodo));
+    const periodo = periodoRetenciones(String(req.body?.periodo ?? ''));
+    const forma = req.body?.formaPago === null || req.body?.formaPago === '' ? null : String(req.body?.formaPago ?? '').toUpperCase();
+    if (forma !== null && !['I', 'U', 'G'].includes(forma)) throw badRequest('La forma de pago es I (ingreso), U (domiciliación) o G (cuenta corriente tributaria).');
+    await guardarOpciones(empresa(req), codigo, ejercicio, periodo, { forma_pago: forma });
+    sendOk(res, codigo === '111' ? await taxModelsService.generarModelo111(empresa(req), ejercicio, periodo) : await taxModelsService.generarModelo115(empresa(req), ejercicio, periodo));
   }),
 );
 

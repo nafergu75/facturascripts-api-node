@@ -1,7 +1,12 @@
 /**
- * Fichero del 190 sobre BD real: el numero identificativo (108-120) lo pone la
- * app, se guarda en la fila del 190 (ModeloImpuesto, datos.numeracion190), no
- * se repite en la empresa y el ejercicio y sobrevive a los recalculos.
+ * Fichero del 190 sobre BD real con el historial de declaraciones (B3, B4 y B5):
+ *  - la persona de contacto y el telefono son los de Registro Mercantil > Datos
+ *    (sin ellos, 400 que dice donde rellenarlos);
+ *  - el numero identificativo (108-120) lo pone una operacion de escritura y el
+ *    fichero (GET) solo lo lee: el mismo en todas las descargas, nunca repetido;
+ *  - presentado, el fichero es el que se guardo;
+ *  - la sustitutiva lleva todos los perceptores y cita la anterior; la
+ *    complementaria, solo los elegidos (por defecto, los que no estaban).
  *
  * Necesita MySQL. Los NIF son inventados (con su letra de control).
  */
@@ -10,18 +15,18 @@ import { prisma } from '../config/database';
 import { letraNif } from '../utils/nif';
 import { contabilizarNominas, crearNomina } from '../services/nominas.service';
 import { crearEmpleado } from '../services/empleados.service';
-import { autorrellenarModelo } from '../services/impuestosModulo.service';
-import { taxModelsService } from '../services/tax-models.service';
+import { autorrellenarModelo, idVirtual } from '../services/impuestosModulo.service';
 import { ficheroModelo190 } from '../services/nominas/fichero190';
 import { calcularModelo190 } from '../services/nominas/fiscal';
 import { idRegistro190 } from '../services/nominas/modelo190';
-import { estadoNumeracion190, numeracionDeDatos } from '../services/nominas/numeracion190';
+import { asignarNumero, cancelarRectificacion, contextoDeclaracion, guardarRegistros } from '../services/declaracionesAeat/declaraciones.service';
+import { prepararRectificacionModelo, presentarDeclaracion } from '../services/declaracionesAeat/presentar';
 
 const COMPANY = `fich190-test-${Date.now()}`;
 const nif = (n: number) => `${String(n).padStart(8, '0')}${letraNif(n)}`;
-const contacto = { telefono: '600000000', contacto: 'Contacto Prueba' };
 const numero = (f: string) => f.slice(107, 120);
 const anterior = (f: string) => f.slice(122, 135);
+const registros = (f: string) => f.replace(/\r\n$/, '').split('\r\n');
 
 beforeAll(async () => {
   await prisma.company.create({ data: { id: COMPANY, name: 'Fichero 190 SL', fsBaseUrl: 'http://localhost:8080', fsApiKeyEnc: 'k' } });
@@ -33,64 +38,88 @@ beforeAll(async () => {
   await contabilizarNominas(COMPANY, 2025, 3);
 });
 
-describe('numero identificativo del 190', () => {
-  it('lo pone la app; la misma declaracion sin presentar repite numero y se guarda en la fila del 190', async () => {
-    const a = await ficheroModelo190(COMPANY, 2025, contacto);
-    expect(a.numeroDeclaracion).toBe('1902025000001');
-    expect(numero(a.contenido)).toBe('1902025000001');
-    expect(a.avisos).toEqual([expect.stringMatching(/^Número identificativo de esta declaración: 1902025000001/)]);
-    const b = await ficheroModelo190(COMPANY, 2025, contacto);
-    expect(b.numeroDeclaracion).toBe('1902025000001');
-    const fila = await prisma.modeloImpuesto.findUniqueOrThrow({ where: { companyId_codigo_ejercicio_periodo: { companyId: COMPANY, codigo: '190', ejercicio: 2025, periodo: '0A' } } });
-    expect(numeracionDeDatos(fila.datos).emitidos.map((e) => e.numero)).toEqual(['1902025000001']);
-  });
-
-  it('los recalculos del 190 (pantalla y modulo Impuestos) no borran los numeros usados', async () => {
-    const pantalla = await taxModelsService.generarModelo190(COMPANY, 2025);
-    await autorrellenarModelo(COMPANY, pantalla.id);
-    expect((await estadoNumeracion190(COMPANY, 2025)).ultimo?.numero).toBe('1902025000001');
-  });
-
-  it('presentado el 190, otra descarga lleva numero nuevo; la sustitutiva cita el anterior y nunca coincide con el', async () => {
-    await taxModelsService.marcarPresentado(COMPANY, '190', 2025, '0A', { numero: '1902025000001', fecha: '2026-01-25' }, 'u1');
-    expect(await estadoNumeracion190(COMPANY, 2025)).toMatchObject({ presentado: true, justificantePresentado: '1902025000001' });
-    const s = await ficheroModelo190(COMPANY, 2025, { ...contacto, tipoDeclaracion: 'S', numeroAnterior: '1902025000001' });
-    expect(s.numeroDeclaracion).toBe('1902025000002');
-    expect(anterior(s.contenido)).toBe('1902025000001');
-    // Si el justificante anterior es el que tocaba (el 3), se salta.
-    const s2 = await ficheroModelo190(COMPANY, 2025, { ...contacto, tipoDeclaracion: 'S', numeroAnterior: '1902025000003' });
-    expect(s2.numeroDeclaracion).toBe('1902025000004');
-    expect(new Set([s.numeroDeclaracion, s2.numeroDeclaracion, '1902025000001']).size).toBe(3);
-  });
-
-  it('sin el numero de la anterior, 400 y no se gasta numero', async () => {
-    await expect(ficheroModelo190(COMPANY, 2025, { ...contacto, tipoDeclaracion: 'S' })).rejects.toMatchObject({ statusCode: 400, message: expect.stringMatching(/número de la declaración anterior/) });
-    expect((await estadoNumeracion190(COMPANY, 2025)).ultimo?.numero).toBe('1902025000004');
+describe('persona de contacto (B3)', () => {
+  it('sin persona de contacto ni telefono en Registro Mercantil > Datos: 400 que dice donde rellenarlos', async () => {
+    await expect(ficheroModelo190(COMPANY, 2025)).rejects.toMatchObject({ statusCode: 400, message: expect.stringMatching(/persona de contacto.*Registro Mercantil > Datos/) });
+    await prisma.legalConfig.update({ where: { companyId: COMPANY }, data: { personaContacto: 'Contacto Prueba Ana', telefono: '+34 600 000 000' } });
   });
 });
 
-describe('complementaria (C): solo los perceptores omitidos que elige el usuario', () => {
-  it('sin seleccion, 400 que propone la sustitutiva', async () => {
-    await expect(ficheroModelo190(COMPANY, 2025, { ...contacto, tipoDeclaracion: 'C', numeroAnterior: '1902025000001' })).rejects.toMatchObject({
-      statusCode: 400,
-      message: expect.stringMatching(/solo van los perceptores que se quedaron fuera.*sustitutiva \(S\)/),
-    });
-    await expect(ficheroModelo190(COMPANY, 2025, { ...contacto, tipoDeclaracion: 'C', numeroAnterior: '1902025000001', perceptores: ['nomina:x:A:'] })).rejects.toMatchObject({ statusCode: 400 });
+describe('numero identificativo del 190 (B5)', () => {
+  it('el GET no pone numero: 409; lo pone la operacion de escritura y todas las descargas llevan el mismo', async () => {
+    await expect(ficheroModelo190(COMPANY, 2025)).rejects.toMatchObject({ statusCode: 409 });
+    expect(await prisma.declaracionAeat.count({ where: { companyId: COMPANY } })).toBe(0);
+    const d = await asignarNumero(COMPANY, 'u1', '190', 2025, '0A');
+    expect(d).toMatchObject({ numero: '1902025000001', tipo: 'N', estado: 'preparada' });
+    // Otra peticion de numero no gasta otro.
+    expect((await asignarNumero(COMPANY, 'u1', '190', 2025, '0A')).numero).toBe('1902025000001');
+    const a = await ficheroModelo190(COMPANY, 2025);
+    const b = await ficheroModelo190(COMPANY, 2025);
+    expect([a.numeroDeclaracion, numero(a.contenido), b.numeroDeclaracion]).toEqual(['1902025000001', '1902025000001', '1902025000001']);
+    expect(a.avisos).toEqual([expect.stringMatching(/^Número identificativo de esta declaración: 1902025000001/)]);
+    // Contacto de Registro Mercantil > Datos en el registro de declarante.
+    expect(registros(a.contenido)[0].slice(58, 107)).toBe('600000000' + 'CONTACTO PRUEBA ANA'.padEnd(40));
   });
 
-  it('con seleccion: solo esos registros y los totales del registro de declarante de ellos', async () => {
+  it('«Recalcular importes» no cambia el numero', async () => {
+    await autorrellenarModelo(COMPANY, idVirtual('190', 2025, '0A'));
+    expect((await contextoDeclaracion(COMPANY, '190', 2025, '0A')).numero).toBe('1902025000001');
+  });
+});
+
+describe('presentado, sustitutiva y complementaria (B4)', () => {
+  let presentado = '';
+
+  it('presentado: el fichero es el que se guardo, aunque cambien las nominas', async () => {
+    const h = await presentarDeclaracion(COMPANY, 'u1', '190', 2025, '0A', { numero: '1902025000001', fecha: '2026-01-25' });
+    expect(h.estado).toBe('presentada');
+    expect(h.declaraciones[0]).toMatchObject({ secuencia: 1, tipo: 'N', numero: '1902025000001', numeroRegistros: 2 });
+    presentado = (await ficheroModelo190(COMPANY, 2025)).contenido;
+    expect(registros(presentado)).toHaveLength(3);
+    // Una nomina nueva despues de presentar no cambia lo presentado.
+    const c = await crearEmpleado(COMPANY, { nif: nif(60000003), nombre: 'Carla', apellidos: 'Prueba Tres', provincia: '46', anioNacimiento: 1985, situacionFamiliar: 3 });
+    await crearNomina(COMPANY, { empleadoId: c.id, ejercicio: 2025, mes: 11, brutoDinerario: 1000, ssTrabajador: 63.5, irpf: 100, liquido: 836.5, ssEmpresa: 300 });
+    await contabilizarNominas(COMPANY, 2025, 11);
+    expect((await ficheroModelo190(COMPANY, 2025)).contenido).toBe(presentado);
+    // Otra vez presentado: 409 (hay que preparar una complementaria o sustitutiva).
+    await expect(presentarDeclaracion(COMPANY, 'u1', '190', 2025, '0A', { numero: '1902025000001', fecha: '2026-01-25' })).rejects.toMatchObject({ statusCode: 409 });
+  });
+
+  it('sustitutiva: numero nuevo, cita la anterior y lleva todos los perceptores; cancelada, su numero no se reutiliza', async () => {
+    const h = await prepararRectificacionModelo(COMPANY, 'u1', '190', 2025, '0A', { tipo: 'S' });
+    expect(h.enCurso).toMatchObject({ tipo: 'S', numero: '1902025000002', justificanteAnterior: '1902025000001' });
+    const s = await ficheroModelo190(COMPANY, 2025);
+    expect([numero(s.contenido), anterior(s.contenido), registros(s.contenido)[0].slice(121, 122)]).toEqual(['1902025000002', '1902025000001', 'S']);
+    expect(registros(s.contenido)).toHaveLength(4);
+    await cancelarRectificacion(COMPANY, 'u1', '190', 2025, '0A');
+    // Vuelve a lo presentado.
+    expect((await ficheroModelo190(COMPANY, 2025)).contenido).toBe(presentado);
+  });
+
+  it('complementaria: por defecto solo el perceptor que no estaba; se puede elegir otro conjunto', async () => {
+    const h = await prepararRectificacionModelo(COMPANY, 'u1', '190', 2025, '0A', { tipo: 'C' });
+    expect(h.enCurso).toMatchObject({ tipo: 'C', numero: '1902025000003', justificanteAnterior: '1902025000001' });
     const m = await calcularModelo190(COMPANY, 2025);
-    expect(m.perceptores).toHaveLength(2);
-    const blas = m.perceptores.find((p) => p.nif === nif(60000002))!;
-    const c = await ficheroModelo190(COMPANY, 2025, { ...contacto, tipoDeclaracion: 'C', numeroAnterior: '1902025000001', perceptores: [idRegistro190(blas)] });
-    const regs = c.contenido.replace(/\r\n$/, '').split('\r\n');
+    const carla = m.perceptores.find((p) => p.nif === nif(60000003))!;
+    expect(h.enCurso!.registros).toEqual([idRegistro190(carla)]);
+    const c = await ficheroModelo190(COMPANY, 2025);
+    const regs = registros(c.contenido);
     expect(regs).toHaveLength(2);
-    expect(regs[1].slice(17, 26)).toBe(nif(60000002));
+    expect(regs[1].slice(17, 26)).toBe(nif(60000003));
     expect(regs[0].slice(120, 121)).toBe('C');
     expect(regs[0].slice(135, 144)).toBe('000000001');
-    expect(regs[0].slice(160, 175)).toBe('000000000015000');
-    expect(c.registros).toBe(1);
-    expect(c.numeroDeclaracion).not.toBe('1902025000001');
+    expect(regs[0].slice(160, 175)).toBe('000000000010000');
+    // Sin ninguno elegido: 400 que explica la complementaria y propone la sustitutiva.
+    await guardarRegistros(COMPANY, '190', 2025, '0A', []);
+    await expect(ficheroModelo190(COMPANY, 2025)).rejects.toMatchObject({ statusCode: 400, message: expect.stringMatching(/solo van los perceptores que se quedaron fuera.*sustitutiva \(S\)/) });
+    await guardarRegistros(COMPANY, '190', 2025, '0A', [idRegistro190(carla)]);
+    // Se presenta la complementaria: secuencia 2, con su numero.
+    const p = await presentarDeclaracion(COMPANY, 'u1', '190', 2025, '0A', { numero: '1902025000003', fecha: '2026-02-10' });
+    expect(p.declaraciones.filter((d) => d.estado === 'presentada').map((d) => [d.secuencia, d.tipo, d.numero])).toEqual([
+      [1, 'N', '1902025000001'],
+      [3, 'C', '1902025000003'],
+    ]);
+    expect(p.declaraciones.find((d) => d.secuencia === 2)).toMatchObject({ estado: 'anulada', numero: '1902025000002' });
   });
 });
 

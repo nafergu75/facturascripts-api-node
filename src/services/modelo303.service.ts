@@ -77,6 +77,8 @@ export interface Borrador303 {
   indicadores: Record<number, string | null>;
   sinActividad: boolean;
   iban: string | null;
+  /** Autoliquidación rectificativa (B4): justificante de la anterior; null si es la normal. */
+  rectificativa: { justificanteAnterior: string } | null;
   /** Lo que impide generar el fichero (falta el NIF...). La pantalla lo enseña. */
   errores: string[];
   advertencias: string[];
@@ -188,7 +190,32 @@ export interface OpcionesMontar303 {
    * recalcula la página 3) y el tipo de declaración es el que se presentó.
    */
   comoSePresento?: boolean;
+  /**
+   * Autoliquidación rectificativa de la presentada (B4). Sede de la AEAT,
+   * «Modelo 303. Autoliquidación rectificativa» (manual práctico de IVA 2025):
+   * [70] es el [69] de la autoliquidación rectificada si es positivo; [109],
+   * la devolución acordada de la anterior; [71] = [69] - [70] + [109]; y
+   * [111], la parte del resultado negativo que corresponde a lo ingresado
+   * antes ([70]). El tipo de declaración va con [71] sin esa parte.
+   */
+  rectificativa?: { justificanteAnterior: string; resultadoAnterior: number; devolucionAcordada?: number } | null;
 }
+
+/** Casillas [70], [109], [71] y [111] de una rectificativa a partir de las de la página 3 calculadas. */
+export function aplicarRectificativa303(
+  oficiales: Readonly<Record<string, number>>,
+  r: { resultadoAnterior: number; devolucionAcordada?: number },
+): Record<string, number> {
+  const c = (n: number | undefined) => Math.round((Number(n) || 0) * 100);
+  const c70 = Math.max(0, c(r.resultadoAnterior));
+  const c109 = Math.max(0, c(r.devolucionAcordada));
+  const c71 = c(oficiales['69']) - c70 + c109;
+  const c111 = c71 < 0 ? Math.min(-c71, c70) : 0;
+  return { ...oficiales, '70': c70 / 100, '109': c109 / 100, '71': c71 / 100, '111': c111 / 100 };
+}
+
+/** Importe que decide el tipo de declaración: [71] sin la parte de [111] (nota del diseño, página 1). */
+const resultadoParaTipo = (c: Readonly<Record<string, number>> | undefined) => ((Math.round((c?.['71'] ?? 0) * 100) + Math.round((c?.['111'] ?? 0) * 100)) / 100);
 
 /**
  * Monta el borrador: casillas, tipo de declaración (el pedido, si vale para el
@@ -209,10 +236,13 @@ export function montarBorrador303(
   const periodo = datos.periodo;
   const guardadas = casillasOficiales303De(datos);
   const devolver = puedePedirDevolucion303(periodo.periodo, ctx.redeme);
-  const compensando = opciones.comoSePresento ? { ...datos, casillasOficiales: guardadas } : conResultadoPagina3_303(datos, guardadas, false);
-  const devolviendo = !opciones.comoSePresento && devolver ? conResultadoPagina3_303(datos, guardadas, true) : null;
-  const resultado71 = compensando.casillasOficiales?.['71'] ?? 0;
-  const tiposDeclaracion = tiposDeclaracion303(resultado71, periodo.periodo, ctx.redeme, devolviendo?.casillasOficiales?.['71']);
+  const rect = opciones.rectificativa ?? null;
+  const conRect = (d: DatosModelo303): DatosModelo303 =>
+    rect && !opciones.comoSePresento ? { ...d, casillasOficiales: aplicarRectificativa303(d.casillasOficiales ?? {}, rect) } : d;
+  const compensando = opciones.comoSePresento ? { ...datos, casillasOficiales: guardadas } : conRect(conResultadoPagina3_303(datos, guardadas, false));
+  const devolviendo = !opciones.comoSePresento && devolver ? conRect(conResultadoPagina3_303(datos, guardadas, true)) : null;
+  const resultado71 = resultadoParaTipo(compensando.casillasOficiales);
+  const tiposDeclaracion = tiposDeclaracion303(resultado71, periodo.periodo, ctx.redeme, devolviendo ? resultadoParaTipo(devolviendo.casillasOficiales) : undefined);
   let tipoDeclaracion = tiposDeclaracion[0];
   if (tipoPedido) {
     const pedido = tipoPedido.toUpperCase() as TipoDeclaracion303;
@@ -253,6 +283,17 @@ export function montarBorrador303(
   }
 
   const advertencias = [...(datos.advertencias ?? [])];
+  if (rect) {
+    if (!/^[0-9A-Z]{13}$/.test(rect.justificanteAnterior)) errores.push('La autoliquidación rectificativa necesita el número de justificante de la anterior (13 caracteres).');
+    if ((casillas['111'] ?? 0) > 0) {
+      advertencias.push(
+        `Rectificativa: ${(casillas['111'] ?? 0).toFixed(2).replace('.', ',')} € del resultado negativo corresponden a lo ingresado con la anterior ([111]). La AEAT los devuelve como ingreso indebido.`,
+      );
+    }
+    if (!rect.devolucionAcordada && Math.round(rect.resultadoAnterior * 100) <= 0) {
+      advertencias.push('Si la autoliquidación anterior salió a devolver y la AEAT ya acordó la devolución, ese importe va en [109]: indícalo al preparar la rectificativa.');
+    }
+  }
   if (razonSocial.length < razonCompleta.length) {
     advertencias.push(
       `La razón social tiene más de ${LONGITUD_RAZON_SOCIAL_303} caracteres y el fichero del 303 solo admite ${LONGITUD_RAZON_SOCIAL_303}: va como «${razonSocial}».`,
@@ -275,6 +316,7 @@ export function montarBorrador303(
     indicadores: indicadoresPagina1_303(periodo, ctx),
     sinActividad: datos.sinActividad === true,
     iban: tipoDeclaracion === 'U' || tipoDeclaracion === 'D' ? iban : null,
+    rectificativa: rect ? { justificanteAnterior: rect.justificanteAnterior } : null,
     errores,
     advertencias,
   };
@@ -295,7 +337,11 @@ export function pagina1Borrador303(b: Borrador303): string {
 
 /** Página 3 (información adicional y resultado). */
 export function pagina3Borrador303(b: Borrador303): string {
-  return componerPagina303('03', { casillas: b.casillas, campos: { 30: b.sinActividad ? 'X' : null } });
+  const r = b.rectificativa;
+  const campos: Record<number, ValorCampo303> = { 30: b.sinActividad ? 'X' : null };
+  // Rectificativa: marca, justificante de la anterior y motivo «Rectificaciones» (campos 31, 32 y 35).
+  if (r) Object.assign(campos, { 31: 'X', 32: r.justificanteAnterior, 35: 'X' });
+  return componerPagina303('03', { casillas: b.casillas, campos });
 }
 
 /** Página DID (domiciliación o devolución): IBAN español y marca SEPA "1". */

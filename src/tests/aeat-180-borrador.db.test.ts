@@ -17,6 +17,7 @@ import request from 'supertest';
 import { prisma } from '../config/database';
 import { expenseInvoicesService } from '../services/expense-invoices.service';
 import borradoresAeatRoutes from '../routes/borradores-aeat.routes';
+import declaracionesAeatRoutes from '../routes/declaraciones-aeat.routes';
 import { errorMiddleware } from '../middleware/error.middleware';
 import { controlCif, letraDni } from '../utils/nif';
 import { DISENO_180 } from '../domain/aeat/disenos';
@@ -38,6 +39,7 @@ function app(companyId: string) {
     req.companyId = companyId;
     next();
   });
+  a.use('/companies/:companyId/tax-models', declaracionesAeatRoutes);
   a.use('/companies/:companyId/tax-models', borradoresAeatRoutes);
   a.use(errorMiddleware);
   return a;
@@ -134,6 +136,9 @@ describe('180 de 2027 desde las facturas de alquiler', () => {
   });
 
   it('GET /180/fichero: el fichero oficial, y la pantalla enseña lo que lleva', async () => {
+    // El número lo pone la operación de escritura (B5); el GET solo lo lee.
+    expect((await request(app(E)).get(`/companies/${E}/tax-models/180/fichero?ejercicio=2027`)).status).toBe(409);
+    expect((await request(app(E)).post(`/companies/${E}/tax-models/180/declaraciones/numero`).send({ ejercicio: 2027 })).status).toBe(200);
     const r = await request(app(E)).get(`/companies/${E}/tax-models/180/fichero?ejercicio=2027`).buffer(true).parse((res, cb) => {
       const trozos: Buffer[] = [];
       res.on('data', (c: Buffer) => trozos.push(c));

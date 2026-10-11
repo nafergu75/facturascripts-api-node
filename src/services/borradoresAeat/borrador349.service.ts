@@ -31,7 +31,6 @@ import {
   erroresEntrada349,
   generarFichero349,
   leerFichero349,
-  numeroDeclaracion349,
   type Clave349,
   type Entrada349,
   type Operador349,
@@ -40,7 +39,19 @@ import {
 } from '../../aeat/modelo349/modelo349.dr';
 import { ErrorDisenoRegistro } from '../../aeat/common/disenoRegistro';
 import { separarNifIva } from '../../aeat/common/normalizacion';
-import { avisoPresentado, avisosContacto, declaranteEmpresa, filaModelo, opcionesDe, presentacionDe, type FilaCalendario } from './comun';
+import {
+  AVISO_SIN_NUMERO,
+  avisoPresentado,
+  declaracionInformativa,
+  declaranteEmpresa,
+  erroresContacto,
+  exigirNumero,
+  filaModelo,
+  opcionesDe,
+  presentacionDe,
+  registrosElegidos,
+  type FilaCalendario,
+} from './comun';
 
 /** Desde este dia las compras se clasifican por el pais ISO-2 y llevan A o I. */
 const INICIO_COMPRAS_ISO2 = '2027-01-01';
@@ -65,8 +76,13 @@ export interface Borrador349 {
   ejercicio: number;
   periodo: string;
   estado: string;
+  /** Tipo y anterior salen del historial de declaraciones (B4); cambioPeriodicidad, de las opciones. */
   opciones: { tipoDeclaracion: 'C' | 'S' | null; declaracionAnterior: string | null; cambioPeriodicidad: boolean };
+  /** Numero identificativo (B5); null hasta que se descarga o se presenta. */
+  numeroDeclaracion: string | null;
   entrada: Entrada349;
+  /** Todos los registros del periodo con su clave (para elegir los de una complementaria). */
+  registros: Array<{ clave: string; nombre: string; importe: number; tipo: 'operador' | 'rectificacion' }>;
   errores: string[];
   avisos: string[];
   /** Lo que lleva el fichero, leido con el diseno (null si no se puede componer). */
@@ -83,7 +99,7 @@ function periodoDeFecha(fecha: string, tipo: PeriodoFiscal['tipo']): { ejercicio
 }
 
 /** Clave de agrupacion de un operador: pais + numero del NIF-IVA (o el NIF limpio) y clave. */
-function claveOperador(m: { nifIva: string; pais?: string | null; clave: string }): string {
+export function claveOperador(m: { nifIva: string; pais?: string | null; clave: string }): string {
   const s = separarNifIva(m.nifIva, m.pais);
   return `${s ? s.pais + s.numero : String(m.nifIva ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '')}|${m.clave}`;
 }
@@ -206,12 +222,13 @@ export async function calcularBorrador349(companyId: string, ejercicio: number, 
   if (p.tipo === 'anual') throw badRequest('El 349 es trimestral o mensual: indica 1T-4T o un mes (01-12).');
   await exigirModelosAeat(companyId, p.fechaInicio, p.fechaFin);
 
-  const [movimientos, declarante, fila] = await Promise.all([
+  const [movimientos, declarante, fila, decl] = await Promise.all([
     movimientos349(companyId, p),
     declaranteEmpresa(companyId),
     filaModelo(companyId, '349', ejercicio, p.periodo),
+    declaracionInformativa(companyId, '349', ejercicio, p.periodo),
   ]);
-  const avisos = avisosContacto(declarante);
+  const avisos: string[] = [];
 
   // Rectificaciones: por operador, clave y periodo corregido.
   const grupos = new Map<string, { m: Movimiento349; c: number; ejercicio: number; periodo: string }>();
@@ -250,12 +267,15 @@ export async function calcularBorrador349(companyId: string, ejercicio: number, 
   }
 
   const opc = opcionesDe(fila);
-  const tipoDeclaracion: 'C' | 'S' | null = opc.tipoDeclaracion === 'C' || opc.tipoDeclaracion === 'S' ? opc.tipoDeclaracion : null;
-  const opciones = {
-    tipoDeclaracion,
-    declaracionAnterior: typeof opc.declaracionAnterior === 'string' ? opc.declaracionAnterior : null,
-    cambioPeriodicidad: opc.cambioPeriodicidad === true,
-  };
+  // Complementaria o sustitutiva y su anterior: las pone el historial de declaraciones (B4).
+  const tipoDeclaracion = decl.tipoDeclaracion;
+  const opciones = { tipoDeclaracion, declaracionAnterior: decl.declaracionAnterior, cambioPeriodicidad: opc.cambioPeriodicidad === true };
+  const operadores = agruparOperadores(movimientos);
+  const rects = rectificaciones.sort((a, b) => a.clave.localeCompare(b.clave) || a.nombre.localeCompare(b.nombre, 'es'));
+  const registros = [
+    ...operadores.map((o) => ({ clave: claveOperador(o), nombre: o.nombre, importe: o.base, tipo: 'operador' as const })),
+    ...rects.map((r) => ({ clave: claveRectificacion349(r), nombre: `${r.nombre} (rectifica ${r.periodo} de ${r.ejercicio})`, importe: r.baseRectificada, tipo: 'rectificacion' as const })),
+  ];
   const calculada: Entrada349 = {
     ejercicio,
     periodo: p.periodo,
@@ -265,18 +285,25 @@ export async function calcularBorrador349(companyId: string, ejercicio: number, 
       nombre: declarante.nombre,
       telefono: declarante.telefono,
       personaContacto: declarante.personaContacto,
-      numeroDeclaracion: numeroDeclaracion349(ejercicio, p.periodo, tipoDeclaracion ? 2 : 1),
+      numeroDeclaracion: decl.numeroDeclaracion,
       tipoDeclaracion,
       declaracionAnterior: opciones.declaracionAnterior,
     },
-    operadores: agruparOperadores(movimientos),
-    rectificaciones: rectificaciones.sort((a, b) => a.clave.localeCompare(b.clave) || a.nombre.localeCompare(b.nombre, 'es')),
+    // Complementaria: solo los registros elegidos (por defecto, los que no estaban en la presentada).
+    operadores: registrosElegidos(operadores, claveOperador, decl.seleccion),
+    rectificaciones: registrosElegidos(rects, claveRectificacion349, decl.seleccion),
   };
   // Presentada: se enseña (y se descarga) lo que se presento.
   const presentada = presentacionDe<Entrada349>(fila);
   const entrada = presentada?.entrada ?? calculada;
+  const errores = presentada ? [] : [...erroresContacto(declarante), ...erroresEntrada349(entrada)];
   if (presentada) avisos.unshift(avisoPresentado(presentada));
-  else if (!entrada.operadores.length && !entrada.rectificaciones!.length) avisos.push('No hay operaciones intracomunitarias en el periodo: no hace falta presentar el 349.');
+  else {
+    if (!entrada.declarante.numeroDeclaracion) avisos.push(AVISO_SIN_NUMERO);
+    if (decl.seleccion && !entrada.operadores.length && !entrada.rectificaciones!.length) {
+      errores.push('La complementaria no lleva ningún registro: marca los operadores que se quedaron fuera de la declaración anterior.');
+    } else if (!entrada.operadores.length && !entrada.rectificaciones!.length) avisos.push('No hay operaciones intracomunitarias en el periodo: no hace falta presentar el 349.');
+  }
 
   let pantalla: Pantalla349 | null = null;
   try {
@@ -284,12 +311,31 @@ export async function calcularBorrador349(companyId: string, ejercicio: number, 
   } catch (e) {
     if (!(e instanceof ErrorDisenoRegistro)) throw e;
   }
-  return { ejercicio, periodo: p.periodo, estado: fila?.estado ?? 'vigente', opciones, entrada, errores: erroresEntrada349(entrada), avisos, pantalla, movimientos };
+  return {
+    ejercicio,
+    periodo: p.periodo,
+    estado: fila?.estado ?? 'vigente',
+    opciones,
+    numeroDeclaracion: entrada.declarante.numeroDeclaracion ?? null,
+    entrada,
+    registros,
+    errores,
+    avisos,
+    pantalla,
+    movimientos,
+  };
+}
+
+/** Clave de una rectificacion: operador, clave y periodo que corrige. */
+export function claveRectificacion349(r: { nifIva: string; pais?: string | null; clave: string; ejercicio: number; periodo: string }): string {
+  return `R|${claveOperador(r)}|${r.ejercicio}|${r.periodo}`;
 }
 
 /** Fichero del 349 para importar en la sede. 400 con la lista de lo que falta. */
 export async function ficheroModelo349(companyId: string, ejercicio: number, periodo: string): Promise<{ nombre: string; contenido: string }> {
   const b = await calcularBorrador349(companyId, ejercicio, periodo);
+  if (b.errores.length) throw badRequest(`No se puede generar el fichero del 349: ${b.errores.join(' ')}`, { errores: b.errores });
+  exigirNumero(b.entrada.declarante.numeroDeclaracion, '349');
   try {
     return { nombre: `349_${ejercicio}_${b.periodo}.txt`, contenido: generarFichero349(b.entrada) };
   } catch (e) {

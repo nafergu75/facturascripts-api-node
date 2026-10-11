@@ -18,7 +18,6 @@ import {
   erroresEntrada180,
   generarFichero180,
   leerFichero180,
-  numeroDeclaracion180,
   type Entrada180,
 } from '../aeat/modelo180/modelo180.dr';
 
@@ -60,7 +59,7 @@ const entrada = (): Entrada180 => ({
     nombre: 'Biosoluciones del Turia, S.L.',
     telefono: '963123456',
     personaContacto: 'García Muñoz Ana',
-    numeroDeclaracion: numeroDeclaracion180(2027),
+    numeroDeclaracion: '1802027000001',
   },
   perceptores: [
     { nif: DNI, nombre: 'Martínez Peña José', provincia: '46', base: 12000, porcentaje: 19, retenciones: 2280, inmueble: valencia },

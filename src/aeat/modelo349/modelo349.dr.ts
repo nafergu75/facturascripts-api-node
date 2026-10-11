@@ -74,15 +74,6 @@ export class ErrorEntrada349 extends Error {
 
 const PERIODO_349 = /^(0[1-9]|1[0-2]|[1-4]T)$/;
 
-/**
- * Numero identificativo de la declaracion: 349 + ejercicio + periodo (mes, o
- * 21-24 para los trimestres) + secuencia de 4 cifras. Distinto por periodo, y
- * con la secuencia se distingue una complementaria o sustitutiva.
- */
-export function numeroDeclaracion349(ejercicio: number, periodo: string, secuencia = 1): string {
-  const p = /^[1-4]T$/.test(periodo) ? `2${periodo[0]}` : periodo === '0A' ? '00' : periodo.padStart(2, '0');
-  return `349${String(ejercicio).padStart(4, '0')}${p}${String(secuencia).padStart(4, '0')}`;
-}
 
 const etiqueta = (o: { nombre: string; nifIva: string }) => `${o.nombre || 'Operador sin nombre'} (${o.nifIva || 'sin NIF'})`;
 
@@ -145,7 +136,8 @@ export function generarFichero349(e: Entrada349, { comprobar = true }: { comprob
     nombreDeclarante: d.nombre,
     telefonoContacto: telefonoAeat(d.telefono) || undefined,
     nombreContacto: d.personaContacto ?? '',
-    numeroDeclaracion: d.numeroDeclaracion || numeroDeclaracion349(e.ejercicio, e.periodo),
+    // Lo pone el historial de declaraciones (B5); sin el, a ceros (solo para la pantalla).
+    numeroDeclaracion: d.numeroDeclaracion || '',
     complementaria: d.tipoDeclaracion === 'C' ? 'C' : '',
     sustitutiva: d.tipoDeclaracion === 'S' ? 'S' : '',
     declaracionAnterior: d.tipoDeclaracion ? d.declaracionAnterior ?? '' : undefined,

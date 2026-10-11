@@ -70,6 +70,8 @@ export interface Entrada390 {
   volumen: VolumenOperaciones390;
   /** Resultados del régimen general de cada 303 del año ([46] o equivalente). */
   resultadosTrimestrales: [number, number, number, number];
+  /** Declaración sustitutiva de la presentada (B4): justificante de la anterior. */
+  sustitutiva?: { justificanteAnterior: string } | null;
   /** Cuotas a compensar que vienen del ejercicio anterior. */
   compensarEjercicioAnterior?: number;
   /** Qué se pidió en el último periodo si salió negativo. */
@@ -186,6 +188,7 @@ export function construirModelo390(e: Entrada390): Declaracion390 {
   const errorNif = errorNifDeclarante(id.nif);
   if (errorNif) errores.push(errorNif);
   if (!textoAeat(id.razonSocial)) errores.push('Falta la razón social de la empresa. Rellénala en Registro Mercantil > Datos para la memoria.');
+  if (e.sustitutiva && !/^[0-9A-Z]{13}$/.test(e.sustitutiva.justificanteAnterior)) errores.push('La sustitutiva necesita el número de justificante de la declaración anterior (13 caracteres).');
   if (e.ejercicio !== DISENO_390.ejercicio) {
     advertencias.push(`Se usa el diseño ${DISENO_390.version} del ejercicio ${DISENO_390.ejercicio}: la AEAT aún no ha publicado el del ${e.ejercicio}. Revísalo cuando salga.`);
   }
@@ -203,6 +206,8 @@ export function construirModelo390(e: Entrada390): Declaracion390 {
     .crudo(130, '2') // concurso de acreedores: No
     .crudo(131, id.criterioCaja ? '1' : '2')
     .crudo(132, '2') // destinatario del criterio de caja: No (no se registra)
+    .crudo(133, e.sustitutiva ? '1' : '0') // sustitutiva
+    .texto(135, e.sustitutiva?.justificanteAnterior ?? '', false)
     .texto(148, id.actividad ?? '')
     .texto(188, id.claveActividad ?? '')
     .texto(191, id.epigrafeIae ?? '')

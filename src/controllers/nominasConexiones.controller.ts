@@ -32,8 +32,8 @@ import {
 } from '../services/nominas/segurosSociales';
 import { calcularModelo190, periodoFiscal, retencionesTrabajo } from '../services/nominas/fiscal';
 import { comprobarDiseno190, idRegistro190, informe190Excel, resumen190 } from '../services/nominas/modelo190';
-import { entradaFichero190, ficheroModelo190 } from '../services/nominas/fichero190';
-import { estadoNumeracion190 } from '../services/nominas/numeracion190';
+import { ficheroModelo190 } from '../services/nominas/fichero190';
+import { contextoDeclaracion } from '../services/declaracionesAeat/declaraciones.service';
 import {
   anularDocumentoNominas,
   descargarDocumentoNominas,
@@ -203,38 +203,45 @@ export const nominasConexionesController = {
         return null;
       }
     })();
+    // Declaracion en curso del historial (B4): numero, tipo y perceptores elegidos para una complementaria.
+    const decl = await contextoDeclaracion(req.companyId!, '190', ejercicio, '0A');
+    const seleccion = decl.registros ? new Set(decl.registros) : null;
+    const elegidos = seleccion ? m.perceptores.filter((p) => seleccion.has(idRegistro190(p))) : m.perceptores;
     sendOk(res, {
       ...m,
-      // Cada registro con su id: la pantalla elige con el cuales van en una complementaria.
-      perceptores: m.perceptores.map((p) => ({ ...p, id: idRegistro190(p) })),
+      // Cada registro con su id: con el se eligen los que van en una complementaria.
+      perceptores: m.perceptores.map((p) => ({
+        ...p,
+        id: idRegistro190(p),
+        presentado: decl.registrosPresentados.has(idRegistro190(p)),
+        incluido: seleccion ? seleccion.has(idRegistro190(p)) : true,
+      })),
       ficheroDisponible: diseno !== null,
       avisoDiseno: diseno?.aviso ?? null,
-      resumen: resumen190(m.perceptores),
-      // Ultimo numero identificativo generado y justificante con que se marco presentado.
-      numeracion: await estadoNumeracion190(req.companyId!, ejercicio),
+      // En una complementaria, el resumen 01-03 es el de los perceptores elegidos.
+      resumen: resumen190(elegidos),
+      declaracion: { tipo: decl.tipo, numero: decl.numero, justificanteAnterior: decl.justificanteAnterior, congelada: decl.congelada },
     });
   }),
 
   /**
    * GET /190/:ejercicio/fichero — TXT de la AEAT (ISO-8859-1). 409 si el ejercicio
-   * es anterior al primer diseño verificado; para uno posterior al ultimo publicado
-   * sale como borrador con ese diseño (cabecera X-Avisos-Aeat). 400 si faltan datos.
-   * telefono, contacto y email (persona con quien relacionarse; obligatorios
-   * telefono y contacto), tipoDeclaracion=C|S y numeroAnterior: en la query (GET)
-   * o, mejor, en el cuerpo (POST, la pantalla). El numero identificativo lo pone
-   * la app (cabecera X-Numero-Declaracion).
+   * es anterior al primer diseño verificado o si la declaracion aun no tiene
+   * numero identificativo (lo pone POST /tax-models/190/declaraciones/numero,
+   * con permiso de escritura: este GET no escribe). Para un ejercicio posterior
+   * al ultimo diseño publicado sale como borrador con ese diseño (cabecera
+   * X-Avisos-Aeat). 400 si faltan datos (tambien la persona de contacto y el
+   * telefono de Registro Mercantil > Datos).
    */
   fichero190: asyncHandler(async (req, res) => {
     const ejercicio = ejercicioDe(req);
     // Una empresa no establecida en Espana no presenta modelos de la AEAT (divisas-iva).
     if (!(await esEmpresaEspanolaFiscal(req.companyId!))) throw badRequest(MENSAJE_SIN_MODELOS);
-    // Por POST los datos de la persona de contacto van en el cuerpo (no quedan en los registros de las URL).
-    const q = ((req.method === 'POST' ? req.body : req.query) ?? {}) as Record<string, unknown>;
-    const f = await ficheroModelo190(req.companyId!, ejercicio, entradaFichero190(q));
+    const f = await ficheroModelo190(req.companyId!, ejercicio);
     // Cabecera ASCII (sin tildes): los avisos con texto completo estan en /190/:ejercicio/perceptores.
     if (f.avisos.length) res.setHeader('X-Avisos-Aeat', encodeURIComponent(f.avisos.join(' | ')));
     res.setHeader('X-Numero-Declaracion', f.numeroDeclaracion);
-    await auditar(req, 'EXPORTAR_MODELO_190', String(ejercicio), { registros: f.registros, numeroDeclaracion: f.numeroDeclaracion, tipo: q.tipoDeclaracion ?? null });
+    await auditar(req, 'EXPORTAR_MODELO_190', String(ejercicio), { registros: f.registros, numeroDeclaracion: f.numeroDeclaracion });
     descargar(res, `190_${ejercicio}.txt`, 'text/plain; charset=ISO-8859-1', Buffer.from(f.contenido, 'latin1'));
   }),
 

@@ -18,6 +18,7 @@ import express from 'express';
 import request from 'supertest';
 import { prisma } from '../config/database';
 import borradoresAeatRoutes from '../routes/borradores-aeat.routes';
+import declaracionesAeatRoutes from '../routes/declaraciones-aeat.routes';
 import { errorMiddleware } from '../middleware/error.middleware';
 import { controlCif } from '../utils/nif';
 import { DISENO_202 } from '../domain/aeat/disenos';
@@ -38,6 +39,7 @@ function app(companyId: string) {
     req.companyId = companyId;
     next();
   });
+  a.use('/companies/:companyId/tax-models', declaracionesAeatRoutes);
   a.use('/companies/:companyId/tax-models', borradoresAeatRoutes);
   a.use(errorMiddleware);
   return a;
@@ -98,16 +100,28 @@ describe('202 de 2027, modalidad A', () => {
     expect(trozos.pagina01.campos).toMatchObject({ modalidad: 'A', c03: 2222.22 });
   });
 
-  it('3P complementaria con domiciliación: [02], U, justificante e IBAN', async () => {
-    const r = await request(app(E))
-      .put(`/companies/${E}/tax-models/202/opciones`)
-      .send({ ejercicio: 2027, periodo: '3P', complementaria: true, resultadoAnterior: 1000, justificanteAnterior: '2020000000001', domiciliar: true });
+  it('3P complementaria con domiciliación: [02] con lo ya ingresado, U, justificante e IBAN', async () => {
+    // Se presenta el 3P con una base menor (1.000 € de [03]) ...
+    await request(app(E)).put(`/companies/${E}/tax-models/202/opciones`).send({ ejercicio: 2027, periodo: '3P', baseManual: 5555.56 });
+    const p = await request(app(E)).post(`/companies/${E}/tax-models/202/presentado`).send({ ejercicio: 2027, periodo: '3P', justificante: { numero: '2020000000001', fecha: '2027-12-18' } });
+    expect(p.status).toBe(200);
+    expect(p.body.data.declaraciones[0]).toMatchObject({ tipo: 'N', estado: 'presentada', resultado: 1000 });
+    // ... y la complementaria toma el justificante y lo ya ingresado de la presentada.
+    const c = await request(app(E)).post(`/companies/${E}/tax-models/202/declaraciones/rectificacion`).send({ ejercicio: 2027, periodo: '3P', tipo: 'C' });
+    expect(c.status).toBe(201);
+    expect(c.body.data.enCurso).toMatchObject({ tipo: 'C', justificanteAnterior: '2020000000001', resultadoAnterior: 1000 });
+    const r = await request(app(E)).put(`/companies/${E}/tax-models/202/opciones`).send({ ejercicio: 2027, periodo: '3P', baseManual: null, domiciliar: true });
     expect(r.status).toBe(200);
+    expect(r.body.data.opciones).toMatchObject({ complementaria: true, resultadoAnterior: 1000, justificanteAnterior: '2020000000001' });
     const { contenido } = await ficheroModelo202(E, 2027, '3P');
     expect(posiciones(contenido, P01 + 13, P01 + 13)).toBe('U');
     expect(posiciones(contenido, P01 + 166, P01 + 199)).toBe('00000000000100000' + '00000000000122222');
     expect(posiciones(contenido, P02 + 712, P02 + 759)).toBe('X2020000000001' + 'ES9121000418450200051332'.padEnd(34));
-    await request(app(E)).put(`/companies/${E}/tax-models/202/opciones`).send({ ejercicio: 2027, periodo: '3P', complementaria: false, resultadoAnterior: null, justificanteAnterior: null, domiciliar: false });
+    // La complementaria ya no se pone a mano en las opciones.
+    expect((await request(app(E)).put(`/companies/${E}/tax-models/202/opciones`).send({ ejercicio: 2027, periodo: '3P', complementaria: true })).status).toBe(400);
+    // Se cancela: vuelve a lo presentado.
+    expect((await request(app(E)).delete(`/companies/${E}/tax-models/202/declaraciones/rectificacion?ejercicio=2027&periodo=3P`)).status).toBe(200);
+    expect((await calcularBorrador202(E, 2027, '3P')).entrada.casillas['03']).toBe(1000);
   });
 
   it('opciones no válidas: 400', async () => {
@@ -119,8 +133,9 @@ describe('202 de 2027, modalidad A', () => {
   });
 
   it('el calendario de 2027 tiene los tres 202 con sus plazos, y el TXT del módulo es el mismo fichero', async () => {
-    const lista = await listarModelosImpuesto(E, 2027, 'activos');
-    const de202 = lista.filter((m) => m.codigo === '202').map((m) => [m.periodo, m.fechaVencimiento, m.periodoEtiqueta]);
+    // El 3P ya está presentado (test anterior): sale en «presentados».
+    const lista = [...(await listarModelosImpuesto(E, 2027, 'activos')), ...(await listarModelosImpuesto(E, 2027, 'presentados'))];
+    const de202 = lista.filter((m) => m.codigo === '202').sort((a, b) => a.periodo.localeCompare(b.periodo)).map((m) => [m.periodo, m.fechaVencimiento, m.periodoEtiqueta]);
     expect(de202).toEqual([
       ['1P', '2027-04-20', '2027-1P'],
       ['2P', '2027-10-20', '2027-2P'],
@@ -145,7 +160,8 @@ describe('202 presentado', () => {
     await request(app(E)).put(`/companies/${E}/tax-models/202/opciones`).send({ ejercicio: 2027, periodo: '1P', baseManual: 5000 });
     const r = await request(app(E)).post(`/companies/${E}/tax-models/202/presentado`).send({ ejercicio: 2027, periodo: '1P', justificante: { numero: '2021234567890', fecha: '2027-04-15' } });
     expect(r.status).toBe(200);
-    expect(r.body.data.entrada.casillas).toEqual({ '01': 5000, '02': 0, '03': 900 });
+    expect(r.body.data.declaraciones[0]).toMatchObject({ tipo: 'N', justificante: '2021234567890', resultado: 900 });
+    expect((await calcularBorrador202(E, 2027, '1P')).entrada.casillas).toEqual({ '01': 5000, '02': 0, '03': 900 });
     await prisma.modeloImpuesto.create({ data: { companyId: E, codigo: '200', ejercicio: 2025, periodo: '0A', estado: 'presentado', datos: { cuotaLiquida: 99999 } as never } });
     const b = await calcularBorrador202(E, 2027, '1P');
     expect(b.entrada.casillas['03']).toBe(900);

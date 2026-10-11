@@ -37,15 +37,17 @@ import {
 } from '../../aeat/modelo202/modelo202.dr';
 import { ErrorDisenoRegistro } from '../../aeat/common/disenoRegistro';
 import { avisoPresentado, declaranteEmpresa, filaModelo, opcionesDe, presentacionDe } from './comun';
+import { contextoDeclaracion, type ContextoDeclaracion } from '../declaracionesAeat/declaraciones.service';
 
 export interface Opciones202 {
   modalidad: 'A' | 'B';
   /** [01] a mano: la cuota del 200 que sirve de base (si el 200 no esta en la app). */
   baseManual: number | null;
   domiciliar: boolean;
+  /** Complementaria en preparación o presentada: la pone el historial de declaraciones (B4). */
   complementaria: boolean;
   justificanteAnterior: string | null;
-  /** [02] lo ingresado en la declaracion anterior (complementaria). */
+  /** [02] lo ya ingresado con las declaraciones presentadas del periodo (complementaria). */
   resultadoAnterior: number | null;
 }
 
@@ -94,15 +96,16 @@ async function cifraNegocios(companyId: string, ejercicio: number): Promise<numb
   return typeof incn === 'number' ? incn : null;
 }
 
-function opciones202(o: Record<string, unknown>): Opciones202 {
+function opciones202(o: Record<string, unknown>, decl: ContextoDeclaracion): Opciones202 {
   const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+  const complementaria = decl.tipo === 'C';
   return {
     modalidad: o.modalidad === 'B' ? 'B' : 'A',
     baseManual: num(o.baseManual),
     domiciliar: o.domiciliar === true,
-    complementaria: o.complementaria === true,
-    justificanteAnterior: typeof o.justificanteAnterior === 'string' ? o.justificanteAnterior : null,
-    resultadoAnterior: num(o.resultadoAnterior),
+    complementaria,
+    justificanteAnterior: complementaria ? decl.justificanteAnterior : null,
+    resultadoAnterior: complementaria ? decl.resultadoAnterior : null,
   };
 }
 
@@ -112,12 +115,13 @@ export async function calcularBorrador202(companyId: string, ejercicio: number, 
   if (!PERIODOS_202.includes(periodo)) throw badRequest('El 202 tiene tres periodos: 1P (abril), 2P (octubre) y 3P (diciembre).');
   if (!(await esEmpresaEspanolaFiscal(companyId))) throw badRequest(MENSAJE_SIN_MODELOS);
 
-  const [declarante, fila, legal] = await Promise.all([
+  const [declarante, fila, legal, decl] = await Promise.all([
     declaranteEmpresa(companyId),
     filaModelo(companyId, '202', ejercicio, periodo),
     prisma.legalConfig.findUnique({ where: { companyId }, select: { cnae: true, ejercicioInicio: true, tipoSociedad: true } }),
+    contextoDeclaracion(companyId, '202', ejercicio, periodo),
   ]);
-  const opciones = opciones202(opcionesDe(fila));
+  const opciones = opciones202(opcionesDe(fila), decl);
   const avisos: string[] = [];
   const errores: string[] = [];
 
@@ -220,22 +224,20 @@ export function opcionesEntrada202(body: Record<string, unknown>): Partial<Recor
     if (body.modalidad !== 'A' && body.modalidad !== 'B') throw badRequest('La modalidad es A (cuota) o B (base).');
     out.modalidad = body.modalidad;
   }
-  for (const k of ['baseManual', 'resultadoAnterior'] as const) {
+  for (const k of ['baseManual'] as const) {
     if (!(k in body)) continue;
     const v = body[k];
     if (v === null || v === '') out[k] = null;
     else if (typeof v === 'number' && Number.isFinite(v) && v >= 0) out[k] = Math.round(v * 100) / 100;
-    else throw badRequest(k === 'baseManual' ? 'La base tiene que ser un importe positivo.' : 'El resultado anterior tiene que ser un importe positivo.');
+    else throw badRequest('La base tiene que ser un importe positivo.');
   }
-  for (const k of ['domiciliar', 'complementaria'] as const) {
+  for (const k of ['domiciliar'] as const) {
     if (!(k in body)) continue;
     if (typeof body[k] !== 'boolean') throw badRequest(`"${k}" tiene que ser sí o no.`);
     out[k] = body[k] as boolean;
   }
-  if ('justificanteAnterior' in body) {
-    const v = String(body.justificanteAnterior ?? '').trim().toUpperCase();
-    if (v && !/^[0-9A-Z]{13}$/.test(v)) throw badRequest('El justificante de la declaración anterior tiene 13 caracteres.');
-    out.justificanteAnterior = v || null;
+  if ('complementaria' in body || 'justificanteAnterior' in body || 'resultadoAnterior' in body) {
+    throw badRequest('La complementaria del 202 se prepara desde su historial de declaraciones (botón «Preparar complementaria»), después de marcar la anterior como presentada.');
   }
   return out;
 }

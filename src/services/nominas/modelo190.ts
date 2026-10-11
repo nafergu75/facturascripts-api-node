@@ -16,7 +16,8 @@ import * as XLSX from 'xlsx';
 import { badRequest, conflict } from '../../utils/http-errors';
 import { aCentimos } from '../../utils/money';
 import { componerRegistroDr, DR190, registroDr, type ValoresDr } from '../aeatRetenciones/diseno';
-import { errorNifDeclarante, motivoNifNoValido, textoAeat } from '../../aeat/common/normalizacion';
+import { errorNifDeclarante, motivoNifNoValido, telefonoAeat, textoAeat } from '../../aeat/common/normalizacion';
+import { erroresContacto } from '../borradoresAeat/comun';
 import type { Modelo190, Perceptor190 } from './fiscal';
 
 /** Ejercicios cuyo diseño de registro se ha comprobado con el publicado por la AEAT. */
@@ -67,7 +68,7 @@ export interface Declarante190 {
   email?: string | null;
   /**
    * Numero identificativo de la declaracion (13 digitos, empieza por 190). Lo
-   * genera la app (services/nominas/numeracion190.ts): sin el no se compone el fichero.
+   * pone el historial de declaraciones (declaracionesAeat): sin el no se compone el fichero.
    */
   numeroDeclaracion?: string | null;
   /** 'C' complementaria o 'S' sustitutiva (segunda presentacion del mismo ejercicio). */
@@ -176,8 +177,8 @@ export function erroresFichero190(declarante: Declarante190, perceptores: Percep
   const errorNif = errorNifDeclarante(declarante.nif);
   if (errorNif) errores.push(errorNif);
   if (!textoAeat(declarante.nombre)) errores.push('Falta la razón social de la empresa.');
-  if (!/^\d{9}$/.test(String(declarante.telefono ?? '').replace(/\D/g, ''))) errores.push('Falta el teléfono (9 cifras) de la persona con quien relacionarse.');
-  if (!textoAeat(declarante.contacto)) errores.push('Faltan los apellidos y el nombre de la persona con quien relacionarse.');
+  // Persona de contacto y teléfono (B3): los de Registro Mercantil > Datos, con el mismo aviso que el resto de modelos.
+  errores.push(...erroresContacto({ personaContacto: declarante.contacto, telefono: declarante.telefono }));
   if (declarante.numeroDeclaracion && !/^190\d{10}$/.test(declarante.numeroDeclaracion)) {
     errores.push('El número identificativo de la declaración tiene 13 dígitos y empieza por 190.');
   }
@@ -254,7 +255,7 @@ export function avisosFichero190(ejercicio: number, declarante: Declarante190): 
 export function generarFicheroModelo190(ejercicio: number, declarante: Declarante190, perceptores: Perceptor190[]): string {
   comprobarDiseno190(ejercicio);
   if (!/^190\d{10}$/.test(String(declarante.numeroDeclaracion ?? ''))) {
-    // Lo asigna asignarNumero190 antes de componer el fichero: nunca uno fijo.
+    // Lo pone el historial de declaraciones (B5) antes de componer el fichero: nunca uno fijo.
     throw new Error('Falta el número identificativo de la declaración del 190');
   }
   const errores = erroresFichero190(declarante, perceptores);
@@ -266,7 +267,7 @@ export function generarFicheroModelo190(ejercicio: number, declarante: Declarant
     ejercicio,
     nifDeclarante: declarante.nif,
     nombreDeclarante: declarante.nombre,
-    telefono: String(declarante.telefono ?? '').replace(/\D/g, ''),
+    telefono: telefonoAeat(declarante.telefono),
     contacto: declarante.contacto,
     numeroDeclaracion: declarante.numeroDeclaracion,
     complementaria: declarante.tipoDeclaracion === 'C' ? 'C' : '',

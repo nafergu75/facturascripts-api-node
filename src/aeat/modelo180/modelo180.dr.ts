@@ -81,10 +81,6 @@ export class ErrorEntrada180 extends Error {
   }
 }
 
-/** 180 + ejercicio + secuencia de 6 cifras. */
-export function numeroDeclaracion180(ejercicio: number, secuencia = 1): string {
-  return `180${String(ejercicio).padStart(4, '0')}${String(secuencia).padStart(6, '0')}`;
-}
 
 const PROVINCIA = /^(0[1-9]|[1-4]\d|5[0-3])$/;
 const quien = (p: Perceptor180) => `${p.nombre || 'Arrendador sin nombre'} (${p.nif || 'sin NIF'})`;
@@ -143,7 +139,8 @@ export function generarFichero180(e: Entrada180, { comprobar = true }: { comprob
     nombreDeclarante: d.nombre,
     telefonoContacto: telefonoAeat(d.telefono) || undefined,
     nombreContacto: d.personaContacto ?? '',
-    numeroDeclaracion: d.numeroDeclaracion || numeroDeclaracion180(e.ejercicio),
+    // Lo pone el historial de declaraciones (B5); sin el, a ceros (solo para la pantalla).
+    numeroDeclaracion: d.numeroDeclaracion || '',
     complementaria: d.tipoDeclaracion === 'C' ? 'C' : '',
     sustitutiva: d.tipoDeclaracion === 'S' ? 'S' : '',
     declaracionAnterior: d.tipoDeclaracion ? d.declaracionAnterior ?? '' : undefined,

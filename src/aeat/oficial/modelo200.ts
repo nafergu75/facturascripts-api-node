@@ -70,6 +70,8 @@ const NO_APLICA = 'No aplica a una S.L. o S.A. pyme sin regímenes especiales (d
 
 export interface Entrada200 {
   ejercicio: number;
+  /** Autoliquidación rectificativa de la presentada (B4): justificante de la anterior (13 cifras). */
+  rectificativa?: { justificanteAnterior: string } | null;
   identificacion: {
     nif: string;
     razonSocial: string;
@@ -275,6 +277,12 @@ export function construirModelo200(e: Entrada200): Declaracion200 {
   const anoNatural = id.fechaInicio.endsWith('-01-01') && id.fechaFin.endsWith('-12-31') && ini.a === fin.a;
   const incn = e.incnAnterior ?? null;
   const p1 = pag('01000');
+  if (e.rectificativa) {
+    // Marca de rectificativa, justificante de la anterior y motivo «Rectificaciones».
+    if (!/^\d{13}$/.test(e.rectificativa.justificanteAnterior)) errores.push('La autoliquidación rectificativa del 200 necesita el número de justificante de la anterior (13 cifras).');
+    else p1.crudo(149, '1').crudo(150, e.rectificativa.justificanteAnterior).crudo(163, '1');
+    advertencias.push('Autoliquidación rectificativa: completa en Sociedades WEB el resultado de la autoliquidación anterior y lo que corresponda a la rectificación.');
+  }
   p1.crudo(13, tipoDeclaracion)
     .texto(14, nif, false)
     .texto(23, id.razonSocial)

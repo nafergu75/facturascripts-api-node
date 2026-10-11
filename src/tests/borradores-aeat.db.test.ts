@@ -19,6 +19,7 @@ import express from 'express';
 import request from 'supertest';
 import { prisma } from '../config/database';
 import impuestosModuloRoutes from '../routes/impuestosModulo.routes';
+import declaracionesAeatRoutes from '../routes/declaraciones-aeat.routes';
 import { errorMiddleware } from '../middleware/error.middleware';
 import { generarTxtModelo } from '../services/impuestosModulo.service';
 import { DISENO_347 } from '../aeat/oficial/modelo347';
@@ -37,6 +38,7 @@ app.use('/companies/:companyId', (req, _res, next) => {
   next();
 });
 app.use('/companies/:companyId/impuestos', impuestosModuloRoutes);
+app.use('/companies/:companyId/tax-models', declaracionesAeatRoutes);
 app.use(errorMiddleware);
 
 const get = (url: string, empresa = ES) => request(app).get(`/companies/${empresa}/impuestos${url}`);
@@ -80,7 +82,7 @@ beforeAll(async () => {
   ] as const) {
     await prisma.company.create({ data: { id, name: `Borradores ${id}`, fsBaseUrl: 'http://localhost:8080', fsApiKeyEnc: 'k' } });
     await prisma.legalConfig.create({
-      data: { companyId: id, denominacion: nif ? 'Borradores Turia, S.L.' : '', nif, pais, telefono: '961 23 45 67', cnae: '4646' },
+      data: { companyId: id, denominacion: nif ? 'Borradores Turia, S.L.' : '', nif, pais, telefono: '961 23 45 67', cnae: '4646', personaContacto: nif ? 'García Pérez Ana' : null },
     });
   }
   const cli = await prisma.customer.create({ data: { companyId: ES, nombreFiscal: 'Distribuciones Peña, S.L.', nifCif: 'B12345674', pais: 'ES', cp: '46001' } });
@@ -103,7 +105,13 @@ describe('borrador del 347', () => {
   });
 
   it('fichero: el mismo que el del módulo de impuestos y con el diseño oficial', async () => {
-    const r = await descargar('/borradores/347/fichero?ejercicio=2025&contacto=Garcia%20Perez%20Ana');
+    // Sin número no hay fichero (B5): lo pone la operación de escritura y el GET lo lee.
+    expect((await get('/borradores/347/fichero?ejercicio=2025')).status).toBe(409);
+    const n = await request(app).post(`/companies/${ES}/tax-models/347/declaraciones/numero`).send({ ejercicio: 2025 });
+    expect(n.status).toBe(200);
+    expect(n.body.data.enCurso.numero).toBe('3472025000001');
+    // La persona de contacto es la de Registro Mercantil > Datos (B3): la de la URL ya no cuenta.
+    const r = await descargar('/borradores/347/fichero?ejercicio=2025&contacto=Otra%20Persona');
     expect(r.status).toBe(200);
     expect(r.headers['content-disposition']).toContain('347_2025.txt');
     const lineas = latin1(r).split('\r\n').filter(Boolean);
@@ -111,6 +119,9 @@ describe('borrador del 347', () => {
     expect(validarRegistro({ hoja: '1', longitud: 500, campos: DISENO_347.registros['1'].campos }, lineas[0])).toEqual([]);
     expect(validarRegistro({ hoja: '2D', longitud: 500, campos: DISENO_347.registros['2D'].campos }, lineas[1])).toEqual([]);
     expect(lineas[0].slice(67, 107).trim()).toBe('GARCIA PEREZ ANA');
+    expect(lineas[0].slice(107, 120)).toBe('3472025000001');
+    // Estable: otra descarga lleva el mismo número.
+    expect(latin1(await descargar('/borradores/347/fichero?ejercicio=2025')).slice(107, 120)).toBe('3472025000001');
     expect(lineas[1].slice(35, 75).trim()).toBe('DISTRIBUCIONES PEÑA SL');
 
     // El TXT del módulo de impuestos ya no lee el JSON guardado: aunque la fila

@@ -105,11 +105,17 @@ export const MODELOS_RETENCIONES: Record<ModeloRetenciones, ConfigModelo> = {
   },
 };
 
-/** Claves de opciones del borrador guardadas con las casillas (no son importes). */
-export const OPCION_FORMA_PAGO = 'opcion_forma_pago';
-export const OPCION_COMPLEMENTARIA = 'opcion_complementaria';
-export const OPCION_JUSTIFICANTE = 'opcion_justificante_anterior';
-export const esOpcion = (clave: string) => clave.startsWith('opcion_');
+/**
+ * Opciones del borrador guardadas con las casillas (no son importes). Todas
+ * las opciones de los modelos llevan el prefijo opc_ (borradoresAeat/comun).
+ * La forma de pago la elige la persona; la complementaria y el justificante
+ * anterior los pone el historial de declaraciones (B4) y se guardan con la
+ * instantánea de lo presentado.
+ */
+export const OPCION_FORMA_PAGO = 'opc_forma_pago';
+export const OPCION_COMPLEMENTARIA = 'opc_complementaria';
+export const OPCION_JUSTIFICANTE = 'opc_justificante_anterior';
+export const esOpcion = (clave: string) => clave.startsWith('opc_');
 
 const cent = (v: number) => Math.round((Number(v) || 0) * 100);
 
@@ -383,7 +389,7 @@ export function formularioDeclaracion(d: DeclaracionRetenciones): FormularioRete
 
 /**
  * Declaracion a partir de lo guardado en ModeloImpuesto (casillas con claves
- * largas, datos de la empresa config_* y opciones opcion_*): es la fuente de
+ * largas, datos de la empresa config_* y opciones opc_*): es la fuente de
  * la pantalla y del fichero. Si las casillas guardadas son de un formato
  * anterior, se usan las calculadas (`calculadas`).
  */
@@ -393,16 +399,35 @@ export function declaracionDeGuardadas(
   ejercicio: number,
   periodo: string,
   calculadas?: Casillas,
+  complementaria?: ComplementariaRetenciones | null,
 ): DeclaracionRetenciones {
   const g = guardadas ?? {};
+  const casillas = tieneCasillasGuardadas(modelo, g) ? casillasDeGuardadas(modelo, g) : (calculadas ?? casillasVacias(modelo));
+  const opciones = opcionesDeGuardadas(g);
   return construirDeclaracion(modelo, {
     nif: g.config_nif,
     denominacion: g.config_razon_social,
     ejercicio,
     periodo,
-    casillas: tieneCasillasGuardadas(modelo, g) ? casillasDeGuardadas(modelo, g) : (calculadas ?? casillasVacias(modelo)),
-    opciones: opcionesDeGuardadas(g),
+    casillas: complementaria ? conComplementaria(modelo, casillas, complementaria.resultadoAnterior) : casillas,
+    opciones: complementaria ? { ...opciones, complementaria: true, justificanteAnterior: complementaria.justificanteAnterior } : opciones,
   });
+}
+
+/** Complementaria en preparación (B4): justificante de la anterior y lo ya ingresado. */
+export interface ComplementariaRetenciones {
+  justificanteAnterior: string;
+  resultadoAnterior: number;
+}
+
+/**
+ * Casillas de una complementaria: [29] del 111 ([04] del 115) con lo ya
+ * ingresado en las presentadas y el resultado [30] ([05]) = base - anteriores.
+ */
+export function conComplementaria(modelo: ModeloRetenciones, casillas: Casillas, resultadoAnterior: number): Casillas {
+  const m = MODELOS_RETENCIONES[modelo];
+  const anteriores = cent(resultadoAnterior);
+  return { ...casillas, [m.anteriores]: anteriores / 100, [m.resultado]: (cent(casillas[m.base]) - anteriores) / 100 };
 }
 
 /** Casillas del 111 a partir del calculo (DatosModelo111). */

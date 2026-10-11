@@ -27,7 +27,6 @@ import {
   erroresEntrada180,
   generarFichero180,
   leerFichero180,
-  numeroDeclaracion180,
   type Cuadre180,
   type Entrada180,
   type Inmueble180,
@@ -35,7 +34,17 @@ import {
   type Perceptor180,
 } from '../../aeat/modelo180/modelo180.dr';
 import { ErrorDisenoRegistro } from '../../aeat/common/disenoRegistro';
-import { avisoPresentado, avisosContacto, declaranteEmpresa, filaModelo, opcionesDe, presentacionDe } from './comun';
+import {
+  AVISO_SIN_NUMERO,
+  avisoPresentado,
+  declaracionInformativa,
+  declaranteEmpresa,
+  erroresContacto,
+  exigirNumero,
+  filaModelo,
+  presentacionDe,
+  registrosElegidos,
+} from './comun';
 
 type InmuebleBd = NonNullable<Awaited<ReturnType<typeof prisma.inmuebleArrendado.findFirst>>>;
 
@@ -53,8 +62,13 @@ export interface FacturaAlquiler180 {
 export interface Borrador180 {
   ejercicio: number;
   estado: string;
+  /** Tipo y anterior: los pone el historial de declaraciones (B4). */
   opciones: { tipoDeclaracion: 'C' | 'S' | null; declaracionAnterior: string | null };
+  /** Numero identificativo (B5); null hasta que se descarga o se presenta. */
+  numeroDeclaracion: string | null;
   entrada: Entrada180;
+  /** Todos los registros del ejercicio con su clave (para elegir los de una complementaria). */
+  registros: Array<{ clave: string; nombre: string; importe: number }>;
   errores: string[];
   avisos: string[];
   pantalla: Pantalla180 | null;
@@ -122,9 +136,14 @@ export async function calcularBorrador180(companyId: string, ejercicio: number):
   });
   const inmuebles = await prisma.inmuebleArrendado.findMany({ where: { companyId } });
   const declaradaEn = await retencionDeclaradaEn(companyId, '115', facturasBd);
-  const [declarante, fila, periodos] = await Promise.all([declaranteEmpresa(companyId), filaModelo(companyId, '180', ejercicio, '0A'), periodos115(companyId, ejercicio)]);
-  const avisos = avisosContacto(declarante);
-  const errores: string[] = [];
+  const [declarante, fila, periodos, decl] = await Promise.all([
+    declaranteEmpresa(companyId),
+    filaModelo(companyId, '180', ejercicio, '0A'),
+    periodos115(companyId, ejercicio),
+    declaracionInformativa(companyId, '180', ejercicio, '0A'),
+  ]);
+  const avisos: string[] = [];
+  const errores: string[] = erroresContacto(declarante);
 
   const grupos = new Map<string, Perceptor180 & { cb: number; cr: number; ultima: string }>();
   const facturas: FacturaAlquiler180[] = [];
@@ -184,9 +203,14 @@ export async function calcularBorrador180(companyId: string, ejercicio: number):
     );
   }
 
-  const opc = opcionesDe(fila);
-  const tipoDeclaracion: 'C' | 'S' | null = opc.tipoDeclaracion === 'C' || opc.tipoDeclaracion === 'S' ? opc.tipoDeclaracion : null;
-  const opciones = { tipoDeclaracion, declaracionAnterior: typeof opc.declaracionAnterior === 'string' ? opc.declaracionAnterior : null };
+  // Complementaria o sustitutiva y su anterior: las pone el historial de declaraciones (B4).
+  const tipoDeclaracion = decl.tipoDeclaracion;
+  const opciones = { tipoDeclaracion, declaracionAnterior: decl.declaracionAnterior };
+  const todos = [...grupos.values()]
+    .filter((g) => g.cb !== 0 || g.cr !== 0)
+    .map(({ cb, cr, ultima, ...g }) => ({ ...g, base: cb / 100, retenciones: cr / 100 }))
+    .sort((a, b) => a.nombre.localeCompare(b.nombre, 'es') || (a.ejercicioDevengo ?? 0) - (b.ejercicioDevengo ?? 0));
+  const registros = todos.map((p) => ({ clave: clavePerceptor180(p), nombre: p.nombre, importe: p.base }));
   const calculada: Entrada180 = {
     ejercicio,
     declarante: {
@@ -194,14 +218,12 @@ export async function calcularBorrador180(companyId: string, ejercicio: number):
       nombre: declarante.nombre,
       telefono: declarante.telefono,
       personaContacto: declarante.personaContacto,
-      numeroDeclaracion: numeroDeclaracion180(ejercicio, tipoDeclaracion ? 2 : 1),
+      numeroDeclaracion: decl.numeroDeclaracion,
       tipoDeclaracion,
       declaracionAnterior: opciones.declaracionAnterior,
     },
-    perceptores: [...grupos.values()]
-      .filter((g) => g.cb !== 0 || g.cr !== 0)
-      .map(({ cb, cr, ultima, ...g }) => ({ ...g, base: cb / 100, retenciones: cr / 100 }))
-      .sort((a, b) => a.nombre.localeCompare(b.nombre, 'es') || (a.ejercicioDevengo ?? 0) - (b.ejercicioDevengo ?? 0)),
+    // Complementaria: solo los perceptores elegidos (por defecto, los que no estaban en la presentada).
+    perceptores: registrosElegidos(todos, clavePerceptor180, decl.seleccion),
   };
   // Presentada: se enseña (y se descarga) lo que se presento.
   const presentada = presentacionDe<Entrada180>(fila);
@@ -209,10 +231,15 @@ export async function calcularBorrador180(companyId: string, ejercicio: number):
   if (presentada) {
     avisos.unshift(avisoPresentado(presentada));
     errores.length = 0;
-  } else if (!entrada.perceptores.length) avisos.push(`No hay facturas de alquiler con retención en ${ejercicio}: no hace falta presentar el 180.`);
+  } else {
+    if (!entrada.declarante.numeroDeclaracion) avisos.push(AVISO_SIN_NUMERO);
+    if (decl.seleccion && !entrada.perceptores.length) errores.push('La complementaria no lleva ningún perceptor: marca los que se quedaron fuera de la declaración anterior.');
+    else if (!entrada.perceptores.length) avisos.push(`No hay facturas de alquiler con retención en ${ejercicio}: no hace falta presentar el 180.`);
+  }
 
-  const cuadre = { ...cuadre180Con115(entrada, periodos), periodos };
-  if (!cuadre.coincide) {
+  // El cuadre con los 115 es del año entero: en una complementaria se compara con todos los registros.
+  const cuadre = { ...cuadre180Con115(decl.seleccion ? { ...entrada, perceptores: todos } : entrada, periodos), periodos };
+  if (!presentada && !cuadre.coincide) {
     errores.push(
       `El 180 no cuadra con los 115 del año: bases ${cuadre.base180.toFixed(2)} € frente a ${cuadre.base115.toFixed(2)} € y retenciones ${cuadre.retenciones180.toFixed(2)} € frente a ${cuadre.retenciones115.toFixed(2)} €. Revisa los 115 guardados antes de presentar.`,
     );
@@ -230,7 +257,9 @@ export async function calcularBorrador180(companyId: string, ejercicio: number):
     ejercicio,
     estado: fila?.estado ?? 'vigente',
     opciones,
+    numeroDeclaracion: entrada.declarante.numeroDeclaracion ?? null,
     entrada,
+    registros,
     // Sin inmueble ya hay un error que lo explica: no se repite campo a campo.
     errores: [...errores, ...erroresEntrada180({ ...entrada, perceptores: entrada.perceptores.filter((p) => p.inmueble !== SIN_INMUEBLE) })],
     avisos,
@@ -245,10 +274,18 @@ export async function calcularBorrador180(companyId: string, ejercicio: number):
 export async function ficheroModelo180(companyId: string, ejercicio: number): Promise<{ nombre: string; contenido: string }> {
   const b = await calcularBorrador180(companyId, ejercicio);
   if (b.errores.length) throw badRequest(`No se puede generar el fichero del 180: ${b.errores.join(' ')}`, { errores: b.errores });
+  exigirNumero(b.entrada.declarante.numeroDeclaracion, '180');
   try {
     return { nombre: `180_${ejercicio}.txt`, contenido: generarFichero180(b.entrada) };
   } catch (e) {
     if (e instanceof ErrorEntrada180) throw badRequest(`No se puede generar el fichero del 180: ${e.errores.join(' ')}`, { errores: e.errores });
     throw e;
   }
+}
+
+/** Clave de un registro del 180: arrendador, inmueble (referencia catastral) y ejercicio de devengo. */
+export function clavePerceptor180(p: Pick<Perceptor180, 'nif' | 'inmueble' | 'ejercicioDevengo'>): string {
+  const nif = String(p.nif ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const ref = String(p.inmueble?.referenciaCatastral ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '') || '-';
+  return `${nif}|${ref}|${p.ejercicioDevengo ?? ''}`;
 }

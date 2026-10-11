@@ -121,10 +121,9 @@ export function provincia347(codigo: string | null | undefined): string | null {
   return /^(0[1-9]|[1-4]\d|5[0-2])$/.test(c) ? c : null;
 }
 
-/** Número identificativo por defecto: 347 + 10 cifras de la fecha y hora (AAMMDDHHMM). */
-export function numeroIdentificativo347(fecha = new Date()): string {
-  const p = (n: number) => String(n).padStart(2, '0');
-  return `347${p(fecha.getUTCFullYear() % 100)}${p(fecha.getUTCMonth() + 1)}${p(fecha.getUTCDate())}${p(fecha.getUTCHours())}${p(fecha.getUTCMinutes())}`;
+/** Clave de un registro de declarado: NIF y clave (A o B). La usa la complementaria para elegirlos. */
+export function claveDeclarado347(d: Pick<Declarado347, 'nif' | 'clave'>): string {
+  return `${nifDerecha(d.nif)}|${d.clave}`;
 }
 
 /**
@@ -141,11 +140,13 @@ export function construirModelo347(ejercicio: number, declarante: Declarante347,
   if (errorNif) errores.push(errorNif);
   const razon = textoAeat(declarante.razonSocial);
   if (!razon) errores.push('Falta la razón social de la empresa. Rellénala en Registro Mercantil > Datos para la memoria.');
+  // Persona de contacto y teléfono (B3): los de Registro Mercantil > Datos; sin ellos no hay fichero.
   const telefono = telefonoAeat(declarante.telefono);
-  if (!telefono) advertencias.push('Falta el teléfono de la persona de contacto (posiciones 59-67): se deja a ceros.');
+  if (!telefono) errores.push('Falta el teléfono de contacto con Hacienda (9 cifras). Rellénalo en Registro Mercantil > Datos.');
   const contacto = textoAeat(declarante.contacto);
-  if (!contacto) advertencias.push('Falta la persona de contacto (posiciones 68-107). Indícala al descargar el fichero.');
-  const numero = /^347\d{10}$/.test(declarante.numeroIdentificativo ?? '') ? declarante.numeroIdentificativo! : numeroIdentificativo347();
+  if (!contacto) errores.push('Falta la persona de contacto con Hacienda (apellidos y nombre). Rellénala en Registro Mercantil > Datos.');
+  // Número identificativo (B5): lo pone el historial de declaraciones. Sin él, a ceros (solo para la pantalla).
+  const numero = /^347\d{10}$/.test(declarante.numeroIdentificativo ?? '') ? declarante.numeroIdentificativo! : '0'.repeat(13);
   const comp = declarante.complementaria ?? null;
   const numeroAnterior = comp ? String(comp.numeroAnterior ?? '').replace(/\D/g, '') : '';
   if (comp && numeroAnterior.length !== 13) errores.push('Una declaración complementaria o sustitutiva necesita el número identificativo (13 cifras) de la anterior.');

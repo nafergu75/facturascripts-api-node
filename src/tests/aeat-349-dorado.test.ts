@@ -17,7 +17,6 @@ import {
   erroresEntrada349,
   generarFichero349,
   leerFichero349,
-  numeroDeclaracion349,
   type Entrada349,
 } from '../aeat/modelo349/modelo349.dr';
 import { separarNifIva } from '../aeat/common/normalizacion';
@@ -32,7 +31,7 @@ const entrada = (): Entrada349 => ({
     nombre: 'Biosoluciones del Turia, S.L.',
     telefono: '+34 963 12 34 56',
     personaContacto: 'García Muñoz Ana',
-    numeroDeclaracion: numeroDeclaracion349(2027, '2T'),
+    numeroDeclaracion: '3492027000001',
   },
   operadores: [
     { nifIva: 'DE123456789', nombre: 'Müller Handels GmbH', clave: 'E', base: 12500 },
@@ -154,7 +153,7 @@ describe('349: complementaria, sustitutiva y periodicidad', () => {
 
   it('X en 186 en la mensual de los dos primeros meses', () => {
     const e = { ...entrada(), periodo: '05', cambioPeriodicidad: true };
-    e.declarante.numeroDeclaracion = numeroDeclaracion349(2027, '05');
+    e.declarante.numeroDeclaracion = '3492027000002';
     const t1 = generarFichero349(e).split('\r\n')[0];
     expect(posiciones(t1, 136, 137)).toBe('05');
     expect(posiciones(t1, 186, 186)).toBe('X');
@@ -202,8 +201,5 @@ describe('349: lo que impide el fichero', () => {
     expect(separarNifIva('', 'DE')).toBeNull();
   });
 
-  it('número de declaración: 349 y diez cifras, distinto por periodo', () => {
-    expect(numeroDeclaracion349(2027, '2T')).toMatch(/^349\d{10}$/);
-    expect(numeroDeclaracion349(2027, '2T')).not.toBe(numeroDeclaracion349(2027, '05'));
-  });
+  // El número de la declaración lo pone el historial (declaracionesAeat): ver aeat-declaraciones.db.test.
 });

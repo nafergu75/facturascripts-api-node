@@ -1,17 +1,18 @@
 /**
- * Piezas comunes de los borradores de los modelos 349, 180 y 202: datos del
- * declarante, opciones de cada declaracion (complementaria, sustitutiva,
- * domiciliacion...) y envio del fichero en ISO-8859-1.
+ * Piezas comunes de los borradores de los modelos: datos del declarante y su
+ * persona de contacto (B3), opciones de cada declaracion (domiciliacion, base a
+ * mano...), la declaracion en curso de las informativas (numero, tipo y
+ * registros elegidos, B4 y B5) y envio del fichero en ISO-8859-1.
  *
  * Las opciones se guardan en la fila del calendario (ModeloImpuesto) del
- * modelo y periodo, en casillas que empiezan por "opc_": el autorrelleno del
- * modulo de Impuestos las conserva.
+ * modelo y periodo, en casillas que empiezan por "opc_" (un solo prefijo para
+ * todos los modelos): el autorrelleno del modulo de Impuestos las conserva.
  */
 import type { Response } from 'express';
 import { prisma } from '../../config/database';
-import { badRequest, forbidden } from '../../utils/http-errors';
-import { telefonoAeat } from '../../aeat/common/normalizacion';
-import { registrarAuditoria } from '../auditoria.service';
+import { badRequest, conflict, forbidden } from '../../utils/http-errors';
+import { telefonoAeat, textoAeat } from '../../aeat/common/normalizacion';
+import { contextoDeclaracion, type ContextoDeclaracion } from '../declaracionesAeat/declaraciones.service';
 
 export interface DeclaranteEmpresa {
   nif: string;
@@ -34,12 +35,26 @@ export async function declaranteEmpresa(companyId: string): Promise<DeclaranteEm
   };
 }
 
-/** Avisos (no impiden el fichero) por los datos de contacto que faltan. */
-export function avisosContacto(d: DeclaranteEmpresa): string[] {
-  const avisos: string[] = [];
-  if (!telefonoAeat(d.telefono)) avisos.push('Falta el teléfono de contacto (9 cifras) en Registro Mercantil > Datos: el fichero lo lleva a ceros.');
-  if (!d.personaContacto.trim()) avisos.push('Falta la persona de contacto (apellidos y nombre) en Registro Mercantil > Datos.');
-  return avisos;
+/**
+ * Persona de contacto y teléfono de la empresa para los modelos que los piden
+ * (347, 349, 180, 190 y 200): los de Registro Mercantil > Datos. Si faltan, es
+ * un error (el fichero da 400 y dice dónde rellenarlos), no un aviso.
+ */
+export async function contactoEmpresa(companyId: string): Promise<{ personaContacto: string; telefono: string }> {
+  const legal = await prisma.legalConfig.findUnique({ where: { companyId }, select: { telefono: true, personaContacto: true } }).catch(() => null);
+  return { personaContacto: legal?.personaContacto ?? '', telefono: legal?.telefono ?? '' };
+}
+
+/** Errores por los datos de contacto que faltan (vacío si están). */
+export function erroresContacto(d: { personaContacto?: string | null; telefono?: string | null }): string[] {
+  const errores: string[] = [];
+  if (!textoAeat(d.personaContacto)) {
+    errores.push('Falta la persona de contacto con Hacienda (apellidos y nombre). Rellénala en Registro Mercantil > Datos.');
+  }
+  if (!telefonoAeat(d.telefono)) {
+    errores.push('Falta el teléfono de contacto con Hacienda (9 cifras). Rellénalo en Registro Mercantil > Datos.');
+  }
+  return errores;
 }
 
 export type OpcionesModelo = Record<string, string | number | boolean | null>;
@@ -57,6 +72,10 @@ export async function filaModelo(companyId: string, codigo: string, ejercicio: n
   return f ? { id: f.id, estado: f.estado, casillas: (f.casillas as Record<string, unknown> | null) ?? {}, datos: f.datos } : null;
 }
 
+/** Prefijo de las opciones guardadas en las casillas de ModeloImpuesto. */
+export const PREFIJO_OPCION = 'opc_';
+export const esOpcion = (clave: string) => clave.startsWith(PREFIJO_OPCION);
+
 /** Opciones guardadas de la declaracion (sin el prefijo opc_). */
 export function opcionesDe(fila: FilaCalendario | null): OpcionesModelo {
   const out: OpcionesModelo = {};
@@ -71,12 +90,17 @@ export function conservarOpciones<T>(casillas: Record<string, T> | null | undefi
 
 /**
  * Guarda opciones de la declaracion (null borra la opcion). Crea la fila del
- * calendario si no existe. Una declaracion presentada no se cambia.
+ * calendario si no existe (lo llaman rutas con permiso de escritura). Una
+ * declaracion presentada no se cambia: hay que preparar una complementaria.
  */
 export async function guardarOpciones(companyId: string, codigo: string, ejercicio: number, periodo: string, opciones: OpcionesModelo): Promise<void> {
   const fila = await filaModelo(companyId, codigo, ejercicio, periodo);
   if (fila && (fila.estado === 'presentado' || fila.estado === 'omitido')) {
-    throw forbidden(`El ${codigo} de ${periodo} de ${ejercicio} está ${fila.estado}: no se puede cambiar.`);
+    throw forbidden(
+      fila.estado === 'presentado'
+        ? `El ${codigo} de ${periodo} de ${ejercicio} está presentado: para cambiarlo, prepara una complementaria o una sustitutiva.`
+        : `El ${codigo} de ${periodo} de ${ejercicio} está omitido: recupéralo antes de cambiarlo.`,
+    );
   }
   const casillas: Record<string, unknown> = { ...(fila?.casillas ?? {}) };
   for (const [k, v] of Object.entries(opciones)) {
@@ -122,39 +146,43 @@ export function presentacionDe<E>(fila: FilaCalendario | null): Presentacion<E> 
 export const avisoPresentado = (p: Presentacion<unknown>) =>
   `Presentado${p.justificante?.numero ? ` (justificante ${p.justificante.numero}${p.justificante.fecha ? `, ${p.justificante.fecha}` : ''})` : ''}: se enseña lo que se presentó. Las facturas que cambien después no lo modifican.`;
 
-/** Justificante de la presentacion: numero y fecha (AAAA-MM-DD). */
-export function justificanteDe(body: Record<string, unknown>): { numero: string; fecha: string } {
-  const j = (body.justificante ?? {}) as Record<string, unknown>;
-  const numero = String(j.numero ?? '').trim().toUpperCase();
-  const fecha = String(j.fecha ?? '').trim();
-  if (!/^[0-9A-Z]{6,20}$/.test(numero)) throw badRequest('Indica el número de justificante que da la sede al presentar.');
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(fecha)) throw badRequest('Indica la fecha de presentación.');
-  return { numero, fecha };
+// ---------------------------------------------------------------------------
+// Declaracion en curso de los modelos informativos (347, 349, 180 y 190)
+// ---------------------------------------------------------------------------
+
+/** Lo que pone el historial de declaraciones en el registro de tipo 1. */
+export interface DeclaracionInformativa {
+  tipoDeclaracion: 'C' | 'S' | null;
+  /** Numero identificativo de la anterior (complementaria o sustitutiva). */
+  declaracionAnterior: string | null;
+  /** Numero de esta declaracion; null si aun no tiene (se asigna al descargar o presentar). */
+  numeroDeclaracion: string | null;
+  /** Complementaria: claves de los registros elegidos; null = todos. */
+  seleccion: string[] | null;
+  ctx: ContextoDeclaracion;
 }
 
-/**
- * Marca la declaracion como presentada y guarda lo que se presento (la
- * entrada del fichero), que es lo que se enseña despues y la base de las
- * rectificaciones y complementarias.
- */
-export async function guardarPresentacion<E>(
-  companyId: string,
-  userId: string,
-  codigo: string,
-  ejercicio: number,
-  periodo: string,
-  entrada: E,
-  justificante: { numero: string; fecha: string },
-  resumen: Record<string, number>,
-): Promise<void> {
-  const fila = await filaModelo(companyId, codigo, ejercicio, periodo);
-  if (fila?.estado === 'presentado') throw badRequest(`El ${codigo} de ${periodo} de ${ejercicio} ya está presentado.`);
-  const casillas = { ...conservarOpciones(fila?.casillas), ...resumen };
-  const datos = { entrada, justificante, fechaPresentacion: new Date().toISOString(), auditoria: { marcadoPresentadoPor: userId } };
-  await prisma.modeloImpuesto.upsert({
-    where: { companyId_codigo_ejercicio_periodo: { companyId, codigo, ejercicio, periodo } },
-    create: { companyId, codigo, ejercicio, periodo, estado: 'presentado', casillas: casillas as never, datos: datos as never },
-    update: { estado: 'presentado', casillas: casillas as never, datos: datos as never },
-  });
-  await registrarAuditoria({ userId, companyId, action: `MARCAR_${codigo}_PRESENTADO`, resourceType: 'modelo_fiscal', resourceId: `${codigo}-${ejercicio}-${periodo}` });
+/** Declaracion en curso (o la ultima presentada) de una informativa. Solo lee. */
+export async function declaracionInformativa(companyId: string, codigo: '347' | '349' | '180' | '190', ejercicio: number, periodo: string): Promise<DeclaracionInformativa> {
+  const ctx = await contextoDeclaracion(companyId, codigo, ejercicio, periodo);
+  const tipo = ctx.tipo === 'C' || ctx.tipo === 'S' ? ctx.tipo : null;
+  return { tipoDeclaracion: tipo, declaracionAnterior: tipo ? ctx.justificanteAnterior : null, numeroDeclaracion: ctx.numero, seleccion: ctx.registros, ctx };
+}
+
+/** Aviso de la pantalla mientras la declaracion no tiene numero. */
+export const AVISO_SIN_NUMERO = 'La app le pone a la declaración su número identificativo al descargar el fichero (o al marcarla como presentada), y ya no cambia.';
+
+/** 409 del fichero de una informativa sin numero: lo asigna una operacion de escritura (B5). */
+export function exigirNumero(numero: string | null | undefined, codigo: string): string {
+  if (!numero) {
+    throw conflict(`La declaración del ${codigo} todavía no tiene número identificativo: pulsa «Descargar fichero» en su pantalla y la app se lo pondrá.`, { motivo: 'SIN_NUMERO' });
+  }
+  return numero;
+}
+
+/** Registros de una complementaria: los elegidos (todos en la normal o la sustitutiva). */
+export function registrosElegidos<T>(items: T[], clave: (t: T) => string, seleccion: string[] | null): T[] {
+  if (!seleccion) return items;
+  const elegidos = new Set(seleccion);
+  return items.filter((t) => elegidos.has(clave(t)));
 }
