@@ -21,6 +21,11 @@ jest.mock('../config/database', () => ({
       update: jest.fn(),
       delete: jest.fn(),
     },
+    // El alta asigna la subcuenta 430 en una transaccion (services/terceros/subcuentas).
+    chartOfAccounts: { findMany: jest.fn().mockResolvedValue([]) },
+    supplier: { findMany: jest.fn().mockResolvedValue([]) },
+    $transaction: jest.fn(async (fn: (tx: unknown) => unknown) => fn(jest.requireMock<{ prisma: unknown }>('../config/database').prisma)),
+    $queryRaw: jest.fn().mockResolvedValue([]),
   },
   connectDatabase: jest.fn(),
   disconnectDatabase: jest.fn(),
