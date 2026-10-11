@@ -11,9 +11,10 @@ jest.mock('@anthropic-ai/sdk', () => ({
 
 import { mapearFacturaAzure } from '../services/lectura/azure-factura.mapper';
 import type { AnalyzeResult } from '../services/lectura/azure-di.client';
-import { AVISO_SIN_COMPLEMENTO, completarConClaude, decidirComplemento, mensajeParaClaude, prepararTexto } from '../services/lectura/claude-complemento';
+import { AVISO_SIN_COMPLEMENTO, completarConClaude, decidirComplemento, mensajeParaClaude, MOTIVO_TOTAL_SIN_RETENCION, prepararTexto } from '../services/lectura/claude-complemento';
+import { aGastoExtraido } from '../services/lectura/adaptadores';
 import type { LecturaHecha, LecturaNormalizada } from '../services/lectura/tipos';
-import type { ContextoValidacion } from '../services/lectura/validaciones';
+import { validarLectura, type ContextoValidacion } from '../services/lectura/validaciones';
 import { compararQr } from '../services/lectura/verifactu-qr';
 import { logger } from '../config/logger';
 import { fixtureAzure, fixtureClaude, NIF_EMPRESA } from './fixtures/azure-di';
@@ -152,12 +153,58 @@ describe('como se mezcla', () => {
     expect(l.numero.motivo).toBe('Azure y la IA no coinciden (Azure: F2026/0012; IA: F2026/0021).');
   });
 
-  it('si Azure dudaba, se toma el dato de la IA', async () => {
+  it('si Azure dudaba y la IA lee otra cosa, se toma el de la IA pero queda para revisar', async () => {
     crear.mockResolvedValueOnce(fixtureClaude('complemento-contradice'));
     const { lectura, texto } = leer('resultado-confianza-baja');
+    const azure = lectura.numero.valor;
+    const r = await completarConClaude(lectura, texto, decidirComplemento(lectura, texto, 'GASTO'), ctx);
+    if (r.tipo !== 'completada') throw new Error(r.tipo);
+    expect(r.lectura.numero).toEqual({ valor: 'F2026/0021', confianza: null, fuente: 'claude', motivo: `Azure leyó «${azure}» con poca seguridad y la IA lee «F2026/0021»: compruébalo.` });
+    const val = await validarLectura(r.lectura, ctx);
+    expect(val.campos.numero?.estado).toBe('revisar');
+  });
+
+  it('si Azure no lo leyo, el de la IA sin mas', async () => {
+    crear.mockResolvedValueOnce(fixtureClaude('complemento-contradice'));
+    const { lectura, texto } = leer('resultado-confianza-baja');
+    lectura.numero = { valor: null, confianza: null, fuente: 'azure' };
     const r = await completarConClaude(lectura, texto, decidirComplemento(lectura, texto, 'GASTO'), ctx);
     if (r.tipo !== 'completada') throw new Error(r.tipo);
     expect(r.lectura.numero).toEqual({ valor: 'F2026/0021', confianza: null, fuente: 'claude' });
+  });
+
+  describe('IRPF con un solo total impreso', () => {
+    /** resultado-irpf con los totales cambiados. */
+    function irpf(cambio: (f: Record<string, any>) => void): LecturaHecha {
+      const ar = fixtureAzure<{ analyzeResult: AnalyzeResult }>('resultado-irpf').analyzeResult;
+      cambio(ar.documents![0].fields as Record<string, any>);
+      const r = mapearFacturaAzure(ar);
+      if (r.tipo !== 'hecho') throw new Error('x');
+      return r;
+    }
+    async function completarCon(h: LecturaHecha): Promise<LecturaNormalizada> {
+      crear.mockResolvedValueOnce(fixtureClaude('complemento-irpf'));
+      const r = await completarConClaude(h.lectura, h.texto, decidirComplemento(h.lectura, h.texto, 'VENTA'), { ...ctx, lector: 'VENTA', nifEmpresa: 'B12345674' });
+      if (r.tipo !== 'completada') throw new Error(r.tipo);
+      return r.lectura;
+    }
+
+    it('el unico total es el total a pagar (1.060): el total de la factura se calcula y cuadra', async () => {
+      const l = await completarCon(irpf((f) => (f.InvoiceTotal.valueCurrency.amount = 1060)));
+      expect(l.totales.totalAPagar.valor).toBe(1060);
+      expect(l.totales.totalFactura).toMatchObject({ valor: 1210, fuente: 'calculado', motivo: MOTIVO_TOTAL_SIN_RETENCION });
+      const val = await validarLectura(l, { ...ctx, lector: 'VENTA', nifEmpresa: 'B12345674' });
+      expect(val.validaciones.map((x) => x.codigo)).not.toContain('CUADRE');
+    });
+
+    it('sin AmountDue, el total a pagar copiado del total no gana a la IA', async () => {
+      const l = await completarCon(irpf((f) => delete f.AmountDue));
+      expect(l.totales.totalFactura.valor).toBe(1210);
+      expect(l.totales.totalAPagar).toMatchObject({ valor: 1060, fuente: 'claude' });
+      const val = await validarLectura(l, ctx);
+      expect(val.validaciones.map((x) => x.codigo)).not.toContain('CUADRE');
+      expect(aGastoExtraido(l, val.validaciones, 0.9).total).toBe(1060);
+    });
   });
 
   it('un desglose de la IA que no cuadra no sustituye al de Azure', async () => {

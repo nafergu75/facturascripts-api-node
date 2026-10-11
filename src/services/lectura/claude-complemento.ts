@@ -140,14 +140,42 @@ export function mensajeParaClaude(l: LecturaNormalizada, contenido: string, preg
 const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
 const cad = (v: unknown): string | null => (typeof v === 'string' && v.trim() ? v.trim() : null);
 const deClaude = <T>(valor: T): Campo<T> => ({ valor, confianza: null, fuente: 'claude' });
-const fiable = (c: Campo<unknown>) => (c.fuente === 'qr' && c.confianza === 1) || (typeof c.confianza === 'number' && c.confianza >= UMBRAL_OK && c.valor !== null);
+/** Leido con seguridad. Un dato calculado (p. ej. el total a pagar copiado del total) no cuenta, aunque herede una confianza. */
+const fiable = (c: Campo<unknown>) =>
+  (c.fuente === 'qr' && c.confianza === 1) || (c.fuente !== 'calculado' && typeof c.confianza === 'number' && c.confianza >= UMBRAL_OK && c.valor !== null);
 
-/** Azure seguro y la IA dice otra cosa: se queda el de Azure, para revisar. Si Azure dudaba, el de la IA. */
+/**
+ * Azure seguro y la IA dice otra cosa: se queda el de Azure, para revisar.
+ * Azure no lo leyo (o lo calculo): el de la IA. Azure lo leyo con poca
+ * seguridad y la IA lee otra cosa: el de la IA, tambien para revisar.
+ */
 function mezclarCampo<T>(azure: Campo<T>, ia: T | null, iguales: (a: T, b: T) => boolean, mostrar: (x: T) => string = String): Campo<T> {
   if (ia === null) return azure;
   if (azure.valor !== null && iguales(azure.valor, ia)) return azure;
   if (fiable(azure)) return { ...azure, motivo: `Azure y la IA no coinciden (Azure: ${mostrar(azure.valor as T)}; IA: ${mostrar(ia)}).` };
-  return deClaude(ia);
+  if (azure.valor === null || azure.fuente === 'calculado') return deClaude(ia);
+  return { ...deClaude(ia), motivo: `Azure leyó «${mostrar(azure.valor)}» con poca seguridad y la IA lee «${mostrar(ia)}»: compruébalo.` };
+}
+
+export const MOTIVO_TOTAL_SIN_RETENCION = 'La factura solo trae el total a pagar: el total sin restar la retención se ha calculado. Compruébalo.';
+export const MOTIVO_A_PAGAR_CALCULADO = 'La factura solo trae un total: el total a pagar se ha calculado restando la retención. Compruébalo.';
+
+/**
+ * Con retencion y un solo total impreso (total de la factura = total a pagar),
+ * decide cual de los dos es y calcula el otro con las bases.
+ */
+function reconciliarRetencion(l: LecturaNormalizada): void {
+  const ret = l.retencion?.importe.valor ?? 0;
+  const tf = l.totales.totalFactura.valor;
+  const tp = l.totales.totalAPagar.valor;
+  if (!(ret > 0) || tf === null || tp === null || aCentimos(tf) !== aCentimos(tp)) return;
+  if (!l.desglose.length || l.desglose.some((t) => t.base.valor === null)) return;
+  const bruto = redondear2(l.desglose.reduce((s, t) => s + (t.base.valor ?? 0) + (t.cuota.valor ?? 0) + (t.cuotaRecargo?.valor ?? 0), 0));
+  if (aCentimos(bruto - ret) === aCentimos(tf)) {
+    l.totales.totalFactura = { valor: bruto, confianza: null, fuente: 'calculado', motivo: MOTIVO_TOTAL_SIN_RETENCION };
+  } else if (aCentimos(bruto) === aCentimos(tf)) {
+    l.totales.totalAPagar = { valor: redondear2(bruto - ret), confianza: null, fuente: 'calculado', motivo: MOTIVO_A_PAGAR_CALCULADO };
+  }
 }
 
 const igualesTexto = (a: string, b: string) => a.toUpperCase().replace(/\s+/g, '') === b.toUpperCase().replace(/\s+/g, '');
@@ -191,6 +219,8 @@ export function mezclarComplemento(original: LecturaNormalizada, input: Record<s
   const concepto = cad(input.concepto);
   if (!l.concepto.valor && concepto) l.concepto = deClaude(concepto);
 
+  reconciliarRetencion(l);
+
   // El desglose de la IA sustituye al calculado solo si cuadra (V01 y V02).
   const tramos = Array.isArray(input.desglose) ? (input.desglose as Array<Record<string, unknown>>) : [];
   if (tramos.length) {
@@ -209,6 +239,7 @@ export function mezclarComplemento(original: LecturaNormalizada, input: Record<s
         };
       });
     const propuesta = conDesglose(l, desglose);
+    reconciliarRetencion(propuesta);
     const falla = validacionesSincronas(propuesta, ctx).some((v) => v.codigo === 'CUADRE' || v.codigo === 'CUOTA_TIPO');
     if (desglose.length && !falla) l = propuesta;
     else l.desglose.forEach((t) => (t.base.motivo ??= 'La IA no ha podido aclarar el desglose: compruébalo.'));
