@@ -229,7 +229,7 @@ describe('fichero del 190 (diseno de registro del ejercicio 2025)', () => {
     faltan: [],
   };
   const perceptorL: Perceptor190 = { ...perceptorA, clave: 'L', subclave: '01', percepcionIntegra: 600, retenciones: 0, valoracionEspecie: 0, ingresosACuentaEfectuados: 0, gastosDeducibles: 0, anioNacimiento: null, situacionFamiliar: null, nifConyuge: null, discapacidad: null, contrato: null, movilidadGeografica: false };
-  const perceptorG: Perceptor190 = { ...perceptorL, clave: 'G', subclave: '01', nif: 'B12345674', nombre: 'Asesoría Muñoz, S.L.', provincia: '03', percepcionIntegra: 1500, retenciones: 225, origen: 'profesional' };
+  const perceptorG: Perceptor190 = { ...perceptorL, clave: 'G', subclave: '01', nif: 'E12345674', nombre: 'Asesoría Muñoz, C.B.', provincia: '03', percepcionIntegra: 1500, retenciones: 225, origen: 'profesional' };
   const declarante = { nif: 'B98765432', nombre: 'Empresa de Prueba, S.L.', telefono: '600000000', contacto: 'Persona Contacto', email: 'contacto@example.com', numeroDeclaracion: '1902025000001' };
 
   it('ejercicio anterior al diseno verificado: 409; posterior: borrador con el diseno de 2025', () => {
@@ -300,8 +300,8 @@ describe('fichero del 190 (diseno de registro del ejercicio 2025)', () => {
     expect(c(l, 153, 170)).toBe('0000' + '0' + ' '.repeat(9) + '0000');
 
     const g = regs[3];
-    expect(c(g, 18, 26)).toBe('B12345674');
-    expect(c(g, 36, 75)).toBe('ASESORIA MUÑOZ S L'.padEnd(40, ' '));
+    expect(c(g, 18, 26)).toBe('E12345674');
+    expect(c(g, 36, 75)).toBe('ASESORIA MUÑOZ C B'.padEnd(40, ' '));
     expect(c(g, 76, 80)).toBe('03G01');
   });
 

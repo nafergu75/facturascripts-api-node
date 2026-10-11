@@ -8,7 +8,7 @@
  * exentas (L.01) y dos profesionales (G.01 al 15 % y G.03 al 7 %).
  */
 import { describe, it, expect } from '@jest/globals';
-import { perceptoresDeNominas, perceptoresProfesionales, codigoProvincia, type NominaFiscal, type Perceptor190 } from '../services/nominas/fiscal';
+import { perceptoresDeNominas, perceptoresProfesionales, codigoProvincia, revisarPerceptoresG, tipoPerceptorG, type NominaFiscal, type Perceptor190 } from '../services/nominas/fiscal';
 import { avisosFichero190, comprobarDiseno190, erroresFichero190, generarFicheroModelo190, resumen190, totales190 } from '../services/nominas/modelo190';
 import { DR190, registroDr } from '../services/aeatRetenciones/diseno';
 import { letraNif } from '../utils/nif';
@@ -18,6 +18,8 @@ const T1 = registroDr(DR190, 'tipo1');
 const T2 = registroDr(DR190, 'tipo2');
 const nif = (n: number) => `${String(n).padStart(8, '0')}${letraNif(n)}`;
 const EMPRESA = 'B12345674';
+/** Comunidad de bienes (entidad en atribucion de rentas): perceptor valido de la clave G. */
+const ASESORIA = 'E12345674';
 const ANA = nif(30000001);
 const BLAS = nif(30000002);
 const CONYUGE = nif(30000009);
@@ -57,8 +59,8 @@ function perceptoresReales(): Perceptor190[] {
     nomina({ empleadoId: 'blas', nif: BLAS, ejercicio: 2025, mes: 11, ejercicioDevengo: 2025, fechaPago: '2026-02-10', brutoDinerario: -200 }),
   ];
   const profesionales = perceptoresProfesionales([
-    { supplierId: 'asesoria', baseTotal: 500, retencionTotal: 75, tipoRetencion: 15, supplier: { nifCif: 'b-12345674', nombreFiscal: 'Asesoría Muñoz, S.L.', cp: '46001', provincia: null } },
-    { supplierId: 'asesoria', baseTotal: 500, retencionTotal: 75, tipoRetencion: 15, supplier: { nifCif: 'b-12345674', nombreFiscal: 'Asesoría Muñoz, S.L.', cp: '46001', provincia: null } },
+    { supplierId: 'asesoria', baseTotal: 500, retencionTotal: 75, tipoRetencion: 15, supplier: { nifCif: 'e-12345674', nombreFiscal: 'Asesoría Muñoz, C.B.', cp: '46001', provincia: null } },
+    { supplierId: 'asesoria', baseTotal: 500, retencionTotal: 75, tipoRetencion: 15, supplier: { nifCif: 'e-12345674', nombreFiscal: 'Asesoría Muñoz, C.B.', cp: '46001', provincia: null } },
     { supplierId: 'disenadora', baseTotal: 1200, retencionTotal: 84, tipoRetencion: 7, supplier: { nifCif: nif(30000004), nombreFiscal: 'Lucía Díaz Sanz', cp: '38760', provincia: null } },
   ]);
   return [...perceptoresDeNominas(2026, nominas, empleados as never), ...profesionales];
@@ -102,7 +104,7 @@ describe('190 de 2026: nominas, atrasos, reintegro y profesionales (caso real)',
       'A ANA 2025',
       'A BLAS ',
       'A BLAS 2025',
-      `G01 ${EMPRESA} `,
+      `G01 ${ASESORIA} `,
       `G03 ${nif(30000004)} `,
       'L01 ANA ',
     ]);
@@ -186,7 +188,7 @@ describe('190 de 2026: nominas, atrasos, reintegro y profesionales (caso real)',
   });
 
   it('profesionales: G.01 al 15 % y G.03 al 7 % (La Palma = 53)', () => {
-    comprobarRegistro(reg('G', EMPRESA), T2, { nombrePerceptor: 'ASESORIA MUÑOZ S L'.padEnd(40, ' '), provincia: '46', clave: 'G', subclave: '01', percepcionIntegra: cents(1000, 13), retenciones: cents(150, 13), anioNacimiento: '0000', contrato: '0' });
+    comprobarRegistro(reg('G', ASESORIA), T2, { nombrePerceptor: 'ASESORIA MUÑOZ C B'.padEnd(40, ' '), provincia: '46', clave: 'G', subclave: '01', percepcionIntegra: cents(1000, 13), retenciones: cents(150, 13), anioNacimiento: '0000', contrato: '0' });
     comprobarRegistro(reg('G', nif(30000004)), T2, { nombrePerceptor: 'LUCIA DIAZ SANZ'.padEnd(40, ' '), provincia: '53', subclave: '03', percepcionIntegra: cents(1200, 13), retenciones: cents(84, 13) });
     expect(codigoProvincia('38700', null)).toBe('53');
     expect(codigoProvincia('38001', null)).toBe('38');
@@ -229,8 +231,60 @@ describe('190: complementaria, sustitutiva y datos que faltan', () => {
     expect(erroresFichero190({ ...declarante, telefono: '', contacto: '' }, [{ ...g, subclave: '09' }, reintegro])).toEqual([
       'Falta el teléfono (9 cifras) de la persona con quien relacionarse.',
       'Faltan los apellidos y el nombre de la persona con quien relacionarse.',
-      'Asesoría Muñoz, S.L.: la clave G necesita una subclave válida (01, 02, 03, 04, 05, 06, 07, 08).',
+      'Asesoría Muñoz, C.B.: la clave G necesita una subclave válida (01, 02, 03, 04, 05, 06, 07, 08).',
       'García Ruiz Blas: un reintegro (percepción negativa) necesita el ejercicio en que se cobró de más.',
     ]);
+  });
+});
+
+describe('190: perceptores de la clave G (solo contribuyentes del IRPF y entidades en atribucion de rentas)', () => {
+  const factura = (supplierId: string, nifCif: string, nombreFiscal: string, tipoRetencion = 15) => ({
+    supplierId,
+    baseTotal: 1000,
+    retencionTotal: (1000 * tipoRetencion) / 100,
+    tipoRetencion,
+    supplier: { nifCif, nombreFiscal, cp: '46001', provincia: null },
+  });
+  const facturas = [
+    factura('dni', nif(30000004), 'Lucía Díaz Sanz'),
+    factura('nie', 'X1234567L', 'John Smith'),
+    factura('cb', 'E12345674', 'Asesoría Muñoz, C.B.'),
+    factura('sc', 'J1234567D', 'Arquitectos Sociedad Civil'),
+    factura('sl', 'B46000006', 'Consultora Levante, S.L.'),
+    factura('sa', 'A10952364', 'Grandes Despachos, S.A.'),
+  ];
+
+  it('tipo de perceptor por la letra del NIF', () => {
+    expect(['12345678Z', 'X1234567L', 'Y1234567X', 'K1234567L', 'E12345674', 'J1234567D', 'B46000006', 'A10952364', 'G12345678', ''].map(tipoPerceptorG)).toEqual([
+      'fisica',
+      'fisica',
+      'fisica',
+      'fisica',
+      'atribucion',
+      'atribucion',
+      'juridica',
+      'juridica',
+      'juridica',
+      'desconocido',
+    ]);
+  });
+
+  it('las sociedades se quitan con un aviso que dice cuales', () => {
+    const r = revisarPerceptoresG(perceptoresProfesionales(facturas), facturas);
+    expect(r.perceptores.map((p) => p.proveedorId).sort()).toEqual(['cb', 'dni', 'nie', 'sc']);
+    expect(r.avisos).toEqual([
+      'Se han quitado del 190 estos 2 proveedores con NIF de sociedad: Consultora Levante, S.L. (B46000006), Grandes Despachos, S.A. (A10952364). ' +
+        'En la clave G solo van personas físicas y entidades en atribución de rentas (comunidades de bienes, sociedades civiles, herencias yacentes). ' +
+        'Si les retuviste IRPF por error, corrige esas facturas (sus retenciones siguen en el 111 y el cuadre no coincidirá); si el NIF está mal, corrígelo en la ficha del proveedor.',
+    ]);
+  });
+
+  it('subclave: 15 % -> G.01; 7 % -> G.03 con aviso (podria ser G.02); otro tipo -> G.01 con aviso', () => {
+    const fs = [factura('a', nif(30000004), 'Lucía Díaz Sanz', 7), factura('b', nif(30000005), 'Pedro Gil', 19), factura('c', nif(30000006), 'Eva Sol', 15)];
+    const r = revisarPerceptoresG(perceptoresProfesionales(fs), fs);
+    expect(r.perceptores.map((p) => `${p.proveedorId}${p.subclave}`).sort()).toEqual(['a03', 'b01', 'c01']);
+    expect(r.avisos).toEqual([expect.stringMatching(/al 7 % van con la subclave G\.03.*G\.02/), expect.stringMatching(/retención del 19 %, que no es el 15 % general: van con la subclave G\.01/)]);
+    // Solo el 15 %: sin avisos.
+    expect(revisarPerceptoresG(perceptoresProfesionales([fs[2]]), [fs[2]]).avisos).toEqual([]);
   });
 });

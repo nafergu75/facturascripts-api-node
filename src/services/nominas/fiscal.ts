@@ -21,6 +21,7 @@ import { prisma } from '../../config/database';
 import type { PeriodoFiscal } from '../../domain/impuestos.model';
 import { badRequest } from '../../utils/http-errors';
 import { aCentimos } from '../../utils/money';
+import { normalizarNif } from '../../utils/nif';
 import { totales190 } from './modelo190';
 import {
   aparicionesRetencionEntre,
@@ -659,14 +660,81 @@ export function perceptoresDeNominas(ejercicio: number, nominas: Array<NominaFis
   return out;
 }
 
+/**
+ * Subclave G de una factura segun su tipo de retencion (DISENOS_LOGICOS_190_2025,
+ * subclaves de la clave G): 01 el tipo general del art. 95.1 RIRPF (15 %); 02 el
+ * especifico de recaudadores municipales, mediadores de seguros con auxiliares
+ * externos y delegados de Loterias (7 %); 03 el reducido de quien inicia la
+ * actividad (7 %). La factura no dice si un 7 % es el de la 02 o el de la 03:
+ * se toma la 03 (la habitual en una pyme) y se avisa (avisosPerceptoresG).
+ * Cualquier otro tipo va a la 01, tambien con aviso.
+ */
+export function subclaveG(tipoRetencion: unknown): string {
+  return Number(tipoRetencion) === 7 ? '03' : '01';
+}
+
+/**
+ * Quien puede ser perceptor de la clave G: el diseño de 2025 (NIF del perceptor,
+ * posiciones 18-26) solo prevé personas fisicas y «entidad en régimen de
+ * atribución de rentas (comunidad de bienes, sociedad civil, herencia yacente,
+ * etc.)»; y el 190 recoge a contribuyentes del IRPF (pagina 9: «En ningún caso
+ * se incluirán [...] personas o entidades [...] que no sean contribuyentes del
+ * IRPF»). Por la letra del NIF: DNI (cifra), NIE (X, Y, Z) y K, L, M son
+ * personas fisicas; E (comunidades de bienes y herencias yacentes) y J
+ * (sociedades civiles), entidades en atribucion de rentas; el resto (A, B, C,
+ * D, F, G, N, P, Q, R, S, U, V, W) son personas juridicas u otras entidades.
+ */
+export function tipoPerceptorG(nif: string): 'fisica' | 'atribucion' | 'juridica' | 'desconocido' {
+  const n = normalizarNif(nif);
+  if (/^[0-9KLMXYZ]/.test(n)) return 'fisica';
+  if (/^[EJ]/.test(n)) return 'atribucion';
+  if (/^[A-DFGHNP-SUVW]/.test(n)) return 'juridica';
+  return 'desconocido';
+}
+
+/**
+ * Registros G que van al 190 (sin personas juridicas) y los avisos: que
+ * proveedores se han quitado y que subclaves son una suposicion.
+ */
+export function revisarPerceptoresG(
+  perceptores: Perceptor190[],
+  facturas: Array<{ supplierId: string; tipoRetencion: number }>,
+): { perceptores: Perceptor190[]; avisos: string[] } {
+  const avisos: string[] = [];
+  const fuera = perceptores.filter((p) => p.clave === 'G' && tipoPerceptorG(p.nif) === 'juridica');
+  const dentro = perceptores.filter((p) => !fuera.includes(p));
+  if (fuera.length) {
+    const nombres = [...new Map(fuera.map((p) => [p.nif, `${p.nombre} (${p.nif})`])).values()];
+    avisos.push(
+      `Se han quitado del 190 ${nombres.length === 1 ? 'este proveedor' : `estos ${nombres.length} proveedores`} con NIF de sociedad: ${nombres.join(', ')}. ` +
+        'En la clave G solo van personas físicas y entidades en atribución de rentas (comunidades de bienes, sociedades civiles, herencias yacentes). ' +
+        'Si les retuviste IRPF por error, corrige esas facturas (sus retenciones siguen en el 111 y el cuadre no coincidirá); si el NIF está mal, corrígelo en la ficha del proveedor.',
+    );
+  }
+  const proveedoresG = new Set(dentro.filter((p) => p.clave === 'G').map((p) => p.proveedorId));
+  const tipos = new Set(facturas.filter((f) => proveedoresG.has(f.supplierId)).map((f) => Number(f.tipoRetencion)));
+  if (tipos.has(7)) {
+    avisos.push(
+      'Las facturas de profesionales al 7 % van con la subclave G.03 (inicio de actividad). Si el 7 % es por ser recaudador municipal, mediador de seguros o delegado de Loterías, la subclave es la G.02: cámbiala en el formulario de la sede antes de presentar.',
+    );
+  }
+  const otros = [...tipos].filter((t) => t !== 15 && t !== 7).sort((a, b) => a - b);
+  if (otros.length) {
+    avisos.push(
+      `Hay facturas de profesionales con retención del ${otros.map((t) => `${t.toLocaleString('es-ES')} %`).join(', ')}, que no es el 15 % general: van con la subclave G.01. ` +
+        'Revisa el tipo de esas facturas o la subclave (G.04 a G.08 para propiedad intelectual, derechos de autor o de imagen) en la sede.',
+    );
+  }
+  return { perceptores: dentro, avisos };
+}
+
 /** Registros G (profesionales) a partir de sus facturas con retencion (puro). */
 export function perceptoresProfesionales(
   facturas: Array<{ supplierId: string; baseTotal: number; retencionTotal: number; tipoRetencion: number; supplier: { nifCif: string; nombreFiscal: string; cp: string | null; provincia: string | null } }>,
 ): Perceptor190[] {
   const grupos = new Map<string, Perceptor190 & { _base: number; _ret: number }>();
   for (const f of facturas) {
-    // G.03: tipo reducido del 7 % por inicio de actividad; G.01: tipo general.
-    const subclave = Number(f.tipoRetencion) === 7 ? '03' : '01';
+    const subclave = subclaveG(f.tipoRetencion);
     const k = `${f.supplierId}|${subclave}`;
     let g = grupos.get(k);
     if (!g) {
@@ -674,7 +742,7 @@ export function perceptoresProfesionales(
       g = {
         clave: 'G',
         subclave,
-        nif: String(f.supplier.nifCif ?? '').toUpperCase().replace(/[\s.-]/g, ''),
+        nif: normalizarNif(f.supplier.nifCif),
         nombre: f.supplier.nombreFiscal,
         provincia,
         percepcionIntegra: 0,
@@ -735,9 +803,12 @@ export async function calcularModelo190(companyId: string, ejercicio: number): P
   const { filas: facturas, avisos: avisosAnuladas } = await retencionesProfesionalesEntre(companyId, anio.fechaInicio, anio.fechaFin);
   avisos.push(...avisosAnuladas);
 
+  // Clave G: solo personas fisicas y entidades en atribucion de rentas (las sociedades, fuera, con aviso).
+  const g = revisarPerceptoresG(perceptoresProfesionales(facturas as never), facturas);
+  avisos.push(...g.avisos);
   const perceptores = [
     ...perceptoresDeNominas(ejercicio, nominas, empleados),
-    ...perceptoresProfesionales(facturas as never),
+    ...g.perceptores,
   ].sort((a, b) => a.clave.localeCompare(b.clave) || a.nombre.localeCompare(b.nombre, 'es') || (a.subclave ?? '').localeCompare(b.subclave ?? ''));
 
   if (tablaLista('nominaResumen')) {

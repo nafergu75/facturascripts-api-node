@@ -93,3 +93,17 @@ describe('complementaria (C): solo los perceptores omitidos que elige el usuario
     expect(c.numeroDeclaracion).not.toBe('1902025000001');
   });
 });
+
+describe('clave G en el calculo del 190', () => {
+  it('una sociedad con retencion no entra en el 190 y el aviso dice cual', async () => {
+    const prov = await prisma.supplier.create({ data: { companyId: COMPANY, nombreFiscal: 'Consultora Prueba, S.L.', nifCif: 'B46000006', cp: '46001' } });
+    await prisma.expenseInvoice.create({
+      data: { companyId: COMPANY, supplierId: prov.id, serie: 'P', numero: 1, numeroCompleto: 'P-1', fechaEmision: '2025-05-05', fechaVencimiento: '2025-06-05', estado: 'ACCOUNTED', baseTotal: 600, retencionTotal: 90, tipoRetencion: 15, totalFactura: 636 },
+    });
+    const m = await calcularModelo190(COMPANY, 2025);
+    expect(m.perceptores.some((p) => p.clave === 'G')).toBe(false);
+    expect(m.avisos).toContainEqual(expect.stringMatching(/^Se han quitado del 190 este proveedor con NIF de sociedad: Consultora Prueba, S\.L\. \(B46000006\)/));
+    // Su retencion sigue en el 111: el cuadre avisa.
+    expect(m.cuadre111.coincide).toBe(false);
+  });
+});
