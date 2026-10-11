@@ -12,13 +12,19 @@ import { prisma } from '../config/database';
 import { incomeInvoicesService } from '../services/income-invoices.service';
 import { crearSerie, listarSeries } from '../services/series.service';
 import { legalConfigService } from '../services/legalConfig.service';
+import { datosPdfFactura, pdfParaDescargar } from '../services/facturaPdf.service';
+import { putObject } from '../utils/storage';
 import { hoyEspana, sumarDiasISO } from '../utils/fechas';
+import { promises as fsp } from 'fs';
+import path from 'path';
 
 const SUFIJO = `${Date.now()}${randomBytes(3).toString('hex')}`;
 const EMPRESA = `vfarr-${SUFIJO}`;
 const SIN_NIF = `vfarr-sinnif-${SUFIJO}`;
 const CON_VF = `vfarr-vf-${SUFIJO}`;
-const EMPRESAS = [EMPRESA, SIN_NIF, CON_VF];
+const SIN_FACTURAS = `vfarr-nueva-${SUFIJO}`;
+const EMPRESAS = [EMPRESA, SIN_NIF, CON_VF, SIN_FACTURAS];
+const USUARIO = `vfarr-user-${SUFIJO}`;
 const clientes: Record<string, string> = {};
 
 /** CIF de sociedad limitada valido y distinto en cada ejecucion (el NIF no se repite entre empresas). */
@@ -50,11 +56,14 @@ beforeAll(async () => {
   }
   await prisma.legalConfig.create({ data: { companyId: EMPRESA, tipoSociedad: 'SL', denominacion: 'Arreglos SL', nif: 'B33333333' } });
   await prisma.legalConfig.create({ data: { companyId: CON_VF, tipoSociedad: 'SL', denominacion: 'Con Verifactu SL', nif: 'B44444444' } });
+  await prisma.legalConfig.create({ data: { companyId: SIN_FACTURAS, tipoSociedad: 'SL', denominacion: 'Recién Llegada SL', nif: cifSl() } });
   await prisma.verifactuConfig.create({ data: { companyId: CON_VF, estado: 'PRUEBAS', entorno: 'PRUEBAS' } });
 });
 
 afterAll(async () => {
   await prisma.verifactuConfig.deleteMany({ where: { companyId: { in: EMPRESAS } } });
+  await prisma.auditLog.deleteMany({ where: { userId: USUARIO } });
+  await fsp.rm(path.join(process.cwd(), 'storage', 'tests', `vfarr-${SUFIJO}`), { recursive: true, force: true });
 });
 
 describe('P1: desde la API no se elige el número de una factura emitida', () => {
@@ -106,16 +115,26 @@ describe('P4: el lector no deja que la app numere la factura', () => {
 });
 
 describe('P5: las facturas del lector van a series históricas', () => {
-  it('si el código coincide con una serie activa, va a la histórica «-H» (desactivada) y no sube el contador de la activa', async () => {
+  it('si el código coincide con una serie de la app (activa): 409, no se crea nada y no sube el contador', async () => {
     const antes = (await serie('A'))!;
-    const f = await delLector({ serie: 'A', numero: 500 });
-    expect(f.serie).toBe('A-H');
-    expect(f.numeroCompleto).toBe('A-H-500');
-    const historica = (await serie('A-H'))!;
-    expect(historica).toMatchObject({ activa: false, tipoDocumento: 'FACTURA' });
+    const facturas = await prisma.incomeInvoice.count({ where: { companyId: EMPRESA } });
+    await expect(delLector({ serie: 'A', numero: 500 })).rejects.toMatchObject({
+      statusCode: 409,
+      details: { campo: 'serie' },
+      message: expect.stringMatching(/mismo número/),
+    });
+    expect(await prisma.incomeInvoice.count({ where: { companyId: EMPRESA } })).toBe(facturas);
+    expect(await serie('A-H')).toBeNull();
     const despues = (await serie('A'))!;
     expect(despues.ultimoNumero).toBe(antes.ultimoNumero);
     expect(despues.activa).toBe(true);
+  });
+
+  it('una serie nueva se crea desactivada y la factura lleva su número real', async () => {
+    const f = await delLector({ serie: 'OTRO-26', numero: 500 });
+    expect(f.serie).toBe('OTRO-26');
+    expect(f.numeroCompleto).toBe('OTRO-26-500');
+    expect((await serie('OTRO-26'))!).toMatchObject({ activa: false, tipoDocumento: 'FACTURA' });
   });
 
   it('una serie ya histórica (desactivada) se reutiliza tal cual', async () => {
@@ -127,9 +146,60 @@ describe('P5: las facturas del lector van a series históricas', () => {
 
   it('el código normalizado («fac/26» → FAC-26) tampoco cae en una serie activa', async () => {
     await crearSerie(EMPRESA, { codigo: 'FAC-26', descripcion: 'Activa', tipoDocumento: 'FACTURA', activa: true, porDefecto: false });
-    const f = await delLector({ serie: 'fac/26', numero: 8 });
-    expect(f.serie).toBe('FAC-26-H');
+    await expect(delLector({ serie: 'fac/26', numero: 8 })).rejects.toMatchObject({ statusCode: 409 });
     expect((await serie('FAC-26'))!.ultimoNumero).toBe(0);
+  });
+
+  it('una serie de la app que se desactivó, con facturas suyas, no se trata como histórica', async () => {
+    await crearSerie(EMPRESA, { codigo: 'VIEJA', descripcion: 'De la app', tipoDocumento: 'FACTURA', activa: true, porDefecto: false });
+    await alta({ serie: 'VIEJA' });
+    await prisma.invoiceSeries.update({ where: { companyId_codigo: { companyId: EMPRESA, codigo: 'VIEJA' } }, data: { activa: false } });
+    const contador = (await serie('VIEJA'))!.ultimoNumero;
+    await expect(delLector({ serie: 'VIEJA', numero: 90 })).rejects.toMatchObject({ statusCode: 409 });
+    expect((await serie('VIEJA'))!.ultimoNumero).toBe(contador);
+  });
+});
+
+describe('Factura del lector: duplicar y PDF', () => {
+  it('se puede duplicar: la copia va a la serie de facturas por defecto', async () => {
+    const f = await delLector({ serie: 'DUP-26', numero: 3 });
+    const copia = await incomeInvoicesService.duplicar(EMPRESA, f.id);
+    expect(copia.estadoDocumento).toBe('BORRADOR');
+    expect(copia.serie).toBe('A');
+  });
+
+  it('su PDF nunca es la plantilla de factura de la app: sale marcado como registro de otro programa', async () => {
+    const f = await delLector({ serie: 'PDF-26', numero: 4 });
+    const { datos, nombre } = await datosPdfFactura(EMPRESA, f.id);
+    expect(datos.registroLector).toBe(true);
+    expect(nombre).toBe('registro_factura_PDF-26-4.pdf');
+    const descarga = await pdfParaDescargar(EMPRESA, f.id);
+    expect(descarga.nombre).toBe('registro_factura_PDF-26-4.pdf');
+    expect(descarga.contenido.subarray(0, 4).toString()).toBe('%PDF');
+    // Una factura de la app sigue siendo una factura.
+    const propia = await alta();
+    expect((await datosPdfFactura(EMPRESA, propia.id)).datos.registroLector).toBe(false);
+  });
+
+  it('con el PDF original guardado por el lector, se descarga ese original', async () => {
+    const f = await delLector({ serie: 'ORI-26', numero: 5 });
+    const original = Buffer.from('%PDF-1.4 original del otro programa');
+    const storagePath = await putObject(`tests/vfarr-${SUFIJO}/original.pdf`, original, 'application/pdf');
+    await prisma.incomeReaderDocument.create({
+      data: {
+        companyId: EMPRESA,
+        sourceType: 'WEB_UPLOAD',
+        originalFileName: 'original.pdf',
+        mimeType: 'application/pdf',
+        fileSize: original.length,
+        storagePath,
+        status: 'VERIFIED',
+        linkedInvoiceId: f.id,
+      },
+    });
+    const descarga = await pdfParaDescargar(EMPRESA, f.id);
+    expect(descarga.contenido.equals(original)).toBe(true);
+    expect(descarga.nombre).toBe('factura_ORI-26-5_original.pdf');
   });
 });
 
@@ -182,6 +252,20 @@ describe('P9: simplificadas (F2) y sus rectificativas (R5)', () => {
     const r = await incomeInvoicesService.crearRectificativa(EMPRESA, simplificada.id, { motivo: 'Error', tipoFactura: 'R5' });
     expect(r.tipoFactura).toBe('R5');
   });
+
+  it('tampoco cambiando a R5 el borrador de la rectificativa de una F1, ni al finalizarlo', async () => {
+    const completa = await alta();
+    const b = await incomeInvoicesService.crearRectificativa(EMPRESA, completa.id, { motivo: 'Error', borrador: true });
+    await expect(incomeInvoicesService.actualizarBorrador(EMPRESA, b.id, { tipoFactura: 'R5' })).rejects.toMatchObject({
+      statusCode: 400,
+      details: { campo: 'tipoFactura' },
+    });
+    // Aunque el tipo se hubiera colado por otra via, finalizar no emite una R5 sobre una F1.
+    await prisma.incomeInvoice.update({ where: { id: b.id }, data: { tipoFactura: 'R5' } });
+    const antes = (await serie('R'))!.ultimoNumero;
+    await expect(incomeInvoicesService.finalizar(EMPRESA, b.id)).rejects.toThrow(/R5/);
+    expect((await serie('R'))!.ultimoNumero).toBe(antes);
+  });
 });
 
 describe('P10: el NIF del emisor no cambia con VERI*FACTU activado', () => {
@@ -195,10 +279,38 @@ describe('P10: el NIF del emisor no cambia con VERI*FACTU activado', () => {
     expect((await prisma.legalConfig.findUniqueOrThrow({ where: { companyId: CON_VF } })).nif).toBe('B44444444');
   });
 
-  it('sin VERI*FACTU, el NIF se puede corregir', async () => {
+  it('sin facturas emitidas, el NIF se puede corregir', async () => {
     const nuevo = cifSl();
-    const cfg = await legalConfigService.actualizar(EMPRESA, { nif: nuevo });
+    const cfg = await legalConfigService.actualizar(SIN_FACTURAS, { nif: nuevo });
     expect(cfg.nif).toBe(nuevo);
+  });
+
+  it('con facturas emitidas, solo un administrador lo cambia, confirmándolo, y queda el rastro', async () => {
+    const nuevo = cifSl();
+    const antes = (await prisma.legalConfig.findUniqueOrThrow({ where: { companyId: EMPRESA } })).nif;
+    await expect(legalConfigService.actualizar(EMPRESA, { nif: nuevo }, { userId: USUARIO })).rejects.toMatchObject({
+      statusCode: 409,
+      details: { campo: 'nif', codigo: 'NIF_CON_FACTURAS' },
+    });
+    await expect(legalConfigService.actualizar(EMPRESA, { nif: nuevo }, { userId: USUARIO, esAdministrador: true })).rejects.toMatchObject({
+      statusCode: 409,
+      details: { campo: 'nif', codigo: 'CONFIRMAR_CAMBIO_NIF' },
+    });
+    expect((await prisma.legalConfig.findUniqueOrThrow({ where: { companyId: EMPRESA } })).nif).toBe(antes);
+
+    const cfg = await legalConfigService.actualizar(EMPRESA, { nif: nuevo, confirmarCambioNif: true }, { userId: USUARIO, esAdministrador: true });
+    expect(cfg.nif).toBe(nuevo);
+    const rastro = await prisma.auditLog.findFirst({ where: { companyId: EMPRESA, action: 'NIF_EMPRESA_CAMBIADO' }, orderBy: { timestamp: 'desc' } });
+    expect(rastro?.userId).toBe(USUARIO);
+    expect(rastro?.meta).toMatchObject({ nif: { antes, despues: nuevo } });
+  });
+
+  it('con facturas emitidas, pasar a autónomo (que retrasa la red al 1-7-2027) tampoco lo hace quien no es administrador', async () => {
+    await expect(legalConfigService.actualizar(EMPRESA, { tipoSociedad: 'AUTONOMO', nif: '12345678Z' }, { userId: USUARIO })).rejects.toMatchObject({
+      statusCode: 409,
+      details: { codigo: 'NIF_CON_FACTURAS' },
+    });
+    expect((await prisma.legalConfig.findUniqueOrThrow({ where: { companyId: EMPRESA } })).tipoSociedad).toBe('SL');
   });
 });
 
