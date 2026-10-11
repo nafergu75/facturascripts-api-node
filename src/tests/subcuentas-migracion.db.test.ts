@@ -9,7 +9,7 @@
 import { describe, it, expect, beforeAll } from '@jest/globals';
 import { prisma } from '../config/database';
 import { asegurarPlanContableEmpresa } from '../services/chart-of-accounts.service';
-import { EjerciciosCerradosError, informeEnTexto, migrarSubcuentasTerceros } from '../services/terceros/migracion';
+import { EjerciciosCerradosError, informeEnTexto, LongitudSinFijarError, migrarSubcuentasTerceros } from '../services/terceros/migracion';
 
 const SUFIJO = Date.now();
 const E = `migsub-${SUFIJO}`;
@@ -67,8 +67,15 @@ beforeAll(async () => {
 });
 
 describe('migrar subcuentas de terceros', () => {
+  it('sin longitud guardada ni subcuentas en el plan se para y pide --longitud (no elige 8 por su cuenta)', async () => {
+    await expect(migrarSubcuentasTerceros(E)).rejects.toBeInstanceOf(LongitudSinFijarError);
+    await expect(migrarSubcuentasTerceros(E, { aplicar: true })).rejects.toThrow(/tráelo antes .*--longitud 8/s);
+    await expect(migrarSubcuentasTerceros(E, { longitud: 11 })).rejects.toThrow(/de 7 a 10/);
+    expect(await prisma.reglasContables.count({ where: { companyId: E } })).toBe(0);
+  });
+
   it('simulacion: informa de todo y no escribe nada', async () => {
-    const r = await migrarSubcuentasTerceros(E);
+    const r = await migrarSubcuentasTerceros(E, { longitud: 8 });
     expect(r).toMatchObject({ simulacion: true, longitud: 8, longitudFijada: true, lineasReescritas: 3 });
     expect(r.fichasConSubcuentaNueva.map((f) => [f.nombre, f.subcuentas])).toEqual([
       ['Cliente Antiguo SL', ['43000001']],
@@ -96,7 +103,7 @@ describe('migrar subcuentas de terceros', () => {
   });
 
   it('aplicar: reescribe las lineas, da de alta las subcuentas usadas y fija la longitud', async () => {
-    const r = await migrarSubcuentasTerceros(E, { aplicar: true });
+    const r = await migrarSubcuentasTerceros(E, { aplicar: true, longitud: 8 });
     expect(r).toMatchObject({ simulacion: false, lineasReescritas: 3 });
     expect(await prisma.journalEntryLine.findUniqueOrThrow({ where: { id: lineaVenta } })).toMatchObject({ accountCode: '43000002', accountName: 'Cliente Reciente SL' });
     expect(await prisma.journalEntryLine.findUniqueOrThrow({ where: { id: lineaGasto } })).toMatchObject({ accountCode: '41000001', accountName: 'Gestoría Migrada SL' });
@@ -117,6 +124,8 @@ describe('migrar subcuentas de terceros', () => {
     const r = await migrarSubcuentasTerceros(E, { aplicar: true });
     expect(r).toMatchObject({ lineasReescritas: 0, longitudFijada: false, fichasConSubcuentaNueva: [], cuentasDadasDeAltaEnPlan: [] });
     expect(r.sinReasignar).toHaveLength(2);
+    // Con la longitud ya guardada no hace falta --longitud; otra distinta se rechaza.
+    await expect(migrarSubcuentasTerceros(E, { longitud: 10 })).rejects.toThrow(/Ya usa subcuentas de 8 dígitos/);
   });
 
   it('con un ejercicio cerrado se para; con incluirCerrados sigue', async () => {

@@ -5,7 +5,9 @@
 # Uso (Git Bash, desde la MISMA copia del backend con la que se aplico el
 # esquema, despues de scripts/aplicar-esquema-prod.sh):
 #   ENV_PROD=../backend/.env.vercel-prod.local bash scripts/migrar-subcuentas-terceros.sh --todas
-#   ENV_PROD=... bash scripts/migrar-subcuentas-terceros.sh --empresa <id> [--incluir-cerrados]
+#   ENV_PROD=... bash scripts/migrar-subcuentas-terceros.sh --empresa <id> [--incluir-cerrados] [--longitud 8]
+# Una empresa sin longitud de subcuentas fijada (ni plan de 2026 traido) se
+# para: trae antes su plan de 2026 o indica --longitud N (7 a 10).
 # Siempre SIMULA primero (ensena lo que haria sin escribir). Con --aplicar,
 # despues de la simulacion pide "si" y solo entonces escribe. Se puede repetir:
 # una segunda pasada no cambia nada.
@@ -24,7 +26,7 @@ RESTO=()
 for arg in "$@"; do
   if [ "$arg" = "--aplicar" ]; then APLICAR=1; else RESTO+=("$arg"); fi
 done
-[ ${#RESTO[@]} -gt 0 ] || { echo "Uso: bash scripts/migrar-subcuentas-terceros.sh (--empresa <id> ... | --todas) [--aplicar] [--incluir-cerrados]"; exit 1; }
+[ ${#RESTO[@]} -gt 0 ] || { echo "Uso: bash scripts/migrar-subcuentas-terceros.sh (--empresa <id> ... | --todas) [--aplicar] [--incluir-cerrados] [--longitud <7-10>]"; exit 1; }
 
 FICHERO="${ENV_PROD:-.env.vercel-prod.local}"
 [ -f "$FICHERO" ] || { echo "No existe $FICHERO: indica ENV_PROD=ruta del .env de produccion."; exit 1; }

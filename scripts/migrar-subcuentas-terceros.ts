@@ -12,12 +12,15 @@
  *   --aplicar            escribe los cambios (sin esto, SOLO SIMULA)
  *   --incluir-cerrados   sigue aunque la empresa tenga ejercicios cerrados
  *                        (reabrelos antes y vuelve a cerrarlos despues)
+ *   --longitud <N>       longitud de las subcuentas (7 a 10) para las empresas
+ *                        que aun no tienen ninguna; sin ella, esas empresas se
+ *                        paran (si van a traer su plan de 2026, eso antes)
  */
 import { prisma } from '../src/config/database';
-import { EjerciciosCerradosError, informeEnTexto, migrarSubcuentasTerceros } from '../src/services/terceros/migracion';
+import { EjerciciosCerradosError, informeEnTexto, LongitudSinFijarError, migrarSubcuentasTerceros } from '../src/services/terceros/migracion';
 
 function uso(): void {
-  console.log('Uso: migrar-subcuentas-terceros.ts (--empresa <id> ... | --todas) [--aplicar] [--incluir-cerrados]');
+  console.log('Uso: migrar-subcuentas-terceros.ts (--empresa <id> ... | --todas) [--aplicar] [--incluir-cerrados] [--longitud <7-10>]');
 }
 
 async function main(): Promise<number> {
@@ -26,12 +29,20 @@ async function main(): Promise<number> {
   let todas = false;
   let aplicar = false;
   let incluirCerrados = false;
+  let longitud: number | undefined;
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a === '--empresa' && args[i + 1]) empresas.push(args[++i]);
     else if (a === '--todas') todas = true;
     else if (a === '--aplicar') aplicar = true;
     else if (a === '--incluir-cerrados') incluirCerrados = true;
+    else if (a === '--longitud' && args[i + 1]) {
+      longitud = Number(args[++i]);
+      if (!Number.isInteger(longitud) || longitud < 7 || longitud > 10) {
+        console.log('--longitud tiene que ser un número de 7 a 10.');
+        return 2;
+      }
+    }
     else if (a === '-h' || a === '--help') {
       uso();
       return 0;
@@ -50,11 +61,11 @@ async function main(): Promise<number> {
   let errores = 0;
   for (const id of [...new Set(empresas)]) {
     try {
-      const informe = await migrarSubcuentasTerceros(id, { aplicar, incluirCerrados });
+      const informe = await migrarSubcuentasTerceros(id, { aplicar, incluirCerrados, longitud });
       console.log(informeEnTexto(informe));
     } catch (e) {
       errores++;
-      if (e instanceof EjerciciosCerradosError) console.log(`Empresa ${id}: ${e.message}`);
+      if (e instanceof EjerciciosCerradosError || e instanceof LongitudSinFijarError) console.log(`Empresa ${id}: ${e.message}`);
       else console.log(`Empresa ${id}: ERROR ${(e as Error).message}`);
     }
     console.log('');

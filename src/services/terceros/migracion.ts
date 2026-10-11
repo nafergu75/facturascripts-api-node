@@ -5,7 +5,12 @@
  * sitio, como si se hubiera hecho asi desde el principio).
  *
  * Por empresa, en UNA transaccion:
- *  0. Plan base al dia y longitud de las subcuentas fijada en sus reglas.
+ *  0. Plan base al dia y longitud de las subcuentas fijada en sus reglas: la
+ *     que ya tenga guardada o la de las subcuentas de tercero que ya haya en
+ *     su plan; si no hay ninguna, la indicada con `longitud` (--longitud N).
+ *     Sin ninguna de las tres no se elige 8 por su cuenta: se para, porque si
+ *     la empresa va a traer su plan de 2026 (R3) la longitud debe ser la de
+ *     ese plan, y despues de migrar ya no se podria cambiar.
  *  1. Subcuenta para todas las fichas que no la tienen (por fecha de alta).
  *  2. Lineas en la generica (430, 4300..., 400, 410...) de los asientos de una
  *     factura (de la factura, de sus cobros o pagos y sus anulaciones, en
@@ -30,17 +35,27 @@ import {
   asegurarSubcuentaEnPlan,
   asignarSubcuentaCliente,
   asignarSubcuentasProveedor,
-  longitudSubcuentasEmpresa,
+  codigosDeTerceros,
+  guardarLongitudSiFalta,
   longitudSubcuentasGuardada,
   nombreDeSubcuenta,
 } from './subcuentas';
-import { esSubcuentaGenerica } from './numeracion';
+import {
+  esLongitudSubcuentasValida,
+  esSubcuentaGenerica,
+  LONGITUD_SUBCUENTAS_DEFECTO,
+  LONGITUD_SUBCUENTAS_MAX,
+  LONGITUD_SUBCUENTAS_MIN,
+  longitudEnUso,
+} from './numeracion';
 
 export interface OpcionesMigracion {
   /** Confirmar los cambios. Sin el, simulacion: no se escribe nada. */
   aplicar?: boolean;
   /** Seguir aunque haya ejercicios cerrados (reabiertos antes por el usuario). */
   incluirCerrados?: boolean;
+  /** Longitud de las subcuentas (7-10) para una empresa que aun no tiene ninguna. */
+  longitud?: number;
 }
 
 export interface LineaSinReasignar {
@@ -83,6 +98,17 @@ export class EjerciciosCerradosError extends Error {
   }
 }
 
+/** La empresa no tiene longitud guardada ni subcuentas de tercero, y no se ha indicado --longitud. */
+export class LongitudSinFijarError extends Error {
+  constructor() {
+    super(
+      'Aún no tiene fijada la longitud de las subcuentas de clientes y proveedores. ' +
+        'Si vas a traer su plan contable de 2026, tráelo antes (Puesta en marcha > Plan de cuentas): fija la longitud de ese plan. ' +
+        `Si no, repite con --longitud 8 (o la que quieras, de ${LONGITUD_SUBCUENTAS_MIN} a ${LONGITUD_SUBCUENTAS_MAX}).`,
+    );
+  }
+}
+
 const OPCIONES_TX = { timeout: 10 * 60_000, maxWait: 30_000 };
 
 /** Años con asientos o con ejercicio dado de alta que estan cerrados. */
@@ -120,7 +146,7 @@ export async function migrarSubcuentasTerceros(companyId: string, opciones: Opci
 
   try {
     return await prisma.$transaction(async (tx) => {
-      const informe = await migrarEnTx(tx, companyId, !opciones.aplicar);
+      const informe = await migrarEnTx(tx, companyId, !opciones.aplicar, opciones.longitud);
       if (!opciones.aplicar) throw new FinSimulacion(informe);
       return informe;
     }, OPCIONES_TX);
@@ -130,15 +156,31 @@ export async function migrarSubcuentasTerceros(companyId: string, opciones: Opci
   }
 }
 
-async function migrarEnTx(tx: TransaccionBD, companyId: string, simulacion: boolean): Promise<InformeMigracion> {
-  // 0. Longitud: la que ya usa la empresa (o 8), guardada en sus reglas.
-  const longitud = await longitudSubcuentasEmpresa(companyId, tx);
-  const longitudFijada = (await longitudSubcuentasGuardada(companyId, tx)) === null;
-  if (longitudFijada) {
-    const fila = await tx.reglasContables.findUnique({ where: { companyId }, select: { data: true } });
-    const data = { ...((fila?.data as object | null) ?? {}), longitudSubcuentas: longitud };
-    await tx.reglasContables.upsert({ where: { companyId }, update: { data }, create: { companyId, data } });
+/** Longitud con la que migra la empresa y si hay que guardarla (punto 0 de la cabecera). */
+async function longitudDeMigracion(tx: TransaccionBD, companyId: string, pedida: number | undefined): Promise<{ longitud: number; guardar: boolean }> {
+  const guardada = await longitudSubcuentasGuardada(companyId, tx);
+  const actual = guardada ?? longitudEnUso(await codigosDeTerceros(tx, companyId));
+  if (pedida !== undefined) {
+    if (!esLongitudSubcuentasValida(pedida)) throw new Error(`--longitud tiene que ser un número de ${LONGITUD_SUBCUENTAS_MIN} a ${LONGITUD_SUBCUENTAS_MAX}.`);
+    if (actual !== null && actual !== pedida) {
+      throw new Error(`Ya usa subcuentas de ${actual} dígitos: no se puede migrar con --longitud ${pedida}. Quita la opción o pon --longitud ${actual}.`);
+    }
+    return { longitud: pedida, guardar: guardada === null };
   }
+  if (actual !== null) return { longitud: actual, guardar: guardada === null };
+  // Sin longitud: solo hace falta si alguna ficha va a recibir subcuenta.
+  const [clientes, proveedores] = await Promise.all([
+    tx.customer.count({ where: { companyId, subcuenta430: null } }),
+    tx.supplier.count({ where: { companyId, OR: [{ subcuenta400: null }, { subcuenta410: null }] } }),
+  ]);
+  if (clientes + proveedores > 0) throw new LongitudSinFijarError();
+  return { longitud: LONGITUD_SUBCUENTAS_DEFECTO, guardar: false };
+}
+
+async function migrarEnTx(tx: TransaccionBD, companyId: string, simulacion: boolean, longitudPedida?: number): Promise<InformeMigracion> {
+  // 0. Longitud guardada en las reglas antes de asignar nada.
+  const { longitud, guardar: longitudFijada } = await longitudDeMigracion(tx, companyId, longitudPedida);
+  if (longitudFijada) await guardarLongitudSiFalta(tx, companyId, longitud);
 
   // 1. Subcuenta para todas las fichas que no la tienen (cliente n.º 1 = el mas antiguo).
   const fichasConSubcuentaNueva: InformeMigracion['fichasConSubcuentaNueva'] = [];
