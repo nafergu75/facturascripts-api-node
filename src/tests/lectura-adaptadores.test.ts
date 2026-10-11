@@ -101,8 +101,8 @@ describe('aInvoiceExtraction', () => {
   it('gastos con dos tipos de IVA: un tramo por tipo, se pide revisar y el panel sabe el tipo de cada base', async () => {
     const l = leer('resultado-iva-multiple');
     expect(tramosGasto(l)).toEqual([
-      { tipoIva: 21, base: 200, cuota: 42 },
-      { tipoIva: 10, base: 50, cuota: 5 },
+      { tipoIva: 21, base: 200, cuota: 42, descripcion: 'Folletos A5 y carteles A3' },
+      { tipoIva: 10, base: 50, cuota: 5, descripcion: 'Libros' },
     ]);
     const r = await validarLectura(l, ctx());
     expect(r.validaciones.find((x) => x.codigo === 'VARIOS_TIPOS_IVA')).toMatchObject({
@@ -115,6 +115,55 @@ describe('aInvoiceExtraction', () => {
     expect(r.campos['desglose.0.cuota']).toMatchObject({ tipoIva: 21 });
     // En ventas no: las lineas salen ya por tipo.
     expect((await validarLectura(l, venta)).validaciones.map((x) => x.codigo)).not.toContain('VARIOS_TIPOS_IVA');
+  });
+
+  describe('descripcion de cada tramo', () => {
+    const linea = (descripcion: string | null, tipoIva: number | null) => ({ descripcion, cantidad: 1, precioUnitario: null, importe: null, tipoIva, confianza: null });
+
+    it('con las partidas de su tipo: sin repetir, la segunda en minuscula salvo siglas, y con muchas, cuantas mas', () => {
+      const l = leer('resultado-iva-multiple');
+      l.lineas = [linea('Libros', 10), linea('Revistas', 10), linea('libros', 10), linea('Tóner', 21), linea('PVC rígido', 21), linea('  ', 21)];
+      expect(tramosGasto(l).map((t) => t.descripcion)).toEqual(['Tóner y PVC rígido', 'Libros y revistas']);
+      l.lineas = ['Folletos', 'Carteles', 'Sobres', 'Tarjetas', 'Lonas'].map((d) => linea(d, 21));
+      expect(tramosGasto(l)[0].descripcion).toBe('Folletos, carteles y 3 partidas más');
+      l.lineas = ['Folletos', 'Carteles', 'Sobres'].map((d) => linea(d, 21));
+      expect(tramosGasto(l)[0].descripcion).toBe('Folletos, carteles y sobres');
+    });
+
+    it('sin partidas de ese tipo: un texto neutro; al 0 %, "Base exenta"', () => {
+      const l = leer('resultado-iva-multiple');
+      l.lineas = [linea('Tóner', 21), linea('Sin tipo', null)];
+      l.desglose[1].tipoIva = 0;
+      l.desglose[1].cuota.valor = 0;
+      expect(tramosGasto(l).map((t) => t.descripcion)).toEqual(['Tóner', 'Base exenta']);
+      l.lineas = [];
+      l.desglose[1].tipoIva = 10;
+      expect(tramosGasto(l).map((t) => t.descripcion)).toEqual(['Base al 21 %', 'Base al 10 %']);
+    });
+
+    it('con un solo tipo, todas las partidas aunque no traigan el tipo', () => {
+      const l = leer('resultado-simple');
+      l.lineas = [linea('Tóner', null), linea('Papel', 21)];
+      expect(tramosGasto(l)).toEqual([{ tipoIva: 21, base: 200, cuota: 42, descripcion: 'Tóner y papel' }]);
+    });
+
+    it('no pasa de 150 caracteres', () => {
+      const l = leer('resultado-simple');
+      l.lineas = [linea('x'.repeat(400), 21)];
+      const d = tramosGasto(l)[0].descripcion;
+      expect(d).toHaveLength(150);
+      expect(d.endsWith('…')).toBe(true);
+    });
+  });
+
+  it('una parte exenta no se llama "IVA del 0 %" en los avisos', async () => {
+    const l = leer('resultado-iva-multiple');
+    l.desglose[1].tipoIva = 0;
+    l.desglose[1].cuota.valor = 5;
+    const r = await validarLectura(l, ctx());
+    expect(r.validaciones.find((x) => x.codigo === 'VARIOS_TIPOS_IVA')?.mensaje).toBe('La factura lleva IVA del 21 % y una parte exenta: comprueba que hay una línea por cada tipo, con su base.');
+    expect(r.validaciones.find((x) => x.codigo === 'CUOTA_TIPO')?.mensaje).toBe('La base exenta no lleva IVA y pone 5,00 €.');
+    expect(JSON.stringify(r)).not.toContain('0 %');
   });
 
   it('con dos tipos de IVA, comprobarTotales de ingresos-extractor pasa', async () => {

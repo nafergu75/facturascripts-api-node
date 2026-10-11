@@ -176,7 +176,7 @@ describe('POST y GET con Azure', () => {
         iva: 42,
         total: 242,
         tipoIva: 21,
-        tramos: [{ tipoIva: 21, base: 200, cuota: 42 }],
+        tramos: [{ tipoIva: 21, base: 200, cuota: 42, descripcion: 'Folletos A5 y carteles A3' }],
         confianza: 0.91,
         errores: [],
         proveedorExistente: { id: supId, nifCif: NIF_EMISOR },
