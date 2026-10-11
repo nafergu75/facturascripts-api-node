@@ -181,7 +181,7 @@ describe('aprobar el borrador del lector con su mes bloqueado', () => {
 
     await expect(motor.aprobarAsiento(E, asientoId, 'u-percer')).rejects.toMatchObject({
       statusCode: 409,
-      message: expect.stringMatching(/^El periodo de 03\/2026 está bloqueado: modifica la factura y, si la recibiste más tarde, pon en «¿La recibiste más tarde\?»/),
+      message: expect.stringMatching(/^El periodo de 03\/2026 está bloqueado\. Si la factura te llegó más tarde, ábrela y pon la fecha de recepción en «¿La recibiste más tarde\?»\. Después aprueba el asiento\./),
       details: { campo: 'fechaRegistro', facturaId: f.id },
     });
     const porRuta = await request(appMotor(E)).post(`/companies/${E}/accounting/journal-entries/${asientoId}/approve`).send({});

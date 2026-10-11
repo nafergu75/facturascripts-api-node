@@ -136,7 +136,7 @@ describe('alta en un trimestre con el 303 presentado', () => {
     await presentar(E, '303', '1T');
     await expect(motor.aprobarAsiento(E, asientoId, 'u-rev')).rejects.toMatchObject({
       statusCode: 409,
-      message: expect.stringMatching(/^El 303 del 1T de 2026 ya está presentado: modifica la factura/),
+      message: expect.stringMatching(/^El 303 del 1T de 2026 ya está presentado\. Si la factura te llegó más tarde, ábrela/),
       // La pantalla abre la factura con «¿La recibiste más tarde?» desplegado.
       details: { campo: 'fechaRegistro', facturaId: f.id },
     });

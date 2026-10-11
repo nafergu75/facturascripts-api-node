@@ -319,6 +319,7 @@ export class AccountingEngineController {
         const motivo = await motivoPeriodoBloqueado(companyId, fechaAsiento, retencionDe(gasto));
         if (motivo) {
           // campo y facturaId: la pantalla abre la factura con «¿La recibiste más tarde?» desplegado.
+          // Si el mes solo esta bloqueado (no presentado), la factura puede ser de ese mes: se dice como desbloquearlo.
           const periodo = await periodoNoAbierto(companyId, fechaAsiento);
           const siTeLlego = !periodo
             ? ''
@@ -326,7 +327,7 @@ export class AccountingEngineController {
               ? ' Si te llegó en ese mes, desbloquéalo antes en Configuración > Ejercicios y periodos.'
               : ' Si te llegó en ese periodo, consúltalo con tu asesor: está cerrado.';
           throw conflict(
-            `${motivo}: modifica la factura y, si la recibiste más tarde, pon en «¿La recibiste más tarde?» la fecha en que te llegó, de un periodo abierto y sin presentar. Después aprueba el asiento.${siTeLlego}`,
+            `${motivo}. Si la factura te llegó más tarde, ábrela y pon la fecha de recepción en «¿La recibiste más tarde?». Después aprueba el asiento.${siTeLlego}`,
             { campo: 'fechaRegistro', facturaId: asiento.invoiceId },
           );
         }
