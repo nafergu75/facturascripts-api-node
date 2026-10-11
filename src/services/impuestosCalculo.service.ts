@@ -106,7 +106,7 @@ function exentaSinDeduccion(f: FacturaFiscal): boolean {
 }
 
 /** Clave del 349 de una factura: E/S en ventas (segun su tipo), A en compras intracomunitarias. */
-function clave349De(f: FacturaFiscal): OperacionIntracomunitaria['clave'] | null {
+export function clave349De(f: FacturaFiscal): OperacionIntracomunitaria['clave'] | null {
   if (f.tipo === 'compra') return f.operacion === 'intracomunitaria' ? 'A' : null;
   const tipo = tipoDe(f);
   if (!tipo) return f.operacion === 'intracomunitaria' ? 'E' : null;
