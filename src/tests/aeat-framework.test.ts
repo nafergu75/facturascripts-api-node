@@ -56,7 +56,7 @@ describe('Framework AEAT (Punto 1) - validacion Zod + delegacion al generador', 
 
   it('111: genera fichero validado', () => {
     const f = generarFichero111Validado({
-      nif: 'B12345678',
+      nif: 'B12345674',
       denominacion: 'MI EMPRESA SL',
       datos: {
         periodo: periodo2T,
@@ -72,7 +72,8 @@ describe('Framework AEAT (Punto 1) - validacion Zod + delegacion al generador', 
 
   it('115: genera fichero validado', () => {
     const f = generarFichero115Validado({
-      nif: 'B12345678',
+      nif: 'B12345674',
+      razonSocial: 'MI EMPRESA SL',
       datos: {
         periodo: periodo2T,
         nPerceptores: 1,

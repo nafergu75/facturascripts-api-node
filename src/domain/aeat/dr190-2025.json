@@ -1,0 +1,960 @@
+{
+  "modelo": "190",
+  "fuente": "DISENOS_LOGICOS_190_2025.pdf (AEAT, diseños de registro del modelo 190, ejercicio 2025: Orden EHA/3127/2009 con las modificaciones hasta la Orden HAC/1431/2025, BOE de 12-12-2025)",
+  "version": "ejercicio 2025",
+  "ejercicio": 2025,
+  "comprobadoEnSede": "2026-10-11",
+  "pendiente": "La app hace el 190 de 2026 y 2027 con este diseño como borrador. Revisarlo cuando la AEAT publique el del ejercicio siguiente (sede, diseños de registro de los modelos 100 a 199).",
+  "separadorRegistros": "\r\n",
+  "notas": [
+    "Primero el registro de tipo 1 y a continuación los de tipo 2.",
+    "Alfanuméricos y alfabéticos alineados a la izquierda, rellenos de blancos, en mayúsculas, sin caracteres especiales y sin vocales acentuadas. Codificación ISO-8859-1 (Ñ = D1, Ç = C7).",
+    "Numéricos alineados a la derecha, rellenos de ceros, sin signo y sin empaquetar.",
+    "Si un campo no tiene contenido, los numéricos van a ceros y los alfanuméricos y alfabéticos a blancos."
+  ],
+  "registros": [
+    {
+      "id": "tipo1",
+      "hoja": "A. Tipo de registro 1: registro de declarante",
+      "longitud": 500,
+      "campos": [
+        {
+          "n": 1,
+          "pos": 1,
+          "lon": 1,
+          "tipo": "Num",
+          "desc": "Tipo de registro",
+          "constante": "1"
+        },
+        {
+          "n": 2,
+          "pos": 2,
+          "lon": 3,
+          "tipo": "Num",
+          "desc": "Modelo declaración",
+          "constante": "190"
+        },
+        {
+          "n": 3,
+          "pos": 5,
+          "lon": 4,
+          "tipo": "Num",
+          "desc": "Ejercicio",
+          "clave": "ejercicio"
+        },
+        {
+          "n": 4,
+          "pos": 9,
+          "lon": 9,
+          "tipo": "An",
+          "desc": "NIF del declarante (ajustado a la derecha, ceros a la izquierda)",
+          "clave": "nifDeclarante",
+          "alinear": "derecha"
+        },
+        {
+          "n": 5,
+          "pos": 18,
+          "lon": 40,
+          "tipo": "An",
+          "desc": "Apellidos y nombre, denominación o razón social del declarante",
+          "clave": "nombreDeclarante"
+        },
+        {
+          "n": 6,
+          "pos": 58,
+          "lon": 1,
+          "tipo": "A",
+          "desc": "Tipo de soporte (T: transmisión telemática)",
+          "constante": "T"
+        },
+        {
+          "n": 7,
+          "pos": 59,
+          "lon": 9,
+          "tipo": "Num",
+          "desc": "Persona con quién relacionarse. Teléfono",
+          "clave": "telefono"
+        },
+        {
+          "n": 8,
+          "pos": 68,
+          "lon": 40,
+          "tipo": "An",
+          "desc": "Persona con quién relacionarse. Apellidos y nombre",
+          "clave": "contacto"
+        },
+        {
+          "n": 9,
+          "pos": 108,
+          "lon": 13,
+          "tipo": "Num",
+          "desc": "Número identificativo de la declaración",
+          "clave": "numeroDeclaracion"
+        },
+        {
+          "n": 10,
+          "pos": 121,
+          "lon": 1,
+          "tipo": "A",
+          "desc": "Declaración complementaria (C)",
+          "clave": "complementaria",
+          "valores": [
+            "C",
+            " "
+          ]
+        },
+        {
+          "n": 11,
+          "pos": 122,
+          "lon": 1,
+          "tipo": "A",
+          "desc": "Declaración sustitutiva (S)",
+          "clave": "sustitutiva",
+          "valores": [
+            "S",
+            " "
+          ]
+        },
+        {
+          "n": 12,
+          "pos": 123,
+          "lon": 13,
+          "tipo": "Num",
+          "desc": "Número identificativo de la declaración anterior",
+          "clave": "numeroDeclaracionAnterior"
+        },
+        {
+          "n": 13,
+          "pos": 136,
+          "lon": 9,
+          "tipo": "Num",
+          "desc": "Número total de percepciones (registros de tipo 2)",
+          "clave": "numeroPercepciones",
+          "casilla": "01"
+        },
+        {
+          "n": 14,
+          "pos": 145,
+          "lon": 1,
+          "tipo": "A",
+          "desc": "Importe total de las percepciones. Signo",
+          "clave": "signoPercepciones",
+          "valores": [
+            "N",
+            " "
+          ]
+        },
+        {
+          "n": 15,
+          "pos": 146,
+          "lon": 15,
+          "tipo": "Num",
+          "desc": "Importe total de las percepciones",
+          "clave": "importePercepciones",
+          "decimales": 2,
+          "casilla": "02"
+        },
+        {
+          "n": 16,
+          "pos": 161,
+          "lon": 15,
+          "tipo": "Num",
+          "desc": "Importe total de las retenciones e ingresos a cuenta",
+          "clave": "importeRetenciones",
+          "decimales": 2,
+          "casilla": "03"
+        },
+        {
+          "n": 17,
+          "pos": 176,
+          "lon": 50,
+          "tipo": "An",
+          "desc": "Correo electrónico de la persona con quien relacionarse",
+          "clave": "email",
+          "libre": true
+        },
+        {
+          "n": 18,
+          "pos": 226,
+          "lon": 262,
+          "tipo": "An",
+          "desc": "Blancos",
+          "blancos": true
+        },
+        {
+          "n": 19,
+          "pos": 488,
+          "lon": 13,
+          "tipo": "An",
+          "desc": "Sello electrónico (solo programas de la AEAT)",
+          "blancos": true
+        }
+      ]
+    },
+    {
+      "id": "tipo2",
+      "hoja": "B. Tipo de registro 2: registro de perceptor",
+      "longitud": 500,
+      "campos": [
+        {
+          "n": 1,
+          "pos": 1,
+          "lon": 1,
+          "tipo": "Num",
+          "desc": "Tipo de registro",
+          "constante": "2"
+        },
+        {
+          "n": 2,
+          "pos": 2,
+          "lon": 3,
+          "tipo": "Num",
+          "desc": "Modelo declaración",
+          "constante": "190"
+        },
+        {
+          "n": 3,
+          "pos": 5,
+          "lon": 4,
+          "tipo": "Num",
+          "desc": "Ejercicio",
+          "clave": "ejercicio"
+        },
+        {
+          "n": 4,
+          "pos": 9,
+          "lon": 9,
+          "tipo": "An",
+          "desc": "NIF del declarante",
+          "clave": "nifDeclarante",
+          "alinear": "derecha"
+        },
+        {
+          "n": 5,
+          "pos": 18,
+          "lon": 9,
+          "tipo": "An",
+          "desc": "NIF del perceptor",
+          "clave": "nifPerceptor",
+          "alinear": "derecha"
+        },
+        {
+          "n": 6,
+          "pos": 27,
+          "lon": 9,
+          "tipo": "An",
+          "desc": "NIF del representante legal (menores de 14 años)",
+          "clave": "nifRepresentante",
+          "alinear": "derecha"
+        },
+        {
+          "n": 7,
+          "pos": 36,
+          "lon": 40,
+          "tipo": "An",
+          "desc": "Apellidos y nombre o denominación del perceptor",
+          "clave": "nombrePerceptor"
+        },
+        {
+          "n": 8,
+          "pos": 76,
+          "lon": 2,
+          "tipo": "Num",
+          "desc": "Código provincia",
+          "clave": "provincia"
+        },
+        {
+          "n": 9,
+          "pos": 78,
+          "lon": 1,
+          "tipo": "A",
+          "desc": "Clave de percepción",
+          "clave": "clave",
+          "valores": [
+            "A",
+            "B",
+            "C",
+            "D",
+            "E",
+            "F",
+            "G",
+            "H",
+            "I",
+            "J",
+            "K",
+            "L"
+          ]
+        },
+        {
+          "n": 10,
+          "pos": 79,
+          "lon": 2,
+          "tipo": "Num",
+          "desc": "Subclave",
+          "clave": "subclave"
+        },
+        {
+          "n": 11,
+          "pos": 81,
+          "lon": 1,
+          "tipo": "A",
+          "desc": "Percepciones dinerarias no derivadas de incapacidad laboral. Signo de la percepción íntegra",
+          "clave": "signoPercepcion",
+          "valores": [
+            "N",
+            " "
+          ]
+        },
+        {
+          "n": 12,
+          "pos": 82,
+          "lon": 13,
+          "tipo": "Num",
+          "desc": "Percepciones dinerarias no derivadas de incapacidad laboral. Percepción íntegra",
+          "clave": "percepcionIntegra",
+          "decimales": 2
+        },
+        {
+          "n": 13,
+          "pos": 95,
+          "lon": 13,
+          "tipo": "Num",
+          "desc": "Percepciones dinerarias no derivadas de incapacidad laboral. Retenciones practicadas",
+          "clave": "retenciones",
+          "decimales": 2
+        },
+        {
+          "n": 14,
+          "pos": 108,
+          "lon": 1,
+          "tipo": "A",
+          "desc": "Percepciones en especie no derivadas de incapacidad laboral. Signo de la percepción en especie",
+          "clave": "signoEspecie",
+          "valores": [
+            "N",
+            " "
+          ]
+        },
+        {
+          "n": 15,
+          "pos": 109,
+          "lon": 13,
+          "tipo": "Num",
+          "desc": "Percepciones en especie no derivadas de incapacidad laboral. Valoración",
+          "clave": "valoracionEspecie",
+          "decimales": 2
+        },
+        {
+          "n": 16,
+          "pos": 122,
+          "lon": 13,
+          "tipo": "Num",
+          "desc": "Percepciones en especie no derivadas de incapacidad laboral. Ingresos a cuenta efectuados",
+          "clave": "ingresosACuentaEfectuados",
+          "decimales": 2
+        },
+        {
+          "n": 17,
+          "pos": 135,
+          "lon": 13,
+          "tipo": "Num",
+          "desc": "Percepciones en especie no derivadas de incapacidad laboral. Ingresos a cuenta repercutidos",
+          "clave": "ingresosACuentaRepercutidos",
+          "decimales": 2
+        },
+        {
+          "n": 18,
+          "pos": 148,
+          "lon": 4,
+          "tipo": "Num",
+          "desc": "Ejercicio devengo",
+          "clave": "ejercicioDevengo"
+        },
+        {
+          "n": 19,
+          "pos": 152,
+          "lon": 1,
+          "tipo": "Num",
+          "desc": "Ceuta o Melilla (1) / La Palma (2)",
+          "clave": "ceutaMelilla",
+          "valores": [
+            "0",
+            "1",
+            "2"
+          ]
+        },
+        {
+          "n": 20,
+          "pos": 153,
+          "lon": 4,
+          "tipo": "Num",
+          "desc": "Datos adicionales. Año de nacimiento",
+          "clave": "anioNacimiento"
+        },
+        {
+          "n": 21,
+          "pos": 157,
+          "lon": 1,
+          "tipo": "Num",
+          "desc": "Datos adicionales. Situación familiar",
+          "clave": "situacionFamiliar",
+          "valores": [
+            "0",
+            "1",
+            "2",
+            "3"
+          ]
+        },
+        {
+          "n": 22,
+          "pos": 158,
+          "lon": 9,
+          "tipo": "An",
+          "desc": "Datos adicionales. NIF del cónyuge / NIF del titular de la unidad de convivencia",
+          "clave": "nifConyuge",
+          "alinear": "derecha"
+        },
+        {
+          "n": 23,
+          "pos": 167,
+          "lon": 1,
+          "tipo": "Num",
+          "desc": "Datos adicionales. Discapacidad",
+          "clave": "discapacidad",
+          "valores": [
+            "0",
+            "1",
+            "2",
+            "3"
+          ]
+        },
+        {
+          "n": 24,
+          "pos": 168,
+          "lon": 1,
+          "tipo": "Num",
+          "desc": "Datos adicionales. Contrato o relación",
+          "clave": "contrato",
+          "valores": [
+            "0",
+            "1",
+            "2",
+            "3",
+            "4"
+          ]
+        },
+        {
+          "n": 25,
+          "pos": 169,
+          "lon": 1,
+          "tipo": "Num",
+          "desc": "Datos adicionales. Titular unidad de convivencia (L.29)",
+          "clave": "titularUnidadConvivencia",
+          "valores": [
+            "0",
+            "1",
+            "2"
+          ]
+        },
+        {
+          "n": 26,
+          "pos": 170,
+          "lon": 1,
+          "tipo": "Num",
+          "desc": "Datos adicionales. Movilidad geográfica",
+          "clave": "movilidadGeografica",
+          "valores": [
+            "0",
+            "1"
+          ]
+        },
+        {
+          "n": 27,
+          "pos": 171,
+          "lon": 13,
+          "tipo": "Num",
+          "desc": "Datos adicionales. Reducciones aplicables",
+          "clave": "reducciones",
+          "decimales": 2
+        },
+        {
+          "n": 28,
+          "pos": 184,
+          "lon": 13,
+          "tipo": "Num",
+          "desc": "Datos adicionales. Gastos deducibles",
+          "clave": "gastosDeducibles",
+          "decimales": 2
+        },
+        {
+          "n": 29,
+          "pos": 197,
+          "lon": 13,
+          "tipo": "Num",
+          "desc": "Datos adicionales. Pensiones compensatorias",
+          "clave": "pensionesCompensatorias",
+          "decimales": 2
+        },
+        {
+          "n": 30,
+          "pos": 210,
+          "lon": 13,
+          "tipo": "Num",
+          "desc": "Datos adicionales. Anualidades por alimentos",
+          "clave": "anualidadesAlimentos",
+          "decimales": 2
+        },
+        {
+          "n": 31,
+          "pos": 223,
+          "lon": 1,
+          "tipo": "Num",
+          "desc": "Hijos y otros descendientes. Menores de 3 años. Nº total",
+          "clave": "descMenores3Total"
+        },
+        {
+          "n": 32,
+          "pos": 224,
+          "lon": 1,
+          "tipo": "Num",
+          "desc": "Hijos y otros descendientes. Menores de 3 años. Por entero",
+          "clave": "descMenores3Entero"
+        },
+        {
+          "n": 33,
+          "pos": 225,
+          "lon": 2,
+          "tipo": "Num",
+          "desc": "Hijos y otros descendientes. Resto. Nº total",
+          "clave": "descRestoTotal"
+        },
+        {
+          "n": 34,
+          "pos": 227,
+          "lon": 2,
+          "tipo": "Num",
+          "desc": "Hijos y otros descendientes. Resto. Por entero",
+          "clave": "descRestoEntero"
+        },
+        {
+          "n": 35,
+          "pos": 229,
+          "lon": 2,
+          "tipo": "Num",
+          "desc": "Descendientes con discapacidad. Igual o superior al 33 % e inferior al 65 %. Nº total",
+          "clave": "descDisc33Total"
+        },
+        {
+          "n": 36,
+          "pos": 231,
+          "lon": 2,
+          "tipo": "Num",
+          "desc": "Descendientes con discapacidad. Igual o superior al 33 % e inferior al 65 %. Por entero",
+          "clave": "descDisc33Entero"
+        },
+        {
+          "n": 37,
+          "pos": 233,
+          "lon": 2,
+          "tipo": "Num",
+          "desc": "Descendientes con discapacidad. Movilidad reducida. Nº total",
+          "clave": "descMovRedTotal"
+        },
+        {
+          "n": 38,
+          "pos": 235,
+          "lon": 2,
+          "tipo": "Num",
+          "desc": "Descendientes con discapacidad. Movilidad reducida. Por entero",
+          "clave": "descMovRedEntero"
+        },
+        {
+          "n": 39,
+          "pos": 237,
+          "lon": 2,
+          "tipo": "Num",
+          "desc": "Descendientes con discapacidad. Igual o superior al 65 %. Nº total",
+          "clave": "descDisc65Total"
+        },
+        {
+          "n": 40,
+          "pos": 239,
+          "lon": 2,
+          "tipo": "Num",
+          "desc": "Descendientes con discapacidad. Igual o superior al 65 %. Por entero",
+          "clave": "descDisc65Entero"
+        },
+        {
+          "n": 41,
+          "pos": 241,
+          "lon": 1,
+          "tipo": "Num",
+          "desc": "Ascendientes. Menores de 75 años. Nº total",
+          "clave": "ascMenores75Total"
+        },
+        {
+          "n": 42,
+          "pos": 242,
+          "lon": 1,
+          "tipo": "Num",
+          "desc": "Ascendientes. Menores de 75 años. Por entero",
+          "clave": "ascMenores75Entero"
+        },
+        {
+          "n": 43,
+          "pos": 243,
+          "lon": 1,
+          "tipo": "Num",
+          "desc": "Ascendientes. De 75 años o más. Nº total",
+          "clave": "ascMayores75Total"
+        },
+        {
+          "n": 44,
+          "pos": 244,
+          "lon": 1,
+          "tipo": "Num",
+          "desc": "Ascendientes. De 75 años o más. Por entero",
+          "clave": "ascMayores75Entero"
+        },
+        {
+          "n": 45,
+          "pos": 245,
+          "lon": 1,
+          "tipo": "Num",
+          "desc": "Ascendientes con discapacidad. Igual o superior al 33 % e inferior al 65 %. Nº total",
+          "clave": "ascDisc33Total"
+        },
+        {
+          "n": 46,
+          "pos": 246,
+          "lon": 1,
+          "tipo": "Num",
+          "desc": "Ascendientes con discapacidad. Igual o superior al 33 % e inferior al 65 %. Por entero",
+          "clave": "ascDisc33Entero"
+        },
+        {
+          "n": 47,
+          "pos": 247,
+          "lon": 1,
+          "tipo": "Num",
+          "desc": "Ascendientes con discapacidad. Movilidad reducida. Nº total",
+          "clave": "ascMovRedTotal"
+        },
+        {
+          "n": 48,
+          "pos": 248,
+          "lon": 1,
+          "tipo": "Num",
+          "desc": "Ascendientes con discapacidad. Movilidad reducida. Por entero",
+          "clave": "ascMovRedEntero"
+        },
+        {
+          "n": 49,
+          "pos": 249,
+          "lon": 1,
+          "tipo": "Num",
+          "desc": "Ascendientes con discapacidad. Igual o superior al 65 %. Nº total",
+          "clave": "ascDisc65Total"
+        },
+        {
+          "n": 50,
+          "pos": 250,
+          "lon": 1,
+          "tipo": "Num",
+          "desc": "Ascendientes con discapacidad. Igual o superior al 65 %. Por entero",
+          "clave": "ascDisc65Entero"
+        },
+        {
+          "n": 51,
+          "pos": 251,
+          "lon": 1,
+          "tipo": "Num",
+          "desc": "Cómputo de los 3 primeros hijos. Hijo 1º",
+          "clave": "hijo1",
+          "valores": [
+            "0",
+            "1",
+            "2"
+          ]
+        },
+        {
+          "n": 52,
+          "pos": 252,
+          "lon": 1,
+          "tipo": "Num",
+          "desc": "Cómputo de los 3 primeros hijos. Hijo 2º",
+          "clave": "hijo2",
+          "valores": [
+            "0",
+            "1",
+            "2"
+          ]
+        },
+        {
+          "n": 53,
+          "pos": 253,
+          "lon": 1,
+          "tipo": "Num",
+          "desc": "Cómputo de los 3 primeros hijos. Hijo 3º",
+          "clave": "hijo3",
+          "valores": [
+            "0",
+            "1",
+            "2"
+          ]
+        },
+        {
+          "n": 54,
+          "pos": 254,
+          "lon": 1,
+          "tipo": "Num",
+          "desc": "Comunicación préstamos vivienda habitual",
+          "clave": "prestamosVivienda",
+          "valores": [
+            "0",
+            "1"
+          ]
+        },
+        {
+          "n": 55,
+          "pos": 255,
+          "lon": 1,
+          "tipo": "A",
+          "desc": "Percepciones dinerarias derivadas de incapacidad laboral. Signo de la percepción íntegra",
+          "clave": "signoPercepcionIT",
+          "valores": [
+            "N",
+            " "
+          ]
+        },
+        {
+          "n": 56,
+          "pos": 256,
+          "lon": 13,
+          "tipo": "Num",
+          "desc": "Percepciones dinerarias derivadas de incapacidad laboral. Percepción íntegra",
+          "clave": "percepcionIT",
+          "decimales": 2
+        },
+        {
+          "n": 57,
+          "pos": 269,
+          "lon": 13,
+          "tipo": "Num",
+          "desc": "Percepciones dinerarias derivadas de incapacidad laboral. Retenciones practicadas",
+          "clave": "retencionesIT",
+          "decimales": 2
+        },
+        {
+          "n": 58,
+          "pos": 282,
+          "lon": 1,
+          "tipo": "A",
+          "desc": "Percepciones en especie derivadas de incapacidad laboral. Signo de la percepción en especie",
+          "clave": "signoEspecieIT",
+          "valores": [
+            "N",
+            " "
+          ]
+        },
+        {
+          "n": 59,
+          "pos": 283,
+          "lon": 13,
+          "tipo": "Num",
+          "desc": "Percepciones en especie derivadas de incapacidad laboral. Valoración",
+          "clave": "valoracionEspecieIT",
+          "decimales": 2
+        },
+        {
+          "n": 60,
+          "pos": 296,
+          "lon": 13,
+          "tipo": "Num",
+          "desc": "Percepciones en especie derivadas de incapacidad laboral. Ingresos a cuenta efectuados",
+          "clave": "ingresosACuentaIT",
+          "decimales": 2
+        },
+        {
+          "n": 61,
+          "pos": 309,
+          "lon": 13,
+          "tipo": "Num",
+          "desc": "Percepciones en especie derivadas de incapacidad laboral. Ingresos a cuenta repercutidos",
+          "clave": "ingresosACuentaRepercutidosIT",
+          "decimales": 2
+        },
+        {
+          "n": 62,
+          "pos": 322,
+          "lon": 1,
+          "tipo": "Num",
+          "desc": "Complemento ayuda para la infancia (L.29)",
+          "clave": "complementoInfancia",
+          "valores": [
+            "0",
+            "1",
+            "2"
+          ]
+        },
+        {
+          "n": 63,
+          "pos": 323,
+          "lon": 13,
+          "tipo": "Num",
+          "desc": "Retenciones e ingresos a cuenta (clave E). Hacienda Estatal",
+          "clave": "retencionesEstado",
+          "decimales": 2
+        },
+        {
+          "n": 64,
+          "pos": 336,
+          "lon": 13,
+          "tipo": "Num",
+          "desc": "Retenciones e ingresos a cuenta (clave E). Comunidad Foral de Navarra",
+          "clave": "retencionesNavarra",
+          "decimales": 2
+        },
+        {
+          "n": 65,
+          "pos": 349,
+          "lon": 13,
+          "tipo": "Num",
+          "desc": "Retenciones e ingresos a cuenta (clave E). Diputación Foral de Araba/Álava",
+          "clave": "retencionesAlava",
+          "decimales": 2
+        },
+        {
+          "n": 66,
+          "pos": 362,
+          "lon": 13,
+          "tipo": "Num",
+          "desc": "Retenciones e ingresos a cuenta (clave E). Diputación Foral de Gipuzkoa",
+          "clave": "retencionesGipuzkoa",
+          "decimales": 2
+        },
+        {
+          "n": 67,
+          "pos": 375,
+          "lon": 13,
+          "tipo": "Num",
+          "desc": "Retenciones e ingresos a cuenta (clave E). Diputación Foral de Bizkaia",
+          "clave": "retencionesBizkaia",
+          "decimales": 2
+        },
+        {
+          "n": 68,
+          "pos": 388,
+          "lon": 1,
+          "tipo": "Num",
+          "desc": "Excesos entrega acciones empresas emergentes",
+          "clave": "excesosEmergentes",
+          "valores": [
+            "0",
+            "1"
+          ]
+        },
+        {
+          "n": 69,
+          "pos": 389,
+          "lon": 1,
+          "tipo": "Num",
+          "desc": "Rendimientos del trabajo por la gestión de fondos de emprendimiento",
+          "clave": "fondosEmprendimiento",
+          "valores": [
+            "0",
+            "1"
+          ]
+        },
+        {
+          "n": 70,
+          "pos": 390,
+          "lon": 1,
+          "tipo": "Num",
+          "desc": "Tipos de prestación de la clave B.01. Jubilación",
+          "clave": "prestacionJubilacion",
+          "valores": [
+            "0",
+            "1"
+          ]
+        },
+        {
+          "n": 71,
+          "pos": 391,
+          "lon": 1,
+          "tipo": "Num",
+          "desc": "Tipos de prestación de la clave B.01. Viudedad",
+          "clave": "prestacionViudedad",
+          "valores": [
+            "0",
+            "1"
+          ]
+        },
+        {
+          "n": 72,
+          "pos": 392,
+          "lon": 1,
+          "tipo": "Num",
+          "desc": "Tipos de prestación de la clave B.01. Incapacidad permanente total o parcial",
+          "clave": "prestacionIncapacidad",
+          "valores": [
+            "0",
+            "1"
+          ]
+        },
+        {
+          "n": 73,
+          "pos": 393,
+          "lon": 1,
+          "tipo": "Num",
+          "desc": "Tipos de prestación de la clave B.01. Pensiones no contributivas por invalidez o jubilación",
+          "clave": "prestacionNoContributiva",
+          "valores": [
+            "0",
+            "1"
+          ]
+        },
+        {
+          "n": 74,
+          "pos": 394,
+          "lon": 1,
+          "tipo": "Num",
+          "desc": "Tipos de prestación de la clave B.01. Resto de prestaciones del artículo 17.2.a).1ª LIRPF",
+          "clave": "prestacionResto",
+          "valores": [
+            "0",
+            "1"
+          ]
+        },
+        {
+          "n": 75,
+          "pos": 395,
+          "lon": 106,
+          "tipo": "An",
+          "desc": "Blancos",
+          "blancos": true
+        }
+      ]
+    }
+  ],
+  "formulario": {
+    "titulo": "Modelo 190. Retenciones e ingresos a cuenta del IRPF. Rendimientos del trabajo y de actividades económicas, premios y determinadas ganancias patrimoniales e imputaciones de rentas. Resumen anual",
+    "resumen": [
+      {
+        "casilla": "01",
+        "rotulo": "Número total de percepciones",
+        "campo": "numeroPercepciones"
+      },
+      {
+        "casilla": "02",
+        "rotulo": "Importe total de las percepciones",
+        "campo": "importePercepciones"
+      },
+      {
+        "casilla": "03",
+        "rotulo": "Importe total de las retenciones e ingresos a cuenta",
+        "campo": "importeRetenciones"
+      }
+    ]
+  }
+}

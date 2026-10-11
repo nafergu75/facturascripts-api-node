@@ -17,7 +17,7 @@ import { calcularModelo190, periodoFiscal } from '../services/nominas/fiscal';
 import { cambiarEstadoPeriodo } from '../services/periodos.service';
 import taxModelsRoutes from '../routes/tax-models.routes';
 import { errorMiddleware } from '../middleware/error.middleware';
-import { controlCif } from '../utils/nif';
+import { controlCif, letraNif } from '../utils/nif';
 
 const SUFIJO = `${Date.now()}`;
 let n = 0;
@@ -29,12 +29,18 @@ const cif = () => {
 async function nuevaEmpresa(nombre: string): Promise<string> {
   const id = `compras-alq-${nombre}-${SUFIJO}`;
   await prisma.company.create({ data: { id, name: `Alquiler ${nombre} SL`, fsBaseUrl: 'http://localhost:8080', fsApiKeyEnc: 'k' } });
-  await prisma.legalConfig.create({ data: { companyId: id, denominacion: `Alquiler ${nombre} SL`, nif: 'B10000000' } });
+  await prisma.legalConfig.create({ data: { companyId: id, denominacion: `Alquiler ${nombre} SL`, nif: 'B10000008' } });
   return id;
 }
 
-const proveedor = async (companyId: string, nombre: string) =>
-  (await prisma.supplier.create({ data: { companyId, nombreFiscal: nombre, nifCif: cif(), cp: '46001', provincia: 'Valencia' } })).id;
+/** DNI inventado con su letra: los profesionales del 190 (clave G) son personas fisicas. */
+const dni = () => {
+  const numero = 10000000 + ((Date.now() + n++ * 7919) % 89999999);
+  return `${numero}${letraNif(numero)}`;
+};
+
+const proveedor = async (companyId: string, nombre: string, nifCif = cif()) =>
+  (await prisma.supplier.create({ data: { companyId, nombreFiscal: nombre, nifCif, cp: '46001', provincia: 'Valencia' } })).id;
 
 const alquiler = (supplierId: string, fecha: string, numero: string) => ({
   companyId: '',
@@ -77,7 +83,7 @@ describe('alquiler y profesional en el mismo trimestre', () => {
   beforeAll(async () => {
     E = await nuevaEmpresa('mixto');
     arrendador = await proveedor(E, 'Inmuebles Centro SL');
-    asesor = await proveedor(E, 'Asesoría Ruiz SL');
+    asesor = await proveedor(E, 'Asesoría Ruiz', dni());
     await alta(E, alquiler(arrendador, '2026-02-01', 'ALQ-02'));
     await alta(E, profesional(asesor, '2026-02-10', 'AS-15'));
   });
@@ -96,7 +102,7 @@ describe('alquiler y profesional en el mismo trimestre', () => {
 
   it('el 190 no tiene a la arrendadora y sigue cuadrando con los 111', async () => {
     const m = await calcularModelo190(E, 2026);
-    expect(m.perceptores.map((p) => [p.clave, p.nombre, p.retenciones])).toEqual([['G', 'Asesoría Ruiz SL', 75]]);
+    expect(m.perceptores.map((p) => [p.clave, p.nombre, p.retenciones])).toEqual([['G', 'Asesoría Ruiz', 75]]);
     expect(m.cuadre111.coincide).toBe(true);
   });
 
@@ -138,7 +144,7 @@ describe('anuladas en el 111 y el 115', () => {
   it('una anulada nunca resta: sin el 111/115 de su periodo presentado no cuenta en ninguno', async () => {
     const E = await nuevaEmpresa('anuladas');
     const arrendador = await proveedor(E, 'Locales Norte SL');
-    const asesor = await proveedor(E, 'Abogados Sur SL');
+    const asesor = await proveedor(E, 'Abogada Sur', dni());
 
     // Periodo abierto: se anula y desaparece.
     const a1 = await alta(E, alquiler(arrendador, '2026-02-01', 'L-1'));
@@ -169,7 +175,7 @@ describe('anuladas en el 111 y el 115', () => {
   it('con el 111/115 de su periodo presentado: se queda alli con un aviso, y no resta en el de la anulacion', async () => {
     const E = await nuevaEmpresa('anuladas-presentadas');
     const arrendador = await proveedor(E, 'Locales Este SL');
-    const asesor = await proveedor(E, 'Abogados Oeste SL');
+    const asesor = await proveedor(E, 'Abogado Oeste', dni());
     const a = await alta(E, alquiler(arrendador, '2026-05-15', 'L-9'));
     const p = await alta(E, profesional(asesor, '2026-05-15', 'P-9'));
     for (const codigo of ['111', '115']) {
@@ -188,7 +194,7 @@ describe('anuladas en el 111 y el 115', () => {
     const m111 = await calcularModelo111(E, periodoFiscal(2026, '2T'));
     expect(m111.retencionesActividades).toBe(75);
     expect(m111.avisos).toContain(
-      'La factura P-9 de Abogados Oeste SL está anulada, pero su retención se declaró en el 111 del 2T de 2026: si no llegaste a pagarla, pide la rectificación de ese modelo.',
+      'La factura P-9 de Abogado Oeste está anulada, pero su retención se declaró en el 111 del 2T de 2026: si no llegaste a pagarla, pide la rectificación de ese modelo.',
     );
     expect((await calcularModelo111(E, periodoFiscal(2026, '3T'))).retencionesActividades).toBe(0);
     // El 190 casa con los 111 presentados.

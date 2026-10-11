@@ -450,7 +450,6 @@ router.get('/docs/modules', (req: Request, res: Response) => {
           'Cumplimiento normativo',
         ],
         endpoints: [
-          'POST /aeat/modelo111/generate',
           'POST /aeat/modelo347/generate',
           'POST /aeat/modelo349/generate',
           'POST /aeat/modelo390/generate',

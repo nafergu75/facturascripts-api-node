@@ -9,7 +9,6 @@ import { asyncHandler } from '../utils/async-handler';
 import { sendOk } from '../utils/response';
 import { badRequest } from '../utils/http-errors';
 import { registrarAuditoria } from '../services/auditoria.service';
-import { configuracionEmpresa } from '../services/impuestosModulo.service';
 import { calcularModelo111, esEmpresaEspanolaFiscal, MENSAJE_SIN_MODELOS } from '../services/impuestosCalculo.service';
 import {
   anularPago111Schema,
@@ -32,7 +31,9 @@ import {
   pagarSegurosSociales,
 } from '../services/nominas/segurosSociales';
 import { calcularModelo190, periodoFiscal, retencionesTrabajo } from '../services/nominas/fiscal';
-import { DISENOS_190_VERIFICADOS, comprobarDiseno190, generarFicheroModelo190, informe190Excel } from '../services/nominas/modelo190';
+import { comprobarDiseno190, idRegistro190, informe190Excel, resumen190 } from '../services/nominas/modelo190';
+import { entradaFichero190, ficheroModelo190 } from '../services/nominas/fichero190';
+import { estadoNumeracion190 } from '../services/nominas/numeracion190';
 import {
   anularDocumentoNominas,
   descargarDocumentoNominas,
@@ -194,34 +195,47 @@ export const nominasConexionesController = {
       await auditar(req, 'EXPORTAR_PERCEPTORES_190', String(ejercicio), { ejercicio, registros: m.totales.registros, perceptores: m.totales.perceptores });
       return descargar(res, `modelo190_${ejercicio}.xlsx`, XLSX_MIME, informe190Excel(m));
     }
-    sendOk(res, { ...m, ficheroDisponible: !!DISENOS_190_VERIFICADOS[ejercicio] });
+    // Sin diseño publicado del ejercicio se genera con el ultimo, como borrador (avisoDiseno).
+    const diseno = (() => {
+      try {
+        return comprobarDiseno190(ejercicio);
+      } catch {
+        return null;
+      }
+    })();
+    sendOk(res, {
+      ...m,
+      // Cada registro con su id: la pantalla elige con el cuales van en una complementaria.
+      perceptores: m.perceptores.map((p) => ({ ...p, id: idRegistro190(p) })),
+      ficheroDisponible: diseno !== null,
+      avisoDiseno: diseno?.aviso ?? null,
+      resumen: resumen190(m.perceptores),
+      // Ultimo numero identificativo generado y justificante con que se marco presentado.
+      numeracion: await estadoNumeracion190(req.companyId!, ejercicio),
+    });
   }),
 
   /**
-   * GET /190/:ejercicio/fichero — TXT de la AEAT (ISO-8859-1). 409 si el diseno de
-   * registro de ese ejercicio no esta verificado; 400 si faltan datos.
+   * GET /190/:ejercicio/fichero — TXT de la AEAT (ISO-8859-1). 409 si el ejercicio
+   * es anterior al primer diseño verificado; para uno posterior al ultimo publicado
+   * sale como borrador con ese diseño (cabecera X-Avisos-Aeat). 400 si faltan datos.
+   * telefono, contacto y email (persona con quien relacionarse; obligatorios
+   * telefono y contacto), tipoDeclaracion=C|S y numeroAnterior: en la query (GET)
+   * o, mejor, en el cuerpo (POST, la pantalla). El numero identificativo lo pone
+   * la app (cabecera X-Numero-Declaracion).
    */
   fichero190: asyncHandler(async (req, res) => {
     const ejercicio = ejercicioDe(req);
     // Una empresa no establecida en Espana no presenta modelos de la AEAT (divisas-iva).
     if (!(await esEmpresaEspanolaFiscal(req.companyId!))) throw badRequest(MENSAJE_SIN_MODELOS);
-    comprobarDiseno190(ejercicio);
-    const [m, cfg] = await Promise.all([calcularModelo190(req.companyId!, ejercicio), configuracionEmpresa(req.companyId!)]);
-    const q = req.query as Record<string, unknown>;
-    const contenido = generarFicheroModelo190(
-      ejercicio,
-      {
-        nif: String(cfg.config_nif ?? ''),
-        nombre: String(cfg.config_razon_social ?? ''),
-        telefono: texto(q.telefono),
-        contacto: texto(q.contacto),
-        email: texto(q.email),
-        numeroDeclaracion: texto(q.numeroDeclaracion),
-      },
-      m.perceptores,
-    );
-    await auditar(req, 'EXPORTAR_MODELO_190', String(ejercicio), { registros: m.totales.registros });
-    descargar(res, `190_${ejercicio}.txt`, 'text/plain; charset=ISO-8859-1', Buffer.from(contenido, 'latin1'));
+    // Por POST los datos de la persona de contacto van en el cuerpo (no quedan en los registros de las URL).
+    const q = ((req.method === 'POST' ? req.body : req.query) ?? {}) as Record<string, unknown>;
+    const f = await ficheroModelo190(req.companyId!, ejercicio, entradaFichero190(q));
+    // Cabecera ASCII (sin tildes): los avisos con texto completo estan en /190/:ejercicio/perceptores.
+    if (f.avisos.length) res.setHeader('X-Avisos-Aeat', encodeURIComponent(f.avisos.join(' | ')));
+    res.setHeader('X-Numero-Declaracion', f.numeroDeclaracion);
+    await auditar(req, 'EXPORTAR_MODELO_190', String(ejercicio), { registros: f.registros, numeroDeclaracion: f.numeroDeclaracion, tipo: q.tipoDeclaracion ?? null });
+    descargar(res, `190_${ejercicio}.txt`, 'text/plain; charset=ISO-8859-1', Buffer.from(f.contenido, 'latin1'));
   }),
 
   // --- PDF de la gestoria ---

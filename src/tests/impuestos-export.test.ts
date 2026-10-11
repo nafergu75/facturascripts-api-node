@@ -91,7 +91,7 @@ describe('generarFicheroModelo111', () => {
       periodo, nPerceptoresTrabajo: 3, percepcionesTrabajo: 9000,
       retencionesTrabajo: 1350, totalRetenciones: 1350, resultadoIngresar: 1350,
     };
-    const f = generarFicheroModelo111('B12345678', periodo, datos, { denominacion: 'MI EMPRESA SL' });
+    const f = generarFicheroModelo111('B12345674', periodo, datos, { denominacion: 'MI EMPRESA SL' });
     const sinCrlf = f.replace(/\r\n$/, '');
     expect(sinCrlf.length).toBe(328 + 1000 + 18);
     expect(sinCrlf.startsWith('<T1110')).toBe(true); // cabecera <T+111+0
@@ -101,7 +101,7 @@ describe('generarFicheroModelo111', () => {
 
     const pagina = sinCrlf.slice(328, 328 + 1000);
     expect(pagina.startsWith('<T11101000>')).toBe(true);
-    expect(pagina.slice(13, 22)).toBe('B12345678'); // NIF (pos 14)
+    expect(pagina.slice(13, 22)).toBe('B12345674'); // NIF (pos 14)
     expect(pagina.slice(108, 116)).toBe('00000003'); // nº perceptores (pos 109, len 8)
     expect(pagina.slice(116, 133)).toBe('00000000000900000'); // percepciones 9000 (pos 117)
     expect(pagina.slice(133, 150)).toBe('00000000000135000'); // retenciones 1350 (pos 134)
@@ -131,14 +131,14 @@ describe('generarFicheroModelo115', () => {
   it('cabecera <AUX> + pagina (500) = 846, casillas en su posicion', () => {
     const periodo: PeriodoFiscal = { ejercicio: 2026, periodo: '2T', tipo: 'trimestral', fechaInicio: '2026-04-01', fechaFin: '2026-06-30' };
     const datos: DatosModelo115 = { periodo, nPerceptores: 2, baseRetenciones: 5000, retenciones: 950, resultadoAnteriores: 0, resultadoIngresar: 950 };
-    const f = generarFicheroModelo115('B12345678', periodo, datos, { razonSocial: 'MI EMPRESA SL' });
+    const f = generarFicheroModelo115('B12345674', periodo, datos, { razonSocial: 'MI EMPRESA SL' });
     const sinCrlf = f.replace(/\r\n$/, '');
     expect(sinCrlf.length).toBe(328 + 500 + 18);
     expect(sinCrlf.startsWith('<T1150')).toBe(true);
     expect(sinCrlf.slice(-18)).toBe('</T1150' + '2026' + '2T' + '0000>');
     const pagina = sinCrlf.slice(328, 328 + 500);
     expect(pagina.startsWith('<T11501000>')).toBe(true);
-    expect(pagina.slice(13, 22)).toBe('B12345678'); // NIF @14
+    expect(pagina.slice(13, 22)).toBe('B12345674'); // NIF @14
     expect(pagina.slice(108, 123)).toBe('000000000000002'); // [01] perceptores @109 (15)
     expect(pagina.slice(123, 140)).toBe('00000000000500000'); // [02] base 5000 @124
     expect(pagina.slice(140, 157)).toBe('00000000000095000'); // [03] retenciones 950 @141
@@ -149,7 +149,7 @@ describe('generarFicheroModelo115', () => {
   it('con casillas negativas no genera el fichero (antes escribia su valor absoluto)', () => {
     const periodo: PeriodoFiscal = { ejercicio: 2026, periodo: '2T', tipo: 'trimestral', fechaInicio: '2026-04-01', fechaFin: '2026-06-30' };
     const datos: DatosModelo115 = { periodo, nPerceptores: 0, baseRetenciones: -1000, retenciones: -190, resultadoAnteriores: 0, resultadoIngresar: -190 };
-    expect(() => generarFicheroModelo115('B12345678', periodo, datos)).toThrow(/^El 115 sale con importes negativos/);
+    expect(() => generarFicheroModelo115('B12345674', periodo, datos)).toThrow(/^El 115 sale con importes negativos/);
   });
 });
 

@@ -2,6 +2,7 @@ import type { Prisma } from '@prisma/client';
 import { prisma } from '../config/database';
 import { badRequest } from '../utils/http-errors';
 import { avisoRetencionAnulada, retencionDeclaradaEn, retencionesActividades, retencionesTrabajo } from './nominas/fiscal';
+import { normalizarNif } from '../utils/nif';
 import { obtenerAsientosEjercicio, calcularSaldosPorSubcuenta } from './contabilidadDatos.service';
 import {
   DatosModelo111,
@@ -783,6 +784,9 @@ export async function calcularModelo349(companyId: string, periodo: PeriodoFisca
   return agregar349(facturas, periodo);
 }
 
+/** Arrendador del 115: su NIF normalizado o, si no lo tiene, el proveedor. */
+const claveArrendador = (f: { supplierId: string; supplier: { nifCif: string | null } }) => normalizarNif(f.supplier.nifCif) || `proveedor:${f.supplierId}`;
+
 /**
  * Modelo 115 (retenciones por arrendamiento de inmuebles urbanos): las
  * facturas de gasto de ALQUILER con retencion, con el criterio fiscal de las
@@ -807,14 +811,15 @@ export async function calcularModelo115(companyId: string, periodo: PeriodoFisca
   for (const f of facturas) {
     const declarada = declaradaEn(f);
     for (const _ of aparicionesRetencionEntre(f, periodo.fechaInicio, periodo.fechaFin, declarada !== null)) {
+      // [01] son arrendadores distintos por NIF: el mismo arrendador dado de alta dos veces cuenta una.
       if (declarada) avisos.push(avisoRetencionAnulada(f.numeroFacturaProveedor ?? f.numeroCompleto, f.supplier.nombreFiscal, '115', declarada, fechaContableGasto(f).slice(0, 4)));
-      const a = porArrendador.get(f.supplierId) ?? { nif: f.supplier.nifCif, nombre: f.supplier.nombreFiscal, base: 0, retencion: 0, facturas: 0 };
+      const a = porArrendador.get(claveArrendador(f)) ?? { nif: f.supplier.nifCif, nombre: f.supplier.nombreFiscal, base: 0, retencion: 0, facturas: 0 };
       for (const d of desgloseRetencionGasto(f)) {
         a.base += c(d.base);
         a.retencion += c(d.cuota);
       }
       a.facturas += 1;
-      porArrendador.set(f.supplierId, a);
+      porArrendador.set(claveArrendador(f), a);
     }
   }
   const lista = [...porArrendador.values()];
