@@ -79,6 +79,19 @@ describe('cuentas elegibles y subcuenta nueva', () => {
     expect(s.cuentas.map((c) => c.codigo)).toEqual(['705']);
   });
 
+  it('las cuentas de uso contable (608, 640, 68x, 708...) no salen en la lista de las lineas', async () => {
+    const g = await listarCuentasLinea(E, 'gasto');
+    const codigos = g.cuentas.map((c) => c.codigo);
+    for (const c of ['606', '608', '609', '610', '630', '640', '642', '681', '694']) expect(codigos).not.toContain(c);
+    expect(codigos).toEqual(expect.arrayContaining(['600', '621', '628', '631', '649']));
+    expect(g.otras).toEqual([]);
+    const conContabilidad = await listarCuentasLinea(E, 'gasto', {}, { verUsoContable: true });
+    expect(conContabilidad.otras.map((c) => c.codigo)).toEqual(expect.arrayContaining(['608', '640', '681']));
+    expect(conContabilidad.cuentas).toEqual(g.cuentas);
+    const v = await listarCuentasLinea(E, 'venta');
+    for (const c of ['706', '708', '709']) expect(v.cuentas.map((x) => x.codigo)).not.toContain(c);
+  });
+
   it('propone y crea la siguiente subcuenta con la longitud de la empresa', async () => {
     expect(await proponerSubcuenta(E, 'gasto', '628')).toMatchObject({ madre: '628', codigo: '62800001', longitud: 8 });
     const a = await crearSubcuentaLinea(E, { tipo: 'gasto', madre: '628', nombre: 'Luz oficina' });
@@ -148,6 +161,13 @@ describe('permisos de la ruta', () => {
     const c = app('compras', ['compras:read']);
     expect((await request(c).get('/cuentas-linea/siguiente?tipo=gasto&madre=628')).status).toBe(200);
     expect((await request(c).post('/cuentas-linea').send({ tipo: 'gasto', madre: '628', nombre: 'X' })).status).toBe(403);
+  });
+
+  it('las de uso contable aparte solo para contabilidad:write y el administrador', async () => {
+    const otras = async (rol: string, permisos: string[]) => (await request(app(rol, permisos)).get('/cuentas-linea?tipo=gasto')).body.data.otras.map((c: { codigo: string }) => c.codigo);
+    expect(await otras('compras-uso', ['compras:write'])).toEqual([]);
+    expect(await otras('contable-uso', ['contabilidad:write'])).toEqual(expect.arrayContaining(['608', '640']));
+    expect(await otras('admin-uso', ['*'])).toEqual(expect.arrayContaining(['608', '640']));
   });
 
   it('contabilidad:write crea de cualquier tipo; el administrador siempre', async () => {

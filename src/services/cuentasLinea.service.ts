@@ -51,6 +51,24 @@ export function esCuentaDeTipo(codigo: string, tipo: TipoCuentaLinea | 'gasto' |
 
 const NOMBRE_BASE = new Map(PGC_BASE.map((n) => [n.code, n.name]));
 
+/**
+ * Cuentas del grupo 6 y de la 70 que no van en la linea de una factura: las de
+ * saldo acreedor (descuentos, devoluciones y rappels: 606, 608, 609, 706, 708 y
+ * 709), variacion de existencias (61), impuesto sobre beneficios (630 y sus
+ * ajustes), sueldos y Seguridad Social (640-645; la 649 «Otros gastos
+ * sociales» si), amortizaciones (68) y deterioros (69). No salen en la lista
+ * principal; quien tiene contabilidad:write (y el administrador) las ve aparte.
+ */
+const USO_CONTABLE: Record<TipoCuentaLinea, string[]> = {
+  gasto: ['606', '608', '609', '61', '630', '633', '634', '636', '638', '640', '641', '642', '643', '644', '645', '68', '69'],
+  venta: ['706', '708', '709'],
+  servicio: [],
+};
+
+export function esCuentaDeUsoContable(codigo: string, tipo: TipoCuentaLinea): boolean {
+  return USO_CONTABLE[tipo].some((p) => codigo.startsWith(p));
+}
+
 // ---------------------------------------------------------------------------
 // Listado de cuentas elegibles
 // ---------------------------------------------------------------------------
@@ -70,7 +88,10 @@ export interface ListadoCuentasLinea {
   porDefecto: string;
   /** Longitud de las subcuentas nuevas. */
   longitud: number;
+  /** Las que pueden ir en una linea de factura. */
   cuentas: CuentaElegible[];
+  /** Las de uso contable (608, 640, 68x...): solo para contabilidad:write o el administrador; si no, vacia. */
+  otras: CuentaElegible[];
 }
 
 const sinTildes = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
@@ -79,12 +100,14 @@ const sinTildes = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLo
  * Cuentas activas del plan de la empresa del tipo pedido, de 3 o mas digitos
  * (las de 1 y 2 son grupos y subgrupos: no llevan apuntes). Con `q`, las que
  * tienen ese texto en el codigo o en el nombre; con `madre`, solo esa cuenta y
- * las que cuelgan de ella.
+ * las que cuelgan de ella. Las de uso contable van aparte, en `otras`, solo
+ * con `verUsoContable`.
  */
 export async function listarCuentasLinea(
   companyId: string,
   tipo: TipoCuentaLinea,
   filtro: { q?: string; madre?: string } = {},
+  opciones: { verUsoContable?: boolean } = {},
 ): Promise<ListadoCuentasLinea> {
   await asegurarPlanContableEmpresa(companyId);
   const { prefijo, porDefecto } = REGLA[tipo];
@@ -95,11 +118,13 @@ export async function listarCuentasLinea(
     orderBy: { codigo: 'asc' },
   });
   const q = filtro.q?.trim() ? sinTildes(filtro.q.trim()) : null;
-  const cuentas = filas
+  const todas = filas
     .filter((c) => c.codigo.length >= 3 && c.codigo.startsWith(prefijo))
     .filter((c) => !q || sinTildes(`${c.codigo} ${c.nombre}`).includes(q))
     .map((c) => ({ codigo: c.codigo, nombre: c.nombre, madre: c.parentCodigo ?? null, propia: c.esPersonalizadaEmpresa }));
-  return { tipo, porDefecto, longitud: await longitudSubcuentasEmpresa(companyId), cuentas };
+  const cuentas = todas.filter((c) => !esCuentaDeUsoContable(c.codigo, tipo));
+  const otras = opciones.verUsoContable ? todas.filter((c) => esCuentaDeUsoContable(c.codigo, tipo)) : [];
+  return { tipo, porDefecto, longitud: await longitudSubcuentasEmpresa(companyId), cuentas, otras };
 }
 
 // ---------------------------------------------------------------------------
