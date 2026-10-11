@@ -341,18 +341,20 @@ export function problemaSerieAeat(codigo: string): string | null {
   );
 }
 
-/** Sufijo de la serie historica cuando el codigo leido coincide con una serie que se usa para emitir. */
-export const SUFIJO_HISTORICA = '-H';
-
 /**
  * Serie de una factura que llega del lector (o de una importacion) con su
  * numeracion original. Siempre es una serie HISTORICA (desactivada): guarda la
  * numeracion de otro programa, no sale para emitir facturas nuevas y su
  * contador no se mezcla con el de las series de la app (spec verifactu, P5).
  *
- *  - Si ya existe una serie desactivada con ese codigo (y del mismo tipo), se usa.
- *  - Si el codigo coincide con una serie activa (o de otro tipo), la factura va
- *    a la historica «<codigo>-H», que se crea si hace falta.
+ *  - Si ya existe una serie desactivada con ese codigo, del mismo tipo y sin
+ *    facturas emitidas por la app, se usa.
+ *  - Si el codigo coincide con una serie de la app (activa, o desactivada pero
+ *    con facturas que emitio la app, o de otro tipo), 409: el otro programa
+ *    tiene que numerar en otra serie. Antes se guardaba en «<codigo>-H», pero
+ *    asi la factura quedaba con un numero que no es el suyo (el libro de
+ *    expedidas y el PDF decian «A-H-500» en vez de «A-500») y se escondia un
+ *    choque real: dos facturas A-500 del mismo emisor (art. 6.1.a RD 1619/2012).
  *  - Si no existe, se crea desactivada con el codigo normalizado.
  *
  * Solo para ese camino: la pantalla y la API usan buscarSeriePorCodigo, y un
@@ -367,37 +369,44 @@ export async function obtenerOCrearSerieHistorica(
   if (!CODIGO_RE.test(codigo)) {
     throw badRequest(`La serie "${codigoLeido}" de la factura no es válida: corrígela (letras, números y guiones, máximo 10).`, { campo: 'serie' });
   }
-  const sirve = (s: SerieDocumento | null): s is SerieDocumento => !!s && !s.activa && s.tipoDocumento === tipoDocumento;
   // Tal cual se leyo (o en mayusculas) y, si no, ya normalizado («fac/26» -> FAC-26).
   const existente = (await buscarSeriePorCodigo(companyId, codigoLeido)) ?? (await buscarSeriePorCodigo(companyId, codigo));
-  if (sirve(existente)) return existente;
-
-  let destino = codigo;
   if (existente) {
-    // Choca con una serie que se usa para emitir: va a su historica.
-    destino = `${codigo.slice(0, 10 - SUFIJO_HISTORICA.length).replace(/-+$/, '')}${SUFIJO_HISTORICA}`;
-    const historica = await buscarSeriePorCodigo(companyId, destino);
-    if (sirve(historica)) return historica;
-    if (historica) {
-      throw badRequest(
-        `La serie ${codigo} de la factura coincide con una de las series de la empresa y la ${destino} también está en uso. ` +
-          'Cambia la serie leída antes de registrarla.',
-        { campo: 'serie' },
-      );
+    if (!existente.activa && existente.tipoDocumento === tipoDocumento && !(await tieneFacturasDeLaApp(companyId, existente.codigo))) {
+      return existente;
     }
+    throw choqueConSerieDeLaApp(existente.codigo);
   }
-  const descripcion =
-    destino === codigo
-      ? `Serie ${codigo} (facturas importadas)`
-      : `Serie ${codigo} de facturas importadas (la ${codigo} de la empresa sigue para emitir)`;
+
   const s = await prisma.invoiceSeries.upsert({
-    where: { companyId_codigo: { companyId, codigo: destino } },
-    create: { companyId, codigo: destino, descripcion, tipoDocumento, activa: false, porDefecto: false },
+    where: { companyId_codigo: { companyId, codigo } },
+    create: { companyId, codigo, descripcion: `Serie ${codigo} (facturas de otro programa)`, tipoDocumento, activa: false, porDefecto: false },
     update: {},
   });
   // Otra peticion pudo crearla a la vez como serie activa: no se mezcla.
-  if (s.activa || s.tipoDocumento !== tipoDocumento) {
-    throw badRequest(`La serie ${destino} ya se usa para emitir facturas: cambia la serie leída antes de registrarla.`, { campo: 'serie' });
-  }
+  if (s.activa || s.tipoDocumento !== tipoDocumento) throw choqueConSerieDeLaApp(codigo);
   return aDominio(s);
+}
+
+/** ¿Hay en la serie alguna factura que no llegara del lector (la emitio la app)? */
+async function tieneFacturasDeLaApp(companyId: string, serie: string): Promise<boolean> {
+  const n = await prisma.incomeInvoice.count({
+    where: {
+      companyId,
+      serie,
+      // Las antiguas del lector no tienen origen, pero si su documento leido.
+      readerDocument: { is: null },
+      OR: [{ origen: null }, { origen: { not: 'lector' } }],
+    },
+  });
+  return n > 0;
+}
+
+function choqueConSerieDeLaApp(codigo: string) {
+  return conflict(
+    `La serie ${codigo} es una de las series con las que la app emite facturas, y dos facturas no pueden tener el mismo número. ` +
+      'Si la factura es de otro programa, ese programa tiene que numerar en una serie distinta. ' +
+      'Si la serie se ha leído mal, corrígela antes de registrarla.',
+    { campo: 'serie' },
+  );
 }
