@@ -9,15 +9,20 @@ import { randomUUID } from 'crypto';
 import { prisma, type TransaccionBD } from '../../config/database';
 import type { CuentasNominas } from '../../domain/nominas.model';
 import { obtenerReglas } from '../reglasContables.service';
+import { longitudSubcuentasGuardada } from '../terceros/subcuentas';
 import { crearCuentasNuevas, prepararPlanEmpresa, type CuentaNueva } from '../puestaEnMarcha/planCuentas';
 import { conceptoSubcuenta465, longitudMasHabitual, NOMBRES_CUENTAS, resolverCuentasNominas, siguienteSubcuenta465 } from './calculo';
 
 /**
- * Longitud de los codigos de la empresa: la mas habitual entre los de sus
- * asientos y sus subcuentas propias (hoy conviven 3, 6 y 10 digitos; usar otra
- * longitud duplicaria cuentas en el mayor). Sin datos, 6.
+ * Longitud de los codigos de la empresa: la de las subcuentas de clientes y
+ * proveedores si esta fijada en sus reglas (asi la 465 de los trabajadores
+ * nuevos sale igual); si no, la mas habitual entre los de sus asientos y sus
+ * subcuentas propias (hoy conviven 3, 6 y 10 digitos; usar otra longitud
+ * duplicaria cuentas en el mayor). Sin datos, 6.
  */
 export async function longitudCuentasEmpresa(companyId: string, db: TransaccionBD | typeof prisma = prisma): Promise<number> {
+  const fijada = await longitudSubcuentasGuardada(companyId, db);
+  if (fijada) return fijada;
   const [lineas, propias] = await Promise.all([
     db.journalEntryLine.findMany({ where: { companyId }, distinct: ['accountCode'], select: { accountCode: true }, take: 5000 }),
     db.chartOfAccounts.findMany({ where: { companyId, esPersonalizadaEmpresa: true }, select: { codigo: true }, take: 5000 }),
