@@ -170,6 +170,19 @@ describe('permisos de la ruta', () => {
     expect(await otras('admin-uso', ['*'])).toEqual(expect.arrayContaining(['608', '640']));
   });
 
+  it('sin Contabilidad «Modificar», la cuenta de uso contable que ya lleva una linea se ve con su nombre, sin la lista', async () => {
+    const c = app('compras-nombres', ['compras:write']);
+    const r = await request(c).get('/cuentas-linea/nombres?tipo=gasto&codigos=640,608,628,700,abc,640');
+    expect(r.status).toBe(200);
+    // Solo las pedidas que son de gastos; 700 (de ventas) y «abc» no salen.
+    expect((r.body.data ?? r.body).map((x: { codigo: string }) => x.codigo)).toEqual(['640', '608', '628']);
+    expect((r.body.data ?? r.body).find((x: { codigo: string }) => x.codigo === '640').nombre).toMatch(/Sueldos/i);
+    expect((await request(c).get('/cuentas-linea?tipo=gasto')).body.data.otras).toEqual([]);
+    expect((await request(c).get('/cuentas-linea/nombres?tipo=gasto')).body.data).toEqual([]);
+    // Quien solo lleva ventas no pregunta por cuentas de gastos.
+    expect((await request(app('ventas-nombres', ['ventas:write'])).get('/cuentas-linea/nombres?tipo=gasto&codigos=640')).status).toBe(403);
+  });
+
   it('contabilidad:write crea de cualquier tipo; el administrador siempre', async () => {
     expect((await request(app('contable', ['contabilidad:write'])).post('/cuentas-linea').send({ tipo: 'gasto', madre: '621', nombre: 'Local' })).status).toBe(201);
     expect((await request(app('admin', ['*'])).post('/cuentas-linea').send({ tipo: 'gasto', madre: '621', nombre: 'Nave' })).status).toBe(201);

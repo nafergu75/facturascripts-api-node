@@ -127,6 +127,23 @@ export async function listarCuentasLinea(
   return { tipo, porDefecto, longitud: await longitudSubcuentasEmpresa(companyId), cuentas, otras };
 }
 
+/** Tope de codigos por peticion de nombres. */
+const MAX_NOMBRES = 50;
+
+/**
+ * Nombre de las cuentas pedidas (separadas por comas) que son de ese tipo,
+ * tambien las de uso contable. Sirve para que la linea que ya va a la 608 o a
+ * la 640 ensene su nombre a quien no recibe la lista `otras`: solo devuelve
+ * las que se piden, nunca la lista entera.
+ */
+export async function nombresCuentasLinea(companyId: string, tipo: TipoCuentaLinea, codigosRaw: unknown): Promise<Array<{ codigo: string; nombre: string }>> {
+  const texto = typeof codigosRaw === 'string' ? codigosRaw : '';
+  const codigos = [...new Set(texto.split(',').map((c) => c.trim()))].filter((c) => esCuentaDeTipo(c, tipo)).slice(0, MAX_NOMBRES);
+  if (!codigos.length) return [];
+  const nombres = await nombresDeCuentas(prisma, companyId, codigos);
+  return codigos.filter((c) => nombres.has(c)).map((c) => ({ codigo: c, nombre: nombres.get(c)! }));
+}
+
 // ---------------------------------------------------------------------------
 // Siguiente codigo libre bajo una cuenta madre
 // ---------------------------------------------------------------------------

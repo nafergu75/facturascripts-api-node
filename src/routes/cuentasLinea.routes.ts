@@ -4,6 +4,8 @@
  *
  *  GET  /?tipo=gasto|venta|servicio[&q=][&madre=]  cuentas elegibles del plan (las de
  *       uso contable, 608, 640, 68x..., aparte en `otras` y solo para contabilidad:write)
+ *  GET  /nombres?tipo=&codigos=608,6280001         nombre de esas cuentas (tambien las de
+ *       uso contable), para la cuenta que ya lleva una linea
  *  GET  /siguiente?tipo=&madre=628                 codigo que recibiria una subcuenta nueva
  *  POST /  { tipo, madre, nombre, codigo? }        crea la subcuenta (201)
  *
@@ -21,6 +23,7 @@ import { registrarAuditoria } from '../services/auditoria.service';
 import {
   crearSubcuentaLinea,
   listarCuentasLinea,
+  nombresCuentasLinea,
   PERMISOS_CUENTA_LINEA,
   proponerSubcuenta,
   tipoCuentaLinea,
@@ -53,6 +56,16 @@ router.get(
     exigir(req, tipo, 'leer');
     const verUsoContable = autorizado(req.user!, req.companyId, ['contabilidad:write']);
     sendOk(res, await listarCuentasLinea(req.companyId!, tipo, { q: texto(req.query.q), madre: texto(req.query.madre) }, { verUsoContable }));
+  }),
+);
+
+router.get(
+  '/nombres',
+  authorize(...LEER),
+  asyncHandler(async (req, res) => {
+    const tipo = tipoCuentaLinea(req.query.tipo);
+    exigir(req, tipo, 'leer');
+    sendOk(res, await nombresCuentasLinea(req.companyId!, tipo, req.query.codigos));
   }),
 );
 
