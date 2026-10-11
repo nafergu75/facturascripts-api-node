@@ -354,7 +354,7 @@ export function informe190Excel(m: Modelo190): Buffer {
     ['Perceptores distintos', m.totales.perceptores],
     ['Importe total de las percepciones', m.totales.percepciones],
     ['Retenciones e ingresos a cuenta', m.totales.retenciones],
-    ['Suma de los cuatro 111', m.cuadre111.total, m.cuadre111.coincide ? 'Coincide' : 'NO coincide'],
+    ['Suma de los 111 del año', m.cuadre111.total, m.cuadre111.coincide ? 'Coincide' : 'NO coincide'],
     ...m.avisos.map((a) => ['Aviso', a]),
   ]);
   hoja['!cols'] = cab.map((t, i) => ({ wch: i === 3 ? 40 : Math.max(10, t.length + 2) }));

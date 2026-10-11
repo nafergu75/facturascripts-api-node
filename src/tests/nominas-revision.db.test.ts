@@ -45,6 +45,7 @@ const R2 = `nomrev2-${SUFIJO}`; // seguros sociales
 const R3 = `nomrev3-${SUFIJO}`; // pago del 111
 const R4 = `nomrev4-${SUFIJO}`; // auditoria, PDF, atrasos y lector de gastos
 const R5 = `nomrev5-${SUFIJO}`; // empresa sin trabajadores
+const R6 = `nomrev6-${SUFIJO}`; // 111 mensual y cuadre del 190
 const nif = (n: number) => `${String(n).padStart(8, '0')}${letraNif(n)}`;
 const bancos: Record<string, string> = {};
 
@@ -87,7 +88,7 @@ const binario = (res: NodeJS.ReadableStream & { setEncoding?: unknown }, cb: (e:
 };
 
 beforeAll(async () => {
-  for (const id of [R1, R2, R3, R4, R5]) {
+  for (const id of [R1, R2, R3, R4, R5, R6]) {
     await prisma.company.create({ data: { id, name: `Empresa ${id}`, fsBaseUrl: 'http://localhost:8080', fsApiKeyEnc: 'k' } });
     bancos[id] = (await prisma.bankAccount.create({ data: { companyId: id, iban: `ES00000000000000000${String(Math.floor(Math.random() * 1e5)).padStart(5, '0')}`, bancoNombre: 'Banco Prueba', subcuentaCodigo: '572001' } })).id;
   }
@@ -95,6 +96,31 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await fsp.rm(path.join(process.cwd(), 'storage', 'nominas', R4), { recursive: true, force: true });
+});
+
+describe('cuadre del 190 con el 111 mensual (gran empresa)', () => {
+  it('suma los 111 mensuales presentados del trimestre (y calcula los meses que falten)', async () => {
+    const e = (await crearEmpleado(R6, { nif: nif(81000061), nombre: 'Persona M', apellidos: 'Mensual', provincia: '46', anioNacimiento: 1990 })).id;
+    await crearNomina(R6, { empleadoId: e, ejercicio: 2026, mes: 8, brutoDinerario: 1500, ssTrabajador: 95.25, irpf: 120, liquido: 1284.75, ssEmpresa: 450 });
+    await crearNomina(R6, { empleadoId: e, ejercicio: 2026, mes: 9, brutoDinerario: 1800, ssTrabajador: 114.3, irpf: 180, liquido: 1505.7, ssEmpresa: 540 });
+    for (const mes of [8, 9]) await contabilizarNominas(R6, 2026, mes);
+    // Los dos meses presentados con lo calculado: el 3T cuadra con lo presentado.
+    await presentar111(R6, 2026, '08', 120);
+    await presentar111(R6, 2026, '09', 180);
+    let m = await calcularModelo190(R6, 2026);
+    expect(m.cuadre111.trimestres.find((t) => t.periodo === '3T')).toEqual({ periodo: '3T', retenciones: 300, fuente: 'presentado', meses: ['08', '09'] });
+    expect(m.cuadre111).toMatchObject({ total: 300, coincide: true });
+    // El de agosto se presentó con otra cifra: el cuadre lo ve (antes solo miraba los trimestres y daba el cálculo).
+    await prisma.modeloImpuesto.update({
+      where: { companyId_codigo_ejercicio_periodo: { companyId: R6, codigo: '111', ejercicio: 2026, periodo: '08' } },
+      data: { casillas: { '03_retenciones_trabajo': 100, '06_ingresos_a_cuenta': 0, '09_retenciones_actividades': 0, '28_total_retenciones': 100, '30_resultado': 100 } },
+    });
+    await prisma.modeloImpuesto.delete({ where: { companyId_codigo_ejercicio_periodo: { companyId: R6, codigo: '111', ejercicio: 2026, periodo: '09' } } });
+    m = await calcularModelo190(R6, 2026);
+    expect(m.cuadre111.trimestres.find((t) => t.periodo === '3T')).toEqual({ periodo: '3T', retenciones: 280, fuente: 'presentado', meses: ['08'] });
+    expect(m.cuadre111).toMatchObject({ total: 280, coincide: false });
+    expect(m.avisos.join(' ')).toMatch(/3T \(meses 08\) con lo presentado/);
+  });
 });
 
 describe('fecha de pago y 111 presentado (el IRPF no se declara dos veces)', () => {
@@ -162,7 +188,7 @@ describe('fecha de pago y 111 presentado (el IRPF no se declara dos veces)', () 
     expect(m.cuadre111.trimestres.find((t) => t.periodo === '3T')).toMatchObject({ retenciones: 300, fuente: 'calculado' });
     expect(m.totales.retenciones).toBe(650);
     expect(m.cuadre111).toMatchObject({ total: 600, coincide: false });
-    expect(m.avisos.join(' ')).toMatch(/no coinciden con la suma de los cuatro 111.*4T con lo presentado/);
+    expect(m.avisos.join(' ')).toMatch(/no coinciden con la suma de los 111 del año.*4T con lo presentado/);
     await borrarNomina(R1, nom.A12x);
     expect((await calcularModelo190(R1, 2026)).cuadre111.coincide).toBe(true);
   });

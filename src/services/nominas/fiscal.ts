@@ -488,12 +488,17 @@ export interface Modelo190 {
     retenciones: number;
   };
   /**
-   * Suma de los cuatro 111 del ano (retenciones e ingresos a cuenta), para
-   * cuadrar con el 190: el 111 presentado (sus casillas guardadas) o, si no se
-   * ha presentado, el calculado sin el resumen antiguo (que no entra en el 190).
+   * Suma de los 111 del ano (retenciones e ingresos a cuenta), para cuadrar
+   * con el 190: el 111 presentado (sus casillas guardadas), trimestral o
+   * mensual, o, si no se ha presentado, el calculado sin el resumen antiguo
+   * (que no entra en el 190).
    */
   cuadre111: {
-    trimestres: Array<{ periodo: string; retenciones: number; fuente: 'presentado' | 'calculado' }>;
+    /**
+     * Un trimestre por fila. Con el 111 mensual, `meses` son los meses
+     * presentados que se suman en ese trimestre (los que falten, calculados).
+     */
+    trimestres: Array<{ periodo: string; retenciones: number; fuente: 'presentado' | 'calculado'; meses?: string[] }>;
     total: number;
     coincide: boolean;
   };
@@ -858,22 +863,48 @@ export async function calcularModelo190(companyId: string, ejercicio: number): P
   }
 
   // Cuadre con los 111: lo PRESENTADO manda (si se recalculara, siempre coincidiria
-  // y no avisaria nunca); de los trimestres sin presentar, el calculo.
+  // y no avisaria nunca); de lo que no esta presentado, el calculo. Quien presenta
+  // el 111 cada mes (gran empresa) tiene presentados los meses, no el trimestre:
+  // en ese trimestre cuenta la suma de sus meses (los presentados, con lo
+  // presentado; los que falten, calculados).
+  const MESES_111 = ['01', '02', '03', '04', '05', '06', '07', '08', '09', '10', '11', '12'];
   const guardados = tablaLista('modeloImpuesto')
-    ? await prisma.modeloImpuesto.findMany({ where: { companyId, codigo: '111', ejercicio, periodo: { in: ['1T', '2T', '3T', '4T'] }, estado: 'presentado' } })
+    ? await prisma.modeloImpuesto.findMany({ where: { companyId, codigo: '111', ejercicio, periodo: { in: ['1T', '2T', '3T', '4T', ...MESES_111] }, estado: 'presentado' } })
     : [];
-  const trimestres: Modelo190['cuadre111']['trimestres'] = desglose.map((d) => {
-    const presentado = retenciones111Guardadas(guardados.find((g) => g.periodo === d.periodo)?.casillas);
-    if (presentado !== null) return { periodo: d.periodo, retenciones: presentado, fuente: 'presentado' as const };
-    const calculado = c(d.trabajo.retencionesDinerarias) + c(d.trabajo.ingresosACuenta) + c(d.actividades.retenciones);
-    return { periodo: d.periodo, retenciones: euros(calculado), fuente: 'calculado' as const };
-  });
+  const presentadoDe = (periodo: string) => retenciones111Guardadas(guardados.find((g) => g.periodo === periodo)?.casillas);
+  const calculadoEn = async (periodo: string, trabajo?: Casillas111Trabajo, actividades?: RetencionesActividades): Promise<number> => {
+    const p = periodoFiscal(ejercicio, periodo);
+    const tr = trabajo ?? agregarTrabajo111(nominas.filter((n) => n.fechaPago >= p.fechaInicio && n.fechaPago <= p.fechaFin)).casillas;
+    const ac = actividades ?? (await retencionesActividades(companyId, p));
+    return c(tr.retencionesDinerarias) + c(tr.ingresosACuenta) + c(ac.retenciones);
+  };
+  const trimestres: Modelo190['cuadre111']['trimestres'] = [];
+  for (const d of desglose) {
+    const presentado = presentadoDe(d.periodo);
+    if (presentado !== null) {
+      trimestres.push({ periodo: d.periodo, retenciones: presentado, fuente: 'presentado' });
+      continue;
+    }
+    const n = Number(d.periodo[0]);
+    const meses = MESES_111.slice((n - 1) * 3, n * 3);
+    const mesesPresentados = meses.filter((m) => presentadoDe(m) !== null);
+    if (!mesesPresentados.length) {
+      trimestres.push({ periodo: d.periodo, retenciones: euros(await calculadoEn(d.periodo, d.trabajo, d.actividades)), fuente: 'calculado' });
+      continue;
+    }
+    let centimos = 0;
+    for (const m of meses) {
+      const delMes = presentadoDe(m);
+      centimos += delMes !== null ? c(delMes) : await calculadoEn(m);
+    }
+    trimestres.push({ periodo: d.periodo, retenciones: euros(centimos), fuente: 'presentado', meses: mesesPresentados });
+  }
   const total = euros(trimestres.reduce((a, t) => a + c(t.retenciones), 0));
   const coincide = c(total) === c(totales.retenciones);
   if (!coincide) {
-    const presentados = trimestres.filter((t) => t.fuente === 'presentado').map((t) => t.periodo);
+    const presentados = trimestres.filter((t) => t.fuente === 'presentado').map((t) => (t.meses ? `${t.periodo} (meses ${t.meses.join(', ')})` : t.periodo));
     avisos.push(
-      `Las retenciones del 190 (${fmt(totales.retenciones)}) no coinciden con la suma de los cuatro 111 (${fmt(total)}` +
+      `Las retenciones del 190 (${fmt(totales.retenciones)}) no coinciden con la suma de los 111 del año (${fmt(total)}` +
         `${presentados.length ? `; ${presentados.join(', ')} con lo presentado` : ''}). Revisa las nóminas o los 111 presentados antes de presentar el 190.`,
     );
   }
