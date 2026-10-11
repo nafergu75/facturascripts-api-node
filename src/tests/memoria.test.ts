@@ -6,6 +6,7 @@ import { proponerAplicacion } from '../services/cuentasAnuales.service';
 import { generarMemoria, limpiarNotasMemoria, NotasMemoria, PENDIENTE } from '../services/memoria.service';
 import { limpiarLegalConfig } from '../services/legalConfig.service';
 import type { CuentasAnualesRM } from '../domain/cuentas-anuales.model';
+import { calcularBalanceModelo } from '../domain/modelos-cuentas-anuales';
 
 let n = 0;
 const asiento = (fecha: string, lineas: Array<[string, number, number]>): AsientoSimple => ({
@@ -26,9 +27,9 @@ const ASIENTOS = [
   asiento('2026-12-31', [['6810000', 500, 0], ['2817000', 0, 500]]),
 ];
 
-function entrada(notas: NotasMemoria = {}, sociedad = {}) {
-  const saldos = saldosDelEjercicio(ASIENTOS, 2026);
-  const saldosAnterior = saldosDelEjercicio(ASIENTOS, 2025);
+function entrada(notas: NotasMemoria = {}, sociedad = {}, asientos: AsientoSimple[] = ASIENTOS) {
+  const saldos = saldosDelEjercicio(asientos, 2026);
+  const saldosAnterior = saldosDelEjercicio(asientos, 2025);
   const est = calcularEstadosDesdeSaldos(saldos, saldosAnterior);
   const cuentas = {
     sociedad: { denominacion: 'Ejemplo SL', nif: 'B12345678', domicilio: '', ejercicio: 2026, formaJuridica: 'Sociedad de Responsabilidad Limitada' },
@@ -43,7 +44,7 @@ function entrada(notas: NotasMemoria = {}, sociedad = {}) {
     notas,
     saldos,
     saldosAnterior,
-    asientos: ASIENTOS.filter((a) => a.fecha.startsWith('2026')),
+    asientos: asientos.filter((a) => a.fecha.startsWith('2026')),
   };
 }
 
@@ -105,6 +106,32 @@ describe('memoria', () => {
     expect(fila('Amortización y deterioro acumulados: saldo inicial')).toBe(200);
     expect(fila('(+) Dotaciones')).toBe(500);
     expect(fila('Valor neto contable')).toBe(1800);
+  });
+
+  it('notas 5 y 6: cada subcuenta de cliente y proveedor por su saldo, como el balance', () => {
+    const asientos = [
+      ...ASIENTOS,
+      asiento('2026-07-01', [['43000001', 1000, 0], ['7000000', 0, 1000]]),
+      asiento('2026-07-02', [['5720001', 200, 0], ['43000002', 0, 200]]), // cliente que nos ha pagado de mas
+      asiento('2026-07-03', [['6000000', 500, 0], ['40000001', 0, 500]]),
+      asiento('2026-07-04', [['40000002', 50, 0], ['5720001', 0, 50]]), // proveedor al que hemos pagado de mas
+      asiento('2026-07-05', [['6940000', 100, 0], ['4900000', 0, 100]]), // deterioro de clientes
+      asiento('2026-07-06', [['5720001', 300, 0], ['4380000', 0, 300]]), // anticipo de un cliente: no es pasivo financiero
+    ];
+    const e = entrada({}, {}, asientos);
+    const m = generarMemoria(e);
+    const fila = (nota: string, texto: string) => notaN(m, nota).tablas[0].filas.find((f) => f.texto === texto)!.valores[0];
+    const balance = calcularBalanceModelo(e.saldos.balance, 0, 0).partidas;
+    const partida = (codigo: string) => balance.find((p) => p.codigo === codigo)!.importe;
+    // Clientes = B.III.1 del balance (1000 - 100 de deterioro), sin restar el cliente acreedor ni el anticipo.
+    expect(fila('5', 'Clientes por ventas y prestaciones de servicios')).toBe(900);
+    expect(partida('B.III.1')).toBe(900);
+    // Proveedores = D.IV.1 (los 200 del ejemplo base + 500), sin restar el proveedor deudor.
+    expect(fila('6', 'Proveedores')).toBe(700);
+    expect(partida('D.IV.1')).toBe(700);
+    // El proveedor deudor va a otros creditos y el cliente acreedor a otros acreedores.
+    expect(fila('5', 'Otros créditos e inversiones a corto plazo')).toBe(50);
+    expect(fila('6', 'Otros acreedores y deudas a corto plazo')).toBe(1500); // 1300 de la 465 del ejemplo base + 200
   });
 
   it('nota 9: desglose de personal y servicios exteriores', () => {

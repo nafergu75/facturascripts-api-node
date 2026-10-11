@@ -9,6 +9,7 @@
 import type { AsientoSimple, SaldosEjercicio } from './contabilidadDatos.service';
 import type { CuentasAnualesRM } from '../domain/cuentas-anuales.model';
 import { PGC_BASE } from '../domain/pgc-model';
+import { partidaBalance } from '../domain/modelos-cuentas-anuales';
 
 const round2 = (n: number): number => Math.round((n + Number.EPSILON) * 100) / 100;
 
@@ -87,6 +88,25 @@ function deudor(saldos: Map<string, number>, prefijos: string[], excluir: string
     if (prefijos.some((p) => c.startsWith(p)) && !excluir.some((p) => c.startsWith(p))) t += v;
   }
   return round2(t);
+}
+
+/**
+ * Clientes, proveedores y acreedores (40, 41, 43 y el deterioro 490/493), CADA
+ * SUBCUENTA POR SU SALDO, igual que el balance (partidaBalance): un cliente con
+ * saldo acreedor no resta de los demas clientes, va a otros acreedores; un
+ * proveedor deudor va a otros creditos. Fuera quedan los anticipos (407 y 438),
+ * que no son instrumentos financieros. Importe por partida del balance.
+ */
+const ES_TERCERO_FINANCIERO = (c: string) => /^(40|41|43|490|493)/.test(c) && !/^(407|438)/.test(c);
+function tercerosPorPartida(saldos: Map<string, number>): Record<'B.III.1' | 'B.III.3' | 'D.IV.1' | 'D.IV.2', number> {
+  const out = { 'B.III.1': 0, 'B.III.3': 0, 'D.IV.1': 0, 'D.IV.2': 0 };
+  for (const [c, v] of saldos) {
+    if (!ES_TERCERO_FINANCIERO(c) || v === 0) continue;
+    const { partida, importe } = partidaBalance(c, v);
+    if (partida in out) out[partida as keyof typeof out] += importe;
+  }
+  for (const k of Object.keys(out) as Array<keyof typeof out>) out[k] = round2(out[k]);
+  return out;
 }
 
 /** Debe y haber del ejercicio en las cuentas de un prefijo. */
@@ -197,12 +217,15 @@ export function generarMemoria(e: EntradaMemoria): Memoria {
   );
 
   // 5. Activos financieros (sin saldos con Administraciones Publicas, que no son instrumentos financieros)
-  const af = (sal: Map<string, number>) => ({
-    lp: deudor(sal, ['24', '25', '26'], ['249', '259']),
-    clientes: deudor(sal, ['43'], ['437']),
-    otros: deudor(sal, ['44', '460', '544', '53', '54', '565', '566'], ['5395', '549']),
-    efectivo: deudor(sal, ['57']),
-  });
+  const af = (sal: Map<string, number>) => {
+    const t = tercerosPorPartida(sal);
+    return {
+      lp: deudor(sal, ['24', '25', '26'], ['249', '259']),
+      clientes: t['B.III.1'],
+      otros: round2(deudor(sal, ['44', '460', '544', '53', '54', '565', '566'], ['5395', '549']) + t['B.III.3']),
+      efectivo: deudor(sal, ['57']),
+    };
+  };
   const afN = af(e.saldos.balance);
   const afA = af(e.saldosAnterior.balance);
   nota(
@@ -228,13 +251,16 @@ export function generarMemoria(e: EntradaMemoria): Memoria {
   );
 
   // 6. Pasivos financieros
-  const pf = (sal: Map<string, number>) => ({
-    bancosLp: -deudor(sal, ['170', '174']),
-    otrasLp: -deudor(sal, ['15', '16', '17', '18'], ['170', '174']),
-    bancosCp: -deudor(sal, ['520', '527']) + Math.max(0, -deudor(sal, ['57'])),
-    proveedores: -deudor(sal, ['40'], ['407']),
-    otrosCp: -deudor(sal, ['41', '465', '466', '51', '521', '523', '524', '525', '526', '551', '555', '56'], ['565', '566', '567']),
-  });
+  const pf = (sal: Map<string, number>) => {
+    const t = tercerosPorPartida(sal);
+    return {
+      bancosLp: -deudor(sal, ['170', '174']),
+      otrasLp: -deudor(sal, ['15', '16', '17', '18'], ['170', '174']),
+      bancosCp: -deudor(sal, ['520', '527']) + Math.max(0, -deudor(sal, ['57'])),
+      proveedores: t['D.IV.1'],
+      otrosCp: round2(-deudor(sal, ['465', '466', '51', '521', '523', '524', '525', '526', '551', '555', '56'], ['565', '566', '567']) + t['D.IV.2']),
+    };
+  };
   const pfN = pf(e.saldos.balance);
   const pfA = pf(e.saldosAnterior.balance);
   const filasPf = [
