@@ -65,9 +65,10 @@ const camposEmpleado = {
   jornadaParcial: z.boolean({ invalid_type_error: 'tiene que ser sí o no' }).optional(),
   grupoCotizacion: z.number().int().min(1, 'de 1 a 11').max(11, 'de 1 a 11').nullable().optional(),
   porcentajeIrpfActual: z.number().min(0, 'de 0 a 100').max(100, 'de 0 a 100').refine(dosDecimales, 'como máximo dos decimales').nullable().optional(),
-  clave190: z.string().regex(/^[A-L]$/, 'una letra de la A a la L').optional(),
+  // La clave D se suprimió en 2013: no se admite.
+  clave190: z.string().regex(/^[A-CE-L]$/, 'una letra de la A a la L (la D ya no existe)').optional(),
   subclave190: z.string().regex(/^\d{2}$/, 'dos dígitos').nullable().optional(),
-  provincia: z.string().regex(/^(0[1-9]|[1-4]\d|5[0-2]|98|99)$/, 'código de provincia de dos dígitos (01-52)').nullable().optional(),
+  provincia: z.string().regex(/^(0[1-9]|[1-4]\d|5[0-3]|98|99)$/, 'código de provincia de dos dígitos (01-52, 53 La Palma, 98 extranjero)').nullable().optional(),
   anioNacimiento: z.number().int().min(1900, 'año no válido').max(2100, 'año no válido').nullable().optional(),
   situacionFamiliar: z.union([z.literal(1), z.literal(2), z.literal(3)], { errorMap: () => ({ message: 'tiene que ser 1, 2 o 3' }) }).nullable().optional(),
   nifConyuge: z

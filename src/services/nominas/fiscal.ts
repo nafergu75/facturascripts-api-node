@@ -21,6 +21,7 @@ import { prisma } from '../../config/database';
 import type { PeriodoFiscal } from '../../domain/impuestos.model';
 import { badRequest } from '../../utils/http-errors';
 import { aCentimos } from '../../utils/money';
+import { totales190 } from './modelo190';
 import {
   aparicionesRetencionEntre,
   desgloseRetencionGasto,
@@ -531,6 +532,8 @@ const sinTildes = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '');
 /** Provincia (dos digitos) de un tercero: por su codigo postal o por el nombre de la provincia. */
 export function codigoProvincia(cp: string | null | undefined, provincia: string | null | undefined): string | null {
   const c = String(cp ?? '').replace(/\D/g, '');
+  // La isla de La Palma (codigos postales 387xx) tiene su propio codigo en el 190: 53.
+  if (c.length === 5 && c.startsWith('387')) return '53';
   if (c.length === 5 && Number(c.slice(0, 2)) >= 1 && Number(c.slice(0, 2)) <= 52) return c.slice(0, 2);
   const p = String(provincia ?? '').trim();
   if (/^(0[1-9]|[1-4]\d|5[0-3])$/.test(p)) return p;
@@ -574,7 +577,10 @@ export function perceptoresDeNominas(ejercicio: number, nominas: Array<NominaFis
     if (!e) continue;
     const devengoAnual = n.ejercicioDevengo ?? n.ejercicio;
     const devengo = devengoAnual < ejercicio ? devengoAnual : null;
-    const k = `${e.id}|${devengo ?? ''}`;
+    // Un reintegro de lo cobrado de mas en un ejercicio anterior va en su propio
+    // registro, con signo N (no se compensa con lo cobrado ese año).
+    const reintegro = devengo !== null && c(n.brutoDinerario) + c(n.indemnizacionSujeta) < 0;
+    const k = `${e.id}|${devengo ?? ''}|${reintegro ? 'R' : ''}`;
     const g = grupos.get(k) ?? { e, devengo, din: 0, irpf: 0, esp: 0, iac: 0, iacRep: 0, ss: 0, dietas: 0, indExenta: 0, docs: 0 };
     g.din += c(n.brutoDinerario) + c(n.indemnizacionSujeta);
     g.irpf += c(n.irpf);
@@ -749,12 +755,27 @@ export async function calcularModelo190(companyId: string, ejercicio: number): P
     avisos.push(`A ${sinDatos.length} registro(s) les faltan datos para el fichero (${[...new Set(sinDatos.flatMap((p) => p.faltan))].join(', ')}): complétalos en ${donde}.`);
   }
 
+  // Lo que el fichero aun no recoge (van a cero): se avisa para revisarlo en la sede.
+  if (perceptores.some((p) => p.clave === 'A')) {
+    avisos.push(
+      'La ficha del trabajador aún no guarda los descendientes y ascendientes del modelo 145 ni la prestación de incapacidad temporal por pago delegado: el fichero los declara a cero. Revísalos en el formulario de la sede antes de presentar.',
+    );
+  }
+  if (nominas.some((n) => aCentimos(Number(n.indemnizacionSujeta) || 0) > 0)) {
+    avisos.push('Hay indemnizaciones sujetas: si llevan la reducción del 30 % por renta irregular, indica su importe en "Reducciones aplicables" del formulario de la sede (el fichero lo deja a cero).');
+  }
+  if (perceptores.some((p) => p.clave === 'E')) {
+    avisos.push('Hay perceptores con clave E (consejeros): el fichero no admite la tributación en proporción al volumen de operaciones con las diputaciones forales (todo se declara al Estado).');
+  }
+
   const c = (v: number) => aCentimos(v);
+  // Los mismos totales que el registro de tipo 1 del fichero.
+  const t = totales190(perceptores);
   const totales = {
-    registros: perceptores.length,
+    registros: t.registros,
     perceptores: new Set(perceptores.map((p) => p.nif)).size,
-    percepciones: euros(perceptores.reduce((a, p) => a + c(p.percepcionIntegra) + c(p.valoracionEspecie), 0)),
-    retenciones: euros(perceptores.reduce((a, p) => a + c(p.retenciones) + c(p.ingresosACuentaEfectuados), 0)),
+    percepciones: t.percepciones,
+    retenciones: t.retenciones,
   };
 
   // El 190 por trimestres de pago (misma fuente que los totales: sin el resumen antiguo).

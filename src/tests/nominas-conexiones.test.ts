@@ -108,7 +108,7 @@ describe('111: rendimientos del trabajo (casillas 01-06)', () => {
 describe('TXT del 111: casillas 04 a 09 en su posicion', () => {
   it('especie en 151/159/176 y actividades economicas en 193/201/218; la 28 cuadra con el detalle', () => {
     const periodo = periodoFiscal(2026, '1T');
-    const f = generarFicheroModelo111('B12345678', periodo, {
+    const f = generarFicheroModelo111('B12345674', periodo, {
       periodo,
       nPerceptoresTrabajo: 3,
       percepcionesTrabajo: 10600,
@@ -121,7 +121,7 @@ describe('TXT del 111: casillas 04 a 09 en su posicion', () => {
       retencionesActividades: 150,
       totalRetenciones: 1395,
       resultadoIngresar: 1395,
-    });
+    }, { denominacion: 'Empresa de Prueba SL' });
     const pagina = f.slice(328, 328 + 1000);
     const campo = (pos: number, len: number) => pagina.slice(pos - 1, pos - 1 + len);
     expect(campo(109, 8)).toBe('00000003');
@@ -232,10 +232,12 @@ describe('fichero del 190 (diseno de registro del ejercicio 2025)', () => {
   const perceptorG: Perceptor190 = { ...perceptorL, clave: 'G', subclave: '01', nif: 'B12345674', nombre: 'Asesoría Muñoz, S.L.', provincia: '03', percepcionIntegra: 1500, retenciones: 225, origen: 'profesional' };
   const declarante = { nif: 'B98765432', nombre: 'Empresa de Prueba, S.L.', telefono: '600000000', contacto: 'Persona Contacto', email: 'contacto@example.com' };
 
-  it('ejercicio sin diseno verificado: 409 con un mensaje claro', () => {
-    expect(() => comprobarDiseno190(2026)).toThrow(expect.objectContaining({ statusCode: 409, message: expect.stringMatching(/2026 no está verificado/) }));
-    expect(() => generarFicheroModelo190(2026, declarante, [perceptorA])).toThrow(/informe por perceptor/);
+  it('ejercicio anterior al diseno verificado: 409; posterior: borrador con el diseno de 2025', () => {
+    expect(() => comprobarDiseno190(2024)).toThrow(expect.objectContaining({ statusCode: 409, message: expect.stringMatching(/2024 no está verificado/) }));
+    expect(() => generarFicheroModelo190(2024, declarante, [perceptorA])).toThrow(/informe por perceptor/);
     expect(() => comprobarDiseno190(2025)).not.toThrow();
+    expect(comprobarDiseno190(2026)).toMatchObject({ borrador: true, disenoEjercicio: 2025 });
+    expect(generarFicheroModelo190(2026, declarante, [perceptorA]).slice(4, 8)).toBe('2026');
   });
 
   it('registros de 500 posiciones: declarante con los totales y un registro por perceptor', () => {
@@ -307,6 +309,8 @@ describe('fichero del 190 (diseno de registro del ejercicio 2025)', () => {
     const sinDatos = { ...perceptorA, provincia: null, anioNacimiento: null };
     expect(erroresFichero190({ nif: '', nombre: 'X' }, [sinDatos])).toEqual([
       'Falta el NIF de la empresa (Registro Mercantil > Datos para la memoria).',
+      'Falta el teléfono (9 cifras) de la persona con quien relacionarse.',
+      'Faltan los apellidos y el nombre de la persona con quien relacionarse.',
       'Prueba Uno Ana: falta el código de provincia.',
       'Prueba Uno Ana: falta el año de nacimiento.',
     ]);
@@ -390,6 +394,7 @@ describe('permisos de las rutas nuevas de nominas', () => {
       }
       expect((await request(app(rol)).post('/nominas/periodos/2026/1/pago').send({})).status).toBe(403);
       expect((await request(app(rol)).post('/nominas/seguros-sociales/2026/1/pago').send({})).status).toBe(403);
+      expect((await request(app(rol)).post('/nominas/190/2025/fichero').send({ telefono: '600000000' })).status).toBe(403);
     }
   });
 
@@ -401,7 +406,8 @@ describe('permisos de las rutas nuevas de nominas', () => {
     expect((await request(a).post('/nominas/retenciones/2026/1T/pago').send({ cuentaProfesionales: '400000' })).status).toBe(400);
     expect((await request(a).get('/nominas/retenciones/2026/7T')).status).toBe(400);
     expect((await request(a).get('/nominas/informes/coste?ejercicio=2026&agrupar=semana')).status).toBe(400);
-    expect((await request(a).get('/nominas/190/2026/fichero')).status).toBe(409);
+    expect((await request(a).get('/nominas/190/2024/fichero')).status).toBe(409);
+    expect((await request(a).post('/nominas/190/2024/fichero').send({ telefono: '600000000', contacto: 'Persona Contacto' })).status).toBe(409);
     const pdf = await request(a).post('/nominas/periodos/2026/1/documentos').attach('archivo', Buffer.from('hola'), { filename: 'nomina.txt', contentType: 'text/plain' });
     expect(pdf.status).toBe(400);
     expect(pdf.body.message).toMatch(/PDF/);
