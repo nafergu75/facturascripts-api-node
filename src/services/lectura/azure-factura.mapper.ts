@@ -29,6 +29,7 @@ export const MOTIVO_BASE_DUDOSA = 'No se ha podido saber la base de este tipo co
 export const MOTIVO_BASE_CALCULADA = 'Base calculada a partir de la cuota: compruébala.';
 export const MOTIVO_RETENCION_CALCULADA = 'Retención calculada a partir del total a pagar: compruébala.';
 export const AVISO_VARIAS_FACTURAS = 'El archivo parece tener varias facturas; solo se ha leído la primera.';
+export const MOTIVO_A_PAGAR_SIN_TOTAL = 'No se ha leído el total a pagar: se ha calculado restando la retención al total de la factura. Compruébalo.';
 
 // ---------------------------------------------------------------------------
 // Lectura de un DocumentField
@@ -309,6 +310,21 @@ export function mapearFacturaAzure(ar: AnalyzeResult, opciones: { paginasArchivo
     texto: ar.content ?? null,
     qr: leerQrDeCodigos((ar.pages ?? []).flatMap((p) => p.barcodes ?? [])),
   };
+}
+
+/**
+ * Sin total a pagar leido (ni InvoiceTotal ni AmountDue, y la IA tampoco lo da),
+ * se toma el total de la factura, calculado con las bases o cotejado con el QR.
+ * Con retencion, ese total menos la retencion, para revisar. Se llama al final,
+ * cuando ya se sabe si hay retencion. Si ya traia un motivo (p. ej. que no se
+ * pudo completar con la IA), lo conserva.
+ */
+export function completarTotalAPagar(l: LecturaNormalizada): void {
+  const total = l.totales.totalFactura.valor;
+  if (l.totales.totalAPagar.valor !== null || total === null) return;
+  const retencion = Math.max(l.retencion?.importe.valor ?? l.totales.retencion.valor ?? 0, 0);
+  const motivo = l.totales.totalAPagar.motivo ?? (retencion > 0 ? MOTIVO_A_PAGAR_SIN_TOTAL : undefined);
+  l.totales.totalAPagar = { valor: redondear2(total - retencion), confianza: null, fuente: 'calculado', ...(motivo ? { motivo } : {}) };
 }
 
 /**

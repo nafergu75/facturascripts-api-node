@@ -3,7 +3,7 @@
  * campos, confianzas, desglose por tipo, recargo, retencion propuesta y que
  * no se cuela nada bruto (content, polygon, spans, words).
  */
-import { confianzaLectura, contarPaginasPdf, leerTipo, mapearFacturaAzure, MOTIVO_BASE_DUDOSA } from '../services/lectura/azure-factura.mapper';
+import { completarTotalAPagar, confianzaLectura, contarPaginasPdf, leerTipo, mapearFacturaAzure, MOTIVO_A_PAGAR_SIN_TOTAL, MOTIVO_BASE_DUDOSA } from '../services/lectura/azure-factura.mapper';
 import type { AnalyzeResult } from '../services/lectura/azure-di.client';
 import type { LecturaHecha } from '../services/lectura/tipos';
 import { fixtureAzure } from './fixtures/azure-di';
@@ -195,3 +195,47 @@ describe('retencion, moneda y otros', () => {
     expect(r.lectura.numero.motivo).toBeDefined();
   });
 });
+
+describe('sin total a pagar leido (completarTotalAPagar)', () => {
+  /** El fixture sin InvoiceTotal ni AmountDue. */
+  function sinTotales(nombre: string) {
+    const a = ar(nombre);
+    const f = a.documents![0].fields as Record<string, unknown>;
+    delete f.InvoiceTotal;
+    delete f.AmountDue;
+    const r = mapearFacturaAzure(a);
+    if (r.tipo !== 'hecho') throw new Error('x');
+    return r.lectura;
+  }
+
+  it('el mapeo calcula el total de la factura con las bases y deja el total a pagar sin valor', () => {
+    const l = sinTotales('resultado-qr-ok');
+    expect(l.totales.totalFactura).toMatchObject({ valor: 242, fuente: 'calculado' });
+    expect(l.totales.totalAPagar.valor).toBeNull();
+  });
+
+  it('sin retencion: el total a pagar es el total de la factura, calculado y sin motivo', () => {
+    const l = sinTotales('resultado-qr-ok');
+    completarTotalAPagar(l);
+    expect(l.totales.totalAPagar).toEqual({ valor: 242, confianza: null, fuente: 'calculado' });
+  });
+
+  it('con retencion: el total menos la retencion, con su motivo', () => {
+    const l = sinTotales('resultado-irpf');
+    l.retencion = { tipo: { valor: 15, confianza: null, fuente: 'claude' }, importe: { valor: 150, confianza: null, fuente: 'claude' } };
+    completarTotalAPagar(l);
+    expect(l.totales.totalAPagar).toEqual({ valor: 1060, confianza: null, fuente: 'calculado', motivo: MOTIVO_A_PAGAR_SIN_TOTAL });
+  });
+
+  it('conserva el motivo que ya tuviera y no toca un total a pagar leido', () => {
+    const l = sinTotales('resultado-qr-ok');
+    l.totales.totalAPagar.motivo = 'No se ha podido completar con la IA: revísalo a mano.';
+    completarTotalAPagar(l);
+    expect(l.totales.totalAPagar).toMatchObject({ valor: 242, motivo: 'No se ha podido completar con la IA: revísalo a mano.' });
+    const leida = mapear('resultado-irpf').lectura;
+    const antes = structuredClone(leida.totales.totalAPagar);
+    completarTotalAPagar(leida);
+    expect(leida.totales.totalAPagar).toEqual(antes);
+  });
+});
+
