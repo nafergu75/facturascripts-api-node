@@ -313,6 +313,13 @@ describe('fichas: nombre, plan y borrado', () => {
     await expect(
       crearSubcuentaPersonalizada({ companyId: E, codigo: '43000099', nombre: 'Suelta', parentCodigo: '430', naturaleza: '', tipoUso: '' }),
     ).rejects.toMatchObject({ statusCode: 409 });
+    // Tampoco colgandola de la 43, la 40, la 41 o la 4: se mira el codigo.
+    for (const [codigo, madre] of [['43089999', '43'], ['40000099', '40'], ['41000099', '41'], ['43000098', '4']]) {
+      await expect(
+        crearSubcuentaPersonalizada({ companyId: E, codigo, nombre: 'Suelta', parentCodigo: madre, naturaleza: '', tipoUso: '' }),
+      ).rejects.toMatchObject({ statusCode: 409, message: expect.stringContaining(codigo.startsWith('43') ? 'créalo en Clientes' : 'créalo en Proveedores') });
+    }
+    expect(await prisma.chartOfAccounts.count({ where: { companyId: E, codigo: { in: ['43089999', '40000099', '41000099', '43000098'] } } })).toBe(0);
   });
 
   it('cambiar activo del cliente desde su ficha', async () => {
