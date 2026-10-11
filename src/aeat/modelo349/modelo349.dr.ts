@@ -74,6 +74,17 @@ export class ErrorEntrada349 extends Error {
 
 const PERIODO_349 = /^(0[1-9]|1[0-2]|[1-4]T)$/;
 
+/**
+ * Meses en que cabe la X de cambio de periodicidad (posición 186): el segundo
+ * mes del trimestre, en el que se superan los 50.000 € y la declaración
+ * mensual recoge ese mes y el anterior (DR_Anexo_349).
+ */
+export const MESES_CAMBIO_PERIODICIDAD_349 = ['02', '05', '08', '11'] as const;
+
+/** Error si no hay ningún registro de tipo 2 (la sede no admite un 349 vacío). */
+export const ERROR_SIN_REGISTROS_349 =
+  'El 349 no lleva ningún operador ni ninguna rectificación: no hay nada que declarar en este periodo y no hace falta presentarlo.';
+
 
 const etiqueta = (o: { nombre: string; nifIva: string }) => `${o.nombre || 'Operador sin nombre'} (${o.nifIva || 'sin NIF'})`;
 
@@ -86,7 +97,11 @@ export function erroresEntrada349(e: Entrada349): string[] {
   if (!textoAeat(d.nombre)) errores.push('Falta la razón social de la empresa: complétala en Registro Mercantil > Datos.');
   if (!Number.isInteger(e.ejercicio) || e.ejercicio < 2000 || e.ejercicio > 9999) errores.push(`El ejercicio ${e.ejercicio} no es válido.`);
   if (!PERIODO_349.test(e.periodo)) errores.push(`El periodo "${e.periodo}" no es válido: usa 01-12 o 1T-4T.`);
-  if (e.cambioPeriodicidad && !/^(0[1-9]|1[0-2])$/.test(e.periodo)) errores.push('El cambio de periodicidad solo se marca en una declaración mensual.');
+  if (e.cambioPeriodicidad && !(MESES_CAMBIO_PERIODICIDAD_349 as readonly string[]).includes(e.periodo)) {
+    errores.push(
+      'El cambio de periodicidad solo se marca en la declaración mensual de febrero, mayo, agosto o noviembre (el segundo mes del trimestre), que recoge ese mes y el anterior.',
+    );
+  }
   if (d.numeroDeclaracion && !/^349\d{10}$/.test(d.numeroDeclaracion)) errores.push('El número de la declaración tiene que tener 13 cifras y empezar por 349.');
   if (d.tipoDeclaracion && !/^349\d{10}$/.test(d.declaracionAnterior ?? '')) {
     errores.push('Una complementaria o sustitutiva necesita el número de la declaración anterior (13 cifras que empiezan por 349).');
@@ -98,14 +113,23 @@ export function erroresEntrada349(e: Entrada349): string[] {
       return;
     }
     if (!separarNifIva(o.nifIva, o.pais)) errores.push(`${etiqueta(o)}: ${que} necesita el NIF-IVA de otro país de la UE, con su código de país.`);
+    // Un nombre solo con letras que la AEAT no admite (griego, cirílico...) queda vacío en el fichero.
+    if (!textoAeat(o.nombre)) {
+      errores.push(
+        `${etiqueta(o)}: el nombre no tiene ningún carácter que admita la AEAT. Escribe en la ficha del cliente o del proveedor el nombre fiscal en caracteres latinos (por ejemplo, transliterado).`,
+      );
+    }
     if (o.clave === 'C' && (!o.sustituto || !separarNifIva(o.sustituto.nifIva, o.sustituto.pais))) {
       errores.push(`${etiqueta(o)}: con la clave C hay que indicar el NIF-IVA del sustituto.`);
+    } else if (o.clave === 'C' && o.sustituto && !textoAeat(o.sustituto.nombre)) {
+      errores.push(`${etiqueta(o)}: el nombre del sustituto no tiene ningún carácter que admita la AEAT. Escríbelo en caracteres latinos.`);
     }
   };
   for (const o of e.operadores) {
     comprobarOperador(o, 'la operación');
     if (o.base < 0) errores.push(`${etiqueta(o)}: la base de la clave ${o.clave} sale negativa (${o.base.toFixed(2)} €). Un abono de otro periodo va como rectificación de ese periodo.`);
   }
+  if (!e.operadores.length && !(e.rectificaciones ?? []).length) errores.push(ERROR_SIN_REGISTROS_349);
   for (const r of e.rectificaciones ?? []) {
     comprobarOperador(r, 'la rectificación');
     if (!PERIODO_349.test(r.periodo) || !Number.isInteger(r.ejercicio)) errores.push(`${etiqueta(r)}: el periodo que se rectifica (${r.ejercicio} ${r.periodo}) no es válido.`);

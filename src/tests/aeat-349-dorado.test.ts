@@ -159,11 +159,26 @@ describe('349: complementaria, sustitutiva y periodicidad', () => {
     expect(posiciones(t1, 186, 186)).toBe('X');
   });
 
-  it('sin operaciones: solo el tipo 1, con ceros', () => {
+  it('sin operaciones: el tipo 1 sale con ceros en la pantalla, pero el fichero no se genera (la sede no admite un 349 vacío)', () => {
     const e = { ...entrada(), operadores: [], rectificaciones: [] };
-    const f = generarFichero349(e);
+    const f = generarFichero349(e, { comprobar: false });
     expect(f.split('\r\n')).toHaveLength(2);
     expect(posiciones(f, 138, 185)).toBe('0'.repeat(48));
+    expect(erroresEntrada349(e)).toEqual([expect.stringMatching(/no lleva ningún operador ni ninguna rectificación/)]);
+    expect(() => generarFichero349(e)).toThrow(/no lleva ningún operador/);
+  });
+
+  it('la X de cambio de periodicidad solo en 02, 05, 08 y 11', () => {
+    for (const periodo of ['02', '05', '08', '11']) expect(erroresEntrada349({ ...entrada(), periodo, cambioPeriodicidad: true })).toEqual([]);
+    for (const periodo of ['01', '03', '06', '12', '2T']) {
+      expect(erroresEntrada349({ ...entrada(), periodo, cambioPeriodicidad: true })).toEqual([expect.stringMatching(/febrero, mayo, agosto o noviembre/)]);
+    }
+  });
+
+  it('un nombre que se queda vacío al limpiarlo (griego, cirílico) es un error que pide caracteres latinos', () => {
+    const e = entrada();
+    e.operadores.push({ nifIva: 'EL123456789', nombre: 'Ελληνική Εταιρεία ΑΕ', clave: 'E', base: 10 });
+    expect(erroresEntrada349(e)).toEqual([expect.stringMatching(/\(EL123456789\): el nombre no tiene ningún carácter que admita la AEAT.*caracteres latinos/)]);
   });
 });
 

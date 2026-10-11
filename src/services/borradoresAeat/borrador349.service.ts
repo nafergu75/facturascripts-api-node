@@ -27,8 +27,10 @@ import { clasificarOperacion, clave349De, exigirModelosAeat, obtenerFacturasFisc
 import { periodoFiscal } from '../nominas/fiscal';
 import type { PeriodoFiscal } from '../../domain/impuestos.model';
 import {
+  ERROR_SIN_REGISTROS_349,
   ErrorEntrada349,
   erroresEntrada349,
+  MESES_CAMBIO_PERIODICIDAD_349,
   generarFichero349,
   leerFichero349,
   type Clave349,
@@ -222,13 +224,19 @@ export async function calcularBorrador349(companyId: string, ejercicio: number, 
   if (p.tipo === 'anual') throw badRequest('El 349 es trimestral o mensual: indica 1T-4T o un mes (01-12).');
   await exigirModelosAeat(companyId, p.fechaInicio, p.fechaFin);
 
-  const [movimientos, declarante, fila, decl] = await Promise.all([
-    movimientos349(companyId, p),
+  const fila = await filaModelo(companyId, '349', ejercicio, p.periodo);
+  const opc = opcionesDe(fila);
+  // Cambio de periodicidad (X): la declaración mensual del segundo mes del
+  // trimestre recoge también el primero (DR_Anexo_349, posición 186).
+  const conCambio = opc.cambioPeriodicidad === true && (MESES_CAMBIO_PERIODICIDAD_349 as readonly string[]).includes(p.periodo);
+  const delPeriodo: PeriodoFiscal = conCambio ? { ...p, fechaInicio: periodoFiscal(ejercicio, String(Number(p.periodo) - 1).padStart(2, '0')).fechaInicio } : p;
+  const [movimientos, declarante, decl] = await Promise.all([
+    movimientos349(companyId, delPeriodo),
     declaranteEmpresa(companyId),
-    filaModelo(companyId, '349', ejercicio, p.periodo),
     declaracionInformativa(companyId, '349', ejercicio, p.periodo),
   ]);
   const avisos: string[] = [];
+  if (conCambio) avisos.push(`Cambio de periodicidad: la declaración de ${p.periodo} recoge también las operaciones del mes anterior.`);
 
   // Rectificaciones: por operador, clave y periodo corregido.
   const grupos = new Map<string, { m: Movimiento349; c: number; ejercicio: number; periodo: string }>();
@@ -266,7 +274,6 @@ export async function calcularBorrador349(companyId: string, ejercicio: number, 
     });
   }
 
-  const opc = opcionesDe(fila);
   // Complementaria o sustitutiva y su anterior: las pone el historial de declaraciones (B4).
   const tipoDeclaracion = decl.tipoDeclaracion;
   const opciones = { tipoDeclaracion, declaracionAnterior: decl.declaracionAnterior, cambioPeriodicidad: opc.cambioPeriodicidad === true };
@@ -296,14 +303,13 @@ export async function calcularBorrador349(companyId: string, ejercicio: number, 
   // Presentada: se enseña (y se descarga) lo que se presento.
   const presentada = presentacionDe<Entrada349>(fila);
   const entrada = presentada?.entrada ?? calculada;
-  const errores = presentada ? [] : [...erroresContacto(declarante), ...erroresEntrada349(entrada)];
+  // Sin ningún registro de tipo 2 es un error (ERROR_SIN_REGISTROS_349); en una
+  // complementaria sin nada elegido, se dice qué hay que marcar.
+  const sinRegistros = (e: string) =>
+    e === ERROR_SIN_REGISTROS_349 && decl.seleccion ? 'La complementaria no lleva ningún registro: marca los operadores que se quedaron fuera de la declaración anterior.' : e;
+  const errores = presentada ? [] : [...erroresContacto(declarante), ...erroresEntrada349(entrada).map(sinRegistros)];
   if (presentada) avisos.unshift(avisoPresentado(presentada));
-  else {
-    if (!entrada.declarante.numeroDeclaracion) avisos.push(AVISO_SIN_NUMERO);
-    if (decl.seleccion && !entrada.operadores.length && !entrada.rectificaciones!.length) {
-      errores.push('La complementaria no lleva ningún registro: marca los operadores que se quedaron fuera de la declaración anterior.');
-    } else if (!entrada.operadores.length && !entrada.rectificaciones!.length) avisos.push('No hay operaciones intracomunitarias en el periodo: no hace falta presentar el 349.');
-  }
+  else if (!entrada.declarante.numeroDeclaracion) avisos.push(AVISO_SIN_NUMERO);
 
   let pantalla: Pantalla349 | null = null;
   try {

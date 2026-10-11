@@ -204,6 +204,33 @@ describe('349 de 2027 desde las facturas', () => {
     await request(app(E)).put(`/companies/${E}/tax-models/349/compras/${pt.id}/clave`).send({ clave: null });
   });
 
+  it('cambio de periodicidad: la X solo en 02, 05, 08 y 11, y la de mayo recoge también abril', async () => {
+    const op = (b: Awaited<ReturnType<typeof calcularBorrador349>>) => b.entrada.operadores.map((o) => [o.clave, o.nombre, o.base]);
+    expect(op(await calcularBorrador349(E, 2027, '05'))).toEqual([['I', 'Peñas Consultoria Lda', 800]]);
+    await request(app(E)).put(`/companies/${E}/tax-models/349/opciones`).send({ ejercicio: 2027, periodo: '05', cambioPeriodicidad: true });
+    const mayo = await calcularBorrador349(E, 2027, '05');
+    expect(op(mayo)).toEqual([
+      ['A', 'Rossi SpA', 3000],
+      ['E', 'Müller Handels GmbH', 5000],
+      ['I', 'Peñas Consultoria Lda', 800],
+    ]);
+    expect(mayo.entrada.cambioPeriodicidad).toBe(true);
+    expect(mayo.avisos).toContainEqual(expect.stringMatching(/recoge también las operaciones del mes anterior/));
+    await request(app(E)).put(`/companies/${E}/tax-models/349/opciones`).send({ ejercicio: 2027, periodo: '05', cambioPeriodicidad: false });
+    // En junio no cabe: error que dice en qué meses va.
+    await request(app(E)).put(`/companies/${E}/tax-models/349/opciones`).send({ ejercicio: 2027, periodo: '06', cambioPeriodicidad: true });
+    const junio = await calcularBorrador349(E, 2027, '06');
+    expect(junio.errores).toContainEqual(expect.stringMatching(/solo se marca en la declaración mensual de febrero, mayo, agosto o noviembre/));
+    await request(app(E)).put(`/companies/${E}/tax-models/349/opciones`).send({ ejercicio: 2027, periodo: '06', cambioPeriodicidad: false });
+  });
+
+  it('sin ningún operador ni rectificación es un error (no un aviso)', async () => {
+    const b = await calcularBorrador349(E, 2027, '3T');
+    expect(b.errores).toContainEqual(expect.stringMatching(/no lleva ningún operador ni ninguna rectificación/));
+    const r = await request(app(E)).get(`/companies/${E}/tax-models/349/fichero?ejercicio=2027&periodo=3T`);
+    expect(r.status).toBe(400);
+  });
+
   it('POST /349/presentado: guarda lo presentado, que se enseña después y es la base de las rectificaciones', async () => {
     const r = await request(app(E))
       .post(`/companies/${E}/tax-models/349/presentado`)
