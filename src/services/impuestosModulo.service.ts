@@ -831,7 +831,7 @@ async function contextoEmpresa303(
   companyId: string,
   ejercicio: number,
   cuentaBancariaId?: string | null,
-): Promise<{ ctx: ContextoEmpresa303; cuentas: CuentaBorrador303[]; cuentaBancariaId: string | null }> {
+): Promise<{ ctx: ContextoEmpresa303; cuentas: CuentaBorrador303[]; cuentaBancariaId: string | null; mensual: boolean }> {
   const [cfg, ajustes, todas] = await Promise.all([
     configuracionEmpresa(companyId),
     ajustesFiscales303(companyId, ejercicio),
@@ -851,6 +851,8 @@ async function contextoEmpresa303(
     },
     cuentas: activas.map((c) => ({ id: c.id, iban: ibanTapado(c.iban), banco: c.bancoNombre ?? null })),
     cuentaBancariaId: elegida?.id ?? null,
+    // Liquidacion mensual (art. 71.3 RIVA): REDEME, SII, gran empresa o asi elegida en los ajustes.
+    mensual: ajustes.periodicidadIva === 'MENSUAL' || ajustes.redeme || ajustes.sii || ajustes.granEmpresa,
   };
 }
 
@@ -861,6 +863,18 @@ export interface ResultadoBorrador303 {
   cuentaBancariaId: string | null;
   /** El borrador es el del 303 presentado (casillas guardadas), no un calculo de hoy. */
   presentado: boolean;
+  /** La empresa presenta el 303 cada mes (REDEME, SII, gran empresa o periodicidad mensual en los ajustes). */
+  mensual: boolean;
+}
+
+/** Periodo del 303: trimestre (1T-4T) o mes (01-12). Admite 1-4 como trimestre y 1-12 con "M" (M5 -> 05). */
+export function periodo303De(valor: unknown): string {
+  const t = String(valor ?? '').trim().toUpperCase();
+  if (/^[1-4]$/.test(t)) return `${t}T`;
+  if (/^[1-4]T$/.test(t)) return t;
+  const mes = /^M?(\d{1,2})$/.exec(t);
+  if (mes && Number(mes[1]) >= 1 && Number(mes[1]) <= 12 && (t.startsWith('M') || mes[1].length === 2)) return mes[1].padStart(2, '0');
+  throw badRequest('El periodo del 303 es un trimestre (1T a 4T) o un mes (01 a 12).', { campo: 'periodo', valor: valor ?? null });
 }
 
 /** Datos guardados del 303 presentado de un periodo (con sus casillas oficiales), o null. */
@@ -897,6 +911,7 @@ export async function calcularBorrador303(companyId: string, periodo: PeriodoFis
       cuentas: empresa.cuentas,
       cuentaBancariaId: empresa.cuentaBancariaId,
       presentado: true,
+      mensual: empresa.mensual,
     };
   }
   const manual = opciones.aCompensar !== undefined && opciones.aCompensar !== null;
@@ -916,23 +931,29 @@ export async function calcularBorrador303(companyId: string, periodo: PeriodoFis
     cuentas: empresa.cuentas,
     cuentaBancariaId: empresa.cuentaBancariaId,
     presentado: false,
+    mensual: empresa.mensual,
   };
 }
 
 /**
- * Fichero oficial del 303 de un trimestre, calculado al momento (lo que
- * descarga el boton de la pantalla del 303), con el diseno de registro 2026.
- * Sin NIF ni razon social no se genera: la sede de la AEAT lo rechazaria.
+ * Fichero oficial del 303 de un trimestre (1T-4T) o de un mes (01-12) con el
+ * diseno de registro 2026: lo que descarga el boton de la pantalla del 303.
+ * Sale del mismo borrador que la pantalla (si esta presentado, de las casillas
+ * guardadas). Sin NIF ni razon social no se genera: la sede lo rechazaria.
  */
-export async function generarTxt303Trimestre(companyId: string, ejercicio: number, trimestre: 1 | 2 | 3 | 4, opciones: OpcionesBorrador303 = {}) {
-  const fila: FilaModelo = { id: '', companyId, codigo: '303', ejercicio, periodo: `${trimestre}T`, estado: 'vigente', casillas: null, datos: null, origen: null };
-  const periodo = periodoFiscalDe(fila);
+export async function generarTxt303(companyId: string, ejercicio: number, periodo303: string, opciones: OpcionesBorrador303 = {}) {
+  const periodo = periodoFiscalDe({ ejercicio, periodo: periodo303De(periodo303) });
   const { borrador } = await calcularBorrador303(companyId, periodo, opciones);
   return {
-    nombre: `303_${ejercicio}_${trimestre}T.txt`,
+    nombre: `303_${ejercicio}_${periodo.periodo}.txt`,
     contenido: ficheroBorrador303(borrador),
     advertencias: borrador.advertencias,
   };
+}
+
+/** Fichero oficial del 303 de un trimestre (ver generarTxt303). */
+export function generarTxt303Trimestre(companyId: string, ejercicio: number, trimestre: 1 | 2 | 3 | 4, opciones: OpcionesBorrador303 = {}) {
+  return generarTxt303(companyId, ejercicio, `${trimestre}T`, opciones);
 }
 
 export async function generarTxtModelo(companyId: string, modeloId: string): Promise<{ nombre: string; contenido: string }> {

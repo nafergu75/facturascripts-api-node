@@ -20,11 +20,11 @@ const router = Router({ mergeParams: true });
 
 /**
  * GET /tax-models/303
- * Generar modelo 303 (IVA trimestral)
+ * Generar modelo 303 (IVA trimestral o mensual)
  *
  * Query params:
  *   - ejercicio: number (REQUERIDO)
- *   - trimestre: 1-4 (REQUERIDO)
+ *   - trimestre: 1-4, o periodo: 1T-4T o 01-12 (mensual: REDEME o SII) (REQUERIDO uno de los dos)
  *   - tipoDeclaracion: I, U, C, D o N (opcional; por defecto el que toca por el resultado)
  *   - aCompensar: cuotas a compensar de periodos anteriores [110] (opcional; por defecto las del 303 anterior)
  *   - cuentaBancariaId: cuenta para domiciliar o para la devolucion (opcional; por defecto la primera activa)
@@ -46,7 +46,7 @@ router.get(
  * Body:
  *   {
  *     ejercicio: number,
- *     trimestre: number,
+ *     trimestre: number, o periodo: '1T'..'4T' | '01'..'12',
  *     justificante: { numero: string, fecha: string }
  *   }
  */

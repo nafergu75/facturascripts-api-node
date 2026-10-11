@@ -33,6 +33,7 @@ import {
   calcularCasillasModelo,
   casillasGuardadas303,
   datosGuardados303,
+  periodo303De,
   periodoFiscalDe,
   type OpcionesBorrador303,
   type ResultadoBorrador303,
@@ -99,7 +100,7 @@ async function exigirEmpresaEspanola(companyId: string): Promise<void> {
 
 export class TaxModelsService {
   /**
-   * MODELO 303: IVA TRIMESTRAL
+   * MODELO 303: IVA TRIMESTRAL O MENSUAL
    *
    * Borrador del 303 con el diseño de registro oficial 2026: las casillas que
    * enseña la pantalla salen del mismo cálculo que el fichero que se importa en
@@ -108,17 +109,24 @@ export class TaxModelsService {
    * (casillas con nombre y datos del fichero), para que las dos pantallas no se
    * pisen. Un modelo presentado, omitido o editado a mano no se recalcula: si
    * está presentado se enseñan las casillas guardadas (las mismas que el fichero).
+   * `periodo303`: trimestre (1 a 4, o 1T a 4T) o mes (01 a 12) para quien lo
+   * presenta cada mes (REDEME o SII).
    * Las listas de facturas de abajo salen de los libros de IVA (informativas).
    */
   async generarModelo303(
     companyId: string,
     ejercicio: number,
-    trimestre: number,
+    periodo303: number | string,
     userId?: string,
     opciones: OpcionesBorrador303 = {},
   ): Promise<{
     ejercicio: number;
-    trimestre: number;
+    /** Trimestre (1-4); null si el periodo es un mes. */
+    trimestre: number | null;
+    /** Periodo del 303: 1T-4T o 01-12. */
+    periodo: string;
+    /** La empresa presenta el 303 cada mes (REDEME, SII, gran empresa o periodicidad mensual). */
+    mensual: boolean;
     ivaRepercutido: { total: number; desglose: any[] };
     ivaSoportado: { total: number; desglose: any[] };
     resultado: number;
@@ -138,15 +146,19 @@ export class TaxModelsService {
   }> {
     // Una empresa no establecida en Espana no presenta modelos de la AEAT.
     await exigirEmpresaEspanola(companyId);
-    if (trimestre < 1 || trimestre > 4) {
-      throw badRequest('Trimestre debe estar entre 1 y 4');
-    }
-    const periodo = `${trimestre}T`;
+    const periodo = periodo303De(periodo303);
+    const trimestre = periodo.endsWith('T') ? Number(periodo[0]) : null;
     const periodoFiscal = periodoFiscalDe({ ejercicio, periodo });
-    const { borrador, aCompensar, cuentas, cuentaBancariaId, presentado } = await calcularBorrador303(companyId, periodoFiscal, opciones);
+    const { borrador, aCompensar, cuentas, cuentaBancariaId, presentado, mensual } = await calcularBorrador303(companyId, periodoFiscal, opciones);
 
-    // Listas de facturas del periodo (libros de IVA), solo para consultar.
-    const period = `Q${trimestre}-${ejercicio}`;
+    // Listas de facturas del periodo (libros de IVA, por trimestre; en un mes,
+    // las de ese mes), solo para consultar.
+    const period = `Q${trimestre ?? Math.ceil(Number(periodo) / 3)}-${ejercicio}`;
+    const delPeriodo = (f: { fecha?: unknown }) => {
+      if (trimestre) return true;
+      const fecha = f.fecha instanceof Date ? f.fecha.toISOString() : String(f.fecha ?? '');
+      return fecha.slice(0, 7) === `${ejercicio}-${periodo}`;
+    };
     const [emitidas, recibidas] = await Promise.all([
       taxDocumentsService.obtenerLibroIVAEmitidas(companyId, period),
       taxDocumentsService.obtenerLibroIVARecibidas(companyId, period),
@@ -156,7 +168,7 @@ export class TaxModelsService {
       generadoPor: userId || 'SYSTEM',
       generadoEn: new Date().toISOString(),
       origen: 'autorrelleno',
-      version: `${ejercicio}.Q${trimestre}`,
+      version: trimestre ? `${ejercicio}.Q${trimestre}` : `${ejercicio}.${periodo}`,
     };
     const casillas = casillasGuardadas303(borrador.datos) as CasillasGuardadas;
     const datos = datosGuardados303(borrador.datos, { tipoDeclaracion: borrador.tipoDeclaracion, auditoria });
@@ -193,15 +205,17 @@ export class TaxModelsService {
       companyId,
       action: 'GENERAR_MODELO_303',
       resourceType: 'modelo_fiscal',
-      resourceId: `303-${ejercicio}-${trimestre}T`,
+      resourceId: `303-${ejercicio}-${periodo}`,
     });
 
     return {
       id: modelo.id,
       ejercicio,
       trimestre,
-      ivaRepercutido: { total: oficiales['27'] ?? 0, desglose: emitidas.facturas },
-      ivaSoportado: { total: oficiales['45'] ?? 0, desglose: recibidas.facturas },
+      periodo,
+      mensual,
+      ivaRepercutido: { total: oficiales['27'] ?? 0, desglose: emitidas.facturas.filter(delPeriodo) },
+      ivaSoportado: { total: oficiales['45'] ?? 0, desglose: recibidas.facturas.filter(delPeriodo) },
       resultado: oficiales['71'] ?? 0,
       estado: modelo.estado,
       origen: modelo.origen,

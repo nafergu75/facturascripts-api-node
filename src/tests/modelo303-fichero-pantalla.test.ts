@@ -4,10 +4,12 @@
 let nif: string | null = 'B12345678';
 let compras: Array<{ base: number; cuota: number }> = [];
 let filaAnterior: Record<string, unknown> | null = null;
+let ajustes: Record<string, unknown> | null = null;
 const guardadas = new Map<string, Record<string, unknown>>();
 jest.mock('../config/database', () => ({
   prisma: {
     legalConfig: { findUnique: jest.fn(async () => ({ nif, denominacion: 'Ejemplo, S.L.' })) },
+    ajustesFiscales: { findUnique: jest.fn(async () => ajustes) },
     modeloImpuesto: {
       findMany: jest.fn(async () => []),
       // El 303 del 1T (periodo anterior) dejo cuotas a compensar.
@@ -54,7 +56,7 @@ jest.mock('../services/impuestosCalculo.service', () => {
   };
 });
 
-import { generarTxt303Trimestre } from '../services/impuestosModulo.service';
+import { generarTxt303, generarTxt303Trimestre } from '../services/impuestosModulo.service';
 import { taxModelsService } from '../services/tax-models.service';
 import { campoDeCasilla303 } from '../domain/aeat/modelo303-2026';
 
@@ -77,6 +79,7 @@ beforeEach(() => {
   nif = 'B12345678';
   compras = [];
   filaAnterior = null;
+  ajustes = null;
   guardadas.clear();
 });
 
@@ -188,5 +191,30 @@ describe('303 presentado: el fichero sale de las casillas guardadas', () => {
     filaAnterior = fila;
     const siguiente = await taxModelsService.generarModelo303('e1', 2026, 2);
     expect(siguiente.aCompensar.importe).toBe(0);
+  });
+});
+
+describe('303 mensual (REDEME, SII o periodicidad mensual)', () => {
+  it('se ve y se descarga por meses, con el periodo 01-12 en el fichero', async () => {
+    ajustes = { periodicidadIva: 'TRIMESTRAL', redeme: true, sii: false, granEmpresa: false, recargoEquivalencia: false, criterioCaja: false, prorrata: null, updatedAt: new Date('2026-01-02') };
+    const mayo = await taxModelsService.generarModelo303('e1', 2026, '05', 'u1');
+    expect(mayo).toMatchObject({ periodo: '05', trimestre: null, mensual: true, resultado: 210 });
+    expect(guardadas.get('05')).toBeDefined();
+    const r = await generarTxt303('e1', 2026, '05');
+    expect(r.nombre).toBe('303_2026_05.txt');
+    expect(r.contenido.startsWith('<T3030202605' + '0000><AUX>')).toBe(true);
+    const pag1 = r.contenido.slice(r.contenido.indexOf('<T30301000>'));
+    expect(pag1.slice(106, 108)).toBe('05');
+    expect(pag1.slice(109, 110)).toBe('1'); // REDEME
+    // Un mes sin facturas (las del mock son de mayo) sale a cero.
+    const junio = await taxModelsService.generarModelo303('e1', 2026, '06');
+    expect(junio.resultado).toBe(0);
+  });
+
+  it('una empresa trimestral también puede abrir un mes (la respuesta dice que no es mensual); periodos raros, 400', async () => {
+    const t = await taxModelsService.generarModelo303('e1', 2026, 2);
+    expect(t).toMatchObject({ periodo: '2T', trimestre: 2, mensual: false });
+    await expect(generarTxt303('e1', 2026, '13')).rejects.toThrow(/trimestre \(1T a 4T\) o un mes \(01 a 12\)/);
+    await expect(taxModelsService.generarModelo303('e1', 2026, 5)).rejects.toThrow(/trimestre \(1T a 4T\) o un mes/);
   });
 });
