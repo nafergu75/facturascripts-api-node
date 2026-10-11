@@ -1,0 +1,10 @@
+{
+  "error": {
+    "code": "InvalidArgument",
+    "message": "Invalid argument.",
+    "innererror": {
+      "code": "InvalidParameter",
+      "message": "The parameter features is invalid."
+    }
+  }
+}

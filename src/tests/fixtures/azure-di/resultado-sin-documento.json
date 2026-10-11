@@ -1,0 +1,106 @@
+{
+  "status": "succeeded",
+  "createdDateTime": "2026-03-05T09:15:02Z",
+  "lastUpdatedDateTime": "2026-03-05T09:15:06Z",
+  "analyzeResult": {
+    "apiVersion": "2024-11-30",
+    "modelId": "prebuilt-invoice",
+    "stringIndexType": "textElements",
+    "content": "Hoja en blanco",
+    "pages": [
+      {
+        "pageNumber": 1,
+        "angle": 0,
+        "width": 8.2639,
+        "height": 11.6806,
+        "unit": "inch",
+        "words": [
+          {
+            "content": "Hoja",
+            "polygon": [
+              1,
+              1,
+              2,
+              1,
+              2,
+              1.2,
+              1,
+              1.2
+            ],
+            "confidence": 0.99,
+            "span": {
+              "offset": 0,
+              "length": 4
+            }
+          },
+          {
+            "content": "en",
+            "polygon": [
+              1,
+              1,
+              2,
+              1,
+              2,
+              1.2,
+              1,
+              1.2
+            ],
+            "confidence": 0.99,
+            "span": {
+              "offset": 5,
+              "length": 2
+            }
+          },
+          {
+            "content": "blanco",
+            "polygon": [
+              1,
+              1,
+              2,
+              1,
+              2,
+              1.2,
+              1,
+              1.2
+            ],
+            "confidence": 0.99,
+            "span": {
+              "offset": 10,
+              "length": 6
+            }
+          }
+        ],
+        "lines": [
+          {
+            "content": "Hoja en blanco",
+            "polygon": [
+              1,
+              1,
+              2,
+              1,
+              2,
+              1.2,
+              1,
+              1.2
+            ],
+            "spans": [
+              {
+                "offset": 0,
+                "length": 10
+              }
+            ]
+          }
+        ],
+        "spans": [
+          {
+            "offset": 0,
+            "length": 14
+          }
+        ],
+        "barcodes": []
+      }
+    ],
+    "documents": [],
+    "contentFormat": "text"
+  }
+}

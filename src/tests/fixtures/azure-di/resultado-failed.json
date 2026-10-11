@@ -1,0 +1,16 @@
+{
+  "status": "failed",
+  "createdDateTime": "2026-03-05T09:15:02Z",
+  "lastUpdatedDateTime": "2026-03-05T09:15:04Z",
+  "error": {
+    "code": "InternalServerError",
+    "message": "An unexpected error occurred.",
+    "details": [
+      {
+        "code": "InvalidContentDimensions",
+        "message": "The input image dimensions are out of range. Refer to documentation for supported image dimensions.",
+        "target": "2"
+      }
+    ]
+  }
+}
