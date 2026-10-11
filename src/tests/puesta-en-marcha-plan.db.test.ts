@@ -288,6 +288,9 @@ describe('sin NIF: propuesta por nombre', () => {
     });
     expect(porCodigo.get('4300000001')).toMatchObject({ accion: 'pendiente', motivo: expect.stringContaining('hay 2 fichas con ese nombre') });
     expect(porCodigo.get('4300000002')).toMatchObject({ accion: 'pendiente', motivo: 'Sin NIF: enlázala a una ficha después.' });
+    // Las dos pendientes son por el NIF, y el aviso concuerda en plural.
+    expect(v.avisos).toContain('2 subcuentas de clientes o proveedores no traen un NIF válido: quedan en el plan para enlazarlas después a su ficha.');
+    expect(v.avisos.join(' ')).not.toMatch(/permiso/);
   });
 });
 
@@ -299,13 +302,22 @@ describe('dar de alta fichas exige ventas:write o compras:write', () => {
     const cuentas: CuentaDelPlan[] = [
       { codigo: '43000001', nombre: 'Cliente Permiso SL', nif: cif() },
       { codigo: '40000001', nombre: 'Proveedor Permiso SL', nif: cif() },
+      { codigo: '43000002', nombre: 'Cliente Sin Nif Ni Ficha SL' },
     ];
     const v = await previsualizarPlan(E, { cuentas, permisos: { cliente: false, proveedor: true } });
     const porCodigo = new Map(v.terceros.map((t) => [t.codigo, t]));
     expect(porCodigo.get('43000001')).toMatchObject({ accion: 'pendiente', motivo: expect.stringContaining('No tienes permiso para dar de alta clientes (Ventas)') });
     expect(porCodigo.get('40000001')).toMatchObject({ accion: 'crear' });
+    expect(porCodigo.get('43000002')).toMatchObject({ accion: 'pendiente', motivo: 'Sin NIF: enlázala a una ficha después.' });
+    // Dos pendientes por motivos distintos: cada aviso dice el suyo, con su recuento y en singular.
+    expect(v.resumen.pendientes).toBe(2);
+    expect(v.avisos).toContain('1 subcuenta de cliente o proveedor no trae un NIF válido: queda en el plan para enlazarla después a su ficha.');
+    expect(v.avisos).toContain(
+      '1 subcuenta de cliente necesita una ficha nueva y no tienes permiso para dar de alta clientes (Ventas «Modificar»): queda en el plan para enlazarla a una ficha que ya exista, o para que el administrador la cree.',
+    );
+    expect(v.avisos.join(' ')).not.toMatch(/dar de alta proveedores/);
     const r = await confirmarPlan(E, { cuentas, permisos: { cliente: false, proveedor: true } });
-    expect(r).toMatchObject({ fichasCreadas: 1, pendientes: 1 });
+    expect(r).toMatchObject({ fichasCreadas: 1, pendientes: 2 });
     expect(await prisma.customer.count({ where: { companyId: E } })).toBe(0);
     await expect(enlazarSubcuenta(E, { codigo: '43000001', nueva: { nombreFiscal: 'Cliente Permiso SL', nifCif: cif() } }, { cliente: false, proveedor: true })).rejects.toMatchObject({
       statusCode: 403,

@@ -321,6 +321,9 @@ export function longitudDelPlan(codigos: string[], esTercero: (c: string) => boo
 
 const nifValido = (n: string | null | undefined): n is string => !!n && /^[A-Z0-9]{5,15}$/.test(n);
 
+/** Elige el texto en singular o en plural segun el numero: segun(1, 'trae', 'traen'). */
+const segun = (n: number, singular: string, plural: string) => (n === 1 ? singular : plural);
+
 interface Analisis {
   vista: VistaPlan;
   cuentasValidas: CuentaDelPlan[];
@@ -354,7 +357,7 @@ async function analizar(
     conocidas.add(c.codigo);
     validas.push(c);
   }
-  if (omitidas.length) avisos.push(`${omitidas.length} cuenta(s) no se importan (grupos 8 y 9 o fuera del PGC): mira la lista.`);
+  if (omitidas.length) avisos.push(`${omitidas.length} ${segun(omitidas.length, 'cuenta no se importa', 'cuentas no se importan')} (grupos 8 y 9 o fuera del PGC): mira la lista.`);
   const nuevas: CuentaNuevaPlan[] = [];
   const existentesConOtroNombre: string[] = [];
   let existentes = 0;
@@ -375,7 +378,9 @@ async function analizar(
     nuevas.push({ codigo: c.codigo, nombre: c.nombre || `${ctx.plan.get(madre)?.nombre ?? nuevas.find((n) => n.codigo === madre)?.nombre ?? 'Cuenta'} (${c.codigo})`, madre });
   }
   if (existentesConOtroNombre.length) {
-    avisos.push(`${existentesConOtroNombre.length} subcuenta(s) ya estaban en el plan con otro nombre: se deja el nombre que tienen (${existentesConOtroNombre.slice(0, 5).join(', ')}${existentesConOtroNombre.length > 5 ? '…' : ''}).`);
+    avisos.push(
+      `${existentesConOtroNombre.length} ${segun(existentesConOtroNombre.length, 'subcuenta ya estaba en el plan con otro nombre: se deja el nombre que tiene', 'subcuentas ya estaban en el plan con otro nombre: se deja el nombre que tienen')} (${existentesConOtroNombre.slice(0, 5).join(', ')}${existentesConOtroNombre.length > 5 ? '…' : ''}).`,
+    );
   }
 
   // 2. Subcuentas de clientes y proveedores: las 430/400/410 que cuelgan de ellas o de 4300/4000/4100.
@@ -407,6 +412,8 @@ async function analizar(
   const nuevasPorNif = new Map<string, string>();
 
   const terceros: SubcuentaTercero[] = [];
+  /** Pendientes porque haria falta una ficha nueva y no hay permiso para darla de alta. */
+  const sinPermiso: Record<TipoFicha, number> = { cliente: 0, proveedor: 0 };
   for (const c of subcuentas) {
     const prefijo = c.codigo.slice(0, 3);
     const tipo = PREFIJO_TIPO[prefijo];
@@ -456,6 +463,7 @@ async function analizar(
     const clave = (id: string) => `${tipo}:${id}:${prefijo}`;
     if (!ficha && nifValido(nif)) {
       if (!permisos[tipo]) {
+        sinPermiso[tipo]++;
         terceros.push({ ...base, accion: 'pendiente', ficha: null, motivo: `${TEXTO_SIN_PERMISO[tipo]}: enlázala a una ficha que ya exista o pide al administrador que la cree.` });
         continue;
       }
@@ -514,12 +522,14 @@ async function analizar(
   const noTercero = validas.filter((c) => /^(4004|4009|4104|4109|4304|4309)\d+$/.test(c.codigo)).map((c) => c.codigo);
   if (noTercero.length) {
     avisos.push(
-      `${noTercero.length} subcuenta(s) de 4004, 4009, 4104, 4109, 4304 o 4309 (${noTercero.slice(0, 3).join(', ')}${noTercero.length > 3 ? '…' : ''}) se traen como cuentas, sin enlazarlas a ningún cliente ni proveedor.`,
+      `${noTercero.length} ${segun(noTercero.length, 'subcuenta', 'subcuentas')} de 4004, 4009, 4104, 4109, 4304 o 4309 (${noTercero.slice(0, 3).join(', ')}${noTercero.length > 3 ? '…' : ''}) se ${segun(noTercero.length, 'trae como cuenta, sin enlazarla', 'traen como cuentas, sin enlazarlas')} a ningún cliente ni proveedor.`,
     );
   }
   const otrasLongitudes = delPlan ? subcuentas.filter((c) => c.codigo.length !== delPlan).map((c) => c.codigo) : [];
   if (otrasLongitudes.length) {
-    avisos.push(`${otrasLongitudes.length} subcuenta(s) de clientes o proveedores tienen otra longitud (${otrasLongitudes.slice(0, 3).join(', ')}): se traen tal cual.`);
+    avisos.push(
+      `${otrasLongitudes.length} ${segun(otrasLongitudes.length, 'subcuenta de cliente o proveedor tiene', 'subcuentas de clientes o proveedores tienen')} otra longitud (${otrasLongitudes.slice(0, 3).join(', ')}): se ${segun(otrasLongitudes.length, 'trae', 'traen')} tal cual.`,
+    );
   }
 
   const resumen = {
@@ -529,7 +539,22 @@ async function analizar(
     yaEnlazadas: terceros.filter((t) => t.accion === 'ya-enlazada').length,
     noSeEnlazan: terceros.filter((t) => t.accion === 'no-se-enlaza').length,
   };
-  if (resumen.pendientes) avisos.push(`${resumen.pendientes} subcuenta(s) de clientes o proveedores no traen NIF: quedan en el plan para enlazarlas después a su ficha.`);
+  // Las pendientes lo son por dos motivos distintos: sin NIF valido, o sin permiso para crear su ficha.
+  const sinNif = resumen.pendientes - sinPermiso.cliente - sinPermiso.proveedor;
+  if (sinNif) {
+    avisos.push(
+      `${sinNif} ${segun(sinNif, 'subcuenta de cliente o proveedor no trae', 'subcuentas de clientes o proveedores no traen')} un NIF válido: ${segun(sinNif, 'queda en el plan para enlazarla', 'quedan en el plan para enlazarlas')} después a su ficha.`,
+    );
+  }
+  for (const tipo of ['cliente', 'proveedor'] as const) {
+    const n = sinPermiso[tipo];
+    if (!n) continue;
+    const [una, varias, quien, area] =
+      tipo === 'cliente' ? ['subcuenta de cliente', 'subcuentas de clientes', 'clientes', 'Ventas'] : ['subcuenta de proveedor', 'subcuentas de proveedores', 'proveedores', 'Compras'];
+    avisos.push(
+      `${n} ${segun(n, una, varias)} ${segun(n, 'necesita', 'necesitan')} una ficha nueva y no tienes permiso para dar de alta ${quien} (${area} «Modificar»): ${segun(n, 'queda', 'quedan')} en el plan para ${segun(n, 'enlazarla', 'enlazarlas')} a una ficha que ya exista, o para que el administrador ${segun(n, 'la cree', 'las cree')}.`,
+    );
+  }
   if (!validas.length) errores.push('El fichero no trae ninguna cuenta de los grupos 1 a 7.');
 
   return {
