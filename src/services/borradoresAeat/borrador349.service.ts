@@ -40,13 +40,15 @@ import {
   type Rectificacion349,
 } from '../../aeat/modelo349/modelo349.dr';
 import { ErrorDisenoRegistro } from '../../aeat/common/disenoRegistro';
-import { avisosContacto, declaranteEmpresa, filaModelo, opcionesDe, type FilaCalendario } from './comun';
+import { avisoPresentado, avisosContacto, declaranteEmpresa, filaModelo, opcionesDe, presentacionDe, type FilaCalendario } from './comun';
 
 /** Desde este dia las compras se clasifican por el pais ISO-2 y llevan A o I. */
 const INICIO_COMPRAS_ISO2 = '2027-01-01';
 
 /** Una factura (o su anulacion) en el 349 del periodo. */
 export interface Movimiento349 {
+  /** Id de la factura de gasto (solo compras: para cambiar su clave A/I). */
+  id?: string;
   factura: string;
   tipo: 'venta' | 'compra';
   fecha: string;
@@ -152,6 +154,7 @@ export async function movimientos349(companyId: string, p: PeriodoFiscal): Promi
       const base = f.lineas.length ? f.lineas.reduce((a, l) => a + cent(Number(l.baseLine)), 0) : cent(Number(f.baseTotal));
       const contable = fechaContableGasto(f);
       out.push({
+        id: f.id,
         factura: f.numeroFacturaProveedor ?? f.numeroCompleto,
         tipo: 'compra',
         fecha: ap.fecha,
@@ -253,7 +256,7 @@ export async function calcularBorrador349(companyId: string, ejercicio: number, 
     declaracionAnterior: typeof opc.declaracionAnterior === 'string' ? opc.declaracionAnterior : null,
     cambioPeriodicidad: opc.cambioPeriodicidad === true,
   };
-  const entrada: Entrada349 = {
+  const calculada: Entrada349 = {
     ejercicio,
     periodo: p.periodo,
     cambioPeriodicidad: opciones.cambioPeriodicidad,
@@ -269,7 +272,11 @@ export async function calcularBorrador349(companyId: string, ejercicio: number, 
     operadores: agruparOperadores(movimientos),
     rectificaciones: rectificaciones.sort((a, b) => a.clave.localeCompare(b.clave) || a.nombre.localeCompare(b.nombre, 'es')),
   };
-  if (!entrada.operadores.length && !entrada.rectificaciones!.length) avisos.push('No hay operaciones intracomunitarias en el periodo: no hace falta presentar el 349.');
+  // Presentada: se enseña (y se descarga) lo que se presento.
+  const presentada = presentacionDe<Entrada349>(fila);
+  const entrada = presentada?.entrada ?? calculada;
+  if (presentada) avisos.unshift(avisoPresentado(presentada));
+  else if (!entrada.operadores.length && !entrada.rectificaciones!.length) avisos.push('No hay operaciones intracomunitarias en el periodo: no hace falta presentar el 349.');
 
   let pantalla: Pantalla349 | null = null;
   try {

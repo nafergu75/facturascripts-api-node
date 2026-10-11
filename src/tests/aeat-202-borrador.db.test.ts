@@ -139,6 +139,21 @@ describe('202 de 2027, modalidad A', () => {
   });
 });
 
+describe('202 presentado', () => {
+  it('se enseña lo presentado aunque cambie la base, y ya no se cambian sus opciones', async () => {
+    const E = await empresa(2_500_000);
+    await request(app(E)).put(`/companies/${E}/tax-models/202/opciones`).send({ ejercicio: 2027, periodo: '1P', baseManual: 5000 });
+    const r = await request(app(E)).post(`/companies/${E}/tax-models/202/presentado`).send({ ejercicio: 2027, periodo: '1P', justificante: { numero: '2021234567890', fecha: '2027-04-15' } });
+    expect(r.status).toBe(200);
+    expect(r.body.data.entrada.casillas).toEqual({ '01': 5000, '02': 0, '03': 900 });
+    await prisma.modeloImpuesto.create({ data: { companyId: E, codigo: '200', ejercicio: 2025, periodo: '0A', estado: 'presentado', datos: { cuotaLiquida: 99999 } as never } });
+    const b = await calcularBorrador202(E, 2027, '1P');
+    expect(b.entrada.casillas['03']).toBe(900);
+    expect(b.avisos[0]).toMatch(/^Presentado \(justificante 2021234567890/);
+    expect((await request(app(E)).put(`/companies/${E}/tax-models/202/opciones`).send({ ejercicio: 2027, periodo: '1P', baseManual: 1 })).status).toBe(403);
+  });
+});
+
 describe('202 con más de 6 millones de cifra de negocios', () => {
   it('modalidad B obligatoria: la app no la calcula y no da fichero', async () => {
     const E = await empresa(7_000_000);

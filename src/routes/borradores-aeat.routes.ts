@@ -6,6 +6,7 @@
  *  - GET  /<modelo>            borrador: las casillas y registros que lleva el fichero, errores y avisos
  *  - GET  /<modelo>/fichero    fichero para importar en la sede (ISO-8859-1); 400 si falta algo
  *  - PUT  /<modelo>/opciones   complementaria, sustitutiva, domiciliacion, base a mano...
+ *  - POST /<modelo>/presentado marcarlo como presentado: se guarda lo presentado (justificante)
  * Y los datos que piden por factura:
  *  - /180/inmuebles (GET, POST, PUT /:id) inmuebles alquilados de cada proveedor
  *  - PUT /180/facturas/:invoiceId/inmueble   inmueble de una factura de alquiler
@@ -19,7 +20,7 @@ import { badRequest } from '../utils/http-errors';
 import { calcularBorrador349, ficheroModelo349 } from '../services/borradoresAeat/borrador349.service';
 import { calcularBorrador180, ficheroModelo180 } from '../services/borradoresAeat/borrador180.service';
 import { calcularBorrador202, ficheroModelo202, opcionesEntrada202 } from '../services/borradoresAeat/borrador202.service';
-import { ejercicioDe, enviarFicheroAeat, guardarOpciones } from '../services/borradoresAeat/comun';
+import { ejercicioDe, enviarFicheroAeat, guardarOpciones, guardarPresentacion, justificanteDe } from '../services/borradoresAeat/comun';
 import {
   actualizarInmueble,
   asignarClave349Compra,
@@ -156,6 +157,32 @@ router.put(
     if (!['1P', '2P', '3P'].includes(periodo)) throw badRequest('El 202 tiene tres periodos: 1P, 2P y 3P.');
     await guardarOpciones(empresa(req), '202', ejercicio, periodo, opcionesEntrada202(req.body ?? {}));
     sendOk(res, await calcularBorrador202(empresa(req), ejercicio, periodo));
+  }),
+);
+
+// --- Presentados: se guarda lo que se presento (base de rectificaciones y complementarias) ---
+router.post(
+  '/:codigo(349|180|202)/presentado',
+  authorize('impuestos:write'),
+  asyncHandler(async (req, res) => {
+    const companyId = empresa(req);
+    const userId = (req.user as { userId?: string } | undefined)?.userId ?? 'SYSTEM';
+    const ejercicio = ejercicioDe(req.body?.ejercicio);
+    const justificante = justificanteDe(req.body ?? {});
+    const codigo = req.params.codigo;
+    const periodo = codigo === '180' ? '0A' : periodoDe(req.body?.periodo ?? (req.body?.trimestre ? `${req.body.trimestre}T` : ''));
+    const b = codigo === '349' ? await calcularBorrador349(companyId, ejercicio, periodo) : codigo === '180' ? await calcularBorrador180(companyId, ejercicio) : await calcularBorrador202(companyId, ejercicio, periodo);
+    if (b.errores.length) throw badRequest(`Corrige esto antes de marcarlo como presentado: ${b.errores.join(' ')}`, { errores: b.errores });
+    const resumen: Record<string, number> =
+      codigo === '349'
+        ? { num_operadores: (b as Awaited<ReturnType<typeof calcularBorrador349>>).entrada.operadores.length }
+        : codigo === '180'
+          ? { num_perceptores: (b as Awaited<ReturnType<typeof calcularBorrador180>>).entrada.perceptores.length }
+          : { '03': (b as Awaited<ReturnType<typeof calcularBorrador202>>).entrada.casillas['03'] ?? 0 };
+    // El periodo normalizado del borrador ('05', '2T'...); el 180 es anual.
+    const periodoGuardado = 'periodo' in b ? b.periodo : periodo;
+    await guardarPresentacion(companyId, userId, codigo, ejercicio, periodoGuardado, b.entrada, justificante, resumen);
+    sendOk(res, codigo === '349' ? await calcularBorrador349(companyId, ejercicio, periodo) : codigo === '180' ? await calcularBorrador180(companyId, ejercicio) : await calcularBorrador202(companyId, ejercicio, periodo));
   }),
 );
 

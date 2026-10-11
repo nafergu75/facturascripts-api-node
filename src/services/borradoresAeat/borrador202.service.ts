@@ -36,7 +36,7 @@ import {
   type Periodo202,
 } from '../../aeat/modelo202/modelo202.dr';
 import { ErrorDisenoRegistro } from '../../aeat/common/disenoRegistro';
-import { declaranteEmpresa, filaModelo, opcionesDe } from './comun';
+import { avisoPresentado, declaranteEmpresa, filaModelo, opcionesDe, presentacionDe } from './comun';
 
 /** Version del programa que va en la cabecera del fichero (posiciones 93-96). */
 export const VERSION_PROGRAMA_202 = '0100';
@@ -158,7 +158,7 @@ export async function calcularBorrador202(companyId: string, ejercicio: number, 
 
   const casillas = calcularModalidadA202(base.importe, opciones.complementaria ? opciones.resultadoAnterior ?? 0 : 0);
   const iban = opciones.domiciliar ? (await listarCuentasBancarias(companyId)).find((c) => c.activa && c.iban)?.iban ?? '' : '';
-  const entrada: Entrada202 = {
+  const calculada: Entrada202 = {
     ejercicio,
     periodo,
     versionPrograma: VERSION_PROGRAMA_202,
@@ -178,6 +178,13 @@ export async function calcularBorrador202(companyId: string, ejercicio: number, 
     iban,
   };
   if (!String(legal?.cnae ?? '').replace(/\D/g, '')) avisos.push('Falta el CNAE de la actividad principal (CNAE-2025) en Registro Mercantil > Datos.');
+  // Presentada: se enseña (y se descarga) lo que se presento.
+  const presentada = presentacionDe<Entrada202>(fila);
+  const entrada = presentada?.entrada ?? calculada;
+  if (presentada) {
+    avisos.unshift(avisoPresentado(presentada));
+    errores.length = 0;
+  }
 
   let pantalla: Pantalla202 | null = null;
   try {

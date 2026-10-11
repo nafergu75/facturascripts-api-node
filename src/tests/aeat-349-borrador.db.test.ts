@@ -197,6 +197,27 @@ describe('349 de 2027 desde las facturas', () => {
     await request(app(E)).put(`/companies/${E}/tax-models/349/compras/${pt.id}/clave`).send({ clave: null });
   });
 
+  it('POST /349/presentado: guarda lo presentado, que se enseña después y es la base de las rectificaciones', async () => {
+    const r = await request(app(E))
+      .post(`/companies/${E}/tax-models/349/presentado`)
+      .send({ ejercicio: 2027, periodo: '1T', justificante: { numero: '3492027210001', fecha: '2027-04-18' } });
+    expect(r.status).toBe(200);
+    expect(r.body.data.estado).toBe('presentado');
+    expect(r.body.data.avisos[0]).toMatch(/^Presentado \(justificante 3492027210001, 2027-04-18\)/);
+    // Rossi estaba en lo presentado: su anulacion deja la base rectificada a cero, sin error.
+    const b = await calcularBorrador349(E, 2027, '2T');
+    expect(b.errores).toEqual([]);
+    expect(b.entrada.rectificaciones!.map((x) => [x.nombre, x.baseAnterior, x.baseRectificada])).toEqual([
+      ['Rossi SpA', 4000, 0],
+      ['Müller Handels GmbH', 10000, 9000],
+    ]);
+    expect(b.avisos.some((x) => /no consta como presentado/.test(x))).toBe(false);
+    // Ya presentado: ni otra vez ni opciones.
+    expect((await request(app(E)).post(`/companies/${E}/tax-models/349/presentado`).send({ ejercicio: 2027, periodo: '1T', justificante: { numero: '3492027210001', fecha: '2027-04-18' } })).status).toBe(400);
+    expect((await request(app(E)).put(`/companies/${E}/tax-models/349/opciones`).send({ ejercicio: 2027, periodo: '1T', tipoDeclaracion: 'C' })).status).toBe(403);
+    expect((await request(app(E)).post(`/companies/${E}/tax-models/349/presentado`).send({ ejercicio: 2027, periodo: '2T', justificante: { numero: '', fecha: '' } })).status).toBe(400);
+  });
+
   it('sin NIF de la empresa no hay fichero: 400 con lo que falta', async () => {
     await prisma.legalConfig.update({ where: { companyId: E }, data: { nif: null } });
     const r = await request(app(E)).get(`/companies/${E}/tax-models/349/fichero?ejercicio=2027&periodo=2T`);

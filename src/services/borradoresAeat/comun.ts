@@ -11,6 +11,7 @@ import type { Response } from 'express';
 import { prisma } from '../../config/database';
 import { badRequest, forbidden } from '../../utils/http-errors';
 import { telefonoAeat } from '../../aeat/common/disenoRegistro';
+import { registrarAuditoria } from '../auditoria.service';
 
 export interface DeclaranteEmpresa {
   nif: string;
@@ -101,4 +102,59 @@ export function enviarFicheroAeat(res: Response, nombre: string, contenido: stri
   res.setHeader('Content-Type', 'text/plain; charset=ISO-8859-1');
   res.setHeader('Content-Disposition', `attachment; filename="${nombre}"`);
   res.status(200).send(Buffer.from(contenido, 'latin1'));
+}
+
+/** Lo que se presento de una declaracion: la entrada del fichero y el justificante. */
+export interface Presentacion<E> {
+  entrada: E;
+  justificante?: { numero: string; fecha: string };
+  fechaPresentacion?: string;
+}
+
+/** La declaracion presentada de una fila (si lo esta y guardo su entrada). */
+export function presentacionDe<E>(fila: FilaCalendario | null): Presentacion<E> | null {
+  if (fila?.estado !== 'presentado') return null;
+  const d = fila.datos as Presentacion<E> | null;
+  return d && typeof d === 'object' && d.entrada ? d : null;
+}
+
+/** Aviso de que se enseña lo presentado, no un calculo nuevo. */
+export const avisoPresentado = (p: Presentacion<unknown>) =>
+  `Presentado${p.justificante?.numero ? ` (justificante ${p.justificante.numero}${p.justificante.fecha ? `, ${p.justificante.fecha}` : ''})` : ''}: se enseña lo que se presentó. Las facturas que cambien después no lo modifican.`;
+
+/** Justificante de la presentacion: numero y fecha (AAAA-MM-DD). */
+export function justificanteDe(body: Record<string, unknown>): { numero: string; fecha: string } {
+  const j = (body.justificante ?? {}) as Record<string, unknown>;
+  const numero = String(j.numero ?? '').trim().toUpperCase();
+  const fecha = String(j.fecha ?? '').trim();
+  if (!/^[0-9A-Z]{6,20}$/.test(numero)) throw badRequest('Indica el número de justificante que da la sede al presentar.');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(fecha)) throw badRequest('Indica la fecha de presentación.');
+  return { numero, fecha };
+}
+
+/**
+ * Marca la declaracion como presentada y guarda lo que se presento (la
+ * entrada del fichero), que es lo que se enseña despues y la base de las
+ * rectificaciones y complementarias.
+ */
+export async function guardarPresentacion<E>(
+  companyId: string,
+  userId: string,
+  codigo: string,
+  ejercicio: number,
+  periodo: string,
+  entrada: E,
+  justificante: { numero: string; fecha: string },
+  resumen: Record<string, number>,
+): Promise<void> {
+  const fila = await filaModelo(companyId, codigo, ejercicio, periodo);
+  if (fila?.estado === 'presentado') throw badRequest(`El ${codigo} de ${periodo} de ${ejercicio} ya está presentado.`);
+  const casillas = { ...conservarOpciones(fila?.casillas), ...resumen };
+  const datos = { entrada, justificante, fechaPresentacion: new Date().toISOString(), auditoria: { marcadoPresentadoPor: userId } };
+  await prisma.modeloImpuesto.upsert({
+    where: { companyId_codigo_ejercicio_periodo: { companyId, codigo, ejercicio, periodo } },
+    create: { companyId, codigo, ejercicio, periodo, estado: 'presentado', casillas: casillas as never, datos: datos as never },
+    update: { estado: 'presentado', casillas: casillas as never, datos: datos as never },
+  });
+  await registrarAuditoria({ userId, companyId, action: `MARCAR_${codigo}_PRESENTADO`, resourceType: 'modelo_fiscal', resourceId: `${codigo}-${ejercicio}-${periodo}` });
 }

@@ -35,7 +35,7 @@ import {
   type Perceptor180,
 } from '../../aeat/modelo180/modelo180.dr';
 import { ErrorDisenoRegistro } from '../../aeat/common/disenoRegistro';
-import { avisosContacto, declaranteEmpresa, filaModelo, opcionesDe } from './comun';
+import { avisoPresentado, avisosContacto, declaranteEmpresa, filaModelo, opcionesDe, presentacionDe } from './comun';
 
 type InmuebleBd = NonNullable<Awaited<ReturnType<typeof prisma.inmuebleArrendado.findFirst>>>;
 
@@ -187,7 +187,7 @@ export async function calcularBorrador180(companyId: string, ejercicio: number):
   const opc = opcionesDe(fila);
   const tipoDeclaracion: 'C' | 'S' | null = opc.tipoDeclaracion === 'C' || opc.tipoDeclaracion === 'S' ? opc.tipoDeclaracion : null;
   const opciones = { tipoDeclaracion, declaracionAnterior: typeof opc.declaracionAnterior === 'string' ? opc.declaracionAnterior : null };
-  const entrada: Entrada180 = {
+  const calculada: Entrada180 = {
     ejercicio,
     declarante: {
       nif: declarante.nif,
@@ -203,7 +203,13 @@ export async function calcularBorrador180(companyId: string, ejercicio: number):
       .map(({ cb, cr, ultima, ...g }) => ({ ...g, base: cb / 100, retenciones: cr / 100 }))
       .sort((a, b) => a.nombre.localeCompare(b.nombre, 'es') || (a.ejercicioDevengo ?? 0) - (b.ejercicioDevengo ?? 0)),
   };
-  if (!entrada.perceptores.length) avisos.push(`No hay facturas de alquiler con retención en ${ejercicio}: no hace falta presentar el 180.`);
+  // Presentada: se enseña (y se descarga) lo que se presento.
+  const presentada = presentacionDe<Entrada180>(fila);
+  const entrada = presentada?.entrada ?? calculada;
+  if (presentada) {
+    avisos.unshift(avisoPresentado(presentada));
+    errores.length = 0;
+  } else if (!entrada.perceptores.length) avisos.push(`No hay facturas de alquiler con retención en ${ejercicio}: no hace falta presentar el 180.`);
 
   const cuadre = { ...cuadre180Con115(entrada, periodos), periodos };
   if (!cuadre.coincide) {
