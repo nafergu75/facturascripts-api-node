@@ -170,6 +170,20 @@ export function totales190(perceptores: Perceptor190[]): { registros: number; pe
   return { registros: perceptores.length, percepciones: percepciones / 100, retenciones: retenciones / 100 };
 }
 
+/**
+ * Error del NIF de un perceptor (con su letra o dígito de control y dónde se
+ * corrige), o null si vale. Lo usan el fichero y la pantalla (/perceptores),
+ * para que un NIF mal se vea antes de descargar.
+ */
+export function errorNifPerceptor190(p: Pick<Perceptor190, 'nif' | 'origen'>): string | null {
+  const trabajador = p.origen === 'nomina';
+  const motivo = motivoNifNoValido(p.nif, { persona: trabajador });
+  if (!motivo) return null;
+  return trabajador
+    ? `el NIF del trabajador (${p.nif || 'vacío'}) no es válido: ${motivo}. Corrígelo en Nóminas > Empleados, en su ficha.`
+    : `el NIF del proveedor (${p.nif || 'vacío'}) no es válido: ${motivo}. Corrígelo en la ficha del proveedor (Proveedores).`;
+}
+
 /** Datos que faltan o que la sede rechazaria (vacio si se puede generar). */
 export function erroresFichero190(declarante: Declarante190, perceptores: Perceptor190[]): string[] {
   const errores: string[] = [];
@@ -193,15 +207,8 @@ export function erroresFichero190(declarante: Declarante190, perceptores: Percep
   }
   if (!perceptores.length) errores.push('No hay ningún perceptor en el ejercicio.');
   for (const p of perceptores) {
-    const trabajador = p.origen === 'nomina';
-    const motivoNif = motivoNifNoValido(p.nif, { persona: trabajador });
-    if (motivoNif) {
-      errores.push(
-        trabajador
-          ? `${p.nombre}: el NIF del trabajador (${p.nif || 'vacío'}) no es válido: ${motivoNif}. Corrígelo en Nóminas > Empleados, en su ficha.`
-          : `${p.nombre}: el NIF del proveedor (${p.nif || 'vacío'}) no es válido: ${motivoNif}. Corrígelo en la ficha del proveedor (Proveedores).`,
-      );
-    }
+    const errorNif = errorNifPerceptor190(p);
+    if (errorNif) errores.push(`${p.nombre}: ${errorNif}`);
     if (!p.provincia || !/^(0[1-9]|[1-4]\d|5[0-3]|98)$/.test(p.provincia)) errores.push(`${p.nombre}: falta el código de provincia.`);
     if (!/^[A-L]$/.test(p.clave)) errores.push(`${p.nombre}: la clave de percepción "${p.clave}" no existe.`);
     else if (SUBCLAVES_190[p.clave] && !SUBCLAVES_190[p.clave].includes(p.subclave ?? '')) {

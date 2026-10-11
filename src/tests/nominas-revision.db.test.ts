@@ -130,6 +130,19 @@ describe('cuadre del 190 con el 111 mensual (gran empresa)', () => {
     await prisma.ajustesFiscales.create({ data: { companyId: R6, periodicidadIva: 'MENSUAL', sii: true, granEmpresa: true } });
     expect((await request(app(R6)).get('/nominas/retenciones/2026/3T')).body.data.mensual).toBe(true);
   });
+
+  it('190: un NIF con la letra mal sale en la relación de perceptores antes de descargar', async () => {
+    const ok = await request(app(R6)).get('/nominas/190/2026/perceptores');
+    expect(ok.status).toBe(200);
+    expect(ok.body.data.perceptores.map((p: { errorNif: string | null }) => p.errorNif)).toEqual([null]);
+    const malo = nif(81000061).slice(0, 8) + (letraNif(81000061) === 'A' ? 'B' : 'A');
+    await prisma.empleado.updateMany({ where: { companyId: R6 }, data: { nif: malo } });
+    const r = await request(app(R6)).get('/nominas/190/2026/perceptores');
+    expect(r.body.data.perceptores[0]).toMatchObject({
+      nif: malo,
+      errorNif: `el NIF del trabajador (${malo}) no es válido: la letra no corresponde a sus cifras. Corrígelo en Nóminas > Empleados, en su ficha.`,
+    });
+  });
 });
 
 describe('fecha de pago y 111 presentado (el IRPF no se declara dos veces)', () => {

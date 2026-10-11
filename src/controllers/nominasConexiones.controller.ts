@@ -31,7 +31,7 @@ import {
   pagarSegurosSociales,
 } from '../services/nominas/segurosSociales';
 import { calcularModelo190, periodoFiscal, presenta111Mensual, retencionesTrabajo } from '../services/nominas/fiscal';
-import { comprobarDiseno190, idRegistro190, informe190Excel, resumen190 } from '../services/nominas/modelo190';
+import { comprobarDiseno190, errorNifPerceptor190, idRegistro190, informe190Excel, resumen190 } from '../services/nominas/modelo190';
 import { ficheroModelo190 } from '../services/nominas/fichero190';
 import { contextoDeclaracion } from '../services/declaracionesAeat/declaraciones.service';
 import {
@@ -218,6 +218,8 @@ export const nominasConexionesController = {
         id: idRegistro190(p),
         presentado: decl.registrosPresentados.has(idRegistro190(p)),
         incluido: seleccion ? seleccion.has(idRegistro190(p)) : true,
+        // NIF con la letra o el control mal: se ve aquí antes de descargar (el fichero da 400).
+        errorNif: errorNifPerceptor190(p),
       })),
       ficheroDisponible: diseno !== null,
       avisoDiseno: diseno?.aviso ?? null,
