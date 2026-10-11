@@ -9,4 +9,9 @@ const router = Router({ mergeParams: true });
 
 router.get('/red-seguridad', authorize('ventas:read'), verifactuController.estadoRedEmpresa);
 
+// Exclusion SII o FORAL (spec 9.2): solo un administrador de la empresa, con
+// rastro en AuditLog. Marcar el SII en los ajustes fiscales no basta para abrir la red.
+router.get('/exclusion', authorize('admin:empresa'), verifactuController.leerExclusion);
+router.put('/exclusion', authorize('admin:empresa'), verifactuController.fijarExclusion);
+
 export default router;
