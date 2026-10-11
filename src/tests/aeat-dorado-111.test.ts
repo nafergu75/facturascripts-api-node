@@ -230,7 +230,7 @@ describe('111: tipo de declaracion, complementaria, domiciliacion y persona fisi
   it('errores que la sede rechazaria: 400 con un mensaje para la persona', () => {
     const err = (e: Partial<Parameters<typeof construirDeclaracion>[1]>) => construirDeclaracion('111', { ...base, casillas: casillas({}), ...e }).errores;
     expect(err({ nif: '' })[0]).toMatch(/^Falta el NIF de la empresa/);
-    expect(err({ nif: 'B12345678' })[0]).toMatch(/^El NIF de la empresa no es válido/);
+    expect(err({ nif: 'B12345678' })[0]).toBe('El NIF de la empresa (B12345678) no es válido: el dígito de control no corresponde a sus cifras. Corrígelo en Registro Mercantil > Datos para la memoria.');
     expect(err({ denominacion: '' })[0]).toMatch(/^Falta la razón social/);
     expect(err({ periodo: '0A' })[0]).toMatch(/periodo "0A" no es válido/);
     expect(err({ casillas: casillas({ '28': 200, '30': 200 }) })[0]).toMatch(/^La casilla \[28\]/);

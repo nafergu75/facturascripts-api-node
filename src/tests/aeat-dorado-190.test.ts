@@ -288,3 +288,30 @@ describe('190: perceptores de la clave G (solo contribuyentes del IRPF y entidad
     expect(revisarPerceptoresG(perceptoresProfesionales([fs[2]]), [fs[2]]).avisos).toEqual([]);
   });
 });
+
+describe('190: NIF con su letra o digito de control (declarante, perceptores y conyuge)', () => {
+  const [ana] = perceptoresReales().filter((p) => p.clave === 'A' && p.nif === ANA && !p.ejercicioDevengo);
+  const [g] = perceptoresReales().filter((p) => p.clave === 'G' && p.nif === ASESORIA);
+
+  it('cada error dice que NIF falla y donde se corrige', () => {
+    const malDni = `${ANA.slice(0, 8)}${ANA[8] === 'A' ? 'B' : 'A'}`;
+    expect(
+      erroresFichero190({ ...declarante, nif: 'B12345678' }, [
+        { ...ana, nif: malDni },
+        { ...ana, nif: 'B46000006', clave: 'L', subclave: '01' },
+        { ...ana, nifConyuge: 'X1234567A' },
+        { ...g, nif: 'E12345670' },
+      ]),
+    ).toEqual([
+      'El NIF de la empresa (B12345678) no es válido: el dígito de control no corresponde a sus cifras. Corrígelo en Registro Mercantil > Datos para la memoria.',
+      `Peña Ibáñez Ana María: el NIF del trabajador (${malDni}) no es válido: la letra no corresponde a sus cifras. Corrígelo en Nóminas > Empleados, en su ficha.`,
+      'Peña Ibáñez Ana María: el NIF del trabajador (B46000006) no es válido: es el NIF de una sociedad, no el de una persona. Corrígelo en Nóminas > Empleados, en su ficha.',
+      'Peña Ibáñez Ana María: el NIF del cónyuge (X1234567A) no es válido: la letra no corresponde a sus cifras. Corrígelo en Nóminas > Empleados, en la ficha del trabajador.',
+      'Asesoría Muñoz, C.B.: el NIF del proveedor (E12345670) no es válido: el dígito de control no corresponde a sus cifras. Corrígelo en la ficha del proveedor (Proveedores).',
+    ]);
+  });
+
+  it('con todos los NIF bien no hay errores de NIF', () => {
+    expect(erroresFichero190(declarante, [ana, g])).toEqual([]);
+  });
+});

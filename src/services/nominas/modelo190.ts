@@ -15,7 +15,7 @@
 import * as XLSX from 'xlsx';
 import { badRequest, conflict } from '../../utils/http-errors';
 import { aCentimos } from '../../utils/money';
-import { componerRegistroDr, DR190, registroDr, sanearAN, type ValoresDr } from '../aeatRetenciones/diseno';
+import { componerRegistroDr, DR190, errorNifDeclarante, motivoNifNoValido, registroDr, sanearAN, type ValoresDr } from '../aeatRetenciones/diseno';
 import type { Modelo190, Perceptor190 } from './fiscal';
 
 /** Ejercicios cuyo diseño de registro se ha comprobado con el publicado por la AEAT. */
@@ -174,9 +174,9 @@ export function totales190(perceptores: Perceptor190[]): { registros: number; pe
 /** Datos que faltan o que la sede rechazaria (vacio si se puede generar). */
 export function erroresFichero190(declarante: Declarante190, perceptores: Perceptor190[]): string[] {
   const errores: string[] = [];
-  if (!/^[A-Z0-9]{9}$/.test(String(declarante.nif ?? '').toUpperCase().replace(/[^A-Z0-9]/g, ''))) {
-    errores.push('Falta el NIF de la empresa (Registro Mercantil > Datos para la memoria).');
-  }
+  // NIF de la empresa, de cada perceptor y del conyuge, con su letra o digito de control.
+  const errorNif = errorNifDeclarante(declarante.nif);
+  if (errorNif) errores.push(errorNif);
   if (!textoAeat(declarante.nombre)) errores.push('Falta la razón social de la empresa.');
   if (!/^\d{9}$/.test(String(declarante.telefono ?? '').replace(/\D/g, ''))) errores.push('Falta el teléfono (9 cifras) de la persona con quien relacionarse.');
   if (!textoAeat(declarante.contacto)) errores.push('Faltan los apellidos y el nombre de la persona con quien relacionarse.');
@@ -194,14 +194,30 @@ export function erroresFichero190(declarante: Declarante190, perceptores: Percep
   }
   if (!perceptores.length) errores.push('No hay ningún perceptor en el ejercicio.');
   for (const p of perceptores) {
-    if (!/^[A-Z0-9]{9}$/.test(p.nif)) errores.push(`${p.nombre}: el NIF "${p.nif}" no tiene 9 caracteres.`);
+    const trabajador = p.origen === 'nomina';
+    const motivoNif = motivoNifNoValido(p.nif, { persona: trabajador });
+    if (motivoNif) {
+      errores.push(
+        trabajador
+          ? `${p.nombre}: el NIF del trabajador (${p.nif || 'vacío'}) no es válido: ${motivoNif}. Corrígelo en Nóminas > Empleados, en su ficha.`
+          : `${p.nombre}: el NIF del proveedor (${p.nif || 'vacío'}) no es válido: ${motivoNif}. Corrígelo en la ficha del proveedor (Proveedores).`,
+      );
+    }
     if (!p.provincia || !/^(0[1-9]|[1-4]\d|5[0-3]|98)$/.test(p.provincia)) errores.push(`${p.nombre}: falta el código de provincia.`);
     if (!/^[A-L]$/.test(p.clave)) errores.push(`${p.nombre}: la clave de percepción "${p.clave}" no existe.`);
     else if (SUBCLAVES_190[p.clave] && !SUBCLAVES_190[p.clave].includes(p.subclave ?? '')) {
       errores.push(`${p.nombre}: la clave ${p.clave} necesita una subclave válida (${SUBCLAVES_190[p.clave].join(', ')}).`);
     }
     if (conDatosPersonales(p) && !p.anioNacimiento) errores.push(`${p.nombre}: falta el año de nacimiento.`);
-    if (conDatosPersonales(p) && p.situacionFamiliar === 2 && !p.nifConyuge) errores.push(`${p.nombre}: falta el NIF del cónyuge (situación familiar 2).`);
+    if (conDatosPersonales(p) && p.situacionFamiliar === 2) {
+      if (!p.nifConyuge) errores.push(`${p.nombre}: falta el NIF del cónyuge (situación familiar 2).`);
+      else {
+        const motivoConyuge = motivoNifNoValido(p.nifConyuge, { persona: true });
+        if (motivoConyuge) {
+          errores.push(`${p.nombre}: el NIF del cónyuge (${p.nifConyuge}) no es válido: ${motivoConyuge}. Corrígelo en Nóminas > Empleados, en la ficha del trabajador.`);
+        }
+      }
+    }
     if (p.percepcionIntegra < 0 || p.valoracionEspecie < 0) {
       // Reintegro de lo cobrado de mas en un ejercicio anterior: con su ejercicio y sin retenciones.
       if (!p.ejercicioDevengo) errores.push(`${p.nombre}: un reintegro (percepción negativa) necesita el ejercicio en que se cobró de más.`);
@@ -211,7 +227,8 @@ export function erroresFichero190(declarante: Declarante190, perceptores: Percep
       errores.push(`${p.nombre}: las retenciones, los ingresos a cuenta y los gastos no pueden ser negativos.`);
     }
   }
-  return errores;
+  // Un trabajador con varios registros (A y L) no repite el mismo error.
+  return [...new Set(errores)];
 }
 
 /**

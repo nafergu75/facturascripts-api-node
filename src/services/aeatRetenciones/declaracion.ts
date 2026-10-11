@@ -9,11 +9,12 @@
  */
 import type { DatosModelo111, DatosModelo115 } from '../../domain/impuestos.model';
 import { badRequest } from '../../utils/http-errors';
-import { normalizarNif, validarNifEspanol } from '../../utils/nif';
+import { normalizarNif } from '../../utils/nif';
 import {
   componerRegistroDr,
   DR111,
   DR115,
+  errorNifDeclarante,
   esPersonaFisica,
   ibanNormalizado,
   nifEmpresaDesarrollo,
@@ -218,12 +219,10 @@ export function construirDeclaracion(modelo: ModeloRetenciones, e: EntradaDeclar
   }
 
   // --- Identificacion ---
+  // NIF con su letra o digito de control (el del declarante: el unico NIF del 111 y del 115).
   const nif = normalizarNif(e.nif);
-  if (!nif) errores.push('Falta el NIF de la empresa. Rellénalo en Registro Mercantil > Datos para la memoria y vuelve a descargar el fichero.');
-  else {
-    const r = validarNifEspanol(nif);
-    if (!r.valido) errores.push(`El NIF de la empresa no es válido (${r.motivo}). Corrígelo en Registro Mercantil > Datos para la memoria.`);
-  }
+  const errorNif = errorNifDeclarante(nif);
+  if (errorNif) errores.push(errorNif);
   const personaFisica = !!nif && esPersonaFisica(nif);
   const denominacion = String(e.denominacion ?? '').trim();
   let apellidos = denominacion;

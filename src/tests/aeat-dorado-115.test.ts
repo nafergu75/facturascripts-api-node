@@ -128,3 +128,15 @@ describe('115: alquileres del trimestre (caso real)', () => {
     expect(() => generarFichero115Validado({ ...entrada, datos: { ...datos, periodo: { ...periodo, periodo: '0A' } } })).toThrow();
   });
 });
+
+describe('115: NIF del declarante con su digito de control', () => {
+  it('un CIF con el control mal no genera el fichero y el error dice que NIF y donde se corrige', () => {
+    const decl = construirDeclaracion('115', { nif: 'B12345678', denominacion: 'Ifbiosoluciones SL', ejercicio: 2027, periodo: '1T', casillas: { '01': 1, '02': 1000, '03': 190, '05': 190 } });
+    expect(decl.errores).toEqual(['El NIF de la empresa (B12345678) no es válido: el dígito de control no corresponde a sus cifras. Corrígelo en Registro Mercantil > Datos para la memoria.']);
+    expect(() => ficheroDeclaracion(decl)).toThrow(expect.objectContaining({ statusCode: 400, message: expect.stringMatching(/\(B12345678\) no es válido/) }));
+    // Un DNI con la letra mal (autonomo).
+    expect(construirDeclaracion('115', { nif: '12345678A', denominacion: 'Pérez Gil, Ana', ejercicio: 2027, periodo: '1T', casillas: {} }).errores[0]).toBe(
+      'El NIF de la empresa (12345678A) no es válido: la letra no corresponde a sus cifras. Corrígelo en Registro Mercantil > Datos para la memoria.',
+    );
+  });
+});

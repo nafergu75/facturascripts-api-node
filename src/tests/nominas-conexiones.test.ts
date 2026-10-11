@@ -230,7 +230,7 @@ describe('fichero del 190 (diseno de registro del ejercicio 2025)', () => {
   };
   const perceptorL: Perceptor190 = { ...perceptorA, clave: 'L', subclave: '01', percepcionIntegra: 600, retenciones: 0, valoracionEspecie: 0, ingresosACuentaEfectuados: 0, gastosDeducibles: 0, anioNacimiento: null, situacionFamiliar: null, nifConyuge: null, discapacidad: null, contrato: null, movilidadGeografica: false };
   const perceptorG: Perceptor190 = { ...perceptorL, clave: 'G', subclave: '01', nif: 'E12345674', nombre: 'Asesoría Muñoz, C.B.', provincia: '03', percepcionIntegra: 1500, retenciones: 225, origen: 'profesional' };
-  const declarante = { nif: 'B98765432', nombre: 'Empresa de Prueba, S.L.', telefono: '600000000', contacto: 'Persona Contacto', email: 'contacto@example.com', numeroDeclaracion: '1902025000001' };
+  const declarante = { nif: 'B98765431', nombre: 'Empresa de Prueba, S.L.', telefono: '600000000', contacto: 'Persona Contacto', email: 'contacto@example.com', numeroDeclaracion: '1902025000001' };
 
   it('ejercicio anterior al diseno verificado: 409; posterior: borrador con el diseno de 2025', () => {
     expect(() => comprobarDiseno190(2024)).toThrow(expect.objectContaining({ statusCode: 409, message: expect.stringMatching(/2024 no está verificado/) }));
@@ -252,7 +252,7 @@ describe('fichero del 190 (diseno de registro del ejercicio 2025)', () => {
     expect(c(t1, 1, 1)).toBe('1');
     expect(c(t1, 2, 4)).toBe('190');
     expect(c(t1, 5, 8)).toBe('2025');
-    expect(c(t1, 9, 17)).toBe('B98765432');
+    expect(c(t1, 9, 17)).toBe('B98765431');
     expect(c(t1, 18, 57)).toBe('EMPRESA DE PRUEBA S L'.padEnd(40, ' '));
     expect(c(t1, 58, 58)).toBe('T');
     expect(c(t1, 59, 67)).toBe('600000000');
@@ -268,7 +268,7 @@ describe('fichero del 190 (diseno de registro del ejercicio 2025)', () => {
 
     const a = regs[1];
     expect(c(a, 1, 8)).toBe('21902025');
-    expect(c(a, 9, 17)).toBe('B98765432');
+    expect(c(a, 9, 17)).toBe('B98765431');
     expect(c(a, 18, 26)).toBe(nif(30000001));
     expect(c(a, 27, 35)).toBe(' '.repeat(9));
     expect(c(a, 36, 75)).toBe('PRUEBA UNO ANA'.padEnd(40, ' '));
@@ -308,7 +308,7 @@ describe('fichero del 190 (diseno de registro del ejercicio 2025)', () => {
   it('faltan datos: 400 con la lista (provincia, ano de nacimiento, NIF de la empresa)', () => {
     const sinDatos = { ...perceptorA, provincia: null, anioNacimiento: null };
     expect(erroresFichero190({ nif: '', nombre: 'X' }, [sinDatos])).toEqual([
-      'Falta el NIF de la empresa (Registro Mercantil > Datos para la memoria).',
+      'Falta el NIF de la empresa. Rellénalo en Registro Mercantil > Datos para la memoria y vuelve a descargar el fichero.',
       'Falta el teléfono (9 cifras) de la persona con quien relacionarse.',
       'Faltan los apellidos y el nombre de la persona con quien relacionarse.',
       'Prueba Uno Ana: falta el código de provincia.',
@@ -319,7 +319,7 @@ describe('fichero del 190 (diseno de registro del ejercicio 2025)', () => {
 
   it('texto AEAT: mayusculas, sin acentos ni signos; la Ñ se mantiene', () => {
     expect(textoAeat('Peña Ibáñez, José-María')).toBe('PEÑA IBAÑEZ JOSE MARIA');
-    expect(registroPerceptor190(2025, 'B98765432', perceptorA)).toHaveLength(500);
+    expect(registroPerceptor190(2025, 'B98765431', perceptorA)).toHaveLength(500);
   });
 });
 

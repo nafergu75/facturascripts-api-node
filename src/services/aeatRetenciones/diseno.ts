@@ -127,15 +127,34 @@ export function esPersonaFisica(nif: string): boolean {
   return /^[0-9KLMXYZ]/.test(normalizarNif(nif));
 }
 
+/**
+ * Por que un NIF no vale para un fichero de la AEAT (letra o digito de control
+ * incluidos), o null si vale. Con `persona`, un CIF de sociedad tampoco vale
+ * (trabajadores y conyuges del 190).
+ */
+export function motivoNifNoValido(valor: unknown, opts: { persona?: boolean } = {}): string | null {
+  const nif = normalizarNif(valor);
+  if (!nif) return 'falta';
+  const r = validarNifEspanol(nif);
+  if (r.valido) return opts.persona && r.tipo === 'CIF' ? 'es el NIF de una sociedad, no el de una persona' : null;
+  if (r.tipo === 'CIF') return 'el dígito de control no corresponde a sus cifras';
+  if (r.tipo) return 'la letra no corresponde a sus cifras';
+  return 'no tiene la forma de un NIF español (8 cifras y una letra; X, Y o Z, 7 cifras y una letra; o una letra, 7 cifras y el control)';
+}
+
+/** Error del NIF de la empresa declarante (111, 115 y 190), con el NIF y donde se corrige; null si vale. */
+export function errorNifDeclarante(valor: unknown): string | null {
+  const nif = normalizarNif(valor);
+  if (!nif) return 'Falta el NIF de la empresa. Rellénalo en Registro Mercantil > Datos para la memoria y vuelve a descargar el fichero.';
+  const motivo = motivoNifNoValido(nif);
+  return motivo ? `El NIF de la empresa (${nif}) no es válido: ${motivo}. Corrígelo en Registro Mercantil > Datos para la memoria.` : null;
+}
+
 /** NIF del declarante normalizado y validado; error claro si falta o no es valido. */
 export function nifDeclarante(valor: unknown): string {
-  const nif = normalizarNif(valor);
-  if (!nif) {
-    throw badRequest('Falta el NIF de la empresa. Rellénalo en Registro Mercantil > Datos para la memoria y vuelve a descargar el fichero.');
-  }
-  const r = validarNifEspanol(nif);
-  if (!r.valido) throw badRequest(`El NIF de la empresa no es válido (${r.motivo}). Corrígelo en Registro Mercantil > Datos para la memoria.`);
-  return r.normalizado;
+  const error = errorNifDeclarante(valor);
+  if (error) throw badRequest(error);
+  return normalizarNif(valor);
 }
 
 /** IBAN sin espacios y en mayusculas, o null si no es valido. */
