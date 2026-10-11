@@ -310,14 +310,52 @@ export async function informePerdidasGanancias(companyId: string, periodo: Perio
 // Sumas y saldos, mayor y diario
 // ---------------------------------------------------------------------------
 
-export async function informeSumasYSaldos(companyId: string, periodo: Periodo, nivel: NivelSumas) {
+export interface OpcionesSumasSaldos {
+  /** Solo un prefijo o un rango de cuentas (430-430 = solo clientes; 410-410 = solo acreedores). */
+  filtro?: FiltroCuentas;
+  /** Por subcuenta: oculta las subcuentas del plan sin movimientos (por defecto, si). */
+  ocultarSinMovimiento?: boolean;
+}
+
+/** Subcuentas activas del plan de la empresa (mas de 3 digitos), para enseñarlas aunque no tengan movimientos. */
+async function subcuentasDelPlan(companyId: string): Promise<string[]> {
+  const filas = await prisma.chartOfAccounts
+    .findMany({ where: { companyId, activo: true }, select: { codigo: true } })
+    .catch(() => [] as Array<{ codigo: string }>);
+  return filas.map((f) => f.codigo).filter((c) => c.length > 3);
+}
+
+const textoFiltro = (f: FiltroCuentas | undefined): string | null => {
+  if (!f) return null;
+  if (f.cuenta) return `cuenta ${f.cuenta}`;
+  if (f.desde || f.hasta) return f.desde === f.hasta ? `cuentas ${f.desde}` : `cuentas ${f.desde ?? '1'} a ${f.hasta ?? '9'}`;
+  return null;
+};
+
+export async function informeSumasYSaldos(companyId: string, periodo: Periodo, nivel: NivelSumas, opciones: OpcionesSumasSaldos = {}) {
   const todos = await cargarAsientos(companyId, periodo.hasta);
   const nombre = await nombrador(companyId, todos);
-  const r = calcularSumasYSaldos(movimientosDelPeriodo(todos, periodo), nivel, nombre);
+  const ocultar = opciones.ocultarSinMovimiento ?? true;
+  const r = calcularSumasYSaldos(movimientosDelPeriodo(todos, periodo), nivel, nombre, {
+    filtro: opciones.filtro,
+    cuentasSinMovimiento: nivel === 'subcuenta' && !ocultar ? await subcuentasDelPlan(companyId) : undefined,
+  });
   const t = r.totales;
+  // Tras las filas de cada cuenta de 3 digitos, su subtotal.
+  const subtotal = new Map(r.subtotales.map((s) => [s.cuenta, s]));
+  const filasTabla: FilaInforme[] = [];
+  r.filas.forEach((f, i) => {
+    filasTabla.push({ celdas: [f.cuenta, f.nombre, f.saldoInicial, f.debe, f.haber, f.saldoDeudor, f.saldoAcreedor] });
+    const grupo = f.cuenta.slice(0, 3);
+    const s = subtotal.get(grupo);
+    if (s && r.filas[i + 1]?.cuenta.slice(0, 3) !== grupo) {
+      filasTabla.push({ celdas: [s.cuenta, `Total ${s.cuenta} ${s.nombre}`.trim(), s.saldoInicial, s.debe, s.haber, s.saldoDeudor, s.saldoAcreedor], estilo: 'subtotal' });
+    }
+  });
+  const queCuentas = textoFiltro(opciones.filtro);
   const tabla: TablaInforme = {
     titulo: 'Balance de sumas y saldos',
-    periodo: textoPeriodo(periodo.desde, periodo.hasta),
+    periodo: `${textoPeriodo(periodo.desde, periodo.hasta)}${queCuentas ? ` · ${queCuentas}` : ''}`,
     empresa: await datosEmpresa(companyId),
     apaisado: true,
     columnas: [
@@ -329,21 +367,45 @@ export async function informeSumasYSaldos(companyId: string, periodo: Periodo, n
       { titulo: 'Saldo deudor', tipo: 'importe', ancho: 2 },
       { titulo: 'Saldo acreedor', tipo: 'importe', ancho: 2 },
     ],
-    filas: [
-      ...r.filas.map((f) => ({ celdas: [f.cuenta, f.nombre, f.saldoInicial, f.debe, f.haber, f.saldoDeudor, f.saldoAcreedor] })),
-      { celdas: ['', 'Totales', t.saldoInicial, t.debe, t.haber, t.saldoDeudor, t.saldoAcreedor], estilo: 'total' as const },
-    ],
+    filas: [...filasTabla, { celdas: ['', 'Totales', t.saldoInicial, t.debe, t.haber, t.saldoDeudor, t.saldoAcreedor], estilo: 'total' as const }],
     notas: [
-      nivel === 'subcuenta' ? 'Por subcuenta.' : `Agrupado por cuentas de ${nivel} dígitos.`,
+      nivel === 'subcuenta'
+        ? `Por subcuenta, con el total de cada cuenta de 3 dígitos${ocultar ? '' : ' (incluye las subcuentas sin movimientos)'}.`
+        : `Agrupado por cuentas de ${nivel} dígitos.`,
+      ...(queCuentas ? [`Solo ${queCuentas}.`] : []),
       'Saldo inicial: deudor en positivo y acreedor en negativo. Sin asientos de regularización ni de cierre.',
-      ...(r.cuadra ? [] : ['Atención: las sumas no cuadran. Revisa los asientos.']),
+      // Con un filtro el debe y el haber no tienen por que cuadrar: solo se avisa con todas las cuentas.
+      ...(r.cuadra || queCuentas ? [] : ['Atención: las sumas no cuadran. Revisa los asientos.']),
     ],
-    fichero: `sumas_y_saldos_${periodo.desde}_${periodo.hasta}`,
+    fichero: `sumas_y_saldos_${queCuentas ? `${queCuentas.replace(/\D+/g, '-')}_` : ''}${periodo.desde}_${periodo.hasta}`.replace(/-+_/g, '_'),
   };
-  return { periodo, nivel, ...r, tabla };
+  return { periodo, nivel, filtro: opciones.filtro ?? null, ocultarSinMovimiento: ocultar, ...r, tabla };
 }
 
-export async function informeMayor(companyId: string, periodo: Periodo, filtro: FiltroCuentas) {
+/** Cliente o proveedor elegido en el Libro mayor: su mayor son sus subcuentas. */
+export interface TerceroDelMayor {
+  tipo: 'cliente' | 'proveedor';
+  id: string;
+  nombre: string;
+  nif: string | null;
+  subcuentas: string[];
+}
+
+/** Ficha y subcuentas de un cliente o proveedor (404 si no es de la empresa). */
+export async function terceroParaMayor(companyId: string, tipo: 'cliente' | 'proveedor', id: string): Promise<TerceroDelMayor> {
+  if (tipo === 'cliente') {
+    const c = await prisma.customer.findFirst({ where: { id, companyId }, select: { id: true, nombreFiscal: true, nifCif: true, subcuenta430: true } });
+    if (!c) throw notFound('Cliente no encontrado.');
+    return { tipo, id: c.id, nombre: c.nombreFiscal, nif: c.nifCif, subcuentas: c.subcuenta430 ? [c.subcuenta430] : [] };
+  }
+  const p = await prisma.supplier.findFirst({ where: { id, companyId }, select: { id: true, nombreFiscal: true, nifCif: true, subcuenta400: true, subcuenta410: true } });
+  if (!p) throw notFound('Proveedor no encontrado.');
+  return { tipo, id: p.id, nombre: p.nombreFiscal, nif: p.nifCif, subcuentas: [p.subcuenta400, p.subcuenta410].filter((x): x is string => !!x) };
+}
+
+export async function informeMayor(companyId: string, periodo: Periodo, filtroCuentas: FiltroCuentas, tercero?: TerceroDelMayor) {
+  // Con un cliente o proveedor: solo sus subcuentas (una ficha sin subcuenta no tiene mayor propio).
+  const filtro: FiltroCuentas = tercero ? { lista: tercero.subcuentas } : filtroCuentas;
   const todos = await cargarAsientos(companyId, periodo.hasta);
   const nombre = await nombrador(companyId, todos);
   const cuentas = calcularMayor(movimientosDelPeriodo(todos, periodo), filtro, nombre);
@@ -361,7 +423,14 @@ export async function informeMayor(companyId: string, periodo: Periodo, filtro: 
       estilo: 'total',
     });
   }
-  const queCuentas = filtro.cuenta ? `cuenta ${filtro.cuenta}` : `cuentas ${filtro.desde ?? '1'} a ${filtro.hasta ?? '9'}`;
+  const queCuentas = tercero
+    ? `${tercero.tipo === 'cliente' ? 'cliente' : 'proveedor'} ${tercero.nombre}${tercero.nif ? ` (${tercero.nif})` : ''}${tercero.subcuentas.length ? `, ${tercero.subcuentas.length > 1 ? 'subcuentas' : 'subcuenta'} ${tercero.subcuentas.join(' y ')}` : ''}`
+    : filtro.cuenta
+      ? `cuenta ${filtro.cuenta}`
+      : `cuentas ${filtro.desde ?? '1'} a ${filtro.hasta ?? '9'}`;
+  const sinMovimientos = tercero && !tercero.subcuentas.length
+    ? `${tercero.nombre} aún no tiene subcuenta contable: no hay movimientos a su nombre.`
+    : 'No hay movimientos en esas cuentas en el periodo.';
   const tabla: TablaInforme = {
     titulo: 'Libro mayor',
     periodo: `${textoPeriodo(periodo.desde, periodo.hasta)} · ${queCuentas}`,
@@ -379,11 +448,11 @@ export async function informeMayor(companyId: string, periodo: Periodo, filtro: 
     filas,
     notas: [
       'Saldo: deudor en positivo y acreedor en negativo. Movimientos por fecha de asiento. Sin asientos de regularización ni de cierre.',
-      ...(cuentas.length ? [] : ['No hay movimientos en esas cuentas en el periodo.']),
+      ...(cuentas.length ? [] : [sinMovimientos]),
     ],
-    fichero: `libro_mayor_${filtro.cuenta ?? `${filtro.desde ?? ''}-${filtro.hasta ?? ''}`}_${periodo.desde}_${periodo.hasta}`,
+    fichero: `libro_mayor_${tercero ? tercero.nombre : (filtro.cuenta ?? `${filtro.desde ?? ''}-${filtro.hasta ?? ''}`)}_${periodo.desde}_${periodo.hasta}`,
   };
-  return { periodo, filtro, cuentas, tabla };
+  return { periodo, filtro, tercero: tercero ?? null, cuentas, tabla };
 }
 
 const NOMBRE_TIPO: Record<string, string> = { APERTURA: 'Apertura', REGULARIZACION: 'Regularización', CIERRE: 'Cierre' };
@@ -437,20 +506,34 @@ async function calcularTerceros(companyId: string, tipo: TipoTercero, periodo: P
     tipo === 'clientes'
       ? await Promise.all([
           prisma.incomeInvoice.findMany({ where: { companyId }, select: { id: true, numeroCompleto: true, customerId: true } }),
-          prisma.customer.findMany({ where: { companyId }, select: { id: true, nombreFiscal: true, nifCif: true } }),
-        ]).then(([f, c]) => [f.map((x) => ({ id: x.id, numero: x.numeroCompleto, terceroId: x.customerId })), c] as const)
+          prisma.customer.findMany({ where: { companyId }, select: { id: true, nombreFiscal: true, nifCif: true, subcuenta430: true } }),
+        ]).then(
+          ([f, c]) =>
+            [
+              f.map((x) => ({ id: x.id, numero: x.numeroCompleto, terceroId: x.customerId })),
+              c.map((x) => ({ id: x.id, nombreFiscal: x.nombreFiscal, nifCif: x.nifCif, subcuentas: x.subcuenta430 ? [x.subcuenta430] : [] })),
+            ] as const,
+        )
       : await Promise.all([
           prisma.expenseInvoice.findMany({ where: { companyId }, select: { id: true, numeroCompleto: true, supplierId: true } }),
-          prisma.supplier.findMany({ where: { companyId }, select: { id: true, nombreFiscal: true, nifCif: true } }),
-        ]).then(([f, s]) => [f.map((x) => ({ id: x.id, numero: x.numeroCompleto, terceroId: x.supplierId })), s] as const);
+          prisma.supplier.findMany({ where: { companyId }, select: { id: true, nombreFiscal: true, nifCif: true, subcuenta400: true, subcuenta410: true } }),
+        ]).then(
+          ([f, s]) =>
+            [
+              f.map((x) => ({ id: x.id, numero: x.numeroCompleto, terceroId: x.supplierId })),
+              s.map((x) => ({ id: x.id, nombreFiscal: x.nombreFiscal, nifCif: x.nifCif, subcuentas: [x.subcuenta400, x.subcuenta410].filter((c): c is string => !!c) })),
+            ] as const,
+        );
 
   const terceros = calcularMayorTerceros(
     todos,
     periodo,
-    { tipo, facturas, fichas: fichas.map((f) => ({ id: f.id, nombre: f.nombreFiscal, nif: f.nifCif })) },
+    { tipo, facturas, fichas: fichas.map((f) => ({ id: f.id, nombre: f.nombreFiscal, nif: f.nifCif, subcuentas: f.subcuentas })) },
     nombre,
   );
-  return terceros;
+  // Subcuentas propias de cada ficha (para la columna Subcuenta y las fichas sin movimientos).
+  const subcuentas = new Map(fichas.map((f) => [f.id, f.subcuentas]));
+  return terceros.map((t) => ({ ...t, subcuentas: subcuentas.get(t.id) ?? (t.id.startsWith('subcuenta:') ? [t.id.slice('subcuenta:'.length)] : []) }));
 }
 
 /**
@@ -539,6 +622,7 @@ export async function informeMayorTerceros(companyId: string, tipo: TipoTercero,
     columnas: [
       { titulo: tipo === 'clientes' ? 'Cliente' : 'Proveedor', tipo: 'texto', ancho: 6 },
       { titulo: 'NIF', tipo: 'codigo', ancho: 2 },
+      { titulo: 'Subcuenta', tipo: 'codigo', ancho: 2.4 },
       { titulo: 'Saldo inicial', tipo: 'importe', ancho: 2 },
       { titulo: 'Debe', tipo: 'importe', ancho: 2 },
       { titulo: 'Haber', tipo: 'importe', ancho: 2 },
@@ -547,10 +631,10 @@ export async function informeMayorTerceros(companyId: string, tipo: TipoTercero,
     ],
     filas: [
       ...filasDatos.map((t) => ({
-        celdas: [t.nombre, t.nif, t.saldoInicial, t.debe, t.haber, t.saldoFinal, ...(conPendiente ? [t.pendienteFacturas] : [])],
+        celdas: [t.nombre, t.nif, t.subcuentas.join(' · ') || null, t.saldoInicial, t.debe, t.haber, t.saldoFinal, ...(conPendiente ? [t.pendienteFacturas] : [])],
       })),
       {
-        celdas: [`Total (${filasDatos.length})`, null, totales.saldoInicial, totales.debe, totales.haber, totales.saldoFinal, ...(conPendiente ? [null] : [])],
+        celdas: [`Total (${filasDatos.length})`, null, null, totales.saldoInicial, totales.debe, totales.haber, totales.saldoFinal, ...(conPendiente ? [null] : [])],
         estilo: 'total' as const,
       },
     ],
@@ -558,7 +642,7 @@ export async function informeMayorTerceros(companyId: string, tipo: TipoTercero,
       tipo === 'clientes'
         ? 'Cuentas 43. Saldo positivo: lo que nos deben; negativo: anticipos o cobros de más.'
         : 'Cuentas 40 y 41. Saldo positivo: lo que debemos; negativo: anticipos o pagos de más.',
-      'El tercero sale de la factura enlazada al asiento, de la referencia del apunte o de su subcuenta propia. Sin asientos de apertura, regularización ni cierre.',
+      'El tercero sale de su subcuenta propia; los apuntes en la cuenta genérica (anteriores a las subcuentas), de la factura enlazada al asiento o de la referencia del apunte. Sin asientos de apertura, regularización ni cierre.',
       tipo === 'clientes'
         ? 'Pendiente s/ facturas: importe de las facturas emitidas menos sus cobros registrados, para cruzarlo con el saldo contable.'
         : 'Pendiente s/ facturas: importe de las facturas recibidas menos sus pagos registrados, para cruzarlo con el saldo contable.',
@@ -570,15 +654,11 @@ export async function informeMayorTerceros(companyId: string, tipo: TipoTercero,
 
 export async function informeDetalleTercero(companyId: string, tipo: TipoTercero, periodo: Periodo, terceroId: string) {
   const terceros = await calcularTerceros(companyId, tipo, periodo);
-  let t: SaldoTercero | undefined = terceros.find((x) => x.id === terceroId);
+  let t: (SaldoTercero & { subcuentas: string[] }) | undefined = terceros.find((x) => x.id === terceroId);
   if (!t) {
-    // Un tercero que existe pero no tiene movimientos: ficha con todo a cero.
-    const ficha =
-      tipo === 'clientes'
-        ? await prisma.customer.findFirst({ where: { id: terceroId, companyId }, select: { id: true, nombreFiscal: true, nifCif: true } })
-        : await prisma.supplier.findFirst({ where: { id: terceroId, companyId }, select: { id: true, nombreFiscal: true, nifCif: true } });
-    if (!ficha) throw notFound(tipo === 'clientes' ? 'Cliente no encontrado.' : 'Proveedor no encontrado.');
-    t = { id: ficha.id, nombre: ficha.nombreFiscal, nif: ficha.nifCif, cuentas: [], saldoInicial: 0, debe: 0, haber: 0, saldoFinal: 0, movimientos: [] };
+    // Un tercero que existe pero no tiene movimientos: ficha con todo a cero, con sus subcuentas.
+    const ficha = await terceroParaMayor(companyId, tipo === 'clientes' ? 'cliente' : 'proveedor', terceroId);
+    t = { id: ficha.id, nombre: ficha.nombre, nif: ficha.nif, cuentas: [], subcuentas: ficha.subcuentas, saldoInicial: 0, debe: 0, haber: 0, saldoFinal: 0, movimientos: [] };
   }
   const facturasPendientes = (await pendientesSegunFacturas(companyId, tipo, periodo.hasta)).filter((f) => f.terceroId === t!.id);
   const totalPendiente = round2(facturasPendientes.reduce((s, f) => s + f.importePendiente, 0));
@@ -590,7 +670,7 @@ export async function informeDetalleTercero(companyId: string, tipo: TipoTercero
   ];
   const notas = [
     tipo === 'clientes' ? 'Saldo positivo: lo que nos debe.' : 'Saldo positivo: lo que le debemos.',
-    ...(t.cuentas.length ? [`Cuentas: ${t.cuentas.join(', ')}.`] : []),
+    ...(t.cuentas.length ? [`Cuentas: ${t.cuentas.join(', ')}.`] : t.subcuentas.length ? [`Subcuenta: ${t.subcuentas.join(', ')} (sin movimientos).`] : []),
   ];
   if (t.id !== SIN_IDENTIFICAR && !t.id.startsWith('subcuenta:')) {
     const de = tipo === 'clientes' ? 'cobro' : 'pago';
@@ -619,4 +699,53 @@ export async function informeDetalleTercero(companyId: string, tipo: TipoTercero
     fichero: `mayor_${t.nombre}_${periodo.desde}_${periodo.hasta}`,
   };
   return { tipo, periodo, tercero: t, facturasPendientes, totalPendiente, tabla };
+}
+
+// ---------------------------------------------------------------------------
+// Buscador de clientes y proveedores (Libro mayor por tercero)
+// ---------------------------------------------------------------------------
+
+export interface TerceroEncontrado {
+  tipo: 'cliente' | 'proveedor';
+  id: string;
+  nombre: string;
+  nif: string | null;
+  subcuentas: string[];
+}
+
+/**
+ * Clientes y proveedores cuyo nombre, NIF o subcuenta contiene el texto (sin
+ * distinguir mayusculas ni tildes: se busca en memoria). Como mucho `limite`,
+ * primero los que empiezan por el texto.
+ */
+export async function buscarTerceros(companyId: string, q: string, tipo?: 'cliente' | 'proveedor', limite = 20): Promise<TerceroEncontrado[]> {
+  const texto = sinTildes(q.trim());
+  if (texto.length < 2) return [];
+  const [clientes, proveedores] = await Promise.all([
+    tipo === 'proveedor' ? [] : prisma.customer.findMany({ where: { companyId }, select: { id: true, nombreFiscal: true, nifCif: true, subcuenta430: true } }),
+    tipo === 'cliente' ? [] : prisma.supplier.findMany({ where: { companyId }, select: { id: true, nombreFiscal: true, nifCif: true, subcuenta400: true, subcuenta410: true } }),
+  ]);
+  const todos: TerceroEncontrado[] = [
+    ...clientes.map((c) => ({ tipo: 'cliente' as const, id: c.id, nombre: c.nombreFiscal, nif: c.nifCif, subcuentas: c.subcuenta430 ? [c.subcuenta430] : [] })),
+    ...proveedores.map((p) => ({
+      tipo: 'proveedor' as const,
+      id: p.id,
+      nombre: p.nombreFiscal,
+      nif: p.nifCif,
+      subcuentas: [p.subcuenta400, p.subcuenta410].filter((x): x is string => !!x),
+    })),
+  ];
+  const sinEspacios = texto.replace(/[\s.-]/g, '');
+  return todos
+    .map((t) => {
+      const nombre = sinTildes(t.nombre);
+      const nif = (t.nif ?? '').toLowerCase();
+      const empieza = nombre.startsWith(texto) || nif.startsWith(sinEspacios) || t.subcuentas.some((c) => c.startsWith(sinEspacios));
+      const contiene = empieza || nombre.includes(texto) || (sinEspacios.length >= 3 && nif.includes(sinEspacios));
+      return { t, peso: empieza ? 0 : contiene ? 1 : 2 };
+    })
+    .filter((x) => x.peso < 2)
+    .sort((a, b) => a.peso - b.peso || a.t.nombre.localeCompare(b.t.nombre, 'es'))
+    .slice(0, limite)
+    .map((x) => x.t);
 }
