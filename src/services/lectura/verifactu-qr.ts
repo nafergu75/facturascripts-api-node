@@ -67,14 +67,21 @@ export function interpretarValorQr(valor: string): QrInterpretado | null {
   return { estado: 'VALIDO', verifactu, datos: { nif: normalizarNif(nif), numserie, fecha: iso, importe: Number(importe) } };
 }
 
-/** El primer QR (kind QRCode) que sea una URL. null si no hay ninguno. */
+const PRIORIDAD: Record<QrInterpretado['estado'], number> = { VALIDO: 0, ILEGIBLE: 1, PRUEBAS: 1, AJENO: 2 };
+
+/**
+ * El QR de la AEAT entre los codigos de la factura: primero uno valido, luego
+ * uno mal formado o de pruebas, y solo si no hay ninguno de la AEAT, uno ajeno
+ * (la web del proveedor, un enlace de pago...). null si no hay ninguna URL.
+ */
 export function leerQrDeCodigos(codigos: CodigoBarras[]): QrInterpretado | null {
+  let mejor: QrInterpretado | null = null;
   for (const c of codigos) {
     if (c.kind !== 'QRCode' || typeof c.value !== 'string') continue;
     const q = interpretarValorQr(c.value);
-    if (q) return q;
+    if (q && (!mejor || PRIORIDAD[q.estado] < PRIORIDAD[mejor.estado])) mejor = q;
   }
-  return null;
+  return mejor;
 }
 
 const normalNumero = (s: string) => s.toUpperCase().replace(/\s+/g, '');
@@ -101,28 +108,38 @@ export function compararQr(qr: QrInterpretado | null, original: LecturaNormaliza
 
   if (!qr) return resultado({ estado: 'SIN_QR', verifactu: null, datos: null });
   if (qr.estado === 'AJENO') return resultado({ estado: 'AJENO', verifactu: null, datos: null });
-  if (qr.estado === 'PRUEBAS') return resultado({ estado: 'NO_COINCIDE', verifactu: null, datos: null, motivo: MOTIVO_QR_PRUEBAS });
+  if (qr.estado === 'PRUEBAS') return resultado({ estado: 'NO_COINCIDE', verifactu: null, datos: null, pruebas: true, motivo: MOTIVO_QR_PRUEBAS });
   if (qr.estado === 'ILEGIBLE' || !qr.datos) return resultado({ estado: 'ILEGIBLE', verifactu: qr.verifactu, datos: null, motivo: MOTIVO_QR_ILEGIBLE });
 
   const d = qr.datos;
   const diferencias: DiferenciaQr[] = [];
+  const completados: Array<DiferenciaQr['campo']> = [];
 
   // NIF del emisor (el obligado a expedir).
   const nifLeido = l.emisor.nif.valor;
-  if (!nifLeido) l.emisor.nif = confirmado(l.emisor.nif, d.nif);
+  if (!nifLeido) {
+    l.emisor.nif = confirmado(l.emisor.nif, d.nif);
+    completados.push('nif');
+  }
   else if (normalizarNif(nifLeido) === d.nif) l.emisor.nif = confirmado(l.emisor.nif);
   else diferencias.push({ campo: 'nif', enQr: d.nif, leido: nifLeido, nivel: 'error' });
 
   // Serie y numero.
   const numLeido = l.numero.valor;
-  if (!numLeido) l.numero = confirmado(l.numero, d.numserie);
+  if (!numLeido) {
+    l.numero = confirmado(l.numero, d.numserie);
+    completados.push('numero');
+  }
   else if (normalNumero(numLeido) === normalNumero(d.numserie) || sinSignos(numLeido) === sinSignos(d.numserie)) l.numero = confirmado(l.numero);
   else if (normalNumero(d.numserie).endsWith(normalNumero(numLeido))) diferencias.push({ campo: 'numero', enQr: d.numserie, leido: numLeido, nivel: 'revisar' });
   else diferencias.push({ campo: 'numero', enQr: d.numserie, leido: numLeido, nivel: 'error' });
 
   // Fecha de expedicion.
   const fechaLeida = l.fechaEmision.valor;
-  if (!fechaLeida) l.fechaEmision = confirmado(l.fechaEmision, d.fecha);
+  if (!fechaLeida) {
+    l.fechaEmision = confirmado(l.fechaEmision, d.fecha);
+    completados.push('fecha');
+  }
   else if (fechaLeida === d.fecha) l.fechaEmision = confirmado(l.fechaEmision);
   else diferencias.push({ campo: 'fecha', enQr: d.fecha, leido: fechaLeida, nivel: 'error' });
 
@@ -132,6 +149,7 @@ export function compararQr(qr: QrInterpretado | null, original: LecturaNormaliza
   if (bruto === null) {
     l.totales.totalFactura = { valor: d.importe, confianza: null, fuente: 'qr', motivo: MOTIVO_TOTAL_DEL_QR };
     if (aPagar === null) l.totales.totalAPagar = { valor: d.importe, confianza: null, fuente: 'qr', motivo: MOTIVO_TOTAL_DEL_QR };
+    completados.push('importe');
   } else if (aCentimos(bruto) === aCentimos(d.importe)) {
     l.totales.totalFactura = confirmado(l.totales.totalFactura);
   } else if (aPagar !== null && aCentimos(aPagar) === aCentimos(d.importe)) {
@@ -140,17 +158,32 @@ export function compararQr(qr: QrInterpretado | null, original: LecturaNormaliza
     diferencias.push({ campo: 'importe', enQr: euros(d.importe), leido: euros(bruto), nivel: 'error' });
   }
 
-  return resultado({ estado: diferencias.length ? 'NO_COINCIDE' : 'COINCIDE', verifactu: qr.verifactu, datos: d, diferencias });
+  return resultado({ estado: diferencias.length ? 'NO_COINCIDE' : 'COINCIDE', verifactu: qr.verifactu, datos: d, diferencias, completados });
 }
 
 const NOMBRE_DATO: Record<DiferenciaQr['campo'], string> = { nif: 'NIF', numero: 'número', fecha: 'fecha', importe: 'importe' };
+const CON_ARTICULO: Record<DiferenciaQr['campo'], string> = { nif: 'el NIF', numero: 'el número', fecha: 'la fecha', importe: 'el importe' };
+const ORDEN_DATOS: Array<DiferenciaQr['campo']> = ['nif', 'numero', 'fecha', 'importe'];
+
+/** "el NIF, el número y la fecha" */
+function enumerar(campos: Array<DiferenciaQr['campo']>): string {
+  const t = campos.map((c) => CON_ARTICULO[c]);
+  return t.length > 1 ? `${t.slice(0, -1).join(', ')} y ${t[t.length - 1]}` : t[0];
+}
 
 /** Texto de la insignia del QR en la pantalla. */
 export function textoQr(qr: ResultadoQr | null): string {
   if (!qr) return 'El QR no se ha comprobado: la factura se ha leído con IA.';
   switch (qr.estado) {
-    case 'COINCIDE':
-      return 'QR VERI*FACTU comprobado: el NIF, el número, la fecha y el importe coinciden con la factura.';
+    case 'COINCIDE': {
+      // Solo se dice "coinciden" de lo que se ha cotejado; lo tomado del QR se dice aparte.
+      const tomados = ORDEN_DATOS.filter((c) => qr.completados?.includes(c));
+      const cotejados = ORDEN_DATOS.filter((c) => !tomados.includes(c));
+      if (!tomados.length) return 'Los datos del QR VERI*FACTU coinciden con los leídos: NIF, número, fecha e importe.';
+      const tomado = `${enumerar(tomados)} ${tomados.length > 1 ? 'se han tomado' : 'se ha tomado'} del QR`;
+      if (!cotejados.length) return `No se ha podido cotejar el QR VERI*FACTU: ${tomado}.`;
+      return `QR VERI*FACTU: ${enumerar(cotejados)} ${cotejados.length > 1 ? 'coinciden' : 'coincide'} con lo leído; ${tomado}.`;
+    }
     case 'NO_COINCIDE':
       if (qr.motivo) return qr.motivo;
       return `El QR VERI*FACTU no coincide con la factura en: ${qr.diferencias.map((d) => NOMBRE_DATO[d.campo]).join(', ')}. Revísalo antes de registrar.`;

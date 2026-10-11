@@ -82,7 +82,18 @@ export interface InfoLectura {
   estado: NivelValidacion;
   requiereRevision: boolean;
   campos: Partial<Record<CampoId, EstadoCampo>>;
-  qr: { estado: ResultadoQr['estado']; verifactu: boolean | null; texto: string; diferencias: ResultadoQr['diferencias'] };
+  /**
+   * completados: datos tomados del QR sin cotejar (con alguno, no es un QR "verificado").
+   * pruebas: QR del entorno de pruebas de la AEAT (llega como NO_COINCIDE sin diferencias).
+   */
+  qr: {
+    estado: ResultadoQr['estado'];
+    verifactu: boolean | null;
+    texto: string;
+    diferencias: ResultadoQr['diferencias'];
+    completados: NonNullable<ResultadoQr['completados']>;
+    pruebas: boolean;
+  };
   /** Lo que hay que revisar y no va ligado a un dato (archivo repetido, QR ilegible o de pruebas). Tambien va en avisos. */
   generales: Array<{ nivel: NivelValidacion; mensaje: string }>;
   avisos: string[];
@@ -297,7 +308,14 @@ function infoLectura(fila: FilaLectura, guardado: ResultadoGuardado, validacione
     estado,
     requiereRevision: estado !== 'ok',
     campos: guardado.campos,
-    qr: { estado: l.qr?.estado ?? 'SIN_QR', verifactu: l.qr?.verifactu ?? null, texto: textoQr(l.qr), diferencias: l.qr?.diferencias ?? [] },
+    qr: {
+      estado: l.qr?.estado ?? 'SIN_QR',
+      verifactu: l.qr?.verifactu ?? null,
+      texto: textoQr(l.qr),
+      diferencias: l.qr?.diferencias ?? [],
+      completados: l.qr?.completados ?? [],
+      pruebas: l.qr?.pruebas === true,
+    },
     generales,
     // Los generales tambien como avisos: sin ellos la pantalla pedia "He revisado" sin decir que.
     avisos: sinRepetidos([...generales.map((g) => g.mensaje), ...avisos]),

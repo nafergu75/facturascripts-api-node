@@ -49,6 +49,14 @@ describe('interpretar el QR', () => {
     expect(leerQrDeCodigos(codigosDe('resultado-simple'))).toBeNull();
     expect(leerQrDeCodigos([{ kind: 'Code128', value: QR }, { kind: 'QRCode', value: 'texto suelto' }])).toBeNull();
   });
+
+  it('un QR ajeno antes del de la AEAT no lo tapa', () => {
+    const web = { kind: 'QRCode', value: 'https://www.imprentalevante.es/pagar?f=12' };
+    expect(leerQrDeCodigos([web, { kind: 'QRCode', value: QR }])).toMatchObject({ estado: 'VALIDO', datos: { numserie: 'F2026/0012' } });
+    expect(leerQrDeCodigos([web, { kind: 'QRCode', value: QR.replace('242.00', '242,00') }])?.estado).toBe('ILEGIBLE');
+    expect(leerQrDeCodigos([{ kind: 'QRCode', value: QR.replace('242.00', '242,00') }, { kind: 'QRCode', value: QR }])?.estado).toBe('VALIDO');
+    expect(leerQrDeCodigos([web])?.estado).toBe('AJENO');
+  });
 });
 
 describe('comparar con lo leido', () => {
@@ -56,7 +64,8 @@ describe('comparar con lo leido', () => {
     const l = compararQr(leerQrDeCodigos(codigosDe('resultado-qr-ok')), leida());
     expect(l.qr).toMatchObject({ estado: 'COINCIDE', verifactu: true, diferencias: [] });
     for (const c of [l.emisor.nif, l.numero, l.fechaEmision, l.totales.totalFactura]) expect(c).toMatchObject({ fuente: 'qr', confianza: 1 });
-    expect(textoQr(l.qr)).toBe('QR VERI*FACTU comprobado: el NIF, el número, la fecha y el importe coinciden con la factura.');
+    expect(l.qr?.completados).toEqual([]);
+    expect(textoQr(l.qr)).toBe('Los datos del QR VERI*FACTU coinciden con los leídos: NIF, número, fecha e importe.');
   });
 
   it('no cambia la lectura que recibe', () => {
@@ -99,6 +108,15 @@ describe('comparar con lo leido', () => {
     expect(l.fechaEmision).toMatchObject({ valor: '2026-03-04', fuente: 'qr', confianza: 1 });
     expect(l.emisor.nif).toMatchObject({ valor: 'B12345674', fuente: 'qr' });
     expect(l.qr?.estado).toBe('COINCIDE');
+    // No se dice que coinciden datos que no se han cotejado.
+    expect(l.qr?.completados).toEqual(['nif', 'fecha']);
+    expect(textoQr(l.qr)).toBe('QR VERI*FACTU: el número y el importe coinciden con lo leído; el NIF y la fecha se han tomado del QR.');
+  });
+
+  it('nada leido: todo del QR y el texto lo dice', () => {
+    const l = compararQr(interpretarValorQr(QR), lecturaVacia());
+    expect(l.qr?.completados).toEqual(['nif', 'numero', 'fecha', 'importe']);
+    expect(textoQr(l.qr)).toBe('No se ha podido cotejar el QR VERI*FACTU: el NIF, el número, la fecha y el importe se han tomado del QR.');
   });
 
   it('sin total leido: se toma el del QR, pero para revisar', () => {
@@ -112,7 +130,7 @@ describe('comparar con lo leido', () => {
 
   it('host de pruebas: NO_COINCIDE con su motivo; mal formado: ILEGIBLE; ajeno; sin QR', () => {
     const pruebas = compararQr(leerQrDeCodigos(codigosDe('resultado-qr-pruebas')), leida());
-    expect(pruebas.qr).toMatchObject({ estado: 'NO_COINCIDE', motivo: 'El QR es del entorno de pruebas de la AEAT; una factura real no debería llevarlo.' });
+    expect(pruebas.qr).toMatchObject({ estado: 'NO_COINCIDE', pruebas: true, motivo: 'El QR es del entorno de pruebas de la AEAT; una factura real no debería llevarlo.' });
     expect(pruebas.numero.fuente).toBe('azure');
     expect(compararQr(leerQrDeCodigos(codigosDe('resultado-qr-mal-formado')), leida()).qr?.estado).toBe('ILEGIBLE');
     expect(textoQr(compararQr(leerQrDeCodigos(codigosDe('resultado-qr-ajeno')), leida()).qr)).toBe(

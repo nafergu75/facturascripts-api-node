@@ -93,6 +93,10 @@ export interface ResultadoQr {
   /** fecha en ISO */
   datos: { nif: string; numserie: string; fecha: string; importe: number } | null;
   diferencias: DiferenciaQr[];
+  /** Datos que no se leyeron en la factura y se han tomado del QR (no se han cotejado con nada). */
+  completados?: Array<DiferenciaQr['campo']>;
+  /** QR del entorno de pruebas de la AEAT (va como NO_COINCIDE con su motivo). */
+  pruebas?: boolean;
   /** Texto para el usuario cuando el QR no se puede usar (de pruebas, mal formado). */
   motivo?: string;
 }
