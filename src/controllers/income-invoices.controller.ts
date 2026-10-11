@@ -48,9 +48,10 @@ export const incomeInvoicesController = {
    * Crear una factura de ingreso completa (cliente+líneas+totales).
    */
   crearIngreso: asyncHandler(async (req, res) => {
+    // companyId va despues: el cuerpo no puede elegir la empresa.
     const dto: CrearFacturaIngresoDTO = {
-      companyId: req.companyId!,
       ...req.body,
+      companyId: req.companyId!,
     };
 
     const factura = await incomeInvoicesService.crearIngreso(dto);
