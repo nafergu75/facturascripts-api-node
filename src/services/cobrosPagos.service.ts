@@ -15,7 +15,7 @@ import { CONTABLE_RULES } from './accounting-engine.service';
 import { perfilEmpresa } from './perfilEmpresa.service';
 import { referenciaParaComprobar, tipoReferencia } from './tiposCambio.service';
 import { asegurarPlanContableEmpresa } from './chart-of-accounts.service';
-import { esTipoGasto } from '../domain/factura-gasto.model';
+import { esTipoGasto, TIPO_GASTO_INFO } from '../domain/factura-gasto.model';
 import { subcuentaClienteParaApunte, subcuentaProveedorParaApunte } from './terceros/subcuentas';
 import { esSubcuentaGenerica } from './terceros/numeracion';
 import { conReintento } from '../utils/reintento';
@@ -123,6 +123,12 @@ export interface ResumenCobros {
   importePendienteCuenta: number;
   /** INGRESO: PENDING | OVERDUE | PAID. GASTO: PENDIENTE | PARCIAL | PAGADA. */
   estado: string;
+  /**
+   * Cuenta del cliente o proveedor contra la que va el cobro o pago: la del
+   * asiento de la factura o, sin el, la subcuenta de su ficha (null si aun no
+   * tiene). Solo para ensenarla: no asigna nada.
+   */
+  cuentaTercero: string | null;
   cobros: CobroResp[];
 }
 
@@ -279,6 +285,34 @@ export async function cuentaTerceroDeFactura(
   if (!f) throw notFound('Factura no encontrada.');
   if (!linea) return subcuentaProveedorParaApunte(tx, companyId, f.supplierId, esTipoGasto(f.tipoGasto) ? f.tipoGasto : 'COMPRA');
   return { codigo: linea.accountCode, nombre: await nombreDeCuentaTercero(tx, companyId, linea.accountCode, `Proveedores · ${f.supplier.nombreFiscal}`) };
+}
+
+/**
+ * La cuenta que tomaria cuentaTerceroDeFactura, sin escribir nada (para la
+ * pantalla): la linea del tercero del asiento de la factura o la subcuenta que
+ * ya tiene su ficha (en gastos, la 400N o la 410N segun el tipo de gasto).
+ */
+async function cuentaTerceroParaVer(companyId: string, tipo: TipoDocumento, invoiceId: string): Promise<string | null> {
+  const asiento = await prisma.journalEntry.findFirst({
+    where: { companyId, invoiceId, invoiceType: tipo, origen: { not: 'TESORERIA' }, estado: { not: 'REVERSED' } },
+    include: { lineas: true },
+    orderBy: { createdAt: 'desc' },
+  });
+  const linea = asiento?.lineas.find((l) =>
+    tipo === 'INGRESO' ? l.accountCode.startsWith('43') && l.debe > 0 : /^4[01]/.test(l.accountCode) && l.haber > 0,
+  );
+  if (linea) return linea.accountCode;
+  if (tipo === 'INGRESO') {
+    const f = await prisma.incomeInvoice.findFirst({ where: { id: invoiceId, companyId }, select: { customer: { select: { subcuenta430: true } } } });
+    return f?.customer.subcuenta430 ?? null;
+  }
+  const f = await prisma.expenseInvoice.findFirst({
+    where: { id: invoiceId, companyId },
+    select: { tipoGasto: true, supplier: { select: { subcuenta400: true, subcuenta410: true } } },
+  });
+  if (!f) return null;
+  const acreedor = TIPO_GASTO_INFO[esTipoGasto(f.tipoGasto) ? f.tipoGasto : 'COMPRA'].acreedor;
+  return (acreedor === '400' ? f.supplier.subcuenta400 : f.supplier.subcuenta410) ?? null;
 }
 
 /** Nombre del apunte del tercero: el del plan si es una subcuenta propia; con la generica, `generico`. */
@@ -467,6 +501,7 @@ export async function listarCobros(companyId: string, tipo: TipoDocumento, invoi
     importeCobradoCuenta: cobradoCuenta,
     importePendienteCuenta: calcularPendiente(tipo, f.totalFactura, f.estado, cobradoCuenta),
     estado,
+    cuentaTercero: await cuentaTerceroParaVer(companyId, tipo, invoiceId),
     cobros: filas.map((p) => aCobroResp(p, numeros)),
   };
 }
