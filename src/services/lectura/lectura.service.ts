@@ -149,8 +149,12 @@ export function textoRespaldo(motivo: string): string | null {
   return 'Azure no ha respondido a tiempo; la factura se ha leído con IA.';
 }
 
-function mensajeError(codigo: string | null): string {
-  if (codigo === 'LECTOR_SIN_IA') return MENSAJE_LECTOR_SIN_IA;
+/** Sin Azure ni Claude, en el lector de ventas (el de gastos manda a Compras). */
+export const MENSAJE_LECTOR_SIN_IA_VENTAS = 'La lectura con IA no está activada en esta instalación. Crea la factura con Ventas → Nueva factura.';
+const ALTERNATIVA_SIN_IA: Record<Lector, string> = { GASTO: '/dashboard/compras/nueva', VENTA: '/dashboard/facturas/nueva' };
+
+function mensajeError(codigo: string | null, lector: string): string {
+  if (codigo === 'LECTOR_SIN_IA') return lector === 'VENTA' ? MENSAJE_LECTOR_SIN_IA_VENTAS : MENSAJE_LECTOR_SIN_IA;
   if (codigo === 'ARCHIVO_NO_VALIDO') return MENSAJE_ARCHIVO_NO_VALIDO;
   return MENSAJE_NO_LEIDA;
 }
@@ -202,7 +206,7 @@ async function terminarConError(fila: FilaLectura, codigo: string): Promise<Resp
   const r = await prisma.lecturaDocumento.updateMany({ where: { id: fila.id, estado: 'LEYENDO' }, data: { estado: 'ERROR', errorCodigo: codigo, terminadaEn: new Date(), archivoRef: null } });
   logger.warn('[lectura] Lectura sin terminar', { lecturaId: fila.id, companyId: fila.companyId, lector: fila.lector, codigo });
   if (r.count > 0 && fila.archivoRef) await borrarArchivo(fila.id, fila.archivoRef);
-  return { lecturaId: fila.id, estado: 'ERROR', codigo, mensaje: mensajeError(codigo) };
+  return { lecturaId: fila.id, estado: 'ERROR', codigo, mensaje: mensajeError(codigo, fila.lector) };
 }
 
 /** Guarda la lectura validada (LISTA). En ventas crea, en la misma transaccion, el documento del lector de siempre. */
@@ -354,7 +358,7 @@ function sinRepetidos(textos: string[]): string[] {
 
 async function respuestaDe(fila: FilaLectura): Promise<RespuestaLectura> {
   if (fila.estado === 'CONFIRMADA' || fila.estado === 'DESCARTADA') return { lecturaId: fila.id, estado: fila.estado };
-  if (fila.estado === 'ERROR') return { lecturaId: fila.id, estado: 'ERROR', codigo: fila.errorCodigo ?? 'NO_LEGIBLE', mensaje: mensajeError(fila.errorCodigo) };
+  if (fila.estado === 'ERROR') return { lecturaId: fila.id, estado: 'ERROR', codigo: fila.errorCodigo ?? 'NO_LEGIBLE', mensaje: mensajeError(fila.errorCodigo, fila.lector) };
   if (fila.estado !== 'LISTA' || !fila.resultado) {
     const segundos = Math.round((Date.now() - fila.iniciadaEn.getTime()) / 1000);
     const falta = fila.azureProximaConsulta ? fila.azureProximaConsulta.getTime() - Date.now() : 2000;
@@ -463,7 +467,7 @@ export async function iniciarLectura(
 
   const motivo = elegirLector(entrada.mimetype);
   if (motivo && !claudeConfigurado()) {
-    throw new HttpError(503, MENSAJE_LECTOR_SIN_IA, { codigo: 'LECTOR_SIN_IA', alternativa: lector === 'GASTO' ? '/dashboard/compras/nueva' : '/dashboard/ventas' });
+    throw new HttpError(503, mensajeError('LECTOR_SIN_IA', lector), { codigo: 'LECTOR_SIN_IA', alternativa: ALTERNATIVA_SIN_IA[lector] });
   }
 
   const archivo: ArchivoLectura = {

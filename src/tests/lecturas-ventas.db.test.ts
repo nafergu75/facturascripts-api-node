@@ -160,6 +160,21 @@ describe('lecturas del lector de ventas', () => {
     expect(await prisma.lecturaDocumento.findUniqueOrThrow({ where: { id: data.lecturaId } })).toMatchObject({ estado: 'DESCARTADA', resultado: null });
   });
 
+  it('sin Azure ni clave de Anthropic: 503 con el texto y el alta a mano de ventas', async () => {
+    delete process.env.AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT;
+    delete process.env.AZURE_DOCUMENT_INTELLIGENCE_KEY;
+    const clave = process.env.ANTHROPIC_API_KEY;
+    delete process.env.ANTHROPIC_API_KEY;
+    try {
+      const r = await request(app()).post('/ingresos-extractor/lecturas').attach('archivo', PDF, 'emitida.pdf');
+      expect(r.status).toBe(503);
+      expect(r.body.message).toBe('La lectura con IA no está activada en esta instalación. Crea la factura con Ventas → Nueva factura.');
+      expect(r.body.details).toMatchObject({ codigo: 'LECTOR_SIN_IA', alternativa: '/dashboard/facturas/nueva' });
+    } finally {
+      process.env.ANTHROPIC_API_KEY = clave;
+    }
+  });
+
   it('una lectura con algo marcado necesita revisado al confirmar', async () => {
     const data = await leer('resultado-confianza-baja');
     expect(data.lectura.requiereRevision).toBe(true);
