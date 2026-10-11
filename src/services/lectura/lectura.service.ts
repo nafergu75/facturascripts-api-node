@@ -83,6 +83,8 @@ export interface InfoLectura {
   requiereRevision: boolean;
   campos: Partial<Record<CampoId, EstadoCampo>>;
   qr: { estado: ResultadoQr['estado']; verifactu: boolean | null; texto: string; diferencias: ResultadoQr['diferencias'] };
+  /** Lo que hay que revisar y no va ligado a un dato (archivo repetido, QR ilegible o de pruebas). Tambien va en avisos. */
+  generales: Array<{ nivel: NivelValidacion; mensaje: string }>;
   avisos: string[];
   paginas: { archivo: number | null; leidas: number | null };
 }
@@ -279,8 +281,10 @@ async function recargar(id: string): Promise<FilaLectura> {
 // Respuestas
 // ---------------------------------------------------------------------------
 
-function infoLectura(fila: FilaLectura, guardado: ResultadoGuardado): InfoLectura {
+function infoLectura(fila: FilaLectura, guardado: ResultadoGuardado, validaciones: ResultadoValidacion[]): InfoLectura {
   const l = guardado.lectura;
+  const generales = validaciones.filter((v) => v.campos.length === 0 && v.nivel !== 'ok').map((v) => ({ nivel: v.nivel, mensaje: v.mensaje }));
+  const avisos = Array.isArray(fila.avisos) ? (fila.avisos as string[]) : [];
   const estado = (fila.estadoValidacion ?? 'revisar') as NivelValidacion;
   const origen = (fila.origen ?? 'CLAUDE') as OrigenLectura;
   return {
@@ -293,7 +297,9 @@ function infoLectura(fila: FilaLectura, guardado: ResultadoGuardado): InfoLectur
     requiereRevision: estado !== 'ok',
     campos: guardado.campos,
     qr: { estado: l.qr?.estado ?? 'SIN_QR', verifactu: l.qr?.verifactu ?? null, texto: textoQr(l.qr), diferencias: l.qr?.diferencias ?? [] },
-    avisos: Array.isArray(fila.avisos) ? (fila.avisos as string[]) : [],
+    generales,
+    // Los generales tambien como avisos: sin ellos la pantalla pedia "He revisado" sin decir que.
+    avisos: sinRepetidos([...generales.map((g) => g.mensaje), ...avisos]),
     paginas: { archivo: fila.paginasArchivo, leidas: fila.paginasLeidas },
   };
 }
@@ -320,7 +326,7 @@ async function respuestaDe(fila: FilaLectura): Promise<RespuestaLectura> {
   }
   const guardado = fila.resultado as unknown as ResultadoGuardado;
   const validaciones = (fila.validaciones ?? []) as unknown as ResultadoValidacion[];
-  const lectura = infoLectura(fila, guardado);
+  const lectura = infoLectura(fila, guardado, validaciones);
 
   if (fila.lector === 'GASTO') {
     const g = aGastoExtraido(guardado.lectura, validaciones, fila.confianza);

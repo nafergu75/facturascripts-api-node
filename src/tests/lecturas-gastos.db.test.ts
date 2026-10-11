@@ -34,6 +34,7 @@ jest.mock('../utils/storage', () => ({
   listObjects: jest.fn(async () => []),
 }));
 
+import { createHash } from 'crypto';
 import express from 'express';
 import request from 'supertest';
 import { prisma } from '../config/database';
@@ -371,6 +372,20 @@ describe('confirmar con lecturaId', () => {
     const r = await request(app()).post('/gastos-extractor/confirmar').send(hoy);
     expect(r.status).toBe(201);
     expect(r.body.data.factura.observaciones).toBe('Leída con el lector de gastos (confianza 82 %).');
+  });
+});
+
+describe('avisos que no van ligados a un dato', () => {
+  it('archivo ya registrado: el texto llega en generales y en avisos', async () => {
+    const hash = createHash('sha256').update(PDF).digest('hex');
+    await prisma.lecturaDocumento.create({
+      data: { companyId: E, lector: 'GASTO', estado: 'CONFIRMADA', archivoNombre: 'antes.pdf', archivoTipo: 'application/pdf', archivoTamanio: PDF.length, archivoHash: hash, confirmadaEn: new Date('2026-05-02T10:00:00Z') },
+    });
+    const { body } = await leerConAzure('resultado-simple');
+    expect(body.lectura.requiereRevision).toBe(true);
+    const mensaje = expect.stringMatching(/^Este mismo archivo ya se registró el \d{2}\/\d{2}\/\d{4}\.$/);
+    expect(body.lectura.generales).toEqual(expect.arrayContaining([{ nivel: 'revisar', mensaje }]));
+    expect(body.lectura.avisos).toEqual(expect.arrayContaining([mensaje]));
   });
 });
 
