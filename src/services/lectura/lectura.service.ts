@@ -27,7 +27,7 @@ import { aIngresoExtraido, type IngresoExtraido } from '../ingresos-extractor.se
 import { perfilEmpresa } from '../perfilEmpresa.service';
 import { aGastoExtraido, aInvoiceExtraction, tramosGasto, type TramoGasto } from './adaptadores';
 import { azurePausado } from './azure-di.client';
-import { confianzaLectura, contarPaginasPdf } from './azure-factura.mapper';
+import { completarTotalAPagar, confianzaLectura, contarPaginasPdf } from './azure-factura.mapper';
 import { azureExtractor } from './azure.extractor';
 import { completarConClaude, decidirComplemento } from './claude-complemento';
 import { claudeConfigurado, claudeVisionExtractor } from './claude-vision.adapter';
@@ -303,6 +303,8 @@ async function terminarConAzure(fila: FilaLectura, hecho: LecturaHecha): Promise
   // Y otra vez al final, por si Claude ha cambiado algun dato. Lo sacado del QR en la
   // primera sigue contando como sacado del QR (compararQr no lo da por cotejado).
   l = compararQr(hecho.qr ?? null, l);
+  // Sin total a pagar leido: el total de la factura (menos la retencion, si la lleva).
+  completarTotalAPagar(l);
   const val = await validar(fila, l);
   await guardarLista(fila, l, val, { origen, motivoRespaldo: null, confianza: confianzaLectura(l, lector) });
   return respuestaDe(await recargar(fila.id));

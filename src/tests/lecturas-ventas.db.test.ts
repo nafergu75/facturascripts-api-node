@@ -38,17 +38,17 @@ import { prisma } from '../config/database';
 import { errorMiddleware } from '../middleware/error.middleware';
 import ingresosRoutes from '../routes/ingresos-extractor.routes';
 import { _reiniciarPausa } from '../services/lectura/azure-di.client';
-import { aceptado, CLAVE, ENDPOINT, fixtureClaude, NIF_EMISOR, respuesta, resultado } from './fixtures/azure-di';
+import { aceptado, CLAVE, ENDPOINT, fixtureAzure, fixtureClaude, NIF_EMISOR, respuesta, resultado } from './fixtures/azure-di';
 
 const E = `lecturas-ventas-${Date.now()}`;
 const PDF = Buffer.from('%PDF-1.4\n1 0 obj << /Type /Page >>\nfactura emitida');
 
-function app() {
+function app(companyId = E) {
   const a = express();
   a.use(express.json({ limit: '20mb' }));
   a.use((req, _res, next) => {
-    req.user = { userId: 'u-ventas', email: 'ventas@test.local', roles: ['ventas'], companies: [E], rolesPorEmpresa: { [E]: ['ventas'] } } as never;
-    req.companyId = E;
+    req.user = { userId: 'u-ventas', email: 'ventas@test.local', roles: ['ventas'], companies: [companyId], rolesPorEmpresa: { [companyId]: ['ventas'] } } as never;
+    req.companyId = companyId;
     next();
   });
   a.use('/ingresos-extractor', ingresosRoutes);
@@ -181,5 +181,37 @@ describe('lecturas del lector de ventas', () => {
     const r = await request(app()).post('/ingresos-extractor/confirmar').send({ documentId: data.ingreso.documentId });
     expect(r.status).toBe(400);
     expect(r.body.details.codigo).toBe('FALTA_REVISION');
+  });
+});
+
+describe('sin total leido', () => {
+  // Otra empresa, para que la factura no salga repetida con las de arriba.
+  const SIN_TOTAL = `${E}-sin-total`;
+  beforeAll(async () => {
+    await prisma.company.create({ data: { id: SIN_TOTAL, name: 'Imprenta Levante SL', fsBaseUrl: 'http://localhost:8080', fsApiKeyEnc: 'k' } });
+    await prisma.legalConfig.create({ data: { companyId: SIN_TOTAL, denominacion: 'Imprenta Levante SL', nif: NIF_EMISOR } });
+  });
+
+  it('QR que coincide, sin InvoiceTotal ni AmountDue: el total es el calculado y cotejado, y la factura se registra', async () => {
+    const f = fixtureAzure<{ analyzeResult: { documents: Array<{ fields: Record<string, unknown> }> } }>('resultado-qr-ok');
+    delete f.analyzeResult.documents[0].fields.InvoiceTotal;
+    delete f.analyzeResult.documents[0].fields.AmountDue;
+    const a = app(SIN_TOTAL);
+    const p = await request(a).post('/ingresos-extractor/lecturas').attach('archivo', PDF, 'emitida.pdf');
+    expect(p.status).toBe(202);
+    const id = p.body.data.lecturaId;
+    await prisma.lecturaDocumento.update({ where: { id }, data: { azureProximaConsulta: new Date(Date.now() - 1000) } });
+    colaGet.push(() => respuesta(f, 200));
+    const r = await request(a).get(`/ingresos-extractor/lecturas/${id}`);
+    expect(r.status).toBe(200);
+    const data = r.body.data;
+    expect(data.ingreso).toMatchObject({ base: 200, iva: 42, total: 242, errores: [] });
+    expect(data.lectura.qr).toMatchObject({ estado: 'COINCIDE', completados: [], diferencias: [] });
+    expect(data.lectura.campos['totales.totalAPagar']).toMatchObject({ estado: 'ok', fuente: 'calculado', valorLeido: 242, motivos: [] });
+    expect(data.lectura).toMatchObject({ estado: 'ok', requiereRevision: false });
+    expect(crear).not.toHaveBeenCalled();
+    const c = await request(a).post('/ingresos-extractor/confirmar').send({ documentId: data.ingreso.documentId });
+    expect(c.status).toBe(201);
+    expect(c.body.data).toMatchObject({ total: 242 });
   });
 });

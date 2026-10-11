@@ -44,6 +44,7 @@ import { _reiniciarPausa, TIEMPO_GET_MS } from '../services/lectura/azure-di.cli
 import { TIEMPO_COMPLEMENTO_MS } from '../services/lectura/claude-complemento';
 import { TIEMPO_CLAUDE_VISION_MS } from '../services/lectura/claude-vision.adapter';
 import { purgarLecturas, RESERVA_MS } from '../services/lectura/lectura.service';
+import { MOTIVO_A_PAGAR_SIN_TOTAL } from '../services/lectura/azure-factura.mapper';
 import { MOTIVO_DATO_DEL_QR } from '../services/lectura/verifactu-qr';
 import { aceptado, CLAVE, ENDPOINT, error, fixtureAzure, fixtureClaude, NIF_EMISOR, NIF_EMPRESA, respuesta, resultado, RESULT_ID } from './fixtures/azure-di';
 
@@ -274,6 +275,45 @@ describe('datos sacados del QR', () => {
       expect(d.lectura.campos[id]).toMatchObject({ estado: 'revisar', fuente: 'qr', confianza: null, motivos: [MOTIVO_DATO_DEL_QR] });
     }
     expect(d.lectura.requiereRevision).toBe(true);
+  });
+});
+
+describe('sin total leido', () => {
+  /** El fixture indicado, sin los campos que se quitan (como si Azure no los hubiera leido). */
+  async function leerSin(fixture: string, ...campos: string[]): Promise<Record<string, any>> {
+    const f = fixtureAzure<{ analyzeResult: { documents: Array<{ fields: Record<string, unknown> }> } }>(fixture);
+    for (const c of campos) delete f.analyzeResult.documents[0].fields[c];
+    colaPost.push(() => aceptado());
+    const id = (await subir()).body.data.lecturaId as string;
+    await yaToca(id);
+    colaGet.push(() => respuesta(f, 200));
+    const r = await consultar(id);
+    expect(r.status).toBe(200);
+    expect(r.body.data.estado).toBe('LISTA');
+    return r.body.data;
+  }
+
+  it('QR que coincide, sin InvoiceTotal ni AmountDue: el total a pagar es el total calculado con las bases y cotejado con el QR', async () => {
+    const d = await leerSin('resultado-qr-ok', 'InvoiceTotal', 'AmountDue');
+    expect(d.gasto).toMatchObject({ base: 200, iva: 42, total: 242, errores: [] });
+    expect(d.lectura.qr).toMatchObject({ estado: 'COINCIDE', completados: [], diferencias: [] });
+    expect(d.lectura.campos['totales.totalFactura']).toMatchObject({ estado: 'ok', fuente: 'qr', confianza: 1, valorLeido: 242 });
+    expect(d.lectura.campos['totales.totalAPagar']).toMatchObject({ estado: 'ok', fuente: 'calculado', confianza: null, valorLeido: 242, motivos: [] });
+    expect(d.lectura).toMatchObject({ estado: 'ok', requiereRevision: false });
+    // El total sale de las bases: no hace falta preguntarlo a la IA.
+    expect(crear).not.toHaveBeenCalled();
+  });
+
+  it('con retencion y sin ningun total impreso: el total a pagar es el total de la factura menos la retencion, calculado y para revisar', async () => {
+    // La IA da la retencion, pero no los totales.
+    const ia = fixtureClaude<{ content: Array<{ input: Record<string, unknown> }> }>('complemento-irpf');
+    const { total_factura: _f, total_a_pagar: _p, ...input } = ia.content[0].input;
+    crear.mockResolvedValueOnce({ ...ia, content: [{ ...ia.content[0], input }] });
+    const d = await leerSin('resultado-irpf', 'InvoiceTotal', 'AmountDue');
+    expect(crear).toHaveBeenCalledTimes(1);
+    expect(d.gasto).toMatchObject({ base: 1000, iva: 210, total: 1060, errores: [] });
+    expect(d.lectura.campos['totales.totalFactura']).toMatchObject({ fuente: 'calculado', valorLeido: 1210 });
+    expect(d.lectura.campos['totales.totalAPagar']).toMatchObject({ estado: 'revisar', fuente: 'calculado', confianza: null, valorLeido: 1060, motivos: [MOTIVO_A_PAGAR_SIN_TOTAL] });
   });
 });
 
