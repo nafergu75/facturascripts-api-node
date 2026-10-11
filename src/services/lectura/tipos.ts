@@ -112,6 +112,8 @@ export interface ContextoLectura {
   companyId: string;
   lector: Lector;
   empresaEspanola: boolean;
+  /** Moneda de la contabilidad (EUR si no se sabe): la que se supone si el lector no lee la moneda. */
+  monedaCuenta?: string;
   /** Paginas del PDF contadas en local (aproximado); null si no es un PDF. */
   paginasArchivo?: number | null;
 }

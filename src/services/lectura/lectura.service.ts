@@ -165,8 +165,8 @@ export function esperaPorConsulta(consultas: number): number {
 const json = (v: unknown) => v as Prisma.InputJsonValue;
 const sinAcentos = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
 
-function contextoLectura(fila: FilaLectura, empresaEspanola: boolean): ContextoLectura {
-  return { companyId: fila.companyId, lector: fila.lector as Lector, empresaEspanola, paginasArchivo: fila.paginasArchivo };
+function contextoLectura(fila: FilaLectura, perfil: { espanola: boolean; monedaCuenta: string }): ContextoLectura {
+  return { companyId: fila.companyId, lector: fila.lector as Lector, empresaEspanola: perfil.espanola, monedaCuenta: perfil.monedaCuenta, paginasArchivo: fila.paginasArchivo };
 }
 
 async function cargarArchivo(fila: FilaLectura): Promise<ArchivoLectura> {
@@ -255,8 +255,7 @@ async function respaldoConClaude(fila: FilaLectura, motivo: MotivoRespaldo, arch
       return terminarConError(fila, 'NO_LEGIBLE');
     }
   }
-  const empresaEspanola = (await perfilEmpresa(fila.companyId)).espanola;
-  const r = await claudeVisionExtractor(fila.lector as Lector).iniciar(a, contextoLectura(fila, empresaEspanola));
+  const r = await claudeVisionExtractor(fila.lector as Lector).iniciar(a, contextoLectura(fila, await perfilEmpresa(fila.companyId)));
   if (r.tipo !== 'hecho') return terminarConError(fila, motivo === 'AZURE_ARCHIVO' ? 'ARCHIVO_NO_VALIDO' : r.tipo === 'fallo' ? r.codigo : 'NO_LEGIBLE');
   const l: LecturaNormalizada = { ...r.lectura, paginas: { archivo: fila.paginasArchivo, leidas: null } };
   const val = await validar(fila, l);
@@ -435,7 +434,7 @@ export async function iniciarLectura(
     mime: entrada.mimetype,
     hash: createHash('sha256').update(entrada.buffer).digest('hex'),
   };
-  const empresaEspanola = (await perfilEmpresa(companyId)).espanola;
+  const perfil = await perfilEmpresa(companyId);
   let fila = await prisma.lecturaDocumento.create({
     data: {
       companyId,
@@ -452,7 +451,7 @@ export async function iniciarLectura(
   fila = await prisma.lecturaDocumento.update({ where: { id: fila.id }, data: { archivoRef } });
 
   if (!motivo) {
-    const r = await azureExtractor.iniciar(archivo, contextoLectura(fila, empresaEspanola));
+    const r = await azureExtractor.iniciar(archivo, contextoLectura(fila, perfil));
     if (r.tipo === 'pendiente') {
       await prisma.lecturaDocumento.update({
         where: { id: fila.id },
@@ -498,8 +497,7 @@ export async function consultarLectura(companyId: string, lector: Lector, id: st
     return respaldoConClaude(propia, fila.azureResultId ? 'AZURE_TIEMPO' : 'NO_LEGIBLE');
   }
 
-  const empresaEspanola = (await perfilEmpresa(companyId)).espanola;
-  const r = await azureExtractor.consultar!({ resultId: fila.azureResultId }, contextoLectura(propia, empresaEspanola));
+  const r = await azureExtractor.consultar!({ resultId: fila.azureResultId }, contextoLectura(propia, await perfilEmpresa(companyId)));
   if (r.tipo === 'pendiente' || (r.tipo === 'fallo' && r.reintentable)) {
     const espera = (r.tipo === 'pendiente' && r.reintentarEnMs) || esperaPorConsulta(n + 1);
     const siguiente = await prisma.lecturaDocumento.update({ where: { id: fila.id }, data: { azureProximaConsulta: new Date(Date.now() + espera) } });

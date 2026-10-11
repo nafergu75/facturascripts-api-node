@@ -161,6 +161,15 @@ describe('respaldo con Claude con vision', () => {
     expect(typeof r.confianzaLector).toBe('number');
   });
 
+  it('ventas de una empresa que lleva sus cuentas en USD: la moneda es la de la contabilidad y V17 no bloquea', async () => {
+    crear.mockResolvedValueOnce(fixtureClaude('vision-venta'));
+    const r = await claudeVisionExtractor('VENTA').iniciar(archivo, { companyId: 'e', lector: 'VENTA', empresaEspanola: false, monedaCuenta: 'USD' });
+    if (r.tipo !== 'hecho') throw new Error(r.tipo);
+    expect(r.lectura.moneda).toEqual({ valor: 'USD', confianza: null, fuente: 'calculado' });
+    const val = await validarLectura(r.lectura, ctx({ lector: 'VENTA', empresaEspanola: false, monedaCuenta: 'USD', nifEmpresa: null }));
+    expect(val.validaciones.map((x) => x.codigo)).not.toContain('MONEDA');
+  });
+
   it('sin clave o con un error de Anthropic: fallo, sin el texto del error', async () => {
     crear.mockRejectedValueOnce(Object.assign(new Error('boom'), { status: 500 }));
     expect(await claudeVisionExtractor('GASTO').iniciar(archivo, { companyId: 'e', lector: 'GASTO', empresaEspanola: true })).toEqual({ tipo: 'fallo', codigo: 'CLAUDE_ERROR', reintentable: false });

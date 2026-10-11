@@ -22,7 +22,7 @@ import {
 } from '../gastos-extractor.service';
 import { construirExtraccion, leerDocumentoConClaude as leerVentaConClaude, type LecturaClaude as LecturaClaudeVenta } from '../invoice-extractor.service';
 import { nifLeido } from './azure-factura.mapper';
-import { lecturaVacia, type ArchivoLectura, type ArranqueLectura, type Campo, type ExtractorFacturas, type Lector, type LecturaNormalizada, type TipoDocumentoLeido } from './tipos';
+import { lecturaVacia, type ArchivoLectura, type ArranqueLectura, type Campo, type ContextoLectura, type ExtractorFacturas, type Lector, type LecturaNormalizada, type TipoDocumentoLeido } from './tipos';
 
 const MIME_ADMITIDOS = /^(application\/pdf|image\/(jpeg|png|webp|gif))$/i;
 
@@ -67,8 +67,12 @@ export function normalizarGastoClaude(g: LecturaClaudeGasto): LecturaNormalizada
 
 const TIPO_VENTA: Record<string, TipoDocumentoLeido> = { factura: 'factura', factura_simplificada: 'simplificada', ticket: 'ticket', recibo: 'recibo', albaran: 'otro', otro: 'otro' };
 
-/** Lectura de ventas de hoy -> LecturaNormalizada. */
-export function normalizarVentaClaude(v: LecturaClaudeVenta): LecturaNormalizada {
+/**
+ * Lectura de ventas de hoy -> LecturaNormalizada. Este lector no lee la
+ * moneda: se supone la de la contabilidad (antes siempre EUR, y V17 bloqueaba
+ * las ventas de las empresas que llevan sus cuentas en USD).
+ */
+export function normalizarVentaClaude(v: LecturaClaudeVenta, monedaCuenta = 'EUR'): LecturaNormalizada {
   const l = lecturaVacia('claude');
   l.tipoDocumento = deClaude(TIPO_VENTA[v.doc_kind ?? 'factura'] ?? 'factura');
   l.emisor.nombre = deClaude(v.vendor_name);
@@ -79,7 +83,7 @@ export function normalizarVentaClaude(v: LecturaClaudeVenta): LecturaNormalizada
   l.numero = deClaude([v.series, v.number].filter(Boolean).join('-') || null);
   l.fechaEmision = deClaude(fechaValida(v.issue_date));
   l.fechaVencimiento = deClaude(fechaValida(v.due_date));
-  l.moneda = calculado('EUR');
+  l.moneda = calculado(monedaCuenta);
   l.concepto = deClaude(v.description);
   l.iban = deClaude(v.iban ? v.iban.replace(/\s+/g, '').toUpperCase() : null);
   l.desglose = v.base_amounts.map((b) => ({ tipoIva: b.vat_rate, base: deClaude(redondear2(b.base)), cuota: deClaude(redondear2(b.vat_amount)), tipoRecargo: null, cuotaRecargo: null }));
@@ -104,7 +108,7 @@ export function claudeVisionExtractor(lector: Lector): ExtractorFacturas {
     id: 'claude',
     configurado: claudeConfigurado,
     admite: (mime) => MIME_ADMITIDOS.test(mime),
-    async iniciar(archivo: ArchivoLectura): Promise<ArranqueLectura> {
+    async iniciar(archivo: ArchivoLectura, ctx?: ContextoLectura): Promise<ArranqueLectura> {
       if (!claudeConfigurado()) return { tipo: 'fallo', codigo: 'CLAUDE_SIN_CLAVE', reintentable: false };
       try {
         if (lector === 'GASTO') {
@@ -112,7 +116,7 @@ export function claudeVisionExtractor(lector: Lector): ExtractorFacturas {
           return { tipo: 'hecho', lectura: normalizarGastoClaude(g), texto: null, qr: null, confianzaLector: _construirGastoExtraido(g).confianza };
         }
         const v = await leerVentaConClaude(archivo.buffer, archivo.mime);
-        return { tipo: 'hecho', lectura: normalizarVentaClaude(v), texto: null, qr: null, confianzaLector: construirExtraccion(v).confidence };
+        return { tipo: 'hecho', lectura: normalizarVentaClaude(v, ctx?.monedaCuenta), texto: null, qr: null, confianzaLector: construirExtraccion(v).confidence };
       } catch (err) {
         // El texto del error puede llevar datos del documento: solo el estado.
         logger.warn('[ocr-claude] La lectura con Claude ha fallado', { lector, http: (err as { statusCode?: number }).statusCode ?? null });
