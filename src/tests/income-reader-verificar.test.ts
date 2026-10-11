@@ -32,7 +32,14 @@ jest.mock('../config/database', () => ({
         creados.push(data);
         return { id: 'cli-1', ...data };
       }),
+      // El alta asigna la subcuenta 430 en la misma transaccion (services/terceros/subcuentas).
+      findMany: jest.fn(async () => []),
+      update: jest.fn(async () => ({})),
     },
+    supplier: { findMany: jest.fn(async () => []) },
+    chartOfAccounts: { findMany: jest.fn(async () => []) },
+    $queryRaw: jest.fn(async () => []),
+    $transaction: jest.fn(async (fn: (tx: unknown) => unknown) => fn(jest.requireMock<{ prisma: unknown }>('../config/database').prisma)),
   },
 }));
 const crearIngreso = jest.fn(async (_dto: unknown) => ({ id: 'fac-1' }));

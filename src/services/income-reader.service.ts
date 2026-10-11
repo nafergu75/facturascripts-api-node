@@ -39,6 +39,7 @@ import { config } from '../config/env';
 import { putObject, getObject } from '../utils/storage';
 import { archivarVentaSinRomper } from './archivoFacturas.service';
 import { paisDelCliente } from '../domain/tipo-operacion.model';
+import { crearClienteConSubcuenta } from './terceros/subcuentas';
 import {
   esVigente,
   diasParaCaducidad,
@@ -724,15 +725,14 @@ export const incomeReaderService = {
     if (existente) {
       customerId = existente.id;
     } else {
-      const nuevoCliente = await prisma.customer.create({
-        data: {
-          companyId,
-          nombreFiscal: parsed.nombreReceptor || `Cliente ${parsed.nifReceptor}`,
-          nifCif: parsed.nifReceptor,
-          // ES salvo que el NIF lleve el prefijo de otro Estado de la UE (FR..., DE...; EL = Grecia).
-          pais: paisDelCliente({ pais: 'ES', nifCif: parsed.nifReceptor }),
-          activo: true,
-        },
+      // Con su subcuenta 430 asignada en la misma transaccion que el alta.
+      const nuevoCliente = await crearClienteConSubcuenta({
+        companyId,
+        nombreFiscal: parsed.nombreReceptor || `Cliente ${parsed.nifReceptor}`,
+        nifCif: parsed.nifReceptor,
+        // ES salvo que el NIF lleve el prefijo de otro Estado de la UE (FR..., DE...; EL = Grecia).
+        pais: paisDelCliente({ pais: 'ES', nifCif: parsed.nifReceptor }),
+        activo: true,
       });
       customerId = nuevoCliente.id;
     }

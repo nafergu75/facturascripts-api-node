@@ -31,6 +31,7 @@ import { hoyEspana, sumarDiasISO } from '../utils/fechas';
 import { copiaAlEmitir, leerAjustesFacturacion } from './ajustesFacturacion.service';
 import { FORMAS_PAGO, type FormaPago } from '../domain/ajustes.model';
 import { leerPais } from './clientes.service';
+import { crearClienteConSubcuenta } from './terceros/subcuentas';
 
 /**
  * Facturas de venta.
@@ -415,18 +416,17 @@ async function resolverCliente(
 
   const n = customerData.nuevo;
   const nifCif = n.nifCif.replace(/[\s-]/g, '').toUpperCase();
-  const customer = await prisma.customer.create({
-    data: {
-      companyId,
-      nombreFiscal: n.nombreFiscal,
-      nifCif,
-      direccion: n.direccion,
-      pais: paisClienteNuevo(n.pais, nifCif),
-      provincia: n.provincia,
-      municipio: n.municipio,
-      cp: n.cp,
-      email: n.email,
-    },
+  // Con su subcuenta 430 asignada en la misma transaccion que el alta.
+  const customer = await crearClienteConSubcuenta({
+    companyId,
+    nombreFiscal: n.nombreFiscal,
+    nifCif,
+    direccion: n.direccion,
+    pais: paisClienteNuevo(n.pais, nifCif),
+    provincia: n.provincia,
+    municipio: n.municipio,
+    cp: n.cp,
+    email: n.email,
   });
 
   return { id: customer.id, fiscal: clienteFiscal(customer) };
