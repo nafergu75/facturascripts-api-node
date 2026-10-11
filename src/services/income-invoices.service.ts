@@ -1,7 +1,7 @@
 import type { Prisma } from '@prisma/client';
 import { badRequest, notFound } from '../utils/http-errors';
 import { prisma, type TransaccionBD as Tx } from '../config/database';
-import { buscarSeriePorCodigo, obtenerOCrearSerieHistorica, obtenerSeriePorDefecto, resolverCodSerieFactura } from './series.service';
+import { buscarSeriePorCodigo, obtenerOCrearSerieHistorica, obtenerSeriePorDefecto, problemaSerieAeat, resolverCodSerieFactura } from './series.service';
 import { listarCobros, registrarCobroFactura, tieneCobrosActivos, type DatosCobro } from './cobrosPagos.service';
 import { comprobarFechaAbierta } from './periodos.service';
 import {
@@ -28,6 +28,7 @@ import { perfilDesdeConfig, perfilEmpresa, type PerfilEmpresa } from './perfilEm
 import { marcarTransaccion, mensajeSinTipo, resolverTipoCambio, type TipoResuelto } from './tiposCambio.service';
 import { resolverFiscalidad } from './fiscalidad-venta.service';
 import { hoyEspana, sumarDiasISO } from '../utils/fechas';
+import { aCentimos } from '../utils/money';
 import { copiaAlEmitir, leerAjustesFacturacion } from './ajustesFacturacion.service';
 import { FORMAS_PAGO, type FormaPago } from '../domain/ajustes.model';
 import { leerPais } from './clientes.service';
@@ -79,8 +80,15 @@ export { FORMAS_PAGO, type FormaPago };
 /** Estados de cobro que se pueden poner a mano en una factura final. */
 export const ESTADOS_COBRO = ['PENDING', 'PAID', 'OVERDUE'] as const;
 
-/** De donde nace la factura. Lo fija el servidor, nunca el cuerpo de la peticion. */
-export type OrigenFactura = 'pantalla' | 'lector' | 'copia';
+/**
+ * De donde nace la factura (columna IncomeInvoice.origen, spec verifactu 2.8).
+ * Lo fija el servidor, nunca el cuerpo de la peticion:
+ *  - pantalla: alta a mano (tambien la rectificativa);
+ *  - api: reservado para integraciones que se identifiquen como tales;
+ *  - copia: duplicar y «pasar a factura» una proforma;
+ *  - lector: factura que expidio otro programa (no genera registro VERI*FACTU).
+ */
+export type OrigenFactura = 'pantalla' | 'api' | 'copia' | 'lector';
 
 /**
  * DTO para crear una factura de ingreso.
@@ -752,6 +760,58 @@ async function exigirDatosEmisor(companyId: string): Promise<PerfilEmpresa> {
   return perfil;
 }
 
+/**
+ * Una factura no se emite con fecha futura (spec verifactu, P3): la AEAT la
+ * rechaza y, ademas, bloquearia la serie hasta ese dia. Hoy es el dia de Madrid.
+ */
+function exigirFechaNoFutura(fechaEmision: string): void {
+  if (fechaEmision > hoyISO()) {
+    throw badRequest(
+      `La fecha de emisión (${fechaEmision}) no puede ser posterior a hoy. Guarda la factura como borrador y emítela ese día.`,
+      { campo: 'fechaEmision' },
+    );
+  }
+}
+
+/** La serie tiene que servir para el numero de factura que se envia a la AEAT (spec verifactu, P11). */
+function exigirSerieValidaAeat(serie: string): void {
+  const problema = problemaSerieAeat(serie);
+  if (problema) throw badRequest(problema, { campo: 'serie' });
+}
+
+/** Tope de una factura simplificada (F2): 3.000 € con el IVA incluido (art. 4.1 RD 1619/2012). */
+export const LIMITE_SIMPLIFICADA = 3000;
+
+/**
+ * Una simplificada (F2) no pasa de 3.000 € de base mas IVA, en euros (spec
+ * verifactu, 4.3 y P9). Solo empresas espanolas: el limite es de la norma espanola.
+ */
+function exigirLimiteSimplificada(
+  tipoFactura: string,
+  perfil: PerfilEmpresa,
+  importes: { baseTotal: number; ivaTotal: number },
+): void {
+  if (tipoFactura !== 'F2' || !perfil.espanola) return;
+  const total = aCentimos(importes.baseTotal) + aCentimos(importes.ivaTotal);
+  if (total > LIMITE_SIMPLIFICADA * 100) {
+    throw badRequest(
+      `Una factura simplificada no puede pasar de 3.000 € (base más IVA) y esta suma ${(total / 100).toFixed(2).replace('.', ',')} €. ` +
+        'Emítela como factura completa (F1).',
+      { campo: 'tipoFactura' },
+    );
+  }
+}
+
+/** R5 solo rectifica una simplificada (F2); el resto de facturas se rectifican con R1 a R4 (spec verifactu, 4.3). */
+function exigirR5SobreSimplificada(tipoFactura: string, original: { tipoFactura: string; numeroCompleto: string | null } | null): void {
+  if (tipoFactura === 'R5' && original && original.tipoFactura !== 'F2') {
+    throw badRequest(
+      `Una rectificativa R5 solo corrige facturas simplificadas (F2) y la ${original.numeroCompleto ?? ''} es ${original.tipoFactura}. Usa R1 a R4.`,
+      { campo: 'tipoFactura' },
+    );
+  }
+}
+
 /** Transaccion de facturas: el tipo de cambio ya esta resuelto; dentro no se consulta la red. */
 function transaccion<T>(fn: (tx: Tx) => Promise<T>): Promise<T> {
   return prisma.$transaction((tx) => marcarTransaccion(() => fn(tx)));
@@ -857,6 +917,21 @@ async function crear(dto: CrearFacturaIngresoDTO, opciones: { origen?: OrigenFac
   if (dto.numero !== undefined && dto.numero !== null && origen !== 'lector') {
     throw badRequest('El número de la factura lo pone la serie al emitirla: no se puede indicar.', { campo: 'numero' });
   }
+  // P4: una factura del lector la expidio otro programa y lleva SU numero y SU
+  // serie. La app nunca la numera (si no, gastaria numeros de sus series).
+  if (origen === 'lector') {
+    if (!Number.isSafeInteger(dto.numero) || (dto.numero as number) < 1) {
+      throw badRequest('Falta el número de la factura leída. Escríbelo (tal como aparece en la factura) antes de registrarla.', {
+        campo: 'numero',
+      });
+    }
+    if (!String(dto.serie ?? '').trim()) {
+      throw badRequest('Falta la serie de la factura leída. Escríbela (tal como aparece en la factura) antes de registrarla.', {
+        campo: 'serie',
+      });
+    }
+    if (dto.borrador || dto.proforma) throw badRequest('Una factura leída se registra ya emitida: no es un borrador ni una proforma.');
+  }
   let lineas = validarLineas(dto.lineas);
   if (dto.proforma && dto.facturaOriginalId) throw badRequest('Una proforma no puede ser una rectificativa.');
   const esRectificativa = !!dto.facturaOriginalId;
@@ -888,10 +963,12 @@ async function crear(dto: CrearFacturaIngresoDTO, opciones: { origen?: OrigenFac
     );
   }
   if (original) comprobarHerencia(original, dto);
+  exigirR5SobreSimplificada(tipoFactura, original);
   const moneda = original ? original.moneda : validarMoneda(dto.moneda ?? perfil.monedaCuenta, perfil.monedasFactura);
   comprobarMonedaLineas(dto.lineas, moneda, false);
 
   const fechaEmision = validarFecha(dto.fechaEmision ?? hoyISO(), 'fecha de emisión');
+  if (emiteLaApp) exigirFechaNoFutura(fechaEmision);
   // Sin forma de pago o sin vencimiento: los de Configuración > Facturación.
   const ajustes = await leerAjustesFacturacion(dto.companyId);
   const fechaVencimiento = validarFecha(dto.fechaVencimiento ?? sumarDiasISO(fechaEmision, ajustes.diasVencimiento), 'fecha de vencimiento');
@@ -908,6 +985,7 @@ async function crear(dto: CrearFacturaIngresoDTO, opciones: { origen?: OrigenFac
   const serie = dto.proforma
     ? await resolverSerieProforma(dto.companyId, dto.serie)
     : await resolverSerie(dto.companyId, dto.serie, esRectificativa, origen);
+  if (emiteLaApp) exigirSerieValidaAeat(serie);
 
   // Quien revisa la fiscalidad lo decide el servidor, nunca el cuerpo.
   const modo: ModoFiscal = esRectificativa
@@ -945,8 +1023,10 @@ async function crear(dto: CrearFacturaIngresoDTO, opciones: { origen?: OrigenFac
 
   const importes =
     interno.importes ?? calcularImportesFactura(lineas, { tipoCambio: tipo.tipoCambio, mismaMoneda: moneda === perfil.monedaCuenta });
+  if (emiteLaApp) exigirLimiteSimplificada(tipoFactura, perfil, importes.cuenta);
   const comunes = {
     companyId: dto.companyId,
+    origen,
     customerId: cliente.id,
     serie,
     fechaEmision,
@@ -1290,6 +1370,8 @@ export const incomeInvoicesService = {
           observaciones: p.observaciones,
           esRectificativa: false,
           proformaId: p.id,
+          // Nace de otro documento, como al duplicar (spec verifactu 2.8).
+          origen: 'copia',
           estadoDocumento: ESTADO_BORRADOR,
           estado: 'DRAFT',
           lineas: { create: lineasACrear(importes) },
@@ -1340,6 +1422,8 @@ export const incomeInvoicesService = {
     }
 
     const fechaEmision = validarFecha(opciones.fechaEmision ?? hoyISO(), 'fecha de emisión');
+    exigirFechaNoFutura(fechaEmision);
+    exigirSerieValidaAeat(actual.serie);
     // Ni en un mes bloqueado ni en un ejercicio cerrado (antes de numerarla).
     await comprobarFechaAbierta(companyId, fechaEmision, 'emitir la factura');
     // Se mantienen los dias de plazo que tenia el borrador.
@@ -1398,6 +1482,7 @@ export const incomeInvoicesService = {
     const recalcular = normaliza || (!misma && !heredado);
     exigirNoFinal(actual);
     const importes = recalcular ? calcularImportesFactura(lineas, { tipoCambio: tipo.tipoCambio, mismaMoneda: misma }) : null;
+    exigirLimiteSimplificada(actual.tipoFactura, perfil, importes ? importes.cuenta : actual);
     // IBAN y pie de ahora, copiados en la factura: su PDF ya no cambia con los ajustes.
     const copia = await copiaAlEmitir(companyId, actual.moneda);
 
@@ -1415,6 +1500,8 @@ export const incomeInvoicesService = {
           fechaEmision,
           fechaVencimiento,
           fechaOperacion,
+          // Se conserva el del borrador (pantalla o copia); uno antiguo sin origen lo emite la pantalla.
+          origen: actual.origen ?? 'pantalla',
           ...copia,
           estado: determinarEstado(fechaVencimiento),
           ...datosTipo(tipo),
