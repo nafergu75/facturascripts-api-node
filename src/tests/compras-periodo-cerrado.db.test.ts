@@ -4,7 +4,10 @@
  *  - una factura anterior sin asiento cuyo mes se bloquea: Contabilizar no
  *    manda a modificarla, y Modificar y Anular no mandan a Contabilizar (antes
  *    se mandaban la una a la otra y no habia salida). Las tres dicen que hay
- *    que desbloquear el mes; desbloqueado, se corrige y se contabiliza.
+ *    que desbloquear el mes; desbloqueado, se corrige y se contabiliza;
+ *  - el borrador del lector cuyo mes se bloquea despues: aprobarlo da el 409
+ *    con { campo: 'fechaRegistro', facturaId } (antes la comprobacion general
+ *    se adelantaba con un 400 que invitaba a cambiar la fecha).
  *
  * Necesita MySQL (en GitHub Actions lo levanta el workflow de tests).
  */
@@ -166,5 +169,43 @@ describe('factura anterior sin asiento con su mes bloqueado', () => {
     const put = await request(app(E)).put(`/expense-invoices/${f.id}`).send(factura(sup));
     expect(put.status).toBe(409);
     expect(put.body.details).toMatchObject({ motivo: 'periodo_cerrado' });
+  });
+});
+
+describe('aprobar el borrador del lector con su mes bloqueado', () => {
+  it('409 con campo fechaRegistro y facturaId (por el controlador y por la ruta); con la fecha de registro en abril, se aprueba', async () => {
+    const E = await nuevaEmpresa('lector');
+    const sup = await proveedor(E);
+    const { factura: f, asientoId } = await expenseInvoicesService.registrarGasto(E, factura(sup, { fechaEmision: '2026-03-04' }), { contabilizar: 'DRAFT' });
+    await cambiarEstadoPeriodo(E, 2026, 3, 'bloqueado');
+
+    await expect(motor.aprobarAsiento(E, asientoId, 'u-percer')).rejects.toMatchObject({
+      statusCode: 409,
+      message: expect.stringMatching(/^El periodo de 03\/2026 está bloqueado: modifica la factura y, si la recibiste más tarde, pon en «¿La recibiste más tarde\?»/),
+      details: { campo: 'fechaRegistro', facturaId: f.id },
+    });
+    const porRuta = await request(appMotor(E)).post(`/companies/${E}/accounting/journal-entries/${asientoId}/approve`).send({});
+    expect(porRuta.status).toBe(409);
+    expect(porRuta.body.error).toMatch(/Si te llegó en ese mes, desbloquéalo antes en Configuración > Ejercicios y periodos\.$/);
+    expect(porRuta.body.details).toEqual({ campo: 'fechaRegistro', facturaId: f.id });
+    expect((await prisma.journalEntry.findUniqueOrThrow({ where: { id: asientoId } })).estado).toBe('DRAFT');
+
+    // El borrador si se modifica con el mes bloqueado: la fecha de registro pasa a abril y se aprueba.
+    const put = await request(app(E)).put(`/expense-invoices/${f.id}`).send(factura(sup, { fechaEmision: '2026-03-04', fechaRegistro: '2026-04-06' }));
+    expect(put.status).toBe(200);
+    await expect(motor.aprobarAsiento(E, put.body.data.asiento.id, 'u-percer')).resolves.toMatchObject({ estado: 'POSTED' });
+    expect((await prisma.expenseInvoice.findUniqueOrThrow({ where: { id: f.id } })).estado).toBe('ACCOUNTED');
+  });
+
+  it('un asiento que no es de una factura de gasto sigue con el 400 general', async () => {
+    const E = await nuevaEmpresa('manual');
+    await cambiarEstadoPeriodo(E, 2026, 3, 'bloqueado');
+    const borrador = await prisma.journalEntry.create({
+      data: { companyId: E, fecha: new Date('2026-03-04T00:00:00Z'), numeroAsiento: 'PC-1', descripcion: 'Borrador', origen: 'MANUAL', estado: 'DRAFT' },
+    });
+    await expect(motor.aprobarAsiento(E, borrador.id, 'u')).rejects.toMatchObject({
+      statusCode: 400,
+      message: expect.stringMatching(/^No se puede aprobar el asiento con fecha 04\/03\/2026: el mes 03\/2026 está bloqueado/),
+    });
   });
 });

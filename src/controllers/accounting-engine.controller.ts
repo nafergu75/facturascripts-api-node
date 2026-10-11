@@ -15,7 +15,7 @@ import { accountingEngineService, desgloseIvaPorTipo } from '../services/account
 import { prisma } from '../config/database';
 import { cuadraEnCentimos } from '../utils/money';
 import { asegurarPlanContableEmpresa } from '../services/chart-of-accounts.service';
-import { comprobarFechaAbierta } from '../services/periodos.service';
+import { comprobarFechaAbierta, periodoNoAbierto } from '../services/periodos.service';
 import { perfilEmpresa } from '../services/perfilEmpresa.service';
 import { motivoSinTipoFijado, notaDivisa } from '../domain/divisas';
 import { esTipoOperacion, fechaDevengoVenta } from '../domain/tipo-operacion.model';
@@ -303,8 +303,36 @@ export class AccountingEngineController {
       }
 
       // Un borrador (p. ej. del lector) no pasa a definitivo en un mes bloqueado
-      // ni en un ejercicio cerrado.
-      await comprobarFechaAbierta(companyId, asiento.fecha.toISOString().slice(0, 10), 'aprobar el asiento');
+      // ni en un ejercicio cerrado. El de una factura de gasto tampoco en un
+      // periodo con el 303 (o el 111/115) ya presentado; para ese, un 409 que
+      // lleva a la factura: su fecha de registro (si se recibio mas tarde) se
+      // cambia, la fecha que puso el proveedor no.
+      const fechaAsiento = asiento.fecha.toISOString().slice(0, 10);
+      const gasto =
+        asiento.origen === 'FACTURA_GASTO' && asiento.invoiceId
+          ? await prisma.expenseInvoice.findFirst({
+              where: { id: asiento.invoiceId, companyId },
+              select: { tipoGasto: true, retencionTotal: true },
+            })
+          : null;
+      if (gasto && asiento.invoiceId) {
+        const motivo = await motivoPeriodoBloqueado(companyId, fechaAsiento, retencionDe(gasto));
+        if (motivo) {
+          // campo y facturaId: la pantalla abre la factura con «¿La recibiste más tarde?» desplegado.
+          const periodo = await periodoNoAbierto(companyId, fechaAsiento);
+          const siTeLlego = !periodo
+            ? ''
+            : periodo.motivo === 'periodo_bloqueado'
+              ? ' Si te llegó en ese mes, desbloquéalo antes en Configuración > Ejercicios y periodos.'
+              : ' Si te llegó en ese periodo, consúltalo con tu asesor: está cerrado.';
+          throw conflict(
+            `${motivo}: modifica la factura y, si la recibiste más tarde, pon en «¿La recibiste más tarde?» la fecha en que te llegó, de un periodo abierto y sin presentar. Después aprueba el asiento.${siTeLlego}`,
+            { campo: 'fechaRegistro', facturaId: asiento.invoiceId },
+          );
+        }
+      } else {
+        await comprobarFechaAbierta(companyId, fechaAsiento, 'aprobar el asiento');
+      }
 
       // Validar debe = haber
       const totalDebe = asiento.lineas.reduce((s, l) => s + (l.debe || 0), 0);
@@ -331,23 +359,6 @@ export class AccountingEngineController {
         if (!cuenta.activo) {
           throw badRequest(
             `Cuenta PGC ${linea.accountCode} está inactiva. Solicita a tu asesor que la active.`
-          );
-        }
-      }
-
-      // El borrador de una factura de gasto (lector) no entra en un periodo con
-      // el 303 (o el 111/115) ya presentado: se cambia antes la fecha de registro.
-      if (asiento.origen === 'FACTURA_GASTO' && asiento.invoiceId) {
-        const gasto = await prisma.expenseInvoice.findFirst({
-          where: { id: asiento.invoiceId, companyId },
-          select: { tipoGasto: true, retencionTotal: true },
-        });
-        const motivo = gasto ? await motivoPeriodoBloqueado(companyId, asiento.fecha.toISOString().slice(0, 10), retencionDe(gasto)) : null;
-        if (motivo) {
-          // campo y facturaId: la pantalla abre la factura con «¿La recibiste más tarde?» desplegado.
-          throw conflict(
-            `${motivo}: modifica la factura y, si la recibiste más tarde, pon en «¿La recibiste más tarde?» la fecha en que te llegó, de un periodo sin presentar. Después aprueba el asiento.`,
-            { campo: 'fechaRegistro', facturaId: asiento.invoiceId },
           );
         }
       }
