@@ -218,8 +218,8 @@ export interface PermisosAlta {
 }
 const TODOS_PERMISOS: PermisosAlta = { cliente: true, proveedor: true };
 const TEXTO_SIN_PERMISO: Record<TipoFicha, string> = {
-  cliente: 'No tienes permiso para dar de alta clientes (Ventas)',
-  proveedor: 'No tienes permiso para dar de alta proveedores (Compras)',
+  cliente: 'No tienes permiso para dar de alta clientes (Ventas «Modificar»)',
+  proveedor: 'No tienes permiso para dar de alta proveedores (Compras «Modificar»)',
 };
 
 const FORMAS_JURIDICAS = new Set([

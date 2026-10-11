@@ -306,7 +306,7 @@ describe('dar de alta fichas exige ventas:write o compras:write', () => {
     ];
     const v = await previsualizarPlan(E, { cuentas, permisos: { cliente: false, proveedor: true } });
     const porCodigo = new Map(v.terceros.map((t) => [t.codigo, t]));
-    expect(porCodigo.get('43000001')).toMatchObject({ accion: 'pendiente', motivo: expect.stringContaining('No tienes permiso para dar de alta clientes (Ventas)') });
+    expect(porCodigo.get('43000001')).toMatchObject({ accion: 'pendiente', motivo: expect.stringContaining('No tienes permiso para dar de alta clientes (Ventas «Modificar»): enlázala') });
     expect(porCodigo.get('40000001')).toMatchObject({ accion: 'crear' });
     expect(porCodigo.get('43000002')).toMatchObject({ accion: 'pendiente', motivo: 'Sin NIF: enlázala a una ficha después.' });
     // Dos pendientes por motivos distintos: cada aviso dice el suyo, con su recuento y en singular.
@@ -321,7 +321,7 @@ describe('dar de alta fichas exige ventas:write o compras:write', () => {
     expect(await prisma.customer.count({ where: { companyId: E } })).toBe(0);
     await expect(enlazarSubcuenta(E, { codigo: '43000001', nueva: { nombreFiscal: 'Cliente Permiso SL', nifCif: cif() } }, { cliente: false, proveedor: true })).rejects.toMatchObject({
       statusCode: 403,
-      message: expect.stringContaining('No tienes permiso para dar de alta clientes'),
+      message: expect.stringContaining('No tienes permiso para dar de alta clientes (Ventas «Modificar»). Enlázala'),
     });
     expect(await prisma.customer.count({ where: { companyId: E } })).toBe(0);
   });
