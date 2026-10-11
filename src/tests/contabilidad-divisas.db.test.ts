@@ -357,7 +357,12 @@ describe('facturas EUR anteriores (sin tipo de operacion): exactamente lo de ant
       ['L-3', 'exportacion', 'cifnif,fecha,idFactura,lineas,nombreTercero,operacion,tipo'],
     ]);
     expect(agregar303(fiscales, T1)).toEqual(agregar303Anterior(fiscales, T1));
-    expect(agregar347(fiscales, 2026)).toEqual(agregar347Anterior(fiscales, 2026));
+    // El 347 añade el desglose del diseño oficial (trimestres, provincia y avisos); el importe es el de siempre.
+    const a347 = agregar347(fiscales, 2026);
+    expect({ ...a347, advertencias: undefined, operaciones: a347.operaciones.map(({ cifnif, nombre, tipo, baseAnual }) => ({ cifnif, nombre, tipo, baseAnual })) }).toEqual({
+      ...agregar347Anterior(fiscales, 2026),
+      advertencias: undefined,
+    });
     expect(agregar349(fiscales, T1)).toEqual(agregar349Anterior(fiscales, T1));
     const { volumen: _v, advertencias: _a, ...a390 } = agregar390(fiscales, 2026);
     expect(a390).toEqual(agregar390Anterior(fiscales, 2026));

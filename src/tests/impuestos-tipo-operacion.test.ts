@@ -178,7 +178,12 @@ describe('facturas anteriores al azar: igual que la copia congelada de los agreg
         expect(new Map(ahora349.operaciones.map((o) => [`${o.cifnif}|${o.clave}`, o.base]))).toEqual(new Map([...agrupado].filter(([, b]) => b !== 0)));
         expect(ahora349.totalBase).toBeCloseTo(antes349.totalBase, 2);
       }
-      expect(agregar347(fs, 2026)).toEqual(agregar347Anterior(fs, 2026));
+      // El 347 añade el desglose del diseño oficial (trimestres, provincia, avisos): los importes por tercero son los de siempre.
+      const a347 = agregar347(fs, 2026);
+      const legado = (ops: Array<{ cifnif: string; nombre: string; tipo: string; baseAnual: number }>) =>
+        ops.map(({ cifnif, nombre, tipo, baseAnual }) => ({ cifnif, nombre, tipo, baseAnual })).sort((a, b) => b.baseAnual - a.baseAnual || a.cifnif.localeCompare(b.cifnif) || a.tipo.localeCompare(b.tipo));
+      const antes347 = agregar347Anterior(fs, 2026);
+      expect({ ...a347, advertencias: undefined, operaciones: legado(a347.operaciones) }).toEqual({ ...antes347, operaciones: legado(antes347.operaciones), advertencias: undefined });
       const { volumen: _v, advertencias: _a, ...a390 } = agregar390(fs, 2026);
       expect(a390).toEqual(agregar390Anterior(fs, 2026));
       // Sin ventas con tipo, [108] es [99], como antes.
