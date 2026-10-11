@@ -38,9 +38,6 @@ import {
 import { ErrorDisenoRegistro } from '../../aeat/common/disenoRegistro';
 import { avisoPresentado, declaranteEmpresa, filaModelo, opcionesDe, presentacionDe } from './comun';
 
-/** Version del programa que va en la cabecera del fichero (posiciones 93-96). */
-export const VERSION_PROGRAMA_202 = '0100';
-
 export interface Opciones202 {
   modalidad: 'A' | 'B';
   /** [01] a mano: la cuota del 200 que sirve de base (si el 200 no esta en la app). */
@@ -161,8 +158,6 @@ export async function calcularBorrador202(companyId: string, ejercicio: number, 
   const calculada: Entrada202 = {
     ejercicio,
     periodo,
-    versionPrograma: VERSION_PROGRAMA_202,
-    nifEmpresaDesarrollo: process.env.AEAT_NIF_EMPRESA_DESARROLLO ?? '',
     tipoDeclaracion: casillas['03'] > 0 ? (opciones.domiciliar ? 'U' : 'I') : 'N',
     nif: declarante.nif,
     denominacion: declarante.nombre,

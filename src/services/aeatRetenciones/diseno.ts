@@ -168,17 +168,6 @@ export function ibanNormalizado(valor: unknown): string | null {
 /** Periodo valido del 111 y del 115: '01'...'12' o '1T'...'4T' (no tienen periodo anual). */
 export const PERIODO_111_115 = /^(0[1-9]|1[0-2]|[1-4]T)$/;
 
-/**
- * Version del programa (posicion 93 de la cabecera <AUX>): la misma que pone
- * el 303. El NIF de la empresa desarrolladora (posicion 101) sale de la
- * variable de entorno AEAT_NIF_EMPRESA_DESARROLLO; sin ella va en blanco.
- */
-export const VERSION_PROGRAMA_AEAT = '0101';
-export function nifEmpresaDesarrollo(): string {
-  const nif = normalizarNif(process.env.AEAT_NIF_EMPRESA_DESARROLLO ?? '');
-  return nif && validarNifEspanol(nif).valido ? nif : '';
-}
-
 // ---------------------------------------------------------------------------
 // Codificador
 // ---------------------------------------------------------------------------

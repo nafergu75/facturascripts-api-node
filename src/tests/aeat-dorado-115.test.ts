@@ -60,7 +60,7 @@ describe('115: alquileres del trimestre (caso real)', () => {
     const f = generarFicheroModelo115(EMPRESA, periodo, datos, { razonSocial: 'Ifbiosoluciones, S.L.' });
     expect(f).toHaveLength(846);
     const { cab, pag, cie } = partes(f);
-    comprobarRegistro(cab, CAB, { ejercicio: '2027', periodo: '1T', versionPrograma: '0101' });
+    comprobarRegistro(cab, CAB, { ejercicio: '2027', periodo: '1T', versionPrograma: '0100', nifEmpresaDesarrollo: 'A10952364' });
     comprobarRegistro(pag, PAG, {
       tipoDeclaracion: 'I',
       nif: EMPRESA,

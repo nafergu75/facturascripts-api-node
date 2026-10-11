@@ -17,13 +17,12 @@ import {
   errorNifDeclarante,
   esPersonaFisica,
   ibanNormalizado,
-  nifEmpresaDesarrollo,
   PERIODO_111_115,
   registroDr,
   sanearAN,
-  VERSION_PROGRAMA_AEAT,
   type DisenoDr,
 } from './diseno';
+import { cabeceraAux, cierreAux, programaAeat, type ProgramaAeat } from '../../aeat/common/cabeceraAux';
 
 export type ModeloRetenciones = '111' | '115';
 export type Casillas = Record<string, number>;
@@ -303,21 +302,17 @@ export function construirDeclaracion(modelo: ModeloRetenciones, e: EntradaDeclar
  * pagina (1000 en el 111, 500 en el 115) + cierre (18), sin salto de linea
  * final (el diseño no lo prevé). 400 si la declaracion tiene errores.
  */
-export function ficheroDeclaracion(d: DeclaracionRetenciones, opts: { versionPrograma?: string; nifEmpresaDesarrollo?: string } = {}): string {
+export function ficheroDeclaracion(d: DeclaracionRetenciones, programa: ProgramaAeat = programaAeat()): string {
   if (d.errores.length) {
     throw badRequest(d.errores.join(' '), { errores: d.errores });
   }
   const m = MODELOS_RETENCIONES[d.modelo];
-  const comunes = { ejercicio: String(d.identificacion.ejercicio).padStart(4, '0'), periodo: d.identificacion.periodo };
-  const cabecera = componerRegistroDr(registroDr(m.diseno, 'cabecera'), {
-    ...comunes,
-    versionPrograma: opts.versionPrograma ?? VERSION_PROGRAMA_AEAT,
-    nifEmpresaDesarrollo: opts.nifEmpresaDesarrollo ?? nifEmpresaDesarrollo(),
-  });
+  const { ejercicio, periodo } = d.identificacion;
+  const comunes = { ejercicio: String(ejercicio).padStart(4, '0'), periodo };
   const pagina = componerRegistroDr(registroDr(m.diseno, m.pagina), {
     ...comunes,
     ...d.casillas,
-    ejercicio: d.identificacion.ejercicio,
+    ejercicio,
     tipoDeclaracion: d.tipoDeclaracion,
     nif: d.identificacion.nif,
     apellidosODenominacion: d.identificacion.apellidosODenominacion,
@@ -326,8 +321,8 @@ export function ficheroDeclaracion(d: DeclaracionRetenciones, opts: { versionPro
     justificanteAnterior: d.justificanteAnterior,
     iban: d.tipoDeclaracion === 'U' ? d.iban : '',
   });
-  const cierre = componerRegistroDr(registroDr(m.diseno, 'cierre'), comunes);
-  return cabecera + pagina + cierre;
+  // Cabecera <AUX> y cierre comunes a todas las autoliquidaciones (aeat/common/cabeceraAux).
+  return cabeceraAux(d.modelo, ejercicio, periodo, programa) + pagina + cierreAux(d.modelo, ejercicio, periodo);
 }
 
 export interface CasillaFormulario {

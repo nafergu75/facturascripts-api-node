@@ -20,6 +20,7 @@
  * primavera del año siguiente) y los tipos de gravamen cambian cada año por la
  * Ley 7/2024 (DT 44.ª LIS).
  */
+import { cabeceraAux, cierreAux, programaAeat, type ProgramaAeat } from '../common/cabeceraAux';
 import dr200 from '../../domain/aeat/dr200-2025.json';
 import type { BalanceSituacion, CuentaPerdidasGanancias } from '../../domain/impuesto-sociedades.model';
 import { aCentimos } from '../../utils/money';
@@ -98,8 +99,8 @@ export interface Entrada200 {
   retenciones?: number;
   /** IBAN de la empresa (devolución). */
   iban?: string | null;
-  versionPrograma?: string;
-  nifEmpresaDesarrollo?: string;
+  /** Version y NIF de la entidad desarrolladora (cabecera <AUX>); por defecto, los de la app. */
+  programa?: ProgramaAeat;
 }
 
 export interface TipoGravamen200 {
@@ -425,14 +426,9 @@ export function construirModelo200(e: Entrada200): Declaracion200 {
   });
   const casillas = Object.assign({}, ...paginas.map((x) => x.casillas)) as Record<string, number | string>;
 
-  const ej = String(e.ejercicio).padStart(4, '0');
-  const cab = new RegistroAeat(
-    { hoja: 'DP200000', longitud: 328, campos: DISENO_200.cabecera.campos.filter((x) => x.pos && x.len && x.pos !== 1) },
-    '200 cabecera',
-  );
-  cab.texto(93, e.versionPrograma ?? '0001', false).texto(101, nifLimpio(e.nifEmpresaDesarrollo ?? ''), false);
-  const cabecera = `<T2000${ej}0A0000>` + cab.toString().slice(17);
-  const cierre = `</T2000${ej}0A0000>`;
+  // Cabecera <AUX> y cierre comunes (aeat/common/cabeceraAux).
+  const cabecera = cabeceraAux('200', e.ejercicio, '0A', e.programa ?? programaAeat());
+  const cierre = cierreAux('200', e.ejercicio, '0A');
 
   const generadas = new Set(orden.map(([x]) => x));
   const paginasPendientes = DISENO_200.indice

@@ -9,16 +9,14 @@
  */
 import { conResultadoPagina3_303, DatosModelo303, filasRegimenGeneral303, PeriodoFiscal } from '../domain/impuestos.model';
 import {
-  cierre303,
-  componerCabecera303,
   componerPagina303,
   nifAn303,
   paginaDiseno303,
-  SoftwareAeat,
   textoAn303,
   type CampoDr303,
   type ValorCampo303,
 } from '../domain/aeat/modelo303-2026';
+import { cabeceraAux, cierreAux, programaAeat, type ProgramaAeat } from '../aeat/common/cabeceraAux';
 import { badRequest } from '../utils/http-errors';
 
 /**
@@ -281,15 +279,6 @@ export function montarBorrador303(
   };
 }
 
-/** Versión del programa y NIF de la entidad desarrolladora (cabecera, Nota 1). */
-export function softwareAeat(): SoftwareAeat {
-  return {
-    // Identificador de la versión de Conta API para los ficheros de la AEAT.
-    versionPrograma: '0100',
-    nifEmpresaDesarrollo: process.env.AEAT_NIF_EMPRESA_DESARROLLO ?? '',
-  };
-}
-
 /** Página 1 (identificación y liquidación del régimen general). */
 export function pagina1Borrador303(b: Borrador303): string {
   const campos: Record<number, ValorCampo303> = {
@@ -319,12 +308,12 @@ export function paginaDidBorrador303(iban: string): string {
  * devolución) + cierre. La página 2 (régimen simplificado) no va y las 4 y 5
  * no tienen contenido para una sociedad en régimen general.
  */
-export function ficheroBorrador303(b: Borrador303, software: SoftwareAeat = softwareAeat()): string {
+export function ficheroBorrador303(b: Borrador303, programa: ProgramaAeat = programaAeat()): string {
   if (b.errores.length) throw badRequest(b.errores[0], { errores: b.errores });
   const { ejercicio, periodo } = b.periodo;
   const paginas = [pagina1Borrador303(b), pagina3Borrador303(b)];
   if (b.iban && (b.tipoDeclaracion === 'U' || b.tipoDeclaracion === 'D')) paginas.push(paginaDidBorrador303(b.iban));
-  return componerCabecera303(ejercicio, periodo, software) + paginas.join('') + cierre303(ejercicio, periodo);
+  return cabeceraAux('303', ejercicio, periodo, programa) + paginas.join('') + cierreAux('303', ejercicio, periodo);
 }
 
 // ---------------------------------------------------------------------------

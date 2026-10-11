@@ -121,7 +121,7 @@ describe('111: fichero con nominas y profesionales (caso real)', () => {
     expect(f).toHaveLength(328 + 1000 + 18);
     expect(f.endsWith('\r\n')).toBe(false);
     const { cab, pag, cie } = partes(f);
-    comprobarRegistro(cab, CAB, { ejercicio: '2026', periodo: '2T', versionPrograma: '0101', nifEmpresaDesarrollo: ' '.repeat(9) });
+    comprobarRegistro(cab, CAB, { ejercicio: '2026', periodo: '2T', versionPrograma: '0100', nifEmpresaDesarrollo: 'A10952364' });
     comprobarRegistro(pag, PAG, {
       tipoDeclaracion: 'I',
       nif: EMPRESA,

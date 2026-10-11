@@ -18,12 +18,6 @@ import { periodoFiscal } from './nominas/fiscal';
 
 const round2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100;
 
-/** Configuracion del programa para la cabecera de los ficheros (opcional). */
-const programa = () => ({
-  versionPrograma: (process.env.AEAT_VERSION_PROGRAMA ?? '0001').slice(0, 4),
-  nifEmpresaDesarrollo: process.env.AEAT_NIF_DESARROLLADOR ?? '',
-});
-
 /** Datos de la sociedad que guarda la app (Registro Mercantil > Datos para la memoria). */
 async function datosSociedad(companyId: string) {
   const legal = await Promise.resolve()
@@ -122,7 +116,7 @@ export function entrada390Desde(
   facturas: FacturaFiscal[],
   ejercicio: number,
   identificacion: Entrada390['identificacion'],
-  extra: Pick<Entrada390, 'compensarEjercicioAnterior' | 'ultimoPeriodo' | 'versionPrograma' | 'nifEmpresaDesarrollo'> = {},
+  extra: Pick<Entrada390, 'compensarEjercicioAnterior' | 'ultimoPeriodo' | 'programa'> = {},
 ): { entrada: Entrada390; advertencias: string[] } {
   const datos = agregar390(facturas, ejercicio);
   const delAno = facturas.filter((f) => f.fecha.startsWith(String(ejercicio)));
@@ -207,7 +201,7 @@ export async function borrador390(companyId: string, ejercicio: number, opciones
       criterioCaja: !!ajustes?.criterioCaja,
       redeme: !!ajustes?.redeme,
     },
-    { compensarEjercicioAnterior: compensar, ultimoPeriodo: opciones.ultimoPeriodo ?? 'compensar', ...programa() },
+    { compensarEjercicioAnterior: compensar, ultimoPeriodo: opciones.ultimoPeriodo ?? 'compensar' },
   );
   const decl = construirModelo390(entrada);
   return { ...decl, advertencias: [...advertencias, ...decl.advertencias] };
@@ -267,7 +261,6 @@ export async function borrador200(companyId: string, ejercicio: number, opciones
     retenciones: opciones.retenciones,
     nuevaCreacion: opciones.nuevaCreacion,
     iban: cuentas.find((c) => c.activa)?.iban ?? null,
-    ...programa(),
   });
   // Lo que hay en la 473 (retenciones y pagos a cuenta) ayuda a rellenar las casillas de la página 14 bis.
   let saldo473 = 0;

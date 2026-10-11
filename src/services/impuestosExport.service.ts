@@ -299,7 +299,7 @@ export function generarFicheroModelo111(
     casillas: casillasDeDatos111(datos),
     opciones: opts.opciones,
   });
-  return ficheroDeclaracion(d, { versionPrograma: opts.versionPrograma, nifEmpresaDesarrollo: opts.nifEmpresaDesarrollo });
+  return ficheroDeclaracion(d);
 }
 
 /**
@@ -322,7 +322,7 @@ export function generarFicheroModelo115(
     casillas: casillasDeDatos115(datos),
     opciones: opts.opciones,
   });
-  return ficheroDeclaracion(d, { versionPrograma: opts.versionPrograma, nifEmpresaDesarrollo: opts.nifEmpresaDesarrollo });
+  return ficheroDeclaracion(d);
 }
 
 /**

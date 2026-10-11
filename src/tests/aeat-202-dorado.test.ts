@@ -34,8 +34,7 @@ const entrada = (periodo: Periodo202, base: number, anterior = 0): Entrada202 =>
   return {
     ejercicio: 2027,
     periodo,
-    versionPrograma: '0100',
-    nifEmpresaDesarrollo: '',
+    programa: { versionPrograma: '0100', nifEmpresaDesarrollo: '' },
     tipoDeclaracion: a['03'] > 0 ? 'I' : 'N',
     nif: NIF,
     denominacion: 'Biosoluciones del Turia, S.L.',

@@ -81,7 +81,7 @@ describe('390 dorado: diseño oficial vers. 1.02 (ejercicio 2025)', () => {
     }
   });
 
-  const { entrada } = entrada390Desde(FACTURAS, 2025, ID, { compensarEjercicioAnterior: 200, ultimoPeriodo: 'compensar', versionPrograma: 'CA01', nifEmpresaDesarrollo: 'B11111111' });
+  const { entrada } = entrada390Desde(FACTURAS, 2025, ID, { compensarEjercicioAnterior: 200, ultimoPeriodo: 'compensar', programa: { versionPrograma: 'CA01', nifEmpresaDesarrollo: 'B11111111' } });
   const decl = construirModelo390(entrada);
   const f = decl.fichero;
 

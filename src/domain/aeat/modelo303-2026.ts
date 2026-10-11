@@ -166,33 +166,3 @@ export function componerPagina303(pagina: Exclude<PaginaDr303, 'cabecera'>, valo
   return out;
 }
 
-/** Datos del programa que van en la cabecera (Nota 1 de DP30300). */
-export interface SoftwareAeat {
-  /** Versión del programa (4 posiciones An). */
-  versionPrograma: string;
-  /** NIF de la entidad desarrolladora (9 posiciones An); en blanco si no se conoce. */
-  nifEmpresaDesarrollo: string;
-}
-
-/** Cabecera del fichero (DP30300, 328 posiciones): <T3030EEEEPP0000><AUX>...</AUX>. */
-export function componerCabecera303(ejercicio: number, periodo: string, software: SoftwareAeat): string {
-  const diseno = paginaDiseno303('cabecera');
-  const valores: Record<number, string> = {
-    4: String(ejercicio).padStart(4, '0'),
-    5: periodo,
-    9: textoAn303(software.versionPrograma).replace(/ /g, '').slice(0, 4),
-    11: nifAn303(software.nifEmpresaDesarrollo).slice(0, 9),
-  };
-  let out = '';
-  for (const c of diseno.campos) {
-    if (c.pos === null || c.lon === null) continue; // contenido y cierre: fuera de la cabecera
-    const v = valores[c.n];
-    out += v !== undefined ? v.padEnd(c.lon, ' ') : c.constante ?? ' '.repeat(c.lon);
-  }
-  return out;
-}
-
-/** Cierre del fichero (18 posiciones): </T + 303 + 0 + ejercicio + periodo + 0000>. */
-export function cierre303(ejercicio: number, periodo: string): string {
-  return `</T3030${String(ejercicio).padStart(4, '0')}${periodo}0000>`;
-}

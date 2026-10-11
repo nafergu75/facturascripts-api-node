@@ -12,6 +12,7 @@
  * REVISAR: es el diseño del ejercicio 2025. El de 2026 cambia por la Orden
  * HAC/27/2026 (carburantes) y aún no está en la sede (comprobado el 11-10-2026).
  */
+import { cabeceraAux, cierreAux, programaAeat, type ProgramaAeat } from '../common/cabeceraAux';
 import dr390 from '../../domain/aeat/dr390-v102.json';
 import type { DesgloseIva, VolumenOperaciones390 } from '../../domain/impuestos.model';
 import { aCentimos } from '../../utils/money';
@@ -72,8 +73,8 @@ export interface Entrada390 {
   compensarEjercicioAnterior?: number;
   /** Qué se pidió en el último periodo si salió negativo. */
   ultimoPeriodo?: 'compensar' | 'devolver';
-  versionPrograma?: string;
-  nifEmpresaDesarrollo?: string;
+  /** Version y NIF de la entidad desarrolladora (cabecera <AUX>); por defecto, los de la app. */
+  programa?: ProgramaAeat;
 }
 
 export interface PaginaGenerada {
@@ -309,14 +310,9 @@ export function construirModelo390(e: Entrada390): Declaracion390 {
   });
   const casillas = Object.assign({}, ...generadas.map((p) => p.casillas)) as Record<string, number | string>;
 
-  // --- Cabecera <AUX> y cierre ---
-  const ej = String(e.ejercicio).padStart(4, '0');
-  const cab = new RegistroAeat({ hoja: 'DP39000', longitud: 328, campos: DISENO_390.cabecera.campos.filter((c) => c.pos && c.len) }, '390 cabecera');
-  cab.crudo(7, ej)
-    .texto(93, e.versionPrograma ?? '0001', false)
-    .texto(101, nifLimpio(e.nifEmpresaDesarrollo ?? ''), false);
-  const cierre = `</T3900${ej}0A0000>`;
-  if (!e.nifEmpresaDesarrollo) advertencias.push('Falta el NIF de la empresa desarrolladora del programa (cabecera, posición 101). Si la sede lo pide, configura AEAT_NIF_DESARROLLADOR.');
+  // --- Cabecera <AUX> y cierre (comunes: aeat/common/cabeceraAux) ---
+  const cabecera = cabeceraAux('390', e.ejercicio, '0A', e.programa ?? programaAeat());
+  const cierre = cierreAux('390', e.ejercicio, '0A');
 
   return {
     ejercicio: e.ejercicio,
@@ -332,6 +328,6 @@ export function construirModelo390(e: Entrada390): Declaracion390 {
     ],
     advertencias,
     errores,
-    fichero: cab.toString() + generadas.map((p) => p.linea).join('') + cierre,
+    fichero: cabecera + generadas.map((p) => p.linea).join('') + cierre,
   };
 }

@@ -14,6 +14,7 @@
 import { DISENO_202 } from '../../domain/aeat/disenos';
 import { componerRegistroDr, leerRegistroDr, nifDerecha, registroDe, textoAeat, type CampoLeidoDr, type ValorDr } from '../common/disenoRegistro';
 import { esNifEspanolValido } from '../../utils/nif';
+import { cabeceraAux, cierreAux, programaAeat, type ProgramaAeat } from '../common/cabeceraAux';
 
 export type Periodo202 = '1P' | '2P' | '3P';
 export const PERIODOS_202: readonly Periodo202[] = ['1P', '2P', '3P'];
@@ -37,8 +38,8 @@ export type Casillas202 = Partial<Record<string, number>>;
 export interface Entrada202 {
   ejercicio: number;
   periodo: Periodo202;
-  versionPrograma?: string;
-  nifEmpresaDesarrollo?: string;
+  /** Version y NIF de la entidad desarrolladora (cabecera <AUX>); por defecto, los de la app. */
+  programa?: ProgramaAeat;
   /** I ingreso, U domiciliacion, G ingreso en CCT, N negativa. */
   tipoDeclaracion: 'I' | 'U' | 'G' | 'N';
   nif: string;
@@ -117,16 +118,11 @@ export function erroresEntrada202(e: Entrada202): string[] {
 export function generarFichero202(e: Entrada202, { comprobar = true }: { comprobar?: boolean } = {}): string {
   const errores = comprobar ? erroresEntrada202(e) : [];
   if (errores.length) throw new ErrorEntrada202(errores);
-  const tag = { ejercicio: String(e.ejercicio), periodo: e.periodo };
   const casillas = (pagina: string): Record<string, ValorDr> =>
     Object.fromEntries(camposCasilla(pagina).map((c) => [c.id, e.casillas[c.casilla!] ?? 0]));
   const marcas = Object.fromEntries(Object.entries(e.marcas ?? {}).map(([k, v]) => [k, v ? 'X' : '']));
 
-  const cabecera = componerRegistroDr(registroDe(DISENO_202, 'cabecera'), {
-    ...tag,
-    versionPrograma: e.versionPrograma ?? '',
-    nifEmpresaDesarrollo: e.nifEmpresaDesarrollo ? nifDerecha(e.nifEmpresaDesarrollo) : '',
-  });
+  const cabecera = cabeceraAux('202', e.ejercicio, e.periodo, e.programa ?? programaAeat());
   const pagina01 = componerRegistroDr(registroDe(DISENO_202, 'pagina01'), {
     tipoDeclaracion: e.tipoDeclaracion,
     nif: nifDerecha(e.nif),
@@ -149,7 +145,7 @@ export function generarFichero202(e: Entrada202, { comprobar = true }: { comprob
     // IBAN espanol: solo las 24 primeras posiciones (nota 7 del diseno).
     iban: e.tipoDeclaracion === 'U' ? (limpiarIban(e.iban).startsWith('ES') ? limpiarIban(e.iban).slice(0, 24) : limpiarIban(e.iban)) : '',
   });
-  const cierre = componerRegistroDr(registroDe(DISENO_202, 'cierre'), tag);
+  const cierre = cierreAux('202', e.ejercicio, e.periodo);
   return cabecera + pagina01 + pagina02 + cierre + '\r\n';
 }
 

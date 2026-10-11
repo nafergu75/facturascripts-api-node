@@ -73,8 +73,7 @@ const BENEFICIO: Entrada200 = {
   pagosFraccionados: [1000, 1000, 1000],
   retenciones: 120,
   iban: 'ES91 2100 0418 4502 0005 1332',
-  versionPrograma: 'CA01',
-  nifEmpresaDesarrollo: 'B11111111',
+  programa: { versionPrograma: 'CA01', nifEmpresaDesarrollo: 'B11111111' },
 };
 
 /** S.L. con pérdidas: resultado -18.500 €, retenciones de 50 €. */
