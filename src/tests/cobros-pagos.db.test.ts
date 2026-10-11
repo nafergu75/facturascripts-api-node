@@ -16,6 +16,8 @@ import { informeDetalleTercero, informeMayorTerceros } from '../services/informe
 import { cambiarEstadoPeriodo } from '../services/periodos.service';
 
 const COMPANY_ID = `cobros-test-${Date.now()}`;
+// El cliente y el proveedor de la suite (los primeros de la empresa) se
+// contabilizan en su subcuenta propia: 43000001 y 40000001 (services/terceros).
 const motor = new AccountingEngineController();
 let customerId: string;
 let supplierId: string;
@@ -85,7 +87,7 @@ describe('cobros de facturas de venta', () => {
     expect(a).toMatchObject({ estado: 'POSTED', origen: 'TESORERIA', invoiceId: facturaId, invoiceType: 'INGRESO' });
     expect(a.descripcion).toContain(numero);
     const porCuenta = Object.fromEntries(a.lineas.map((l) => [l.accountCode, [l.debe, l.haber, l.referencia]]));
-    expect(porCuenta).toEqual({ '5720001': [500, 0, numero], '430': [0, 500, numero] });
+    expect(porCuenta).toEqual({ '5720001': [500, 0, numero], '43000001': [0, 500, numero] });
     expect((await prisma.incomeInvoice.findUniqueOrThrow({ where: { id: facturaId } })).estado).toBe('PENDING');
   });
 
@@ -154,7 +156,7 @@ describe('cobros de facturas de venta', () => {
       const contra = await asientoDe(pago.anulacionEntryId);
       expect(contra).toMatchObject({ estado: 'POSTED', invoiceId: f.id, invoiceType: 'INGRESO' });
       expect(contra.fecha.toISOString().slice(0, 10)).toBe('2026-05-02');
-      expect(Object.fromEntries(contra.lineas.map((l) => [l.accountCode, [l.debe, l.haber]]))).toEqual({ '5720001': [0, 242], '430': [242, 0] });
+      expect(Object.fromEntries(contra.lineas.map((l) => [l.accountCode, [l.debe, l.haber]]))).toEqual({ '5720001': [0, 242], '43000001': [242, 0] });
     } finally {
       await cambiarEstadoPeriodo(COMPANY_ID, 2026, 4, 'abierto');
     }
@@ -217,7 +219,7 @@ describe('pagos de facturas de gasto', () => {
     expect(p1.cobro.asientoNumero).toMatch(/^PAGO-\d{5}$/);
     const a = await asientoDe(p1.cobro.asientoId);
     expect(a).toMatchObject({ estado: 'POSTED', origen: 'TESORERIA', invoiceId: g.id, invoiceType: 'GASTO' });
-    expect(Object.fromEntries(a.lineas.map((l) => [l.accountCode, [l.debe, l.haber]]))).toEqual({ '400': [84, 0], '5720001': [0, 84] });
+    expect(Object.fromEntries(a.lineas.map((l) => [l.accountCode, [l.debe, l.haber]]))).toEqual({ '40000001': [84, 0], '5720001': [0, 84] });
     expect((await prisma.expenseInvoice.findUniqueOrThrow({ where: { id: g.id } })).estadoPago).toBe('PARCIAL');
 
     // Mayor de proveedores cruzado: saldo contable 400 = pendiente segun facturas 400.

@@ -1,4 +1,3 @@
-import { Prisma } from '@prisma/client';
 import { prisma, type TransaccionBD as Tx } from '../config/database';
 import { badRequest, notFound } from '../utils/http-errors';
 import { aCentimos } from '../utils/money';
@@ -16,7 +15,10 @@ import { CONTABLE_RULES } from './accounting-engine.service';
 import { perfilEmpresa } from './perfilEmpresa.service';
 import { referenciaParaComprobar, tipoReferencia } from './tiposCambio.service';
 import { asegurarPlanContableEmpresa } from './chart-of-accounts.service';
-import { TIPO_GASTO_INFO, esTipoGasto } from '../domain/factura-gasto.model';
+import { esTipoGasto } from '../domain/factura-gasto.model';
+import { subcuentaClienteParaApunte, subcuentaProveedorParaApunte } from './terceros/subcuentas';
+import { esSubcuentaGenerica } from './terceros/numeracion';
+import { conReintento } from '../utils/reintento';
 
 /**
  * Cobros de facturas de venta y pagos de facturas de gasto, con su asiento.
@@ -243,10 +245,20 @@ async function actualizarEstadoFactura(tx: Tx, f: FacturaBase, tipo: TipoDocumen
 
 /**
  * Subcuenta del cliente (43x, al debe) o del proveedor (40x/41x, al haber) que
- * uso el asiento de la factura. Sin asiento, la generica.
+ * uso el asiento de la factura: el cobro hereda la cuenta de la deuda. Sin
+ * asiento (o sin esa linea), la subcuenta del tercero, asignada y dada de alta
+ * en el plan si falta: en gastos, la 400N o la 410N segun el tipo de gasto,
+ * para que el pago y la deuda casen al contabilizar la factura despues.
+ * Nombre: el del plan; con la generica (asientos anteriores a las
+ * subcuentas), "Clientes · X" o "Proveedores · X" como siempre.
  */
-export async function cuentaTerceroDeFactura(companyId: string, tipo: TipoDocumento, invoiceId: string): Promise<string> {
-  const asiento = await prisma.journalEntry.findFirst({
+export async function cuentaTerceroDeFactura(
+  tx: Tx,
+  companyId: string,
+  tipo: TipoDocumento,
+  invoiceId: string,
+): Promise<{ codigo: string; nombre: string }> {
+  const asiento = await tx.journalEntry.findFirst({
     where: { companyId, invoiceId, invoiceType: tipo, origen: { not: 'TESORERIA' }, estado: { not: 'REVERSED' } },
     include: { lineas: true },
     orderBy: { createdAt: 'desc' },
@@ -254,13 +266,26 @@ export async function cuentaTerceroDeFactura(companyId: string, tipo: TipoDocume
   const linea = asiento?.lineas.find((l) =>
     tipo === 'INGRESO' ? l.accountCode.startsWith('43') && l.debe > 0 : /^4[01]/.test(l.accountCode) && l.haber > 0,
   );
-  if (!linea && tipo === 'GASTO') {
-    // Factura de gasto aun sin asiento: la cuenta que usara al contabilizarla
-    // (400 en compras, 410 en servicios), para que el pago y la deuda casen.
-    const f = await prisma.expenseInvoice.findFirst({ where: { id: invoiceId, companyId }, select: { tipoGasto: true } });
-    if (f && esTipoGasto(f.tipoGasto)) return TIPO_GASTO_INFO[f.tipoGasto].acreedor;
+  if (tipo === 'INGRESO') {
+    const f = await tx.incomeInvoice.findFirst({ where: { id: invoiceId, companyId }, select: { customerId: true, customer: { select: { nombreFiscal: true } } } });
+    if (!f) throw notFound('Factura no encontrada.');
+    if (!linea) return subcuentaClienteParaApunte(tx, companyId, f.customerId);
+    return { codigo: linea.accountCode, nombre: await nombreDeCuentaTercero(tx, companyId, linea.accountCode, `Clientes · ${f.customer.nombreFiscal}`) };
   }
-  return linea?.accountCode ?? (tipo === 'INGRESO' ? '430' : '400');
+  const f = await tx.expenseInvoice.findFirst({
+    where: { id: invoiceId, companyId },
+    select: { supplierId: true, tipoGasto: true, supplier: { select: { nombreFiscal: true } } },
+  });
+  if (!f) throw notFound('Factura no encontrada.');
+  if (!linea) return subcuentaProveedorParaApunte(tx, companyId, f.supplierId, esTipoGasto(f.tipoGasto) ? f.tipoGasto : 'COMPRA');
+  return { codigo: linea.accountCode, nombre: await nombreDeCuentaTercero(tx, companyId, linea.accountCode, `Proveedores · ${f.supplier.nombreFiscal}`) };
+}
+
+/** Nombre del apunte del tercero: el del plan si es una subcuenta propia; con la generica, `generico`. */
+async function nombreDeCuentaTercero(tx: Tx, companyId: string, codigo: string, generico: string): Promise<string> {
+  if (esSubcuentaGenerica(codigo)) return generico;
+  const c = await tx.chartOfAccounts.findFirst({ where: { companyId, codigo }, select: { nombre: true } });
+  return c?.nombre ?? generico;
 }
 
 /** Vive en periodos.service (la usan tambien el motor contable y las facturas). */
@@ -351,17 +376,8 @@ async function crearAsiento(
   });
 }
 
-/** Reintenta si dos asientos a la vez sacan el mismo numero (indice unico). */
-async function conReintento<T>(fn: () => Promise<T>): Promise<T> {
-  for (let intento = 0; ; intento++) {
-    try {
-      return await fn();
-    } catch (e) {
-      const repetido = e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002';
-      if (!repetido || intento >= 3) throw e;
-    }
-  }
-}
+// conReintento (utils/reintento): si dos asientos a la vez sacan el mismo numero
+// o la misma subcuenta (indice unico), se repite la transaccion.
 
 /** Bloquea la fila de la factura hasta el final de la transaccion (dos cobros a la vez no se pasan del total). */
 async function bloquearFactura(tx: Tx, tipo: TipoDocumento, id: string): Promise<void> {
@@ -523,7 +539,6 @@ export async function registrarCobroFactura(
 
   await comprobarFechaAbierta(companyId, fecha);
   const tesoreria = await resolverTesoreria(companyId, datos, tipo);
-  const cuentaTercero = await cuentaTerceroDeFactura(companyId, tipo, invoiceId);
   const nota = datos.nota?.trim() ? datos.nota.trim().slice(0, 1000) : null;
   const numero = f.numeroCompleto ?? f.id;
 
@@ -578,10 +593,11 @@ export async function registrarCobroFactura(
         ? ` [${importeConMoneda(calculo.importeDoc, moneda)}; ${textoTipo(monedaCuenta, moneda, calculo.tipoCambio)}]`
         : '';
       const descripcion = `${t.Cobro} factura ${numero} - ${actual.tercero}${divisa}${nota ? ` (${nota})` : ''}`;
-      const nombreTercero = tipo === 'INGRESO' ? `Clientes · ${actual.tercero}` : `Proveedores · ${actual.tercero}`;
+      // La subcuenta del tercero que uso la factura (o la suya, si aun no tiene asiento).
+      const tercero = await cuentaTerceroDeFactura(tx, companyId, tipo, invoiceId);
       const apuntes = apuntesDeCobro(calculo.apuntes, {
         tesoreria: { cuenta: tesoreria.cuenta, nombre: tesoreria.nombre },
-        tercero: { cuenta: cuentaTercero, nombre: nombreTercero },
+        tercero: { cuenta: tercero.codigo, nombre: tercero.nombre },
       });
       const asiento = await crearAsiento(tx, companyId, {
         prefijo: t.prefijo,
