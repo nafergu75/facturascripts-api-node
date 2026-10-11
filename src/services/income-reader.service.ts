@@ -79,6 +79,11 @@ export interface ParsedInvoiceData {
     baseImponible?: number;
     tipoIva?: number;
     tipoRetencion?: number;
+    /**
+     * Cuenta de ingresos elegida para la linea al revisar el documento (700,
+     * 705, 7050001...). Sin ella, la 700. El OCR no la rellena.
+     */
+    cuenta?: string;
   }>;
 
   // Metadata
@@ -745,6 +750,7 @@ export const incomeReaderService = {
       descuentoPorcentaje: 0,
       tipoIva: l.tipoIva ?? 21,
       tipoRetencion: l.tipoRetencion ?? 0,
+      ...(typeof l.cuenta === 'string' && l.cuenta.trim() ? { cuenta: l.cuenta.trim() } : {}),
     }));
 
     if (lineas.length === 0) {
