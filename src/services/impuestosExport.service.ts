@@ -1,5 +1,6 @@
 import { DatosModelo111, DatosModelo115, DatosModelo303, DatosModelo347, DatosModelo349, DatosModelo390, filasRegimenGeneral303, PeriodoFiscal } from '../domain/impuestos.model';
 import { badRequest } from '../utils/http-errors';
+import { casillasDeDatos111, casillasDeDatos115, construirDeclaracion, ficheroDeclaracion, type OpcionesDeclaracion } from './aeatRetenciones/declaracion';
 
 /**
  * Generacion de ficheros BOE (ancho fijo) para importar en la Sede AEAT.
@@ -407,157 +408,52 @@ export function generarFicheroModelo390(nif: string, ejercicio: number, datos: D
 }
 
 /**
- * El 111 y el 115 no admiten casillas negativas (lo declarado de mas se
- * rectifica en su periodo): antes se escribia su valor absoluto y el fichero
- * no casaba con la pantalla. Ahora no se genera.
- */
-function sinCasillasNegativas(modelo: '111' | '115', importes: number[]): void {
-  if (importes.some((v) => Math.round((Number(v) || 0) * 100) < 0)) {
-    throw badRequest(
-      `El ${modelo} sale con importes negativos y no admite casillas negativas: revisa las facturas anuladas del periodo. Si declaraste de más en otro periodo, se rectifica ese modelo.`,
-    );
-  }
-}
-
-/**
- * Modelo 111 (retenciones IRPF) — diseno OFICIAL v1.9. Fichero = cabecera/envoltura
- * <AUX> (328) + pagina M11101 (1000) + cierre (18). La envoltura del 111 trae sus
- * constantes literales (a diferencia del 303/390): pos6 '0', pos13 '0000>',
- * pos18 '<AUX>', pos323 '</AUX>', cierre '</T1110'+ejercicio+periodo+'0000>'.
- *
- * Pagina: tag '<T11101000>', NIF@14, denominacion@23(60), ejercicio@103, periodo@107,
- * rendim. trabajo nº perceptores@109/percepciones@117/retenciones@134, total
- * suma retenciones [casilla 28]@487, resultado a ingresar [30]@521, cierre @989.
- * De [01] a [27] van en grupos de tres (nº perceptores 8 + importe 17 + importe
- * 17 = 42 posiciones) seguidos desde la 109: trabajo en especie [04]-[06]@151,
- * actividades economicas dinerarias [07]-[09]@193 (sin ellas la casilla 28 no
- * cuadraria con el detalle).
+ * Modelo 111 (retenciones IRPF) con el diseño de registro OFICIAL vigente
+ * (dr111e16v18.xls, v1.8 de mayo de 2021, comprobado en la sede el 11-10-2026):
+ * cabecera <AUX> (328) + pagina M11101 (1000) + cierre (18), sin salto de
+ * linea final. Las posiciones salen de src/domain/aeat/dr111-v2.json y el
+ * contenido de la misma declaracion que enseña la pantalla
+ * (services/aeatRetenciones/declaracion.ts). 400 si la sede lo rechazaria
+ * (NIF, casillas negativas o que no cuadran, domiciliacion sin IBAN...).
  */
 export function generarFicheroModelo111(
   nif: string,
   periodo: PeriodoFiscal,
   datos: DatosModelo111,
-  opts: { denominacion?: string; versionPrograma?: string; nifEmpresaDesarrollo?: string } = {},
+  opts: { denominacion?: string; versionPrograma?: string; nifEmpresaDesarrollo?: string; opciones?: OpcionesDeclaracion } = {},
 ): string {
-  sinCasillasNegativas('111', [
-    datos.percepcionesTrabajo,
-    datos.retencionesTrabajo,
-    datos.percepcionesEspecie ?? 0,
-    datos.ingresosACuentaEspecie ?? 0,
-    datos.percepcionesActividades ?? 0,
-    datos.retencionesActividades ?? 0,
-    datos.totalRetenciones,
-    datos.resultadoIngresar,
-  ]);
-  const cents = (v: number): number => Math.round(Math.abs(v) * 100);
-
-  // --- Pagina M11101 (1000 chars), mayoritariamente numerica -> ceros ---
-  const p = new Array(1000).fill('0') as string[];
-  const blank = (desde: number, hasta: number): void => {
-    for (let i = desde; i <= hasta; i++) p[i - 1] = ' ';
-  };
-  blank(1, 12); // tag (se sobrescribe) + indicador pag complementaria
-  blank(13, 13); // tipo declaracion (A)
-  blank(14, 102); // NIF + denominacion + nombre (An)
-  blank(107, 108); // periodo (An)
-  blank(538, 1000); // complementaria/justificante/IBAN/reservado/sello/cierre (An)
-
-  escribir(p, 1, '<T');
-  escribir(p, 3, '111');
-  escribir(p, 6, '01');
-  escribir(p, 8, '000>');
-  escribir(p, 13, datos.resultadoIngresar < 0 ? 'N' : 'I'); // tipo declaracion (I ingreso / N negativa)
-  escribir(p, 14, texto(nif, 9));
-  escribir(p, 23, texto((opts.denominacion ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase(), 60));
-  escribir(p, 103, numero(periodo.ejercicio, 4));
-  escribir(p, 107, texto(periodo.periodo, 2));
-  escribir(p, 109, numero(datos.nPerceptoresTrabajo, 8)); // nº perceptores trabajo dinerario
-  escribir(p, 117, numero(cents(datos.percepcionesTrabajo), 17)); // importe percepciones
-  escribir(p, 134, numero(cents(datos.retencionesTrabajo), 17)); // importe retenciones
-  escribir(p, 151, numero(datos.nPerceptoresEspecie ?? 0, 8)); // [04] perceptores trabajo en especie
-  escribir(p, 159, numero(cents(datos.percepcionesEspecie ?? 0), 17)); // [05] valor percepciones en especie
-  escribir(p, 176, numero(cents(datos.ingresosACuentaEspecie ?? 0), 17)); // [06] ingresos a cuenta
-  escribir(p, 193, numero(datos.nPerceptoresActividades ?? 0, 8)); // [07] perceptores actividades economicas
-  escribir(p, 201, numero(cents(datos.percepcionesActividades ?? 0), 17)); // [08] percepciones
-  escribir(p, 218, numero(cents(datos.retencionesActividades ?? 0), 17)); // [09] retenciones
-  escribir(p, 487, numero(cents(datos.totalRetenciones), 17)); // [28] suma retenciones e ingresos a cuenta
-  escribir(p, 521, numero(cents(datos.resultadoIngresar), 17)); // [30] resultado a ingresar
-  escribir(p, 989, '</T11101000>');
-  const pagina = p.join('');
-
-  // --- Cabecera/envoltura <AUX> (328) ---
-  const cab = new Array(328).fill(' ') as string[];
-  escribir(cab, 1, '<T');
-  escribir(cab, 3, '111');
-  escribir(cab, 6, '0');
-  escribir(cab, 7, numero(periodo.ejercicio, 4));
-  escribir(cab, 11, texto(periodo.periodo, 2));
-  escribir(cab, 13, '0000>');
-  escribir(cab, 18, '<AUX>');
-  escribir(cab, 93, texto(opts.versionPrograma ?? '', 4));
-  escribir(cab, 101, texto(opts.nifEmpresaDesarrollo ?? '', 9));
-  escribir(cab, 323, '</AUX>');
-
-  const cierre = '</T1110' + numero(periodo.ejercicio, 4) + texto(periodo.periodo, 2) + '0000>';
-
-  return cab.join('') + pagina + cierre + '\r\n';
+  const d = construirDeclaracion('111', {
+    nif,
+    denominacion: opts.denominacion ?? '',
+    ejercicio: periodo.ejercicio,
+    periodo: periodo.periodo,
+    casillas: casillasDeDatos111(datos),
+    opciones: opts.opciones,
+  });
+  return ficheroDeclaracion(d, { versionPrograma: opts.versionPrograma, nifEmpresaDesarrollo: opts.nifEmpresaDesarrollo });
 }
 
 /**
- * Modelo 115 (retenciones arrendamiento inmuebles) — diseno OFICIAL v1.3.
- * Envoltura <AUX> (328) + pagina DR11501 (500) + cierre (18) = 846 chars.
- * Pagina: tag '<T11501000>', NIF@14, razon@23(60), ejercicio@103, periodo@107,
- * [01] perceptores@109(15), [02] base@124(17), [03] retenciones@141(17),
- * [04] anteriores@158(17), [05] a ingresar@175(17), cierre '</T11501000>'@489.
+ * Modelo 115 (retenciones por arrendamiento de inmuebles urbanos) con el diseño
+ * OFICIAL vigente (DR115e15v13.xls, v1.3 de febrero de 2019): cabecera <AUX>
+ * (328) + pagina DR11501 (500) + cierre (18) = 846 caracteres, sin salto de
+ * linea final. Posiciones en src/domain/aeat/dr115-v13.json.
  */
 export function generarFicheroModelo115(
   nif: string,
   periodo: PeriodoFiscal,
   datos: DatosModelo115,
-  opts: { razonSocial?: string; versionPrograma?: string; nifEmpresaDesarrollo?: string } = {},
+  opts: { razonSocial?: string; versionPrograma?: string; nifEmpresaDesarrollo?: string; opciones?: OpcionesDeclaracion } = {},
 ): string {
-  sinCasillasNegativas('115', [datos.baseRetenciones, datos.retenciones, datos.resultadoAnteriores, datos.resultadoIngresar]);
-  const cents = (v: number): number => Math.round(Math.abs(v) * 100);
-
-  const p = new Array(500).fill('0') as string[];
-  const blank = (d: number, h: number): void => {
-    for (let i = d; i <= h; i++) p[i - 1] = ' ';
-  };
-  blank(1, 13); // tag + complementaria + tipo declaracion
-  blank(14, 102); // NIF + razon + nombre
-  blank(107, 108); // periodo
-  blank(192, 500); // complementaria/justificante/IBAN/reservado/sello/cierre
-
-  escribir(p, 1, '<T');
-  escribir(p, 3, '115');
-  escribir(p, 6, '01');
-  escribir(p, 8, '000>');
-  escribir(p, 13, datos.resultadoIngresar < 0 ? 'N' : 'I');
-  escribir(p, 14, texto(nif, 9));
-  escribir(p, 23, texto((opts.razonSocial ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase(), 60));
-  escribir(p, 103, numero(periodo.ejercicio, 4));
-  escribir(p, 107, texto(periodo.periodo, 2));
-  escribir(p, 109, numero(datos.nPerceptores, 15)); // [01]
-  escribir(p, 124, numero(cents(datos.baseRetenciones), 17)); // [02]
-  escribir(p, 141, numero(cents(datos.retenciones), 17)); // [03]
-  escribir(p, 158, numero(cents(datos.resultadoAnteriores), 17)); // [04]
-  escribir(p, 175, numero(cents(datos.resultadoIngresar), 17)); // [05]
-  escribir(p, 489, '</T11501000>');
-
-  const cab = new Array(328).fill(' ') as string[];
-  escribir(cab, 1, '<T');
-  escribir(cab, 3, '115');
-  escribir(cab, 6, '0');
-  escribir(cab, 7, numero(periodo.ejercicio, 4));
-  escribir(cab, 11, texto(periodo.periodo, 2));
-  escribir(cab, 13, '0000>');
-  escribir(cab, 18, '<AUX>');
-  escribir(cab, 93, texto(opts.versionPrograma ?? '', 4));
-  escribir(cab, 101, texto(opts.nifEmpresaDesarrollo ?? '', 9));
-  escribir(cab, 323, '</AUX>');
-
-  const cierre = '</T1150' + numero(periodo.ejercicio, 4) + texto(periodo.periodo, 2) + '0000>';
-  return cab.join('') + p.join('') + cierre + '\r\n';
+  const d = construirDeclaracion('115', {
+    nif,
+    denominacion: opts.razonSocial ?? '',
+    ejercicio: periodo.ejercicio,
+    periodo: periodo.periodo,
+    casillas: casillasDeDatos115(datos),
+    opciones: opts.opciones,
+  });
+  return ficheroDeclaracion(d, { versionPrograma: opts.versionPrograma, nifEmpresaDesarrollo: opts.nifEmpresaDesarrollo });
 }
 
 /**

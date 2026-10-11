@@ -201,8 +201,16 @@ export interface DatosModelo111 {
   resumenAntiguo?: { bruto: number; irpf: number };
   /** Nominas en borrador con pago en el periodo (cuentan, pero aun no tienen asiento). */
   borradores?: number;
+  /**
+   * Casillas [10] a [27] (actividades en especie, premios, aprovechamientos
+   * forestales y derechos de imagen), por numero de casilla. La app aun no las
+   * calcula: si faltan, van a 0.
+   */
+  otrasCasillas?: Partial<Record<string, number>>;
   totalRetenciones: number; // suma retenciones e ingresos a cuenta [casilla 28]
-  resultadoIngresar: number; // [casilla 30]
+  /** [29] Resultado de anteriores declaraciones (solo en una complementaria). */
+  resultadoAnteriores?: number;
+  resultadoIngresar: number; // [casilla 30] = [28] - [29]
   /** Avisos del calculo (nominas en borrador, meses solo con el resumen antiguo...). */
   avisos?: string[];
 }

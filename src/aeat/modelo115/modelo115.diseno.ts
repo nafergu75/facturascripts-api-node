@@ -1,19 +1,19 @@
 import { CampoDiseno } from '../common/aeat-encoder';
+import { DR115, registroDr } from '../../services/aeatRetenciones/diseno';
 
 /**
- * Diseno del Modelo 115 (retenciones por arrendamiento) — pagina DR11501,
- * longitud 500. Envoltura <AUX>. Fuente: 115.xls.
+ * Diseno del Modelo 115 (retenciones por arrendamiento de inmuebles urbanos) —
+ * pagina DR11501, longitud 500, con la envoltura <AUX> (328) y el cierre (18).
+ * Fuente: DR115e15v13.xls (v1.3, febrero de 2019), transcrito en
+ * src/domain/aeat/dr115-v13.json, que es lo que usa el generador. Aqui se
+ * expone en formato CampoDiseno (los 22 campos).
  */
 export const LONGITUD_REGISTRO_115 = 500;
 
-export const CAMPOS_115_DR11501: CampoDiseno[] = [
-  { nombre: 'nif', posicionInicio: 14, longitud: 9, tipo: 'AN' },
-  { nombre: 'razonSocial', posicionInicio: 23, longitud: 80, tipo: 'AN' },
-  { nombre: 'ejercicio', posicionInicio: 103, longitud: 4, tipo: 'N' },
-  { nombre: 'periodo', posicionInicio: 107, longitud: 2, tipo: 'AN' },
-  { nombre: 'nPerceptores01', posicionInicio: 109, longitud: 15, tipo: 'N' },
-  { nombre: 'baseRetenciones02', posicionInicio: 124, longitud: 17, tipo: 'N', decimales: 2 },
-  { nombre: 'retenciones03', posicionInicio: 141, longitud: 17, tipo: 'N', decimales: 2 },
-  { nombre: 'resultadoAnteriores04', posicionInicio: 158, longitud: 17, tipo: 'N', decimales: 2 },
-  { nombre: 'resultadoIngresar05', posicionInicio: 175, longitud: 17, tipo: 'N', decimales: 2 },
-];
+export const CAMPOS_115_DR11501: CampoDiseno[] = registroDr(DR115, 'DR11501').campos.map((c) => ({
+  nombre: c.clave ?? (c.casilla ? `casilla${c.casilla}` : `campo${c.n}`),
+  posicionInicio: c.pos,
+  longitud: c.lon,
+  tipo: c.tipo === 'Num' || c.tipo === 'N' ? 'N' : c.tipo === 'A' ? 'A' : 'AN',
+  ...(c.decimales ? { decimales: c.decimales } : {}),
+}));

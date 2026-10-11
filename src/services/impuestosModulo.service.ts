@@ -32,10 +32,9 @@ import {
 } from './impuestosCalculo.service';
 import { calcularModelo200 } from './impuestoSociedadesCalculo.service';
 import { calcularModelo190 } from './nominas/fiscal';
+import { casillasAGuardadas, casillasDeDatos111, casillasDeDatos115, declaracionDeGuardadas, esOpcion, ficheroDeclaracion } from './aeatRetenciones/declaracion';
 import {
   envolverFichero,
-  generarFicheroModelo111,
-  generarFicheroModelo115,
   generarFicheroModelo200,
   generarFicheroModelo303,
   generarFicheroModelo347,
@@ -571,36 +570,13 @@ async function calcularCasillas(companyId: string, fila: FilaModelo): Promise<{ 
       };
     }
     case '111': {
+      // Las 30 casillas del formulario oficial (las que la app no calcula, a 0).
       const d = await calcularModelo111(companyId, periodo);
-      return {
-        casillas: {
-          '01_perceptores_trabajo': d.nPerceptoresTrabajo,
-          '02_percepciones_trabajo': d.percepcionesTrabajo,
-          '03_retenciones_trabajo': d.retencionesTrabajo,
-          '04_perceptores_especie': d.nPerceptoresEspecie ?? 0,
-          '05_percepciones_especie': d.percepcionesEspecie ?? 0,
-          '06_ingresos_a_cuenta': d.ingresosACuentaEspecie ?? 0,
-          '07_perceptores_actividades': d.nPerceptoresActividades ?? 0,
-          '08_percepciones_actividades': d.percepcionesActividades ?? 0,
-          '09_retenciones_actividades': d.retencionesActividades ?? 0,
-          '28_total_retenciones': d.totalRetenciones,
-          '30_resultado': d.resultadoIngresar,
-        },
-        datos: d,
-      };
+      return { casillas: casillasAGuardadas('111', casillasDeDatos111(d)), datos: d };
     }
     case '115': {
       const d = await calcularModelo115(companyId, periodo);
-      return {
-        casillas: {
-          '01_perceptores': d.nPerceptores,
-          '02_base': d.baseRetenciones,
-          '03_retenciones': d.retenciones,
-          '04_anteriores': d.resultadoAnteriores,
-          '05_resultado': d.resultadoIngresar,
-        },
-        datos: d,
-      };
+      return { casillas: casillasAGuardadas('115', casillasDeDatos115(d)), datos: d };
     }
     case '190': {
       // Solo totales: el detalle por perceptor lleva datos de los trabajadores y
@@ -663,7 +639,9 @@ export async function autorrellenarModelo(companyId: string, modeloId: string): 
   }
 
   const [{ casillas, datos }, config] = await Promise.all([calcularCasillas(companyId, fila), configuracionEmpresa(companyId)]);
-  fila.casillas = { ...casillas, ...config };
+  // Las opciones del borrador (forma de pago, complementaria) no son importes: se conservan.
+  const opciones = Object.fromEntries(Object.entries(fila.casillas ?? {}).filter(([k]) => esOpcion(k)));
+  fila.casillas = { ...casillas, ...config, ...opciones };
   fila.datos = datos;
   fila.origen = 'autorrelleno';
   await guardarFila(fila); // guardado automatico del autorrelleno
@@ -683,7 +661,10 @@ export async function guardarModeloManual(
 ): Promise<ModeloImpuestoDetalle> {
   const fila = await cargarFila(companyId, modeloId);
   fila.casillas = { ...(fila.casillas ?? {}), ...casillasParciales };
-  fila.origen = 'manual-mixto';
+  // Elegir la forma de pago o marcar la complementaria no es editar importes:
+  // el modelo se sigue recalculando con la contabilidad.
+  const soloOpciones = Object.keys(casillasParciales).length > 0 && Object.keys(casillasParciales).every(esOpcion);
+  if (!soloOpciones) fila.origen = 'manual-mixto';
   await guardarFila(fila);
   return obtenerDetalleModelo(companyId, modeloId);
 }
@@ -746,9 +727,14 @@ export async function generarTxtModelo(companyId: string, modeloId: string): Pro
     case '349':
       return { nombre, contenido: generarFicheroModelo349(nif, periodo, datos as DatosModelo349, razon) };
     case '111':
-      return { nombre, contenido: generarFicheroModelo111(nif, periodo, datos as DatosModelo111, { denominacion: razon }) };
-    case '115':
-      return { nombre, contenido: generarFicheroModelo115(nif, periodo, datos as DatosModelo115, { razonSocial: razon }) };
+    case '115': {
+      // Mismo origen que la pantalla: las casillas guardadas (tambien las
+      // editadas a mano), los datos de la empresa y las opciones del borrador.
+      const modelo = refrescada.codigo as '111' | '115';
+      const calculadas = modelo === '111' ? casillasDeDatos111(datos as DatosModelo111) : casillasDeDatos115(datos as DatosModelo115);
+      const decl = declaracionDeGuardadas(modelo, cas, refrescada.ejercicio, refrescada.periodo, calculadas);
+      return { nombre, contenido: ficheroDeclaracion(decl) };
+    }
     case '200':
       return { nombre, contenido: generarFicheroModelo200(nif, refrescada.ejercicio, { razonSocial: razon }) };
     case '130':
