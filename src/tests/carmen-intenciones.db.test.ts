@@ -26,7 +26,7 @@ import { construirContexto } from '../services/carmen/contexto';
 import { INTENCIONES, intencionPorId } from '../services/carmen/intenciones/catalogo';
 import { olvidarIndices } from '../services/carmen/terceros';
 import { resolverCodigoPeriodo } from '../services/carmen/huecos/periodo';
-import { pendientesSegunFacturas, informePerdidasGanancias } from '../services/informesContables.service';
+import { informeDetalleTercero, pendientesSegunFacturas, informePerdidasGanancias } from '../services/informesContables.service';
 import { resumenFiscalPeriodo } from '../services/resumenFiscal.service';
 import { listarCobros } from '../services/cobrosPagos.service';
 import { calcularModelo303 } from '../services/impuestosCalculo.service';
@@ -198,6 +198,36 @@ beforeAll(async () => {
 });
 
 describe('cifras exactas con BD', () => {
+  it('INT-07: el saldo contable de la subcuenta del cliente, como el mayor de clientes (informeDetalleTercero)', async () => {
+    await prisma.customer.update({ where: { id: ids.perez }, data: { subcuenta430: '43000001' } });
+    await prisma.journalEntry.create({
+      data: {
+        companyId: EMPRESA,
+        fecha: new Date('2026-08-01T00:00:00Z'),
+        numeroAsiento: 'INT07-1',
+        descripcion: 'Factura 2026-3',
+        origen: 'FACTURA_INGRESO',
+        estado: 'POSTED',
+        lineas: {
+          create: [
+            { accountCode: '43000001', accountName: 'Construcciones Pérez SL', debe: 2420, haber: 0, companyId: EMPRESA },
+            { accountCode: '700', accountName: 'Ventas', debe: 0, haber: 2000, companyId: EMPRESA },
+            { accountCode: '477', accountName: 'IVA', debe: 0, haber: 420, companyId: EMPRESA },
+          ],
+        },
+      },
+    });
+    olvidarIndices();
+    const r = cifras(await ejecutar('INT-07', { terceroId: ids.perez, rol: 'cliente' }, ['contable']));
+    const servicio = await informeDetalleTercero(EMPRESA, 'clientes', { desde: '2026-01-01', hasta: HOY, ejercicio: 2026 }, ids.perez);
+    expect(servicio.tercero.saldoFinal).toBe(2420);
+    expect(r.kpis?.[0]).toEqual({ etiqueta: 'Saldo contable', valor: '2.420,00 €', detalle: '43000001' });
+    expect(r.texto).toContain('te debe 2.420,00 €');
+    // Por la subcuenta escrita en la pregunta se encuentra al cliente.
+    const { buscarTercero } = await import('../services/carmen/terceros');
+    expect(await buscarTercero(EMPRESA, 'cuanto debe la 43000001')).toMatchObject({ tipo: 'unico', tercero: { id: ids.perez } });
+  });
+
   it('INT-06: lo que se debe a proveedores, sin borradores y menos lo pagado', async () => {
     const servicio = await pendientesSegunFacturas(EMPRESA, 'proveedores', HOY);
     expect(servicio.map((f) => [f.numeroCompleto, f.importePendiente]).sort()).toEqual([['IB-1', 202.5], ['PG-12', 121]]);

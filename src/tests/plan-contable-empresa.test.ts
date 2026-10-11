@@ -37,6 +37,9 @@ jest.mock('../config/database', () => ({
         return Promise.resolve(fila);
       }),
     },
+    // Ningun cliente ni proveedor con subcuenta: ninguna cuenta esta enlazada a una ficha.
+    customer: { findMany: jest.fn(() => Promise.resolve([])) },
+    supplier: { findMany: jest.fn(() => Promise.resolve([])) },
   },
 }));
 jest.mock('../services/auditoria.service', () => ({ registrarAuditoria: jest.fn() }));

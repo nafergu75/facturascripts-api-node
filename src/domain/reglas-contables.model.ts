@@ -32,6 +32,11 @@ export interface ReglasContablesEmpresa {
   /** Subcuentas por defecto cuando no hay mapeo especifico. */
   cuentaVentasPorDefecto: string;
   cuentaComprasPorDefecto: string;
+  /**
+   * NO se usan para clientes ni proveedores: cada tercero tiene su subcuenta
+   * propia (430N, 400N, 410N; ver services/terceros/subcuentas.ts). Solo las
+   * lee el codigo heredado de FacturaScripts.
+   */
   cuentaClientesPorDefecto: string;
   cuentaProveedoresPorDefecto: string;
   /** Subcuenta de tesoreria por defecto (cobros/pagos sin forma de pago mapeada). */
@@ -46,6 +51,12 @@ export interface ReglasContablesEmpresa {
    * (ver services/nominas/calculo.ts, cuentasNominasPorDefecto).
    */
   nominas?: Partial<CuentasNominas>;
+  /**
+   * Digitos de las subcuentas de clientes y proveedores (7 a 10). Sin ella, la
+   * de las subcuentas de tercero que ya tenga la empresa (plan traido de otro
+   * programa) o 8. Solo se puede cambiar mientras no haya ninguna asignada.
+   */
+  longitudSubcuentas?: number;
 }
 
 /**

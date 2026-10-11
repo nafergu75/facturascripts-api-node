@@ -45,6 +45,7 @@ import { previsualizarCierre } from '../services/cierreEjercicio.service';
 import { agregar303Anterior, agregar347Anterior, agregar349Anterior, agregar390Anterior } from './agregadores-anteriores';
 import type { PeriodoFiscal } from '../domain/impuestos.model';
 
+// Cada empresa del test tiene un solo cliente: su subcuenta propia es la 43000001 (services/terceros).
 const motor = new AccountingEngineController();
 const T1: PeriodoFiscal = { ejercicio: 2026, periodo: '1T', tipo: 'trimestral', fechaInicio: '2026-01-01', fechaFin: '2026-03-31' };
 
@@ -102,7 +103,7 @@ describe('exportacion en USD de una empresa espanola', () => {
 
     const r = await motor.contabilizarFacturaIngreso(companyId, f.id);
     const { asiento, porCuenta } = await lineasAsiento(r.journalEntryId);
-    expect(porCuenta).toEqual({ '430': [9000, 0], '700': [0, 9000] });
+    expect(porCuenta).toEqual({ '43000001': [9000, 0], '700': [0, 9000] });
     expect(asiento.descripcion).toContain('(10.000,00 USD; 1 EUR = 1,1111 USD, tipo indicado a mano)');
 
     const libro = await prisma.vATBook.findMany({ where: { companyId, numeroFactura: f.numeroCompleto! } });
@@ -126,7 +127,7 @@ describe('exportacion en USD de una empresa espanola', () => {
     expect(res.contabilizada).toBe(true);
     const lineas = await prisma.journalEntryLine.findMany({ where: { companyId, entry: { origen: 'FACTURA_INGRESO' } } });
     const saldo = (cuenta: string) => Math.round(lineas.filter((l) => l.accountCode === cuenta).reduce((s, l) => s + l.debe - l.haber, 0) * 100) / 100;
-    expect([saldo('430'), saldo('700'), saldo('477')]).toEqual([0, 0, 0]);
+    expect([saldo('43000001'), saldo('700'), saldo('477')]).toEqual([0, 0, 0]);
   });
 });
 
@@ -142,7 +143,7 @@ describe('entrega intracomunitaria', () => {
       lineas: [linea(2000)],
     });
     const r = await motor.contabilizarFacturaIngreso(companyId, f.id);
-    expect((await lineasAsiento(r.journalEntryId)).porCuenta).toEqual({ '430': [2000, 0], '700': [0, 2000] });
+    expect((await lineasAsiento(r.journalEntryId)).porCuenta).toEqual({ '43000001': [2000, 0], '700': [0, 2000] });
     expect((await prisma.vATBook.findFirstOrThrow({ where: { companyId } })).causaExencion).toBe('E5');
 
     const m303 = await calcularModelo303(companyId, T1);
@@ -188,7 +189,7 @@ describe('cobro de una factura en USD', () => {
     });
     expect(cobro).toMatchObject({ moneda: 'USD', importeDoc: 400, importe: 363.64, importeTesoreria: 380.95, tipoCambio: 1.05, fuenteTipoCambio: 'MANUAL', diferenciaCambio: 17.31 });
     expect(resumen).toMatchObject({ moneda: 'USD', monedaCuenta: 'EUR', totalFactura: 1000, importeCobrado: 400, importePendiente: 600, importePendienteCuenta: 545.45, estado: 'PENDING' });
-    expect((await lineasAsiento(cobro.asientoId!)).porCuenta).toEqual({ '5720001': [380.95, 0], '430': [0, 363.64], '768': [0, 17.31] });
+    expect((await lineasAsiento(cobro.asientoId!)).porCuenta).toEqual({ '5720001': [380.95, 0], '43000001': [0, 363.64], '768': [0, 17.31] });
     // La 768 se ha anadido al plan de una empresa que ya existia.
     expect(await prisma.chartOfAccounts.count({ where: { companyId, codigo: '768' } })).toBe(1);
   });
@@ -200,7 +201,7 @@ describe('cobro de una factura en USD', () => {
       tipoCambio: 1.12,
       cuentaBancariaId: bancoId,
     });
-    expect((await lineasAsiento(cobro.asientoId!)).porCuenta).toEqual({ '5720001': [535.71, 0], '668': [9.74, 0], '430': [0, 545.45] });
+    expect((await lineasAsiento(cobro.asientoId!)).porCuenta).toEqual({ '5720001': [535.71, 0], '668': [9.74, 0], '43000001': [0, 545.45] });
     expect(resumen).toMatchObject({ importePendiente: 0, importePendienteCuenta: 0, estado: 'PAID' });
     expect((await prisma.incomeInvoice.findUniqueOrThrow({ where: { id: facturaId } })).estado).toBe('PAID');
 
@@ -227,7 +228,7 @@ describe('cobro de una factura en USD', () => {
       cuentaBancariaId: bancoId,
     });
     expect(cobro).toMatchObject({ fuenteTipoCambio: 'BANCO', importe: 545.45, importeTesoreria: 560, comisionBancaria: 5, diferenciaCambio: 19.55 });
-    expect((await lineasAsiento(cobro.asientoId!)).porCuenta).toEqual({ '5720001': [560, 0], '626': [5, 0], '430': [0, 545.45], '768': [0, 19.55] });
+    expect((await lineasAsiento(cobro.asientoId!)).porCuenta).toEqual({ '5720001': [560, 0], '626': [5, 0], '43000001': [0, 545.45], '768': [0, 19.55] });
   });
 
   it('en divisa el importe va en importeDoc; sin BCE ni tipo, se pide; en euros no se admite tipo', async () => {
@@ -307,7 +308,7 @@ describe('empresa de EE. UU. (sin IVA en la app)', () => {
     expect(f).toMatchObject({ tipoOperacion: 'EMPRESA_EXTRANJERA', moneda: 'USD', totalFactura: 1000 });
 
     const r = await motor.contabilizarFacturaIngreso(companyId, f.id);
-    expect((await lineasAsiento(r.journalEntryId)).porCuenta).toEqual({ '430': [1000, 0], '700': [0, 1000] });
+    expect((await lineasAsiento(r.journalEntryId)).porCuenta).toEqual({ '43000001': [1000, 0], '700': [0, 1000] });
     expect(await prisma.vATBook.count({ where: { companyId } })).toBe(0);
 
     expect(await obtenerFacturasFiscales(companyId, '2026-01-01', '2026-12-31')).toEqual([]);
@@ -365,7 +366,7 @@ describe('facturas EUR anteriores (sin tipo de operacion): exactamente lo de ant
 
     const r = await motor.contabilizarFacturaIngreso(companyId, a1.id);
     const { asiento, porCuenta } = await lineasAsiento(r.journalEntryId);
-    expect(porCuenta).toEqual({ '430': [4840, 0], '700': [0, 4000], '477': [0, 840] });
+    expect(porCuenta).toEqual({ '43000001': [4840, 0], '700': [0, 4000], '477': [0, 840] });
     expect(asiento.descripcion).toBe('Factura de ingreso #L-1 - Cliente B77777777');
     const libro = await prisma.vATBook.findMany({ where: { companyId } });
     expect(libro.map((l) => [l.tipoIva, l.baseImponible, l.cuotaIva, l.tipoOperacion, l.causaExencion])).toEqual([[21, 4000, 840, null, null]]);

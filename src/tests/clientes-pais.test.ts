@@ -14,9 +14,14 @@ jest.mock('../config/database', () => {
         pais: 'ES',
         ...data,
       })),
+      // Subcuenta 430 del alta (services/terceros/subcuentas): sin otras ocupadas.
+      findMany: jest.fn(async () => []),
     },
+    chartOfAccounts: { findMany: jest.fn(async () => []) },
+    supplier: { findMany: jest.fn(async () => []) },
   };
   prisma.$transaction = jest.fn(async (fn: (tx: unknown) => unknown) => fn(prisma));
+  prisma.$queryRaw = jest.fn(async () => []);
   return { prisma };
 });
 

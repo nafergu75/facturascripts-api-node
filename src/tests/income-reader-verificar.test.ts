@@ -21,7 +21,11 @@ jest.mock('../config/database', () => ({
           nombreEmisor: 'Mi Empresa SL',
           nifReceptor: 'B22222222',
           nombreReceptor: 'Cliente SL',
-          lineas: [{ descripcion: 'Servicio', cantidad: 1, precioUnitario: 100, tipoIva: 21 }],
+          lineas: [
+            { descripcion: 'Servicio', cantidad: 1, precioUnitario: 100, tipoIva: 21 },
+            // Cuenta de ingresos elegida al revisar el documento (R2).
+            { descripcion: 'Consultoria', cantidad: 1, precioUnitario: 50, tipoIva: 21, cuenta: ' 70500001 ' },
+          ],
         },
       })),
       update: jest.fn(async () => ({})),
@@ -32,7 +36,14 @@ jest.mock('../config/database', () => ({
         creados.push(data);
         return { id: 'cli-1', ...data };
       }),
+      // El alta asigna la subcuenta 430 en la misma transaccion (services/terceros/subcuentas).
+      findMany: jest.fn(async () => []),
+      update: jest.fn(async () => ({})),
     },
+    supplier: { findMany: jest.fn(async () => []) },
+    chartOfAccounts: { findMany: jest.fn(async () => []) },
+    $queryRaw: jest.fn(async () => []),
+    $transaction: jest.fn(async (fn: (tx: unknown) => unknown) => fn(jest.requireMock<{ prisma: unknown }>('../config/database').prisma)),
   },
 }));
 const crearIngreso = jest.fn(async (_dto: unknown) => ({ id: 'fac-1' }));
@@ -47,5 +58,13 @@ describe('income-reader: verificar y crear factura', () => {
 
     expect(creados[0]).toMatchObject({ nifCif: 'B22222222', nombreFiscal: 'Cliente SL' });
     expect(crearIngreso).toHaveBeenCalledWith(expect.objectContaining({ customer: { id: 'cli-1' }, serie: 'F-2025', numero: 7 }));
+  });
+
+  it('cada linea lleva la cuenta elegida al revisar; sin ella, ninguna (la generica)', async () => {
+    crearIngreso.mockClear();
+    await incomeReaderService.verificarYCrearFactura('c1', 'doc-1').catch(() => undefined);
+    const dto = crearIngreso.mock.calls[0][0] as { lineas: Array<Record<string, unknown>> };
+    expect(dto.lineas[0]).not.toHaveProperty('cuenta');
+    expect(dto.lineas[1]).toMatchObject({ descripcion: 'Consultoria', cuenta: '70500001' });
   });
 });

@@ -12,7 +12,8 @@
 import { badRequest, conflict, notFound, notImplemented } from '../utils/http-errors';
 import { registrarAuditoria } from '../services/auditoria.service';
 import { accountingEngineService, desgloseIvaPorTipo } from '../services/accounting-engine.service';
-import { prisma } from '../config/database';
+import { prisma, type TransaccionBD } from '../config/database';
+import { basePorCuenta, nombresDeCuentas } from '../services/cuentasLinea.service';
 import { cuadraEnCentimos } from '../utils/money';
 import { asegurarPlanContableEmpresa } from '../services/chart-of-accounts.service';
 import { comprobarFechaAbierta, periodoNoAbierto } from '../services/periodos.service';
@@ -20,7 +21,80 @@ import { perfilEmpresa } from '../services/perfilEmpresa.service';
 import { motivoSinTipoFijado, notaDivisa } from '../domain/divisas';
 import { esTipoOperacion, fechaDevengoVenta } from '../domain/tipo-operacion.model';
 import { fechaContableGasto } from '../domain/factura-gasto.model';
-import { cuentaAcreedorDePagos, datosContablesGasto, motivoPeriodoBloqueado, retencionDe } from '../services/expense-invoices.service';
+import { cuentaAcreedorDePagos, datosContablesGastoConSubcuenta, motivoPeriodoBloqueado, retencionDe } from '../services/expense-invoices.service';
+import { conReintentoSubcuenta, fichaDeSubcuenta, subcuentaClienteParaApunte, type FichaDeSubcuenta } from '../services/terceros/subcuentas';
+import { esSubcuentaGenerica } from '../services/terceros/numeracion';
+
+/** Mismo cliente o proveedor. */
+const mismaFicha = (a: { tipo: string; id: string } | null | undefined, b: { tipo: string; id: string } | null | undefined) =>
+  !!a && !!b && a.tipo === b.tipo && a.id === b.id;
+
+/**
+ * Al cambiar la cuenta de una linea de cliente (43x) o de proveedor (40x/41x)
+ * de un borrador, la nueva tiene que ser del mismo grupo y del MISMO tercero:
+ * la deuda no se pasa a otro cliente o proveedor desde aqui. En proveedores,
+ * su subcuenta (400N o 410N) o la generica; en clientes, una 43x que no sea de
+ * otro cliente. Y cualquier otra linea (700, 477, 572...) solo puede pasar a la
+ * subcuenta de un cliente o proveedor si es el del asiento (el de su factura o
+ * el de otra de sus lineas); en un asiento sin tercero, a la de cualquiera.
+ * Devuelve el texto del error o null.
+ */
+async function problemaCuentaTercero(
+  companyId: string,
+  asiento: { invoiceId: string | null; invoiceType: string | null; origen: string; lineas: Array<{ id: string; accountCode: string }> },
+  lineaId: string,
+  original: string,
+  nueva: string,
+): Promise<string | null> {
+  const esCliente = original.startsWith('43');
+  const esProveedor = /^4[01]/.test(original);
+  if (esCliente && !nueva.startsWith('43')) return `Esta línea es la del cliente (${original}): solo puede ir a una cuenta de clientes (43).`;
+  if (esProveedor && !/^4[01]/.test(nueva)) return `Esta línea es la del proveedor (${original}): solo puede ir a una cuenta de proveedores o acreedores (400 o 410).`;
+  const fichas = await fichaDeSubcuenta(companyId);
+  const deLaNueva: FichaDeSubcuenta | undefined = fichas.get(nueva);
+  if (!esCliente && !esProveedor && !deLaNueva) return null;
+  let deLaLinea: { tipo: string; id: string } | null = fichas.get(original) ?? null;
+  if (!deLaLinea && asiento.invoiceId) {
+    if (asiento.invoiceType === 'GASTO' || asiento.origen === 'FACTURA_GASTO') {
+      const f = await prisma.expenseInvoice.findFirst({ where: { id: asiento.invoiceId, companyId }, select: { supplierId: true } });
+      if (f) deLaLinea = { tipo: 'proveedor', id: f.supplierId };
+    } else {
+      const f = await prisma.incomeInvoice.findFirst({ where: { id: asiento.invoiceId, companyId }, select: { customerId: true } });
+      if (f) deLaLinea = { tipo: 'cliente', id: f.customerId };
+    }
+  }
+  if (!esCliente && !esProveedor) {
+    // Linea que no es de tercero: el tercero del asiento sale de la factura o de otra linea.
+    const delAsiento = deLaLinea ?? asiento.lineas.filter((l) => l.id !== lineaId).map((l) => fichas.get(l.accountCode)).find((f) => !!f) ?? null;
+    return delAsiento && !mismaFicha(deLaNueva, delAsiento)
+      ? `La subcuenta ${nueva} es de ${deLaNueva!.nombre}, no del cliente o proveedor de este asiento.`
+      : null;
+  }
+  if (esCliente) {
+    if (deLaNueva && deLaLinea && !mismaFicha(deLaNueva, deLaLinea)) return `La subcuenta ${nueva} es de ${deLaNueva.nombre}, no del cliente de este asiento.`;
+    return null;
+  }
+  if (esSubcuentaGenerica(nueva) || mismaFicha(deLaNueva, deLaLinea)) return null;
+  return deLaNueva
+    ? `La subcuenta ${nueva} es de ${deLaNueva.nombre}, no del proveedor de este asiento.`
+    : `La cuenta ${nueva} no es una subcuenta del proveedor de este asiento: usa la suya (400 o 410) o la genérica.`;
+}
+
+/**
+ * Base de la venta por cuenta de ingresos (la de cada linea; sin ella, la 700),
+ * con el nombre del plan. undefined si ninguna linea lleva cuenta: el asiento
+ * de siempre, todo a la 700 «Ventas».
+ */
+async function ingresosPorCuenta(
+  tx: TransaccionBD,
+  companyId: string,
+  lineas: Array<{ accountCode: string | null; baseLine: number }>,
+): Promise<Array<{ cuenta: string; nombre: string; base: number }> | undefined> {
+  if (!lineas.some((l) => l.accountCode)) return undefined;
+  const reparto = basePorCuenta(lineas.map((l) => ({ cuenta: l.accountCode, base: Number(l.baseLine) })), '700');
+  const nombres = await nombresDeCuentas(tx, companyId, reparto.map((r) => r.cuenta));
+  return reparto.map((r) => ({ ...r, nombre: nombres.get(r.cuenta) ?? 'Ventas' }));
+}
 
 export class AccountingEngineController {
   /**
@@ -92,8 +166,12 @@ export class AccountingEngineController {
       // Ni en un mes bloqueado ni en un ejercicio cerrado (tambien desde el hook AUTO).
       await comprobarFechaAbierta(companyId, factura.fechaEmision, 'contabilizar la factura');
 
-      // Transacción atómica: crear asiento + líneas + VATBook
-      const result = await prisma.$transaction(async (tx) => {
+      // Transacción atómica: subcuenta del cliente (430N, asignada y en el plan
+      // si falta) + asiento + líneas + VATBook. Las rectificativas van a la del
+      // cliente de la original (es el mismo customerId).
+      const result = await conReintentoSubcuenta(() => prisma.$transaction(async (tx) => {
+        const cliente = await subcuentaClienteParaApunte(tx, companyId, factura.customerId);
+        const ingresoPorCuenta = await ingresosPorCuenta(tx, companyId, factura.lineas);
         const asiento = await accountingEngineService.contabilizarFacturaIngreso(
           companyId,
           invoiceId,
@@ -111,6 +189,9 @@ export class AccountingEngineController {
             clienteId: factura.customerId,
             clienteNif: factura.customer.nifCif,
             clienteNombre: factura.customer.nombreFiscal,
+            cuentaCliente: cliente.codigo,
+            nombreCuentaCliente: cliente.nombre,
+            ...(ingresoPorCuenta ? { ingresoPorCuenta } : {}),
             clientePais: factura.customer.pais,
             // El tipo guardado; las facturas anteriores (sin tipo) se contabilizan como siempre.
             tipoOperacion: esTipoOperacion(factura.tipoOperacion) ? factura.tipoOperacion : undefined,
@@ -126,7 +207,7 @@ export class AccountingEngineController {
         // la factura dejaba de verse como pendiente de cobro.
 
         return asiento;
-      });
+      }));
 
       // Auditoría
       await registrarAuditoria({
@@ -226,12 +307,13 @@ export class AccountingEngineController {
       // Los mismos datos que el alta: la fecha de registro (si se recibio mas
       // tarde), la cuenta de cada linea, la base de las lineas con retencion y,
       // si ya tiene pagos, la cuenta del proveedor que usaron (400 o 410).
+      // Sin pagos, la subcuenta del proveedor (400N o 410N segun el tipo de gasto).
       const cuentaAcreedor = await cuentaAcreedorDePagos(companyId, invoiceId);
-      const result = await prisma.$transaction(async (tx) => {
+      const result = await conReintentoSubcuenta(() => prisma.$transaction(async (tx) => {
         const asiento = await accountingEngineService.contabilizarFacturaGasto(
           companyId,
           invoiceId,
-          datosContablesGasto(factura, factura.supplier, { estadoAsiento: 'POSTED', cuentaAcreedor }),
+          await datosContablesGastoConSubcuenta(tx, companyId, factura, factura.supplier, { estadoAsiento: 'POSTED', cuentaAcreedor }),
           tx,
         );
 
@@ -241,7 +323,7 @@ export class AccountingEngineController {
         });
 
         return asiento;
-      });
+      }));
 
       // Auditoría
       await registrarAuditoria({
@@ -607,25 +689,48 @@ export class AccountingEngineController {
         );
       }
 
-      // Actualizar línea
-      const lineaActualizada = await prisma.journalEntryLine.update({
-        where: { id: lineId },
-        data: cambios,
-      });
+      // Solo cuenta, debe y haber. La cuenta tiene que existir y estar activa en
+      // el plan (su nombre pasa a la linea); la de un cliente o proveedor, del
+      // mismo tercero (problemaCuentaTercero).
+      const linea = asiento.lineas.find((l) => l.id === lineId)!;
+      const data: { accountCode?: string; accountName?: string; debe?: number; haber?: number } = {};
+      if (cambios.accountCode !== undefined && String(cambios.accountCode).trim() !== linea.accountCode) {
+        const codigo = String(cambios.accountCode).trim();
+        if (/^\d{1,2}$/.test(codigo)) {
+          throw badRequest(`La ${codigo} es un grupo o subgrupo del plan y no lleva apuntes: elige una cuenta de 3 o más dígitos.`);
+        }
+        const cuenta = codigo ? await prisma.chartOfAccounts.findFirst({ where: { companyId, codigo }, select: { nombre: true, activo: true } }) : null;
+        if (!cuenta) throw badRequest(`La cuenta ${codigo || '(vacía)'} no está en el plan contable de la empresa.`);
+        if (!cuenta.activo) throw badRequest(`La cuenta ${codigo} está desactivada en el plan contable.`);
+        const problema = await problemaCuentaTercero(companyId, asiento, lineId, linea.accountCode, codigo);
+        if (problema) throw badRequest(problema);
+        data.accountCode = codigo;
+        data.accountName = cuenta.nombre.slice(0, 190);
+      }
+      for (const campo of ['debe', 'haber'] as const) {
+        if (cambios[campo] === undefined) continue;
+        const n = Number(cambios[campo]);
+        if (!Number.isFinite(n)) throw badRequest(`El ${campo} no es un número.`);
+        data[campo] = Math.round(n * 100) / 100;
+      }
 
-      // Validar debe = haber después de ajuste
-      const lineasActualizadas = await prisma.journalEntryLine.findMany({
-        where: { entryId: journalEntryId },
-      });
-      const totalDebe = lineasActualizadas.reduce((s, l) => s + (l.debe || 0), 0);
-      const totalHaber = lineasActualizadas.reduce((s, l) => s + (l.haber || 0), 0);
+      // Debe = haber con el cambio aplicado, ANTES de guardarlo (antes se
+      // guardaba y luego se avisaba, y el asiento quedaba descuadrado).
+      const conCambio = asiento.lineas.map((l) => (l.id === lineId ? { ...l, ...data } : l));
+      const totalDebe = conCambio.reduce((s, l) => s + (l.debe || 0), 0);
+      const totalHaber = conCambio.reduce((s, l) => s + (l.haber || 0), 0);
       const cuadrado = cuadraEnCentimos(totalDebe, totalHaber);
-
       if (!cuadrado) {
         throw badRequest(
           `Ajuste desequilibra el asiento: debe ${totalDebe} ≠ haber ${totalHaber}`
         );
       }
+
+      // Actualizar línea
+      const lineaActualizada = await prisma.journalEntryLine.update({
+        where: { id: lineId },
+        data,
+      });
 
       // Auditoría
       await registrarAuditoria({

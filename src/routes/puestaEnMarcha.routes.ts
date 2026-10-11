@@ -46,4 +46,10 @@ router.post('/comparativo/vista-previa', authorize('contabilidad:write'), subida
 router.post('/comparativo', authorize('contabilidad:write'), subida.single('archivo'), c.confirmarComparativo);
 router.delete('/comparativo/:ejercicio', authorize('contabilidad:write'), c.borrarComparativo);
 
+// Plan contable del ejercicio anterior (todas sus cuentas y subcuentas) y enlace de las de clientes y proveedores.
+router.post('/plan/vista-previa', authorize('contabilidad:write'), subida.single('archivo'), c.vistaPlan);
+router.post('/plan', authorize('contabilidad:write'), subida.single('archivo'), c.confirmarPlan);
+router.get('/plan/sin-enlazar', authorize('contabilidad:read'), c.sinEnlazar);
+router.post('/plan/enlazar', authorize('contabilidad:write'), c.enlazar);
+
 export default router;

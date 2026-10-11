@@ -8,7 +8,15 @@ import { prisma, type TransaccionBD } from '../config/database';
 import { CompanyScopedService, ID, Paginated } from '../domain/common.types';
 import { Cliente } from '../domain/cliente.model';
 import { parsePagination } from '../utils/pagination';
-import { badRequest, notFound } from '../utils/http-errors';
+import { badRequest, conflict, notFound } from '../utils/http-errors';
+import { hoyEspana } from '../utils/fechas';
+import {
+  apuntesEnSubcuentas,
+  crearClienteConSubcuenta,
+  retirarSubcuentasDeFicha,
+  sincronizarNombreSubcuentas,
+  subcuentasEnPlan,
+} from './terceros/subcuentas';
 import { normalizarPais, prefijoNifIvaUe } from '../domain/tipo-operacion.model';
 import { MONEDAS_FACTURA_ACTIVAS, normalizarMoneda } from '../domain/divisas';
 import { esCodigoPais } from '../utils/geografia';
@@ -35,10 +43,14 @@ type CustomerRow = {
   municipio?: string | null;
   provincia?: string | null;
   monedaPreferida?: string | null;
+  subcuenta430?: string | null;
 };
 
-/** Customer (Prisma) -> forma de respuesta del recurso clientes. */
-function aCliente(c: CustomerRow): Record<string, unknown> {
+/**
+ * Customer (Prisma) -> forma de respuesta del recurso clientes. `enPlan`: las
+ * subcuentas que ya estan en el plan (sin ella, "sin movimientos todavia").
+ */
+function aCliente(c: CustomerRow, enPlan: string[] = []): Record<string, unknown> {
   return {
     id: c.id,
     nombreFiscal: c.nombreFiscal,
@@ -53,7 +65,16 @@ function aCliente(c: CustomerRow): Record<string, unknown> {
     municipio: c.municipio ?? '',
     provincia: c.provincia ?? '',
     monedaPreferida: c.monedaPreferida ?? null,
+    // Subcuenta contable propia (430 + correlativo).
+    subcuenta430: c.subcuenta430 ?? null,
+    subcuentasEnPlan: enPlan.filter((x) => x === c.subcuenta430),
   };
+}
+
+/** Respuesta de varios clientes con sus subcuentas ya dadas de alta en el plan (una consulta). */
+async function aClientes(companyId: string, filas: CustomerRow[]): Promise<Record<string, unknown>[]> {
+  const enPlan = await subcuentasEnPlan(prisma, companyId, filas.map((c) => c.subcuenta430));
+  return filas.map((c) => aCliente(c, enPlan));
 }
 
 const textoONull = (v: unknown): string | null => (v === undefined || v === null || String(v).trim() === '' ? null : String(v).trim());
@@ -141,6 +162,13 @@ function leerDireccion(data: Record<string, unknown>) {
   return out;
 }
 
+/** Activo: si o no (true/false); cualquier otra cosa, 400. */
+function leerActivo(v: unknown): boolean {
+  if (v === true || v === 'true') return true;
+  if (v === false || v === 'false') return false;
+  throw badRequest('«activo» tiene que ser sí o no (true o false).');
+}
+
 /** Lee nombre/nif/teléfono del payload aceptando alias FS y Prisma. */
 function leerDatos(data: Record<string, unknown>): { nombreFiscal?: string; nifCif?: string; email: string | null; telefono: string | null; direccion: string | null } {
   const nombre = (data.nombreFiscal ?? data.nombre ?? data.razonsocial) as string | undefined;
@@ -167,6 +195,7 @@ export async function buscarClientes(companyId: ID, query: string, limit = 20): 
       { nombreFiscal: { contains: q } },
       { nifCif: { contains: q } },
       { email: { contains: q } },
+      { subcuenta430: { startsWith: q } },
     ];
   }
   const items = (await prisma.customer.findMany({ where, take: limit, orderBy: { nombreFiscal: 'asc' } })) as CustomerRow[];
@@ -181,29 +210,28 @@ export const clientesService: CompanyScopedService<Cliente> = {
       prisma.customer.findMany({ where, skip: offset, take: limit, orderBy: { createdAt: 'desc' } }),
       prisma.customer.count({ where }),
     ]);
-    return { items: (items as CustomerRow[]).map(aCliente) as unknown as Cliente[], total, limit, offset };
+    return { items: (await aClientes(String(companyId), items as CustomerRow[])) as unknown as Cliente[], total, limit, offset };
   },
 
   async getById(companyId: ID, id: ID): Promise<Cliente> {
     const c = (await prisma.customer.findFirst({ where: { id: String(id), companyId: String(companyId) } })) as CustomerRow | null;
     if (!c) throw notFound('Cliente no encontrado.');
-    return aCliente(c) as unknown as Cliente;
+    return (await aClientes(String(companyId), [c]))[0] as unknown as Cliente;
   },
 
   async create(companyId: ID, data: Record<string, unknown>): Promise<Cliente> {
     const d = leerDatos(data);
     if (!d.nombreFiscal || !d.nifCif) throw notFound('Se requiere nombre y NIF.');
-    const c = (await prisma.customer.create({
-      data: {
-        companyId: String(companyId),
-        nombreFiscal: d.nombreFiscal,
-        nifCif: d.nifCif,
-        email: d.email,
-        telefono: d.telefono,
-        ...leerDireccion(data),
-        pais: leerPais(data.pais, d.nifCif) ?? 'ES',
-        monedaPreferida: leerMonedaPreferida(data.monedaPreferida),
-      },
+    // La subcuenta 430 se asigna en la misma transaccion que el alta.
+    const c = (await crearClienteConSubcuenta({
+      companyId: String(companyId),
+      nombreFiscal: d.nombreFiscal,
+      nifCif: d.nifCif,
+      email: d.email,
+      telefono: d.telefono,
+      ...leerDireccion(data),
+      pais: leerPais(data.pais, d.nifCif) ?? 'ES',
+      monedaPreferida: leerMonedaPreferida(data.monedaPreferida),
     })) as CustomerRow;
     return aCliente(c) as unknown as Cliente;
   },
@@ -222,18 +250,38 @@ export const clientesService: CompanyScopedService<Cliente> = {
       ...leerDireccion(data),
       ...(pais !== undefined ? { pais } : {}),
       ...(data.monedaPreferida !== undefined ? { monedaPreferida: leerMonedaPreferida(data.monedaPreferida) } : {}),
+      ...(data.activo !== undefined ? { activo: leerActivo(data.activo) } : {}),
     };
     const c = (await prisma.$transaction(async (tx) => {
       // Las facturas anteriores conservan la clasificacion con el pais de antes.
       if (pais !== undefined) await congelarPaisFacturasAnteriores(tx, String(companyId), String(id), existe.pais);
+      // La subcuenta del plan lleva el nombre fiscal: cambia con el. Los apuntes ya grabados no se tocan.
+      if (d.nombreFiscal !== undefined && d.nombreFiscal !== existe.nombreFiscal) {
+        await sincronizarNombreSubcuentas(tx, String(companyId), [existe.subcuenta430], d.nombreFiscal);
+      }
       return tx.customer.update({ where: { id: String(id) }, data: cambios });
     })) as CustomerRow;
-    return aCliente(c) as unknown as Cliente;
+    return (await aClientes(String(companyId), [c]))[0] as unknown as Cliente;
   },
 
+  /**
+   * Borra el cliente si no tiene facturas ni apuntes en su subcuenta; si no,
+   * 409 (se puede desactivar). Su subcuenta queda en el plan inactiva: el
+   * codigo no se le da a otro cliente.
+   */
   async remove(companyId: ID, id: ID): Promise<void> {
     const existe = await prisma.customer.findFirst({ where: { id: String(id), companyId: String(companyId) } });
     if (!existe) throw notFound('Cliente no encontrado.');
-    await prisma.customer.delete({ where: { id: String(id) } });
+    const [facturas, apuntes] = await Promise.all([
+      prisma.incomeInvoice.count({ where: { companyId: String(companyId), customerId: existe.id } }),
+      apuntesEnSubcuentas(prisma, String(companyId), [existe.subcuenta430]),
+    ]);
+    if (facturas > 0 || apuntes > 0) {
+      throw conflict('No se puede borrar: tiene facturas o movimientos contables. Desactívalo para que no salga al facturar.', { facturas, apuntes });
+    }
+    await prisma.$transaction(async (tx) => {
+      await retirarSubcuentasDeFicha(tx, String(companyId), [existe.subcuenta430], { tipo: 'cliente', id: existe.id, nombreFiscal: existe.nombreFiscal }, hoyEspana());
+      await tx.customer.delete({ where: { id: existe.id } });
+    });
   },
 };

@@ -19,6 +19,7 @@ import { proximosPlazos } from '../faq/calendario';
 import { EJECUTORES_FACTURACION } from './facturacion';
 import { EJECUTORES_IMPUESTOS, resumenImpuestos } from './impuestos';
 import { cuentaDeResultados } from './resultados';
+import { saldoContableTercero } from './contabilidad';
 import type { CarmenCtx, HuecosResueltos, Kpi, RespuestaDatos } from '../tipos';
 
 type Ejecutor = (ctx: CarmenCtx, h: HuecosResueltos) => Promise<RespuestaDatos>;
@@ -482,6 +483,7 @@ export const EJECUTORES = {
   ultimosMovimientos,
   resumenEmpresa,
   cuentaDeResultados,
+  saldoContableTercero,
   ...EJECUTORES_FACTURACION,
   ...EJECUTORES_IMPUESTOS,
 };

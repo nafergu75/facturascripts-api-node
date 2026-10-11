@@ -257,7 +257,7 @@ export const FICHAS: FichaFAQ[] = [
     pregunta: '¿Qué asiento genera una factura de venta?',
     variantes: ['que asiento hace una venta', 'asiento de una factura emitida', 'como se contabiliza una venta', 'cuentas de una factura de venta', '430 700 477', 'partida doble de una venta'],
     respuesta:
-      'Con una venta de 1.000 € más 210 € de IVA, el asiento es: al debe, 430 Clientes por 1.210 €; al haber, 700 Ventas por 1.000 € y 477 IVA repercutido por 210 €. Debe y haber siempre suman lo mismo. Cuando cobras, otro asiento lleva 572 Bancos al debe y 430 Clientes al haber.',
+      'Con una venta de 1.000 € más 210 € de IVA, el asiento es: al debe, la subcuenta del cliente (por ejemplo, 43000012, dentro de la 430 Clientes) por 1.210 €; al haber, 700 Ventas por 1.000 € y 477 IVA repercutido por 210 €. Debe y haber siempre suman lo mismo. Cada cliente tiene su propia subcuenta, con su nombre. Cuando cobras, otro asiento lleva 572 Bancos al debe y la subcuenta del cliente al haber.',
     fuente: PGC,
     ...VERIFICADA,
     etiquetas: ['asiento', 'venta', '430', '700', '477', 'partida doble', 'contabilizar'],
@@ -268,7 +268,7 @@ export const FICHAS: FichaFAQ[] = [
     pregunta: '¿Qué asiento genera una factura de compra o de gasto?',
     variantes: ['como se contabiliza un gasto', 'asiento de factura de proveedor', 'cuentas de una compra', '600 472 400', 'contabilizar factura recibida'],
     respuesta:
-      'Con una compra de 500 € más 105 € de IVA: al debe, la cuenta del gasto (600 Compras, 621 Arrendamientos, 628 Suministros...) por 500 € y 472 IVA soportado por 105 €; al haber, 400 Proveedores (o 410 Acreedores si es un servicio) por 605 €. Al pagarla, 400 o 410 al debe y 572 Bancos al haber.',
+      'Con una compra de 500 € más 105 € de IVA: al debe, la cuenta del gasto (600 Compras, 621 Arrendamientos, 628 Suministros...) por 500 € y 472 IVA soportado por 105 €; al haber, la subcuenta del proveedor en la 400 Proveedores (o en la 410 Acreedores si es un servicio) por 605 €. Cada proveedor tiene su número, el mismo en la 400 y en la 410 (40000007 y 41000007). Al pagarla, esa subcuenta al debe y 572 Bancos al haber.',
     fuente: PGC,
     ...VERIFICADA,
     etiquetas: ['asiento', 'compra', 'gasto', '400', '410', '472', '600', 'proveedor', 'contabilizar', 'contabiliza', 'factura de proveedor'],
@@ -290,7 +290,7 @@ export const FICHAS: FichaFAQ[] = [
     pregunta: '¿Por qué lo pendiente de cobro de un cliente no coincide con su saldo contable?',
     variantes: ['el saldo del cliente no cuadra con las facturas', 'diferencia entre pendiente y saldo del mayor', 'mayor de clientes no coincide', 'pendiente de cobro distinto del saldo de la 430', 'por que no coincide el saldo contable con lo pendiente'],
     respuesta:
-      'Son dos cálculos distintos. Lo pendiente según facturas es el total de cada factura menos los cobros registrados, a fecha de hoy. El saldo contable sale de los asientos aprobados de la cuenta del cliente (430). No coinciden si hay asientos sin aprobar, cobros registrados sin asiento o saldos de apertura importados. El saldo contable lo ves en Contabilidad → Mayor de clientes y proveedores.',
+      'Son dos cálculos distintos. Lo pendiente según facturas es el total de cada factura menos los cobros registrados, a fecha de hoy. El saldo contable sale de los asientos aprobados de la subcuenta propia del cliente (430 seguida de su número, por ejemplo 43000012). No coinciden si hay asientos sin aprobar, cobros registrados sin asiento o saldos de apertura importados. El saldo contable lo ves en Contabilidad → Mayor de clientes y proveedores, o en el Libro mayor eligiendo el cliente.',
     fuente: PGC,
     ...VERIFICADA,
     enlaceApp: { texto: 'Ir al Mayor de clientes y proveedores', href: '/dashboard/mayor-terceros' },

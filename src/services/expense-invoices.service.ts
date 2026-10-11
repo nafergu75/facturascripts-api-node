@@ -28,6 +28,10 @@ import { perfilEmpresa } from './perfilEmpresa.service';
 import { registrarAuditoria } from './auditoria.service';
 import { datosProveedor, type DatosProveedor } from './proveedores.service';
 import { logCreate } from './suppliers/supplierAudit.service';
+import { asignarSubcuentasProveedor, conReintentoSubcuenta, crearProveedorConSubcuenta, INDICES_SUBCUENTA, subcuentaProveedorParaApunte } from './terceros/subcuentas';
+import { esSubcuentaGenerica } from './terceros/numeracion';
+import { nombresDeCuentas, problemaCuentasLinea } from './cuentasLinea.service';
+import { logger } from '../config/logger';
 
 /**
  * DTOs para creación y manipulación de facturas de gasto
@@ -213,22 +217,28 @@ async function resolverProveedor(
   }
 
   const p = providerData.nuevo;
-  const supplier = await prisma.supplier.create({
-    data: {
-      companyId,
-      nombreFiscal: p.nombreFiscal,
-      nifCif: p.nifCif,
-      direccion: p.direccion,
-      pais: p.pais || 'ES',
-      provincia: p.provincia,
-      municipio: p.municipio,
-      cp: p.cp,
-      email: p.email,
-      telefono: p.telefono,
-    },
+  // Con sus subcuentas 400N y 410N asignadas en la misma transaccion que el alta.
+  const supplier = await crearProveedorConSubcuenta({
+    companyId,
+    nombreFiscal: p.nombreFiscal,
+    nifCif: p.nifCif,
+    direccion: p.direccion,
+    pais: p.pais || 'ES',
+    provincia: p.provincia,
+    municipio: p.municipio,
+    cp: p.cp,
+    email: p.email,
+    telefono: p.telefono,
   });
 
   return supplier.id;
+}
+
+/** Proveedor nuevo dentro de la transaccion de la factura, con sus subcuentas 400N y 410N asignadas. */
+async function crearProveedorEnTx(tx: TransaccionBD, companyId: string, nuevo: DatosProveedor): Promise<ProveedorBasico> {
+  const s = await tx.supplier.create({ data: { companyId, ...nuevo } as Prisma.SupplierUncheckedCreateInput });
+  await asignarSubcuentasProveedor(tx, companyId, s);
+  return s;
 }
 
 /**
@@ -411,14 +421,16 @@ export async function motivoPeriodoBloqueado(
 export const textoPeriodoPresentado = (motivo: string) =>
   `${motivo}: si la recibiste más tarde, indica en «¿La recibiste más tarde?» la fecha en que te llegó, de un periodo sin presentar.`;
 
-/** La cuenta de gasto tiene que estar en el plan de la empresa (activa) o en el plan base. */
-async function comprobarCuentas(companyId: string, cuentas: string[]): Promise<void> {
-  const base = new Set(PGC_BASE.map((n) => n.code));
-  for (const c of [...new Set(cuentas)]) {
-    if (base.has(c)) continue;
-    const enPlan = await prisma.chartOfAccounts.findFirst({ where: { companyId, codigo: c, activo: true }, select: { id: true } });
-    if (!enPlan) throw badRequest(`La cuenta ${c} no existe en tu plan contable`, { campo: 'cuentaGasto' });
-  }
+/**
+ * La cuenta de gasto de cada linea (la suya o la de la factura) tiene que ser
+ * del grupo 6 y estar activa en el plan de la empresa (o en el plan base). El
+ * error apunta a la linea si la cuenta es suya y, si no, a la de la factura.
+ */
+async function comprobarCuentas(companyId: string, v: FacturaGastoBody, cuentas: Array<string | null>): Promise<void> {
+  const problema = await problemaCuentasLinea(companyId, 'gasto', cuentas);
+  if (!problema) return;
+  const i = problema.indice;
+  throw badRequest(problema.mensaje, { campo: v.lineas[i]?.cuenta ? `lineas.${i}.cuenta` : 'cuentaGasto' });
 }
 
 /**
@@ -546,7 +558,14 @@ const NOMBRE_CUENTA = new Map(PGC_BASE.map((n) => [n.code, n.name]));
 export function datosContablesGasto(
   f: FacturaConLineas,
   s: { id: string; nifCif: string; nombreFiscal: string },
-  extra: { estadoAsiento: 'POSTED' | 'DRAFT'; numeroAsiento?: string; cuentaAcreedor?: string | null },
+  extra: {
+    estadoAsiento: 'POSTED' | 'DRAFT';
+    numeroAsiento?: string;
+    cuentaAcreedor?: string | null;
+    nombreCuentaAcreedor?: string | null;
+    /** Nombre de las cuentas de gasto en el plan de la empresa (sus subcuentas: 6280001 «Luz oficina»). */
+    nombresCuentas?: Map<string, string>;
+  },
 ): Parameters<typeof contabilizarFacturaGasto>[2] {
   const tipo: TipoGasto = esTipoGasto(f.tipoGasto) ? f.tipoGasto : 'COMPRA';
   const porCuenta = new Map<string, number>();
@@ -571,7 +590,7 @@ export function datosContablesGasto(
     tipoGasto: tipo,
     desgloseIva: f.lineas.length ? desgloseIvaPorTipo(f.lineas.map((l) => ({ tipoIva: l.tipoIva, baseLine: Number(l.baseLine), ivaImporte: Number(l.ivaImporte) }))) : undefined,
     gastoPorCuenta: f.lineas.length
-      ? [...porCuenta].map(([cuenta, centimos]) => ({ cuenta, nombre: NOMBRE_CUENTA.get(cuenta) ?? 'Gastos', base: centimos / 100 }))
+      ? [...porCuenta].map(([cuenta, centimos]) => ({ cuenta, nombre: extra.nombresCuentas?.get(cuenta) ?? NOMBRE_CUENTA.get(cuenta) ?? 'Gastos', base: centimos / 100 }))
       : undefined,
     desgloseRetencion: desgloseRetencionGasto({
       baseTotal: Number(f.baseTotal),
@@ -582,7 +601,38 @@ export function datosContablesGasto(
     estadoAsiento: extra.estadoAsiento,
     ...(extra.numeroAsiento ? { numeroAsiento: extra.numeroAsiento } : {}),
     ...(extra.cuentaAcreedor ? { cuentaAcreedor: extra.cuentaAcreedor } : {}),
+    ...(extra.nombreCuentaAcreedor ? { nombreCuentaAcreedor: extra.nombreCuentaAcreedor } : {}),
   };
+}
+
+/**
+ * datosContablesGasto con la subcuenta del proveedor: la 400N (compras) o la
+ * 410N (servicios) segun el tipo de gasto, asignada y dada de alta en el plan
+ * si falta. Si la factura ya tiene pagos, la cuenta que usaron (`cuentaAcreedor`,
+ * de cuentaAcreedorDePagos): asi pago y deuda casan; si fue la generica (pagos
+ * anteriores a las subcuentas), se respeta y queda un aviso en el log.
+ */
+export async function datosContablesGastoConSubcuenta(
+  tx: TransaccionBD,
+  companyId: string,
+  f: FacturaConLineas,
+  s: { id: string; nifCif: string; nombreFiscal: string },
+  extraSinNombres: { estadoAsiento: 'POSTED' | 'DRAFT'; numeroAsiento?: string; cuentaAcreedor?: string | null },
+): Promise<Parameters<typeof contabilizarFacturaGasto>[2]> {
+  // Cuentas de gasto con el nombre del plan (las subcuentas propias llevan el suyo).
+  const tipo: TipoGasto = esTipoGasto(f.tipoGasto) ? f.tipoGasto : 'COMPRA';
+  const nombresCuentas = await nombresDeCuentas(tx, companyId, f.lineas.map((l) => l.accountCode ?? TIPO_GASTO_INFO[tipo].cuenta));
+  const extra = { ...extraSinNombres, nombresCuentas };
+  if (extra.cuentaAcreedor) {
+    if (esSubcuentaGenerica(extra.cuentaAcreedor)) {
+      logger.warn('gasto contabilizado contra la cuenta generica de sus pagos anteriores', { companyId, factura: f.numeroCompleto, cuenta: extra.cuentaAcreedor });
+      return datosContablesGasto(f, s, extra);
+    }
+    const enPlan = await tx.chartOfAccounts.findFirst({ where: { companyId, codigo: extra.cuentaAcreedor }, select: { nombre: true } });
+    return datosContablesGasto(f, s, { ...extra, nombreCuentaAcreedor: enPlan?.nombre ?? s.nombreFiscal });
+  }
+  const sub = await subcuentaProveedorParaApunte(tx, companyId, s.id, f.tipoGasto);
+  return datosContablesGasto(f, s, { ...extra, cuentaAcreedor: sub.codigo, nombreCuentaAcreedor: sub.nombre });
 }
 
 /**
@@ -740,7 +790,7 @@ export async function registrarGasto(companyId: string, cuerpo: unknown, opcione
   const { espanola } = await perfilEmpresa(companyId);
   const v = validarFacturaGasto(bruto, { paisProveedor: prov.pais, permitirSerie: true, empresaEspanola: espanola });
   const { lineas, baseTotal, ivaTotal, retencionTotal, totalFactura, cabecera } = lineasParaGuardar(v);
-  await comprobarCuentas(companyId, lineas.map((l) => l.accountCode).filter((c): c is string => !!c));
+  await comprobarCuentas(companyId, v, lineas.map((l) => l.accountCode));
   await comprobarCuentasNomina(companyId, v, lineas.map((l) => l.accountCode));
 
   const numeroActivo = normalizarNumeroProveedor(v.numeroFacturaProveedor);
@@ -763,7 +813,7 @@ export async function registrarGasto(companyId: string, cuerpo: unknown, opcione
   for (let intento = 1; !resultado; intento++) {
     try {
       resultado = await prisma.$transaction(async (tx) => {
-        const supplier: ProveedorBasico = prov.existente ?? (await tx.supplier.create({ data: { companyId, ...prov.nuevo! } }));
+        const supplier: ProveedorBasico = prov.existente ?? (await crearProveedorEnTx(tx, companyId, prov.nuevo!));
         const ultima = await tx.expenseInvoice.findFirst({ where: { companyId, serie }, orderBy: { numero: 'desc' }, select: { numero: true } });
         const numero = (ultima?.numero ?? 0) + 1;
         const f = await tx.expenseInvoice.create({
@@ -792,7 +842,8 @@ export async function registrarGasto(companyId: string, cuerpo: unknown, opcione
           },
           include: { lineas: true },
         });
-        const { asientoId } = await contabilizarFacturaGasto(companyId, f.id, datosContablesGasto(f, supplier, { estadoAsiento: opciones.contabilizar }), tx);
+        const datos = await datosContablesGastoConSubcuenta(tx, companyId, f, supplier, { estadoAsiento: opciones.contabilizar });
+        const { asientoId } = await contabilizarFacturaGasto(companyId, f.id, datos, tx);
         return { id: f.id, asientoId, supplierId: supplier.id };
       }, OPCIONES_TX);
     } catch (e) {
@@ -801,9 +852,9 @@ export async function registrarGasto(companyId: string, cuerpo: unknown, opcione
         const ya = await prisma.supplier.findFirst({ where: { companyId, nifCif: prov.nuevo?.nifCif ?? '' }, select: { id: true, nombreFiscal: true } });
         throw conflict(`Ya existe un proveedor con ese NIF: ${ya?.nombreFiscal ?? ''}`.trim(), { campo: 'proveedor.nifCif', proveedorId: ya?.id });
       }
-      // Dos altas a la vez con el mismo numero interno: se reintenta con el siguiente.
-      const numeroRepetido = esDuplicado(e, 'serie') || esDuplicado(e, 'numeroCompleto');
-      if (!numeroRepetido || intento >= 3) throw e;
+      // Dos altas a la vez con el mismo numero interno (o la misma subcuenta de proveedor): se reintenta.
+      const numeroRepetido = esDuplicado(e, 'serie') || esDuplicado(e, 'numeroCompleto') || INDICES_SUBCUENTA.some((i) => esDuplicado(e, i));
+      if (!numeroRepetido || intento >= 5) throw e;
     }
   }
 
@@ -993,7 +1044,7 @@ export async function editarGasto(
   const { espanola } = await perfilEmpresa(companyId);
   const v = validarFacturaGasto(bruto, { paisProveedor: prov.pais, permitirSerie: false, empresaEspanola: espanola });
   const { lineas, baseTotal, ivaTotal, retencionTotal, totalFactura, cabecera } = lineasParaGuardar(v);
-  await comprobarCuentas(companyId, lineas.map((l) => l.accountCode).filter((c): c is string => !!c));
+  await comprobarCuentas(companyId, v, lineas.map((l) => l.accountCode));
   await comprobarCuentasNomina(companyId, v, lineas.map((l) => l.accountCode));
   const numeroActivo = normalizarNumeroProveedor(v.numeroFacturaProveedor);
   if (prov.existente) await comprobarDuplicado(companyId, prov.existente.id, numeroActivo, id);
@@ -1011,10 +1062,10 @@ export async function editarGasto(
 
   let r: { asientoNuevo: string | null; supplierId: string };
   try {
-    r = await prisma.$transaction(async (tx) => {
+    r = await conReintentoSubcuenta(() => prisma.$transaction(async (tx) => {
       // Lo comprobado arriba se vuelve a mirar con la factura bloqueada.
       await bloquearSinCambios(tx, companyId, id, actual, asiento, mensajeConPagos);
-      const supplier: ProveedorBasico = prov.existente ?? (await tx.supplier.create({ data: { companyId, ...prov.nuevo! } }));
+      const supplier: ProveedorBasico = prov.existente ?? (await crearProveedorEnTx(tx, companyId, prov.nuevo!));
       await tx.expenseInvoiceLine.deleteMany({ where: { invoiceId: id } });
       const f = await tx.expenseInvoice.update({
         where: { id },
@@ -1044,10 +1095,11 @@ export async function editarGasto(
       if (asiento.estado === 'POSTED') {
         await tx.journalEntry.update({ where: { id: asiento.id }, data: { estado: 'REVERSED' } });
         const previos = await tx.journalEntry.count({ where: { companyId, invoiceId: id, origen: 'FACTURA_GASTO' } });
+        // Con el proveedor o el tipo de gasto nuevos: su subcuenta (400N o 410N).
         const nuevo = await contabilizarFacturaGasto(
           companyId,
           id,
-          datosContablesGasto(f, supplier, { estadoAsiento: 'POSTED', numeroAsiento: `FAC-GAST-${f.numeroCompleto}-R${previos}` }),
+          await datosContablesGastoConSubcuenta(tx, companyId, f, supplier, { estadoAsiento: 'POSTED', numeroAsiento: `FAC-GAST-${f.numeroCompleto}-R${previos}` }),
           tx,
         );
         return { asientoNuevo: nuevo.asientoId, supplierId: supplier.id };
@@ -1057,12 +1109,12 @@ export async function editarGasto(
       const nuevo = await contabilizarFacturaGasto(
         companyId,
         id,
-        datosContablesGasto(f, supplier, { estadoAsiento: 'DRAFT', numeroAsiento: asiento.numeroAsiento }),
+        await datosContablesGastoConSubcuenta(tx, companyId, f, supplier, { estadoAsiento: 'DRAFT', numeroAsiento: asiento.numeroAsiento }),
         tx,
       );
       if (asiento.estado !== 'DRAFT') await tx.journalEntry.update({ where: { id: nuevo.asientoId }, data: { estado: asiento.estado } });
       return { asientoNuevo: nuevo.asientoId, supplierId: supplier.id };
-    }, OPCIONES_TX);
+    }, OPCIONES_TX));
   } catch (e) {
     if (esDuplicado(e, 'numeroProveedorActivo')) throw await duplicadaTrasCarrera(companyId, prov.existente?.id ?? null, numeroActivo);
     if (esDuplicado(e, 'nifCif')) throw conflict('Ya existe un proveedor con ese NIF.', { campo: 'proveedor.nifCif' });

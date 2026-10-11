@@ -1,7 +1,9 @@
-import { badRequest, notFound } from '../utils/http-errors';
+import { badRequest, conflict, notFound } from '../utils/http-errors';
 import { randomUUID } from 'crypto';
 import { prisma } from '../config/database';
 import { PGC_BASE, PgcNode } from '../domain/pgc-model';
+import { fichaDeSubcuenta } from './terceros/subcuentas';
+import { esSubcuentaDeTercero } from './terceros/numeracion';
 
 export interface CrearCuentaDTO {
   companyId: string;
@@ -154,6 +156,18 @@ export async function crearSubcuentaPersonalizada(
   if (!/^\d+$/.test(codigo) || !codigo.startsWith(parentCodigo) || codigo.length <= parentCodigo.length) {
     throw badRequest(`El código ${codigo} tiene que empezar por ${parentCodigo} y ser más largo (solo dígitos).`);
   }
+  // Las subcuentas de clientes (430) y proveedores (400, 410) salen de su ficha:
+  // una suelta ocuparia un numero sin tercero. Se decide por el CODIGO y no
+  // solo por la madre: 43099999 bajo la 43 o la 4 tambien seria de un cliente.
+  // Bajo 4309, 4009, 407, 438... si se puede.
+  if (['430', '400', '410'].includes(parentCodigo) || esSubcuentaDeTercero(codigo)) {
+    throw conflict(
+      codigo.startsWith('430')
+        ? 'Las subcuentas de clientes se crean solas al dar de alta el cliente: créalo en Clientes.'
+        : 'Las subcuentas de proveedores y acreedores se crean solas al dar de alta el proveedor: créalo en Proveedores.',
+      { parentCodigo },
+    );
+  }
   const dto: CrearCuentaDTO = { ...dtoEntrada, codigo, nombre, parentCodigo };
 
   // Validar que el padre existe
@@ -204,6 +218,14 @@ export async function actualizarCuenta(
   });
 
   if (!cuenta) throw notFound('Cuenta no encontrada.');
+  // La subcuenta de un cliente o proveedor se cambia desde su ficha (lleva su nombre fiscal).
+  const ficha = (await fichaDeSubcuenta(companyId)).get(cuenta.codigo);
+  if (ficha) {
+    throw conflict(`Esta subcuenta es ${ficha.tipo === 'cliente' ? 'del cliente' : 'del proveedor'} ${ficha.nombre}: cámbiala desde su ficha.`, {
+      tipo: ficha.tipo,
+      id: ficha.id,
+    });
+  }
   if (cuenta.esBasePGC && datos.nombre) {
     throw badRequest('No se puede editar el nombre de cuentas del PGC base.');
   }

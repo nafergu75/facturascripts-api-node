@@ -119,6 +119,9 @@ export async function enriquecerFacturasConEstadoCobro<T extends Record<string, 
 /**
  * CRITICA 1 — registrar un cobro directo sobre la factura. VIA UNICA: crea un
  * vencimiento ad-hoc por el importe y lo liquida (asiento de tesoreria incluido).
+ *
+ * @deprecated Lee la factura de FacturaScripts. La conciliacion ya usa
+ * cobrosPagos.registrarCobroFactura (subcuenta del cliente). Sin llamadores.
  */
 export async function registrarCobro(
   companyId: string,
@@ -137,6 +140,9 @@ export async function registrarCobro(
 }
 
 /**
+ * @deprecated Codigo heredado de FacturaScripts (cuenta 430/400 inventada a
+ * partir del codigo de tercero de FS). Usa cobrosPagos.registrarCobroFactura.
+ *
  * Registra el cobro/pago de un VENCIMIENTO generando su asiento de tesoreria
  * (572/570 <-> 430/400) segun cuentasTesoreriaPorFormaPago, marca el vencimiento
  * liquidado, persiste el cobro y recalcula el estado de la factura.

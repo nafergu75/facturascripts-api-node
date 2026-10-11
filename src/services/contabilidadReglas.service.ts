@@ -16,8 +16,10 @@ function sumBy<T>(arr: T[], f: (x: T) => number): number {
  * base (430/400...) y su codigo: grupo de 3 digitos + codigo numerico a 7 -> 10
  * digitos (ej. cliente "1" -> "4300000001"). Asi cada tercero tiene su subcuenta.
  *
- * TODO (mejora): registrar esta subcuenta como SubcuentaEmpresa (planContable)
- * la primera vez, para gestionarla desde el modulo de plan contable.
+ * @deprecated Codigo heredado de FacturaScripts, sin llamadores en el motor
+ * propio. La subcuenta de un cliente o proveedor es la de su ficha:
+ * services/terceros/subcuentas.ts (subcuentaClienteParaApunte,
+ * subcuentaProveedorParaApunte). Se borrara en otra tarea.
  */
 export function subcuentaTercero(cuentaBase: string, codigoTercero: string): string {
   const grupo = cuentaBase.slice(0, 3);

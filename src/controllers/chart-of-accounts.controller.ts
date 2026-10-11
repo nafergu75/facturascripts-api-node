@@ -6,6 +6,7 @@ import {
   CrearCuentaDTO,
 } from '../services/chart-of-accounts.service';
 import { registrarAuditoria } from '../services/auditoria.service';
+import { fichaDeSubcuenta } from '../services/terceros/subcuentas';
 
 export const chartOfAccountsController = {
   /**
@@ -51,15 +52,12 @@ export const chartOfAccountsController = {
 
     // La primera consulta crea el plan si la empresa aun no lo tiene.
     await chartOfAccountsService.asegurarPlanContableEmpresa(req.companyId!);
-    const cuentas = await chartOfAccountsService.listarPlanContable(
-      req.companyId!,
-      {
-        grupo,
-        nivel,
-        naturaleza,
-        soloActivas,
-      },
-    );
+    const [lista, fichas] = await Promise.all([
+      chartOfAccountsService.listarPlanContable(req.companyId!, { grupo, nivel, naturaleza, soloActivas }),
+      fichaDeSubcuenta(req.companyId!),
+    ]);
+    // Las subcuentas de clientes y proveedores dicen de quien son (la pantalla enlaza a su ficha).
+    const cuentas = lista.map((c) => ({ ...c, tercero: fichas.get(c.codigo) ?? null }));
 
     sendOk(res, { cuentas, cantidad: cuentas.length });
   }),

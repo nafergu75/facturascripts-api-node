@@ -34,6 +34,10 @@ function porCuenta(lineas: Linea[]): Record<string, Linea> {
   return Object.fromEntries(lineas.map((l) => [l.accountCode, l]));
 }
 
+// El cliente y el proveedor de la suite se contabilizan en su subcuenta propia
+// (services/terceros/subcuentas): la primera de la empresa, 43000001, y el
+// mismo numero en la 400 (compras) y la 410 (servicios): 40000001 y 41000001.
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Fixtures compartidas de toda la suite
 // ─────────────────────────────────────────────────────────────────────────────
@@ -139,7 +143,7 @@ describe('contabilizarFacturaIngreso', () => {
       const lineas = await getLineas(journalEntryId);
       expect(lineas).toHaveLength(3);
       const pc = porCuenta(lineas);
-      expect(pc['430'].debe).toBeCloseTo(1210);
+      expect(pc['43000001'].debe).toBeCloseTo(1210);
       expect(pc['700'].haber).toBeCloseTo(1000);
       expect(pc['477'].haber).toBeCloseTo(210);
     });
@@ -201,7 +205,7 @@ describe('contabilizarFacturaIngreso', () => {
 
     it('430 DEBE 1060 (neto al cliente)', async () => {
       const pc = porCuenta(await getLineas(journalEntryId));
-      expect(pc['430'].debe).toBeCloseTo(1060);
+      expect(pc['43000001'].debe).toBeCloseTo(1060);
     });
 
     it('equilibrado: DEBE=1210 HABER=1210', async () => {
@@ -309,7 +313,7 @@ describe('contabilizarFacturaGasto', () => {
       const pc = porCuenta(lineas);
       expect(pc['600'].debe).toBeCloseTo(1000);
       expect(pc['472'].debe).toBeCloseTo(210);
-      expect(pc['400'].haber).toBeCloseTo(1210);
+      expect(pc['40000001'].haber).toBeCloseTo(1210);
     });
 
     it('NO existe línea 4751 (sin retención)', async () => {
@@ -380,8 +384,8 @@ describe('contabilizarFacturaGasto', () => {
 
     it('410 HABER 1060 (el profesional es acreedor, no proveedor, y cobra el neto)', async () => {
       const pc = porCuenta(await getLineas(journalEntryId));
-      expect(pc['410'].haber).toBeCloseTo(1060);
-      expect(pc['400']).toBeUndefined();
+      expect(pc['41000001'].haber).toBeCloseTo(1060);
+      expect(pc['40000001']).toBeUndefined();
     });
 
     it('DEBE=1210 HABER=1210', async () => {

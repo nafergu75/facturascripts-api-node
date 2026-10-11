@@ -31,6 +31,8 @@ import { hoyEspana, sumarDiasISO } from '../utils/fechas';
 import { copiaAlEmitir, leerAjustesFacturacion } from './ajustesFacturacion.service';
 import { FORMAS_PAGO, type FormaPago } from '../domain/ajustes.model';
 import { leerPais } from './clientes.service';
+import { crearClienteConSubcuenta } from './terceros/subcuentas';
+import { esCuentaDeTipo, problemaCuentasLinea } from './cuentasLinea.service';
 
 /**
  * Facturas de venta.
@@ -149,6 +151,12 @@ export interface CrearLineaIngresoDTO {
   tipoIva?: number; // 0, 4, 10, 21 (defecto 21)
   tipoRetencion?: number; // 0, 7, 15, 19 (defecto 0)
   productoServicioId?: string;
+  /**
+   * Cuenta de ingresos de la linea (70x: 700, 705, 7050001...). Sin ella, la
+   * del producto (la suya, la de su familia o 705 si es un servicio) y, si no
+   * hay producto, la 700.
+   */
+  cuenta?: string | null;
   /** Moneda de la linea (la de la factura). Obligatoria al modificar un borrador en divisa. */
   moneda?: string;
 }
@@ -260,6 +268,8 @@ export interface LineaIngresoResp {
   ivaImporteDoc: number;
   retencionImporteDoc: number;
   productoServicioId?: string;
+  /** Cuenta de ingresos de la linea; null = la generica (700). */
+  cuenta: string | null;
 }
 
 const round2 = (n: number): number => Math.round((n + Number.EPSILON) * 100) / 100;
@@ -378,6 +388,7 @@ function aRespuesta(f: FacturaConLineas, ctx: ContextoRespuesta): IncomeInvoiceR
       ivaImporteDoc: l.ivaImporteDoc ?? l.ivaImporte,
       retencionImporteDoc: l.retencionImporteDoc ?? l.retencionImporte,
       productoServicioId: l.productoServicioId ?? undefined,
+      cuenta: l.accountCode ?? null,
     })),
   };
 }
@@ -415,18 +426,17 @@ async function resolverCliente(
 
   const n = customerData.nuevo;
   const nifCif = n.nifCif.replace(/[\s-]/g, '').toUpperCase();
-  const customer = await prisma.customer.create({
-    data: {
-      companyId,
-      nombreFiscal: n.nombreFiscal,
-      nifCif,
-      direccion: n.direccion,
-      pais: paisClienteNuevo(n.pais, nifCif),
-      provincia: n.provincia,
-      municipio: n.municipio,
-      cp: n.cp,
-      email: n.email,
-    },
+  // Con su subcuenta 430 asignada en la misma transaccion que el alta.
+  const customer = await crearClienteConSubcuenta({
+    companyId,
+    nombreFiscal: n.nombreFiscal,
+    nifCif,
+    direccion: n.direccion,
+    pais: paisClienteNuevo(n.pais, nifCif),
+    provincia: n.provincia,
+    municipio: n.municipio,
+    cp: n.cp,
+    email: n.email,
   });
 
   return { id: customer.id, fiscal: clienteFiscal(customer) };
@@ -456,6 +466,10 @@ function validarLineas(lineas: CrearLineaIngresoDTO[] | undefined): LineaEntrada
     if (!Number.isFinite(Number(ret)) || ret < 0 || ret > 50) {
       throw badRequest(`Línea ${n}: la retención de IRPF no es válida.`);
     }
+    const cuenta = cuentaDeLinea(l.cuenta);
+    if (cuenta && !esCuentaDeTipo(cuenta, 'venta')) {
+      throw badRequest(`Línea ${n}: la cuenta ${cuenta} no es de ventas; tiene que empezar por 70.`, { campo: `lineas.${i}.cuenta` });
+    }
   });
   return lineas.map((l) => ({
     descripcion: String(l.descripcion).trim(),
@@ -465,7 +479,41 @@ function validarLineas(lineas: CrearLineaIngresoDTO[] | undefined): LineaEntrada
     tipoIva: Number(l.tipoIva ?? 21),
     tipoRetencion: Number(l.tipoRetencion ?? 0),
     productoServicioId: l.productoServicioId,
+    ...(cuentaDeLinea(l.cuenta) ? { cuentaContable: cuentaDeLinea(l.cuenta)! } : {}),
   }));
+}
+
+/** Cuenta escrita en una linea: solo digitos; vacia = ninguna. */
+function cuentaDeLinea(v: unknown): string | undefined {
+  if (v === undefined || v === null) return undefined;
+  const c = String(v).replace(/[\s.]/g, '');
+  return c || undefined;
+}
+
+/**
+ * Cuenta de ingresos de cada linea: la indicada (tiene que estar activa en el
+ * plan; si no, 400 con la linea) o la del producto (la suya, la de su familia
+ * o la 705 si es un servicio), siempre que exista en el plan. Sin ninguna, la
+ * linea queda sin cuenta y va a la 700 al contabilizar.
+ */
+async function conCuentasDeVenta(companyId: string, lineas: LineaEntrada[]): Promise<LineaEntrada[]> {
+  const indicada = await problemaCuentasLinea(companyId, 'venta', lineas.map((l) => l.cuentaContable));
+  if (indicada) throw badRequest(`Línea ${indicada.indice + 1}: ${indicada.mensaje}`, { campo: `lineas.${indicada.indice}.cuenta` });
+  const ids = [...new Set(lineas.filter((l) => !l.cuentaContable && l.productoServicioId).map((l) => l.productoServicioId!))];
+  if (!ids.length) return lineas;
+  const productos = await prisma.product.findMany({
+    where: { companyId, id: { in: ids } },
+    select: { id: true, tipo: true, cuentaVentas: true, familia: { select: { cuentaVentas: true } } },
+  });
+  const propuesta = new Map(productos.map((p) => [p.id, (p.cuentaVentas || p.familia?.cuentaVentas || (p.tipo === 'SERVICIO' ? '705' : '700')).replace(/\D/g, '')]));
+  // La del producto solo si vale (una cuenta antigua que ya no esta en el plan no bloquea la factura).
+  const validas = new Set<string>();
+  for (const c of new Set(propuesta.values())) if (c && !(await problemaCuentasLinea(companyId, 'venta', [c]))) validas.add(c);
+  return lineas.map((l) => {
+    if (l.cuentaContable || !l.productoServicioId) return l;
+    const c = propuesta.get(l.productoServicioId);
+    return c && validas.has(c) ? { ...l, cuentaContable: c } : l;
+  });
 }
 
 /**
@@ -498,6 +546,7 @@ function lineasDocGuardadas(f: FacturaConLineas): LineaEntrada[] {
     tipoIva: l.tipoIva,
     tipoRetencion: l.tipoRetencion,
     productoServicioId: l.productoServicioId ?? undefined,
+    ...(l.accountCode ? { cuentaContable: l.accountCode } : {}),
   }));
 }
 
@@ -513,6 +562,7 @@ function importesGuardados(f: FacturaConLineas): ImportesFactura {
       tipoIva: l.tipoIva,
       tipoRetencion: l.tipoRetencion,
       productoServicioId: l.productoServicioId ?? undefined,
+      ...(l.accountCode ? { cuentaContable: l.accountCode } : {}),
       doc: {
         precioUnitario: l.precioUnitarioDoc ?? l.precioUnitario,
         baseLine: l.baseLineDoc ?? l.baseLine,
@@ -570,6 +620,7 @@ function lineasACrear(imp: ImportesFactura) {
     cantidad: l.cantidad,
     descuentoPorcentaje: l.descuentoPorcentaje,
     productoServicioId: l.productoServicioId,
+    accountCode: l.cuentaContable ?? null,
     ...importesLinea(l),
   }));
 }
@@ -835,7 +886,7 @@ interface Interno {
  */
 async function crear(dto: CrearFacturaIngresoDTO, opciones: { origen?: OrigenFactura }, interno: Interno): Promise<IncomeInvoiceResp> {
   const origen: OrigenFactura = opciones.origen ?? 'pantalla';
-  let lineas = validarLineas(dto.lineas);
+  let lineas = await conCuentasDeVenta(dto.companyId, validarLineas(dto.lineas));
   if (dto.proforma && dto.facturaOriginalId) throw badRequest('Una proforma no puede ser una rectificativa.');
   const esRectificativa = !!dto.facturaOriginalId;
   const tipoFactura = validarTipoFactura(dto.tipoFactura, esRectificativa ? 'R1' : 'F1');
@@ -1096,7 +1147,7 @@ export const incomeInvoicesService = {
     const misma = moneda === perfil.monedaCuenta;
 
     // Fiscalidad con el estado combinado (lo nuevo y lo que ya habia).
-    let lineas = dto.lineas ? validarLineas(dto.lineas) : lineasDocGuardadas(actual);
+    let lineas = dto.lineas ? await conCuentasDeVenta(companyId, validarLineas(dto.lineas)) : lineasDocGuardadas(actual);
     const fiscal = await resolverFiscalidad(
       {
         companyId,
@@ -1446,7 +1497,7 @@ export const incomeInvoicesService = {
         tipoOperacion: o.tipoOperacion === 'EMPRESA_EXTRANJERA' ? null : o.tipoOperacion,
         causaExencion: o.causaExencion,
         referenciaLegal: o.referenciaLegal,
-        lineas: lineasDocGuardadas(o).map((l) => ({ ...l, moneda: o.moneda })),
+        lineas: lineasDocGuardadas(o).map(({ cuentaContable, ...l }) => ({ ...l, cuenta: cuentaContable ?? null, moneda: o.moneda })),
       },
       { origen: 'copia' },
       {},
@@ -1641,6 +1692,7 @@ export const incomeInvoicesService = {
         tipoIva: l.tipoIva,
         tipoRetencion: l.tipoRetencion,
         productoServicioId: l.productoServicioId,
+        cuenta: l.cuentaContable ?? null,
       }));
     }
 

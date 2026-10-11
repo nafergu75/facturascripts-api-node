@@ -77,8 +77,15 @@ describe('Conciliacion con cuenta 555 (Quipu)', () => {
   it('crea asiento banco<->555 (Prisma) y marca el movimiento conciliado', async () => {
     const cuenta = await crearCuentaBancaria('co555', { iban: 'ES00', subcuentaCodigo: '572000', activa: true });
     const [mov] = await importarMovimientosDesdeCSV('co555', cuenta.id, '2026-05-01;-90.00;Comision bancaria');
+    // La cuenta tiene que existir (y estar activa) en el plan de la empresa.
+    await prisma.chartOfAccounts.upsert({
+      where: { companyId_codigo: { companyId: 'co555', codigo: '555' } },
+      update: { activo: true },
+      create: { companyId: 'co555', codigo: '555', nombre: 'Partidas pendientes de aplicación', grupo: 5, nivel: 3, naturaleza: 'ACTIVO', tipoUso: 'BALANCE' },
+    });
+    await expect(conciliarMovimientoConCuenta('co555', mov.id, '5550000000')).rejects.toThrow(/no está en el plan contable/);
 
-    const r = await conciliarMovimientoConCuenta('co555', mov.id, '5550000000');
+    const r = await conciliarMovimientoConCuenta('co555', mov.id);
     expect(r.movimientoConciliado).toBe(true);
     // El asiento ahora vive en Prisma (JournalEntryLine), no en FacturaScripts.
     const entryId = String((r.asiento as Record<string, unknown>).idasiento);

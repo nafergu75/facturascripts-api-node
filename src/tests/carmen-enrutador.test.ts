@@ -37,6 +37,7 @@ jest.mock('../services/carmen/intenciones/datos', () => {
       facturadoEnPeriodo: ejecutor('INT-09'),
       buscarFactura: ejecutor('INT-13'),
       cuentaDeResultados: ejecutor('INT-18'),
+      saldoContableTercero: ejecutor('INT-07'),
       ivaDelTrimestre: ejecutor('INT-28'),
     },
   };
@@ -73,12 +74,12 @@ afterAll(() => {
 beforeEach(() => {
   olvidarIndices();
   mockPrisma.customer.findMany.mockResolvedValue([
-    { id: 'c1', nombreFiscal: 'CONSTRUCCIONES PÉREZ SL', nifCif: 'B11111111' },
+    { id: 'c1', nombreFiscal: 'CONSTRUCCIONES PÉREZ SL', nifCif: 'B11111111', subcuenta430: '43000001' },
     { id: 'c2', nombreFiscal: 'Talleres Martínez SA', nifCif: 'A22222222' },
     { id: 'c3', nombreFiscal: 'HERMANOS RUIZ SL', nifCif: 'B33333333' },
   ]);
   mockPrisma.supplier.findMany.mockResolvedValue([
-    { id: 'p1', nombreFiscal: 'IBERDROLA CLIENTES SAU', nifCif: 'A44444444' },
+    { id: 'p1', nombreFiscal: 'IBERDROLA CLIENTES SAU', nifCif: 'A44444444', subcuenta400: '40000001', subcuenta410: '41000001' },
     { id: 'p2', nombreFiscal: 'REPSOL COMERCIAL SA', nifCif: 'A55555555' },
   ]);
   mockPrisma.bankAccount.findMany.mockResolvedValue([{ id: 'b1', bancoNombre: 'Banco Sabadell', iban: 'ES0000000000000000001234' }]);
@@ -211,6 +212,15 @@ const DATOS: Record<string, string[]> = {
     'iva a pagar del trimestre',
     'cuanto tengo que pagar de iva',
     'liquidacion del iva',
+  ],
+  'INT-07': [
+    'saldo contable de Construcciones Pérez',
+    '¿qué saldo tiene Iberdrola en contabilidad?',
+    'mayor de Talleres Martínez',
+    '¿cuánto debe la 43000001?',
+    'saldo de la subcuenta 41000001',
+    'movimientos contables de Repsol',
+    'que dice la contabilidad de hermanos ruiz',
   ],
   'INT-30': ['¿qué impuestos tengo que presentar?', '¿tengo algo caducado?', 'proximos impuestos', 'que declaraciones me tocan este trimestre', 'que tengo pendiente con hacienda', 'que modelos hay que presentar este mes'],
   'INT-39': ['dame un resumen', 'buenos días, ¿qué tengo hoy?', 'como va la empresa', 'como vamos', 'resumen de la situacion'],
@@ -588,7 +598,7 @@ describe('paso 3: charla y peticiones de acción', () => {
     expect((await preguntar('Hola')).cuerpo.origen).toBe('sistema');
     expect((await preguntar('gracias')).cuerpo.texto).toMatch(/De nada/);
     const ayuda = await preguntar('¿qué sabes hacer?');
-    expect(ayuda.cuerpo.botones?.length).toBe(14);
+    expect(ayuda.cuerpo.botones?.length).toBe(15);
   });
 
   it('una petición de acción dice dónde se hace y no hace nada', async () => {

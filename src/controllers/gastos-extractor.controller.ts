@@ -12,6 +12,7 @@ import { asyncHandler } from '../utils/async-handler';
 import { badRequest } from '../utils/http-errors';
 import { prisma } from '../config/database';
 import { AVISO_NO_FACTURA, gastosExtractorService, GastoExtraido, GastoExtraidoEmpresa } from '../services/gastos-extractor.service';
+import { cuentaHabitualDeProveedor } from '../services/cuentasLinea.service';
 import { empresaConNominas, expenseInvoicesService } from '../services/expense-invoices.service';
 import { normalizarNumeroProveedor } from '../domain/factura-gasto.model';
 import { limpiarNif } from '../domain/tipo-operacion.model';
@@ -87,7 +88,8 @@ export const gastosExtractorController = {
       });
       duplicada = f ? { facturaId: f.id, numeroCompleto: f.numeroCompleto } : null;
     }
-    const data: GastoExtraidoEmpresa = { ...resultado, proveedorExistente, duplicada };
+    const cuentaHabitual = proveedorExistente ? await cuentaHabitualDeProveedor(companyId, proveedorExistente.id) : null;
+    const data: GastoExtraidoEmpresa = { ...resultado, proveedorExistente, duplicada, cuentaHabitual };
     res.status(201).json({ ok: true, data });
   }),
 

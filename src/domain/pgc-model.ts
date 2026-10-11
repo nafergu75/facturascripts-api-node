@@ -918,6 +918,15 @@ const PGC_AMPLIACION: PgcNode[] = [
   subgrupo('22', 'Inversiones inmobiliarias', 'activo'),
   cuenta('221', 'Inversiones en construcciones', 'activo'),
   // Grupo 4
+  // Las que traen los balances y diarios de otros programas junto a las
+  // subcuentas de clientes y proveedores (sin ellas, la puesta en marcha fallaba).
+  cuenta('401', 'Proveedores, efectos comerciales a pagar', 'pasivo'),
+  cuenta('407', 'Anticipos a proveedores', 'activo'),
+  cuenta('431', 'Clientes, efectos comerciales a cobrar', 'activo'),
+  cuenta('436', 'Clientes de dudoso cobro', 'activo'),
+  cuenta('438', 'Anticipos de clientes', 'pasivo'),
+  subgrupo('49', 'Deterioro de valor de créditos comerciales y provisiones a corto plazo', 'activo'),
+  cuenta('490', 'Deterioro de valor de créditos por operaciones comerciales', 'activo'),
   cuenta('473', 'Hacienda Pública, retenciones y pagos a cuenta', 'activo'),
   // El motor contable lleva aqui el IRPF que retenemos en las compras.
   {

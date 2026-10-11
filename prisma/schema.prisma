@@ -168,11 +168,16 @@ model Customer {
   /// Moneda en la que se le suele facturar (ISO 4217). Solo la propone el
   /// formulario; el backend no la aplica si la factura no indica moneda.
   monedaPreferida String?         @db.VarChar(3)
+  /// Subcuenta contable propia (430 + correlativo con la longitud de la
+  /// empresa, 43000012). Se asigna al dar de alta la ficha; en el plan se da
+  /// de alta con el nombre fiscal al primer apunte (services/terceros).
+  subcuenta430    String?         @db.VarChar(15)
   createdAt       DateTime        @default(now())
   updatedAt       DateTime        @updatedAt
   invoices        IncomeInvoice[]
 
   @@unique([companyId, nifCif])
+  @@unique([companyId, subcuenta430])
   @@index([companyId])
 }
 
@@ -691,6 +696,11 @@ model Supplier {
   email        String?
   telefono     String?
   activo       Boolean               @default(true)
+  /// Subcuentas propias con el MISMO correlativo: 400N (compras) y 410N
+  /// (servicios). Se asignan las dos al dar de alta la ficha; en el plan solo
+  /// se da de alta la que se usa, al primer apunte (services/terceros).
+  subcuenta400 String?               @db.VarChar(15)
+  subcuenta410 String?               @db.VarChar(15)
   createdAt    DateTime              @default(now())
   updatedAt    DateTime              @updatedAt
   invoices     ExpenseInvoice[]
@@ -698,6 +708,8 @@ model Supplier {
   bankAccounts SupplierBankAccount[]
 
   @@unique([companyId, nifCif])
+  @@unique([companyId, subcuenta400])
+  @@unique([companyId, subcuenta410])
   @@index([companyId])
 }
 

@@ -18,9 +18,10 @@ import { authorize } from '../middleware/authorize.middleware';
 import { asyncHandler } from '../utils/async-handler';
 import { sendOk } from '../utils/response';
 import { badRequest } from '../utils/http-errors';
-import { resolverPeriodo, type NivelSumas, type Periodo, type TipoTercero } from '../services/informesContables.calculo';
+import { resolverPeriodo, type FiltroCuentas, type NivelSumas, type Periodo, type TipoTercero } from '../services/informesContables.calculo';
 import { nombreFichero, tablaAPdf, tablaAXlsx, type TablaInforme } from '../services/informesContables.documentos';
 import {
+  buscarTerceros,
   ejerciciosDisponibles,
   informeBalance,
   informeDetalleTercero,
@@ -29,6 +30,7 @@ import {
   informeMayorTerceros,
   informePerdidasGanancias,
   informeSumasYSaldos,
+  terceroParaMayor,
 } from '../services/informesContables.service';
 
 export const informesContablesRoutes = Router({ mergeParams: true });
@@ -56,6 +58,22 @@ async function responder(res: Response, formato: unknown, informe: { tabla: Tabl
   }
   if (formato && formato !== 'json') throw badRequest('Formato no válido. Usa json, pdf o xlsx.');
   return sendOk(res, informe);
+}
+
+const soloDigitos = (v: unknown) => (typeof v === 'string' ? v.replace(/\D/g, '') : '') || undefined;
+
+/** Filtro de cuentas de la consulta: cuenta (prefijo) o rango cuentaDesde/cuentaHasta. */
+function filtroCuentas(query: Record<string, unknown>): FiltroCuentas | undefined {
+  const filtro = { cuenta: soloDigitos(query.cuenta), desde: soloDigitos(query.cuentaDesde), hasta: soloDigitos(query.cuentaHasta) };
+  if (filtro.desde && filtro.hasta && filtro.desde > filtro.hasta) throw badRequest('La cuenta inicial es mayor que la final.');
+  return filtro.cuenta || filtro.desde || filtro.hasta ? filtro : undefined;
+}
+
+/** cliente | proveedor (tambien admite clientes | proveedores). */
+function tipoFicha(v: unknown): 'cliente' | 'proveedor' {
+  if (v === 'cliente' || v === 'clientes') return 'cliente';
+  if (v === 'proveedor' || v === 'proveedores') return 'proveedor';
+  throw badRequest('Indica si es un cliente o un proveedor (tipoTercero=cliente o proveedor).');
 }
 
 function tipoTercero(v: string): TipoTercero {
@@ -93,7 +111,15 @@ informesContablesRoutes.get(
   asyncHandler(async (req, res) => {
     const n = String(req.query.nivel ?? 'subcuenta');
     const nivel: NivelSumas = n === '3' ? 3 : n === '4' ? 4 : 'subcuenta';
-    await responder(res, req.query.formato, await informeSumasYSaldos(req.companyId!, periodo(req.query), nivel));
+    const ocultar = req.query.ocultarSinMovimiento;
+    await responder(
+      res,
+      req.query.formato,
+      await informeSumasYSaldos(req.companyId!, periodo(req.query), nivel, {
+        filtro: filtroCuentas(req.query),
+        ocultarSinMovimiento: ocultar === undefined || ocultar === '' ? true : si(ocultar),
+      }),
+    );
   }),
 );
 
@@ -101,11 +127,23 @@ informesContablesRoutes.get(
   '/mayor',
   authorize('contabilidad:read'),
   asyncHandler(async (req, res) => {
-    const limpia = (v: unknown) => (typeof v === 'string' ? v.replace(/\D/g, '') : '') || undefined;
-    const filtro = { cuenta: limpia(req.query.cuenta), desde: limpia(req.query.cuentaDesde), hasta: limpia(req.query.cuentaHasta) };
-    if (!filtro.cuenta && !filtro.desde && !filtro.hasta) throw badRequest('Indica una cuenta (p. ej. 572) o un rango de cuentas.');
-    if (filtro.desde && filtro.hasta && filtro.desde > filtro.hasta) throw badRequest('La cuenta inicial es mayor que la final.');
-    await responder(res, req.query.formato, await informeMayor(req.companyId!, periodo(req.query), filtro));
+    // Un cliente o proveedor (su subcuenta) o una cuenta o rango de cuentas.
+    const terceroId = typeof req.query.tercero === 'string' && req.query.tercero.trim() ? req.query.tercero.trim() : null;
+    const tercero = terceroId ? await terceroParaMayor(req.companyId!, tipoFicha(req.query.tipoTercero), terceroId) : undefined;
+    const filtro = filtroCuentas(req.query);
+    if (!tercero && !filtro) throw badRequest('Indica una cuenta (p. ej. 572), un rango de cuentas o un cliente o proveedor.');
+    await responder(res, req.query.formato, await informeMayor(req.companyId!, periodo(req.query), filtro ?? {}, tercero));
+  }),
+);
+
+/** Buscador de clientes y proveedores por nombre, NIF o subcuenta (para el Libro mayor). */
+informesContablesRoutes.get(
+  '/buscar-tercero',
+  authorize('contabilidad:read'),
+  asyncHandler(async (req, res) => {
+    const q = typeof req.query.q === 'string' ? req.query.q : '';
+    const tipo = req.query.tipo === undefined || req.query.tipo === '' ? undefined : tipoFicha(req.query.tipo);
+    sendOk(res, await buscarTerceros(req.companyId!, q, tipo));
   }),
 );
 
