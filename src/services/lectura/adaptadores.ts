@@ -57,13 +57,57 @@ export interface TramoGasto {
   tipoIva: number;
   base: number;
   cuota: number;
+  /** Texto de la linea del formulario: las partidas de ese tipo ("Tóner", "Libros y revistas") o uno neutro ("Base al 10 %", "Base exenta"). */
+  descripcion: string;
+}
+
+/** Largo maximo de la descripcion de un tramo (la linea admite 500). */
+const MAX_DESCRIPCION_TRAMO = 150;
+
+/** 21 -> "21 %", 5.2 -> "5,2 %". */
+const porcentaje = (n: number) => `${String(Math.round(n * 100) / 100).replace('.', ',')} %`;
+
+/** Texto neutro de un tramo sin partidas: "Base al 10 %"; al 0 %, "Base exenta" (no "Base al 0 %"). */
+export function descripcionNeutraTramo(tipoIva: number): string {
+  return tipoIva === 0 ? 'Base exenta' : `Base al ${porcentaje(tipoIva)}`;
+}
+
+/** "Revistas" -> "revistas" para ir detras de "y"; "PVC" o "A3" se quedan como estan. */
+const enMinuscula = (t: string) => (/^\p{Lu}\p{Ll}/u.test(t) ? t.charAt(0).toLowerCase() + t.slice(1) : t);
+
+/** "Libros", "Libros y revistas", "Folletos, carteles y sobres" o "Folletos, carteles y 3 partidas más". */
+function unirPartidas(partidas: string[]): string {
+  if (partidas.length === 1) return partidas[0];
+  const [primera, ...resto] = partidas;
+  const siguientes = resto.map(enMinuscula);
+  const lista = partidas.length > 3 ? [primera, siguientes[0], `${partidas.length - 2} partidas más`] : [primera, ...siguientes];
+  return `${lista.slice(0, -1).join(', ')} y ${lista[lista.length - 1]}`;
+}
+
+/** Descripcion de un tramo con las partidas de su tipo de IVA (todas, si solo hay un tipo). */
+function descripcionTramo(l: LecturaNormalizada, tipoIva: number): string {
+  const unSoloTipo = l.desglose.length === 1;
+  const vistas = new Set<string>();
+  const partidas: string[] = [];
+  for (const linea of l.lineas) {
+    const d = linea.descripcion?.replace(/\s+/g, ' ').trim();
+    if (!d) continue;
+    if (!unSoloTipo && (linea.tipoIva === null || Math.round(linea.tipoIva * 100) !== Math.round(tipoIva * 100))) continue;
+    const clave = d.toLowerCase();
+    if (vistas.has(clave)) continue;
+    vistas.add(clave);
+    partidas.push(d);
+  }
+  if (!partidas.length) return descripcionNeutraTramo(tipoIva);
+  const texto = unirPartidas(partidas);
+  return texto.length > MAX_DESCRIPCION_TRAMO ? `${texto.slice(0, MAX_DESCRIPCION_TRAMO - 1).trimEnd()}…` : texto;
 }
 
 /** Un tramo por tipo de IVA, para que el formulario ponga una linea por tipo en vez de juntarlos. */
 export function tramosGasto(l: LecturaNormalizada): TramoGasto[] {
   return l.desglose
     .filter((t) => t.base.valor !== null)
-    .map((t) => ({ tipoIva: t.tipoIva, base: redondear2(t.base.valor ?? 0), cuota: redondear2(t.cuota.valor ?? 0) }));
+    .map((t) => ({ tipoIva: t.tipoIva, base: redondear2(t.base.valor ?? 0), cuota: redondear2(t.cuota.valor ?? 0), descripcion: descripcionTramo(l, t.tipoIva) }));
 }
 
 export function aInvoiceExtraction(
