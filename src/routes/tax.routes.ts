@@ -7,7 +7,7 @@
  * - Exportación de modelos
  */
 
-import { generarTxt303Trimestre } from '../services/impuestosModulo.service';
+import { generarTxt303Trimestre, opcionesBorrador303DeQuery } from '../services/impuestosModulo.service';
 import { Router, Request, Response } from 'express';
 import { taxDocumentsService } from '../services/tax-documents.service';
 import { authMiddleware } from '../middleware/auth.middleware';
@@ -212,6 +212,8 @@ taxRoutes.get(
  * Query params:
  *   - period: string (REQUERIDO) - Q1-2026, Q2-2026, etc.
  *   - format: 'txt' | 'json' (default: json)
+ *   - con format=txt, las opciones del borrador (las mismas que GET /tax-models/303):
+ *     tipoDeclaracion (I, U, C, D, N), aCompensar (importe) y cuentaBancariaId
  *
  * Response:
  *   - Si format=txt: String con contenido TXT
@@ -249,7 +251,12 @@ taxRoutes.get(
         if (!m) {
           return res.status(400).json({ error: 'El periodo tiene que ser Q1-2026, Q2-2026...' });
         }
-        const { nombre, contenido } = await generarTxt303Trimestre(companyId, Number(m[2]), Number(m[1]) as 1 | 2 | 3 | 4);
+        const { nombre, contenido } = await generarTxt303Trimestre(
+          companyId,
+          Number(m[2]),
+          Number(m[1]) as 1 | 2 | 3 | 4,
+          opcionesBorrador303DeQuery(req.query as Record<string, unknown>),
+        );
         res.setHeader('Content-Type', 'text/plain; charset=ISO-8859-1');
         res.setHeader('Content-Disposition', `attachment; filename="${nombre}"`);
         return res.status(200).send(Buffer.from(contenido, 'latin1'));
