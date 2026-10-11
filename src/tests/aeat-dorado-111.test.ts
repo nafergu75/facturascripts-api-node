@@ -218,6 +218,19 @@ describe('111: tipo de declaracion, complementaria, domiciliacion y persona fisi
     expect(construirDeclaracion('111', { ...base, casillas: casillas({}), opciones: { complementaria: true } }).errores[0]).toMatch(/13 cifras/);
   });
 
+  it('complementaria con resultado 0 o negativo: la sede no la admite, error en vez de fichero', () => {
+    const opciones = { complementaria: true, justificanteAnterior: '1110123456789' };
+    const cero = construirDeclaracion('111', { ...base, casillas: casillas({ '29': 150, '30': 0 }), opciones });
+    expect(cero.errores).toEqual([
+      'Una complementaria del 111 solo se presenta si sale una cantidad a ingresar, y aquí la casilla [30] sale 0,00 €. La sede no la admite: si en la declaración anterior ingresaste de más, pide en la sede la rectificación de esa autoliquidación; si no cambia nada, no hace falta presentar otra.',
+    ]);
+    expect(() => ficheroDeclaracion(cero)).toThrow(expect.objectContaining({ statusCode: 400 }));
+    const negativa = construirDeclaracion('111', { ...base, casillas: casillas({ '29': 200, '30': -50 }), opciones });
+    expect(negativa.errores).toContainEqual(expect.stringMatching(/^Una complementaria del 111 solo se presenta si sale una cantidad a ingresar, y aquí la casilla \[30\] sale -50,00 €/));
+    // Sin complementaria, el resultado 0 sigue siendo una declaracion negativa (N).
+    expect(construirDeclaracion('111', { ...base, casillas: casillas({ '28': 0, '03': 0, '09': 0, '30': 0 }) })).toMatchObject({ errores: [], tipoDeclaracion: 'N' });
+  });
+
   it('persona fisica: apellidos en la 23 y nombre en la 83, con la Ñ (ISO-8859-1)', () => {
     const d = construirDeclaracion('111', { ...base, nif: nif(30000001), denominacion: 'Peña Ibáñez, José-María', casillas: casillas({}) });
     comprobarRegistro(partes(ficheroDeclaracion(d)).pag, PAG, {

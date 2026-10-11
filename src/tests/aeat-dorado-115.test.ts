@@ -140,3 +140,18 @@ describe('115: NIF del declarante con su digito de control', () => {
     );
   });
 });
+
+describe('115: complementaria sin cantidad a ingresar', () => {
+  it('[05] = 0 en una complementaria: error claro, no se genera', () => {
+    const decl = construirDeclaracion('115', {
+      nif: EMPRESA,
+      denominacion: 'Ifbiosoluciones SL',
+      ejercicio: 2027,
+      periodo: '1T',
+      casillas: { '01': 2, '02': 5190, '03': 986.1, '04': 986.1, '05': 0 },
+      opciones: { complementaria: true, justificanteAnterior: '1151234567890' },
+    });
+    expect(decl.errores).toEqual([expect.stringMatching(/^Una complementaria del 115 solo se presenta si sale una cantidad a ingresar, y aquí la casilla \[05\] sale 0,00 €\. La sede no la admite/)]);
+    expect(() => ficheroDeclaracion(decl)).toThrow(expect.objectContaining({ statusCode: 400 }));
+  });
+});

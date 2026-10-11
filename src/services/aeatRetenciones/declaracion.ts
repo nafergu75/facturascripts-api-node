@@ -253,7 +253,20 @@ export function construirDeclaracion(modelo: ModeloRetenciones, e: EntradaDeclar
   if (resultado !== cent(casillas[m.resultado])) {
     errores.push(`La casilla [${m.resultado}] tiene que ser [${m.base}] - [${m.anteriores}] (${(resultado / 100).toFixed(2)}): corrige las casillas editadas a mano.`);
   }
-  if (resultado < 0) errores.push(`El resultado del ${modelo} no puede ser negativo: lo ingresado de más se rectifica en la declaración anterior.`);
+  if (complementaria && resultado <= 0) {
+    // Instrucciones del modelo 111 en la sede (Modelo 111 > Instrucciones, consultadas
+    // el 11-10-2026): «Únicamente procederá la presentación de autoliquidación
+    // complementaria» cuando dé un importe a ingresar mayor, y de la casilla 30:
+    // «dicho resultado habrá de ser siempre una cantidad positiva». Lo ingresado de
+    // más se corrige con una solicitud de rectificación (art. 120.3 LGT). El 115
+    // tiene la misma liquidacion ([05] = [03] - [04]) y los mismos tipos (I, U, G, N).
+    errores.push(
+      `Una complementaria del ${modelo} solo se presenta si sale una cantidad a ingresar, y aquí la casilla [${m.resultado}] sale ${(resultado / 100).toFixed(2).replace('.', ',')} €. ` +
+        'La sede no la admite: si en la declaración anterior ingresaste de más, pide en la sede la rectificación de esa autoliquidación; si no cambia nada, no hace falta presentar otra.',
+    );
+  } else if (resultado < 0) {
+    errores.push(`El resultado del ${modelo} no puede ser negativo: lo ingresado de más se rectifica en la declaración anterior.`);
+  }
   const justificante = String(o.justificanteAnterior ?? '').replace(/\s/g, '');
   if (complementaria && !/^\d{13}$/.test(justificante)) {
     errores.push('En una complementaria hay que indicar el número de justificante de la declaración anterior (13 cifras).');
