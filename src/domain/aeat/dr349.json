@@ -1,0 +1,88 @@
+{
+  "modelo": "349",
+  "nombre": "Declaración recapitulativa de operaciones intracomunitarias",
+  "norma": "Orden HAC/174/2020, de 4 de febrero (Anexo: diseños lógicos)",
+  "fichero": "DR_Anexo_349.pdf",
+  "ejercicios": "2020 y siguientes",
+  "comprobadoEnSede": "2026-10-11",
+  "url": "https://sede.agenciatributaria.gob.es/Sede/ayuda/disenos-registro/modelos-300-399.html",
+  "codificacion": "ISO-8859-1",
+  "separador": "CRLF",
+  "registros": [
+    {
+      "id": "declarante",
+      "nombre": "Tipo 1: registro de declarante",
+      "longitud": 500,
+      "campos": [
+        { "pos": 1, "lon": 1, "tipo": "Num", "id": "tipoRegistro", "descripcion": "Tipo de registro", "constante": "1" },
+        { "pos": 2, "lon": 3, "tipo": "Num", "id": "modelo", "descripcion": "Modelo declaración", "constante": "349" },
+        { "pos": 5, "lon": 4, "tipo": "Num", "id": "ejercicio", "descripcion": "Ejercicio" },
+        { "pos": 9, "lon": 9, "tipo": "An", "id": "nifDeclarante", "descripcion": "NIF del declarante (a la derecha, ceros a la izquierda)" },
+        { "pos": 18, "lon": 40, "tipo": "An", "id": "nombreDeclarante", "descripcion": "Apellidos y nombre o razón social del declarante" },
+        { "pos": 58, "lon": 1, "tipo": "Blanco", "id": "blancos58", "descripcion": "Blancos" },
+        { "pos": 59, "lon": 9, "tipo": "Num", "id": "telefonoContacto", "descripcion": "Persona con quién relacionarse: teléfono" },
+        { "pos": 68, "lon": 40, "tipo": "An", "id": "nombreContacto", "descripcion": "Persona con quién relacionarse: apellidos y nombre" },
+        { "pos": 108, "lon": 13, "tipo": "Num", "id": "numeroDeclaracion", "descripcion": "Número identificativo de la declaración (empieza por 349)" },
+        { "pos": 121, "lon": 1, "tipo": "A", "id": "complementaria", "descripcion": "Declaración complementaria (\"C\")" },
+        { "pos": 122, "lon": 1, "tipo": "A", "id": "sustitutiva", "descripcion": "Declaración sustitutiva (\"S\")" },
+        { "pos": 123, "lon": 13, "tipo": "Num", "id": "declaracionAnterior", "descripcion": "Número identificativo de la declaración anterior" },
+        { "pos": 136, "lon": 2, "tipo": "An", "id": "periodo", "descripcion": "Período (01-12, 1T-4T)" },
+        { "pos": 138, "lon": 9, "tipo": "Num", "id": "numeroOperadores", "descripcion": "Número total de operadores intracomunitarios" },
+        { "pos": 147, "lon": 15, "tipo": "Num", "id": "importeOperaciones", "descripcion": "Importe de las operaciones intracomunitarias", "decimales": 2 },
+        { "pos": 162, "lon": 9, "tipo": "Num", "id": "numeroRectificaciones", "descripcion": "Número total de operadores intracomunitarios con rectificaciones" },
+        { "pos": 171, "lon": 15, "tipo": "Num", "id": "importeRectificaciones", "descripcion": "Importe de las rectificaciones", "decimales": 2 },
+        { "pos": 186, "lon": 1, "tipo": "A", "id": "cambioPeriodicidad", "descripcion": "Indicador de cambio de periodicidad (\"X\")" },
+        { "pos": 187, "lon": 204, "tipo": "Blanco", "id": "blancos187", "descripcion": "Blancos" },
+        { "pos": 391, "lon": 9, "tipo": "An", "id": "nifRepresentante", "descripcion": "NIF del representante legal (declarante menor de 14 años)" },
+        { "pos": 400, "lon": 101, "tipo": "Blanco", "id": "blancos400", "descripcion": "Blancos" }
+      ]
+    },
+    {
+      "id": "operador",
+      "nombre": "Tipo 2: registro de operador intracomunitario",
+      "longitud": 500,
+      "campos": [
+        { "pos": 1, "lon": 1, "tipo": "Num", "id": "tipoRegistro", "descripcion": "Tipo de registro", "constante": "2" },
+        { "pos": 2, "lon": 3, "tipo": "Num", "id": "modelo", "descripcion": "Modelo declaración", "constante": "349" },
+        { "pos": 5, "lon": 4, "tipo": "Num", "id": "ejercicio", "descripcion": "Ejercicio" },
+        { "pos": 9, "lon": 9, "tipo": "An", "id": "nifDeclarante", "descripcion": "NIF del declarante (a la derecha, ceros a la izquierda)" },
+        { "pos": 18, "lon": 58, "tipo": "Blanco", "id": "blancos18", "descripcion": "Blancos" },
+        { "pos": 76, "lon": 2, "tipo": "A", "id": "paisOperador", "descripcion": "NIF operador comunitario: código de país" },
+        { "pos": 78, "lon": 15, "tipo": "An", "id": "numeroOperador", "descripcion": "NIF operador comunitario: número" },
+        { "pos": 93, "lon": 40, "tipo": "An", "id": "nombreOperador", "descripcion": "Apellidos y nombre o razón social del operador intracomunitario" },
+        { "pos": 133, "lon": 1, "tipo": "A", "id": "clave", "descripcion": "Clave de operación (E, M, H, A, T, S, I, R, D, C)" },
+        { "pos": 134, "lon": 13, "tipo": "Num", "id": "base", "descripcion": "Base imponible o importe", "decimales": 2 },
+        { "pos": 147, "lon": 32, "tipo": "Blanco", "id": "blancos147", "descripcion": "Blancos" },
+        { "pos": 179, "lon": 2, "tipo": "A", "id": "paisSustituto", "descripcion": "NIF del destinatario final sustituto: código de país (solo clave C)" },
+        { "pos": 181, "lon": 15, "tipo": "An", "id": "numeroSustituto", "descripcion": "NIF del destinatario final sustituto: número (solo clave C)" },
+        { "pos": 196, "lon": 40, "tipo": "An", "id": "nombreSustituto", "descripcion": "Apellidos y nombre o razón social del sustituto (solo clave C)" },
+        { "pos": 236, "lon": 265, "tipo": "Blanco", "id": "blancos236", "descripcion": "Blancos" }
+      ]
+    },
+    {
+      "id": "rectificacion",
+      "nombre": "Tipo 2: registro de rectificaciones",
+      "longitud": 500,
+      "campos": [
+        { "pos": 1, "lon": 1, "tipo": "Num", "id": "tipoRegistro", "descripcion": "Tipo de registro", "constante": "2" },
+        { "pos": 2, "lon": 3, "tipo": "Num", "id": "modelo", "descripcion": "Modelo declaración", "constante": "349" },
+        { "pos": 5, "lon": 4, "tipo": "Num", "id": "ejercicio", "descripcion": "Ejercicio" },
+        { "pos": 9, "lon": 9, "tipo": "An", "id": "nifDeclarante", "descripcion": "NIF del declarante (a la derecha, ceros a la izquierda)" },
+        { "pos": 18, "lon": 58, "tipo": "Blanco", "id": "blancos18", "descripcion": "Blancos" },
+        { "pos": 76, "lon": 2, "tipo": "A", "id": "paisOperador", "descripcion": "NIF operador comunitario: código de país" },
+        { "pos": 78, "lon": 15, "tipo": "An", "id": "numeroOperador", "descripcion": "NIF operador comunitario: número" },
+        { "pos": 93, "lon": 40, "tipo": "An", "id": "nombreOperador", "descripcion": "Apellidos y nombre o razón social del operador intracomunitario" },
+        { "pos": 133, "lon": 1, "tipo": "A", "id": "clave", "descripcion": "Clave de operación (E, M, H, A, T, S, I, R, D, C)" },
+        { "pos": 134, "lon": 13, "tipo": "Blanco", "id": "blancos134", "descripcion": "Blancos" },
+        { "pos": 147, "lon": 4, "tipo": "Num", "id": "ejercicioRectificado", "descripcion": "Rectificaciones: ejercicio de la declaración que se corrige" },
+        { "pos": 151, "lon": 2, "tipo": "An", "id": "periodoRectificado", "descripcion": "Rectificaciones: periodo de la declaración que se corrige" },
+        { "pos": 153, "lon": 13, "tipo": "Num", "id": "baseRectificada", "descripcion": "Base imponible o importe rectificados", "decimales": 2 },
+        { "pos": 166, "lon": 13, "tipo": "Num", "id": "baseAnterior", "descripcion": "Base imponible declarada anteriormente", "decimales": 2 },
+        { "pos": 179, "lon": 2, "tipo": "A", "id": "paisSustituto", "descripcion": "NIF del destinatario final sustituto: código de país (solo clave C)" },
+        { "pos": 181, "lon": 15, "tipo": "An", "id": "numeroSustituto", "descripcion": "NIF del destinatario final sustituto: número (solo clave C)" },
+        { "pos": 196, "lon": 40, "tipo": "An", "id": "nombreSustituto", "descripcion": "Apellidos y nombre o razón social del sustituto (solo clave C)" },
+        { "pos": 236, "lon": 265, "tipo": "Blanco", "id": "blancos236", "descripcion": "Blancos" }
+      ]
+    }
+  ]
+}

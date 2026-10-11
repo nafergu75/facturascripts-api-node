@@ -49,10 +49,13 @@ const FICHAS: Record<string, FichaModeloImpuesto> = {
     modeloCodigo: '349',
     titulo: 'Modelo 349 — Operaciones intracomunitarias',
     textoExplicativo:
-      'Declaracion informativa de entregas (clave E) y adquisiciones (clave A) intracomunitarias. Las operaciones se detectan por el pais del tercero o el prefijo de su NIF-IVA.',
-    advertencias: ['El operador debe estar dado de alta en el ROI/VIES; valida su NIF-IVA antes de facturar sin IVA.'],
-    notasConfiguracion: ['Configura el codpais en la ficha del cliente/proveedor para una clasificacion correcta.'],
-    recomendaciones: ['Si el 349 sale vacio pero tienes ventas UE, revisa el pais/NIF de las fichas de cliente.'],
+      'Declaración informativa de las operaciones con empresas de otros países de la UE: E entregas de bienes, S servicios prestados, A compras de bienes e I servicios recibidos. Una línea por operador y clave; los abonos de un periodo anterior van como rectificación de ese periodo. El borrador con las casillas del fichero está en Fiscalidad > Modelo 349.',
+    advertencias: [
+      'El operador tiene que estar dado de alta en el ROI/VIES: comprueba su NIF-IVA antes de facturar sin IVA.',
+      'En las compras, la clave sale del tipo de gasto (compras = A; servicios, alquileres y suministros = I). Se puede cambiar en cada factura.',
+    ],
+    notasConfiguracion: ['El país (ISO-2) y el NIF-IVA con su prefijo (DE, FR, EL...) de la ficha del cliente o proveedor deciden si la operación va al 349.'],
+    recomendaciones: ['Si el 349 sale vacío pero tienes operaciones con la UE, revisa el país y el NIF de las fichas.'],
   },
   '111': {
     modeloCodigo: '111',
@@ -86,10 +89,34 @@ const FICHAS: Record<string, FichaModeloImpuesto> = {
     textoExplicativo:
       'Ingresa las retenciones practicadas en los alquileres de inmuebles urbanos (locales, oficinas) que pagas como inquilino.',
     advertencias: [
-      'Sale de las facturas de gasto de tipo Alquileres con retención. El resumen anual por arrendador (los datos del 180) está en Fiscalidad > Modelo 115.',
+      'Sale de las facturas de gasto de tipo Alquileres con retención. El resumen anual por arrendador e inmueble es el modelo 180 (Fiscalidad > Modelo 180).',
     ],
     notasConfiguracion: ['El arrendador debe facilitarte su NIF y el porcentaje de retencion vigente (19%).'],
     recomendaciones: ['Cuadra con el resumen anual 180 a fin de ejercicio.'],
+  },
+  '180': {
+    modeloCodigo: '180',
+    titulo: 'Modelo 180 — Resumen anual de retenciones por alquileres',
+    textoExplicativo:
+      'Resumen anual del 115: un registro por arrendador e inmueble con la base, el porcentaje y la retención del año. Se presenta del 1 al 31 de enero y tiene que cuadrar con los cuatro 115.',
+    advertencias: [
+      'Cada local alquilado necesita su referencia catastral y su dirección completa: se dan de alta en la pantalla del 180.',
+      'Un arrendador sin NIF español no va en el 180 (va en el 216/296).',
+    ],
+    notasConfiguracion: ['El arrendador necesita el código postal o la provincia en su ficha.'],
+    recomendaciones: ['Revisa el cuadre con los 115 antes de descargar el fichero.'],
+  },
+  '202': {
+    modeloCodigo: '202',
+    titulo: 'Modelo 202 — Pago fraccionado del Impuesto sobre Sociedades',
+    textoExplicativo:
+      'Pago a cuenta del Impuesto sobre Sociedades en abril (1P), octubre (2P) y diciembre (3P). Con la modalidad de cuota, el 18 % de la cuota del último 200 presentado (en abril, el de dos años antes; en octubre y diciembre, el del año anterior).',
+    advertencias: [
+      'Si la cifra de negocios pasa de 6 millones, va por la modalidad de base (art. 40.3), que la app todavía no calcula.',
+      'Si el 200 se presentó fuera de la app, indica su cuota a mano en la pantalla del 202.',
+    ],
+    notasConfiguracion: ['El CNAE de la actividad principal (CNAE-2025) se pone en Registro Mercantil > Datos.'],
+    recomendaciones: ['Si sale a cero no hace falta presentarlo.'],
   },
   '130': {
     modeloCodigo: '130',

@@ -34,6 +34,8 @@ export interface LegalConfigInput {
   telefono?: string | null;
   email?: string | null;
   web?: string | null;
+  /** Persona de contacto de los modelos informativos (apellidos y nombre). */
+  personaContacto?: string | null;
   pais?: string;
   /** Moneda de la contabilidad (EUR o USD). Ver actualizar(). */
   monedaCuenta?: string;
@@ -58,6 +60,7 @@ const TEXTOS = [
   'telefono',
   'email',
   'web',
+  'personaContacto',
 ] as const;
 // AUTONOMO: empresario individual (no se inscribe en el Registro Mercantil).
 const TIPOS_SOCIEDAD = ['SA', 'SL', 'SLU', 'SCP', 'AUTONOMO', 'OTRA'];
@@ -125,7 +128,7 @@ export function limpiarLegalConfig(datos: Record<string, unknown>, paisActual = 
     const v = datos[campo] === null ? '' : String(datos[campo]).trim();
     // Las columnas de texto son VARCHAR(191) (lo que Prisma pone por defecto en
     // MySQL); antes se cortaba a 300 y un texto largo acababa en un error 500.
-    limpio[campo] = v === '' ? null : v.slice(0, campo === 'actividad' ? 2000 : TEXTO_MAX);
+    limpio[campo] = v === '' ? null : v.slice(0, campo === 'actividad' ? 2000 : campo === 'personaContacto' ? 80 : TEXTO_MAX);
   }
   if (datos.tipoSociedad !== undefined) {
     const t = String(datos.tipoSociedad).toUpperCase();

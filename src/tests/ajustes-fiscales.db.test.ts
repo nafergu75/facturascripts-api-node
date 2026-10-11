@@ -55,7 +55,7 @@ describe('calendarioEjercicio (puro)', () => {
     const cal = calendarioEjercicio(2026);
     expect(codigos(cal, '303')).toEqual(['1T', '2T', '3T', '4T']);
     expect(codigos(cal, '111')).toEqual(['1T', '2T', '3T', '4T']);
-    expect(cal.filter((c) => c.periodo === '0A').map((c) => c.codigo)).toEqual(['390', '347', '200', '190']);
+    expect(cal.filter((c) => c.periodo === '0A').map((c) => c.codigo)).toEqual(['390', '347', '200', '190', '180']);
     expect(codigos(cal, '130')).toEqual([]);
   });
 
