@@ -68,6 +68,7 @@ const mockListarCobros = jest.fn();
 const mockObtenerResumen = jest.fn();
 const mockPendientes = jest.fn();
 const mockPyG = jest.fn();
+const mockDetalle = jest.fn();
 const mockResumenFiscal = jest.fn();
 const mockCalendario = jest.fn();
 const mockModeloGuardado = jest.fn();
@@ -81,6 +82,7 @@ jest.mock('../services/treasury.service', () => ({ obtenerResumen: (...a: unknow
 jest.mock('../services/informesContables.service', () => ({
   pendientesSegunFacturas: (...a: unknown[]) => mockPendientes(...a),
   informePerdidasGanancias: (...a: unknown[]) => mockPyG(...a),
+  informeDetalleTercero: (...a: unknown[]) => mockDetalle(...a),
 }));
 jest.mock('../services/resumenFiscal.service', () => ({ resumenFiscalPeriodo: (...a: unknown[]) => mockResumenFiscal(...a) }));
 jest.mock('../services/impuestosModulo.service', () => ({
@@ -187,11 +189,33 @@ beforeEach(() => {
     { codigo: '111', descripcion: 'Retenciones', ejercicio: 2026, periodo: '3T', fechaVencimiento: '2026-10-20', estado: 'vigente', tieneBorrador: false, guardado: false },
   ]);
   mockModeloGuardado.mockReset().mockResolvedValue(null);
+  mockDetalle.mockReset().mockResolvedValue(DETALLE_C1);
   mockCalcular303.mockReset().mockResolvedValue({ totalCuotaDevengada: 2100, totalCuotaDeducible: 840, resultado: 1260, resultadoFinal: 1260 });
 });
 
+/** Mayor del cliente c1 (informeDetalleTercero). */
+const DETALLE_C1 = {
+  tercero: {
+    id: 'c1',
+    nombre: 'CONSTRUCCIONES PÉREZ SL',
+    nif: 'B11111111',
+    cuentas: ['43000001'],
+    subcuentas: ['43000001'],
+    saldoInicial: 0,
+    debe: 1331,
+    haber: 0,
+    saldoFinal: 1331,
+    movimientos: [
+      { fecha: '2026-06-01', asiento: 'FAC-ING-A-1', asientoId: 'a1', concepto: 'Factura A-1', cuenta: '43000001', factura: 'A-1', debe: 1210, haber: 0, saldo: 1210 },
+      { fecha: '2026-10-01', asiento: 'FAC-ING-A-3', asientoId: 'a3', concepto: 'Factura A-3', cuenta: '43000001', factura: 'A-3', debe: 121, haber: 0, saldo: 1331 },
+    ],
+  },
+  facturasPendientes: [{ id: 'f1' }, { id: 'f3' }],
+  totalPendiente: 1331,
+};
+
 const huecosDe = (id: string): HuecosResueltos =>
-  id === 'INT-01' ? { terceroId: 'c1', rol: 'cliente' }
+  id === 'INT-01' || id === 'INT-07' ? { terceroId: 'c1', rol: 'cliente' }
   : id === 'INT-05' ? { periodo: resolverCodigoPeriodo('este-mes', HOY)!, sentido: 'cobros' }
   : id === 'INT-13' ? { numeroFactura: 'A-012' }
   : {};
@@ -206,6 +230,7 @@ const MATRIZ: Record<string, Record<string, boolean>> = {
   'INT-03': { admin: true, contable: true, ventas: true, 'solo-lectura': true, 'sin rol': false, 'admin global': true },
   'INT-05': { admin: true, contable: true, ventas: true, 'solo-lectura': true, 'sin rol': false, 'admin global': true },
   'INT-06': { admin: true, contable: true, ventas: true, 'solo-lectura': true, 'sin rol': false, 'admin global': true },
+  'INT-07': { admin: true, contable: true, ventas: true, 'solo-lectura': true, 'sin rol': false, 'admin global': true },
   'INT-09': { admin: true, contable: true, ventas: true, 'solo-lectura': true, 'sin rol': false, 'admin global': true },
   'INT-13': { admin: true, contable: true, ventas: true, 'solo-lectura': true, 'sin rol': false, 'admin global': true },
   'INT-18': { admin: true, contable: true, ventas: true, 'solo-lectura': true, 'sin rol': false, 'admin global': true },
@@ -216,7 +241,7 @@ const MATRIZ: Record<string, Record<string, boolean>> = {
   'INT-30': { admin: true, contable: true, ventas: false, 'solo-lectura': true, 'sin rol': false, 'admin global': true },
 };
 
-const SERVICIOS = [mockFacturasPorCobrar, mockTotalCobradoEntre, mockObtenerResumen, mockPendientes, mockPyG, mockResumenFiscal, mockListarCobros, mockCalendario, mockModeloGuardado, mockCalcular303];
+const SERVICIOS = [mockFacturasPorCobrar, mockTotalCobradoEntre, mockObtenerResumen, mockPendientes, mockPyG, mockResumenFiscal, mockListarCobros, mockCalendario, mockModeloGuardado, mockCalcular303, mockDetalle];
 
 const ESCRITURAS = /\.(create|createMany|update|updateMany|upsert|delete|deleteMany)$|^\$(executeRaw|executeRawUnsafe|queryRawUnsafe|transaction)$/;
 
@@ -323,7 +348,7 @@ describe('matriz de permisos', () => {
   });
 
   it('todas las intenciones del catálogo tienen ejecutor, ejemplos y una pregunta', () => {
-    expect(INTENCIONES).toHaveLength(14);
+    expect(INTENCIONES).toHaveLength(15);
     for (const i of INTENCIONES) {
       expect(typeof i.ejecutar).toBe('function');
       expect(i.ejemplos.length).toBeGreaterThanOrEqual(5);
@@ -364,6 +389,41 @@ describe('contrato de cifras', () => {
       'Tienes 1.736,00 € pendientes de cobro en 3 facturas de 2 clientes; 1.615,00 € ya han vencido. Cuenta el total de cada factura emitida menos los cobros registrados hasta hoy y sus rectificativas.',
     );
     expect(r.tabla?.filas.map((f) => f.celdas[0])).toEqual(['A-1', 'A-2', 'A-3']);
+  });
+
+  it('INT-07: el saldo contable es el de informeDetalleTercero, con su subcuenta y sin IA', async () => {
+    const r = await ejecutar('INT-07', 'contable');
+    if (!conCifras(r) || r.sinPermiso) throw new Error('sin cifras');
+    expect(mockDetalle).toHaveBeenCalledWith('E1', 'clientes', { desde: '2026-01-01', hasta: HOY, ejercicio: 2026 }, 'c1');
+    expect(r.entendido).toBe('Saldo contable de CONSTRUCCIONES PÉREZ SL a 07/10/2026');
+    expect(r.texto).toBe(
+      'Según la contabilidad, CONSTRUCCIONES PÉREZ SL te debe 1.331,00 € a 07/10/2026. Subcuenta 43000001. Sale de los asientos aprobados de su subcuenta; los borradores no cuentan.',
+    );
+    expect(r.kpis).toEqual([
+      { etiqueta: 'Saldo contable', valor: '1.331,00 €', detalle: '43000001' },
+      { etiqueta: 'Pendiente según facturas', valor: '1.331,00 €', detalle: '2 facturas' },
+    ]);
+    expect(r.tabla?.filas.map((f) => f.celdas[5])).toEqual([1210, 1331]);
+    expect(r.permisoRequerido).toBe('contabilidad:read');
+    expect(r.enlaces?.map((e) => e.href)).toEqual(['/dashboard/informes?tipo=mayor&tercero=c1&tipoTercero=cliente', '/dashboard/mayor-terceros?tipo=cliente&tercero=c1']);
+    expect(r.descargas?.[0].ruta).toBe('/informes-contables/mayor?ejercicio=2026&hasta=2026-10-07&tercero=c1&tipoTercero=cliente&formato=pdf');
+  });
+
+  it('INT-07: un proveedor con saldo a su favor; sin contabilidad:read no se calcula nada', async () => {
+    mockDetalle.mockResolvedValueOnce({
+      tercero: { ...DETALLE_C1.tercero, id: 'p1', nombre: 'IBERDROLA CLIENTES SAU', subcuentas: ['40000001', '41000001'], saldoFinal: 302.5, movimientos: [] },
+      facturasPendientes: [],
+      totalPendiente: 0,
+    });
+    const r = await ejecutar('INT-07', 'admin', { terceroId: 'p1', rol: 'proveedor' });
+    if (r.sinPermiso) throw new Error('sin permiso');
+    expect(mockDetalle).toHaveBeenCalledWith('E1', 'proveedores', expect.any(Object), 'p1');
+    expect(r.texto).toMatch(/^Según la contabilidad, le debes 302,50 € a IBERDROLA CLIENTES SAU a 07\/10\/2026\. Subcuentas 40000001 y 41000001\./);
+    mockDetalle.mockClear();
+    const ventasSin = construirContexto(ROLES.ventas, 'E1', HOY);
+    const sin = await intencionPorId('INT-07')!.ejecutar({ ...ventasSin, permisos: new Set(['ventas:read']) }, { terceroId: 'c1', rol: 'cliente' });
+    expect(sin).toEqual({ sinPermiso: true, area: 'contabilidad' });
+    expect(mockDetalle).not.toHaveBeenCalled();
   });
 
   it('INT-01: filtra las facturas del cliente', async () => {
