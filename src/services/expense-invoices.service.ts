@@ -30,6 +30,7 @@ import { datosProveedor, type DatosProveedor } from './proveedores.service';
 import { logCreate } from './suppliers/supplierAudit.service';
 import { asignarSubcuentasProveedor, conReintentoSubcuenta, crearProveedorConSubcuenta, INDICES_SUBCUENTA, subcuentaProveedorParaApunte } from './terceros/subcuentas';
 import { esSubcuentaGenerica } from './terceros/numeracion';
+import { nombresDeCuentas, problemaCuentasLinea } from './cuentasLinea.service';
 import { logger } from '../config/logger';
 
 /**
@@ -420,14 +421,16 @@ export async function motivoPeriodoBloqueado(
 export const textoPeriodoPresentado = (motivo: string) =>
   `${motivo}: si la recibiste más tarde, indica en «¿La recibiste más tarde?» la fecha en que te llegó, de un periodo sin presentar.`;
 
-/** La cuenta de gasto tiene que estar en el plan de la empresa (activa) o en el plan base. */
-async function comprobarCuentas(companyId: string, cuentas: string[]): Promise<void> {
-  const base = new Set(PGC_BASE.map((n) => n.code));
-  for (const c of [...new Set(cuentas)]) {
-    if (base.has(c)) continue;
-    const enPlan = await prisma.chartOfAccounts.findFirst({ where: { companyId, codigo: c, activo: true }, select: { id: true } });
-    if (!enPlan) throw badRequest(`La cuenta ${c} no existe en tu plan contable`, { campo: 'cuentaGasto' });
-  }
+/**
+ * La cuenta de gasto de cada linea (la suya o la de la factura) tiene que ser
+ * del grupo 6 y estar activa en el plan de la empresa (o en el plan base). El
+ * error apunta a la linea si la cuenta es suya y, si no, a la de la factura.
+ */
+async function comprobarCuentas(companyId: string, v: FacturaGastoBody, cuentas: Array<string | null>): Promise<void> {
+  const problema = await problemaCuentasLinea(companyId, 'gasto', cuentas);
+  if (!problema) return;
+  const i = problema.indice;
+  throw badRequest(problema.mensaje, { campo: v.lineas[i]?.cuenta ? `lineas.${i}.cuenta` : 'cuentaGasto' });
 }
 
 /**
@@ -555,7 +558,14 @@ const NOMBRE_CUENTA = new Map(PGC_BASE.map((n) => [n.code, n.name]));
 export function datosContablesGasto(
   f: FacturaConLineas,
   s: { id: string; nifCif: string; nombreFiscal: string },
-  extra: { estadoAsiento: 'POSTED' | 'DRAFT'; numeroAsiento?: string; cuentaAcreedor?: string | null; nombreCuentaAcreedor?: string | null },
+  extra: {
+    estadoAsiento: 'POSTED' | 'DRAFT';
+    numeroAsiento?: string;
+    cuentaAcreedor?: string | null;
+    nombreCuentaAcreedor?: string | null;
+    /** Nombre de las cuentas de gasto en el plan de la empresa (sus subcuentas: 6280001 «Luz oficina»). */
+    nombresCuentas?: Map<string, string>;
+  },
 ): Parameters<typeof contabilizarFacturaGasto>[2] {
   const tipo: TipoGasto = esTipoGasto(f.tipoGasto) ? f.tipoGasto : 'COMPRA';
   const porCuenta = new Map<string, number>();
@@ -580,7 +590,7 @@ export function datosContablesGasto(
     tipoGasto: tipo,
     desgloseIva: f.lineas.length ? desgloseIvaPorTipo(f.lineas.map((l) => ({ tipoIva: l.tipoIva, baseLine: Number(l.baseLine), ivaImporte: Number(l.ivaImporte) }))) : undefined,
     gastoPorCuenta: f.lineas.length
-      ? [...porCuenta].map(([cuenta, centimos]) => ({ cuenta, nombre: NOMBRE_CUENTA.get(cuenta) ?? 'Gastos', base: centimos / 100 }))
+      ? [...porCuenta].map(([cuenta, centimos]) => ({ cuenta, nombre: extra.nombresCuentas?.get(cuenta) ?? NOMBRE_CUENTA.get(cuenta) ?? 'Gastos', base: centimos / 100 }))
       : undefined,
     desgloseRetencion: desgloseRetencionGasto({
       baseTotal: Number(f.baseTotal),
@@ -607,8 +617,12 @@ export async function datosContablesGastoConSubcuenta(
   companyId: string,
   f: FacturaConLineas,
   s: { id: string; nifCif: string; nombreFiscal: string },
-  extra: { estadoAsiento: 'POSTED' | 'DRAFT'; numeroAsiento?: string; cuentaAcreedor?: string | null },
+  extraSinNombres: { estadoAsiento: 'POSTED' | 'DRAFT'; numeroAsiento?: string; cuentaAcreedor?: string | null },
 ): Promise<Parameters<typeof contabilizarFacturaGasto>[2]> {
+  // Cuentas de gasto con el nombre del plan (las subcuentas propias llevan el suyo).
+  const tipo: TipoGasto = esTipoGasto(f.tipoGasto) ? f.tipoGasto : 'COMPRA';
+  const nombresCuentas = await nombresDeCuentas(tx, companyId, f.lineas.map((l) => l.accountCode ?? TIPO_GASTO_INFO[tipo].cuenta));
+  const extra = { ...extraSinNombres, nombresCuentas };
   if (extra.cuentaAcreedor) {
     if (esSubcuentaGenerica(extra.cuentaAcreedor)) {
       logger.warn('gasto contabilizado contra la cuenta generica de sus pagos anteriores', { companyId, factura: f.numeroCompleto, cuenta: extra.cuentaAcreedor });
@@ -776,7 +790,7 @@ export async function registrarGasto(companyId: string, cuerpo: unknown, opcione
   const { espanola } = await perfilEmpresa(companyId);
   const v = validarFacturaGasto(bruto, { paisProveedor: prov.pais, permitirSerie: true, empresaEspanola: espanola });
   const { lineas, baseTotal, ivaTotal, retencionTotal, totalFactura, cabecera } = lineasParaGuardar(v);
-  await comprobarCuentas(companyId, lineas.map((l) => l.accountCode).filter((c): c is string => !!c));
+  await comprobarCuentas(companyId, v, lineas.map((l) => l.accountCode));
   await comprobarCuentasNomina(companyId, v, lineas.map((l) => l.accountCode));
 
   const numeroActivo = normalizarNumeroProveedor(v.numeroFacturaProveedor);
@@ -1030,7 +1044,7 @@ export async function editarGasto(
   const { espanola } = await perfilEmpresa(companyId);
   const v = validarFacturaGasto(bruto, { paisProveedor: prov.pais, permitirSerie: false, empresaEspanola: espanola });
   const { lineas, baseTotal, ivaTotal, retencionTotal, totalFactura, cabecera } = lineasParaGuardar(v);
-  await comprobarCuentas(companyId, lineas.map((l) => l.accountCode).filter((c): c is string => !!c));
+  await comprobarCuentas(companyId, v, lineas.map((l) => l.accountCode));
   await comprobarCuentasNomina(companyId, v, lineas.map((l) => l.accountCode));
   const numeroActivo = normalizarNumeroProveedor(v.numeroFacturaProveedor);
   if (prov.existente) await comprobarDuplicado(companyId, prov.existente.id, numeroActivo, id);
