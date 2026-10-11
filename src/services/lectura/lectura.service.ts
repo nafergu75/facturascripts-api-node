@@ -178,15 +178,30 @@ async function cargarArchivo(fila: FilaLectura): Promise<ArchivoLectura> {
   return { buffer: await getObject(fila.archivoRef), nombre: fila.archivoNombre, mime: fila.archivoTipo, hash: fila.archivoHash };
 }
 
+/** Borra el original de Blob sin romper: un fallo solo deja un aviso (sin el nombre del archivo). */
+async function borrarArchivo(lecturaId: string, ref: string): Promise<void> {
+  await deleteObject(ref).catch((err) => logger.warn('[lectura] No se ha podido borrar el archivo de la lectura', { lecturaId, error: (err as { name?: string })?.name ?? 'Error' }));
+}
+
+/** El documento del lector de ventas de una lectura que no se registra: REJECTED y sin los datos leidos. */
+async function rechazarDocumentoVenta(incomeReaderDocumentId: string, motivo: string): Promise<void> {
+  await prisma.incomeReaderDocument.updateMany({
+    where: { id: incomeReaderDocumentId, status: 'READY_FOR_VERIFICATION' },
+    data: { status: 'REJECTED', rejectionReason: motivo, parsedData: Prisma.DbNull, storagePath: '' },
+  });
+}
+
 function limpiarAzure(resultId: string | null): void {
   if (!resultId || !azureExtractor.limpiar) return;
   // Sin esperar: un fallo solo deja un aviso.
   void azureExtractor.limpiar({ resultId }).catch(() => undefined);
 }
 
+/** La lectura no se ha podido hacer. El original ya no sirve (una lectura en ERROR no se reintenta): se borra. */
 async function terminarConError(fila: FilaLectura, codigo: string): Promise<RespuestaLectura> {
-  await prisma.lecturaDocumento.updateMany({ where: { id: fila.id, estado: 'LEYENDO' }, data: { estado: 'ERROR', errorCodigo: codigo, terminadaEn: new Date() } });
+  const r = await prisma.lecturaDocumento.updateMany({ where: { id: fila.id, estado: 'LEYENDO' }, data: { estado: 'ERROR', errorCodigo: codigo, terminadaEn: new Date(), archivoRef: null } });
   logger.warn('[lectura] Lectura sin terminar', { lecturaId: fila.id, companyId: fila.companyId, lector: fila.lector, codigo });
+  if (r.count > 0 && fila.archivoRef) await borrarArchivo(fila.id, fila.archivoRef);
   return { lecturaId: fila.id, estado: 'ERROR', codigo, mensaje: mensajeError(codigo) };
 }
 
@@ -362,40 +377,59 @@ async function respuestaDe(fila: FilaLectura): Promise<RespuestaLectura> {
 }
 
 // ---------------------------------------------------------------------------
-// Purga (sin cron: al principio de cada POST, en esa empresa y con tope)
+// Purga: al principio de cada POST (esa empresa, 50 como mucho) y en el cron
+// diario que ya existe (/cron/carmen-purga: todas las empresas, 200 como mucho)
 // ---------------------------------------------------------------------------
 
-export async function purgarLecturas(companyId: string, ahora: Date = new Date()): Promise<void> {
+/**
+ * - A los 7 dias, lo que no se registro (LEYENDO, LISTA, ERROR) pasa a
+ *   DESCARTADA: sin resultado, sin archivo y, en ventas, sin los datos del
+ *   documento del lector.
+ * - A los 90 dias: de las CONFIRMADAS se vacia el resultado (lo demas queda
+ *   como pista de auditoria); de las DESCARTADAS, tambien las validaciones y
+ *   los avisos, que llevan valores leidos (NIF, importes).
+ * Devuelve cuantas lecturas ha tocado.
+ */
+export async function purgarLecturas(companyId?: string, ahora: Date = new Date(), tope = companyId ? 50 : 200): Promise<number> {
   const hace7 = new Date(ahora.getTime() - 7 * DIA_MS);
   const hace90 = new Date(ahora.getTime() - 90 * DIA_MS);
+  const deEmpresa = companyId ? { companyId } : {};
 
   const viejas = await prisma.lecturaDocumento.findMany({
-    where: { companyId, estado: { in: ['LEYENDO', 'LISTA', 'ERROR'] }, createdAt: { lt: hace7 } },
+    where: { ...deEmpresa, estado: { in: ['LEYENDO', 'LISTA', 'ERROR'] }, createdAt: { lt: hace7 } },
     select: { id: true, archivoRef: true, incomeReaderDocumentId: true },
-    take: 50,
+    take: tope,
   });
   for (const v of viejas) {
     await prisma.lecturaDocumento.update({ where: { id: v.id }, data: { estado: 'DESCARTADA', resultado: Prisma.DbNull, archivoRef: null } });
-    if (v.incomeReaderDocumentId) {
-      await prisma.incomeReaderDocument.updateMany({ where: { id: v.incomeReaderDocumentId, status: 'READY_FOR_VERIFICATION' }, data: { status: 'REJECTED', rejectionReason: 'Lectura caducada' } });
-    }
-    if (v.archivoRef) await deleteObject(v.archivoRef).catch(() => undefined);
+    if (v.incomeReaderDocumentId) await rechazarDocumentoVenta(v.incomeReaderDocumentId, 'Lectura caducada');
+    if (v.archivoRef) await borrarArchivo(v.id, v.archivoRef);
   }
 
-  // A los 90 dias solo se vacia el resultado: lo demas queda como pista de auditoria.
-  const antiguas = await prisma.lecturaDocumento.findMany({
+  const confirmadas = await prisma.lecturaDocumento.findMany({
+    where: { ...deEmpresa, estado: 'CONFIRMADA', confirmadaEn: { lt: hace90 }, resultado: { not: Prisma.DbNull } },
+    select: { id: true },
+    take: tope,
+  });
+  if (confirmadas.length) await prisma.lecturaDocumento.updateMany({ where: { id: { in: confirmadas.map((a) => a.id) } }, data: { resultado: Prisma.DbNull } });
+
+  const descartadas = await prisma.lecturaDocumento.findMany({
     where: {
-      companyId,
-      resultado: { not: Prisma.DbNull },
-      OR: [
-        { estado: 'CONFIRMADA', confirmadaEn: { lt: hace90 } },
-        { estado: 'DESCARTADA', updatedAt: { lt: hace90 } },
-      ],
+      ...deEmpresa,
+      estado: 'DESCARTADA',
+      updatedAt: { lt: hace90 },
+      OR: [{ resultado: { not: Prisma.DbNull } }, { validaciones: { not: Prisma.DbNull } }, { avisos: { not: Prisma.DbNull } }],
     },
     select: { id: true },
-    take: 50,
+    take: tope,
   });
-  if (antiguas.length) await prisma.lecturaDocumento.updateMany({ where: { id: { in: antiguas.map((a) => a.id) } }, data: { resultado: Prisma.DbNull } });
+  if (descartadas.length) {
+    await prisma.lecturaDocumento.updateMany({
+      where: { id: { in: descartadas.map((a) => a.id) } },
+      data: { resultado: Prisma.DbNull, validaciones: Prisma.DbNull, avisos: Prisma.DbNull },
+    });
+  }
+  return viejas.length + confirmadas.length + descartadas.length;
 }
 
 // ---------------------------------------------------------------------------
@@ -520,12 +554,9 @@ export async function descartarLectura(companyId: string, lector: Lector, id: st
   const fila = await buscar(companyId, lector, id);
   if (fila.estado === 'CONFIRMADA') throw conflict('Esta factura ya se registró: no se puede descartar.', { codigo: 'LECTURA_YA_CONFIRMADA' });
   if (fila.estado === 'DESCARTADA') return;
-  await prisma.lecturaDocumento.update({ where: { id: fila.id }, data: { estado: 'DESCARTADA', archivoRef: null, terminadaEn: fila.terminadaEn ?? new Date() } });
+  // El resultado ya no se usa (un GET de una DESCARTADA solo da el estado): fuera desde ya.
+  await prisma.lecturaDocumento.update({ where: { id: fila.id }, data: { estado: 'DESCARTADA', archivoRef: null, resultado: Prisma.DbNull, terminadaEn: fila.terminadaEn ?? new Date() } });
   if (fila.estado === 'LEYENDO') limpiarAzure(fila.azureResultId);
-  if (fila.incomeReaderDocumentId) {
-    await prisma.incomeReaderDocument.updateMany({ where: { id: fila.incomeReaderDocumentId, status: 'READY_FOR_VERIFICATION' }, data: { status: 'REJECTED', rejectionReason: 'Lectura descartada' } });
-  }
-  if (fila.archivoRef) {
-    await deleteObject(fila.archivoRef).catch((err) => logger.warn('[lectura] No se ha podido borrar el archivo descartado', { lecturaId: fila.id, error: (err as { name?: string })?.name ?? 'Error' }));
-  }
+  if (fila.incomeReaderDocumentId) await rechazarDocumentoVenta(fila.incomeReaderDocumentId, 'Lectura descartada');
+  if (fila.archivoRef) await borrarArchivo(fila.id, fila.archivoRef);
 }

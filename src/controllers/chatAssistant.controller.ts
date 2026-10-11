@@ -10,6 +10,7 @@ import { atender, catalogoParaPagina } from '../services/carmen/enrutador';
 import { borrarSesion, listarSesiones, mensajesDeSesion, purgarSiToca, purgarTodas, valorarMensaje } from '../services/carmen/sesiones';
 import { HttpError } from '../utils/http-errors';
 import { logger } from '../config/logger';
+import { purgarLecturas } from '../services/lectura/lectura.service';
 import { guardarAjustes, leerAjustes, topeEmpresaDia } from '../services/carmen/ajustes.service';
 import { leerUso, motivoConfiguracion, motivoSinIA, TEXTO_MOTIVO } from '../services/carmen/presupuesto.service';
 import type { Request } from 'express';
@@ -183,6 +184,14 @@ export const chatAssistantController = {
     if (recibido.length !== esperado.length || !timingSafeEqual(recibido, esperado)) throw new HttpError(401, 'No autorizado.');
     const borrados = await purgarTodas();
     logger.info(`carmen: purga diaria, ${borrados} mensajes caducados borrados`);
-    sendOk(res, { borrados });
+    // La misma tarea purga las lecturas del lector de facturas de todas las empresas (sin otro cron).
+    let lecturas: number | null = null;
+    try {
+      lecturas = await purgarLecturas();
+      logger.info('[lectura] Purga diaria de lecturas', { lecturas });
+    } catch (err) {
+      logger.warn('[lectura] La purga diaria de lecturas ha fallado', { error: (err as { name?: string })?.name ?? 'Error' });
+    }
+    sendOk(res, { borrados, lecturas });
   }),
 };

@@ -151,6 +151,15 @@ describe('lecturas del lector de ventas', () => {
     expect(await prisma.lecturaDocumento.findUniqueOrThrow({ where: { id: recargo.lecturaId } })).toMatchObject({ estado: 'LISTA' });
   });
 
+  it('descartar: el documento del lector queda REJECTED y sin los datos leidos', async () => {
+    const data = await leer('resultado-simple');
+    const r = await request(app()).post(`/ingresos-extractor/lecturas/${data.lecturaId}/descartar`);
+    expect(r.status).toBe(200);
+    const doc = await prisma.incomeReaderDocument.findUniqueOrThrow({ where: { id: data.ingreso.documentId } });
+    expect(doc).toMatchObject({ status: 'REJECTED', parsedData: null, storagePath: '' });
+    expect(await prisma.lecturaDocumento.findUniqueOrThrow({ where: { id: data.lecturaId } })).toMatchObject({ estado: 'DESCARTADA', resultado: null });
+  });
+
   it('una lectura con algo marcado necesita revisado al confirmar', async () => {
     const data = await leer('resultado-confianza-baja');
     expect(data.lectura.requiereRevision).toBe(true);

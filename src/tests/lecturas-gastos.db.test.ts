@@ -43,7 +43,7 @@ import gastosRoutes from '../routes/gastos-extractor.routes';
 import { _reiniciarPausa, TIEMPO_GET_MS } from '../services/lectura/azure-di.client';
 import { TIEMPO_COMPLEMENTO_MS } from '../services/lectura/claude-complemento';
 import { TIEMPO_CLAUDE_VISION_MS } from '../services/lectura/claude-vision.adapter';
-import { RESERVA_MS } from '../services/lectura/lectura.service';
+import { purgarLecturas, RESERVA_MS } from '../services/lectura/lectura.service';
 import { aceptado, CLAVE, ENDPOINT, error, fixtureClaude, NIF_EMISOR, NIF_EMPRESA, respuesta, resultado, RESULT_ID } from './fixtures/azure-di';
 
 const E = `lecturas-gastos-${Date.now()}`;
@@ -278,6 +278,10 @@ describe('respaldo y cortocircuito', () => {
     const r = await subir();
     expect(r.status).toBe(400);
     expect(r.body.details.codigo).toBe('ARCHIVO_NO_VALIDO');
+    // La lectura queda en ERROR sin el original: no se reintenta y la pantalla no tiene su id para descartarla.
+    const fila = await prisma.lecturaDocumento.findFirstOrThrow({ where: { companyId: E, estado: 'ERROR' }, orderBy: { createdAt: 'desc' } });
+    expect(fila).toMatchObject({ errorCodigo: 'ARCHIVO_NO_VALIDO', archivoRef: null });
+    expect(borrados).toContain(`mem://lecturas/${E}/${fila.id}-factura_marzo.pdf`);
   });
 
   it('formato no admitido o mas de 4 MB: 400', async () => {
@@ -407,7 +411,7 @@ describe('descartar y purgar', () => {
     const id = (await subir()).body.data.lecturaId;
     const r = await request(app()).post(`/gastos-extractor/lecturas/${id}/descartar`);
     expect(r.status).toBe(200);
-    expect(await prisma.lecturaDocumento.findUniqueOrThrow({ where: { id } })).toMatchObject({ estado: 'DESCARTADA', archivoRef: null });
+    expect(await prisma.lecturaDocumento.findUniqueOrThrow({ where: { id } })).toMatchObject({ estado: 'DESCARTADA', archivoRef: null, resultado: null });
     expect(borrados).toContain(`mem://lecturas/${E}/${id}-factura_marzo.pdf`);
     expect(llamadas('DELETE')).toHaveLength(1); // y el resultado en Azure
     expect((await consultar(id)).body.data).toEqual({ lecturaId: id, estado: 'DESCARTADA' });
@@ -428,5 +432,26 @@ describe('descartar y purgar', () => {
     expect(borrados).toContain('mem://vieja');
     const a = await prisma.lecturaDocumento.findUniqueOrThrow({ where: { id: antigua.id } });
     expect(a).toMatchObject({ estado: 'CONFIRMADA', resultado: null, origen: 'AZURE', confianza: 0.9, qrEstado: 'COINCIDE', confirmadaPor: 'u' });
+  });
+
+  it('purga a los 90 dias: una DESCARTADA pierde tambien las validaciones y los avisos (llevan valores leidos)', async () => {
+    const dia = 24 * 60 * 60 * 1000;
+    const base = { companyId: E, lector: 'GASTO', archivoNombre: 'v.pdf', archivoTipo: 'application/pdf', archivoTamanio: 1, archivoHash: 'c'.repeat(64) };
+    const d = await prisma.lecturaDocumento.create({
+      data: { ...base, estado: 'DESCARTADA', validaciones: [{ codigo: 'NIF_EMISOR', nivel: 'error', campos: ['emisor.nif'], mensaje: 'El NIF B1 no vale' }], avisos: ['aviso con 242,00 €'] },
+    });
+    await prisma.$executeRaw`UPDATE LecturaDocumento SET updatedAt = ${new Date(Date.now() - 91 * dia)} WHERE id = ${d.id}`;
+    await purgarLecturas(E);
+    expect(await prisma.lecturaDocumento.findUniqueOrThrow({ where: { id: d.id } })).toMatchObject({ estado: 'DESCARTADA', resultado: null, validaciones: null, avisos: null });
+  });
+
+  it('purga diaria de todas las empresas (la llama /cron/carmen-purga): tambien las de una empresa que no vuelve a subir facturas', async () => {
+    const dia = 24 * 60 * 60 * 1000;
+    const otra = await prisma.lecturaDocumento.create({
+      data: { companyId: OTRA, lector: 'GASTO', archivoNombre: 'v.pdf', archivoTipo: 'application/pdf', archivoTamanio: 1, archivoHash: 'd'.repeat(64), estado: 'LISTA', archivoRef: 'mem://otra', resultado: { lectura: {} }, createdAt: new Date(Date.now() - 8 * dia) },
+    });
+    expect(await purgarLecturas()).toBeGreaterThanOrEqual(1);
+    expect(await prisma.lecturaDocumento.findUniqueOrThrow({ where: { id: otra.id } })).toMatchObject({ estado: 'DESCARTADA', resultado: null, archivoRef: null });
+    expect(borrados).toContain('mem://otra');
   });
 });
