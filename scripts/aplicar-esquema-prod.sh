@@ -48,7 +48,9 @@ MARCAS=(
   'contrasenaProvisionalHasta'
   'permisosPersonalizados'
   'subcuenta430'
+  'subcuenta400'
   'subcuenta410'
+  'model LecturaDocumento'
 )
 for marca in "${MARCAS[@]}"; do
   grep -q "$marca" prisma/schema.prisma || {

@@ -1,0 +1,1092 @@
+{
+  "status": "succeeded",
+  "createdDateTime": "2026-03-05T09:15:02Z",
+  "lastUpdatedDateTime": "2026-03-05T09:15:06Z",
+  "analyzeResult": {
+    "apiVersion": "2024-11-30",
+    "modelId": "prebuilt-invoice",
+    "stringIndexType": "textElements",
+    "content": "FACTURA RECTIFICATIVA R-3\nIMPRENTA LEVANTE SL\nCIF B12345674\nCalle Mayor 12, 46001 Valencia\nTel. 963 123 456 - facturacion@imprentalevante.es\nNº R-3\nRectifica la factura A-12 por devolución de mercancía\nFecha: 04/03/2026\nCliente: COMERCIAL DEMO SL - CIF B87654323\nFolletos A5 100,00\nCarteles A3 100,00\nBase imponible 200,00\nIVA 21% 42,00\nTotal factura 242,00 €\nIBAN ES91 2100 0418 4502 0005 1332\n:barcode:",
+    "pages": [
+      {
+        "pageNumber": 1,
+        "angle": 0,
+        "width": 8.2639,
+        "height": 11.6806,
+        "unit": "inch",
+        "words": [
+          {
+            "content": "FACTURA",
+            "polygon": [
+              1,
+              1,
+              2,
+              1,
+              2,
+              1.2,
+              1,
+              1.2
+            ],
+            "confidence": 0.99,
+            "span": {
+              "offset": 0,
+              "length": 7
+            }
+          },
+          {
+            "content": "RECTIFICATIVA",
+            "polygon": [
+              1,
+              1,
+              2,
+              1,
+              2,
+              1.2,
+              1,
+              1.2
+            ],
+            "confidence": 0.99,
+            "span": {
+              "offset": 5,
+              "length": 13
+            }
+          },
+          {
+            "content": "R-3",
+            "polygon": [
+              1,
+              1,
+              2,
+              1,
+              2,
+              1.2,
+              1,
+              1.2
+            ],
+            "confidence": 0.99,
+            "span": {
+              "offset": 10,
+              "length": 3
+            }
+          },
+          {
+            "content": "IMPRENTA",
+            "polygon": [
+              1,
+              1,
+              2,
+              1,
+              2,
+              1.2,
+              1,
+              1.2
+            ],
+            "confidence": 0.99,
+            "span": {
+              "offset": 15,
+              "length": 8
+            }
+          },
+          {
+            "content": "LEVANTE",
+            "polygon": [
+              1,
+              1,
+              2,
+              1,
+              2,
+              1.2,
+              1,
+              1.2
+            ],
+            "confidence": 0.99,
+            "span": {
+              "offset": 20,
+              "length": 7
+            }
+          },
+          {
+            "content": "SL",
+            "polygon": [
+              1,
+              1,
+              2,
+              1,
+              2,
+              1.2,
+              1,
+              1.2
+            ],
+            "confidence": 0.99,
+            "span": {
+              "offset": 25,
+              "length": 2
+            }
+          }
+        ],
+        "lines": [
+          {
+            "content": "FACTURA RECTIFICATIVA R-3",
+            "polygon": [
+              1,
+              1,
+              2,
+              1,
+              2,
+              1.2,
+              1,
+              1.2
+            ],
+            "spans": [
+              {
+                "offset": 0,
+                "length": 10
+              }
+            ]
+          }
+        ],
+        "spans": [
+          {
+            "offset": 0,
+            "length": 404
+          }
+        ],
+        "barcodes": []
+      }
+    ],
+    "documents": [
+      {
+        "docType": "invoice",
+        "boundingRegions": [
+          {
+            "pageNumber": 1,
+            "polygon": [
+              1,
+              1,
+              2,
+              1,
+              2,
+              1.2,
+              1,
+              1.2
+            ]
+          }
+        ],
+        "fields": {
+          "VendorName": {
+            "type": "string",
+            "valueString": "IMPRENTA LEVANTE SL",
+            "content": "IMPRENTA LEVANTE SL",
+            "confidence": 0.95,
+            "boundingRegions": [
+              {
+                "pageNumber": 1,
+                "polygon": [
+                  1,
+                  1,
+                  2,
+                  1,
+                  2,
+                  1.2,
+                  1,
+                  1.2
+                ]
+              }
+            ],
+            "spans": [
+              {
+                "offset": 0,
+                "length": 19
+              }
+            ]
+          },
+          "VendorTaxId": {
+            "type": "string",
+            "valueString": "B12345674",
+            "content": "B12345674",
+            "confidence": 0.93,
+            "boundingRegions": [
+              {
+                "pageNumber": 1,
+                "polygon": [
+                  1,
+                  1,
+                  2,
+                  1,
+                  2,
+                  1.2,
+                  1,
+                  1.2
+                ]
+              }
+            ],
+            "spans": [
+              {
+                "offset": 20,
+                "length": 9
+              }
+            ]
+          },
+          "VendorAddress": {
+            "type": "address",
+            "valueAddress": {
+              "houseNumber": "12",
+              "road": "Calle Mayor",
+              "postalCode": "46001",
+              "city": "Valencia",
+              "state": "Valencia",
+              "countryRegion": "ESP",
+              "streetAddress": "Calle Mayor 12"
+            },
+            "content": "Calle Mayor 12, 46001 Valencia",
+            "confidence": 0.9,
+            "boundingRegions": [
+              {
+                "pageNumber": 1,
+                "polygon": [
+                  1,
+                  1,
+                  2,
+                  1,
+                  2,
+                  1.2,
+                  1,
+                  1.2
+                ]
+              }
+            ],
+            "spans": [
+              {
+                "offset": 30,
+                "length": 30
+              }
+            ]
+          },
+          "CustomerName": {
+            "type": "string",
+            "valueString": "COMERCIAL DEMO SL",
+            "content": "COMERCIAL DEMO SL",
+            "confidence": 0.92,
+            "boundingRegions": [
+              {
+                "pageNumber": 1,
+                "polygon": [
+                  1,
+                  1,
+                  2,
+                  1,
+                  2,
+                  1.2,
+                  1,
+                  1.2
+                ]
+              }
+            ],
+            "spans": [
+              {
+                "offset": 61,
+                "length": 17
+              }
+            ]
+          },
+          "CustomerTaxId": {
+            "type": "string",
+            "valueString": "B87654323",
+            "content": "B87654323",
+            "confidence": 0.9,
+            "boundingRegions": [
+              {
+                "pageNumber": 1,
+                "polygon": [
+                  1,
+                  1,
+                  2,
+                  1,
+                  2,
+                  1.2,
+                  1,
+                  1.2
+                ]
+              }
+            ],
+            "spans": [
+              {
+                "offset": 79,
+                "length": 9
+              }
+            ]
+          },
+          "InvoiceId": {
+            "type": "string",
+            "valueString": "R-3",
+            "content": "R-3",
+            "confidence": 0.94,
+            "boundingRegions": [
+              {
+                "pageNumber": 1,
+                "polygon": [
+                  1,
+                  1,
+                  2,
+                  1,
+                  2,
+                  1.2,
+                  1,
+                  1.2
+                ]
+              }
+            ],
+            "spans": [
+              {
+                "offset": 339,
+                "length": 3
+              }
+            ]
+          },
+          "InvoiceDate": {
+            "type": "date",
+            "valueDate": "2026-03-04",
+            "content": "04/03/2026",
+            "confidence": 0.97,
+            "boundingRegions": [
+              {
+                "pageNumber": 1,
+                "polygon": [
+                  1,
+                  1,
+                  2,
+                  1,
+                  2,
+                  1.2,
+                  1,
+                  1.2
+                ]
+              }
+            ],
+            "spans": [
+              {
+                "offset": 100,
+                "length": 10
+              }
+            ]
+          },
+          "DueDate": {
+            "type": "date",
+            "valueDate": "2026-04-03",
+            "content": "03/04/2026",
+            "confidence": 0.88,
+            "boundingRegions": [
+              {
+                "pageNumber": 1,
+                "polygon": [
+                  1,
+                  1,
+                  2,
+                  1,
+                  2,
+                  1.2,
+                  1,
+                  1.2
+                ]
+              }
+            ],
+            "spans": [
+              {
+                "offset": 111,
+                "length": 10
+              }
+            ]
+          },
+          "SubTotal": {
+            "type": "currency",
+            "valueCurrency": {
+              "amount": 200,
+              "currencySymbol": "€",
+              "currencyCode": "EUR"
+            },
+            "content": "200,00 €",
+            "confidence": 0.94,
+            "boundingRegions": [
+              {
+                "pageNumber": 1,
+                "polygon": [
+                  1,
+                  1,
+                  2,
+                  1,
+                  2,
+                  1.2,
+                  1,
+                  1.2
+                ]
+              }
+            ],
+            "spans": [
+              {
+                "offset": 122,
+                "length": 8
+              }
+            ]
+          },
+          "TotalTax": {
+            "type": "currency",
+            "valueCurrency": {
+              "amount": 42,
+              "currencySymbol": "€",
+              "currencyCode": "EUR"
+            },
+            "content": "42,00 €",
+            "confidence": 0.93,
+            "boundingRegions": [
+              {
+                "pageNumber": 1,
+                "polygon": [
+                  1,
+                  1,
+                  2,
+                  1,
+                  2,
+                  1.2,
+                  1,
+                  1.2
+                ]
+              }
+            ],
+            "spans": [
+              {
+                "offset": 131,
+                "length": 8
+              }
+            ]
+          },
+          "InvoiceTotal": {
+            "type": "currency",
+            "valueCurrency": {
+              "amount": 242,
+              "currencySymbol": "€",
+              "currencyCode": "EUR"
+            },
+            "content": "242,00 €",
+            "confidence": 0.95,
+            "boundingRegions": [
+              {
+                "pageNumber": 1,
+                "polygon": [
+                  1,
+                  1,
+                  2,
+                  1,
+                  2,
+                  1.2,
+                  1,
+                  1.2
+                ]
+              }
+            ],
+            "spans": [
+              {
+                "offset": 140,
+                "length": 8
+              }
+            ]
+          },
+          "AmountDue": {
+            "type": "currency",
+            "valueCurrency": {
+              "amount": 242,
+              "currencySymbol": "€",
+              "currencyCode": "EUR"
+            },
+            "content": "242,00 €",
+            "confidence": 0.91,
+            "boundingRegions": [
+              {
+                "pageNumber": 1,
+                "polygon": [
+                  1,
+                  1,
+                  2,
+                  1,
+                  2,
+                  1.2,
+                  1,
+                  1.2
+                ]
+              }
+            ],
+            "spans": [
+              {
+                "offset": 149,
+                "length": 8
+              }
+            ]
+          },
+          "TaxDetails": {
+            "type": "array",
+            "valueArray": [
+              {
+                "type": "object",
+                "valueObject": {
+                  "Amount": {
+                    "type": "currency",
+                    "valueCurrency": {
+                      "amount": 42,
+                      "currencySymbol": "€",
+                      "currencyCode": "EUR"
+                    },
+                    "content": "42,00 €",
+                    "confidence": 0.9,
+                    "boundingRegions": [
+                      {
+                        "pageNumber": 1,
+                        "polygon": [
+                          1,
+                          1,
+                          2,
+                          1,
+                          2,
+                          1.2,
+                          1,
+                          1.2
+                        ]
+                      }
+                    ],
+                    "spans": [
+                      {
+                        "offset": 158,
+                        "length": 8
+                      }
+                    ]
+                  },
+                  "Rate": {
+                    "type": "string",
+                    "valueString": "21%",
+                    "content": "21%",
+                    "confidence": 0.9,
+                    "boundingRegions": [
+                      {
+                        "pageNumber": 1,
+                        "polygon": [
+                          1,
+                          1,
+                          2,
+                          1,
+                          2,
+                          1.2,
+                          1,
+                          1.2
+                        ]
+                      }
+                    ],
+                    "spans": [
+                      {
+                        "offset": 167,
+                        "length": 3
+                      }
+                    ]
+                  }
+                },
+                "confidence": 0.9,
+                "boundingRegions": [
+                  {
+                    "pageNumber": 1,
+                    "polygon": [
+                      1,
+                      1,
+                      2,
+                      1,
+                      2,
+                      1.2,
+                      1,
+                      1.2
+                    ]
+                  }
+                ],
+                "spans": [
+                  {
+                    "offset": 171,
+                    "length": 10
+                  }
+                ]
+              }
+            ]
+          },
+          "Items": {
+            "type": "array",
+            "valueArray": [
+              {
+                "type": "object",
+                "valueObject": {
+                  "Description": {
+                    "type": "string",
+                    "valueString": "Folletos A5",
+                    "content": "Folletos A5",
+                    "confidence": 0.93,
+                    "boundingRegions": [
+                      {
+                        "pageNumber": 1,
+                        "polygon": [
+                          1,
+                          1,
+                          2,
+                          1,
+                          2,
+                          1.2,
+                          1,
+                          1.2
+                        ]
+                      }
+                    ],
+                    "spans": [
+                      {
+                        "offset": 182,
+                        "length": 11
+                      }
+                    ]
+                  },
+                  "Quantity": {
+                    "type": "number",
+                    "valueNumber": 1000,
+                    "content": "1000",
+                    "confidence": 0.93,
+                    "boundingRegions": [
+                      {
+                        "pageNumber": 1,
+                        "polygon": [
+                          1,
+                          1,
+                          2,
+                          1,
+                          2,
+                          1.2,
+                          1,
+                          1.2
+                        ]
+                      }
+                    ],
+                    "spans": [
+                      {
+                        "offset": 194,
+                        "length": 4
+                      }
+                    ]
+                  },
+                  "UnitPrice": {
+                    "type": "currency",
+                    "valueCurrency": {
+                      "amount": 0.1,
+                      "currencySymbol": "€",
+                      "currencyCode": "EUR"
+                    },
+                    "content": "0,10 €",
+                    "confidence": 0.93,
+                    "boundingRegions": [
+                      {
+                        "pageNumber": 1,
+                        "polygon": [
+                          1,
+                          1,
+                          2,
+                          1,
+                          2,
+                          1.2,
+                          1,
+                          1.2
+                        ]
+                      }
+                    ],
+                    "spans": [
+                      {
+                        "offset": 199,
+                        "length": 8
+                      }
+                    ]
+                  },
+                  "Amount": {
+                    "type": "currency",
+                    "valueCurrency": {
+                      "amount": 100,
+                      "currencySymbol": "€",
+                      "currencyCode": "EUR"
+                    },
+                    "content": "100,00 €",
+                    "confidence": 0.93,
+                    "boundingRegions": [
+                      {
+                        "pageNumber": 1,
+                        "polygon": [
+                          1,
+                          1,
+                          2,
+                          1,
+                          2,
+                          1.2,
+                          1,
+                          1.2
+                        ]
+                      }
+                    ],
+                    "spans": [
+                      {
+                        "offset": 208,
+                        "length": 8
+                      }
+                    ]
+                  },
+                  "TaxRate": {
+                    "type": "string",
+                    "valueString": "21%",
+                    "content": "21%",
+                    "confidence": 0.93,
+                    "boundingRegions": [
+                      {
+                        "pageNumber": 1,
+                        "polygon": [
+                          1,
+                          1,
+                          2,
+                          1,
+                          2,
+                          1.2,
+                          1,
+                          1.2
+                        ]
+                      }
+                    ],
+                    "spans": [
+                      {
+                        "offset": 217,
+                        "length": 3
+                      }
+                    ]
+                  },
+                  "Tax": {
+                    "type": "currency",
+                    "valueCurrency": {
+                      "amount": 21,
+                      "currencySymbol": "€",
+                      "currencyCode": "EUR"
+                    },
+                    "content": "21,00 €",
+                    "confidence": 0.93,
+                    "boundingRegions": [
+                      {
+                        "pageNumber": 1,
+                        "polygon": [
+                          1,
+                          1,
+                          2,
+                          1,
+                          2,
+                          1.2,
+                          1,
+                          1.2
+                        ]
+                      }
+                    ],
+                    "spans": [
+                      {
+                        "offset": 221,
+                        "length": 8
+                      }
+                    ]
+                  }
+                },
+                "confidence": 0.93,
+                "boundingRegions": [
+                  {
+                    "pageNumber": 1,
+                    "polygon": [
+                      1,
+                      1,
+                      2,
+                      1,
+                      2,
+                      1.2,
+                      1,
+                      1.2
+                    ]
+                  }
+                ],
+                "spans": [
+                  {
+                    "offset": 230,
+                    "length": 10
+                  }
+                ]
+              },
+              {
+                "type": "object",
+                "valueObject": {
+                  "Description": {
+                    "type": "string",
+                    "valueString": "Carteles A3",
+                    "content": "Carteles A3",
+                    "confidence": 0.93,
+                    "boundingRegions": [
+                      {
+                        "pageNumber": 1,
+                        "polygon": [
+                          1,
+                          1,
+                          2,
+                          1,
+                          2,
+                          1.2,
+                          1,
+                          1.2
+                        ]
+                      }
+                    ],
+                    "spans": [
+                      {
+                        "offset": 241,
+                        "length": 11
+                      }
+                    ]
+                  },
+                  "Quantity": {
+                    "type": "number",
+                    "valueNumber": 50,
+                    "content": "50",
+                    "confidence": 0.93,
+                    "boundingRegions": [
+                      {
+                        "pageNumber": 1,
+                        "polygon": [
+                          1,
+                          1,
+                          2,
+                          1,
+                          2,
+                          1.2,
+                          1,
+                          1.2
+                        ]
+                      }
+                    ],
+                    "spans": [
+                      {
+                        "offset": 253,
+                        "length": 2
+                      }
+                    ]
+                  },
+                  "UnitPrice": {
+                    "type": "currency",
+                    "valueCurrency": {
+                      "amount": 2,
+                      "currencySymbol": "€",
+                      "currencyCode": "EUR"
+                    },
+                    "content": "2,00 €",
+                    "confidence": 0.93,
+                    "boundingRegions": [
+                      {
+                        "pageNumber": 1,
+                        "polygon": [
+                          1,
+                          1,
+                          2,
+                          1,
+                          2,
+                          1.2,
+                          1,
+                          1.2
+                        ]
+                      }
+                    ],
+                    "spans": [
+                      {
+                        "offset": 256,
+                        "length": 8
+                      }
+                    ]
+                  },
+                  "Amount": {
+                    "type": "currency",
+                    "valueCurrency": {
+                      "amount": 100,
+                      "currencySymbol": "€",
+                      "currencyCode": "EUR"
+                    },
+                    "content": "100,00 €",
+                    "confidence": 0.93,
+                    "boundingRegions": [
+                      {
+                        "pageNumber": 1,
+                        "polygon": [
+                          1,
+                          1,
+                          2,
+                          1,
+                          2,
+                          1.2,
+                          1,
+                          1.2
+                        ]
+                      }
+                    ],
+                    "spans": [
+                      {
+                        "offset": 265,
+                        "length": 8
+                      }
+                    ]
+                  },
+                  "TaxRate": {
+                    "type": "string",
+                    "valueString": "21%",
+                    "content": "21%",
+                    "confidence": 0.93,
+                    "boundingRegions": [
+                      {
+                        "pageNumber": 1,
+                        "polygon": [
+                          1,
+                          1,
+                          2,
+                          1,
+                          2,
+                          1.2,
+                          1,
+                          1.2
+                        ]
+                      }
+                    ],
+                    "spans": [
+                      {
+                        "offset": 274,
+                        "length": 3
+                      }
+                    ]
+                  },
+                  "Tax": {
+                    "type": "currency",
+                    "valueCurrency": {
+                      "amount": 21,
+                      "currencySymbol": "€",
+                      "currencyCode": "EUR"
+                    },
+                    "content": "21,00 €",
+                    "confidence": 0.93,
+                    "boundingRegions": [
+                      {
+                        "pageNumber": 1,
+                        "polygon": [
+                          1,
+                          1,
+                          2,
+                          1,
+                          2,
+                          1.2,
+                          1,
+                          1.2
+                        ]
+                      }
+                    ],
+                    "spans": [
+                      {
+                        "offset": 278,
+                        "length": 8
+                      }
+                    ]
+                  }
+                },
+                "confidence": 0.93,
+                "boundingRegions": [
+                  {
+                    "pageNumber": 1,
+                    "polygon": [
+                      1,
+                      1,
+                      2,
+                      1,
+                      2,
+                      1.2,
+                      1,
+                      1.2
+                    ]
+                  }
+                ],
+                "spans": [
+                  {
+                    "offset": 287,
+                    "length": 10
+                  }
+                ]
+              }
+            ]
+          },
+          "PaymentDetails": {
+            "type": "array",
+            "valueArray": [
+              {
+                "type": "object",
+                "valueObject": {
+                  "IBAN": {
+                    "type": "string",
+                    "valueString": "ES91 2100 0418 4502 0005 1332",
+                    "content": "ES91 2100 0418 4502 0005 1332",
+                    "confidence": 0.9,
+                    "boundingRegions": [
+                      {
+                        "pageNumber": 1,
+                        "polygon": [
+                          1,
+                          1,
+                          2,
+                          1,
+                          2,
+                          1.2,
+                          1,
+                          1.2
+                        ]
+                      }
+                    ],
+                    "spans": [
+                      {
+                        "offset": 298,
+                        "length": 29
+                      }
+                    ]
+                  }
+                },
+                "confidence": 0.9,
+                "boundingRegions": [
+                  {
+                    "pageNumber": 1,
+                    "polygon": [
+                      1,
+                      1,
+                      2,
+                      1,
+                      2,
+                      1.2,
+                      1,
+                      1.2
+                    ]
+                  }
+                ],
+                "spans": [
+                  {
+                    "offset": 328,
+                    "length": 10
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        "confidence": 0.94,
+        "spans": [
+          {
+            "offset": 0,
+            "length": 404
+          }
+        ]
+      }
+    ],
+    "contentFormat": "text"
+  }
+}

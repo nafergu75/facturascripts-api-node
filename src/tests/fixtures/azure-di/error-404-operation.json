@@ -1,0 +1,10 @@
+{
+  "error": {
+    "code": "NotFound",
+    "message": "Resource not found.",
+    "innererror": {
+      "code": "OperationNotFound",
+      "message": "The requested operation was not found. The identifier may be invalid or the operation may have expired."
+    }
+  }
+}

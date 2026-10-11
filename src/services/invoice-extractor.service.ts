@@ -290,7 +290,7 @@ function aplicarFallbacksHeuristicos(lectura: LecturaClaude, textoExtraido: stri
   return lectura;
 }
 
-interface LecturaClaude {
+export interface LecturaClaude {
   doc_kind: string | null;
   number: string | null;
   series: string | null;
@@ -314,7 +314,7 @@ interface LecturaClaude {
   raw_text: string | null;
 }
 
-async function leerDocumentoConClaude(buffer: Buffer, mimeType: string): Promise<LecturaClaude> {
+export async function leerDocumentoConClaude(buffer: Buffer, mimeType: string, peticion?: { timeout?: number; maxRetries?: number }): Promise<LecturaClaude> {
   if (!anthropicClient) {
     throw badRequest('El extractor IA no está disponible: falta ANTHROPIC_API_KEY en el servidor.');
   }
@@ -344,7 +344,7 @@ async function leerDocumentoConClaude(buffer: Buffer, mimeType: string): Promise
       ],
       tools: [HERRAMIENTA_EXTRACCION],
       tool_choice: { type: 'tool', name: 'registrar_extraccion_factura' },
-    });
+    }, peticion);
   } catch (err) {
     const e = err as { status?: number; error?: { error?: { message?: string } } };
     const detalle = e.error?.error?.message ?? (err instanceof Error ? err.message : String(err));

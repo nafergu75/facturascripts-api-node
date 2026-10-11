@@ -1,0 +1,6 @@
+{
+  "error": {
+    "code": "ServiceUnavailable",
+    "message": "A transient error occurred. Try again."
+  }
+}

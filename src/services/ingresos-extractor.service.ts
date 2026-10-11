@@ -5,6 +5,7 @@ import { incomeInvoicesService, type CrearLineaIngresoDTO } from './income-invoi
 import { invoiceExtractorService, type InvoiceExtraction } from './invoice-extractor.service';
 import { archivarVentaSinRomper } from './archivoFacturas.service';
 import { paisDelCliente } from '../domain/tipo-operacion.model';
+import { comprobarRevisionVenta, vincularLectura } from './lectura/confirmar';
 
 /**
  * Lector de facturas de INGRESO (pantalla "Lector de ingresos").
@@ -145,12 +146,18 @@ export const ingresosExtractorService = {
   },
 
   /** Crea la factura de ingreso a partir de la extraccion guardada. */
-  async confirmar(companyId: string, documentId: string): Promise<{ facturaId: string; numeroCompleto: string; total: number }> {
+  async confirmar(
+    companyId: string,
+    documentId: string,
+    opciones: { revisado?: boolean; userId?: string } = {},
+  ): Promise<{ facturaId: string; numeroCompleto: string; total: number }> {
     const doc = await prisma.incomeReaderDocument.findFirst({
       where: { id: documentId, companyId, sourceType: 'EXTRACTOR_IA' },
     });
     if (!doc) throw notFound('Documento no encontrado.');
     if (doc.status !== 'READY_FOR_VERIFICATION') throw badRequest(`El documento esta en estado ${doc.status}; ya no se puede confirmar.`);
+    // Leido con /lecturas: si algo estaba marcado, hace falta "He revisado".
+    await comprobarRevisionVenta(companyId, documentId, opciones.revisado === true);
 
     const e = doc.parsedData as unknown as InvoiceExtraction;
     const resumen = aIngresoExtraido(documentId, e);
@@ -205,6 +212,7 @@ export const ingresosExtractorService = {
 
     // Archivo por trimestres: el PDF original queda en su carpeta (no bloqueante).
     await archivarVentaSinRomper(companyId, factura.id);
+    await vincularLectura(companyId, { incomeReaderDocumentId: documentId }, { incomeInvoiceId: factura.id, userId: opciones.userId, revisada: opciones.revisado === true });
 
     return { facturaId: factura.id, numeroCompleto: factura.numeroCompleto ?? '', total: factura.totalFactura };
   },

@@ -1,0 +1,32 @@
+{
+  "id": "msg_01PRUEBA",
+  "type": "message",
+  "role": "assistant",
+  "model": "claude-opus-4-8",
+  "content": [
+    {
+      "type": "tool_use",
+      "id": "toolu_01PRUEBA",
+      "name": "registrar_extraccion_gasto",
+      "input": {
+        "numero": "F2026/0012",
+        "fecha": "2026-03-04",
+        "proveedor": "IMPRENTA LEVANTE SL",
+        "nif_proveedor": "B12345674",
+        "concepto": "material de imprenta",
+        "base": 200,
+        "iva_porcentaje": 21,
+        "iva_cantidad": 42,
+        "total": 242,
+        "moneda": "EUR",
+        "tipo_documento": "factura"
+      }
+    }
+  ],
+  "stop_reason": "tool_use",
+  "stop_sequence": null,
+  "usage": {
+    "input_tokens": 1200,
+    "output_tokens": 150
+  }
+}

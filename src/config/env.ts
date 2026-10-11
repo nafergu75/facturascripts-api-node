@@ -150,7 +150,7 @@ const carmen = leerCarmen();
  * como ausente para que Carmen entre en modo degradado limpio (solo RAG) en vez
  * de intentar una llamada que fallaría por autenticación.
  */
-function normalizarAnthropicKey(value?: string): string | undefined {
+export function normalizarAnthropicKey(value?: string): string | undefined {
   if (!value) return undefined;
   const v = value.trim();
   if (!v.startsWith('sk-ant-') || /x{6,}/i.test(v) || v.length < 40) return undefined;

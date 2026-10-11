@@ -16,6 +16,8 @@ jest.mock('../config/database', () => ({
       update: jest.fn(async ({ data }: { data: Record<string, unknown> }) => actualizaciones.push(data)),
     },
     customer: { findFirst: jest.fn(async () => null) },
+    // Documento del lector de siempre: sin lectura de /lecturas enlazada.
+    lecturaDocumento: { findFirst: jest.fn(async () => null) },
   },
 }));
 const crearIngreso = jest.fn(async (dto: Record<string, unknown>) => ({ id: 'fac-1', numeroCompleto: `${dto.serie}-${dto.numero}`, totalFactura: 1196 }));

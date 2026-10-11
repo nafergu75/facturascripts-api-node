@@ -17,6 +17,7 @@ import { empresaConNominas, expenseInvoicesService } from '../services/expense-i
 import { normalizarNumeroProveedor } from '../domain/factura-gasto.model';
 import { limpiarNif } from '../domain/tipo-operacion.model';
 import { normalizarNif } from '../utils/nif';
+import { comprobarLecturaParaConfirmar, prefijoObservaciones, vincularLectura } from '../services/lectura/confirmar';
 
 /** Tamano maximo del archivo: el cuerpo de una funcion de Vercel no pasa de 4,5 MB. */
 export const MAX_ARCHIVO_LECTOR = 4 * 1024 * 1024;
@@ -116,14 +117,22 @@ export const gastosExtractorController = {
       throw badRequest(AVISO_NO_FACTURA[tipoDocumento]);
     }
 
+    // Lectura con Azure (POST /lecturas): llega por el extra del formulario. Sin ella, como siempre.
+    const lectura = typeof cuerpo.lecturaId === 'string' && cuerpo.lecturaId ? await comprobarLecturaParaConfirmar(companyId, cuerpo.lecturaId, 'GASTO', cuerpo) : null;
+
     const pct = typeof confianza === 'number' && Number.isFinite(confianza) ? Math.round(confianza <= 1 ? confianza * 100 : confianza) : null;
-    const prefijo = pct !== null ? `Leída con el lector de gastos (confianza ${pct} %).` : 'Leída con el lector de gastos.';
-    const { cuentaContableBase: _antigua, ...resto } = cuerpo;
+    const prefijo = lectura
+      ? prefijoObservaciones(lectura.origen, lectura.confianza)
+      : pct !== null
+        ? `Leída con el lector de gastos (confianza ${pct} %).`
+        : 'Leída con el lector de gastos.';
+    const { cuentaContableBase: _antigua, lecturaId: _lectura, revisado: _revisado, ...resto } = cuerpo;
     const r = await expenseInvoicesService.registrarGasto(
       companyId,
       { ...resto, ...(cuerpo.cuentaGasto === undefined && cuenta ? { cuentaGasto: cuenta } : {}) },
       { contabilizar: 'DRAFT', prefijoObservaciones: prefijo, usuarioEmail: req.user?.email, userId: req.user?.userId },
     );
+    if (lectura) await vincularLectura(companyId, { lecturaId: lectura.id }, { expenseInvoiceId: r.factura.id, userId: req.user?.userId, revisada: cuerpo.revisado === true });
     res.status(201).json({ ok: true, data: { factura: r.factura, asientoId: r.asientoId, asientoEstado: 'DRAFT', proveedorCreado: r.proveedorCreado } });
   }),
 };

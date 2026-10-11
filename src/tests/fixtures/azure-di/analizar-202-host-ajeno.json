@@ -1,0 +1,6 @@
+{
+  "headers": {
+    "Operation-Location": "https://otro.example.com/documentintelligence/documentModels/prebuilt-invoice/analyzeResults/3b31320d-8bab-4f88-b19c-2322a7f11034?api-version=2024-11-30",
+    "Retry-After": "2"
+  }
+}

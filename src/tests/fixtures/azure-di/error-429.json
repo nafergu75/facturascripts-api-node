@@ -1,0 +1,10 @@
+{
+  "_nota": "forma de la pasarela de Azure AI services; no es del contrato de Document Intelligence",
+  "headers": {
+    "Retry-After": "1"
+  },
+  "error": {
+    "code": "429",
+    "message": "Requests to the Analyze Document Operation under Document Intelligence API have exceeded rate limit of your current FormRecognizer F0 pricing tier. Please retry after 1 second."
+  }
+}

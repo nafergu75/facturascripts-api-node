@@ -1,0 +1,10 @@
+{
+  "error": {
+    "code": "InvalidRequest",
+    "message": "Invalid request.",
+    "innererror": {
+      "code": "InvalidContent",
+      "message": "The file is corrupted or format is unsupported. Refer to documentation for the list of supported formats."
+    }
+  }
+}

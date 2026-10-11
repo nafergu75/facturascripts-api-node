@@ -12,6 +12,7 @@ import { requestLoggerMiddleware } from './middleware/request-logger.middleware'
 import { badRequest, HttpError } from './utils/http-errors';
 import { topeMensualAgotadoEnCache } from './services/carmen/presupuesto.service';
 import { chatAssistantController } from './controllers/chatAssistant.controller';
+import { estadoOcr } from './config/azure';
 
 /** Rutas de Carmen (POST /companies/:companyId/chat-assistant...). */
 const RUTA_CARMEN = /^\/companies\/[^/]+\/chat-assistant(?:\/|$)/;
@@ -80,6 +81,8 @@ export function createApp(): Express {
       },
       // Sin importes. topeAgotado es lo ultimo que ha visto esta instancia (null si aun nada).
       carmen: { llmActivo: config.carmen.llmActivo && !!config.anthropicApiKey, topeAgotado: topeMensualAgotadoEnCache() },
+      // Lector de facturas: si Azure esta configurado y que lector se usa (sin valores).
+      ocr: estadoOcr(),
     });
   });
 
