@@ -24,7 +24,7 @@ import { tiene } from './contexto';
 import { normalizar, type TextoNormalizado } from './normalizar';
 import { extraerPeriodo, resolverCodigoPeriodo } from './huecos/periodo';
 import { extraerFoco, extraerImporteMinimo, extraerModelo, extraerNumeroFactura, extraerSentido } from './huecos/otros';
-import { buscarTercero, indiceTerceros, indiceTrabajadores, nombraTrabajadorEn, trozosCandidatos, UMBRAL_USAR, type ResultadoTercero } from './terceros';
+import { buscarTercero, indiceTerceros, indiceTrabajadores, nombraTrabajadorEn, RE_SUBCUENTA, trozosCandidatos, UMBRAL_USAR, type ResultadoTercero } from './terceros';
 import { RE_NIF } from './huecos/otros';
 import { clasificar, decidir, textoParaClasificar, UMBRAL_DATOS, type Puntuacion } from './clasificador';
 import { INTENCIONES, intencionPorId, type Intencion } from './intenciones/catalogo';
@@ -205,6 +205,8 @@ async function extraerHuecos(ctx: CarmenCtx, n: TextoNormalizado): Promise<Hueco
     if (roles.includes('cliente')) senales.add('__cliente');
     if (roles.includes('proveedor')) senales.add('__proveedor');
     if (roles.includes('banco')) senales.add('__banco');
+    // «¿Cuánto debe la 43000012?»: la subcuenta contable señala el saldo contable (INT-07).
+    if (RE_SUBCUENTA.test(tercero.trozo)) senales.add('__subcuenta');
     // Un nombre que solo es cliente no puede ser «lo que le debo» (ni al revés).
     if (roles.includes('cliente') && !roles.includes('proveedor')) senales.add('__soloCliente');
     if (roles.includes('proveedor') && !roles.includes('cliente')) senales.add('__soloProveedor');
