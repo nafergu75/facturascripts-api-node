@@ -29,6 +29,15 @@ import {
   type ParteComparativo,
 } from '../services/puestaEnMarcha/puestaEnMarcha.service';
 import { borrarSubida, reensamblarSubida, recibirTrozo } from '../services/puestaEnMarcha/subidasTrozos';
+import {
+  confirmarPlan,
+  cuentasPlanDesdeJson,
+  enlazarSubcuenta,
+  leerPlan,
+  previsualizarPlan,
+  subcuentasSinEnlazar,
+  tercerosDesdeJson,
+} from '../services/puestaEnMarcha/planAnterior';
 
 type ConFichero = Request & { file?: { buffer: Buffer; originalname: string } };
 
@@ -99,6 +108,16 @@ async function conMapeo<T>(fn: () => Promise<T>): Promise<T | { necesitaMapeo: t
     if (d?.necesitaMapeo) return { necesitaMapeo: true, mensaje: (e as Error).message, columnas: d.columnas, mapeo: d.mapeo };
     throw e;
   }
+}
+
+/** Plan del ejercicio anterior: del fichero (campo "archivo" o "subidaId") o ya mapeado (campo "cuentas"), con el listado de terceros opcional. */
+async function entradaPlan(req: ConFichero) {
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const terceros = tercerosDesdeJson(body.terceros);
+  const f = await ficheroDe(req);
+  if (f) return { lectura: leerPlan(f.buffer, f.originalname), terceros };
+  if (body.cuentas !== undefined) return { cuentas: cuentasPlanDesdeJson(body.cuentas), terceros };
+  throw badRequest('Adjunta el fichero del plan de cuentas en el campo "archivo".');
 }
 
 function ejercicioDe(raw: unknown): number {
@@ -214,6 +233,52 @@ export const puestaEnMarchaController = {
     const r = await confirmarComparativo(req.companyId!, await entradaSaldos(req as ConFichero), { ejercicio: b.ejercicio, parte: (b.parte || 'todo') as ParteComparativo });
     await limpiarSubida(req as ConFichero);
     sendOk(res, r, undefined, 201);
+  }),
+
+  /** POST /plan/vista-previa — lo que haria el traslado del plan anterior, sin tocar nada. */
+  vistaPlan: asyncHandler(async (req, res) => {
+    sendOk(res, await previsualizarPlan(req.companyId!, await entradaPlan(req as ConFichero)));
+  }),
+
+  /** POST /plan — crea las cuentas, fija la longitud y enlaza las subcuentas de terceros. */
+  confirmarPlan: asyncHandler(async (req, res) => {
+    const r = await confirmarPlan(req.companyId!, await entradaPlan(req as ConFichero));
+    await registrarAuditoria({
+      userId: req.user!.userId,
+      companyId: req.companyId,
+      action: 'IMPORTAR_PLAN_ANTERIOR',
+      resourceType: 'PLAN_CONTABLE',
+      resourceId: req.companyId!,
+      meta: {
+        cuentasCreadas: r.cuentasCreadas,
+        fichasEnlazadas: r.fichasEnlazadas,
+        fichasCreadas: r.fichasCreadas,
+        pendientes: r.pendientes,
+        longitudFijada: r.longitudFijada,
+      },
+    });
+    await limpiarSubida(req as ConFichero);
+    sendOk(res, r, undefined, 201);
+  }),
+
+  /** GET /plan/sin-enlazar — subcuentas de clientes y proveedores del plan que no son de ninguna ficha. */
+  sinEnlazar: asyncHandler(async (req, res) => {
+    sendOk(res, await subcuentasSinEnlazar(req.companyId!));
+  }),
+
+  /** POST /plan/enlazar — { codigo, fichaId } o { codigo, nueva: { nombreFiscal, nifCif } }. */
+  enlazar: asyncHandler(async (req, res) => {
+    const b = (req.body ?? {}) as Record<string, unknown>;
+    const r = await enlazarSubcuenta(req.companyId!, { codigo: b.codigo, fichaId: b.fichaId, nueva: (b.nueva as { nombreFiscal?: unknown; nifCif?: unknown } | undefined) ?? null });
+    await registrarAuditoria({
+      userId: req.user!.userId,
+      companyId: req.companyId,
+      action: 'ENLAZAR_SUBCUENTA_TERCERO',
+      resourceType: r.tipo === 'cliente' ? 'CLIENTE' : 'PROVEEDOR',
+      resourceId: r.fichaId,
+      meta: r,
+    });
+    sendOk(res, r);
   }),
 
   borrarComparativo: asyncHandler(async (req, res) => {
