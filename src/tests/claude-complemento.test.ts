@@ -47,6 +47,16 @@ afterAll(() => {
 });
 
 describe('cuando se llama', () => {
+  it('sin InvoiceTotal ni AmountDue no se pregunta el total a pagar: sale del total calculado con las bases', () => {
+    const a = fixtureAzure<{ analyzeResult: AnalyzeResult }>('resultado-simple').analyzeResult;
+    const f = a.documents![0].fields as Record<string, unknown>;
+    delete f.InvoiceTotal;
+    delete f.AmountDue;
+    const r = mapearFacturaAzure(a);
+    if (r.tipo !== 'hecho') throw new Error('x');
+    expect(decidirComplemento(r.lectura, r.texto, 'GASTO')).toEqual([]);
+  });
+
   it('la factura simple no necesita a Claude', () => {
     expect(disparadores('resultado-simple')).toEqual([]);
   });

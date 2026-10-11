@@ -44,7 +44,8 @@ const camposClave = (l: LecturaNormalizada, lector: Lector): Array<[string, Camp
   lector === 'VENTA' ? ['el NIF del cliente', l.receptor.nif, 'nif_cliente'] : ['el NIF del emisor', l.emisor.nif, 'nif_emisor'],
   ['el número de factura', l.numero, 'numero'],
   ['la fecha de la factura', l.fechaEmision, 'fecha'],
-  ['el total a pagar', l.totales.totalAPagar, 'total_a_pagar'],
+  // Sin total a pagar leido, se calcula con el total de la factura (completarTotalAPagar): cuenta la seguridad de ese total.
+  ['el total a pagar', l.totales.totalAPagar.valor === null && l.totales.totalFactura.valor !== null ? l.totales.totalFactura : l.totales.totalAPagar, 'total_a_pagar'],
 ];
 
 /** Las preguntas que hay que hacer a Claude. Vacia: no se le llama. */
