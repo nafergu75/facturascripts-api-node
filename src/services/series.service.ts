@@ -320,27 +320,84 @@ export function normalizarCodigoSerie(texto: string): string {
 }
 
 /**
+ * Caracteres que la AEAT no admite en NumSerieFactura (VERI*FACTU): solo ASCII
+ * imprimible (32-126) y sin « " ' < > = ». La app prohibe ademas «&», porque
+ * no esta claro como entra en la huella (spec verifactu, 3.5).
+ */
+const PROHIBIDOS_AEAT = /["'<>=&]/;
+const ASCII_IMPRIMIBLE = /^[\x20-\x7E]+$/;
+
+/**
+ * null si el codigo de la serie sirve para el numero de factura que se envia a
+ * la AEAT; si no, el aviso para la persona. Las series nuevas ya no pueden
+ * llevar esos caracteres (CODIGO_RE), pero una antigua si: con ella no se emite.
+ */
+export function problemaSerieAeat(codigo: string): string | null {
+  const c = String(codigo ?? '');
+  if (ASCII_IMPRIMIBLE.test(c) && !PROHIBIDOS_AEAT.test(c) && c.trim().length > 0) return null;
+  return (
+    `La serie ${c} tiene caracteres que la AEAT no admite en el número de factura ` +
+    '(acentos, ñ, comillas, &, <, > o =). Emite la factura en otra serie: solo letras sin acentos, números y guiones.'
+  );
+}
+
+/** Sufijo de la serie historica cuando el codigo leido coincide con una serie que se usa para emitir. */
+export const SUFIJO_HISTORICA = '-H';
+
+/**
  * Serie de una factura que llega del lector (o de una importacion) con su
- * numeracion original. Si no existe se crea con el codigo normalizado y
- * DESACTIVADA: guarda la numeracion de otro programa, pero no aparece para
- * emitir facturas nuevas. Solo para ese camino: la pantalla y la API usan
- * buscarSeriePorCodigo, y un codigo que no existe es un 400.
+ * numeracion original. Siempre es una serie HISTORICA (desactivada): guarda la
+ * numeracion de otro programa, no sale para emitir facturas nuevas y su
+ * contador no se mezcla con el de las series de la app (spec verifactu, P5).
+ *
+ *  - Si ya existe una serie desactivada con ese codigo (y del mismo tipo), se usa.
+ *  - Si el codigo coincide con una serie activa (o de otro tipo), la factura va
+ *    a la historica «<codigo>-H», que se crea si hace falta.
+ *  - Si no existe, se crea desactivada con el codigo normalizado.
+ *
+ * Solo para ese camino: la pantalla y la API usan buscarSeriePorCodigo, y un
+ * codigo que no existe es un 400.
  */
 export async function obtenerOCrearSerieHistorica(
   companyId: string,
   codigoLeido: string,
   tipoDocumento: TipoDocumentoSerie = 'FACTURA',
 ): Promise<SerieDocumento> {
-  const existente = await buscarSeriePorCodigo(companyId, codigoLeido);
-  if (existente) return existente;
   const codigo = normalizarCodigoSerie(codigoLeido);
   if (!CODIGO_RE.test(codigo)) {
     throw badRequest(`La serie "${codigoLeido}" de la factura no es válida: corrígela (letras, números y guiones, máximo 10).`, { campo: 'serie' });
   }
+  const sirve = (s: SerieDocumento | null): s is SerieDocumento => !!s && !s.activa && s.tipoDocumento === tipoDocumento;
+  // Tal cual se leyo (o en mayusculas) y, si no, ya normalizado («fac/26» -> FAC-26).
+  const existente = (await buscarSeriePorCodigo(companyId, codigoLeido)) ?? (await buscarSeriePorCodigo(companyId, codigo));
+  if (sirve(existente)) return existente;
+
+  let destino = codigo;
+  if (existente) {
+    // Choca con una serie que se usa para emitir: va a su historica.
+    destino = `${codigo.slice(0, 10 - SUFIJO_HISTORICA.length).replace(/-+$/, '')}${SUFIJO_HISTORICA}`;
+    const historica = await buscarSeriePorCodigo(companyId, destino);
+    if (sirve(historica)) return historica;
+    if (historica) {
+      throw badRequest(
+        `La serie ${codigo} de la factura coincide con una de las series de la empresa y la ${destino} también está en uso. ` +
+          'Cambia la serie leída antes de registrarla.',
+        { campo: 'serie' },
+      );
+    }
+  }
+  const descripcion =
+    destino === codigo
+      ? `Serie ${codigo} (facturas importadas)`
+      : `Serie ${codigo} de facturas importadas (la ${codigo} de la empresa sigue para emitir)`;
   const s = await prisma.invoiceSeries.upsert({
-    where: { companyId_codigo: { companyId, codigo } },
-    create: { companyId, codigo, descripcion: `Serie ${codigo} (facturas importadas)`, tipoDocumento, activa: false, porDefecto: false },
+    where: { companyId_codigo: { companyId, codigo: destino } },
+    create: { companyId, codigo: destino, descripcion, tipoDocumento, activa: false, porDefecto: false },
     update: {},
   });
+  // Otra peticion pudo crearla a la vez como serie activa: no se mezcla.
+  if (s.activa || s.tipoDocumento !== tipoDocumento) {
+    throw badRequest(`La serie ${destino} ya se usa para emitir facturas: cambia la serie leída antes de registrarla.`, { campo: 'serie' });
+  }
   return aDominio(s);
 }
