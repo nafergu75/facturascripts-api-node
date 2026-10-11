@@ -142,6 +142,15 @@ function v04Recargo(l: LecturaNormalizada): ResultadoValidacion[] {
   });
 }
 
+/** Gastos con varios tipos de IVA: el formulario los junta en una linea si no se separan a mano. */
+function v23VariosTipos(l: LecturaNormalizada, ctx: ContextoValidacion): ResultadoValidacion[] {
+  const tipos = [...new Set(l.desglose.map((t) => t.tipoIva))];
+  if (ctx.lector !== 'GASTO' || tipos.length < 2) return [];
+  const lista = tipos.map((t) => `del ${pct(t)}`);
+  const texto = `${lista.slice(0, -1).join(', ')} y ${lista[lista.length - 1]}`;
+  return [v('VARIOS_TIPOS_IVA', 'revisar', l.desglose.map((_, i): CampoId => `desglose.${i}.base`), `La factura lleva IVA ${texto}: comprueba que hay una línea por cada tipo, con su base.`)];
+}
+
 function v05RecargoNoSoportado(l: LecturaNormalizada, ctx: ContextoValidacion): ResultadoValidacion[] {
   if (!l.desglose.some((t) => t.tipoRecargo !== null)) return [];
   return ctx.lector === 'GASTO'
@@ -331,6 +340,7 @@ export function validacionesSincronas(l: LecturaNormalizada, ctx: ContextoValida
     ...v03TipoIva(l, ctx),
     ...v04Recargo(l),
     ...v05RecargoNoSoportado(l, ctx),
+    ...v23VariosTipos(l, ctx),
     ...v06Irpf(l),
     ...v07NifEmisor(l, ctx),
     ...v08NifReceptor(l, ctx),
@@ -413,6 +423,13 @@ export function combinar(l: LecturaNormalizada, validaciones: ResultadoValidacio
       if (!e.motivos.includes(val.mensaje)) e.motivos.push(val.mensaje);
     }
   }
+  // El tipo de IVA de cada tramo, para que la pantalla diga "Base del 21 %".
+  l.desglose.forEach((t, i) => {
+    for (const parte of ['base', 'cuota', 'recargo'] as const) {
+      const e = campos[`desglose.${i}.${parte}`];
+      if (e) e.tipoIva = t.tipoIva;
+    }
+  });
   // Sugerencias del QR.
   for (const d of l.qr?.diferencias ?? []) {
     const e = campos[CAMPO_QR[d.campo]];

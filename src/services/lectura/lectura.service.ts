@@ -25,7 +25,7 @@ import { deleteObject, getObject, putObject } from '../../utils/storage';
 import { MENSAJE_LECTOR_SIN_IA, type GastoExtraidoEmpresa } from '../gastos-extractor.service';
 import { aIngresoExtraido, type IngresoExtraido } from '../ingresos-extractor.service';
 import { perfilEmpresa } from '../perfilEmpresa.service';
-import { aGastoExtraido, aInvoiceExtraction } from './adaptadores';
+import { aGastoExtraido, aInvoiceExtraction, tramosGasto, type TramoGasto } from './adaptadores';
 import { azurePausado } from './azure-di.client';
 import { confianzaLectura, contarPaginasPdf } from './azure-factura.mapper';
 import { azureExtractor } from './azure.extractor';
@@ -92,7 +92,8 @@ export interface InfoLectura {
 export interface LecturaGastoLista {
   lecturaId: string;
   estado: 'LISTA';
-  gasto: GastoExtraidoEmpresa;
+  /** tramos: uno por tipo de IVA (base y cuota), para poner una linea por tipo. */
+  gasto: GastoExtraidoEmpresa & { tramos: TramoGasto[] };
   lectura: InfoLectura;
 }
 export interface LecturaIngresoLista {
@@ -332,7 +333,7 @@ async function respuestaDe(fila: FilaLectura): Promise<RespuestaLectura> {
     const g = aGastoExtraido(guardado.lectura, validaciones, fila.confianza);
     const proveedorExistente = await proveedorPorNif(fila.companyId, g.nifProveedor);
     const duplicada = proveedorExistente ? await gastoDuplicado(fila.companyId, proveedorExistente.id, g.numeroFactura) : null;
-    return { lecturaId: fila.id, estado: 'LISTA', gasto: { ...g, proveedorExistente, duplicada }, lectura };
+    return { lecturaId: fila.id, estado: 'LISTA', gasto: { ...g, tramos: tramosGasto(guardado.lectura), proveedorExistente, duplicada }, lectura };
   }
   const extraccion = aInvoiceExtraction(guardado.lectura, validaciones, { confianza: fila.confianza, nombreArchivo: fila.archivoNombre, mime: fila.archivoTipo });
   const ingreso = aIngresoExtraido(fila.incomeReaderDocumentId ?? '', extraccion);

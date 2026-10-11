@@ -201,6 +201,8 @@ export interface EstadoCampo {
   valorLeido: string | number | null;
   motivos: string[];
   sugerencia?: string;
+  /** Solo en desglose.N.*: el tipo de IVA del tramo, para decir "Base del 21 %". */
+  tipoIva?: number;
 }
 
 export interface ResultadoValidacion {

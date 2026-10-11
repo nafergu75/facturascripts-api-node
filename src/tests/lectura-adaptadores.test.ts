@@ -12,7 +12,7 @@ jest.mock('@anthropic-ai/sdk', () => ({
 
 import { _construirGastoExtraido } from '../services/gastos-extractor.service';
 import { comprobarTotales, lineasDesdeExtraccion, aIngresoExtraido } from '../services/ingresos-extractor.service';
-import { aGastoExtraido, aInvoiceExtraction } from '../services/lectura/adaptadores';
+import { aGastoExtraido, aInvoiceExtraction, tramosGasto } from '../services/lectura/adaptadores';
 import { mapearFacturaAzure } from '../services/lectura/azure-factura.mapper';
 import type { AnalyzeResult } from '../services/lectura/azure-di.client';
 import { claudeVisionExtractor } from '../services/lectura/claude-vision.adapter';
@@ -96,6 +96,25 @@ describe('aInvoiceExtraction', () => {
     const r = aInvoiceExtraction(rect, (await validarLectura(rect, venta)).validaciones, { confianza: 1, nombreArchivo: null, mime: null });
     expect(r.document_type).toBe('credit_note');
     expect(r.validation.errors).toEqual(['Es una factura rectificativa. Todavía no se puede registrar con el lector.']);
+  });
+
+  it('gastos con dos tipos de IVA: un tramo por tipo, se pide revisar y el panel sabe el tipo de cada base', async () => {
+    const l = leer('resultado-iva-multiple');
+    expect(tramosGasto(l)).toEqual([
+      { tipoIva: 21, base: 200, cuota: 42 },
+      { tipoIva: 10, base: 50, cuota: 5 },
+    ]);
+    const r = await validarLectura(l, ctx());
+    expect(r.validaciones.find((x) => x.codigo === 'VARIOS_TIPOS_IVA')).toMatchObject({
+      nivel: 'revisar',
+      campos: ['desglose.0.base', 'desglose.1.base'],
+      mensaje: 'La factura lleva IVA del 21 % y del 10 %: comprueba que hay una línea por cada tipo, con su base.',
+    });
+    expect(r.estado).toBe('revisar');
+    expect(r.campos['desglose.1.base']).toMatchObject({ estado: 'revisar', tipoIva: 10 });
+    expect(r.campos['desglose.0.cuota']).toMatchObject({ tipoIva: 21 });
+    // En ventas no: las lineas salen ya por tipo.
+    expect((await validarLectura(l, venta)).validaciones.map((x) => x.codigo)).not.toContain('VARIOS_TIPOS_IVA');
   });
 
   it('con dos tipos de IVA, comprobarTotales de ingresos-extractor pasa', async () => {

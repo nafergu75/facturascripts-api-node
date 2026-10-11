@@ -53,6 +53,19 @@ export function aGastoExtraido(l: LecturaNormalizada, validaciones: ResultadoVal
   };
 }
 
+export interface TramoGasto {
+  tipoIva: number;
+  base: number;
+  cuota: number;
+}
+
+/** Un tramo por tipo de IVA, para que el formulario ponga una linea por tipo en vez de juntarlos. */
+export function tramosGasto(l: LecturaNormalizada): TramoGasto[] {
+  return l.desglose
+    .filter((t) => t.base.valor !== null)
+    .map((t) => ({ tipoIva: t.tipoIva, base: redondear2(t.base.valor ?? 0), cuota: redondear2(t.cuota.valor ?? 0) }));
+}
+
 export function aInvoiceExtraction(
   l: LecturaNormalizada,
   validaciones: ResultadoValidacion[],
