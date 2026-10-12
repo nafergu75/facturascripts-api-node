@@ -14,7 +14,7 @@
  */
 import { prisma, type TransaccionBD } from '../../config/database';
 import { badRequest, conflict, notFound } from '../../utils/http-errors';
-import { aCentimos } from '../../utils/money';
+import { aCentimos, importeTexto } from '../../utils/money';
 import { registrarAuditoria } from '../auditoria.service';
 import { comprobarFechaAbierta } from '../periodos.service';
 import { grabarAsientos, OPCIONES_TX } from '../puestaEnMarcha/asientosEnBloque';
@@ -280,6 +280,20 @@ const mesActual = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Mad
 export async function mesesSinDotar(companyId: string, hasta: string = mesActual()): Promise<MesDotacion[]> {
   const plan = await planDeDotaciones(companyId, hasta);
   return plan.map((m) => ({ periodo: m.periodo, importe: m.importe, bienes: m.lineas.length, asiento: null }));
+}
+
+/**
+ * Aviso al bloquear un mes (o al mirar un trimestre): amortizacion que falta
+ * por apuntar hasta ese mes. null si no falta nada.
+ */
+export async function avisoAmortizacionPendiente(companyId: string, hasta: string): Promise<string | null> {
+  const meses = await mesesSinDotar(companyId, hasta);
+  if (!meses.length) return null;
+  const mes = (p: string) => `${p.slice(5, 7)}/${p.slice(0, 4)}`;
+  const total = r2(meses.reduce((t, m) => t + m.importe, 0));
+  const ultimo = meses[meses.length - 1].periodo;
+  const cuales = meses.length === 1 ? `del mes ${mes(ultimo)}` : `de ${meses.length} meses (de ${mes(meses[0].periodo)} a ${mes(ultimo)})`;
+  return `Falta por apuntar la amortización ${cuales}: ${importeTexto(total)}. Calcúlala en Contabilidad > Inmovilizado.`;
 }
 
 interface MesPlan {
