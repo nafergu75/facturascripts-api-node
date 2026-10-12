@@ -158,6 +158,36 @@ describe('111: traspaso a la 4709 de la retención de abonos que no cabe', () =>
     const anu = await request(app(E)).post('/tax-models/111/traspaso-4709/anular').send({ ejercicio: 2027, periodo: '1T' });
     expect(anu.status).toBe(409);
   });
+
+  it('el mismo exceso no se pasa dos veces pidiendo un mes del trimestre ya traspasado (ni al revés)', async () => {
+    const r = await request(app(E)).post('/tax-models/111/traspaso-4709').send({ ejercicio: 2027, periodo: '2T' });
+    expect(r.status).toBe(201);
+    const numero = (await prisma.journalEntry.findUniqueOrThrow({ where: { id: r.body.data.asiento.asientoId } })).numeroAsiento;
+    for (const periodo of ['05', '04', '06']) {
+      const mes = await request(app(E)).post('/tax-models/111/traspaso-4709').send({ ejercicio: 2027, periodo });
+      expect(mes.status).toBe(409);
+      expect(mes.body.details).toMatchObject({ motivo: 'ya_traspasado' });
+      expect(mes.body.message).toBe(`La retención de abonos de ese periodo ya está pasada a la 4709 con el 111 del 2T de 2027 (asiento ${numero}).`);
+    }
+    expect(await saldo(E, '4709')).toBe(90);
+    // Al revés: con el de mayo hecho, el 2T tampoco.
+    await request(app(E)).post('/tax-models/111/traspaso-4709/anular').send({ ejercicio: 2027, periodo: '2T' });
+    const mayo = await crearAsientoConApuntes(E, {
+      fecha: '2027-05-31',
+      concepto: 'Traspaso de mayo',
+      apuntes: [
+        { subcuenta: '4709', concepto: '4709', debe: 90, haber: 0 },
+        { subcuenta: '4751', concepto: '4751', debe: 0, haber: 90 },
+      ],
+      origen: 'AJUSTE_MANUAL',
+      invoiceId: '111-2027-05',
+      invoiceType: 'TRASPASO_4709',
+      exigirCuadre: true,
+    });
+    const trimestre = await request(app(E)).post('/tax-models/111/traspaso-4709').send({ ejercicio: 2027, periodo: '2T' });
+    expect(trimestre.status).toBe(409);
+    expect(trimestre.body.message).toBe(`La retención de abonos de ese periodo ya está pasada a la 4709 con el 111 de mayo de 2027 (asiento ${mayo.asiento.numero}).`);
+  });
 });
 
 describe('115: el mismo traspaso con el abono de un alquiler', () => {
