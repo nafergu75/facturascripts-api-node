@@ -135,6 +135,11 @@ describe('rutas y permisos', () => {
     // Bancos: tesorería o contabilidad.
     const bancos = { '5720000001': { saldoExtracto: '18.600,00', nueva: { iban: 'ES91 2100 0418 4502 0005 1332', bancoNombre: 'Sabadell' } } };
     expect((await request(app(['tesoreria:read'])).put('/arranque/2027/bancos').send({ bancos })).status).toBe(403);
+    // Con solo Contabilidad no se da de alta una cuenta bancaria (eso es de Tesorería).
+    const sinTesoreria = await request(app(['contabilidad:write'])).put('/arranque/2027/bancos').send({ bancos });
+    expect(sinTesoreria.status).toBe(403);
+    expect(sinTesoreria.body.message).toMatch(/permiso de Tesorería/);
+    expect(await prisma.bankAccount.count({ where: { companyId: E } })).toBe(0);
     const b = await request(app(['tesoreria:write'])).put('/arranque/2027/bancos').send({ bancos });
     expect(b.status).toBe(200);
     // 30 € de diferencia con la contabilidad: hay que aceptarlo o revisarlo.
