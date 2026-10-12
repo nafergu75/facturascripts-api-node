@@ -28,7 +28,7 @@ import { perfilDesdeConfig, perfilEmpresa, type PerfilEmpresa } from './perfilEm
 import { marcarTransaccion, mensajeSinTipo, resolverTipoCambio, type TipoResuelto } from './tiposCambio.service';
 import { resolverFiscalidad } from './fiscalidad-venta.service';
 import { fechaTexto, hoyEspana, sumarDiasISO } from '../utils/fechas';
-import { periodo303FueraDeLaApp } from '../utils/anios';
+import { inicioLlevanzaApp, periodo303FueraDeLaApp } from '../utils/anios';
 import { aCentimos } from '../utils/money';
 import { copiaAlEmitir, leerAjustesFacturacion } from './ajustesFacturacion.service';
 import { FORMAS_PAGO, type FormaPago } from '../domain/ajustes.model';
@@ -134,6 +134,12 @@ export interface CrearFacturaIngresoDTO {
   /** Transferencia bancaria, giro (recibo domiciliado) o contado. Defecto: el de Configuración > Facturación. */
   formaPago?: FormaPago;
   facturaOriginalId?: string; // Si es rectificativa
+  /**
+   * Rectificativa de una factura emitida FUERA de la app antes de llevar en
+   * ella la facturacion (p. ej. una de 2026 que trajo la gestoria): su numero
+   * y su fecha. En lugar de facturaOriginalId; solo por diferencias (I).
+   */
+  rectificaFuera?: { numero?: unknown; fecha?: unknown } | null;
   tipoRectificativa?: 'S' | 'I';
   motivoRectificacion?: string;
   /** Moneda de la factura (ISO 4217). Por defecto, la de la contabilidad. */
@@ -253,6 +259,8 @@ export interface IncomeInvoiceResp {
   observaciones?: string;
   esRectificativa: boolean;
   facturaOriginalId?: string;
+  /** Rectificativa de una factura de fuera de la app: su numero y su fecha. */
+  rectificaFuera?: { numero: string; fecha: string | null };
   /** Factura nacida de una proforma: id de esa proforma. */
   proformaId?: string;
   /** Proforma ya pasada a factura: id de la factura creada. */
@@ -381,6 +389,7 @@ function aRespuesta(f: FacturaConLineas, ctx: ContextoRespuesta): IncomeInvoiceR
     observaciones: f.observaciones ?? undefined,
     esRectificativa: f.esRectificativa,
     facturaOriginalId: f.facturaOriginalId ?? undefined,
+    ...(f.rectificaFueraNumero ? { rectificaFuera: { numero: f.rectificaFueraNumero, fecha: f.rectificaFueraFecha ?? null } } : {}),
     proformaId: f.proformaId ?? undefined,
     esRecurrente: f.esRecurrente,
     createdAt: f.createdAt,
@@ -421,6 +430,19 @@ function paisClienteNuevo(pais: string | undefined, nifCif: string): string {
 /**
  * Resuelve o crea el cliente. Devuelve su id y sus datos fiscales.
  */
+/** Numero y fecha de la factura de fuera de la app que se rectifica (rectificaFuera), validados. */
+function leerRectificaFuera(v: unknown): { numero: string; fecha: string } {
+  const o = (v && typeof v === 'object' ? v : {}) as { numero?: unknown; fecha?: unknown };
+  const numero = typeof o.numero === 'string' ? o.numero.trim() : '';
+  if (!numero) throw badRequest('Escribe el número de la factura que rectificas.', { campo: 'rectificaFuera.numero' });
+  if (numero.length > 60) throw badRequest('El número de la factura que rectificas es demasiado largo (60 caracteres como mucho).', { campo: 'rectificaFuera.numero' });
+  const fecha = typeof o.fecha === 'string' ? o.fecha.trim() : '';
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(fecha) || Number.isNaN(Date.parse(`${fecha}T00:00:00Z`)) || new Date(`${fecha}T00:00:00Z`).toISOString().slice(0, 10) !== fecha) {
+    throw badRequest('Escribe la fecha de la factura que rectificas (día, mes y año).', { campo: 'rectificaFuera.fecha' });
+  }
+  return { numero, fecha };
+}
+
 const MESES_TEXTO = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
 
 /** «del 4T de 2026» o «de diciembre de 2026». */
@@ -1037,11 +1059,22 @@ async function crear(dto: CrearFacturaIngresoDTO, opciones: { origen?: OrigenFac
   // La factura que se rectifica (si lo es): sus cuentas valen aunque se hayan desactivado.
   const originalLeida = interno.original ?? (dto.facturaOriginalId ? await buscarConLineas(dto.companyId, String(dto.facturaOriginalId)) : null);
   let lineas = await conCuentasDeVenta(dto.companyId, validarLineas(dto.lineas), originalLeida);
-  if (dto.proforma && dto.facturaOriginalId) throw badRequest('Una proforma no puede ser una rectificativa.');
-  const esRectificativa = !!dto.facturaOriginalId;
+  // Rectificativa de una factura de fuera de la app (una de 2026 que trajo la gestoria, por ejemplo).
+  const rectFuera = dto.rectificaFuera !== undefined && dto.rectificaFuera !== null ? leerRectificaFuera(dto.rectificaFuera) : null;
+  if (rectFuera && dto.facturaOriginalId) throw badRequest('Indica la factura que rectificas de la app o la de fuera, no las dos.');
+  if (dto.proforma && (dto.facturaOriginalId || rectFuera)) throw badRequest('Una proforma no puede ser una rectificativa.');
+  if (rectFuera && origen === 'lector') throw badRequest('El lector no registra rectificativas de ventas.');
+  const esRectificativa = !!dto.facturaOriginalId || !!rectFuera;
   const tipoFactura = validarTipoFactura(dto.tipoFactura, esRectificativa ? 'R1' : 'F1');
   if (esRectificativa !== tipoFactura.startsWith('R')) {
     throw badRequest('Una factura rectificativa debe ser de tipo R1 a R5, y solo las rectificativas pueden serlo.');
+  }
+  if (rectFuera && tipoFactura === 'R5') throw badRequest('La R5 rectifica una factura simplificada de la app: para una de fuera, usa R1 a R4.');
+  if (rectFuera && (dto.tipoRectificativa ?? 'I') !== 'I') {
+    throw badRequest('La rectificativa de una factura de fuera de la app va por diferencias: escribe solo lo que cambia (en negativo si baja).');
+  }
+  if (rectFuera && !dto.borrador && !String(dto.motivoRectificacion ?? '').trim()) {
+    throw badRequest('Indica el motivo de la rectificación.', { campo: 'motivoRectificacion' });
   }
   // Red de seguridad de VERI*FACTU: antes de crear nada (cliente, numero...).
   // Emitir aqui es la emision directa y la rectificativa emitida al momento; el
@@ -1064,7 +1097,7 @@ async function crear(dto: CrearFacturaIngresoDTO, opciones: { origen?: OrigenFac
 
   const perfil = await perfilEmpresa(dto.companyId);
   const original: FacturaConLineas | null = esRectificativa ? originalLeida : null;
-  if (esRectificativa && !original) throw badRequest('La factura que se rectifica no existe.');
+  if (dto.facturaOriginalId && !original) throw badRequest('La factura que se rectifica no existe.');
   // Solo se rectifica una factura emitida (ni un borrador ni una proforma: su tipo de cambio no es definitivo).
   if (original && original.estadoDocumento !== ESTADO_FINAL) {
     throw badRequest(
@@ -1085,6 +1118,17 @@ async function crear(dto: CrearFacturaIngresoDTO, opciones: { origen?: OrigenFac
   const fechaVencimiento = validarFecha(dto.fechaVencimiento ?? sumarDiasISO(fechaEmision, ajustes.diasVencimiento), 'fecha de vencimiento');
   if (fechaVencimiento < fechaEmision) throw badRequest('El vencimiento no puede ser anterior a la fecha de emisión.');
   const fechaOperacion = validarFechaOperacion(dto.fechaOperacion, fechaEmision);
+  if (rectFuera) {
+    if (rectFuera.fecha > fechaEmision) {
+      throw badRequest(`La factura que rectificas (${fechaTexto(rectFuera.fecha)}) no puede ser posterior a la rectificativa.`, { campo: 'rectificaFuera.fecha' });
+    }
+    // Solo las de antes de llevar la facturacion en la app: las de despues estan en la app y se rectifican desde su ficha.
+    if (rectFuera.fecha >= (await inicioLlevanzaApp(dto.companyId))) {
+      throw badRequest(`La factura que rectificas es del ${fechaTexto(rectFuera.fecha)}, cuando ya llevabas la facturación en la app: búscala en Ventas y rectifícala desde su ficha.`, {
+        campo: 'rectificaFuera.fecha',
+      });
+    }
+  }
   // Una factura emitida (o registrada desde el lector) lleva asiento en su fecha:
   // no puede caer en un mes bloqueado ni en un ejercicio cerrado. Se comprueba
   // antes de numerarla, para no gastar un numero de la serie.
@@ -1110,7 +1154,7 @@ async function crear(dto: CrearFacturaIngresoDTO, opciones: { origen?: OrigenFac
   if (emiteLaApp) exigirSerieValidaAeat(serie);
 
   // Quien revisa la fiscalidad lo decide el servidor, nunca el cuerpo.
-  const modo: ModoFiscal = esRectificativa
+  const modo: ModoFiscal = original
     ? 'heredar'
     : dto.proforma || dto.borrador
       ? 'guardar'
@@ -1168,6 +1212,8 @@ async function crear(dto: CrearFacturaIngresoDTO, opciones: { origen?: OrigenFac
     observaciones: dto.observaciones,
     esRectificativa,
     facturaOriginalId: dto.facturaOriginalId,
+    rectificaFueraNumero: rectFuera?.numero ?? null,
+    rectificaFueraFecha: rectFuera?.fecha ?? null,
     tipoRectificativa: esRectificativa ? (dto.tipoRectificativa ?? 'I') : null,
     motivoRectificacion: esRectificativa ? dto.motivoRectificacion : null,
     lineas: { create: lineasACrear(importes) },
@@ -1361,7 +1407,7 @@ export const incomeInvoicesService = {
         lineas,
         ...(original ? { heredado: herencia(original) } : {}),
       },
-      actual.esRectificativa ? 'heredar' : 'guardar',
+      original ? 'heredar' : 'guardar',
     );
     data.tipoOperacion = fiscal.tipoOperacion;
     data.causaExencion = fiscal.causaExencion;
@@ -1588,7 +1634,7 @@ export const incomeInvoicesService = {
         lineas,
         ...(original ? { heredado: herencia(original) } : {}),
       },
-      actual.esRectificativa ? 'heredar' : 'emitir',
+      original ? 'heredar' : 'emitir',
     );
     const normaliza = fiscal.lineas.some((l, i) => l.tipoIva !== (lineas[i].tipoIva ?? 21) || l.tipoRetencion !== (lineas[i].tipoRetencion ?? 0));
     lineas = conFiscalidad(lineas, fiscal);
