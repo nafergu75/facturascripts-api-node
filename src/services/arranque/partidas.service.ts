@@ -137,7 +137,7 @@ async function aperturaPorCarga(db: Db, companyId: string, cargaIds: string[]): 
  * Asi un abono de 2027 sobre una factura de 2026 rebaja una sola vez lo que
  * queda por pagar de esa factura.
  */
-async function compensadoPorPartida(db: Db, companyId: string, filas: FilaEnlace[]): Promise<Map<string, number>> {
+async function compensadoPorPartida(db: Db, companyId: string, filas: FilaEnlace[], hasta?: string): Promise<Map<string, number>> {
   const pagos = filas.filter((f) => f.tipo === 'PAGO');
   const out = new Map<string, number>();
   if (!pagos.length) return out;
@@ -155,7 +155,7 @@ async function compensadoPorPartida(db: Db, companyId: string, filas: FilaEnlace
   ];
   if (!condiciones.length) return out;
   const cs = await db.compensacionGasto.findMany({
-    where: { companyId, estado: 'ACTIVO', fecha: { gte: desde }, OR: condiciones },
+    where: { companyId, estado: 'ACTIVO', fecha: { gte: desde, ...(hasta ? { lte: hasta } : {}) }, OR: condiciones },
     select: { abonoId: true, facturaId: true, numeroFuera: true, fecha: true, importe: true },
   });
   for (const f of pagos) {
@@ -177,22 +177,25 @@ async function compensadoPorPartida(db: Db, companyId: string, filas: FilaEnlace
 }
 
 /** Lo aplicado con abonos de proveedor a cada partida (parte de lo liquidado). */
-async function soloCompensado(db: Db, companyId: string, ids: string[]): Promise<Map<string, number>> {
+async function soloCompensado(db: Db, companyId: string, ids: string[], hasta?: string): Promise<Map<string, number>> {
   if (!ids.length) return new Map();
   const enlace = await db.partidaPendiente.findMany({ where: { companyId, id: { in: ids } }, select: { id: true, tipo: true, supplierId: true, expenseInvoiceId: true, numeroDocumento: true, cargaId: true } });
-  return compensadoPorPartida(db, companyId, enlace);
+  return compensadoPorPartida(db, companyId, enlace, hasta);
 }
 
-/** Cobrado o pagado de cada partida: sus liquidaciones activas mas lo aplicado con abonos de proveedor. */
-async function liquidadoPorPartida(db: Db, companyId: string, ids: string[]): Promise<Map<string, number>> {
+/**
+ * Cobrado o pagado de cada partida: sus liquidaciones activas mas lo aplicado
+ * con abonos de proveedor. Con `hasta`, solo lo que tiene fecha hasta ese dia.
+ */
+async function liquidadoPorPartida(db: Db, companyId: string, ids: string[], hasta?: string): Promise<Map<string, number>> {
   if (!ids.length) return new Map();
   const [filas, compensado] = await Promise.all([
     db.invoicePayment.groupBy({
       by: ['invoiceId'],
-      where: { companyId, invoiceType: 'PARTIDA', estado: 'ACTIVO', invoiceId: { in: ids } },
+      where: { companyId, invoiceType: 'PARTIDA', estado: 'ACTIVO', invoiceId: { in: ids }, ...(hasta ? { fecha: { lte: hasta } } : {}) },
       _sum: { importe: true },
     }),
-    soloCompensado(db, companyId, ids),
+    soloCompensado(db, companyId, ids, hasta),
   ]);
   const out = new Map(filas.map((f) => [f.invoiceId, r2(Number(f._sum.importe ?? 0))]));
   for (const [id, euros] of compensado) out.set(id, r2((out.get(id) ?? 0) + euros));
@@ -333,6 +336,52 @@ export async function listarPartidas(companyId: string, f: FiltrosPartidas) {
     return { abiertas: abiertas.length, pendiente: r2(abiertas.reduce((s, p) => s + p.pendiente, 0)) };
   };
   return { partidas, totales: { cobros: total('COBRO'), pagos: total('PAGO') } };
+}
+
+export interface PartidaPendienteA {
+  id: string;
+  tipo: TipoPartida;
+  subcuenta: string;
+  /** Cliente o proveedor de la partida (null si no tiene ficha). */
+  terceroId: string | null;
+  numeroDocumento: string;
+  fechaDocumento: string | null;
+  fechaVencimiento: string | null;
+  importeInicial: number;
+  pendiente: number;
+  estado: EstadoPartida;
+}
+
+/**
+ * Lo que quedaba de cada partida a un dia (para cruzarlo con el mayor por
+ * tercero): lo pendiente a 31-12 menos lo cobrado, pagado o descontado con
+ * abonos hasta ese dia. Solo partidas no anuladas de cargas cuya apertura es
+ * de ese dia o anterior. Las que quedan a 0 no salen. Solo lee.
+ */
+export async function partidasPendientesA(companyId: string, tipo: TipoPartida, hasta: string): Promise<PartidaPendienteA[]> {
+  const filas = await prisma.partidaPendiente.findMany({ where: { companyId, tipo, estado: { not: 'ANULADA' } } });
+  if (!filas.length) return [];
+  const apertura = await aperturaPorCarga(prisma, companyId, filas.map((f) => f.cargaId));
+  const vivas = filas.filter((f) => (apertura.get(f.cargaId) ?? '9999-12-31') <= hasta);
+  const liquidado = await liquidadoPorPartida(prisma, companyId, vivas.map((f) => f.id), hasta);
+  return vivas
+    .map((f) => {
+      const inicial = Number(f.importePendiente);
+      const hecho = liquidado.get(f.id) ?? 0;
+      return {
+        id: f.id,
+        tipo,
+        subcuenta: f.subcuenta,
+        terceroId: (tipo === 'COBRO' ? f.customerId : f.supplierId) ?? null,
+        numeroDocumento: f.numeroDocumento,
+        fechaDocumento: f.fechaDocumento,
+        fechaVencimiento: f.fechaVencimiento,
+        importeInicial: inicial,
+        pendiente: r2(inicial - hecho),
+        estado: estadoPartida(inicial, hecho),
+      };
+    })
+    .filter((p) => aCentimos(p.pendiente) !== 0);
 }
 
 /** Lo pendiente de 2026 por tipo, para los resumenes (Carmen, panel): numero de partidas abiertas e importe. */
