@@ -236,7 +236,7 @@ export async function analizarCarga(
     ...(t.ficha ? { ficha: t.ficha } : {}),
   }));
   const plan = listaCuentas.length
-    ? await analizarPlanSinEscribir(companyId, listaCuentas, listado, permisos, { nombresGestoria: true })
+    ? await analizarPlanSinEscribir(companyId, listaCuentas, listado, permisos, { nombresGestoria: true, longitudFija: datos.plan ? datos.longitud : null })
     : ({
         lectura: null,
         cuentasLeidas: 0,
@@ -258,13 +258,29 @@ export async function analizarCarga(
   const sinMadreConSaldo = plan.omitidas.filter((o) => !/^[89]/.test(o.codigo) && conMovimiento.has(o.codigo)).map((o) => `${o.codigo} ${nombres.get(o.codigo) ?? ''}: ${o.motivo}`.trim());
   const delPlan = plan.longitud.delPlan;
   const longitudesIncoherentes: string[] = [];
+  /** De que fichero viene cada subcuenta con otra longitud, para decirlo en el error. */
+  const ficherosConOtraLongitud: Array<{ fichero: string; subcuentas: number; longitud: number }> = [];
   if (delPlan && datos.plan) {
-    const otros = new Set<string>();
-    for (const c of datos.sumasSaldos?.cuentas ?? []) otros.add(c.codigo);
-    for (const p of datos.cartera ?? []) if (p.subcuenta) otros.add(p.subcuenta);
-    if (usarDiario && diario) for (const a of diario.asientos) for (const l of a.lineas) otros.add(l.cuenta);
-    for (const c of otros) if (esSubcuentaDeTercero(c) && c.length !== delPlan) longitudesIncoherentes.push(c);
-    longitudesIncoherentes.sort();
+    const ficheroDe = (idHoja: string | undefined, tipo: string) =>
+      datos.hojas.find((h) => (idHoja ? h.id === idHoja : h.tipo === tipo && !h.excluida))?.fichero ?? 'otro fichero';
+    const otros = new Map<string, Set<string>>();
+    const apuntar = (fichero: string, codigo: string) => {
+      if (!esSubcuentaDeTercero(codigo) || codigo.length === delPlan) return;
+      if (!otros.has(fichero)) otros.set(fichero, new Set());
+      otros.get(fichero)!.add(codigo);
+    };
+    for (const c of datos.sumasSaldos?.cuentas ?? []) apuntar(ficheroDe(datos.sumasSaldos!.hoja, 'SUMAS_Y_SALDOS'), c.codigo);
+    for (const p of datos.cartera ?? []) if (p.subcuenta) apuntar(ficheroDe(undefined, 'CARTERA'), p.subcuenta);
+    if (usarDiario && diario) for (const a of diario.asientos) for (const l of a.lineas) apuntar(ficheroDe(datos.diario?.hoja, 'DIARIO'), l.cuenta);
+    const todas = new Set<string>();
+    for (const [fichero, codigos] of otros) {
+      for (const c of codigos) todas.add(c);
+      const veces = new Map<number, number>();
+      for (const c of codigos) veces.set(c.length, (veces.get(c.length) ?? 0) + 1);
+      const longitud = [...veces.entries()].sort((x, y) => y[1] - x[1])[0][0];
+      ficherosConOtraLongitud.push({ fichero, subcuentas: codigos.size, longitud });
+    }
+    longitudesIncoherentes.push(...[...todas].sort());
   }
   const accionDe = new Map(plan.terceros.map((t) => [t.codigo, t]));
   const tercerosConSaldoSinFicha = [...saldosApertura.entries()]
@@ -400,6 +416,7 @@ export async function analizarCarga(
     tercerosSinNifEnPlan,
     sinMadreConSaldo,
     longitudesIncoherentes,
+    ficherosConOtraLongitud,
     longitud: { delPlan, motivo: delPlan ? plan.longitud.motivo : null },
     tercerosConSaldoSinFicha,
     cartera,
@@ -573,8 +590,18 @@ export function vistaDe(a: AnalisisCarga): VistaCarga {
     historico ? varios(historico, `asiento de ${a.ejercicio - 1}`, `asientos de ${a.ejercicio - 1}`) : '',
     a.apertura ? `la apertura del 1-1-${a.ejercicio}` : '',
     a.cartera && a.cartera.partidas.length + a.cartera.sinDetalle.length ? varios(a.cartera.partidas.length + a.cartera.sinDetalle.length, 'factura pendiente', 'facturas pendientes') : '',
+    a.inmovilizado && a.inmovilizado.activos.length && !a.excluidos.includes('INMOVILIZADO') ? varios(a.inmovilizado.activos.length, 'bien de inmovilizado', 'bienes de inmovilizado') : '',
   ].filter(Boolean);
   const lista = partes.length > 1 ? `${partes.slice(0, -1).join(', ')} y ${partes[partes.length - 1]}` : (partes[0] ?? 'nada nuevo');
+  // Lo que mas importa a quien no sabe de contabilidad: desde ahora no se apunta nada de ese año.
+  const anterior = a.ejercicio - 1;
+  const totalRetirados = Object.values(a.retirados).reduce((s, n) => s + n, 0);
+  const consecuencias = [
+    a.marcaLlevanzaExterna ? ` ${anterior} quedará como «lo llevó la gestoría»: se podrá consultar, pero no apuntar nada con fecha de ${anterior}.` : '',
+    totalRetirados
+      ? ` ${varios(totalRetirados, `asiento de ${anterior} apuntado en la app se retira (no se borra).`, `asientos de ${anterior} apuntados en la app se retiran (no se borran).`)}`
+      : '',
+  ].join('');
   return {
     ejercicio: a.ejercicio,
     tipoCarga: a.tipoCarga,
@@ -655,7 +682,7 @@ export function vistaDe(a: AnalisisCarga): VistaCarga {
     datosFiscales: a.ajustes.datosFiscales ?? null,
     resultadoDeclarado: a.ajustes.resultadoDeclarado ?? null,
     comprobaciones: a.comprobaciones,
-    confirmacion: `Se crearán ${lista}. Podrás deshacerlo mientras no haya cobros ni pagos de ${a.ejercicio} sobre estos datos.`,
+    confirmacion: `Se crearán ${lista}.${consecuencias} Podrás deshacerlo mientras no haya cobros ni pagos de ${a.ejercicio} sobre estos datos.`,
     puedeConfirmar: a.comprobaciones.nivel !== 'ERRORES',
     huella: a.huella,
   };
