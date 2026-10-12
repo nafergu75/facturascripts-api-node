@@ -261,7 +261,8 @@ export const ingresosExtractorService = {
         lineas,
         observaciones: `Digitalizada desde ${doc.originalFileName}`,
       },
-      { origen: 'lector' },
+      // El numero se guarda tal como se leyo (con sus ceros y su separador), el que ve la pantalla.
+      { origen: 'lector', numeroLeido: resumen.numeroFactura },
     );
 
     // Archivar el PDF en su carpeta definitiva. No es critico: si falla, la

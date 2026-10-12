@@ -113,13 +113,18 @@ describe('lecturas del lector de ventas', () => {
     const data = await leer('resultado-simple');
     const r = await request(app()).post('/ingresos-extractor/confirmar').send({ documentId: data.ingreso.documentId });
     expect(r.status).toBe(201);
-    expect(r.body.data).toMatchObject({ numeroCompleto: 'F2026-12', total: 242 });
+    // El numero, tal como se expidio (con sus ceros y su separador); serie y numero, para la unicidad.
+    expect(r.body.data).toMatchObject({ numeroCompleto: 'F2026/0012', total: 242 });
+    expect(await prisma.incomeInvoice.findUniqueOrThrow({ where: { id: r.body.data.facturaId } })).toMatchObject({ serie: 'F2026', numero: 12, numeroCompleto: 'F2026/0012' });
+    // Y asi va al libro registro de facturas expedidas (con el asiento).
+    const libro = await prisma.vATBook.findFirstOrThrow({ where: { companyId: E, asientoId: r.body.data.asientoId } });
+    expect(libro.numeroFactura).toBe('F2026/0012');
     const fila = await prisma.lecturaDocumento.findUniqueOrThrow({ where: { id: data.lecturaId } });
     expect(fila).toMatchObject({ estado: 'CONFIRMADA', incomeInvoiceId: r.body.data.facturaId, confirmadaPor: 'u-ventas' });
     // La misma factura otra vez: la lectura nueva ya la marca como duplicada (error).
     const otra = await leer('resultado-simple');
     expect(otra.lectura.estado).toBe('error');
-    expect(otra.ingreso.errores).toContain('Ya registraste esta factura (F2026-12).');
+    expect(otra.ingreso.errores).toContain('Ya registraste esta factura (F2026/0012).');
   });
 
   it('«Cambiar cuenta»: el confirmar lleva la cuenta de cada linea y solo toma eso del cuerpo', async () => {

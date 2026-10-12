@@ -7,6 +7,7 @@ import { normalizarNumeroProveedor } from '../../domain/factura-gasto.model';
 import { limpiarNif } from '../../domain/tipo-operacion.model';
 import { hoyEspana } from '../../utils/fechas';
 import { normalizarNif } from '../../utils/nif';
+import { numeroCompletoLeido } from '../income-invoices.service';
 import { separarNumero } from '../ingresos-extractor.service';
 import { perfilEmpresa } from '../perfilEmpresa.service';
 import { comprobarFechaAbierta } from '../periodos.service';
@@ -36,14 +37,18 @@ async function facturaDuplicada(companyId: string, lector: Lector, l: LecturaNor
     const prov = await proveedorPorNif(companyId, l.emisor.nif.valor);
     return prov ? gastoDuplicado(companyId, prov.id, l.numero.valor) : null;
   }
-  let numeroCompleto: string;
+  // Repetida si coincide la serie y el numero (sin ceros ni separador) o el numero tal como se leyo.
+  let clave: { serie: string; numero: number };
   try {
-    const { serie, numero } = separarNumero(null, l.numero.valor, l.fechaEmision.valor);
-    numeroCompleto = `${serie}-${numero}`;
+    clave = separarNumero(null, l.numero.valor, l.fechaEmision.valor);
   } catch {
     return null;
   }
-  const f = await prisma.incomeInvoice.findFirst({ where: { companyId, numeroCompleto }, select: { numeroCompleto: true } });
+  const tal = numeroCompletoLeido(l.numero.valor, clave.serie);
+  const f = await prisma.incomeInvoice.findFirst({
+    where: { companyId, OR: [clave, ...(tal ? [{ numeroCompleto: tal }] : [])] },
+    select: { numeroCompleto: true },
+  });
   return f?.numeroCompleto ? { numeroCompleto: f.numeroCompleto } : null;
 }
 

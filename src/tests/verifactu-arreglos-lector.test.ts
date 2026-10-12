@@ -51,7 +51,7 @@ describe('P4: el lector no deja que la app numere', () => {
   it('con número: serie y número leídos, origen lector', async () => {
     parsedData = { ...base, fecha: '2026-09-15', numero: 'F-2026-0007' };
     await incomeReaderService.verificarYCrearFactura('c1', 'doc-1').catch(() => undefined);
-    expect(crearIngreso).toHaveBeenCalledWith(expect.objectContaining({ serie: 'F-2026', numero: 7 }), { origen: 'lector' });
+    expect(crearIngreso).toHaveBeenCalledWith(expect.objectContaining({ serie: 'F-2026', numero: 7 }), { origen: 'lector', numeroLeido: 'F-2026-0007' });
   });
 });
 
@@ -63,6 +63,7 @@ describe('P6: fecha por defecto en hora de Madrid', () => {
     // Sin prefijo, la serie es el año de la fecha.
     expect(crearIngreso).toHaveBeenCalledWith(expect.objectContaining({ fechaEmision: '2027-01-01', serie: '2027', numero: 15 }), {
       origen: 'lector',
+      numeroLeido: '15',
     });
   });
 });

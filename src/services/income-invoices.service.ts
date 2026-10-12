@@ -492,6 +492,19 @@ function validarLineas(lineas: CrearLineaIngresoDTO[] | undefined): LineaEntrada
   }));
 }
 
+/**
+ * numeroCompleto de una factura del lector: el numero tal como aparece en
+ * ella, sin espacios («F2026/0012», «FX-0007»). Si no lleva serie (solo
+ * «0015»), delante va la que se le pone, el ano («2027-0015»): si no, la 15 de
+ * 2027 y la de 2028 se llamarian igual. null si no hay o es demasiado largo.
+ */
+export function numeroCompletoLeido(leido: string | null | undefined, serie: string): string | null {
+  const t = String(leido ?? '').replace(/\s+/g, '');
+  if (!t) return null;
+  const completo = t.startsWith(serie) ? t : `${serie}-${t}`;
+  return completo.length <= 60 ? completo : null;
+}
+
 /** Cuenta escrita en una linea: solo digitos; vacia = ninguna. */
 function cuentaDeLinea(v: unknown): string | undefined {
   if (v === undefined || v === null) return undefined;
@@ -966,7 +979,7 @@ interface Interno {
  * Crea una factura (borrador, proforma, emitida o rectificativa). `opciones`
  * lo fija el servidor; `interno` solo lo usa este servicio.
  */
-async function crear(dto: CrearFacturaIngresoDTO, opciones: { origen?: OrigenFactura }, interno: Interno): Promise<IncomeInvoiceResp> {
+async function crear(dto: CrearFacturaIngresoDTO, opciones: { origen?: OrigenFactura; numeroLeido?: string | null }, interno: Interno): Promise<IncomeInvoiceResp> {
   const origen: OrigenFactura = opciones.origen ?? 'pantalla';
   if (dto.numero !== undefined && dto.numero !== null && origen !== 'lector') {
     throw badRequest('El número de la factura lo pone la serie al emitirla: no se puede indicar.', { campo: 'numero' });
@@ -1147,17 +1160,24 @@ async function crear(dto: CrearFacturaIngresoDTO, opciones: { origen?: OrigenFac
 
   // Factura emitida fuera de la app (lector): conserva su numero original. La
   // comprobacion, el alta y el contador de su serie (historica) van juntos.
+  // numeroCompleto es el numero tal como se expidio (art. 63 RIVA: «F2026/0012»,
+  // con sus ceros y su separador); serie + numero (entero) sirven para que no
+  // se repita y para el contador.
   if (dto.numero) {
     const numero = dto.numero;
+    const numeroCompleto = numeroCompletoLeido(opciones.numeroLeido, serie) ?? `${serie}-${numero}`;
     const factura = await transaccion(async (tx) => {
-      const existe = await tx.incomeInvoice.findFirst({ where: { companyId: dto.companyId, serie, numero } });
-      if (existe) throw badRequest(`La factura ${serie}-${numero} ya existe.`);
+      const existe = await tx.incomeInvoice.findFirst({
+        where: { companyId: dto.companyId, OR: [{ serie, numero }, { numeroCompleto }] },
+        select: { numeroCompleto: true },
+      });
+      if (existe) throw badRequest(`La factura ${existe.numeroCompleto ?? numeroCompleto} ya existe.`);
       const creada = await tx.incomeInvoice.create({
         data: {
           ...comunes,
           ...copia,
           numero,
-          numeroCompleto: `${serie}-${numero}`,
+          numeroCompleto,
           estadoDocumento: ESTADO_FINAL,
           finalizadaEn: new Date(),
           estado: determinarEstado(fechaVencimiento),
@@ -1198,7 +1218,7 @@ export const incomeInvoicesService = {
    * `opciones.origen` lo pone quien llama desde el servidor (lector OCR,
    * copia); lo que llegue en el cuerpo con ese nombre se ignora.
    */
-  async crearIngreso(dto: CrearFacturaIngresoDTO, opciones: { origen?: OrigenFactura } = {}): Promise<IncomeInvoiceResp> {
+  async crearIngreso(dto: CrearFacturaIngresoDTO, opciones: { origen?: OrigenFactura; numeroLeido?: string | null } = {}): Promise<IncomeInvoiceResp> {
     const limpio = { ...dto } as CrearFacturaIngresoDTO & Record<string, unknown>;
     // Campos que fija el servidor: nunca desde el cuerpo.
     for (const campo of [
@@ -1215,7 +1235,7 @@ export const incomeInvoicesService = {
     // El numero solo lo trae una factura del lector (la expidio otro programa).
     // Desde la pantalla o la API lo pone siempre la serie, dentro de la transaccion.
     if (opciones.origen !== 'lector') delete limpio.numero;
-    return crear(limpio, { origen: opciones.origen }, {});
+    return crear(limpio, { origen: opciones.origen, ...(opciones.origen === 'lector' ? { numeroLeido: opciones.numeroLeido } : {}) }, {});
   },
 
   /** Modifica un borrador. Una factura emitida no se toca. */

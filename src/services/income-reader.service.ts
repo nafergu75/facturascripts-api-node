@@ -785,7 +785,8 @@ export const incomeReaderService = {
         lineas,
         observaciones: `Digitalizado desde: ${documento.originalFileName}`,
       },
-      { origen: 'lector' },
+      // El numero se guarda tal como se leyo (con sus ceros y su separador).
+      { origen: 'lector', numeroLeido: String(parsed.numero) },
     );
 
     // Actualizar documento como verificado
