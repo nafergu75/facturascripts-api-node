@@ -46,6 +46,7 @@ import { TIEMPO_CLAUDE_VISION_MS } from '../services/lectura/claude-vision.adapt
 import { purgarLecturas, RESERVA_MS } from '../services/lectura/lectura.service';
 import { MOTIVO_TOTAL_SUMADO, MOTIVO_TOTAL_SUMADO_CON_RETENCION } from '../services/lectura/azure-factura.mapper';
 import { MOTIVO_DATO_DEL_QR } from '../services/lectura/verifactu-qr';
+import { expenseInvoicesService } from '../services/expense-invoices.service';
 import { aceptado, CLAVE, ENDPOINT, error, fixtureAzure, fixtureClaude, NIF_EMISOR, NIF_EMPRESA, respuesta, resultado, RESULT_ID } from './fixtures/azure-di';
 
 const E = `lecturas-gastos-${Date.now()}`;
@@ -492,15 +493,64 @@ describe('confirmar con lecturaId', () => {
     expect(r.body).toMatchObject({ message: 'Parece una factura emitida por la empresa: léela en el lector de ventas.', details: { codigo: 'VALIDACION_LECTURA', campo: 'emisor.nif' } });
   });
 
-  it('una rectificativa no se registra aunque se marque He revisado (seria un gasto positivo)', async () => {
+  it('una rectificativa queda para revisar, con la original propuesta; sin decir qué rectifica no se registra; con ello, como abono en borrador', async () => {
+    // La A-12 del mismo proveedor (300 € + IVA = 363 €): la R-3 leída trae 242 € en positivo, más del 50 %.
+    const original = await expenseInvoicesService.registrarGasto(
+      E,
+      { proveedor: { id: supId }, numeroFacturaProveedor: 'A-12', fechaEmision: '2026-02-10', tipoGasto: 'SUMINISTROS', lineas: [{ descripcion: 'Folletos', cantidad: 1, precioUnitario: 300, tipoIva: 21 }] },
+      { contabilizar: 'POSTED' },
+    );
     crear.mockResolvedValueOnce(fixtureClaude('complemento-rectificativa'));
     const { id, body } = await leerConAzure('resultado-rectificativa');
-    expect(body.lectura.estado).toBe('error');
-    const r = await request(app()).post('/gastos-extractor/confirmar').send(cuerpo(id, { revisado: true, numeroFacturaProveedor: 'R-3' }));
-    expect(r.status).toBe(400);
-    expect(r.body).toMatchObject({ message: 'Es una factura rectificativa (rectifica a la A-12). Todavía no se puede registrar con el lector.', details: { codigo: 'RECTIFICATIVA_NO_ADMITIDA' } });
+    expect(body.lectura.estado).toBe('revisar');
+    const leida = await prisma.lecturaDocumento.findUniqueOrThrow({ where: { id } });
+    expect(leida.validaciones).toContainEqual(
+      expect.objectContaining({ codigo: 'RECTIFICATIVA', nivel: 'revisar', mensaje: 'Es una rectificativa o un abono (rectifica a la A-12): se registrará como abono. Comprueba la factura que rectifica.' }),
+    );
+    expect(body.gasto.rectificativa).toEqual({
+      numeroRectificada: 'A-12',
+      motivo: 'Devolución de mercancía',
+      causaPropuesta: 'DEVOLUCION',
+      importesNegativos: false,
+      tipoPropuesto: 'S',
+      sentido: null,
+      propuesta: {
+        coincidencia: 'EXACTA',
+        original: { id: original.factura.id, numeroCompleto: original.factura.numeroCompleto, numero: 'A-12', fecha: '2026-02-10', total: 363, exacta: true },
+        candidatas: [{ id: original.factura.id, numeroCompleto: original.factura.numeroCompleto, numero: 'A-12', fecha: '2026-02-10', total: 363, exacta: true }],
+      },
+    });
+
+    // Sin el bloque rectificativa (ni «no es una rectificativa»): 400 que lo pide.
+    const sin = await request(app()).post('/gastos-extractor/confirmar').send(cuerpo(id, { revisado: true, numeroFacturaProveedor: 'R-3' }));
+    expect(sin.status).toBe(400);
+    expect(sin.body).toMatchObject({ message: 'Indica qué factura rectifica, o marca que no es una rectificativa.', details: { codigo: 'FALTA_RECTIFICATIVA', campo: 'rectificativa' } });
     expect(await prisma.expenseInvoice.count({ where: { companyId: E, numeroFacturaProveedor: 'R-3' } })).toBe(0);
-    expect(await prisma.lecturaDocumento.findUniqueOrThrow({ where: { id } })).toMatchObject({ estado: 'LISTA' });
+
+    // Con el bloque: abono en borrador que rectifica la A-12.
+    const ok = await request(app())
+      .post('/gastos-extractor/confirmar')
+      .send(
+        cuerpo(id, {
+          revisado: true,
+          numeroFacturaProveedor: 'R-3',
+          lineas: [{ descripcion: 'Devolución folletos', cantidad: 1, precioUnitario: -200, tipoIva: 21 }],
+          totalDocumento: -242,
+          rectificativa: { tipo: 'I', causa: 'DEVOLUCION', motivo: 'Devolución de mercancía', originales: [{ id: original.factura.id }] },
+        }),
+      );
+    expect(ok.status).toBe(201);
+    expect(ok.body.data).toMatchObject({ asientoEstado: 'DRAFT', factura: { estado: 'DRAFT', esRectificativa: true, totalFactura: -242, facturaOriginalId: original.factura.id } });
+    expect(await prisma.lecturaDocumento.findUniqueOrThrow({ where: { id } })).toMatchObject({ estado: 'CONFIRMADA', expenseInvoiceId: ok.body.data.factura.id });
+  });
+
+  it('una lectura de rectificativa marcada como «no es una rectificativa» se registra como factura y queda en AuditLog', async () => {
+    crear.mockResolvedValueOnce(fixtureClaude('complemento-rectificativa'));
+    const { id } = await leerConAzure('resultado-rectificativa');
+    const r = await request(app()).post('/gastos-extractor/confirmar').send(cuerpo(id, { revisado: true, numeroFacturaProveedor: 'R-3B', noEsRectificativa: true }));
+    expect(r.status).toBe(201);
+    expect(r.body.data.factura).toMatchObject({ esRectificativa: false, totalFactura: 242 });
+    expect(await prisma.auditLog.count({ where: { companyId: E, action: 'LECTOR_NO_ES_RECTIFICATIVA', resourceId: r.body.data.factura.id } })).toBe(1);
   });
 
   it('una lectura que no existe: 404', async () => {
