@@ -43,6 +43,12 @@ jest.mock('../services/carmen/intenciones/datos', () => {
   };
 });
 
+// Lo pendiente de 2026 se suma en el ejecutor (con BD): aqui solo cuenta el enrutado.
+jest.mock('../services/carmen/intenciones/pendiente2026', () => ({ conPendiente2026: (_tipo: string, ejecutor: unknown) => ejecutor }));
+jest.mock('../services/carmen/intenciones/arranque', () => ({
+  estadoArranque: jest.fn(async () => ({ entendido: 'INT-40', texto: 'Cifras de INT-40', permisoRequerido: 'x' })),
+}));
+
 import { config } from '../config/env';
 import { responder, TEXTO_EMPRESA_EXTRANJERA, type EntradaCarmen } from '../services/carmen/enrutador';
 import { construirMensajes, fijarClienteIA, NOTA_EMPRESA_EXTRANJERA } from '../services/carmen/llm';
@@ -224,6 +230,7 @@ const DATOS: Record<string, string[]> = {
   ],
   'INT-30': ['¿qué impuestos tengo que presentar?', '¿tengo algo caducado?', 'proximos impuestos', 'que declaraciones me tocan este trimestre', 'que tengo pendiente con hacienda', 'que modelos hay que presentar este mes'],
   'INT-39': ['dame un resumen', 'buenos días, ¿qué tengo hoy?', 'como va la empresa', 'como vamos', 'resumen de la situacion'],
+  'INT-40': ['¿está bien la contabilidad de 2026 que traje de la gestoría?', 'que falta del arranque', 'cuadra lo que traje de la gestoria', 'esta completa la contabilidad de 2026'],
 };
 
 /** Más frases por intención: faltas, abreviaturas, coloquialismos y fechas en lenguaje natural. */
@@ -598,7 +605,7 @@ describe('paso 3: charla y peticiones de acción', () => {
     expect((await preguntar('Hola')).cuerpo.origen).toBe('sistema');
     expect((await preguntar('gracias')).cuerpo.texto).toMatch(/De nada/);
     const ayuda = await preguntar('¿qué sabes hacer?');
-    expect(ayuda.cuerpo.botones?.length).toBe(15);
+    expect(ayuda.cuerpo.botones?.length).toBe(16);
   });
 
   it('una petición de acción dice dónde se hace y no hace nada', async () => {

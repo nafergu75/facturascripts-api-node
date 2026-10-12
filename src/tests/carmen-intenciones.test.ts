@@ -17,6 +17,8 @@ const lecturas: Record<string, (...a: unknown[]) => unknown> = {
     { fecha: '2026-10-04', importe: 1210, concepto: 'TRANSFERENCIA CONSTRUCCIONES PEREZ', cuentaBancaria: { bancoNombre: 'Banco Sabadell', iban: 'ES0000000000000000001234' } },
   ],
   'invoicePayment.count': async () => 4,
+  // Sin facturas de 2026 pendientes (lo de 2026 se prueba con BD en arranque-carmen.db.test.ts).
+  'partidaPendiente.findMany': async () => [],
   'customer.findMany': async () => [{ id: 'c1', nombreFiscal: 'CONSTRUCCIONES PÉREZ SL', nifCif: 'B11111111' }],
   'supplier.findMany': async () => [
     { id: 'p1', nombreFiscal: 'IBERDROLA CLIENTES SAU', nifCif: 'A44444444' },
@@ -348,7 +350,7 @@ describe('matriz de permisos', () => {
   });
 
   it('todas las intenciones del catálogo tienen ejecutor, ejemplos y una pregunta', () => {
-    expect(INTENCIONES).toHaveLength(15);
+    expect(INTENCIONES).toHaveLength(16);
     for (const i of INTENCIONES) {
       expect(typeof i.ejecutar).toBe('function');
       expect(i.ejemplos.length).toBeGreaterThanOrEqual(5);
