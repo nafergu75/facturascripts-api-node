@@ -350,6 +350,17 @@ export async function quitarFichero(companyId: string, ejercicioRaw: unknown, ca
   return { carga: cargaPublica(r), borrada: false };
 }
 
+/** Ficheros de la carga de los que no se ha usado nada (todas sus hojas marcadas «No usar» o ilegibles). */
+function ficherosNoUsados(c: CargaFila): string[] {
+  const hojas = (c.resumen as { vista?: VistaCarga } | null)?.vista?.hojas ?? [];
+  return ficherosDe(c)
+    .filter((f) => {
+      const suyas = hojas.filter((h) => h.sha256 === f.sha256);
+      return suyas.length > 0 && suyas.every((h) => h.excluida || h.error);
+    })
+    .map((f) => f.nombre);
+}
+
 /** Estado del apartado: carga vigente, borrador, la que se esta importando y el historial de versiones. */
 export async function estadoArranque(companyId: string, ejercicioRaw: unknown) {
   const ejercicio = validarEjercicio(ejercicioRaw);
@@ -364,6 +375,7 @@ export async function estadoArranque(companyId: string, ejercicioRaw: unknown) {
     confirmadaPor: c.confirmadaPor,
     confirmadaEn: c.confirmadaEn?.toISOString() ?? null,
     nivel: (c.resumen as { vista?: VistaCarga; final?: { nivel: string } } | null)?.final?.nivel ?? (c.resumen as { vista?: VistaCarga } | null)?.vista?.comprobaciones.nivel ?? null,
+    ficherosNoUsados: ficherosNoUsados(c),
   });
   const borradorFila = cargas.find((c) => c.estado === 'BORRADOR');
   return {
