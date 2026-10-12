@@ -28,6 +28,7 @@ import {
 } from '../domain/rectificativa-gasto.model';
 import { comprobarImportesRectificativa, totalesLineas, totalesRectificativa, type FacturaGastoBody } from '../schemas/factura-gasto.schemas';
 import { aplicadoPorFactura } from './cobrosPagos.service';
+import { numeroComparable, pendientePorPartida } from './arranque/partidas.service';
 
 type Db = TransaccionBD | typeof prisma;
 
@@ -551,20 +552,68 @@ export async function datosRectificativaDeFicha(
 }
 
 /**
+ * Factura de 2026 que trajo la gestoria y sigue pendiente de pago (partida
+ * pendiente sin factura en la app). Un abono sobre ella va «de fuera de la
+ * app» con su numero, y se descuenta de lo que se le debe si no estaba pagada.
+ */
+export interface PartidaFueraCandidata {
+  partidaId: string;
+  numero: string;
+  fecha: string | null;
+  /** Lo que queda por pagar hoy (lo de 31-12 menos pagos y abonos ya aplicados). */
+  pendiente: number;
+  /** El numero coincide con el buscado (sin espacios y en mayusculas). */
+  exacta: boolean;
+}
+
+/**
+ * Partidas de pago vivas del proveedor que trajo «Traer la contabilidad de
+ * 2026» sin factura en la app: todas (son pocas), con las del numero buscado
+ * primero. Solo las que tienen algo pendiente.
+ */
+async function partidasFueraDe(companyId: string, supplierId: string, numero: string): Promise<PartidaFueraCandidata[]> {
+  const filas = await prisma.partidaPendiente.findMany({
+    where: { companyId, tipo: 'PAGO', supplierId, expenseInvoiceId: null, sinDetalle: false, estado: { in: ['PENDIENTE', 'PARCIAL'] } },
+    select: { id: true, numeroDocumento: true, fechaDocumento: true },
+    orderBy: [{ fechaDocumento: 'desc' }, { numeroDocumento: 'asc' }],
+    take: 200,
+  });
+  if (!filas.length) return [];
+  const pendiente = await pendientePorPartida(prisma, companyId, filas.map((f) => f.id));
+  const buscado = numeroComparable(numero);
+  return filas
+    .map((f) => ({
+      partidaId: f.id,
+      numero: f.numeroDocumento,
+      fecha: f.fechaDocumento,
+      pendiente: pendiente.get(f.id) ?? 0,
+      exacta: !!buscado && numeroComparable(f.numeroDocumento) === buscado,
+    }))
+    .filter((p) => aCentimos(p.pendiente) > 0)
+    .sort((a, b) => Number(b.exacta) - Number(a.exacta));
+}
+
+/**
  * Candidatas a original de un abono (GET /originales y el lector): facturas
  * vigentes (ni anuladas ni en borrador) del proveedor (por id o por NIF), con
  * el numero normalizado igual (EXACTA) o parecido (PARECIDA), 8 como mucho.
+ * Ademas, `partidasFuera`: sus facturas de 2026 que trajo la gestoria y siguen
+ * pendientes de pago (no estan en la app como factura).
  */
 export async function buscarOriginales(
   companyId: string,
   q: { supplierId?: string | null; numero?: string | null; nif?: string | null },
-): Promise<{ coincidencia: 'EXACTA' | 'PARECIDA' | 'NINGUNA'; candidatas: Array<{ id: string; numeroCompleto: string; numero: string | null; fecha: string; total: number; exacta: boolean }> }> {
+): Promise<{
+  coincidencia: 'EXACTA' | 'PARECIDA' | 'NINGUNA';
+  candidatas: Array<{ id: string; numeroCompleto: string; numero: string | null; fecha: string; total: number; exacta: boolean }>;
+  partidasFuera: PartidaFueraCandidata[];
+}> {
   let supplierId = q.supplierId?.trim() || null;
   if (!supplierId && q.nif?.trim()) {
     const s = await prisma.supplier.findFirst({ where: { companyId, nifCif: q.nif.trim().toUpperCase() }, select: { id: true } });
     supplierId = s?.id ?? null;
   }
-  if (!supplierId) return { coincidencia: 'NINGUNA', candidatas: [] };
+  if (!supplierId) return { coincidencia: 'NINGUNA', candidatas: [], partidasFuera: [] };
   const numero = q.numero?.trim() ? normalizarNumeroProveedor(q.numero) : '';
   const facturas = await prisma.expenseInvoice.findMany({
     where: { companyId, supplierId, estado: { notIn: ['ANULADA', 'DRAFT'] } },
@@ -591,7 +640,7 @@ export async function buscarOriginales(
     exacta,
   }));
   const coincidencia = candidatas.some((c) => c.exacta) ? 'EXACTA' : candidatas.length && numero ? 'PARECIDA' : 'NINGUNA';
-  return { coincidencia, candidatas };
+  return { coincidencia, candidatas, partidasFuera: await partidasFueraDe(companyId, supplierId, q.numero ?? '') };
 }
 
 /**

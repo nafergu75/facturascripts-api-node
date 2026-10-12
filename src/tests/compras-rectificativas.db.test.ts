@@ -411,7 +411,7 @@ describe('rutas de las candidatas a original y del prellenado', () => {
     expect(p.body.data.coincidencia).toBe('PARECIDA');
     expect(p.body.data.candidatas).toHaveLength(2);
     const nada = await request(app(E)).get('/expense-invoices/originales').query({ nif: 'B00000000', numero: 'F-1' });
-    expect(nada.body.data).toEqual({ coincidencia: 'NINGUNA', candidatas: [] });
+    expect(nada.body.data).toEqual({ coincidencia: 'NINGUNA', candidatas: [], partidasFuera: [] });
   });
 
   it('GET /:id/rectificar: líneas con su cuenta, la propuesta por causa, lo pendiente y el máximo', async () => {

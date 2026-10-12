@@ -12,6 +12,7 @@ import { listarPartidas, liquidarPartida, resumenPendiente } from '../services/a
 import { registrarGasto, anularGasto } from '../services/expense-invoices.service';
 import { anularCompensacion, aplicarAbono } from '../services/compensacionesGasto.service';
 import { pendiente2026 } from '../services/carmen/intenciones/pendiente2026';
+import { buscarOriginales } from '../services/rectificativasGasto.service';
 import { AJUSTES_A, ficherosEmpresaA } from './fixtures/arranque/generar';
 import { empresaDePrueba, traerCarga, USUARIO_PRUEBA } from './fixtures/arranque/importar';
 
@@ -60,6 +61,19 @@ describe('abonos de 2027 sobre facturas pendientes de 2026', () => {
     banco = (await prisma.bankAccount.findFirstOrThrow({ where: { companyId: E, subcuentaCodigo: '5720000001' } })).id;
   }, 120_000);
 
+  it('el buscador de la original del abono ofrece las facturas de 2026 pendientes del proveedor, con lo que queda', async () => {
+    const dos = await proveedor('4000000002');
+    const r = await buscarOriginales(E, { supplierId: dos.id, numero: 'fd-12' });
+    expect(r.candidatas).toEqual([]);
+    expect(r.partidasFuera[0]).toMatchObject({ numero: 'FD-12', fecha: '2026-03-15', pendiente: 2420, exacta: true });
+    // Sin número, todas las vivas de ese proveedor; nunca las de otro.
+    const todas = await buscarOriginales(E, { supplierId: dos.id });
+    expect(todas.partidasFuera.map((p) => p.numero)).toContain('FD-12');
+    expect(todas.partidasFuera.every((p) => p.exacta === false && p.pendiente > 0)).toBe(true);
+    const luz = await proveedor('4100000001');
+    expect((await buscarOriginales(E, { supplierId: luz.id })).partidasFuera.map((p) => p.numero)).not.toContain('FD-12');
+  });
+
   it('«se descuenta de lo que le debo» rebaja la partida de esa factura y la deja en parte pagada', async () => {
     const dos = await proveedor('4000000002');
     await registrarGasto(E, abonoFuera(dos.id, 'AB-1', -1000, { numero: 'FD-12', fecha: '2026-03-15' }), { contabilizar: 'POSTED' });
@@ -77,6 +91,8 @@ describe('abonos de 2027 sobre facturas pendientes de 2026', () => {
     const luz = await proveedor('4100000001');
     const a = await registrarGasto(E, abonoFuera(luz.id, 'AB-2', -1000, { numero: 'L-0330', fecha: '2026-03-30' }), { contabilizar: 'POSTED' });
     expect(await vista('L-0330')).toMatchObject({ pendiente: 0, compensado: 605, estado: 'LIQUIDADA' });
+    // Ya no queda nada por pagar: el buscador deja de ofrecerla.
+    expect((await buscarOriginales(E, { supplierId: luz.id, numero: 'L-0330' })).partidasFuera).toEqual([]);
     const c = await prisma.compensacionGasto.findFirstOrThrow({ where: { companyId: E, abonoId: a.factura.id } });
     expect(Number(c.importe)).toBe(605);
   });
