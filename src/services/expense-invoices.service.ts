@@ -19,7 +19,7 @@ import {
   type TipoGasto,
 } from '../domain/factura-gasto.model';
 import { esFechaReal, validarFacturaGasto, type FacturaGastoBody } from '../schemas/factura-gasto.schemas';
-import { r2GastoConSigno } from '../domain/rectificativa-gasto.model';
+import { fechaIvaGasto, r2GastoConSigno } from '../domain/rectificativa-gasto.model';
 import { contabilizarFacturaGasto, desgloseIvaPorTipo } from './accounting-engine.service';
 import { autoliquidacionPorTipo, clasificarCompra } from './impuestosCalculo.service';
 import {
@@ -445,32 +445,97 @@ async function asientoVigente(db: TransaccionBD | typeof prisma, companyId: stri
 export const retencionDe = (f: { retencionTotal: number; tipoGasto: string }) =>
   aCentimos(Number(f.retencionTotal) || 0) !== 0 ? tipoRetencionLibro(f.tipoGasto) : null;
 
+/** Por que no se puede tocar una factura de gasto en una fecha (bloqueoPeriodoGasto). */
+export interface BloqueoPeriodo {
+  /** «El 303 del 1T de 2027 ya está presentado», «El periodo de 03/2026 está bloqueado»... */
+  motivo: string;
+  /** El modelo presentado; null si el mes esta bloqueado o el ejercicio cerrado. */
+  modelo: '303' | '111' | '115' | null;
+  ejercicio: number;
+  /** Periodo del modelo presentado ('1T' o '04'); null si es un periodo cerrado. */
+  periodo: string | null;
+}
+
 /**
- * null si se puede tocar la contabilidad de esa fecha; si no, el motivo: el
- * periodo o el ejercicio estan cerrados (comprobarFechaAbierta) o el 303 del
- * trimestre (o del mes), o el 111/115 si hay retencion, ya esta presentado.
+ * null si se puede tocar la contabilidad de esa fecha; si no, por que: el mes
+ * o el ejercicio estan cerrados (comprobarFechaAbierta, con la fecha contable),
+ * el 111/115 del periodo de la fecha contable esta presentado (si hay
+ * retencion) o lo esta el 303 del periodo de `fechaIva`. `fechaIva` es la que
+ * cuenta en el IVA (fechaIvaGasto): la contable salvo en una ERROR_IVA que
+ * reduce, que va al periodo de la original. Que ese periodo este cerrado no
+ * frena nada: solo se mira si su 303 esta presentado.
  */
+export async function bloqueoPeriodoGasto(
+  companyId: string,
+  fecha: string,
+  retencion: 'PROFESIONAL' | 'ARRENDAMIENTO' | null,
+  fechaIva: string = fecha,
+): Promise<BloqueoPeriodo | null> {
+  try {
+    await comprobarFechaAbierta(companyId, fecha);
+  } catch (e) {
+    if (e instanceof HttpError) return { motivo: e.message.replace(/: no se pueden añadir asientos con esa fecha\.?$/, ''), modelo: null, ejercicio: Number(fecha.slice(0, 4)), periodo: null };
+    throw e;
+  }
+  const presentadoEn = async (codigo: '303' | '111' | '115', f: string): Promise<BloqueoPeriodo | null> => {
+    const ejercicio = Number(f.slice(0, 4));
+    const mes = f.slice(5, 7);
+    const presentado = await prisma.modeloImpuesto.findFirst({
+      where: { companyId, codigo, ejercicio, periodo: { in: [`${Math.ceil(Number(mes) / 3)}T`, mes] }, estado: 'presentado' },
+      select: { periodo: true },
+    });
+    return presentado ? { motivo: `El ${codigo} del ${presentado.periodo} de ${ejercicio} ya está presentado`, modelo: codigo, ejercicio, periodo: presentado.periodo } : null;
+  };
+  const retenciones = retencion === 'PROFESIONAL' ? await presentadoEn('111', fecha) : retencion === 'ARRENDAMIENTO' ? await presentadoEn('115', fecha) : null;
+  return retenciones ?? presentadoEn('303', fechaIva);
+}
+
+/** El motivo de bloqueoPeriodoGasto, o null si se puede tocar. */
 export async function motivoPeriodoBloqueado(
   companyId: string,
   fecha: string,
   retencion: 'PROFESIONAL' | 'ARRENDAMIENTO' | null,
+  fechaIva: string = fecha,
 ): Promise<string | null> {
-  try {
-    await comprobarFechaAbierta(companyId, fecha);
-  } catch (e) {
-    if (e instanceof HttpError) return e.message.replace(/: no se pueden añadir asientos con esa fecha\.?$/, '');
-    throw e;
-  }
-  const ejercicio = Number(fecha.slice(0, 4));
-  const mes = fecha.slice(5, 7);
-  const periodos = [`${Math.ceil(Number(mes) / 3)}T`, mes];
-  const codigos = ['303', ...(retencion === 'PROFESIONAL' ? ['111'] : retencion === 'ARRENDAMIENTO' ? ['115'] : [])];
-  const presentado = await prisma.modeloImpuesto.findFirst({
-    where: { companyId, codigo: { in: codigos }, ejercicio, periodo: { in: periodos }, estado: 'presentado' },
-    select: { codigo: true, periodo: true },
+  return (await bloqueoPeriodoGasto(companyId, fecha, retencion, fechaIva))?.motivo ?? null;
+}
+
+/** Pantalla del 303, para el enlace del 409 rectificar_303. */
+const ENLACE_303 = '/dashboard/fiscal/modelo-303';
+
+/** details del 409 de un abono que reduce el IVA de un 303 ya presentado. */
+export const detallesRectificar303 = (b: BloqueoPeriodo, campo: string) => ({
+  campo,
+  motivo: 'rectificar_303',
+  modelo: '303',
+  ejercicio: b.ejercicio,
+  periodo: b.periodo,
+  enlace: ENLACE_303,
+});
+
+const MESES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
+/** «el 1T de 2027» o «abril de 2027». */
+const periodoTexto = (b: BloqueoPeriodo) => (/^\d{2}$/.test(b.periodo ?? '') ? `${MESES[Number(b.periodo) - 1]} de ${b.ejercicio}` : `el ${b.periodo} de ${b.ejercicio}`);
+
+/** Aviso del alta (o de la aprobacion) de un abono registrado en un 303 ya presentado. */
+export const avisoRectificar303 = (b: BloqueoPeriodo) =>
+  `Registrada en ${periodoTexto(b)}, que ya está presentado: prepara la autoliquidación rectificativa de ese 303. ` +
+  'En la contabilidad, apunta a mano la regularización del IVA (472 y 4750), el recargo (678) y los intereses de demora (669) cuando los pagues.';
+
+/**
+ * Marca en AuditLog de un abono que se registra (o se aprueba) en un 303 ya
+ * presentado: recuerda la rectificativa del 303 y los asientos que hay que
+ * hacer a mano (seccion 11 de la especificacion).
+ */
+export async function marcarRectificar303(companyId: string, facturaId: string, b: BloqueoPeriodo, cuota: number, userId?: string): Promise<void> {
+  await registrarAuditoria({
+    userId: userId ?? 'SYSTEM',
+    companyId,
+    action: 'RECTIFICAR_303_PENDIENTE',
+    resourceType: 'ExpenseInvoice',
+    resourceId: facturaId,
+    meta: { modelo: '303', ejercicio: b.ejercicio, periodo: b.periodo, cuota, aviso: avisoRectificar303(b) },
   });
-  if (presentado) return `El ${presentado.codigo} del ${presentado.periodo} de ${ejercicio} ya está presentado`;
-  return null;
 }
 
 /**
@@ -624,8 +689,41 @@ const extraRectificativa = (p: PlanRectificativa | null): DatosRectificativaAsie
  * Esta rectificativa reduce el IVA deducido de un periodo cuyo 303 ya esta
  * presentado (seccion 11 de la especificacion de abonos).
  */
-const textoRectificar303 = (motivo: string, deLaOriginal: boolean) =>
-  `Esta rectificativa reduce el IVA que dedujiste y se declara en ${deLaOriginal ? 'el periodo de la factura que corrige' : 'el periodo en que la recibiste'}. ${motivo}: hay que presentar una autoliquidación rectificativa de ese 303, que saldrá con más a ingresar y fuera de plazo (con el recargo y, en su caso, los intereses del art. 27 LGT).${deLaOriginal ? '' : ' Si te llegó más tarde, pon la fecha en que te llegó.'}`;
+const RECARGO_303 = 'saldrá más a ingresar y fuera de plazo, con el recargo y, en su caso, los intereses del art. 27 LGT.';
+
+/**
+ * 409 de un abono que reduce el IVA de un 303 ya presentado. Por el art. 80
+ * (devolucion, descuento...) se declara en el periodo en que se recibe; una
+ * ERROR_IVA que reduce, en el de la factura que corrige (art. 114 LIVA). En
+ * los dos casos hay recargo e intereses (art. 27 LGT).
+ */
+export const textoRectificar303 = (motivo: string, deLaOriginal: boolean) =>
+  deLaOriginal
+    ? `Esta rectificativa corrige un IVA mal aplicado y reduce el que dedujiste: se declara en el periodo de la factura que corrige. ${motivo}. Regístrala igualmente y presenta una autoliquidación rectificativa de ese 303: ${RECARGO_303}`
+    : `Esta rectificativa reduce el IVA que dedujiste y se declara en el periodo en que la recibiste. ${motivo}. Si la recibiste en ese periodo, regístrala igualmente y presenta una autoliquidación rectificativa de ese 303: ${RECARGO_303} Si te llegó más tarde, pon la fecha en que te llegó.`;
+
+/**
+ * Con el periodo bloqueado (bloqueoPeriodoGasto): si es un abono que reduce el
+ * IVA de un 303 presentado y esta confirmado (confirmaRectificar303, o ya lo
+ * estaba para ese mismo periodo), devuelve el bloqueo para guardar la marca;
+ * sin confirmar, el 409 rectificar_303. Lo demas (un cargo, un 111/115
+ * presentado, un periodo cerrado) lanza el 409 de siempre (`otroError`).
+ */
+async function comprobarRectificar303(
+  b: BloqueoPeriodo,
+  p: {
+    rect: { fechaImputacionIva: string | null } | null;
+    ivaTotal: number;
+    confirma: boolean;
+    otroError?: (b: BloqueoPeriodo) => Promise<HttpError> | HttpError;
+  },
+): Promise<BloqueoPeriodo> {
+  const reduce = !!p.rect && b.modelo === '303' && aCentimos(p.ivaTotal) < 0;
+  if (!reduce) throw p.otroError ? await p.otroError(b) : conflict(textoPeriodoPresentado(b.motivo), { campo: 'fechaRegistro' });
+  const deLaOriginal = !!p.rect?.fechaImputacionIva;
+  if (!p.confirma) throw conflict(textoRectificar303(b.motivo, deLaOriginal), detallesRectificar303(b, deLaOriginal ? 'rectificativa' : 'fechaRegistro'));
+  return b;
+}
 
 /**
  * Datos del motor contable a partir de la factura guardada y su proveedor: la
@@ -881,17 +979,11 @@ export async function registrarGasto(companyId: string, cuerpo: unknown, opcione
   await comprobarFechaAbierta(companyId, fechaContable);
   // Presentar el 303 (o el 111/115) no cierra el mes: sin esto la factura
   // entraria en un trimestre ya declarado y su IVA no se deduciria en ninguno.
+  // El 303 se mira en el periodo de su IVA (el de la original en una ERROR_IVA que reduce).
   const retencion = aCentimos(retencionTotal) !== 0 ? tipoRetencionLibro(v.tipoGasto) : null;
-  const presentado = await motivoPeriodoBloqueado(companyId, fechaContable, retencion);
-  if (presentado) {
-    if (rect && aCentimos(ivaTotal) < 0) throw conflict(textoRectificar303(presentado, false), { campo: 'fechaRegistro', motivo: 'rectificar_303' });
-    throw conflict(textoPeriodoPresentado(presentado), { campo: 'fechaRegistro' });
-  }
-  // ERROR_IVA que reduce: su IVA va al 303 del periodo de la original.
-  if (rect?.fechaImputacionIva) {
-    const delOriginal = await motivoPeriodoBloqueado(companyId, rect.fechaImputacionIva, null);
-    if (delOriginal) throw conflict(textoRectificar303(delOriginal, true), { campo: 'rectificativa', motivo: 'rectificar_303' });
-  }
+  const presentado = await bloqueoPeriodoGasto(companyId, fechaContable, retencion, rect?.fechaImputacionIva ?? fechaContable);
+  // Un abono que reduce el IVA de un 303 presentado se registra si se confirma (seccion 11).
+  const confirmado303 = presentado ? await comprobarRectificar303(presentado, { rect, ivaTotal, confirma: v.rectificativa?.confirmaRectificar303 === true }) : null;
   await asegurarPlanContableEmpresa(companyId);
 
   const { fechaEmision, fechaVencimiento } = resolverFechasGasto({ fechaEmision: v.fechaEmision, fechaVencimiento: v.fechaVencimiento });
@@ -929,6 +1021,7 @@ export async function registrarGasto(companyId: string, cuerpo: unknown, opcione
             totalFactura,
             observaciones,
             ...columnasRectificativa(rect),
+            ...(confirmado303 ? { rectificar303ConfirmadoEn: new Date().toISOString() } : {}),
             lineas: { create: lineas },
           },
           include: { lineas: true },
@@ -964,8 +1057,9 @@ export async function registrarGasto(companyId: string, cuerpo: unknown, opcione
     resourceId: resultado.id,
     meta: { asientoId: resultado.asientoId, proveedorCreado, ...(rect ? { rectificativa: { tipo: rect.tipo, causa: rect.causa, rectifica: rect.rectifica } } : {}) },
   });
+  if (confirmado303) await marcarRectificar303(companyId, resultado.id, confirmado303, ivaTotal, opciones.userId);
   const factura = await obtenerDetalle(companyId, resultado.id);
-  const avisos = [...(rect?.avisos ?? v.avisos ?? [])];
+  const avisos = [...(rect?.avisos ?? v.avisos ?? []), ...(confirmado303 ? [avisoRectificar303(confirmado303)] : [])];
   return { factura: avisos.length ? { ...factura, avisos } : factura, asientoId: resultado.asientoId, proveedorCreado };
 }
 
@@ -1129,10 +1223,10 @@ export async function editarGasto(
     const b = await bloqueoAnterior(companyId, fecha, motivo, 'modificar');
     return conflict(b.texto, b.details);
   };
-  if (enModelos) {
-    const motivo = await motivoPeriodoBloqueado(companyId, fechaContableGasto(actual), retencionDe(actual));
-    if (motivo) throw await bloqueo(motivo, fechaContableGasto(actual));
-  }
+  // Un abono confirmado en un 303 ya presentado (seccion 11) se puede corregir sin volver a frenar.
+  const bloqueoActual = enModelos ? await bloqueoPeriodoGasto(companyId, fechaContableGasto(actual), retencionDe(actual), fechaIvaGasto(actual)) : null;
+  const confirmadoAntes = bloqueoActual?.modelo === '303' && !!actual.rectificar303ConfirmadoEn ? bloqueoActual : null;
+  if (bloqueoActual && !confirmadoAntes) throw await bloqueo(bloqueoActual.motivo, fechaContableGasto(actual));
 
   const bruto = { ...((cuerpo ?? {}) as Record<string, unknown>) };
   if (bruto.proveedor === undefined && bruto.provider !== undefined) bruto.proveedor = bruto.provider;
@@ -1169,14 +1263,30 @@ export async function editarGasto(
 
   const fechaNueva = v.fechaRegistro ?? v.fechaEmision;
   await comprobarFechaAbierta(companyId, fechaNueva);
+  let confirmado303: BloqueoPeriodo | null = null;
   if (enModelos) {
-    const motivo = await motivoPeriodoBloqueado(companyId, fechaNueva, aCentimos(retencionTotal) !== 0 ? tipoRetencionLibro(v.tipoGasto) : null);
-    if (motivo) throw await bloqueo(motivo, fechaNueva);
-    if (rect?.fechaImputacionIva) {
-      const delOriginal = await motivoPeriodoBloqueado(companyId, rect.fechaImputacionIva, null);
-      if (delOriginal) throw conflict(textoRectificar303(delOriginal, true), { campo: 'rectificativa', motivo: 'rectificar_303' });
+    const retencionNueva = aCentimos(retencionTotal) !== 0 ? tipoRetencionLibro(v.tipoGasto) : null;
+    const b = await bloqueoPeriodoGasto(companyId, fechaNueva, retencionNueva, rect?.fechaImputacionIva ?? fechaNueva);
+    if (b) {
+      // Ya confirmado para ese mismo 303: no se vuelve a pedir.
+      const mismo303 = !!confirmadoAntes && confirmadoAntes.ejercicio === b.ejercicio && confirmadoAntes.periodo === b.periodo;
+      confirmado303 = await comprobarRectificar303(b, {
+        rect,
+        ivaTotal,
+        confirma: mismo303 || v.rectificativa?.confirmaRectificar303 === true,
+        otroError: (x) => bloqueo(x.motivo, fechaNueva),
+      });
     }
   }
+  // La marca solo sigue si el abono sigue en un 303 presentado; con otra fecha, se quita.
+  // Un borrador del lector la conserva: se vuelve a mirar al aprobar el asiento.
+  const marca303 = !actual.esRectificativa || !enModelos
+    ? undefined
+    : !confirmado303
+      ? null
+      : confirmadoAntes && confirmadoAntes.ejercicio === confirmado303.ejercicio && confirmadoAntes.periodo === confirmado303.periodo
+        ? actual.rectificar303ConfirmadoEn
+        : new Date().toISOString();
   if (asiento) await asegurarPlanContableEmpresa(companyId);
 
   const { fechaEmision, fechaVencimiento } = resolverFechasGasto({ fechaEmision: v.fechaEmision, fechaVencimiento: v.fechaVencimiento });
@@ -1210,6 +1320,7 @@ export async function editarGasto(
           totalFactura,
           observaciones: v.observaciones?.trim() || null,
           ...columnasRectificativa(rect),
+          ...(marca303 !== undefined ? { rectificar303ConfirmadoEn: marca303 } : {}),
           lineas: { create: lineas },
         },
         include: { lineas: true },
@@ -1263,8 +1374,11 @@ export async function editarGasto(
     resourceId: id,
     meta: { asientoAnterior: asiento?.id ?? null, asientoNuevo: r.asientoNuevo },
   });
+  // Confirmado ahora (no lo estaba para ese 303): marca en AuditLog y aviso, como en el alta.
+  const nuevaMarca = confirmado303 && marca303 !== actual.rectificar303ConfirmadoEn ? confirmado303 : null;
+  if (nuevaMarca) await marcarRectificar303(companyId, id, nuevaMarca, ivaTotal, ctx.userId);
   const detalle = await obtenerDetalle(companyId, id);
-  const avisos = [...(rect?.avisos ?? v.avisos ?? [])];
+  const avisos = [...(rect?.avisos ?? v.avisos ?? []), ...(nuevaMarca ? [avisoRectificar303(nuevaMarca)] : [])];
   return avisos.length ? { ...detalle, avisos } : detalle;
 }
 
@@ -1299,7 +1413,9 @@ export async function anularGasto(
   const fechaPedida = typeof datos.fecha === 'string' && datos.fecha ? datos.fecha : null;
 
   const asiento = await asientoVigente(prisma, companyId, id);
-  const declarada = cuentaEnModelos(f.estado, asiento) ? await motivoPeriodoBloqueado(companyId, fechaContableGasto(f), retencionDe(f)) : null;
+  // El 303 con la fecha de su IVA: una ERROR_IVA imputada a un 303 presentado se anula con
+  // contraasiento. Aunque se confirmara al registrarla (rectificar303ConfirmadoEn), manda lo presentado.
+  const declarada = cuentaEnModelos(f.estado, asiento) ? await motivoPeriodoBloqueado(companyId, fechaContableGasto(f), retencionDe(f), fechaIvaGasto(f)) : null;
   // Una factura anterior sin asiento ya cuenta en los modelos: si su periodo
   // esta declarado, anularla sin contraasiento cambiaria lo presentado.
   if (declarada && !asiento) {
@@ -1461,7 +1577,10 @@ async function obtenerDetalle(companyId: string, id: string): Promise<GastoDetal
   const tipo = esTipoGasto(f.tipoGasto) ? f.tipoGasto : null;
 
   // Lo que se puede hacer (las mismas reglas que editarGasto y anularGasto, sin lanzar errores).
-  const bloqueo = cuentaEnModelos(f.estado, asiento) ? await motivoPeriodoBloqueado(companyId, fechaContableGasto(f), retencionDe(f)) : null;
+  const bloqueoModelos = cuentaEnModelos(f.estado, asiento) ? await bloqueoPeriodoGasto(companyId, fechaContableGasto(f), retencionDe(f), fechaIvaGasto(f)) : null;
+  const bloqueo = bloqueoModelos?.motivo ?? null;
+  // Un abono confirmado en un 303 ya presentado se puede corregir (anularlo sigue con contraasiento).
+  const bloqueoEdicion = bloqueoModelos?.modelo === '303' && f.rectificar303ConfirmadoEn ? null : bloqueo;
   const [bloqueoEditar, bloqueoAnular] =
     bloqueo && !asiento
       ? await Promise.all([
@@ -1474,8 +1593,8 @@ async function obtenerDetalle(companyId: string, id: string): Promise<GastoDetal
       ? { permitido: false, motivo: 'La factura está anulada: no se puede modificar.' }
       : activos > 0
         ? { permitido: false, motivo: mensajeConPagos }
-        : bloqueo
-          ? { permitido: false, motivo: bloqueoEditar ? bloqueoEditar.texto : textoNoModificable(bloqueo) }
+        : bloqueoEdicion
+          ? { permitido: false, motivo: bloqueoEditar ? bloqueoEditar.texto : textoNoModificable(bloqueoEdicion) }
           : { permitido: true };
   const anular =
     f.estado === 'ANULADA'
