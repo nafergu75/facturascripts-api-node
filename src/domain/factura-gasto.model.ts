@@ -43,8 +43,9 @@ export function textoEstadoPago(estadoPago: string, vencida: boolean): string {
   return 'Pendiente de pago';
 }
 
-export const esVencida = (f: { estado: string; estadoPago: string; fechaVencimiento: string }, hoy: string): boolean =>
-  f.estado !== 'ANULADA' && f.estadoPago !== 'PAGADA' && f.fechaVencimiento < hoy;
+/** Vencida sin pagar del todo. Un abono (total < 0) nunca vence: es dinero a favor de la empresa. */
+export const esVencida = (f: { estado: string; estadoPago: string; fechaVencimiento: string; totalFactura?: number | null }, hoy: string): boolean =>
+  f.estado !== 'ANULADA' && f.estadoPago !== 'PAGADA' && f.fechaVencimiento < hoy && !(Number(f.totalFactura ?? 0) < 0);
 
 /** Filtro de "vigentes" para resumenes no fiscales: ni borradores del lector ni anuladas. */
 export const GASTO_VIGENTE: { estado: { notIn: string[] } } = { estado: { notIn: ['DRAFT', 'ANULADA'] } };
