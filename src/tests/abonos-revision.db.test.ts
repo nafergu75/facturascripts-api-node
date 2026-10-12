@@ -244,3 +244,34 @@ describe('180 y 190 cuando la retención de un abono no cabe en su 115 o 111 (de
     );
   });
 });
+
+describe('error de IVA que reduce sobre una factura de 2026 (llevada fuera de la app)', () => {
+  it('pide confirmar que se rectificará el 303 de 2026, deja la marca y avisa', async () => {
+    const E = await empresa('iva2026');
+    const prov = (await proveedoresService.create(E, { nombreFiscal: 'Electricidad Russafa SL', nifCif: cif() })).id;
+    const cuerpo = (confirma: boolean) =>
+      factura(prov, 'RX-1', '2027-02-15', -1000, {
+        lineas: [lin(-1000), lin(1000, { tipoIva: 10 })],
+        rectificativa: { tipo: 'I', causa: 'ERROR_IVA', originales: [{ numero: 'F-2026/77', fecha: '2026-11-20' }], ...(confirma ? { confirmaRectificar303: true } : {}) },
+      });
+    const e = await error(registrarGasto(E, cuerpo(false), { contabilizar: 'POSTED' }));
+    expect(e.status).toBe(409);
+    expect(e.message).toMatch(/^Esta rectificativa corrige un IVA mal aplicado .*El 303 del 4T de 2026 se presentó fuera de la app\. Regístrala igualmente/);
+    const r = await registrarGasto(E, cuerpo(true), { contabilizar: 'POSTED' });
+    expect(r.factura.avisos).toContainEqual(expect.stringMatching(/^Registrada en el 4T de 2026, que ya está presentado/));
+    const marca = await prisma.auditLog.findFirst({ where: { companyId: E, action: 'RECTIFICAR_303_PENDIENTE', resourceId: r.factura.id } });
+    expect(marca?.meta).toMatchObject({ ejercicio: 2026, periodo: '4T' });
+  });
+
+  it('una ERROR_IVA de una factura de 2027 sin presentar sigue sin pedir nada', async () => {
+    const E = await empresa('iva2027');
+    const prov = (await proveedoresService.create(E, { nombreFiscal: 'Electricidad Benicalap SL', nifCif: cif() })).id;
+    const o = await registrarGasto(E, factura(prov, 'F-1', '2027-01-20', 1000), { contabilizar: 'POSTED' });
+    const r = await registrarGasto(
+      E,
+      factura(prov, 'RX-2', '2027-04-15', -1000, { lineas: [lin(-1000), lin(1000, { tipoIva: 10 })], rectificativa: { tipo: 'I', causa: 'ERROR_IVA', originales: [{ id: o.factura.id }] } }),
+      { contabilizar: 'POSTED' },
+    );
+    expect((r.factura.avisos ?? []).filter((a) => a.includes('303'))).toEqual([]);
+  });
+});

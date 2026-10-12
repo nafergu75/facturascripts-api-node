@@ -138,7 +138,10 @@ describe('347: fecha contable, signo y umbral en valor absoluto', () => {
     const E = await empresa('347b');
     const p = (await proveedoresService.create(E, { nombreFiscal: 'Proveedor Medio SL', nifCif: cif(), cp: '46001' })).id;
     await gasto(E, p, 'F-A', '2027-01-05', [lin(5000)]);
-    await gasto(E, p, 'R-A', '2027-02-10', [lin(-1000), lin(1000, { tipoIva: 10 })], rect('ERROR_IVA', [{ numero: 'F-2026/77', fecha: '2026-11-30' }]));
+    // Su 303 (4T de 2026) se presentó fuera de la app: hay que confirmar que se rectificará.
+    await gasto(E, p, 'R-A', '2027-02-10', [lin(-1000), lin(1000, { tipoIva: 10 })], {
+      rectificativa: { tipo: 'I', causa: 'ERROR_IVA', originales: [{ numero: 'F-2026/77', fecha: '2026-11-30' }], confirmaRectificar303: true },
+    });
     const m = await calcularModelo347(E, 2027);
     expect(m.operaciones[0].trimestres).toEqual([6050 - 110, 0, 0, 0]);
     expect((await calcularModelo347(E, 2026)).operaciones).toEqual([]);
