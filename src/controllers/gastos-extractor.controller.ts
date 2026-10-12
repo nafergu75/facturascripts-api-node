@@ -18,6 +18,7 @@ import { normalizarNumeroProveedor } from '../domain/factura-gasto.model';
 import { limpiarNif } from '../domain/tipo-operacion.model';
 import { normalizarNif } from '../utils/nif';
 import { comprobarLecturaParaConfirmar, prefijoObservaciones, vincularLectura } from '../services/lectura/confirmar';
+import { exigirProveedorDadoDeAlta } from '../services/lectura/terceros-lector';
 
 /** Tamano maximo del archivo: el cuerpo de una funcion de Vercel no pasa de 4,5 MB. */
 export const MAX_ARCHIVO_LECTOR = 4 * 1024 * 1024;
@@ -100,6 +101,7 @@ export const gastosExtractorController = {
    * factura y su asiento quedan en borrador («Pendiente de revisar») hasta que
    * se apruebe el asiento en el Motor contable. Las nominas y los seguros
    * sociales de una empresa con trabajadores siguen dando 400 (van a Nominas).
+   * El proveedor llega como { id }: uno nuevo da 400 TERCERO_NO_DADO_DE_ALTA.
    */
   confirmar: asyncHandler(async (req: Request, res: Response) => {
     const companyId = req.companyId as string;
@@ -119,6 +121,8 @@ export const gastosExtractorController = {
 
     // Lectura con Azure (POST /lecturas): llega por el extra del formulario. Sin ella, como siempre.
     const lectura = typeof cuerpo.lecturaId === 'string' && cuerpo.lecturaId ? await comprobarLecturaParaConfirmar(companyId, cuerpo.lecturaId, 'GASTO', cuerpo) : null;
+    // El proveedor tiene que estar dado de alta (llega su id): el lector ya no lo crea solo.
+    await exigirProveedorDadoDeAlta(companyId, cuerpo);
 
     const pct = typeof confianza === 'number' && Number.isFinite(confianza) ? Math.round(confianza <= 1 ? confianza * 100 : confianza) : null;
     const prefijo = lectura
