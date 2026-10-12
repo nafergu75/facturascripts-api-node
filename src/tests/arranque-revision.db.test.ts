@@ -11,7 +11,7 @@ import { prisma } from '../config/database';
 import { subirYAnalizar } from '../services/arranque/cargas.service';
 import { saldosComparativosImportados } from '../services/puestaEnMarcha/puestaEnMarcha.service';
 import { analizarPlanSinEscribir } from '../services/puestaEnMarcha/planAnterior';
-import { ficherosEmpresaB, filasDiario, libro, PLAN_A, type AsientoPrueba } from './fixtures/arranque/generar';
+import { ficherosEmpresaB, filasDiario, filasSumasYSaldos, libro, PLAN_A, type AsientoPrueba } from './fixtures/arranque/generar';
 import { empresaDePrueba, traerCarga, TODOS, USUARIO_PRUEBA } from './fixtures/arranque/importar';
 
 const SUFIJO = Date.now();
@@ -115,5 +115,45 @@ describe('NIF con la letra o el digito de control mal', () => {
     expect(de.get('43000002')).toMatchObject({ accion: 'crear', nif: 'B12345674' });
     expect(de.get('43000003')).toMatchObject({ accion: 'pendiente' });
     expect(de.get('43000004')).toMatchObject({ accion: 'crear', nif: 'FR12345678901' });
+  });
+});
+
+describe('bienes que no se amortizan y la 28x de la gestoria', () => {
+  it('el terreno no crea cuentas de amortizacion; la maquinaria usa la unica 281 con saldo', async () => {
+    const E = `arr-rev-inm-${SUFIJO}`;
+    await empresaDePrueba(E);
+    const saldos = [
+      { codigo: '1000000000', nombre: 'Capital', saldo: -150000 },
+      { codigo: '2100000000', nombre: 'Terreno', saldo: 50000 },
+      { codigo: '2130000000', nombre: 'Maquinaria', saldo: 100000 },
+      { codigo: '2811000000', nombre: 'A.A. inmovilizado material', saldo: -10000 },
+      { codigo: '5720000001', nombre: 'Banco', saldo: 10000 },
+    ];
+    const sys = { nombre: 'sys.xlsx', contenido: libro([['SyS', filasSumasYSaldos(saldos.map((x) => ({ ...x, debe: Math.max(x.saldo, 0), haber: Math.max(-x.saldo, 0) })), 'Sumas y saldos')]]) };
+    const inm = {
+      nombre: 'inmovilizado.xlsx',
+      contenido: libro([
+        [
+          'Inmovilizado',
+          [
+            ['Fichas de inmovilizado'],
+            ['Descripción', 'Cuenta', 'Fecha alta', 'Coste', 'Amort. acumulada', 'Coeficiente'],
+            ['Solar polígono', '2100000000', '01/01/2020', 50000, 0, 0],
+            ['Torno', '2130000000', '01/01/2022', 100000, 10000, 10],
+          ],
+        ],
+      ]),
+    };
+    const { r } = await traerCarga(E, [sys, inm]);
+    expect(r.vista.comprobaciones.puntos.map((p) => p.clave)).not.toContain('inmovilizado:cuadre');
+    const nuevas = r.vista.plan.nuevasMuestra.map((c) => c.codigo);
+    expect(nuevas).not.toContain('2810000000');
+    expect(nuevas).not.toContain('2813000000');
+    const activos = await prisma.activoFijo.findMany({ where: { companyId: E }, orderBy: { descripcion: 'asc' } });
+    expect(activos.map((a) => [a.descripcion, a.subcuentaAmortAcum, a.subcuentaDotacion, Number(a.coeficiente)])).toEqual([
+      ['Solar polígono', '', '', 0],
+      ['Torno', '2811000000', '6810000000', 10],
+    ]);
+    expect(await prisma.chartOfAccounts.count({ where: { companyId: E, codigo: { in: ['2810000000', '2813000000', '6800000000'] } } })).toBe(0);
   });
 });
