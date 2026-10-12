@@ -38,7 +38,11 @@ import { prisma } from '../config/database';
 import { errorMiddleware } from '../middleware/error.middleware';
 import ingresosRoutes from '../routes/ingresos-extractor.routes';
 import { _reiniciarPausa } from '../services/lectura/azure-di.client';
-import { aceptado, CLAVE, ENDPOINT, fixtureAzure, fixtureClaude, NIF_EMISOR, respuesta, resultado } from './fixtures/azure-di';
+import { aceptado, CLAVE, ENDPOINT, fixtureAzure, fixtureClaude, NIF_EMISOR, NIF_EMPRESA, respuesta, resultado } from './fixtures/azure-di';
+import { clientesService } from '../services/clientes.service';
+
+/** El cliente de los fixtures, dado de alta: el lector ya no lo crea al registrar (lector-tercero-alta.db.test). */
+const altaCliente = (companyId: string) => clientesService.create(companyId, { nombreFiscal: 'COMERCIAL DEMO SL', nifCif: NIF_EMPRESA });
 
 const E = `lecturas-ventas-${Date.now()}`;
 const PDF = Buffer.from('%PDF-1.4\n1 0 obj << /Type /Page >>\nfactura emitida');
@@ -95,6 +99,7 @@ beforeAll(async () => {
   await prisma.company.create({ data: { id: E, name: 'Imprenta Levante SL', fsBaseUrl: 'http://localhost:8080', fsApiKeyEnc: 'k' } });
   // En ventas la empresa es la emisora de los fixtures.
   await prisma.legalConfig.create({ data: { companyId: E, denominacion: 'Imprenta Levante SL', nif: NIF_EMISOR } });
+  await altaCliente(E);
 });
 
 describe('lecturas del lector de ventas', () => {
@@ -132,6 +137,7 @@ describe('lecturas del lector de ventas', () => {
     const E2 = `${E}-cuentas`;
     await prisma.company.create({ data: { id: E2, name: 'Imprenta Levante SL', fsBaseUrl: 'http://localhost:8080', fsApiKeyEnc: 'k' } });
     await prisma.legalConfig.create({ data: { companyId: E2, denominacion: 'Imprenta Levante SL', nif: NIF_EMISOR } });
+    await altaCliente(E2);
     const confirmar = (cuerpo: Record<string, unknown>) => request(app(E2)).post('/ingresos-extractor/confirmar').send(cuerpo);
     const data = await leer('resultado-iva-multiple', E2);
     // Una linea por tipo de IVA, en el orden en que se registraran.
@@ -236,6 +242,7 @@ describe('sin total leido', () => {
   beforeAll(async () => {
     await prisma.company.create({ data: { id: SIN_TOTAL, name: 'Imprenta Levante SL', fsBaseUrl: 'http://localhost:8080', fsApiKeyEnc: 'k' } });
     await prisma.legalConfig.create({ data: { companyId: SIN_TOTAL, denominacion: 'Imprenta Levante SL', nif: NIF_EMISOR } });
+    await altaCliente(SIN_TOTAL);
   });
 
   it('QR que coincide, sin InvoiceTotal ni AmountDue: el total es el calculado y cotejado, y la factura se registra', async () => {
