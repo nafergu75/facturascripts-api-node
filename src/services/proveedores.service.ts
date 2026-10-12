@@ -211,7 +211,8 @@ export const proveedoresService = {
   /**
    * Borra el proveedor si no tiene facturas ni apuntes en sus subcuentas; si
    * no, 409 (se puede desactivar). Sus subcuentas quedan en el plan inactivas:
-   * el numero no se le da a otro proveedor.
+   * el numero no se le da a otro proveedor. Sus inmuebles del 180 se borran con
+   * el (sin facturas no los usa nada).
    */
   async remove(companyId: ID, id: ID, usuarioEmail?: string): Promise<void> {
     const existe = await buscarDeLaEmpresa(String(companyId), String(id));
@@ -227,6 +228,8 @@ export const proveedoresService = {
     await conReintentoSubcuenta(() =>
       prisma.$transaction(async (tx) => {
         await retirarSubcuentasDeFicha(tx, String(companyId), subcuentas, { tipo: 'proveedor', id: existe.id, nombreFiscal: existe.nombreFiscal }, hoyEspana());
+        // Sus inmuebles del modelo 180 (sin facturas, ninguna apunta a ellos): se van con él.
+        await tx.inmuebleArrendado.deleteMany({ where: { companyId: String(companyId), supplierId: existe.id } });
         await tx.supplier.delete({ where: { id: existe.id } });
       }),
     );
