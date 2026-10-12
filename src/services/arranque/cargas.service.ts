@@ -21,7 +21,7 @@ import type { PermisosAlta } from '../puestaEnMarcha/planAnterior';
 import { analizarCarga, EJERCICIO_ARRANQUE, vistaDe, type AnalisisCarga, type VistaCarga } from './analisis.service';
 import { limpiarMapeoCampos } from './campos';
 import { TIPOS_HOJA, type TipoHoja } from './clasificador';
-import { prepararDatos, type AjusteHoja, type AjustesCarga, type FicheroLeible, type TipoCarga } from './datos';
+import { prepararDatos, type AjusteBanco, type AjusteHoja, type AjustesCarga, type DatosFiscales, type FicheroLeible, type TipoCarga } from './datos';
 import { EXTENSIONES_CARGA, MAX_FICHEROS_CARGA, TAM_MAX_FICHERO } from './lectorLibros';
 
 export interface FicheroGuardado {
@@ -46,6 +46,74 @@ export function validarEjercicio(raw: unknown): number {
 export const ficherosDe = (c: { ficheros: Prisma.JsonValue }): FicheroGuardado[] => (Array.isArray(c.ficheros) ? (c.ficheros as unknown as FicheroGuardado[]) : []);
 export const ajustesDe = (c: { ajustes: Prisma.JsonValue | null }): AjustesCarga => (c.ajustes && typeof c.ajustes === 'object' ? (c.ajustes as AjustesCarga) : {});
 
+/** Importe escrito a mano (admite coma decimal); null si viene vacio. */
+function importeManual(v: unknown, texto: string, campo: string): number | null {
+  if (v === undefined || v === null || v === '') return null;
+  // «1.250,30» (con coma decimal) o «1250.30»: la coma manda si la hay.
+  const t = String(v).trim();
+  const n = typeof v === 'number' ? v : Number(t.includes(',') ? t.replace(/\./g, '').replace(',', '.') : t);
+  if (!Number.isFinite(n)) throw badRequest(`${texto}: escribe un importe (por ejemplo, 1250,30).`, { campo });
+  return Math.round(n * 100) / 100;
+}
+
+/** Saldos de los extractos a 31-12 por subcuenta 572, validados. */
+export function limpiarBancos(raw: unknown): Record<string, AjusteBanco> {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw badRequest('Los datos de los bancos no son válidos.');
+  const out: Record<string, AjusteBanco> = {};
+  for (const [codigo, v] of Object.entries(raw as Record<string, unknown>)) {
+    if (!/^57\d{1,13}$/.test(codigo)) throw badRequest(`«${codigo}» no es una cuenta de bancos (57...).`, { campo: 'bancos' });
+    if (!v || typeof v !== 'object') continue;
+    const b = v as Record<string, unknown>;
+    const banco: AjusteBanco = { saldoExtracto: importeManual(b.saldoExtracto, `Saldo del extracto de la ${codigo}`, `bancos.${codigo}.saldoExtracto`) };
+    if (typeof b.bankAccountId === 'string' && b.bankAccountId) banco.bankAccountId = b.bankAccountId.slice(0, 40);
+    if (b.nueva && typeof b.nueva === 'object') {
+      const n = b.nueva as Record<string, unknown>;
+      const iban = String(n.iban ?? '').replace(/\s+/g, '').toUpperCase();
+      if (!/^[A-Z]{2}\d{2}[A-Z0-9]{8,30}$/.test(iban)) throw badRequest(`El IBAN de la ${codigo} no es válido.`, { campo: `bancos.${codigo}.iban` });
+      banco.nueva = { iban, bancoNombre: n.bancoNombre ? String(n.bancoNombre).slice(0, 120) : null };
+    }
+    if (b.aceptarDiferencia === true) banco.aceptarDiferencia = true;
+    out[codigo] = banco;
+  }
+  return out;
+}
+
+/** Datos fiscales de 2026 escritos a mano, validados. */
+export function limpiarDatosFiscales(raw: unknown, previos: DatosFiscales = {}): DatosFiscales {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw badRequest('Los datos fiscales no son válidos.');
+  const r = raw as Record<string, unknown>;
+  const out: DatosFiscales = { ...previos };
+  if (r.resultado303T4 !== undefined) out.resultado303T4 = importeManual(r.resultado303T4, 'Resultado del 303 del 4T', 'resultado303T4');
+  if (r.cuotasIvaACompensar !== undefined) {
+    const n = importeManual(r.cuotasIvaACompensar, 'Cuotas de IVA a compensar', 'cuotasIvaACompensar');
+    if (n !== null && n < 0) throw badRequest('Las cuotas de IVA a compensar se escriben en positivo.', { campo: 'cuotasIvaACompensar' });
+    out.cuotasIvaACompensar = n;
+  }
+  if (r.basesNegativas !== undefined) {
+    if (!Array.isArray(r.basesNegativas)) throw badRequest('Las bases imponibles negativas van en una lista.', { campo: 'basesNegativas' });
+    out.basesNegativas = r.basesNegativas.slice(0, 30).map((b, i) => {
+      const x = (b ?? {}) as Record<string, unknown>;
+      const ejercicio = Number(x.ejercicio);
+      const importe = importeManual(x.importe, `Base negativa ${i + 1}`, 'basesNegativas');
+      if (!Number.isInteger(ejercicio) || ejercicio < 1990 || ejercicio > 2100 || importe === null || importe <= 0) {
+        throw badRequest('Cada base imponible negativa lleva su año y un importe positivo.', { campo: 'basesNegativas' });
+      }
+      return { ejercicio, importe };
+    });
+  }
+  if (r.deducciones !== undefined) {
+    if (!Array.isArray(r.deducciones)) throw badRequest('Las deducciones van en una lista.', { campo: 'deducciones' });
+    out.deducciones = r.deducciones.slice(0, 30).map((d, i) => {
+      const x = (d ?? {}) as Record<string, unknown>;
+      const concepto = String(x.concepto ?? '').trim().slice(0, 120);
+      const importe = importeManual(x.importe, `Deducción ${i + 1}`, 'deducciones');
+      if (!concepto || importe === null || importe <= 0) throw badRequest('Cada deducción lleva su concepto y un importe positivo.', { campo: 'deducciones' });
+      return { concepto, importe };
+    });
+  }
+  return out;
+}
+
 /** Ajustes que llegan del cliente, validados (tipo, mapeo, exclusiones y datos a mano). */
 export function limpiarAjustes(raw: unknown, previos: AjustesCarga = {}): AjustesCarga {
   if (raw === undefined || raw === null) return previos;
@@ -69,6 +137,8 @@ export function limpiarAjustes(raw: unknown, previos: AjustesCarga = {}): Ajuste
     else if (typeof r.fechaCorte === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(r.fechaCorte)) out.fechaCorte = r.fechaCorte;
     else throw badRequest('La fecha del sumas y saldos tiene que ser AAAA-MM-DD.');
   }
+  if (r.bancos !== undefined) out.bancos = r.bancos === null ? {} : { ...(previos.bancos ?? {}), ...limpiarBancos(r.bancos) };
+  if (r.datosFiscales !== undefined) out.datosFiscales = r.datosFiscales === null ? {} : limpiarDatosFiscales(r.datosFiscales, previos.datosFiscales);
   if (r.hojas !== undefined) {
     if (!r.hojas || typeof r.hojas !== 'object') throw badRequest('Los ajustes de las hojas no son válidos.');
     const hojas: Record<string, AjusteHoja> = { ...(previos.hojas ?? {}) };
