@@ -155,15 +155,22 @@ describe('confirmar', () => {
     await esperarCuadre(expect, E, 2026, 1, 42, 200);
   });
 
-  it('con un proveedor nuevo: se crea y se dice', async () => {
+  it('con un proveedor nuevo: 400 TERCERO_NO_DADO_DE_ALTA, sin crearlo (hay que darlo de alta antes)', async () => {
     const nif = `B2222222${controlCif('2222222').cifra}`;
     const r = await request(app())
       .post('/gastos-extractor/confirmar')
       .send(confirmar({ proveedor: { nuevo: { nombreFiscal: 'Proveedor Leído SL', nifCif: nif } }, numeroFacturaProveedor: 'N-1', confianza: undefined }));
+    expect(r.status).toBe(400);
+    expect(r.body.details.codigo).toBe('TERCERO_NO_DADO_DE_ALTA');
+    expect(await prisma.supplier.count({ where: { companyId: E, nifCif: nif } })).toBe(0);
+    expect(await prisma.expenseInvoice.count({ where: { companyId: E, numeroFacturaProveedor: 'N-1' } })).toBe(0);
+  });
+
+  it('sin la confianza de la lectura: la observacion lo dice sin porcentaje', async () => {
+    const r = await request(app()).post('/gastos-extractor/confirmar').send(confirmar({ numeroFacturaProveedor: 'N-2', confianza: undefined }));
     expect(r.status).toBe(201);
-    expect(r.body.data.proveedorCreado).toBe(true);
+    expect(r.body.data.proveedorCreado).toBe(false);
     expect(r.body.data.factura.observaciones).toBe('Leída con el lector de gastos.');
-    expect(await prisma.supplier.count({ where: { companyId: E, nifCif: nif } })).toBe(1);
   });
 
   it('sin el numero del proveedor: 400', async () => {
