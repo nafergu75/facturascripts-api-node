@@ -316,13 +316,28 @@ export function importesNegativos(l: LecturaNormalizada): boolean {
   return importes.some((x) => typeof x === 'number' && aCentimos(x) < 0);
 }
 
-function v19v20TipoDocumento(l: LecturaNormalizada): ResultadoValidacion[] {
+/** V19 en el lector de gastos: una rectificativa o un abono se registra como abono (seccion 12 de la especificacion de abonos). */
+export const mensajeRectificativaGasto = (n: string | null | undefined) =>
+  `Es una rectificativa o un abono${n ? ` (rectifica a la ${n})` : ''}: se registrará como abono. Comprueba la factura que rectifica.`;
+
+/**
+ * V19 y V20. Una rectificativa o importes en negativo: en gastos, para
+ * revisar (el formulario se abre como abono, con la original propuesta); en
+ * ventas sigue siendo un error (las rectificativas de venta se hacen desde la
+ * factura original).
+ */
+function v19v20TipoDocumento(l: LecturaNormalizada, ctx: Pick<ContextoValidacion, 'lector'>): ResultadoValidacion[] {
   const tipo = l.tipoDocumento.valor;
+  const gasto = ctx.lector === 'GASTO';
   if (tipo === 'rectificativa') {
     const n = l.rectificativa?.numeroRectificada.valor;
+    if (gasto) return [v('RECTIFICATIVA', 'revisar', ['tipoDocumento'], mensajeRectificativaGasto(n))];
     return [v('RECTIFICATIVA', 'error', ['tipoDocumento'], `Es una factura rectificativa${n ? ` (rectifica a la ${n})` : ''}. Todavía no se puede registrar con el lector.`)];
   }
-  if (importesNegativos(l)) return [v('RECTIFICATIVA', 'error', ['tipoDocumento', 'totales.totalAPagar'], MENSAJE_IMPORTES_NEGATIVOS)];
+  if (importesNegativos(l)) {
+    if (gasto) return [v('RECTIFICATIVA', 'revisar', ['tipoDocumento', 'totales.totalAPagar'], mensajeRectificativaGasto(null))];
+    return [v('RECTIFICATIVA', 'error', ['tipoDocumento', 'totales.totalAPagar'], MENSAJE_IMPORTES_NEGATIVOS)];
+  }
   if (tipo === 'nomina' || tipo === 'seguros_sociales') return [v('NO_FACTURA', 'revisar', ['tipoDocumento'], AVISO_NO_FACTURA[tipo])];
   return [];
 }
@@ -357,7 +372,7 @@ export function validacionesSincronas(l: LecturaNormalizada, ctx: ContextoValida
     ...v16Obligatorios(l),
     ...v17Moneda(l, ctx),
     ...v18Qr(l),
-    ...v19v20TipoDocumento(l),
+    ...v19v20TipoDocumento(l, ctx),
     ...v21v22Totales(l),
   ];
 }
