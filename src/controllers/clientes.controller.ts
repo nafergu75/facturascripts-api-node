@@ -1,5 +1,5 @@
 import { asyncHandler } from '../utils/async-handler';
-import { clientesService, buscarClientes } from '../services/clientes.service';
+import { clientesService, buscarClientes, clientePorNifFicha } from '../services/clientes.service';
 import { sendMessage, sendOk } from '../utils/response';
 
 export const clientesController = {
@@ -12,6 +12,10 @@ export const clientesController = {
     const q = String(req.query.q ?? '');
     const limit = Math.min(Math.max(1, Number(req.query.limit ?? 20) || 20), 100);
     sendOk(res, await buscarClientes(req.companyId!, q, limit));
+  }),
+  // Por NIF (el lector de ventas y el alta), como GET /proveedores/por-nif/:nif.
+  porNif: asyncHandler(async (req, res) => {
+    sendOk(res, await clientePorNifFicha(req.companyId!, req.params.nif));
   }),
   getById: asyncHandler(async (req, res) => {
     const data = await clientesService.getById(req.companyId!, req.params.id);
