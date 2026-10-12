@@ -13,6 +13,7 @@ import { proveedoresService } from '../services/proveedores.service';
 import { anularGasto, editarGasto, registrarGasto } from '../services/expense-invoices.service';
 import { asegurarPlanContableEmpresa } from '../services/chart-of-accounts.service';
 import { calcularModelo303 } from '../services/impuestosCalculo.service';
+import { taxDocumentsService } from '../services/tax-documents.service';
 import { periodoFiscal } from '../services/nominas/fiscal';
 import { aCentimos } from '../utils/money';
 import { controlCif } from '../utils/nif';
@@ -93,6 +94,10 @@ describe('asiento de una adquisición intracomunitaria', () => {
     expect(m.casillasOficiales?.['37']).toBe(231.01);
     expect(await saldo(E, '472', '2027-01-01', '2027-03-31')).toBe(231.01);
     expect(await saldo(E, '477', '2027-01-01', '2027-03-31')).toBe(-231.01);
+    // El libro de recibidas lleva la fila al 0 % y da aparte el IVA autoliquidado (el que falta para cuadrar con la 472).
+    const libro = await taxDocumentsService.obtenerLibroIVARecibidas(E, 'Q1-2027');
+    expect(libro).toMatchObject({ totalCuotas: 0, autoliquidado: 231.01 });
+    expect(libro.nota).toBe('Las cuotas no incluyen 231,01 € de IVA autoliquidado de adquisiciones intracomunitarias: está en la 472 (y en la 477) y en el 303.');
   });
 
   it('una compra nacional no lleva autoliquidación', async () => {
