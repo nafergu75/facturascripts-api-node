@@ -44,6 +44,34 @@ function periodoRetenciones(entrada: string): string {
 }
 
 const clave = (codigo: CodigoRetenciones, ejercicio: number, periodo: string) => `${codigo}-${ejercicio}-${periodo}`;
+
+/**
+ * Periodos que se solapan con uno: el mismo, y su trimestre si es un mes o
+ * sus tres meses si es un trimestre. Un mismo exceso no se pasa dos veces a la
+ * 4709 pidiendo el mes y el trimestre que lo contiene (p. ej. tras cambiar de
+ * periodicidad a mitad de año).
+ */
+function periodosSolapados(periodo: string): string[] {
+  const t = /^([1-4])T$/.exec(periodo);
+  if (t) return [periodo, ...[1, 2, 3].map((i) => String((Number(t[1]) - 1) * 3 + i).padStart(2, '0'))];
+  return [periodo, `${Math.ceil(Number(periodo) / 3)}T`];
+}
+
+/** Traspaso vigente del mismo modelo en ese periodo o en uno que se solapa. */
+async function traspasoQueSolapa(db: Pick<typeof prisma, 'journalEntry'>, companyId: string, codigo: CodigoRetenciones, ejercicio: number, periodo: string) {
+  const claves = periodosSolapados(periodo).map((p) => clave(codigo, ejercicio, p));
+  const a = await db.journalEntry.findFirst({
+    where: { companyId, invoiceType: TIPO, invoiceId: { in: claves }, estado: { not: 'REVERSED' } },
+    select: { id: true, numeroAsiento: true, invoiceId: true },
+  });
+  if (!a) return null;
+  const suyo = (a.invoiceId ?? '').split('-')[2] ?? periodo;
+  const texto =
+    suyo === periodo
+      ? `La retención de abonos del ${codigo} ${delPeriodo(ejercicio, periodo)} ya está pasada a la 4709 (asiento ${a.numeroAsiento}).`
+      : `La retención de abonos de ese periodo ya está pasada a la 4709 con el ${codigo} ${delPeriodo(ejercicio, suyo)} (asiento ${a.numeroAsiento}).`;
+  return { asientoId: a.id, texto };
+}
 const eur = (n: number) => `${n.toLocaleString('es-ES', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €`;
 const MESES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
 /** «del 2T de 2027» o «de abril de 2027». */
@@ -106,8 +134,8 @@ export async function traspasarExcesoA4709(
 ): Promise<{ codigo: CodigoRetenciones; ejercicio: number; periodo: string; importe: number; cuenta4751: string; asiento: Traspaso4709 }> {
   const periodo = periodoRetenciones(periodoEntrada);
   const p = periodoFiscal(ejercicio, periodo);
-  const ya = await traspaso4709De(companyId, codigo, ejercicio, periodo);
-  if (ya) throw conflict(`La retención de abonos del ${codigo} ${delPeriodo(ejercicio, periodo)} ya está pasada a la 4709 (asiento ${ya.numero}).`, { motivo: 'ya_traspasado', asientoId: ya.asientoId });
+  const ya = await traspasoQueSolapa(prisma, companyId, codigo, ejercicio, periodo);
+  if (ya) throw conflict(ya.texto, { motivo: 'ya_traspasado', asientoId: ya.asientoId });
   const exceso = await excesoRetencionAbonos(companyId, codigo, ejercicio, periodo);
   const centimos = aCentimos(exceso);
   if (centimos <= 0) {
@@ -123,8 +151,8 @@ export async function traspasarExcesoA4709(
   const asiento = await conReintento(() =>
     prisma.$transaction(async (tx) => {
       // Dos peticiones a la vez: se vuelve a mirar dentro de la transacción.
-      const otro = await tx.journalEntry.findFirst({ where: { companyId, invoiceType: TIPO, invoiceId: clave(codigo, ejercicio, periodo), estado: { not: 'REVERSED' } }, select: { numeroAsiento: true } });
-      if (otro) throw conflict(`La retención de abonos del ${codigo} ${delPeriodo(ejercicio, periodo)} ya está pasada a la 4709 (asiento ${otro.numeroAsiento}).`, { motivo: 'ya_traspasado' });
+      const otro = await traspasoQueSolapa(tx, companyId, codigo, ejercicio, periodo);
+      if (otro) throw conflict(otro.texto, { motivo: 'ya_traspasado' });
       await asegurarCuentas(tx, companyId, [
         { codigo: CUENTA_4709, nombre: NOMBRE_4709 },
         { codigo: cuenta4751, nombre: NOMBRE_4751 },
