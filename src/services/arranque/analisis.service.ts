@@ -68,6 +68,11 @@ export interface AnalisisCarga {
   inmovilizado: { activos: ActivoResuelto[]; diferencias: Array<{ codigo: string; fichas: number; saldo: number; diferencia: number }>; sinCuenta: number } | null;
   /** D1: la carga trae sumas y saldos o diario de 2026, asi que 2026 pasa a llevado fuera. */
   marcaLlevanzaExterna: boolean;
+  /**
+   * La carga fijara AjustesFiscales.inicioEnApp en el 1 de enero del ejercicio:
+   * 2026 pasa a llevado fuera y la empresa no habia indicado su fecha de inicio.
+   */
+  fijaInicioEnApp: boolean;
   retirados: Record<string, number>;
   cargaVigente: { id: string; version: number } | null;
   /** Bancos (572) de la apertura con el saldo del extracto escrito a mano y su cuenta de Tesoreria. */
@@ -367,6 +372,8 @@ export async function analizarCarga(
   // 9. D1: 2026 pasa a llevado fuera si la carga trae sumas y saldos o diario. Asientos de 2026 de la app que se retiran.
   const marcaLlevanzaExterna = !!datos.sumasSaldos || usarDiario;
   const retirados: Record<string, number> = {};
+  const fijaInicioEnApp =
+    marcaLlevanzaExterna && !(await prisma.ajustesFiscales.findUnique({ where: { companyId }, select: { inicioEnApp: true } }))?.inicioEnApp;
   if (marcaLlevanzaExterna) {
     const grupos = await prisma.journalEntry.groupBy({
       by: ['origen'],
@@ -465,6 +472,7 @@ export async function analizarCarga(
     cartera,
     inmovilizado,
     marcaLlevanzaExterna,
+    fijaInicioEnApp,
     retirados,
     cargaVigente: ctx.vigente,
     bancos: vivos.bancos,
@@ -598,6 +606,9 @@ export function vistaDe(a: AnalisisCarga): VistaCarga {
   const totalRetirados = Object.values(a.retirados).reduce((s, n) => s + n, 0);
   const consecuencias = [
     a.marcaLlevanzaExterna ? ` ${anterior} quedará como «lo llevó la gestoría»: se podrá consultar, pero no apuntar nada con fecha de ${anterior}.` : '',
+    a.fijaInicioEnApp
+      ? ` Los impuestos se llevarán en la app desde el 1-1-${a.ejercicio}: los modelos de ${anterior} los presentó la gestoría y no saldrán como pendientes.`
+      : '',
     totalRetirados
       ? ` ${varios(totalRetirados, `asiento de ${anterior} apuntado en la app se retira (no se borra).`, `asientos de ${anterior} apuntados en la app se retiran (no se borran).`)}`
       : '',
