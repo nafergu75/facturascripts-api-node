@@ -22,7 +22,7 @@ import type { PaginaOficial } from '../aeat/oficial/diseno';
  * Borradores de los modelos 347, 390 y 200 con el diseño oficial de la AEAT
  * (montado en /companies/:companyId/impuestos/borradores). La pantalla y el
  * fichero salen del mismo cálculo. Los dos GET solo leen (B6): la persona de
- * contacto sale de Registro Mercantil > Datos (B3) y la complementaria,
+ * contacto sale de Datos de la empresa (apartado Contacto) (B3) y la complementaria,
  * sustitutiva o rectificativa, del historial de declaraciones (B4).
  */
 

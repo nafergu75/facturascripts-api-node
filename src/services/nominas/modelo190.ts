@@ -191,7 +191,7 @@ export function erroresFichero190(declarante: Declarante190, perceptores: Percep
   const errorNif = errorNifDeclarante(declarante.nif);
   if (errorNif) errores.push(errorNif);
   if (!textoAeat(declarante.nombre)) errores.push('Falta la razón social de la empresa.');
-  // Persona de contacto y teléfono (B3): los de Registro Mercantil > Datos, con el mismo aviso que el resto de modelos.
+  // Persona de contacto y teléfono (B3): los de Datos de la empresa (apartado Contacto), con el mismo aviso que el resto de modelos.
   errores.push(...erroresContacto({ personaContacto: declarante.contacto, telefono: declarante.telefono }));
   if (declarante.numeroDeclaracion && !/^190\d{10}$/.test(declarante.numeroDeclaracion)) {
     errores.push('El número identificativo de la declaración tiene 13 dígitos y empieza por 190.');

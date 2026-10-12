@@ -61,7 +61,7 @@ export type Borrador347 = Declaracion347 & {
 };
 
 /**
- * Borrador del 347. Contacto y teléfono, de Registro Mercantil > Datos (B3);
+ * Borrador del 347. Contacto y teléfono, de Datos de la empresa (B3);
  * tipo, anterior, número y registros elegidos, del historial (B4 y B5).
  */
 export async function borrador347(companyId: string, ejercicio: number, opts: { calcular?: boolean } = {}): Promise<Borrador347> {
@@ -403,7 +403,7 @@ export async function borrador200(companyId: string, ejercicio: number, opciones
       nif: soc.nif,
       razonSocial: soc.razonSocial,
       cnae: soc.cnae,
-      // Persona de contacto y teléfono (B3): los de Registro Mercantil > Datos.
+      // Persona de contacto y teléfono (B3): los de Datos de la empresa (apartado Contacto).
       telefono: contacto.telefono || soc.telefono,
       email: soc.email,
       contacto: contacto.personaContacto || null,

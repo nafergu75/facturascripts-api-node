@@ -3,7 +3,7 @@
  * declaracion y compone el fichero (modelo190.ts) con lo que pone el historial
  * de declaraciones (B4 y B5): numero identificativo, complementaria o
  * sustitutiva, numero de la anterior y perceptores elegidos. La persona de
- * contacto y el telefono son los de Registro Mercantil > Datos (B3). Solo lee:
+ * contacto y el telefono son los de Datos de la empresa (apartado Contacto) (B3). Solo lee:
  * el numero lo asigna POST /tax-models/190/declaraciones/numero.
  */
 import { badRequest } from '../../utils/http-errors';

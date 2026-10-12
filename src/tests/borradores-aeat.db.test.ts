@@ -110,7 +110,7 @@ describe('borrador del 347', () => {
     const n = await request(app).post(`/companies/${ES}/tax-models/347/declaraciones/numero`).send({ ejercicio: 2025 });
     expect(n.status).toBe(200);
     expect(n.body.data.enCurso.numero).toBe('3472025000001');
-    // La persona de contacto es la de Registro Mercantil > Datos (B3): la de la URL ya no cuenta.
+    // La persona de contacto es la de Datos de la empresa (B3): la de la URL ya no cuenta.
     const r = await descargar('/borradores/347/fichero?ejercicio=2025&contacto=Otra%20Persona');
     expect(r.status).toBe(200);
     expect(r.headers['content-disposition']).toContain('347_2025.txt');

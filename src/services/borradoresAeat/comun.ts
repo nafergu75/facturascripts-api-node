@@ -21,7 +21,7 @@ export interface DeclaranteEmpresa {
   personaContacto: string;
 }
 
-/** NIF, razon social, telefono y persona de contacto (Registro Mercantil > Datos). */
+/** NIF y razon social (Registro Mercantil > Datos para la memoria), telefono y persona de contacto (Datos de la empresa, apartado Contacto). */
 export async function declaranteEmpresa(companyId: string): Promise<DeclaranteEmpresa> {
   const [legal, empresa] = await Promise.all([
     prisma.legalConfig.findUnique({ where: { companyId }, select: { nif: true, denominacion: true, telefono: true, personaContacto: true } }),
@@ -37,7 +37,7 @@ export async function declaranteEmpresa(companyId: string): Promise<DeclaranteEm
 
 /**
  * Persona de contacto y teléfono de la empresa para los modelos que los piden
- * (347, 349, 180, 190 y 200): los de Registro Mercantil > Datos. Si faltan, es
+ * (347, 349, 180, 190 y 200): los de Datos de la empresa (apartado Contacto). Si faltan, es
  * un error (el fichero da 400 y dice dónde rellenarlos), no un aviso.
  */
 export async function contactoEmpresa(companyId: string): Promise<{ personaContacto: string; telefono: string }> {

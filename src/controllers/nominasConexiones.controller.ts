@@ -253,7 +253,7 @@ export const nominasConexionesController = {
    * con permiso de escritura: este GET no escribe). Para un ejercicio posterior
    * al ultimo diseño publicado sale como borrador con ese diseño (cabecera
    * X-Avisos-Aeat). 400 si faltan datos (tambien la persona de contacto y el
-   * telefono de Registro Mercantil > Datos).
+   * telefono de Datos de la empresa).
    */
   fichero190: asyncHandler(async (req, res) => {
     const ejercicio = ejercicioDe(req);
