@@ -249,11 +249,11 @@ describe('Fichero del 303 contra el diseño oficial 2026', () => {
     expect(datos.advertencias ?? []).toEqual([]);
   });
 
-  it('una compra intracomunitaria sin IVA va en [10] con aviso para autoliquidar la cuota', () => {
+  it('una compra intracomunitaria sin IVA se autoliquida al 21 % en [10]/[11] y se deduce en [36]/[37], con aviso', () => {
     const { p1, datos } = generar([compra(500, 0, { operacion: 'intracomunitaria', cifnif: 'DE999' })], P2T);
-    expect(leer({ '01': p1 }, '10')).toBe(500);
-    expect(leer({ '01': p1 }, '11')).toBe(0);
-    expect(datos.advertencias?.some((a) => /\[10\]\/\[11\]/.test(a))).toBe(true);
+    const l = (c: string) => leer({ '01': p1 }, c);
+    expect([l('10'), l('11'), l('36'), l('37'), l('46')]).toEqual([500, 105, 500, 105, 0]);
+    expect(datos.advertencias?.some((a) => /al 21 %.*\[10\]\/\[11\]/.test(a))).toBe(true);
   });
 
   it('inversión del sujeto pasivo: ventas en [122]; compras con ISP en [12]/[13] y [28]/[29]; resultado cero es N', () => {
