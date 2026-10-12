@@ -189,6 +189,8 @@ export async function analizarCarga(
     }
   }
   if (saldos && saldos.analisis.lineas.some((l) => l.cuenta === saldos!.analisis.cuenta129)) anadir(saldos.analisis.cuenta129, 'Resultado del ejercicio');
+  // Subcuentas del 13 que reciben el saldo de los grupos 8 y 9 (pueden no estar en ningun fichero).
+  for (const t of saldos?.analisis.grupos89.traspasos ?? []) anadir(t.a, '');
   const listaCuentas = [...cuentas.values()].sort((a, b) => a.codigo.localeCompare(b.codigo));
 
   // 5. Plan y fichas: el mismo analisis que el traslado del plan, sin escribir.
@@ -355,6 +357,7 @@ export async function analizarCarga(
     repetidos: datos.choques,
     sumasSaldos: sys && datos.sumasSaldos ? { analisis: sys, fechaCorte: datos.sumasSaldos.fechaCorte } : null,
     saldosDesdeDiario: !sys && !!diario,
+    apertura: saldos?.analisis ?? null,
     pyg: datos.pyg,
     resultadoDeclarado: ajustes.resultadoDeclarado ?? null,
     diario,
