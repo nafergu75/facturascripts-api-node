@@ -114,14 +114,16 @@ export function analizarDiario(
 
 /**
  * Saldos a 31-12 sacados del diario cuando no hay sumas y saldos: sin la
- * regularizacion ni el cierre (los grupos 6 y 7 van a la 129 en la apertura).
+ * regularizacion ni el cierre (los grupos 6 y 7 van a la 129 en la apertura y
+ * los 8 y 9, a su cuenta del subgrupo 13: ver analizarSaldos). Las lineas de
+ * 8 y 9 se cuentan: si no, su contrapartida quedaria sola y la apertura no
+ * cuadraria.
  */
 export function saldosDesdeDiario(asientos: AsientoAgrupado[]): CuentaSaldo[] {
   const saldos = new Map<string, { nombre: string; saldo: number }>();
   for (const a of asientos) {
     if (a.especial === 'REGULARIZACION' || a.especial === 'CIERRE') continue;
     for (const l of a.lineas) {
-      if (/^[89]/.test(l.cuenta)) continue;
       const s = saldos.get(l.cuenta) ?? { nombre: l.nombre, saldo: 0 };
       s.saldo = round2(s.saldo + l.debe - l.haber);
       if (!s.nombre && l.nombre) s.nombre = l.nombre;
