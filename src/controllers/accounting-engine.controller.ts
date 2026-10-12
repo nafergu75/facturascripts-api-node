@@ -22,6 +22,7 @@ import { motivoSinTipoFijado, notaDivisa } from '../domain/divisas';
 import { esTipoOperacion, fechaDevengoVenta } from '../domain/tipo-operacion.model';
 import { fechaContableGasto } from '../domain/factura-gasto.model';
 import { cuentaAcreedorDePagos, datosContablesGastoConSubcuenta, motivoPeriodoBloqueado, retencionDe } from '../services/expense-invoices.service';
+import { crearCompensacionesAuto } from '../services/compensacionesGasto.service';
 import { conReintentoSubcuenta, fichaDeSubcuenta, subcuentaClienteParaApunte, type FichaDeSubcuenta } from '../services/terceros/subcuentas';
 import { esSubcuentaGenerica } from '../services/terceros/numeracion';
 
@@ -462,6 +463,8 @@ export class AccountingEngineController {
             where: { id: asiento.invoiceId ?? '', companyId, estado: 'DRAFT' },
             data: { estado: 'ACCOUNTED' },
           });
+          // Un abono del lector resta de lo pendiente de su original al aprobarlo.
+          if (asiento.invoiceId) await crearCompensacionesAuto(tx, companyId, asiento.invoiceId, { userId });
         }
       });
 
