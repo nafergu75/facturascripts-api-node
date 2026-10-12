@@ -11,10 +11,13 @@
  *  - POST   /:codigo/presentado                               marca como presentada la declaración en curso (congela su instantánea)
  *
  * El GET solo lee. Lo demás pide impuestos:write; en el 190 basta también con
- * nominas:write (su fichero lleva los datos de la plantilla).
+ * nominas:write (su fichero lleva los datos de la plantilla). En el 190, la
+ * lista de perceptores (GET) solo sale con nominas:read, y elegirlos (PUT
+ * .../registros) pide nominas:write.
  */
 import { Router, type Request } from 'express';
 import { authorize } from '../middleware/authorize.middleware';
+import { autorizado } from '../services/rbac.service';
 import { asyncHandler } from '../utils/async-handler';
 import { sendOk } from '../utils/response';
 import { badRequest } from '../utils/http-errors';
@@ -48,10 +51,28 @@ async function declaracionDe(req: Request, fuente: Record<string, unknown>): Pro
 
 const cuerpo = (req: Request) => (req.body ?? {}) as Record<string, unknown>;
 
+/**
+ * Lista de perceptores del 190 (nombre, percepción íntegra y clave interna de
+ * cada trabajador o profesional): son datos de la plantilla y solo los ve
+ * quien tiene permiso de Nóminas, igual que /nominas/190/:ejercicio/perceptores.
+ * A quien entra solo con impuestos:read se le quita la lista y se le dice por qué.
+ */
+const AVISO_REGISTROS_NOMINAS = 'La lista de perceptores del 190 es de Nóminas: pide al administrador permiso de Nóminas para verla y elegirlos.';
+function conRegistrosPermitidos<T extends { registros: unknown; enCurso?: { registros?: unknown } | null }>(req: Request, codigo: CodigoAeat, h: T): T {
+  if (codigo !== '190' || autorizado(req.user!, req.companyId, ['nominas:read'])) return h;
+  const oculto = h.registros !== null || !!h.enCurso?.registros;
+  return {
+    ...h,
+    registros: null,
+    ...(h.enCurso ? { enCurso: { ...h.enCurso, registros: null } } : {}),
+    ...(oculto ? { avisoRegistros: AVISO_REGISTROS_NOMINAS } : {}),
+  };
+}
+
 // --- Lectura ---
 const historial = asyncHandler(async (req, res) => {
   const d = await declaracionDe(req, req.query as Record<string, unknown>);
-  sendOk(res, await historialConRegistros(d.companyId, d.codigo, d.ejercicio, d.periodo));
+  sendOk(res, conRegistrosPermitidos(req, d.codigo, await historialConRegistros(d.companyId, d.codigo, d.ejercicio, d.periodo)));
 });
 router.get('/:codigo(303|111|115|202|390|200|347|349|180)/declaraciones', authorize('impuestos:read'), historial);
 router.get('/:codigo(190)/declaraciones', authorize('impuestos:read', 'nominas:read'), historial);
@@ -75,10 +96,11 @@ router.post('/:codigo(190)/declaraciones/rectificacion', authorize('impuestos:wr
 const registros = asyncHandler(async (req, res) => {
   const d = await declaracionDe(req, cuerpo(req));
   await guardarRegistrosModelo(d.companyId, d.codigo, d.ejercicio, d.periodo, cuerpo(req).registros);
-  sendOk(res, await historialConRegistros(d.companyId, d.codigo, d.ejercicio, d.periodo));
+  sendOk(res, conRegistrosPermitidos(req, d.codigo, await historialConRegistros(d.companyId, d.codigo, d.ejercicio, d.periodo)));
 });
 router.put('/:codigo(347|349|180)/declaraciones/rectificacion/registros', authorize('impuestos:write'), registros);
-router.put('/:codigo(190)/declaraciones/rectificacion/registros', authorize('impuestos:write', 'nominas:write'), registros);
+// Elegir perceptores es tocar datos de la plantilla: solo con nominas:write.
+router.put('/:codigo(190)/declaraciones/rectificacion/registros', authorize('nominas:write'), registros);
 
 const cancelar = asyncHandler(async (req, res) => {
   const d = await declaracionDe(req, req.query as Record<string, unknown>);
