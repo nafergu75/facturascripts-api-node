@@ -352,7 +352,11 @@ export async function borrador200(companyId: string, ejercicio: number, opciones
     retenciones: opciones.retenciones,
     nuevaCreacion: opciones.nuevaCreacion,
     iban: cuentas.find((c) => c.activa)?.iban ?? null,
-    rectificativa: ctx.enCurso?.tipo === 'C' ? { justificanteAnterior: ctx.justificanteAnterior ?? '' } : null,
+    // Rectificativa: lo ingresado con la anterior va a [01578] y no se vuelve a pedir.
+    rectificativa:
+      ctx.enCurso?.tipo === 'C'
+        ? { justificanteAnterior: ctx.justificanteAnterior ?? '', resultadoAnterior: ctx.resultadoAnterior, devolucionAcordada: ctx.devolucionAcordada }
+        : null,
   });
   // Sin persona de contacto o teléfono no hay fichero (B3).
   decl.errores.unshift(...erroresContacto(contacto));

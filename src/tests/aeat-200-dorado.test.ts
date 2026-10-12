@@ -365,3 +365,43 @@ describe('200 dorado: diseño oficial vers. 1.02 (ejercicio 2025)', () => {
     expect(malo.errores.join(' ')).toMatch(/no cuadra/);
   });
 });
+
+describe('200 rectificativa: lo ya ingresado va a [01578] y no se pide otra vez', () => {
+  const rect = (resultadoAnterior: number, devolucionAcordada = 0) =>
+    construirModelo200({ ...BENEFICIO, rectificativa: { justificanteAnterior: '2002025000001', resultadoAnterior, devolucionAcordada } });
+
+  it('con la anterior a ingresar 1540 €: [01578] = 1540 y [00621] = [01586] - [01578]', () => {
+    const d = rect(1540);
+    expect(d.errores).toEqual([]);
+    const pg = trocear(d.fichero).paginas;
+    for (const [codigo, linea] of Object.entries(pg)) expect([codigo, validarRegistro(PAGINAS[codigo], linea)]).toEqual([codigo, []]);
+    expect(campo(pg['14B00'], 1051, 17)).toBe(n17(5070)); // [01586]
+    expect(campo(pg['14B00'], 1085, 17)).toBe(n17(1540)); // [01578]
+    expect(campo(pg['14B00'], 1153, 17)).toBe(n17(3530)); // [00621]
+    expect(campo(pg['14B00'], 1187, 17)).toBe(n17(0)); // [00866]
+    expect(campo(pg['01000'], 13, 1)).toBe('I');
+    expect(campo(pg['01000'], 149, 15)).toBe('1' + '2002025000001' + '1');
+    expect(campo(pg['DID00'], 425, 18)).toBe('I' + n17(3530)); // se ingresa solo la diferencia
+    expect(d.liquidacion).toMatchObject({ resultado: 3530, resultadoAnterior: 1540, rectificacion: 0, tipoDeclaracion: 'I' });
+    expect(d.advertencias.join(' ')).toMatch(/solo se ingresa la diferencia, 3530,00 €.*Sociedades WEB/);
+  });
+
+  it('si ahora sale menos de lo ingresado, la diferencia va a [00866] y se devuelve a la cuenta', () => {
+    const d = rect(6000);
+    const pg = trocear(d.fichero).paginas;
+    for (const [codigo, linea] of Object.entries(pg)) expect([codigo, validarRegistro(PAGINAS[codigo], linea)]).toEqual([codigo, []]);
+    expect(campo(pg['14B00'], 1153, 17)).toBe(n17(-930)); // [00621] = 5070 - 6000
+    expect(campo(pg['14B00'], 1187, 17)).toBe(n17(930)); // [00866]
+    expect(campo(pg['01000'], 13, 1)).toBe('N'); // sin la parte de la rectificación queda a cero
+    expect(campo(pg['DID00'], 225, 17)).toBe(n17(930));
+    expect(campo(pg['DID00'], 242, 25)).toBe('1' + 'ES9121000418450200051332');
+    expect(campo(pg['DID00'], 425, 1)).toBe(' ');
+    expect(campo(pg['DID00'], 207, 1)).toBe(' ');
+  });
+
+  it('la devolución ya acordada de la anterior suma ([01584])', () => {
+    const pg = trocear(rect(0, 200).fichero).paginas;
+    expect(campo(pg['14B00'], 1119, 17)).toBe(n17(200)); // [01584]
+    expect(campo(pg['14B00'], 1153, 17)).toBe(n17(5270)); // [00621]
+  });
+});

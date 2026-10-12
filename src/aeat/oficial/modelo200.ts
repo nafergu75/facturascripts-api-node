@@ -70,8 +70,12 @@ const NO_APLICA = 'No aplica a una S.L. o S.A. pyme sin regímenes especiales (d
 
 export interface Entrada200 {
   ejercicio: number;
-  /** Autoliquidación rectificativa de la presentada (B4): justificante de la anterior (13 cifras). */
-  rectificativa?: { justificanteAnterior: string } | null;
+  /**
+   * Autoliquidación rectificativa de la presentada (B4): justificante de la
+   * anterior (13 cifras), lo ya ingresado con ella ([01578]) y la devolución
+   * que la AEAT ya acordó ([01584]).
+   */
+  rectificativa?: { justificanteAnterior: string; resultadoAnterior?: number; devolucionAcordada?: number } | null;
   identificacion: {
     nif: string;
     razonSocial: string;
@@ -182,6 +186,10 @@ export interface Declaracion200 {
     pagosFraccionados: number; // [00601]+[00603]+[00605]
     cuotaDiferencial: number; // [00611]
     resultado: number; // [00621]
+    /** Rectificativa: lo ingresado con la anterior [01578], la devolución acordada [01584] y lo que se devuelve por la rectificación [00866]. */
+    resultadoAnterior: number;
+    devolucionAcordada: number;
+    rectificacion: number;
     tipoDeclaracion: 'I' | 'N' | 'D';
     binsGeneradas: number;
   };
@@ -259,8 +267,19 @@ export function construirModelo200(e: Entrada200): Declaracion200 {
   const c599 = c592 - ret;
   const c611 = c599 - pf[0] - pf[1] - pf[2];
   const c1586 = c611;
-  const c621 = c1586;
-  const tipoDeclaracion: 'I' | 'N' | 'D' = c621 > 0 ? 'I' : c621 < 0 ? 'D' : 'N';
+  // Rectificativa (manual de Sociedades, «Cumplimentación del modelo 200:
+  // casillas 01578 y 01584»): [00621] = [01586] - [01578] + [01584]. [01578] es
+  // lo que se ingresó con la anterior y [01584], la devolución que la AEAT ya
+  // hizo (0 si no se ha acordado). Si [00621] sale negativo, la parte que
+  // corresponde a lo ingresado antes va en [00866] (lo devuelve la AEAT por la
+  // rectificación) y el tipo de declaración se decide sin ella, como en el 303.
+  const rect = e.rectificativa ?? null;
+  const c1578 = rect ? c(Math.max(0, rect.resultadoAnterior ?? 0)) : 0;
+  const c1584 = rect ? c(Math.max(0, rect.devolucionAcordada ?? 0)) : 0;
+  const c621 = c1586 - c1578 + c1584;
+  const c866 = rect && c1578 > 0 && c621 < 0 ? Math.min(-c621, c1578) : 0;
+  const cTipo = c621 + c866;
+  const tipoDeclaracion: 'I' | 'N' | 'D' = cTipo > 0 ? 'I' : cTipo < 0 ? 'D' : 'N';
 
   if (bins === 0) advertencias.push('No se han indicado bases imponibles negativas de ejercicios anteriores: si las hay, indícalas para compensarlas ([00547]) y completa la página 15 en Sociedades WEB.');
   if (ret === 0 && pf.every((x) => x === 0)) advertencias.push('No se han indicado retenciones ni pagos fraccionados (modelo 202): si los hubo, indícalos ([01766], [00601], [00603] y [00605]).');
@@ -281,7 +300,12 @@ export function construirModelo200(e: Entrada200): Declaracion200 {
     // Marca de rectificativa, justificante de la anterior y motivo «Rectificaciones».
     if (!/^\d{13}$/.test(e.rectificativa.justificanteAnterior)) errores.push('La autoliquidación rectificativa del 200 necesita el número de justificante de la anterior (13 cifras).');
     else p1.crudo(149, '1').crudo(150, e.rectificativa.justificanteAnterior).crudo(163, '1');
-    advertencias.push('Autoliquidación rectificativa: completa en Sociedades WEB el resultado de la autoliquidación anterior y lo que corresponda a la rectificación.');
+    const txt = (n: number) => eur(n).toFixed(2).replace('.', ',');
+    advertencias.push(
+      c866 > 0
+        ? `Autoliquidación rectificativa: con la anterior se ingresaron ${txt(c1578)} € ([01578]). Ahora sale ${txt(c621)} € ([00621]): la AEAT devuelve ${txt(c866)} € por la rectificación ([00866]) a la cuenta de la empresa. Revísalo en Sociedades WEB antes de presentarla.`
+        : `Autoliquidación rectificativa: con la anterior se ingresaron ${txt(c1578)} € ([01578])${c1584 ? ` y la AEAT ya devolvió ${txt(c1584)} € ([01584])` : ''}. Ahora solo se ingresa la diferencia, ${txt(Math.max(0, c621))} € ([00621]). Revísalo en Sociedades WEB antes de presentarla.`,
+    );
   }
   p1.crudo(13, tipoDeclaracion)
     .texto(14, nif, false)
@@ -393,6 +417,7 @@ export function construirModelo200(e: Entrada200): Declaracion200 {
     .importe('00611', eur(c611))
     .importe('01586', eur(c1586))
     .importe('00621', eur(c621));
+  if (rect) p14b.importe('01578', eur(c1578)).importe('01584', eur(c1584)).importe('00866', eur(c866));
 
   // --- DID00: ingreso o devolución (la última página) ---
   const did = pag('DID00');
@@ -414,15 +439,16 @@ export function construirModelo200(e: Entrada200): Declaracion200 {
     .importe(156, eur(c1586))
     .importe(173, eur(c621));
   const iban = ibanAeat(e.iban) ?? '';
-  if (tipoDeclaracion === 'D') {
-    did.crudo(207, 'D').importe(208, eur(-c621));
+  const conCuenta = tipoDeclaracion === 'D' || c866 > 0;
+  if (tipoDeclaracion === 'D') did.crudo(207, 'D').importe(208, eur(-cTipo));
+  // Rectificativa: lo que se devuelve por la rectificación, por transferencia (campo 25).
+  if (c866 > 0) did.importe(225, eur(c866));
+  if (conCuenta) {
     if (iban) did.crudo(242, iban.startsWith('ES') ? '1' : '2').texto(243, iban, false);
     else advertencias.push('Sale a devolver y falta un IBAN válido de la empresa (Tesorería > Cuentas bancarias).');
-  } else if (tipoDeclaracion === 'I') {
-    did.crudo(425, 'I').importe(426, eur(c621));
-  } else {
-    did.crudo(562, '1');
   }
+  if (tipoDeclaracion === 'I') did.crudo(425, 'I').importe(426, eur(c621));
+  else if (tipoDeclaracion === 'N' && c866 === 0) did.crudo(562, '1');
 
   const orden: Array<[string, RegistroAeat]> = [
     ['01000', p1], ['01B00', p1b], ['03000', p3], ['04000', p4], ['05000', p5], ['06000', p6],
@@ -463,6 +489,9 @@ export function construirModelo200(e: Entrada200): Declaracion200 {
       pagosFraccionados: eur(pf[0] + pf[1] + pf[2]),
       cuotaDiferencial: eur(c611),
       resultado: eur(c621),
+      resultadoAnterior: eur(c1578),
+      devolucionAcordada: eur(c1584),
+      rectificacion: eur(c866),
       tipoDeclaracion,
       binsGeneradas: c552 < 0 ? eur(-c552) : 0,
     },
