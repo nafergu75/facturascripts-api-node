@@ -155,6 +155,18 @@ describe('B5: un «Marcar como presentado» rechazado no gasta número', () => {
   });
 });
 
+describe('B4: historial con quién la presentó y aviso con la fecha en DD/MM/AAAA', () => {
+  it('presentadoPorNombre es el email del usuario y el congelado dice la fecha como la lee la persona', async () => {
+    const u = await prisma.user.create({ data: { email: `presenta-${Date.now()}@ejemplo.com`, passwordHash: 'x' } });
+    const { presentarDeclaracion } = await import('../services/declaracionesAeat/presentar');
+    const h = await presentarDeclaracion(OTRA, u.id, '303', 2026, '4T', { numero: '3032026444444', fecha: '2027-01-20' });
+    expect(h.declaraciones[0]).toMatchObject({ presentadoPor: u.id, presentadoPorNombre: u.email, fechaPresentacion: '2027-01-20' });
+    const { avisoCongelada } = await import('../services/declaracionesAeat/declaraciones.service');
+    const ctx = await contextoDeclaracion(OTRA, '303', 2026, '4T');
+    expect(avisoCongelada(ctx.ultimaPresentada!)).toMatch(/justificante 3032026444444, 20\/01\/2027/);
+  });
+});
+
 describe('190: la lista de perceptores de la complementaria es de Nóminas', () => {
   it('sin nominas:read el historial no trae los perceptores (ni sus importes), y elegirlos pide nominas:write', async () => {
     const pres = await request(app()).post(ruta('/tax-models/190/presentado')).send({ ejercicio: 2026, periodo: '0A', justificante: { numero: '1902026111111', fecha: '2027-01-20' } });
