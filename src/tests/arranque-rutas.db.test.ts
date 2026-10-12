@@ -186,7 +186,8 @@ describe('rutas y permisos', () => {
     const sha = carga.ficheros[0].sha256;
     const q = await request(escritor).delete(`/arranque/2027/cargas/${carga.id}/ficheros/${sha}`);
     expect(q.status).toBe(200);
-    expect(datos(q).carga.ficheros).toEqual([]);
+    // Era el unico fichero: el borrador se borra (la pantalla vuelve al principio).
+    expect(datos(q)).toEqual({ carga: null, borrada: true });
     expect((await request(escritor).delete(`/arranque/2027/cargas/${carga.id}/ficheros/${sha}`)).status).toBe(404);
   });
 
