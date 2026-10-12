@@ -70,6 +70,14 @@ export interface Entrada390 {
    */
   deducibleIntraBienes?: DesgloseIva[];
   deducibleIntraServicios?: DesgloseIva[];
+  /**
+   * Modificación de bases y cuotas [29]/[30] (con signo): las rectificativas de
+   * venta y el autodevengo de las compras intracomunitarias anuladas, que el
+   * 303 declara en [14]/[15]. No van en las filas por tipo.
+   */
+  modificaciones?: { base: number; cuota: number };
+  /** Rectificación de deducciones [639]/[62] (con signo): las compras deducibles anuladas, [40]/[41] del 303. */
+  rectificacionDeducciones?: { base: number; cuota: number };
   /** IVA deducible de las compras interiores corrientes, por tipo. */
   deducibleInterior: DesgloseIva[];
   /** IVA deducible de las importaciones de bienes corrientes (DUA), por tipo. */
@@ -272,8 +280,11 @@ export function construirModelo390(e: Entrada390): Declaracion390 {
   const rg = porTipos(p2, e.devengado, DEVENGADO, 'IVA devengado', errores);
   const ib = porTipos(p2, e.adquisicionesIntraBienes, INTRA_BIENES_DEV, 'Adquisiciones intracomunitarias de bienes', errores);
   const is = porTipos(p2, e.adquisicionesIntraServicios, INTRA_SERV_DEV, 'Adquisiciones intracomunitarias de servicios', errores);
-  const base33 = rg.base + ib.base + is.base;
-  const cuota34 = rg.cuota + ib.cuota + is.cuota;
+  // [29]/[30]: modificación de bases y cuotas (campos N, con signo).
+  const mod = { base: cent(e.modificaciones?.base ?? 0), cuota: cent(e.modificaciones?.cuota ?? 0) };
+  if (mod.base !== 0 || mod.cuota !== 0) p2.importe('29', eur(mod.base)).importe('30', eur(mod.cuota));
+  const base33 = rg.base + ib.base + is.base + mod.base;
+  const cuota34 = rg.cuota + ib.cuota + is.cuota + mod.cuota;
   p2.importe('33', eur(base33)).importe('34', eur(cuota34));
 
   // --- Página 02B00: recargo de equivalencia (no aplica) y [47] ---
@@ -293,7 +304,10 @@ export function construirModelo390(e: Entrada390): Declaracion390 {
   const p4 = pag('04000');
   const dis = porTipos(p4, e.deducibleIntraServicios ?? e.adquisicionesIntraServicios, DED_INTRA_SERV, 'IVA deducible en adquisiciones intracomunitarias de servicios', errores);
   p4.importe('597', eur(dis.base)).importe('598', eur(dis.cuota));
-  const c64 = di.cuota + dimp.cuota + dib.cuota + dis.cuota; // [49]+[53]+[57]+[598] (el resto de sumandos va a cero)
+  // [639]/[62]: rectificación de deducciones (campos N, con signo).
+  const rd = { base: cent(e.rectificacionDeducciones?.base ?? 0), cuota: cent(e.rectificacionDeducciones?.cuota ?? 0) };
+  if (rd.base !== 0 || rd.cuota !== 0) p4.importe('639', eur(rd.base)).importe('62', eur(rd.cuota));
+  const c64 = di.cuota + dimp.cuota + dib.cuota + dis.cuota + rd.cuota; // [49]+[53]+[57]+[598]+[62] (el resto de sumandos va a cero)
   const c65 = cuota34 - c64; // [47] - [64]
   p4.importe('64', eur(c64)).importe('65', eur(c65));
 
