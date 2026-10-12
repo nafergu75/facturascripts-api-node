@@ -46,6 +46,31 @@ export function validarEjercicio(raw: unknown): number {
 export const ficherosDe = (c: { ficheros: Prisma.JsonValue }): FicheroGuardado[] => (Array.isArray(c.ficheros) ? (c.ficheros as unknown as FicheroGuardado[]) : []);
 export const ajustesDe = (c: { ajustes: Prisma.JsonValue | null }): AjustesCarga => (c.ajustes && typeof c.ajustes === 'object' ? (c.ajustes as AjustesCarga) : {});
 
+/**
+ * Firma de lo que se importa: los ficheros y los ajustes que salen de ellos
+ * (tipo de hoja, columnas, exclusiones, tipo de carga, motivo). La
+ * confirmacion la guarda y cada fase comprueba que no ha cambiado: nadie puede
+ * colar un fichero o un mapeo que el administrador no vio.
+ */
+export function firmaEntrada(c: { ficheros: Prisma.JsonValue; ajustes: Prisma.JsonValue | null }): string {
+  const { bancos: _b, datosFiscales: _d, resultadoDeclarado: _r, ...ajustes } = ajustesDe(c);
+  const ficheros = ficherosDe(c).map((f) => f.sha256).sort();
+  return createHash('sha256').update(JSON.stringify({ ficheros, ajustes })).digest('hex');
+}
+
+const TEXTO_YA_CONFIRMADA = 'Esta carga se ha confirmado o ha cambiado mientras tanto: vuelve a cargar la página.';
+
+/**
+ * Escribe en el borrador solo si sigue siendo el mismo borrador que se leyo
+ * (estado BORRADOR y sin cambios desde entonces): si otra persona lo ha
+ * confirmado o ha subido otro fichero entre medias, 409 y no se pisa nada.
+ */
+async function escribirBorrador(c: CargaFila, data: Prisma.CargaArranqueUpdateManyMutationInput): Promise<CargaFila> {
+  const r = await prisma.cargaArranque.updateMany({ where: { id: c.id, estado: 'BORRADOR', updatedAt: c.updatedAt }, data });
+  if (r.count !== 1) throw conflict(TEXTO_YA_CONFIRMADA, { codigo: 'CARGA_CAMBIADA' });
+  return prisma.cargaArranque.findUniqueOrThrow({ where: { id: c.id } });
+}
+
 /** Importe escrito a mano (admite coma decimal); null si viene vacio. */
 function importeManual(v: unknown, texto: string, campo: string): number | null {
   if (v === undefined || v === null || v === '') return null;
@@ -223,9 +248,12 @@ const cargaPublica = (c: CargaFila): RespuestaCarga['carga'] => ({
 
 async function guardarAnalisis(c: CargaFila, a: AnalisisCarga, userId: string): Promise<{ carga: CargaFila; vista: VistaCarga }> {
   const vista = vistaDe(a);
-  const carga = await prisma.cargaArranque.update({
-    where: { id: c.id },
-    data: { huella: a.huella, tipo: a.tipoCarga, resumen: { vista, analizadaEn: new Date().toISOString() } as unknown as Prisma.InputJsonValue },
+  // Solo si sigue siendo el borrador analizado; se mezcla con el resumen que tenga (no se pisa).
+  const resumen = c.resumen && typeof c.resumen === 'object' && !Array.isArray(c.resumen) ? (c.resumen as Record<string, unknown>) : {};
+  const carga = await escribirBorrador(c, {
+    huella: a.huella,
+    tipo: a.tipoCarga,
+    resumen: { ...resumen, vista, analizadaEn: new Date().toISOString() } as unknown as Prisma.InputJsonValue,
   });
   await registrarAuditoria({
     userId,
@@ -276,11 +304,8 @@ export async function subirYAnalizar(
     await putObject(clave, f.contenido);
     ficheros.push({ nombre: f.nombre.slice(0, 200), sha256: sha, tamano: f.contenido.length, clave });
   }
-  c = await prisma.cargaArranque.update({
-    where: { id: c.id },
-    data: { ficheros: ficheros as unknown as Prisma.InputJsonValue, ajustes: limpiarAjustes(ajustesRaw, ajustesDe(c)) as unknown as Prisma.InputJsonValue },
-  });
   if (!ficheros.length) throw badRequest('Sube al menos un fichero de la gestoría.');
+  c = await escribirBorrador(c, { ficheros: ficheros as unknown as Prisma.InputJsonValue, ajustes: limpiarAjustes(ajustesRaw, ajustesDe(c)) as unknown as Prisma.InputJsonValue });
   const a = await analizarCargaGuardada(c, permisos);
   const r = await guardarAnalisis(c, a, userId);
   return { carga: cargaPublica(r.carga), vista: r.vista, avisos };
@@ -292,15 +317,19 @@ export async function reanalizar(companyId: string, ejercicioRaw: unknown, carga
   let c = await cargaDeEmpresa(companyId, ejercicio, cargaId);
   if (c.estado !== 'BORRADOR') throw conflict('Esta carga ya está confirmada: para cambiarla, sube los ficheros en una carga nueva.');
   const ajustes = limpiarAjustes(ajustesRaw, ajustesDe(c));
-  c = await prisma.cargaArranque.update({ where: { id: c.id }, data: { ajustes: ajustes as unknown as Prisma.InputJsonValue } });
   if (!ficherosDe(c).length) throw badRequest('Sube al menos un fichero de la gestoría.');
+  c = await escribirBorrador(c, { ajustes: ajustes as unknown as Prisma.InputJsonValue });
   const a = await analizarCargaGuardada(c, permisos);
   const r = await guardarAnalisis(c, a, userId);
   return { carga: cargaPublica(r.carga), vista: r.vista, avisos: [] };
 }
 
-/** Quita un fichero del borrador. */
-export async function quitarFichero(companyId: string, ejercicioRaw: unknown, cargaId: string, sha: string): Promise<{ carga: RespuestaCarga['carga'] }> {
+/**
+ * Quita un fichero del borrador. Si era el ultimo, el borrador se borra: la
+ * pantalla vuelve al principio (qué pedir a la gestoría y dónde soltar los
+ * ficheros) en vez de quedarse con un borrador vacío sin sitio para subir.
+ */
+export async function quitarFichero(companyId: string, ejercicioRaw: unknown, cargaId: string, sha: string): Promise<{ carga: RespuestaCarga['carga'] | null; borrada: boolean }> {
   const ejercicio = validarEjercicio(ejercicioRaw);
   const c = await cargaDeEmpresa(companyId, ejercicio, cargaId);
   if (c.estado !== 'BORRADOR') throw conflict('Esta carga ya está confirmada: sus ficheros no se pueden quitar.');
@@ -310,12 +339,15 @@ export async function quitarFichero(companyId: string, ejercicioRaw: unknown, ca
   const quedan = ficheros.filter((x) => x.sha256 !== sha);
   const ajustes = ajustesDe(c);
   if (ajustes.hojas) for (const k of Object.keys(ajustes.hojas)) if (k.startsWith(sha.slice(0, 12))) delete ajustes.hojas[k];
-  const r = await prisma.cargaArranque.update({
-    where: { id: c.id },
-    data: { ficheros: quedan as unknown as Prisma.InputJsonValue, ajustes: ajustes as unknown as Prisma.InputJsonValue, huella: null, resumen: Prisma.DbNull },
-  });
+  if (!quedan.length) {
+    const r = await prisma.cargaArranque.deleteMany({ where: { id: c.id, estado: 'BORRADOR', updatedAt: c.updatedAt } });
+    if (r.count !== 1) throw conflict(TEXTO_YA_CONFIRMADA, { codigo: 'CARGA_CAMBIADA' });
+    await deleteObjects([f.clave]).catch(() => undefined);
+    return { carga: null, borrada: true };
+  }
+  const r = await escribirBorrador(c, { ficheros: quedan as unknown as Prisma.InputJsonValue, ajustes: ajustes as unknown as Prisma.InputJsonValue, huella: null, resumen: Prisma.DbNull });
   await deleteObjects([f.clave]).catch(() => undefined);
-  return { carga: cargaPublica(r) };
+  return { carga: cargaPublica(r), borrada: false };
 }
 
 /** Estado del apartado: carga vigente, borrador, la que se esta importando y el historial de versiones. */
