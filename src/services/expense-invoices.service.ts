@@ -31,7 +31,8 @@ import {
   type PlanRectificativa,
 } from './rectificativasGasto.service';
 import { asegurarPlanContableEmpresa } from './chart-of-accounts.service';
-import { tieneCobrosActivos } from './cobrosPagos.service';
+import { aplicadoPorFactura, tieneCobrosActivos } from './cobrosPagos.service';
+import { anularCompensacionesAuto, comprobarCompensaciones, compensacionesDe, crearCompensacionesAuto, type CompensacionResp } from './compensacionesGasto.service';
 import { comprobarFechaAbierta, periodoNoAbierto } from './periodos.service';
 import { archivarGastoSinRomper } from './archivoFacturas.service';
 import { perfilEmpresa } from './perfilEmpresa.service';
@@ -167,6 +168,12 @@ export interface GastoDetalle extends ExpenseInvoiceResp {
   facturaOriginalId: string | null;
   /** Avisos del alta o la correccion que no la impiden. */
   avisos?: string[];
+  /** Aplicaciones del abono a otras facturas, o de abonos a esta factura. */
+  compensaciones: CompensacionResp[];
+  /** Pendiente con signo (total - pagos - compensaciones): en un abono, lo que queda a tu favor en negativo. */
+  pendiente: number;
+  /** Solo en los abonos: lo que queda a favor de la empresa (en positivo). */
+  aFavor?: number;
 }
 
 export interface FiltrosGastos {
@@ -175,6 +182,8 @@ export interface FiltrosGastos {
   q?: unknown;
   estado?: unknown;
   pago?: unknown;
+  /** facturas | abonos (abonos y rectificativas). */
+  tipo?: unknown;
   supplierId?: unknown;
   desde?: unknown;
   hasta?: unknown;
@@ -202,13 +211,35 @@ export interface ListadoGastos {
     retencionTotal: number;
     totalFactura: number;
     importePendiente: number;
+    esRectificativa: boolean;
+    /** Abono (total < 0). */
+    esAbono: boolean;
   }>;
   total: number;
   page: number;
   limit: number;
   paginas: number;
-  contadores: { todas: number; sinContabilizar: number; pendientesRevision: number; contabilizadas: number; anuladas: number; pendientesPago: number; vencidas: number };
-  totales: { base: number; iva: number; retencion: number; total: number; pendiente: number };
+  contadores: {
+    todas: number;
+    sinContabilizar: number;
+    pendientesRevision: number;
+    contabilizadas: number;
+    anuladas: number;
+    pendientesPago: number;
+    vencidas: number;
+    /** Abonos con algo a favor de la empresa. */
+    abonosAFavor: number;
+  };
+  totales: {
+    base: number;
+    iva: number;
+    retencion: number;
+    total: number;
+    /** Pendiente de pago de las facturas (sin los abonos). */
+    pendiente: number;
+    /** Suma de lo que queda a favor en los abonos (en positivo). */
+    aFavor: number;
+  };
   monedaCuenta: string;
 }
 
@@ -702,8 +733,9 @@ export async function cuentaAcreedorDePagos(companyId: string, invoiceId: string
   });
   const ids = pagos.map((p) => p.journalEntryId).filter((x): x is string => !!x);
   if (!ids.length) return null;
+  // Por la cuenta, sin mirar el lado (la devolucion de un abono lleva el proveedor al haber).
   const lineas = await prisma.journalEntryLine.findMany({
-    where: { companyId, entryId: { in: ids }, debe: { gt: 0 } },
+    where: { companyId, entryId: { in: ids } },
     select: { accountCode: true },
   });
   return lineas.find((l) => /^4[01]/.test(l.accountCode))?.accountCode ?? null;
@@ -747,25 +779,18 @@ async function borrarLibrosDeAsiento(tx: TransaccionBD, companyId: string, asien
   await tx.retentionBook.deleteMany({ where: { companyId, asientoId } });
 }
 
-/** Lo pagado (pagos activos) y cuantos pagos activos tiene una factura. */
+/** Lo aplicado (pagos, devoluciones y compensaciones activos) y cuantos pagos activos tiene una factura. */
 async function pagosDe(companyId: string, invoiceId: string): Promise<{ pagado: number; activos: number }> {
-  const r = await prisma.invoicePayment.aggregate({
-    where: { companyId, invoiceType: 'GASTO', invoiceId, estado: 'ACTIVO' },
-    _sum: { importe: true },
-    _count: { _all: true },
-  });
-  return { pagado: round2(Number(r._sum.importe ?? 0)), activos: r._count._all };
+  const [aplicado, activos] = await Promise.all([
+    aplicadoPorFactura(companyId, [invoiceId]),
+    prisma.invoicePayment.count({ where: { companyId, invoiceType: 'GASTO', invoiceId, estado: 'ACTIVO' } }),
+  ]);
+  return { pagado: round2(aplicado.get(invoiceId) ?? 0), activos };
 }
 
-/** Lo pagado por factura (pagos activos) de un conjunto de facturas. */
+/** Lo aplicado por factura (pagos, devoluciones y compensaciones activos) de un conjunto de facturas. */
 async function pagadoPorFacturas(companyId: string, ids: string[]): Promise<Map<string, number>> {
-  if (!ids.length) return new Map();
-  const filas = await prisma.invoicePayment.groupBy({
-    by: ['invoiceId'],
-    where: { companyId, invoiceType: 'GASTO', estado: 'ACTIVO', invoiceId: { in: ids } },
-    _sum: { importe: true },
-  });
-  return new Map(filas.map((r) => [r.invoiceId, round2(Number(r._sum.importe ?? 0))]));
+  return aplicadoPorFactura(companyId, ids);
 }
 
 const mensajeConPagos = 'La factura tiene pagos registrados: anúlalos antes de modificarla.';
@@ -911,6 +936,8 @@ export async function registrarGasto(companyId: string, cuerpo: unknown, opcione
         if (rect) await guardarEnlaces(tx, companyId, f.id, rect.enlaces);
         const datos = await datosContablesGastoConSubcuenta(tx, companyId, f, supplier, { estadoAsiento: opciones.contabilizar, ...extraRectificativa(rect) });
         const { asientoId } = await contabilizarFacturaGasto(companyId, f.id, datos, tx);
+        // Un abono en firme resta de lo pendiente de su original (las del lector, al aprobar el asiento).
+        if (rect && opciones.contabilizar === 'POSTED') await crearCompensacionesAuto(tx, companyId, f.id, { fuera: rect.compensarFuera, userId: opciones.userId });
         return { id: f.id, asientoId, supplierId: supplier.id };
       }, OPCIONES_TX);
     } catch (e) {
@@ -1133,6 +1160,8 @@ export async function editarGasto(
       [totalFactura, actual.totalFactura],
     ].some(([a, b]) => aCentimos(Number(a)) !== aCentimos(Number(b)));
   if (cambiaImportes) await comprobarSinRectificativas(companyId, id, 'corregir');
+  // Lo compensado con abonos cuenta como pagado: el total no puede bajar de ahi; un abono aplicado a mano no se corrige.
+  await comprobarCompensaciones(prisma, companyId, id, { totalNuevo: totalFactura });
   await comprobarCuentas(companyId, v, lineas.map((l) => l.accountCode));
   await comprobarCuentasNomina(companyId, v, lineas.map((l) => l.accountCode));
   const numeroActivo = normalizarNumeroProveedor(v.numeroFacturaProveedor);
@@ -1191,6 +1220,8 @@ export async function editarGasto(
       await borrarLibrosDeAsiento(tx, companyId, asiento.id);
       if (asiento.estado === 'POSTED') {
         await tx.journalEntry.update({ where: { id: asiento.id }, data: { estado: 'REVERSED' } });
+        // Las compensaciones AUTO de un abono se rehacen con sus importes nuevos (despues del asiento).
+        if (actual.esRectificativa) await anularCompensacionesAuto(tx, companyId, id);
         const previos = await tx.journalEntry.count({ where: { companyId, invoiceId: id, origen: 'FACTURA_GASTO' } });
         // Con el proveedor o el tipo de gasto nuevos: su subcuenta (400N o 410N).
         const nuevo = await contabilizarFacturaGasto(
@@ -1203,6 +1234,7 @@ export async function editarGasto(
           }),
           tx,
         );
+        if (rect) await crearCompensacionesAuto(tx, companyId, id, { fuera: rect.compensarFuera, userId: ctx.userId });
         return { asientoNuevo: nuevo.asientoId, supplierId: supplier.id };
       }
       // Borrador (o pendiente de revisar): se rehace con el mismo numero y estado.
@@ -1254,6 +1286,7 @@ export async function anularGasto(
   if (f.estado === 'ANULADA') throw conflict('La factura ya está anulada.');
   if (await tieneCobrosActivos(companyId, 'GASTO', id)) throw conflict('La factura tiene pagos registrados: anúlalos antes de anularla.');
   await comprobarSinRectificativas(companyId, id, 'anular');
+  await comprobarCompensaciones(prisma, companyId, id);
 
   const motivo = typeof datos.motivo === 'string' ? datos.motivo.trim() : '';
   if (motivo.length < 3) throw badRequest('Indica el motivo de la anulación.', { campo: 'motivo' });
@@ -1289,6 +1322,8 @@ export async function anularGasto(
     await bloquearSinCambios(tx, companyId, id, f, asiento, 'La factura tiene pagos registrados: anúlalos antes de anularla.');
 
     let contra: string | null = null;
+    // Las compensaciones AUTO del abono se anulan con el (lo que restaba de su original vuelve a estar pendiente).
+    if (f.esRectificativa) await anularCompensacionesAuto(tx, companyId, id, conContraasiento ? fechaAnulacion : hoyEspana());
     if (asiento && !conContraasiento) {
       await borrarLibrosDeAsiento(tx, companyId, asiento.id);
       await tx.journalEntry.update({ where: { id: asiento.id }, data: { estado: 'REVERSED' } });
@@ -1400,7 +1435,14 @@ async function obtenerDetalle(companyId: string, id: string): Promise<GastoDetal
   });
   if (!f) throw notFound('Factura de gasto no encontrada.');
 
-  const [{ pagado, activos }, perfil, rect] = await Promise.all([pagosDe(companyId, id), perfilEmpresa(companyId), datosRectificativaDeFicha(companyId, f)]);
+  const [{ pagado, activos }, perfil, rect, compensaciones] = await Promise.all([
+    pagosDe(companyId, id),
+    perfilEmpresa(companyId),
+    datosRectificativaDeFicha(companyId, f),
+    compensacionesDe(companyId, id),
+  ]);
+  const pendiente = f.estado === 'ANULADA' ? 0 : round2(Number(f.totalFactura) - pagado);
+  const esAbono = aCentimos(Number(f.totalFactura)) < 0;
   // En una anulada se ensena el asiento original (aunque este REVERSED); el contraasiento va en `anulacion`.
   const asiento =
     f.estado === 'ANULADA'
@@ -1473,7 +1515,10 @@ async function obtenerDetalle(companyId: string, id: string): Promise<GastoDetal
     retencionTotal: f.retencionTotal,
     totalFactura: f.totalFactura,
     importePagado: pagado,
-    importePendiente: f.estado === 'ANULADA' ? 0 : round2(Number(f.totalFactura) - pagado),
+    importePendiente: pendiente,
+    pendiente,
+    ...(esAbono ? { aFavor: round2(-pendiente) || 0 } : {}),
+    compensaciones,
     observaciones: f.observaciones ?? undefined,
     monedaCuenta: perfil.monedaCuenta,
     supplier: { id: f.supplier.id, nombreFiscal: f.supplier.nombreFiscal, nifCif: f.supplier.nifCif, pais: f.supplier.pais },
@@ -1500,12 +1545,14 @@ const ESTADOS_FILTRO: Record<string, Prisma.ExpenseInvoiceWhereInput> = {
 };
 
 function filtroPago(pago: string, hoy: string): Prisma.ExpenseInvoiceWhereInput {
-  const noAnulada = { estado: { not: 'ANULADA' } };
+  // Los abonos (total < 0) no se pagan ni vencen: tienen su propio filtro (tipo=abonos).
+  const noAnulada = { estado: { not: 'ANULADA' }, totalFactura: { gte: 0 } };
   if (pago === 'pendiente') return { ...noAnulada, estadoPago: 'PENDIENTE' };
   // Lo que cuenta el contador «Pendientes de pago»: sin pagar del todo (pendientes y pagadas en parte).
   if (pago === 'por_pagar') return { ...noAnulada, estadoPago: { not: 'PAGADA' } };
   if (pago === 'parcial') return { ...noAnulada, estadoPago: 'PARCIAL' };
-  if (pago === 'pagada') return { estadoPago: 'PAGADA' };
+  if (pago === 'pagada') return { estadoPago: 'PAGADA', totalFactura: { gte: 0 } };
+  if (pago === 'a_favor') return { estado: { not: 'ANULADA' }, totalFactura: { lt: 0 }, estadoPago: { not: 'PAGADA' } };
   return { ...noAnulada, estadoPago: { not: 'PAGADA' }, fechaVencimiento: { lt: hoy } }; // vencida
 }
 
@@ -1521,11 +1568,15 @@ async function listarGastos(companyId: string, filtros: FiltrosGastos = {}): Pro
   const q = texto(filtros.q);
   const estado = texto(filtros.estado);
   const pago = texto(filtros.pago);
+  const tipo = texto(filtros.tipo);
   const supplierId = texto(filtros.supplierId);
   const desde = texto(filtros.desde);
   const hasta = texto(filtros.hasta);
   if (estado && !ESTADOS_FILTRO[estado]) throw badRequest('Estado no válido: usa sin_contabilizar, pendiente_revision, contabilizada o anulada.');
-  if (pago && !['pendiente', 'parcial', 'por_pagar', 'pagada', 'vencida'].includes(pago)) throw badRequest('Filtro de pago no válido: usa pendiente, parcial, por_pagar, pagada o vencida.');
+  if (pago && !['pendiente', 'parcial', 'por_pagar', 'pagada', 'vencida', 'a_favor'].includes(pago)) {
+    throw badRequest('Filtro de pago no válido: usa pendiente, parcial, por_pagar, pagada, vencida o a_favor.');
+  }
+  if (tipo && !['facturas', 'abonos'].includes(tipo)) throw badRequest('Tipo no válido: usa facturas o abonos.');
   for (const [nombre, f] of [['desde', desde], ['hasta', hasta]] as const) {
     if (f && !/^\d{4}-\d{2}-\d{2}$/.test(f)) throw badRequest(`La fecha «${nombre}» tiene que ser AAAA-MM-DD.`);
     if (f && !esFechaReal(f)) throw badRequest(`La fecha «${nombre}» no existe.`);
@@ -1534,6 +1585,7 @@ async function listarGastos(companyId: string, filtros: FiltrosGastos = {}): Pro
   const hoy = hoyEspana();
   const comunes: Prisma.ExpenseInvoiceWhereInput[] = [{ companyId }];
   if (supplierId) comunes.push({ supplierId });
+  if (tipo) comunes.push({ esRectificativa: tipo === 'abonos' });
   if (q) {
     comunes.push({
       OR: [
@@ -1554,7 +1606,7 @@ async function listarGastos(companyId: string, filtros: FiltrosGastos = {}): Pro
   };
   const sinAnuladas: Prisma.ExpenseInvoiceWhereInput = { AND: [where, { estado: { not: 'ANULADA' } }] };
 
-  const [items, total, porEstado, pendientesPago, vencidas, suma, idsFiltrados, perfil] = await Promise.all([
+  const [items, total, porEstado, pendientesPago, vencidas, suma, idsFiltrados, perfil, abonosAFavor] = await Promise.all([
     prisma.expenseInvoice.findMany({
       where,
       include: { supplier: { select: { id: true, nombreFiscal: true, nifCif: true } } },
@@ -1567,14 +1619,18 @@ async function listarGastos(companyId: string, filtros: FiltrosGastos = {}): Pro
     prisma.expenseInvoice.count({ where: { AND: [whereBase, filtroPago('por_pagar', hoy)] } }),
     prisma.expenseInvoice.count({ where: { AND: [whereBase, filtroPago('vencida', hoy)] } }),
     prisma.expenseInvoice.aggregate({ where: sinAnuladas, _sum: { baseTotal: true, ivaTotal: true, retencionTotal: true, totalFactura: true } }),
-    prisma.expenseInvoice.findMany({ where: sinAnuladas, select: { id: true } }),
+    prisma.expenseInvoice.findMany({ where: sinAnuladas, select: { id: true, totalFactura: true } }),
     perfilEmpresa(companyId),
+    prisma.expenseInvoice.count({ where: { AND: [whereBase, filtroPago('a_favor', hoy)] } }),
   ]);
 
   const pagado = await pagadoPorFacturas(companyId, [...new Set([...items.map((f) => f.id), ...idsFiltrados.map((f) => f.id)])]);
   const cuenta = (estados: string[]) => porEstado.filter((g) => estados.includes(g.estado)).reduce((a, g) => a + g._count._all, 0);
   const totalFiltrado = round2(Number(suma._sum.totalFactura ?? 0));
-  const pagadoFiltrado = idsFiltrados.reduce((a, f) => a + aCentimos(pagado.get(f.id) ?? 0), 0) / 100;
+  // Pendiente de pago (sin los abonos) y a favor (los abonos), por separado.
+  const pendienteDe = (f: { id: string; totalFactura: number }) => aCentimos(Number(f.totalFactura)) - aCentimos(pagado.get(f.id) ?? 0);
+  const pendienteFiltrado = idsFiltrados.filter((f) => aCentimos(Number(f.totalFactura)) >= 0).reduce((a, f) => a + pendienteDe(f), 0) / 100;
+  const aFavorFiltrado = -idsFiltrados.filter((f) => aCentimos(Number(f.totalFactura)) < 0).reduce((a, f) => a + pendienteDe(f), 0) / 100;
 
   return {
     items: items.map((f) => {
@@ -1601,6 +1657,8 @@ async function listarGastos(companyId: string, filtros: FiltrosGastos = {}): Pro
         retencionTotal: f.retencionTotal,
         totalFactura: f.totalFactura,
         importePendiente: f.estado === 'ANULADA' ? 0 : round2(Number(f.totalFactura) - (pagado.get(f.id) ?? 0)),
+        esRectificativa: f.esRectificativa,
+        esAbono: aCentimos(Number(f.totalFactura)) < 0,
       };
     }),
     total,
@@ -1615,13 +1673,15 @@ async function listarGastos(companyId: string, filtros: FiltrosGastos = {}): Pro
       anuladas: cuenta(['ANULADA']),
       pendientesPago,
       vencidas,
+      abonosAFavor,
     },
     totales: {
       base: round2(Number(suma._sum.baseTotal ?? 0)),
       iva: round2(Number(suma._sum.ivaTotal ?? 0)),
       retencion: round2(Number(suma._sum.retencionTotal ?? 0)),
       total: totalFiltrado,
-      pendiente: round2(totalFiltrado - pagadoFiltrado),
+      pendiente: round2(pendienteFiltrado),
+      aFavor: round2(aFavorFiltrado),
     },
     monedaCuenta: perfil.monedaCuenta,
   };
