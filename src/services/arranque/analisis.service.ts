@@ -24,6 +24,7 @@ import type { ActivoLeido, PartidaLeida } from './extractores';
 import { analizarDiario, saldosDesdeDiario, type AnalisisDiario } from './historico';
 import { analizarSaldos, saldosDeLineas, type AnalisisSaldos, type LineaApertura } from './saldos';
 import { puntosVivos } from './vivas.service';
+import { analizarRepeticion, type AnalisisRepeticion } from './definitiva';
 
 /** Ejercicio de destino de la carga (por ahora solo 2027) y el que se trae. */
 export const EJERCICIO_ARRANQUE = 2027;
@@ -66,6 +67,8 @@ export interface AnalisisCarga {
   cargaVigente: { id: string; version: number } | null;
   /** Bancos (572) de la apertura con el saldo del extracto escrito a mano y su cuenta de Tesoreria. */
   bancos: BancoComprobar[] | null;
+  /** Frente a la carga vigente: modo de la apertura, diferencias y lo que se mantiene. */
+  repeticion: AnalisisRepeticion;
   comprobaciones: ResultadoComprobaciones;
   erroresEstado: string[];
   huella: string;
@@ -306,9 +309,6 @@ export async function analizarCarga(
       sustituye: ctx.aperturas.map((a) => ({ id: a.id, numero: a.numeroAsiento })),
       eneroNoAbierto: !!ctx.eneroPeriodo && ctx.eneroPeriodo.estado !== 'abierto',
     };
-    if (apertura.eneroNoAbierto) {
-      erroresEstado.push(`Enero de ${ejercicio} está bloqueado: la apertura del 1-1-${ejercicio} no se puede poner ni cambiar. Desbloquéalo en Configuración > Ejercicios y periodos.`);
-    }
   }
 
   // 9. D1: 2026 pasa a llevado fuera si la carga trae sumas y saldos o diario. Asientos de 2026 de la app que se retiran.
@@ -322,14 +322,19 @@ export async function analizarCarga(
     });
     for (const g of grupos) retirados[g.origen] = g._count._all;
   }
-  if (ctx.vigente) {
-    // Repetir la carga: las partidas de la vigente se anulan; si ya tienen cobros o pagos, no.
-    const partidas = await prisma.partidaPendiente.findMany({ where: { companyId, cargaId: ctx.vigente.id, estado: { not: 'ANULADA' } }, select: { id: true } });
-    const conCobros = partidas.length
-      ? await prisma.invoicePayment.count({ where: { companyId, invoiceType: 'PARTIDA', estado: 'ACTIVO', invoiceId: { in: partidas.map((p) => p.id) } } })
-      : 0;
-    if (conCobros) erroresEstado.push(`La carga vigente (versión ${ctx.vigente.version}) ya tiene cobros o pagos de 2027 sobre sus facturas pendientes: no se puede sustituir.`);
-  }
+  // Repetir la carga (otra provisional o la definitiva): que cambia y como se aplica.
+  const repeticion = await analizarRepeticion({
+    companyId,
+    ejercicio,
+    vigente: ctx.vigente,
+    apertura: apertura?.lineas ?? null,
+    hayAperturaPrevia: ctx.aperturas.length > 0,
+    eneroNoAbierto: apertura?.eneroNoAbierto ?? false,
+    motivoAjuste: ajustes.motivoAjuste ?? null,
+    partidas: datos.cartera && cartera ? [...cartera.partidas, ...cartera.sinDetalle] : null,
+    activos: inmovilizado && !inmovilizadoFuera ? inmovilizado.activos : null,
+  });
+  erroresEstado.push(...repeticion.errores);
 
   // Cuentas de Tesoreria elegidas a mano para cada 572: tienen que ser de la empresa y de esa subcuenta.
   const elegidas = Object.entries(ajustes.bancos ?? {}).filter(([, b]) => b.bankAccountId);
@@ -406,6 +411,7 @@ export async function analizarCarga(
     retirados,
     cargaVigente: ctx.vigente,
     bancos: vivos.bancos,
+    repeticion,
     comprobaciones,
     erroresEstado,
   };
@@ -433,6 +439,7 @@ function huellaDe(a: Omit<AnalisisCarga, 'huella'>, ajustes: AjustesCarga): stri
     llevanza: a.marcaLlevanzaExterna,
     retirados: a.retirados,
     vigente: a.cargaVigente?.id ?? null,
+    repeticion: [a.repeticion.modo, a.repeticion.partidasMantenidas.map((p) => p.id), a.repeticion.activosMantenidos.map((x) => x.id)],
     nivel: a.comprobaciones.nivel,
     puntos: a.comprobaciones.puntos.map((p) => [p.clave, p.nivel]),
   };
@@ -495,6 +502,16 @@ export interface VistaCarga {
   sustituyeVersion: number | null;
   /** Bancos de la apertura: saldo contable, extracto escrito y cuenta de Tesoreria. */
   bancos: BancoComprobar[] | null;
+  /** Frente a la carga vigente (otra provisional o la definitiva). */
+  repeticion: {
+    modo: AnalisisRepeticion['modo'];
+    textoModo: string;
+    /** Subcuentas que cambian (como mucho 500), con el filtro «solo diferencias» ya hecho. */
+    diferencias: AnalisisRepeticion['comparacion'];
+    totalDiferencias: number;
+    partidasQueSiguen: number;
+    activosQueSiguen: number;
+  } | null;
   datosFiscales: AjustesCarga['datosFiscales'] | null;
   comprobaciones: ResultadoComprobaciones;
   /** Frase del dialogo de confirmacion. */
@@ -578,6 +595,21 @@ export function vistaDe(a: AnalisisCarga): VistaCarga {
     retirados: a.retirados,
     sustituyeVersion: a.cargaVigente?.version ?? null,
     bancos: a.bancos,
+    repeticion: a.cargaVigente
+      ? {
+          modo: a.repeticion.modo,
+          textoModo:
+            a.repeticion.modo === 'COMPLEMENTARIO'
+              ? `Enero de ${a.ejercicio} está bloqueado: la apertura no se toca y las diferencias van en un asiento de ajuste del 1-1-${a.ejercicio}.`
+              : a.repeticion.modo === 'REEMPLAZAR'
+                ? `La apertura del 1-1-${a.ejercicio} se sustituye por la nueva.`
+                : `Se pone la apertura del 1-1-${a.ejercicio}.`,
+          diferencias: a.repeticion.comparacion.slice(0, 500),
+          totalDiferencias: a.repeticion.comparacion.length,
+          partidasQueSiguen: a.repeticion.partidasMantenidas.length,
+          activosQueSiguen: a.repeticion.activosMantenidos.length,
+        }
+      : null,
     datosFiscales: a.ajustes.datosFiscales ?? null,
     comprobaciones: a.comprobaciones,
     confirmacion: `Se crearán ${lista}. Podrás deshacerlo mientras no haya cobros ni pagos de ${a.ejercicio} sobre estos datos.`,
