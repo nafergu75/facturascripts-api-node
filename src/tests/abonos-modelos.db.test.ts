@@ -26,7 +26,9 @@ import { calcularBorrador349 } from '../services/borradoresAeat/borrador349.serv
 import { calcularBorrador180 } from '../services/borradoresAeat/borrador180.service';
 import { guardarOpciones } from '../services/borradoresAeat/comun';
 import { crearInmueble } from '../services/borradoresAeat/inmuebles.service';
-import { periodoFiscal } from '../services/nominas/fiscal';
+import { calcularModelo190, periodoFiscal } from '../services/nominas/fiscal';
+import { casillasDeDatos111, construirDeclaracion, ficheroDeclaracion } from '../services/aeatRetenciones/declaracion';
+import { erroresFichero190 } from '../services/nominas/modelo190';
 import { aCentimos } from '../utils/money';
 import { controlCif, letraDni } from '../utils/nif';
 
@@ -280,9 +282,62 @@ describe('111, 115, 180 y 190 con la retención de un abono (decisión P1)', () 
     expect(abono.inmuebleArrendadoId).toBe(original.inmuebleArrendadoId);
   });
 
+  it('111 del 2T: el fichero sale con [09] a cero, sin el error de casillas negativas', async () => {
+    const m = await calcularModelo111(E, periodoFiscal(2027, '2T'));
+    const legal = await prisma.legalConfig.findUniqueOrThrow({ where: { companyId: E } });
+    const d = construirDeclaracion('111', { nif: legal.nif, denominacion: legal.denominacion, ejercicio: 2027, periodo: '2T', casillas: casillasDeDatos111(m) });
+    expect(d.errores).toEqual([]);
+    expect(d.casillas).toMatchObject({ '07': 1, '08': 0, '09': 0 });
+    expect(() => ficheroDeclaracion(d)).not.toThrow();
+  });
+
+  it('190: el profesional se netea en el año; el que solo tiene abonos sale en negativo con su aviso, y el fichero no se genera', async () => {
+    const ruiz = (await proveedoresService.create(E, { nombreFiscal: 'Ruiz Mora Pedro', nifCif: dni(), cp: '46010' })).id;
+    await gasto(E, ruiz, 'RZ-1R', '2027-10-10', [lin(-500, { tipoRetencion: 15 })], {
+      tipoGasto: 'SERVICIO_PROFESIONAL',
+      ...rect('ANULACION_PRECIO', [{ numero: 'RZ-2026/3', fecha: '2026-12-01' }]),
+    });
+    const m = await calcularModelo190(E, 2027);
+    const asesorNif = (await prisma.supplier.findUniqueOrThrow({ where: { id: asesor } })).nifCif;
+    // Factura y abono del mismo año: se netean a cero (si sale, sale a cero).
+    const a = m.perceptores.find((p) => p.nif === asesorNif);
+    expect(a ? [a.percepcionIntegra, a.retenciones] : [0, 0]).toEqual([0, 0]);
+    expect(m.perceptores.find((p) => p.nombre === 'Ruiz Mora Pedro')).toMatchObject({ percepcionIntegra: -500, retenciones: -75 });
+    expect(m.avisos).toContainEqual(
+      'Ruiz Mora Pedro sale con importes negativos en 2027 (sus abonos superan lo facturado): no se puede declarar así en el 190. Revisa sus facturas y abonos del año o consúltalo con tu asesor.',
+    );
+    // El resumen de datos que faltan no lo mezcla con el código postal.
+    expect(m.avisos.filter((a) => a.includes('les faltan datos') && a.includes('negativo'))).toEqual([]);
+    const errores = erroresFichero190({ nif: 'B00000000', nombre: 'Abonos ret SL', numeroDeclaracion: '1900000000001' }, m.perceptores);
+    expect(errores).toContainEqual(expect.stringMatching(/^Ruiz Mora Pedro: las retenciones, los ingresos a cuenta y los gastos no pueden ser negativos/i));
+  });
+
+  it('180: un arrendador con más abonos que facturas en el año es error', async () => {
+    const casero2 = (await proveedoresService.create(E, { nombreFiscal: 'López Sanz Rosa', nifCif: dni(), cp: '46003' })).id;
+    await crearInmueble(E, {
+      supplierId: casero2,
+      referenciaCatastral: '1234567YJ2713S0001AB',
+      tipoVia: 'AV',
+      nombreVia: 'Puerto',
+      numeroCasa: '3',
+      municipio: 'València',
+      codigoMunicipio: '46250',
+      codigoPostal: '46011',
+    });
+    await gasto(E, casero2, 'L-1R', '2027-10-15', [lin(-300, { tipoRetencion: 19 })], {
+      tipoGasto: 'ALQUILER',
+      ...rect('DESCUENTO', [{ numero: 'L-2026/12', fecha: '2026-12-01' }]),
+    });
+    const b = await calcularBorrador180(E, 2027);
+    expect(b.errores).toContainEqual(
+      'López Sanz Rosa sale con importes negativos en 2027 (sus abonos superan lo facturado): no se puede declarar así en el 180. Revisa sus facturas y abonos del año o consúltalo con tu asesor.',
+    );
+  });
+
   it('180: el arrendador se netea en el año (aquí a cero: no se declara)', async () => {
     const b = await calcularBorrador180(E, 2027);
-    expect(b.entrada.perceptores).toEqual([]);
-    expect(b.errores.filter((e) => /negativos/.test(e))).toEqual([]);
+    const nifCasero = (await prisma.supplier.findUniqueOrThrow({ where: { id: casero } })).nifCif;
+    expect(b.entrada.perceptores.filter((p) => p.nif === nifCasero)).toEqual([]);
+    expect(b.errores.filter((e) => /negativos/.test(e) && e.startsWith('Martínez'))).toEqual([]);
   });
 });
