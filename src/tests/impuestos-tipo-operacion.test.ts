@@ -93,7 +93,7 @@ describe('facturas anteriores (sin tipo): exactamente lo de siempre', () => {
     expect(m).not.toHaveProperty('inversionSujetoPasivo');
     // Lo unico nuevo es el diseno 2026: la compra intracomunitaria sin IVA va en
     // [10]/[11] y [36]/[37] (autodevengo al 21 %) con un aviso.
-    expect(m.advertencias).toEqual([expect.stringMatching(/proveedores de otros países de la UE sin IVA en la factura \(base 50\.00 €\).*\[10\]\/\[11\]/)]);
+    expect(m.advertencias).toEqual([expect.stringMatching(/proveedores de otros países de la UE sin IVA en la factura \(base 50,00 €\).*\[10\]\/\[11\]/)]);
     expect(Object.keys(m.casillas).sort()).toEqual(
       [
         '04_base_devengada_10',
@@ -124,7 +124,7 @@ describe('facturas anteriores (sin tipo): exactamente lo de siempre', () => {
     expect(m.volumenOperaciones).toBe(1200);
     expect(m.resultadoAnual).toBe(146);
     expect(m.volumen).toMatchObject({ regimenGeneral: 1200, intracomunitarias: 0, exportacionesYExentasConDeduccion: 0, total: 1200 });
-    expect(m.advertencias?.[0]).toMatch(/2000\.00 €.*800\.00 €/);
+    expect(m.advertencias?.[0]).toMatch(/2\.000,00 €.*800,00 €/);
   });
 
   it('347 y 349: los de siempre', () => {
