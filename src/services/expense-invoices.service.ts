@@ -689,13 +689,14 @@ const extraRectificativa = (p: PlanRectificativa | null): DatosRectificativaAsie
  * Esta rectificativa reduce el IVA deducido de un periodo cuyo 303 ya esta
  * presentado (seccion 11 de la especificacion de abonos).
  */
-const RECARGO_303 = 'saldrá más a ingresar y fuera de plazo, con el recargo y, en su caso, los intereses del art. 27 LGT.';
+const RECARGO_303 = 'saldrá más a ingresar y fuera de plazo, con el recargo y, en su caso, los intereses de demora (arts. 26 y 27 LGT).';
 
 /**
  * 409 de un abono que reduce el IVA de un 303 ya presentado. Por el art. 80
  * (devolucion, descuento...) se declara en el periodo en que se recibe; una
  * ERROR_IVA que reduce, en el de la factura que corrige (art. 114 LIVA). En
- * los dos casos hay recargo e intereses (art. 27 LGT).
+ * los dos casos hay recargo e intereses de demora (arts. 26 y 27 LGT, por el
+ * art. 114.Dos.2.º LIVA, comprobado en el BOE: version vigente desde el 31-10-2012).
  */
 export const textoRectificar303 = (motivo: string, deLaOriginal: boolean) =>
   deLaOriginal
