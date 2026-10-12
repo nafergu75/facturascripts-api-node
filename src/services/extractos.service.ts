@@ -2,6 +2,7 @@ import { listarCuentasBancarias, listarMovimientos } from './bancos.service';
 import { obtenerAsientosEjercicio, calcularSaldosPorSubcuenta } from './contabilidadDatos.service';
 import { ExtractoBancario, LineaExtracto, RevisionExtractoContable } from '../domain/extractos.model';
 import { notFound } from '../utils/http-errors';
+import { prisma } from '../config/database';
 
 const round2 = (n: number): number => Math.round((n + Number.EPSILON) * 100) / 100;
 
@@ -28,11 +29,18 @@ export async function generarExtractoBancario(
   rango: RangoFechas = {},
 ): Promise<ExtractoBancario> {
   const cuenta = await obtenerCuenta(companyId, cuentaBancariaId);
-  const movs = (await listarMovimientos(companyId, cuentaBancariaId))
-    .filter((m) => (!rango.desde || m.fecha >= rango.desde) && (!rango.hasta || m.fecha <= rango.hasta))
+  // Con el saldo del extracto a una fecha (el 31-12 del año que llevo la gestoria), el
+  // extracto parte de ese saldo y solo cuenta los movimientos posteriores.
+  const inicio = await prisma.bankAccount.findFirst({ where: { id: cuentaBancariaId, companyId }, select: { fechaSaldoInicial: true, saldoInicial: true } });
+  const corte = rango.saldoInicial === undefined ? (inicio?.fechaSaldoInicial ?? null) : null;
+  const todos = (await listarMovimientos(companyId, cuentaBancariaId))
+    .filter((m) => !corte || m.fecha > corte)
     .sort((a, b) => (a.fecha < b.fecha ? -1 : a.fecha > b.fecha ? 1 : 0));
+  const movs = todos.filter((m) => (!rango.desde || m.fecha >= rango.desde) && (!rango.hasta || m.fecha <= rango.hasta));
+  // Lo que se movio entre el saldo inicial y el principio del rango tambien cuenta.
+  const antes = corte && rango.desde ? todos.filter((m) => m.fecha < rango.desde!).reduce((s, m) => s + m.importe, 0) : 0;
 
-  const saldoInicial = round2(rango.saldoInicial ?? 0);
+  const saldoInicial = round2(rango.saldoInicial ?? (corte ? Number(inicio?.saldoInicial ?? 0) + antes : 0));
   let saldo = saldoInicial;
   let totalCargos = 0;
   let totalAbonos = 0;
