@@ -4,13 +4,18 @@
  * presenta el 303 cada mes, usa los meses y la casilla [85] sale del 303 de
  * enero.
  *
- * Necesita MySQL. Los NIF son inventados (con su carácter de control).
+ * Los 303 de periodos que aún no han terminado no se piden marcar como
+ * presentados: se avisa aparte de que salen de las facturas de hoy.
+ *
+ * Necesita MySQL. Los NIF son inventados (con su carácter de control). Reloj
+ * falso (solo Date) en el 1-3-2027, con el ejercicio 2026 ya terminado.
  */
-import { describe, it, expect, beforeAll } from '@jest/globals';
+import { describe, it, expect, beforeAll, beforeEach, afterEach } from '@jest/globals';
 import { prisma } from '../config/database';
 import { borrador390 } from '../services/borradoresAeat.service';
 import { prepararRectificacionModelo, presentarDeclaracion } from '../services/declaracionesAeat/presentar';
 import { limpiarLegalConfig } from '../services/legalConfig.service';
+import { relojEn, relojReal } from './reloj-falso';
 
 const T = Date.now();
 const TRIM = `aeat390-trim-${T}`;
@@ -51,6 +56,9 @@ beforeAll(async () => {
 });
 
 describe('390 con los 303 presentados', () => {
+  beforeEach(() => relojEn('2027-03-01T10:00:00Z'));
+  afterEach(relojReal);
+
   it('trimestral: el 1T presentado manda aunque después se registre otra factura de ese trimestre', async () => {
     await venta(TRIM, clientes[TRIM], '2026-02-10', 1000); // 210 de IVA
     await venta(TRIM, clientes[TRIM], '2026-05-10', 2000); // 420
@@ -65,6 +73,15 @@ describe('390 con los 303 presentados', () => {
     expect(avisos).toMatch(/Los 303 de 2T, 3T, 4T no están marcados como presentados/);
     // El devengado del año sí incluye la factura nueva: no cuadra con lo presentado y se avisa.
     expect(avisos).toMatch(/\[86\] \(735,00 €\) no cuadra con los 303 del año \(a ingresar 630,00 €/);
+  });
+
+  it('con el ejercicio en curso, el 4T sin terminar no se pide marcar: se avisa de que sale de las facturas de hoy', async () => {
+    relojEn('2026-10-12T10:00:00Z');
+    const b = await borrador390(TRIM, 2026);
+    const avisos = b.advertencias.join(' ');
+    expect(avisos).toMatch(/Los 303 de 2T, 3T no están marcados como presentados/);
+    expect(avisos).not.toMatch(/2T, 3T, 4T no están marcados/);
+    expect(avisos).toMatch(/El ejercicio 2026 aún no ha terminado: el 303 de 4T todavía no se puede presentar y sale de las facturas de hoy/);
   });
 
   it('un 303 presentado con su rectificativa en preparación cuenta como presentado: el 390 usa lo presentado y lo dice', async () => {
