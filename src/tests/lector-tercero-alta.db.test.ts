@@ -55,6 +55,7 @@ import gastosRoutes from '../routes/gastos-extractor.routes';
 import ingresosRoutes from '../routes/ingresos-extractor.routes';
 import clientesRoutes from '../routes/clientes.routes';
 import proveedoresRoutes from '../routes/proveedores.routes';
+import incomeReaderRoutes from '../routes/income-reader.routes';
 import { _reiniciarPausa } from '../services/lectura/azure-di.client';
 import { controlCif } from '../utils/nif';
 import { aceptado, CLAVE, ENDPOINT, fixtureAzure, NIF_EMISOR, NIF_EMPRESA, respuesta, resultado } from './fixtures/azure-di';
@@ -76,6 +77,7 @@ function app(companyId: string) {
   a.use('/ingresos-extractor', ingresosRoutes);
   a.use('/clientes', clientesRoutes);
   a.use('/proveedores', proveedoresRoutes);
+  a.use('/income-reader', incomeReaderRoutes);
   a.use(errorMiddleware);
   return a;
 }
@@ -447,5 +449,89 @@ describe('altas de terceros desde el lector', () => {
     const sinNif = await request(app(E)).post('/clientes').send({ nombreFiscal: 'Sin NIF SL' });
     expect(sinNif.status).toBe(400);
     expect(sinNif.body).toMatchObject({ message: 'Falta el NIF del cliente.', details: { campo: 'nifCif' } });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Remates de la revision
+// ---------------------------------------------------------------------------
+
+/** Lee con Azure simulado una factura de venta con el NIF del cliente cambiado. */
+async function leerVentaConNifCliente(companyId: string, nif: string): Promise<Record<string, any>> {
+  const p = await request(app(companyId)).post('/ingresos-extractor/lecturas').attach('archivo', PDF, 'factura.pdf');
+  const id = p.body.data.lecturaId;
+  await prisma.lecturaDocumento.update({ where: { id }, data: { azureProximaConsulta: new Date(Date.now() - 1000) } });
+  const fixture = fixtureAzure<{ analyzeResult: { documents: Array<{ fields: Record<string, any> }> } }>('resultado-simple');
+  fixture.analyzeResult.documents[0].fields.CustomerTaxId = { type: 'string', valueString: nif, content: nif, confidence: 0.9 };
+  colaGet.push(() => respuesta(fixture, 200));
+  crear.mockRejectedValue(Object.assign(new Error('x'), { status: 529 }));
+  const r = await request(app(companyId)).get(`/ingresos-extractor/lecturas/${id}`);
+  expect(r.body.data.estado).toBe('LISTA');
+  return r.body.data;
+}
+
+describe('el lector antiguo (/income-reader) no registra lo leido con el lector de ventas', () => {
+  it('PUT y verify de un documento del lector de ventas: 409, sin crear el cliente ni la factura', async () => {
+    const E = await empresa(NIF_EMISOR);
+    const data = await leer(E, 'ingresos-extractor');
+    const documentId = data.ingreso.documentId;
+    const put = await request(app(E))
+      .put(`/income-reader/${documentId}`)
+      .send({ nifReceptor: cif('4444444'), nombreReceptor: 'Atajo Dos SL', numero: 'A-1', fecha: '2026-09-15', lineas: [{ descripcion: 'x', cantidad: 1, precioUnitario: 10, tipoIva: 21 }] });
+    expect(put.status).toBe(409);
+    expect(put.body.details).toMatchObject({ codigo: 'DOCUMENTO_DEL_LECTOR_DE_VENTAS' });
+    const verify = await request(app(E)).post(`/income-reader/${documentId}/verify`);
+    expect(verify.status).toBe(409);
+    expect(verify.body.message).toMatch(/Ventas > Lector de facturas/);
+    const rechazo = await request(app(E)).post(`/income-reader/${documentId}/reject`).send({ motivo: 'x' });
+    expect(rechazo.status).toBe(409);
+    expect(await prisma.customer.count({ where: { companyId: E } })).toBe(0);
+    expect(await prisma.incomeInvoice.count({ where: { companyId: E } })).toBe(0);
+    expect(await prisma.incomeReaderDocument.findUniqueOrThrow({ where: { id: documentId } })).toMatchObject({ status: 'READY_FOR_VERIFICATION' });
+    // Y el lector de ventas sigue pidiendo el alta.
+    const r = await request(app(E)).post('/ingresos-extractor/confirmar').send({ documentId });
+    expect(r.body.details).toMatchObject({ codigo: 'TERCERO_NO_DADO_DE_ALTA' });
+  });
+
+  it('verify de un documento suyo sin numero: 400 y el cliente no se queda creado', async () => {
+    const E = await empresa(NIF_EMISOR);
+    const doc = await prisma.incomeReaderDocument.create({
+      data: {
+        companyId: E,
+        sourceType: 'WEB_UPLOAD',
+        originalFileName: 'f.pdf',
+        mimeType: 'application/pdf',
+        fileSize: 10,
+        storagePath: 'mem://nada',
+        status: 'READY_FOR_VERIFICATION',
+        parsedData: { nifReceptor: cif('3333333'), nombreReceptor: 'Sin Numero SL', fecha: '2026-09-15', lineas: [{ descripcion: 'x', cantidad: 1, precioUnitario: 10, tipoIva: 21 }] },
+      },
+    });
+    const r = await request(app(E)).post(`/income-reader/${doc.id}/verify`);
+    expect(r.status).toBe(400);
+    expect(r.body.message).toMatch(/Falta el número/);
+    expect(await prisma.customer.count({ where: { companyId: E } })).toBe(0);
+  });
+});
+
+describe('lector de ventas: NIF del cliente mal leido y cliente elegido', () => {
+  it('se registra y el PDF pasa a su carpeta definitiva, sin errores en el log', async () => {
+    const E = await empresa(NIF_EMISOR);
+    const elegido = await prisma.customer.create({ data: { companyId: E, nombreFiscal: 'Comercial Demo SL', nifCif: NIF_CLIENTE } });
+    // B87654320: el digito de control no cuadra.
+    const data = await leerVentaConNifCliente(E, 'B87654320');
+    expect(data.ingreso.errores.some((m: string) => /dígito de control/.test(m))).toBe(true);
+    const consola = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      const r = await request(app(E)).post('/ingresos-extractor/confirmar').send({ documentId: data.ingreso.documentId, revisado: true, clienteId: elegido.id });
+      expect(r.status).toBe(201);
+      expect(consola.mock.calls.filter((c) => String(c[0]).includes('no se pudo archivar'))).toEqual([]);
+    } finally {
+      consola.mockRestore();
+    }
+    const doc = await prisma.incomeReaderDocument.findUniqueOrThrow({ where: { id: data.ingreso.documentId } });
+    expect(doc.status).toBe('VERIFIED');
+    expect(doc.storagePath.startsWith(`mem://facturas/${E}/`)).toBe(true);
+    expect(doc.storagePath).toMatch(/\/\d{4}\/Q\d\/income\//);
   });
 });
