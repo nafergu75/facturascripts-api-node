@@ -22,6 +22,7 @@ import impuestosModuloRoutes from '../routes/impuestosModulo.routes';
 import declaracionesAeatRoutes from '../routes/declaraciones-aeat.routes';
 import { errorMiddleware } from '../middleware/error.middleware';
 import { generarTxtModelo } from '../services/impuestosModulo.service';
+import { presentable } from '../services/declaracionesAeat/modelos';
 import { DISENO_347 } from '../aeat/oficial/modelo347';
 import { validarRegistro } from '../aeat/oficial/diseno';
 
@@ -174,12 +175,29 @@ describe('borrador del 200', () => {
     expect(d.paginas.map((p: { codigo: string }) => p.codigo)).toEqual(['01000', '01B00', '03000', '04000', '05000', '06000', '07000', '08000', '12000', '14000', '14B00', 'DID00']);
     expect(d.paginasPendientes.length).toBeGreaterThan(50);
     expect(d.casillas['00558']).toBeDefined();
-    const f = await descargar('/borradores/200/fichero?ejercicio=2025');
+    // Sin la cifra de negocios de 2024 no se supone el 25 %: se pide y no hay fichero.
+    expect(d.cifraNegociosAnterior).toEqual({ importe: null, origen: 'ninguno' });
+    expect(d.errores).toContainEqual(expect.stringMatching(/No consta la cifra de negocios de 2024.*«Cifra de negocios de 2024»/));
+    expect(d.liquidacion.tipo.descripcion).toMatch(/^Provisional/);
+    expect((await descargar('/borradores/200/fichero?ejercicio=2025')).status).toBe(400);
+    // Escrita a mano en la pantalla: tipo de la microempresa de 2025 y fichero.
+    const conCifra = (await get('/borradores/200?ejercicio=2025&bins=0&retenciones=0&incnAnterior=350000')).body.data;
+    expect(conCifra.cifraNegociosAnterior).toEqual({ importe: 350000, origen: 'manual' });
+    expect(conCifra.errores.join(' ')).not.toMatch(/cifra de negocios/);
+    expect(conCifra.liquidacion.tipo.codigo).toBe('2122');
+    const f = await descargar('/borradores/200/fichero?ejercicio=2025&incnAnterior=350000');
     expect(f.status).toBe(200);
     expect(latin1(f).startsWith('<T200020250A0000><AUX>')).toBe(true);
   });
 
+  it('lo presentado guarda la cifra de negocios del año, la que pide el 202 del año siguiente', async () => {
+    const p = await presentable(ES, '200', 2025, '0A', { incnAnterior: '350000' });
+    const datos = p.instantanea.fila.datos as { pyg?: { importeNetoCifraNegocios?: number } };
+    expect(datos.pyg?.importeNetoCifraNegocios).toBe(p.instantanea.casillas['00255'] ?? 0);
+  });
+
   it('importes no válidos: 400', async () => {
+    expect((await get('/borradores/200?ejercicio=2025&incnAnterior=-1')).status).toBe(400);
     expect((await get('/borradores/200?ejercicio=2025&bins=-5')).status).toBe(400);
     expect((await get('/borradores/111?ejercicio=2025')).status).toBe(400);
     expect((await get('/borradores/347')).status).toBe(400);
