@@ -1057,9 +1057,46 @@ async function presentado303(companyId: string, periodo: PeriodoFiscal): Promise
  * fichero (una sola fuente para los dos). Si el 303 del periodo está
  * presentado, sale de las casillas guardadas (las que se presentaron) con el
  * tipo de declaración que se presentó, aunque después cambien las facturas;
- * si no, se calcula al momento.
+ * si no, se calcula al momento. Lleva el aviso de los abonos registrados
+ * después de presentarlo (avisosAbonosTrasPresentar).
  */
 export async function calcularBorrador303(companyId: string, periodo: PeriodoFiscal, opciones: OpcionesBorrador303 = {}): Promise<ResultadoBorrador303> {
+  const [r, avisos] = await Promise.all([borrador303DelPeriodo(companyId, periodo, opciones), avisosAbonosTrasPresentar(companyId, periodo)]);
+  if (avisos.length) r.borrador.advertencias.unshift(...avisos);
+  return r;
+}
+
+const eurosTexto = (n: number) => `${n.toLocaleString('es-ES', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €`;
+
+/**
+ * Abonos de proveedor que reducen el IVA de este periodo y se registraron
+ * con el 303 ya presentado («Registrar y avisarme de rectificar el 303»,
+ * seccion 11 de la especificacion de abonos): el 303 presentado no los lleva
+ * y hay que presentar una autoliquidación rectificativa. Se miran por la
+ * fecha de su IVA (fechaIvaGasto: la de la original en una ERROR_IVA).
+ */
+export async function avisosAbonosTrasPresentar(companyId: string, periodo: PeriodoFiscal): Promise<string[]> {
+  if (!dbOk()) return [];
+  const rango = { gte: periodo.fechaInicio, lte: periodo.fechaFin };
+  const abonos = await prisma.expenseInvoice.findMany({
+    where: {
+      companyId,
+      esRectificativa: true,
+      rectificar303ConfirmadoEn: { not: null },
+      estado: { notIn: ['ANULADA', 'DRAFT'] },
+      OR: [{ fechaImputacionIva: rango }, { fechaImputacionIva: null, fechaRegistro: rango }, { fechaImputacionIva: null, fechaRegistro: null, fechaEmision: rango }],
+    },
+    select: { numeroCompleto: true, numeroFacturaProveedor: true, ivaTotal: true },
+    orderBy: { numero: 'asc' },
+  });
+  return abonos.map(
+    (a) =>
+      `La rectificativa ${a.numeroFacturaProveedor ?? a.numeroCompleto} (registro ${a.numeroCompleto}) se registró después de presentar este 303 y reduce el IVA deducido en ${eurosTexto(Math.abs(Number(a.ivaTotal)))}: ` +
+      'prepara la autoliquidación rectificativa de este periodo. En la contabilidad, apunta a mano la regularización del IVA (472 y 4750), el recargo (678) y los intereses de demora (669) cuando los pagues.',
+  );
+}
+
+async function borrador303DelPeriodo(companyId: string, periodo: PeriodoFiscal, opciones: OpcionesBorrador303): Promise<ResultadoBorrador303> {
   const guardado = await presentado303(companyId, periodo);
   if (guardado) {
     const empresa = await contextoEmpresa303(companyId, periodo.ejercicio, opciones.cuentaBancariaId, guardado.indicadores ? undefined : periodo.periodo);
