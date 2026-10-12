@@ -465,8 +465,8 @@ async function devengoEnPeriodoDeFuera(companyId: string, devengo: string, fecha
 }
 
 const textoDevengoFuera = (devengo: string, p: { ejercicio: number; periodo: string }) =>
-  `La operación es del ${fechaTexto(devengo)}: su IVA va en el 303 ${periodo303Texto(p)}, que presenta tu gestoría. ` +
-  'Emítela igualmente y pásale la factura a la gestoría para que la incluya en ese 303 (y en su 390 y su 347).';
+  `La operación es del ${fechaTexto(devengo)}: su IVA va en el 303 ${periodo303Texto(p)}, que se presenta fuera de la app (por ejemplo, lo lleva tu gestoría). ` +
+  'Emítela igualmente y pasa la factura a quien presente ese 303 para que la incluya, y también en su 390 y su 347.';
 
 /** 409 de una venta con la operacion en un periodo de la gestoria, sin confirmar (ver devengoEnPeriodoDeFuera). */
 const errorDevengoFuera = (devengo: string, p: { ejercicio: number; periodo: string }) =>
