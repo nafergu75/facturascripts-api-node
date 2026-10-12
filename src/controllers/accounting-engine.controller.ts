@@ -22,7 +22,9 @@ import { motivoSinTipoFijado, notaDivisa } from '../domain/divisas';
 import { esTipoOperacion, fechaDevengoVenta } from '../domain/tipo-operacion.model';
 import { fechaContableGasto } from '../domain/factura-gasto.model';
 import {
+  abonoReduceIva,
   bloqueoPeriodoGasto,
+  confirmacion303Vigente,
   cuentaAcreedorDePagos,
   datosContablesGastoConSubcuenta,
   detallesRectificar303,
@@ -32,6 +34,7 @@ import {
   type BloqueoPeriodo,
 } from '../services/expense-invoices.service';
 import { crearCompensacionesAuto } from '../services/compensacionesGasto.service';
+import { bloquearFacturasGasto } from '../services/rectificativasGasto.service';
 import { conReintentoSubcuenta, fichaDeSubcuenta, subcuentaClienteParaApunte, type FichaDeSubcuenta } from '../services/terceros/subcuentas';
 import { esSubcuentaGenerica } from '../services/terceros/numeracion';
 
@@ -406,16 +409,25 @@ export class AccountingEngineController {
         asiento.origen === 'FACTURA_GASTO' && asiento.invoiceId
           ? await prisma.expenseInvoice.findFirst({
               where: { id: asiento.invoiceId, companyId },
-              select: { tipoGasto: true, retencionTotal: true, ivaTotal: true, esRectificativa: true, fechaImputacionIva: true, rectificar303ConfirmadoEn: true },
+              select: {
+                tipoGasto: true,
+                retencionTotal: true,
+                ivaTotal: true,
+                esRectificativa: true,
+                fechaImputacionIva: true,
+                rectificar303ConfirmadoEn: true,
+                fechaEmision: true,
+                fechaRegistro: true,
+              },
             })
           : null;
       // Abono que reduce el IVA de un 303 ya presentado, confirmado ahora (seccion 11): se guarda la marca al aprobar.
       let confirmado303: BloqueoPeriodo | null = null;
       if (gasto && asiento.invoiceId) {
         // El 303, con la fecha de su IVA (la de la original en una ERROR_IVA que reduce).
-        const b = await bloqueoPeriodoGasto(companyId, fechaAsiento, retencionDe(gasto), gasto.fechaImputacionIva ?? fechaAsiento);
-        const abonoQueReduce = b?.modelo === '303' && gasto.esRectificativa && aCentimos(Number(gasto.ivaTotal)) < 0;
-        if (b && abonoQueReduce && !gasto.rectificar303ConfirmadoEn) {
+        const b = await bloqueoPeriodoGasto(companyId, fechaAsiento, retencionDe(gasto), gasto.fechaImputacionIva ?? fechaAsiento, abonoReduceIva(gasto));
+        const abonoQueReduce = b?.modelo === '303' && abonoReduceIva(gasto);
+        if (b && abonoQueReduce && !(await confirmacion303Vigente(companyId, gasto))) {
           if (!opciones.confirmaRectificar303) {
             throw conflict(textoRectificar303(b.motivo, !!gasto.fechaImputacionIva), {
               ...detallesRectificar303(b, gasto.fechaImputacionIva ? 'rectificativa' : 'fechaRegistro'),
@@ -472,17 +484,35 @@ export class AccountingEngineController {
         }
       }
 
+      // Originales de la app de un abono del lector: se bloquean con el abono al aprobarlo.
+      const originalesAbono =
+        asiento.origen === 'FACTURA_GASTO' && asiento.invoiceId
+          ? (
+              await prisma.expenseInvoiceRectificada.findMany({
+                where: { companyId, rectificativaId: asiento.invoiceId, originalId: { not: null } },
+                select: { originalId: true },
+              })
+            ).map((e) => e.originalId as string)
+          : [];
+
       // Actualizar estado. Si es el borrador de una factura de gasto del lector,
       // la factura pasa a contabilizada en la misma transaccion.
       const ahora = new Date();
       await prisma.$transaction(async (tx) => {
-        await tx.journalEntry.update({
-          where: { id: journalEntryId },
+        // Lo primero, antes de leer nada: la factura y sus originales bloqueadas
+        // (en orden de id, como el alta y los pagos). Si no, la compensacion se
+        // calculaba con una foto de antes de un pago confirmado mientras tanto y
+        // la original quedaba pagada dos veces.
+        if (asiento.origen === 'FACTURA_GASTO' && asiento.invoiceId) await bloquearFacturasGasto(tx, [asiento.invoiceId, ...originalesAbono]);
+        // Solo si sigue sin aprobar: dos aprobaciones a la vez no pasan las dos.
+        const aprobado = await tx.journalEntry.updateMany({
+          where: { id: journalEntryId, companyId, estado: { in: ['DRAFT', 'PENDING_REVIEW'] } },
           data: {
             estado: 'POSTED',
             updatedAt: ahora,
           },
         });
+        if (aprobado.count !== 1) throw conflict('El asiento ya está aprobado.');
         if (asiento.origen === 'FACTURA_GASTO') {
           await tx.expenseInvoice.updateMany({
             where: { id: asiento.invoiceId ?? '', companyId, estado: 'DRAFT' },
