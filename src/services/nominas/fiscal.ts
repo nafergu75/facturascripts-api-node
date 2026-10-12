@@ -833,6 +833,9 @@ export function perceptoresProfesionales(
  * rentas exentas de los trabajadores, G profesionales), con los totales del
  * registro de declarante y el cuadre con los cuatro 111 del ano.
  */
+/** Marca de un perceptor del 190 con el año en negativo (abonos que superan lo facturado). */
+const FALTA_NEGATIVO_190 = 'importes del año en negativo (sus abonos superan lo facturado)';
+
 export async function calcularModelo190(companyId: string, ejercicio: number): Promise<Modelo190> {
   const anio = periodoFiscal(ejercicio, '0A');
   const avisos: string[] = [];
@@ -860,7 +863,7 @@ export async function calcularModelo190(companyId: string, ejercicio: number): P
   // Abonos que superan lo facturado en el año: un perceptor no se declara en negativo.
   for (const p of g.perceptores) {
     if (p.percepcionIntegra < 0 || p.retenciones < 0) {
-      p.faltan.push('importes del año en negativo (sus abonos superan lo facturado)');
+      p.faltan.push(FALTA_NEGATIVO_190);
       avisos.push(
         `${p.nombre} sale con importes negativos en ${ejercicio} (sus abonos superan lo facturado): no se puede declarar así en el 190. Revisa sus facturas y abonos del año o consúltalo con tu asesor.`,
       );
@@ -877,13 +880,15 @@ export async function calcularModelo190(companyId: string, ejercicio: number): P
       avisos.push(`Hay meses de ${ejercicio} registrados solo con el resumen antiguo de nóminas (totales sin trabajadores): no entran en el 190. Importa esas nóminas por trabajador.`);
     }
   }
-  const sinDatos = perceptores.filter((p) => p.faltan.length);
+  // Los importes en negativo ya tienen su aviso: aqui solo los datos que se completan en una ficha.
+  const sinDatos = perceptores.filter((p) => p.faltan.some((x) => x !== FALTA_NEGATIVO_190));
   if (sinDatos.length) {
     // Sin nombres: este aviso tambien sale en el modulo Impuestos (impuestos:read).
     const deTrabajadores = sinDatos.some((p) => p.origen === 'nomina');
     const deProveedores = sinDatos.some((p) => p.origen === 'profesional');
     const donde = [deTrabajadores ? 'la ficha de cada trabajador en Nóminas > Empleados' : '', deProveedores ? 'el código postal del proveedor' : ''].filter(Boolean).join(' y ');
-    avisos.push(`A ${sinDatos.length} registro(s) les faltan datos para el fichero (${[...new Set(sinDatos.flatMap((p) => p.faltan))].join(', ')}): complétalos en ${donde}.`);
+    const faltan = [...new Set(sinDatos.flatMap((p) => p.faltan.filter((x) => x !== FALTA_NEGATIVO_190)))];
+    avisos.push(`A ${sinDatos.length} registro(s) les faltan datos para el fichero (${faltan.join(', ')}): complétalos en ${donde}.`);
   }
 
   // Lo que el fichero aun no recoge (van a cero): se avisa para revisarlo en la sede.
