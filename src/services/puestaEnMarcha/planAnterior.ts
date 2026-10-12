@@ -28,6 +28,7 @@
 import { randomUUID } from 'crypto';
 import { prisma, type TransaccionBD } from '../../config/database';
 import { PGC_BASE } from '../../domain/pgc-model';
+import { naturalezaDe, PGC_OFICIAL } from '../../domain/pgc-oficial';
 import { paisDelCliente } from '../../domain/tipo-operacion.model';
 import { badRequest, conflict, forbidden, notFound } from '../../utils/http-errors';
 import { normalizarNif } from '../../utils/nif';
@@ -191,6 +192,11 @@ export interface CuentaNuevaPlan {
   codigo: string;
   nombre: string;
   madre: string;
+  /**
+   * Subgrupo o cuenta del PGC oficial que la app no trae de serie (13, 130,
+   * 211, 281...): se crea con su naturaleza oficial y como cuenta del PGC.
+   */
+  oficial?: { naturaleza: string };
 }
 
 export interface VistaPlan {
@@ -355,10 +361,28 @@ async function analizar(
   const ctx = await cargarContexto(db, companyId, cuentasEntrada.map((c) => c.codigo));
 
   // 1. Cuentas: grupos 1 a 7 con su madre; las de 8 y 9 no se usan en la app.
+  //    El plan base de la app no trae todas las cuentas del PGC (211, 281, 130,
+  //    260...): las que falten se crean con su nombre oficial, con su subgrupo,
+  //    aunque el fichero solo traiga las subcuentas (SUBCTA.DBF de ContaPlus).
+  const deEntrada = new Set(cuentasEntrada.map((c) => c.codigo));
+  const delPgc = new Map<string, CuentaDelPlan>();
+  const anadirDelPgc = (codigo: string) => {
+    if (ctx.plan.has(codigo) || deEntrada.has(codigo) || delPgc.has(codigo)) return;
+    const oficial = PGC_OFICIAL.get(codigo);
+    if (oficial) delPgc.set(codigo, { codigo, nombre: oficial.nombre });
+  };
+  for (const c of cuentasEntrada) {
+    if (!/^[1-7]\d\d/.test(c.codigo)) continue;
+    const cuenta = c.codigo.slice(0, 3);
+    // Solo si su cuenta de 3 digitos es del PGC o ya esta (en la app o en el fichero): una 139 no.
+    if (!PGC_OFICIAL.has(cuenta) && !ctx.plan.has(cuenta) && !deEntrada.has(cuenta)) continue;
+    anadirDelPgc(cuenta.slice(0, 2));
+    anadirDelPgc(cuenta);
+  }
   const omitidas: VistaPlan['omitidas'] = [];
   const conocidas = new Set(ctx.plan.keys());
   const validas: CuentaDelPlan[] = [];
-  for (const c of [...cuentasEntrada].sort((a, b) => a.codigo.length - b.codigo.length || a.codigo.localeCompare(b.codigo))) {
+  for (const c of [...cuentasEntrada, ...delPgc.values()].sort((a, b) => a.codigo.length - b.codigo.length || a.codigo.localeCompare(b.codigo))) {
     if (!/^[1-7]/.test(c.codigo)) {
       omitidas.push({ codigo: c.codigo, motivo: 'Grupos 8 y 9: la app no los usa.' });
       continue;
@@ -367,9 +391,10 @@ async function analizar(
       omitidas.push({ codigo: c.codigo, motivo: `No encaja en el PGC (no existe la cuenta ${c.codigo.slice(0, 3)}).` });
       continue;
     }
-    // Una cuenta de 3 digitos que la app no trae de serie (213 Maquinaria, 112 Reserva legal...)
-    // vale si su subgrupo existe; si no, no encaja y sus subcuentas tampoco (antes quedaban sin madre).
-    if (c.codigo.length <= 3 && !ctx.plan.has(c.codigo) && !(c.codigo.length === 3 && ctx.plan.has(c.codigo.slice(0, 2)))) {
+    // Un subgrupo o una cuenta de 3 digitos que la app no trae de serie vale si es del PGC
+    // oficial, o (una cuenta de 3) si su subgrupo existe; si no, no encaja y sus subcuentas
+    // tampoco (antes quedaban sin madre).
+    if (c.codigo.length <= 3 && !ctx.plan.has(c.codigo) && !PGC_OFICIAL.has(c.codigo) && !(c.codigo.length === 3 && conocidas.has(c.codigo.slice(0, 2)))) {
       omitidas.push({ codigo: c.codigo, motivo: 'Cuenta de 3 dígitos que no está en el PGC de PYMES.' });
       continue;
     }
@@ -388,9 +413,15 @@ async function analizar(
       if (c.nombre && ya.nombre !== c.nombre && c.codigo.length > 3) existentesConOtroNombre.push(c.codigo);
       continue;
     }
-    const madre = c.codigo.length === 3 ? c.codigo.slice(0, 2) : madreDe(c.codigo, conocidasPlan)!;
+    const madre = c.codigo.length <= 3 ? c.codigo.slice(0, c.codigo.length - 1) : madreDe(c.codigo, conocidasPlan)!;
     conocidasPlan.add(c.codigo);
-    nuevas.push({ codigo: c.codigo, nombre: c.nombre || `${ctx.plan.get(madre)?.nombre ?? nuevas.find((n) => n.codigo === madre)?.nombre ?? 'Cuenta'} (${c.codigo})`, madre });
+    const oficial = c.codigo.length <= 3 ? PGC_OFICIAL.get(c.codigo) : undefined;
+    nuevas.push({
+      codigo: c.codigo,
+      nombre: c.nombre || oficial?.nombre || `${ctx.plan.get(madre)?.nombre ?? nuevas.find((n) => n.codigo === madre)?.nombre ?? 'Cuenta'} (${c.codigo})`,
+      madre,
+      ...(oficial ? { oficial: { naturaleza: naturalezaDe(oficial.tipo) } } : {}),
+    });
   }
   if (existentesConOtroNombre.length && !opciones.nombresGestoria) {
     avisos.push(
@@ -721,10 +752,10 @@ async function crearCuentas(tx: TransaccionBD, companyId: string, nuevas: Cuenta
         nombre: n.nombre.slice(0, 190),
         grupo: m.grupo,
         nivel: m.nivel + 1,
-        naturaleza: m.naturaleza,
+        naturaleza: n.oficial?.naturaleza ?? m.naturaleza,
         tipoUso: m.tipoUso,
-        esBasePGC: false,
-        esPersonalizadaEmpresa: true,
+        esBasePGC: !!n.oficial,
+        esPersonalizadaEmpresa: !n.oficial,
         activo: true,
         parentId: m.id,
         parentCodigo: m.codigo,
