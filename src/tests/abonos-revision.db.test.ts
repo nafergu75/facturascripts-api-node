@@ -14,7 +14,11 @@ import * as compensaciones from '../services/compensacionesGasto.service';
 import { cuentaHabitualDeProveedor } from '../services/cuentasLinea.service';
 import { asegurarPlanContableEmpresa } from '../services/chart-of-accounts.service';
 import * as periodos from '../services/periodos.service';
-import { controlCif } from '../utils/nif';
+import { calcularBorrador180 } from '../services/borradoresAeat/borrador180.service';
+import { crearInmueble } from '../services/borradoresAeat/inmuebles.service';
+import { calcularModelo115 } from '../services/impuestosCalculo.service';
+import { calcularModelo190, periodoFiscal } from '../services/nominas/fiscal';
+import { controlCif, letraDni } from '../utils/nif';
 
 const SUFIJO = Date.now();
 let n = 0;
@@ -23,10 +27,17 @@ function cif(): string {
   return `B${siete}${controlCif(siete).cifra}`;
 }
 
+function dni(): string {
+  const ocho = String(10000000 + ((SUFIJO + n++ * 104729) % 89999999)).slice(0, 8);
+  return `${ocho}${letraDni(ocho)}`;
+}
+
 async function empresa(nombre: string): Promise<string> {
   const E = `revab-${nombre}-${SUFIJO}`;
   await prisma.company.create({ data: { id: E, name: `Revisión abonos ${nombre} SL`, fsBaseUrl: 'http://localhost', fsApiKeyEnc: 'k' } });
-  await prisma.legalConfig.create({ data: { companyId: E, denominacion: `Revisión abonos ${nombre} SL`, nif: cif() } });
+  await prisma.legalConfig.create({
+    data: { companyId: E, denominacion: `Revisión abonos ${nombre} SL`, nif: cif(), telefono: '963 11 22 33', personaContacto: 'Gómez Ruiz Ana' },
+  });
   await asegurarPlanContableEmpresa(E);
   return E;
 }
@@ -175,5 +186,61 @@ describe('abonos de la misma original a la vez', () => {
     const e = await error(anularGasto(E, o.factura.id, { motivo: 'Duplicada' }));
     expect(e).toMatchObject({ status: 409, message: expect.stringMatching(/Tiene la rectificativa GR-1/) });
     expect((await prisma.expenseInvoice.findUniqueOrThrow({ where: { id: o.factura.id } })).estado).toBe('ACCOUNTED');
+  });
+});
+
+describe('180 y 190 cuando la retención de un abono no cabe en su 115 o 111 (decisión P1)', () => {
+  let E: string;
+
+  beforeAll(async () => {
+    E = await empresa('cuadre');
+    const casero = (await proveedoresService.create(E, { nombreFiscal: 'Martínez Peña José', nifCif: dni(), cp: '46004' })).id;
+    await crearInmueble(E, {
+      supplierId: casero,
+      referenciaCatastral: '9872023VH5797S0001WX',
+      tipoVia: 'CL',
+      nombreVia: 'Colón',
+      numeroCasa: '12',
+      municipio: 'València',
+      codigoMunicipio: '46250',
+      codigoPostal: '46004',
+    });
+    const alq = (num: string, fecha: string, precio: number, extra: Record<string, unknown> = {}) =>
+      registrarGasto(E, factura(casero, num, fecha, precio, { tipoGasto: 'ALQUILER', lineas: [lin(precio, { tipoRetencion: 19 })], ...extra }), { contabilizar: 'POSTED' });
+    const a1 = await alq('A-1', '2027-02-01', 1000);
+    const a2 = await alq('A-2', '2027-05-01', 1000);
+    await alq('AR-1', '2027-05-20', -200, { rectificativa: { tipo: 'I', causa: 'DESCUENTO', originales: [{ id: a2.factura.id }] } });
+    await alq('AR-2', '2027-08-10', -500, { rectificativa: { tipo: 'I', causa: 'DESCUENTO', originales: [{ id: a1.factura.id }] } });
+
+    const asesor = (await proveedoresService.create(E, { nombreFiscal: 'Sanz Vidal Marta', nifCif: dni(), cp: '46005' })).id;
+    const otro = (await proveedoresService.create(E, { nombreFiscal: 'Pérez Gil Juan', nifCif: dni(), cp: '46006' })).id;
+    const prof = (s: string, num: string, fecha: string, precio: number, extra: Record<string, unknown> = {}) =>
+      registrarGasto(E, factura(s, num, fecha, precio, { tipoGasto: 'SERVICIO_PROFESIONAL', lineas: [lin(precio, { tipoRetencion: 15 })], ...extra }), { contabilizar: 'POSTED' });
+    const p1 = await prof(asesor, 'P-1', '2027-02-01', 1000);
+    await prof(otro, 'P-2', '2027-04-05', 600);
+    await prof(asesor, 'P-1R', '2027-05-05', -1000, { rectificativa: { tipo: 'I', causa: 'ANULACION_PRECIO', originales: [{ id: p1.factura.id }] } });
+  });
+
+  it('el 115 del 3T queda a cero con 500 € de base y 95 € de retención que no caben', async () => {
+    expect(await calcularModelo115(E, periodoFiscal(2027, '3T'))).toMatchObject({ baseRetenciones: 0, retenciones: 0, excesoBaseAbonos: 500, excesoAbonos: 95 });
+  });
+
+  it('el 180 netea el año (1.300 / 247) y cuadra con los 115 descontando lo que no cupo; el fichero no se bloquea por eso', async () => {
+    const b = await calcularBorrador180(E, 2027);
+    expect(b.cuadre).toMatchObject({ coincide: true, base180: 1300, retenciones180: 247, base115: 1800, retenciones115: 342, excesoBase: 500, excesoRetenciones: 95 });
+    expect(b.errores.filter((e) => e.startsWith('El 180 no cuadra'))).toEqual([]);
+    expect(b.avisos).toContainEqual(
+      'Los 115 llevan 95,00 € de retención (y 500,00 € de base) más que el 180: son abonos de alquiler que no cupieron en el 115 del 3T. El 180 ya los descuenta. Para recuperar esa retención, pide la rectificación del 115 en que se declaró la factura que rectifican (art. 120.3 LGT).',
+    );
+  });
+
+  it('el 190 cuadra con los 111 descontando lo que no cupo, con su aviso y sin el de las nóminas', async () => {
+    const m = await calcularModelo190(E, 2027);
+    expect(m.totales.retenciones).toBe(90);
+    expect(m.cuadre111).toMatchObject({ total: 150, coincide: true, excesoAbonos: 60 });
+    expect(m.avisos.filter((a) => a.includes('no coinciden con la suma de los 111'))).toEqual([]);
+    expect(m.avisos).toContainEqual(
+      'Los 111 llevan 60,00 € de retención más que el 190: son abonos de profesionales que no cupieron en el 111 del 2T. El 190 ya los descuenta. Para recuperar esa retención, pide la rectificación del 111 en que se declaró la factura que rectifican (art. 120.3 LGT).',
+    );
   });
 });
