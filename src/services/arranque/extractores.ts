@@ -186,6 +186,8 @@ export interface ColumnaHoja {
   letra: string;
   titulo: string;
   ejemplo: string;
+  /** Hasta dos valores de filas con datos (no de titulos). */
+  ejemplos?: string[];
 }
 
 export interface ErrorExtraccion {
@@ -195,6 +197,10 @@ export interface ErrorExtraccion {
   /** Datos que faltan («cuenta», «debe»...). */
   faltan: Campo[];
   columnas: ColumnaHoja[];
+  /** Fila de titulos que se ha tomado (1-based; 0 = sin titulos), para mandarla con el mapeo. */
+  filaTitulos?: number;
+  /** Primeras filas de la hoja, para ver que es antes de elegir el tipo. */
+  muestra?: string[][];
 }
 
 export interface ResultadoExtraccion {
@@ -205,6 +211,9 @@ export interface ResultadoExtraccion {
   error: ErrorExtraccion | null;
   /** Codigos con punto de relleno («430.1») que se han expandido. */
   codigosExpandidos: number;
+  /** Columnas de la hoja y su fila de titulos (1-based; 0 = sin titulos), para revisarlas a mano. */
+  columnas?: ColumnaHoja[];
+  filaTitulos?: number;
 }
 
 export interface OpcionesExtraccion {
@@ -255,21 +264,56 @@ export const OBLIGATORIOS: Partial<Record<TipoHoja, { cumple: (m: Partial<Record
 };
 OBLIGATORIOS.TERCEROS_PROVEEDORES = OBLIGATORIOS.TERCEROS_CLIENTES;
 
-/** Columnas de la hoja con un ejemplo, para que la persona pueda elegir. */
+/** Celda con una cifra o un codigo (57200001, 9.000,00, 01/01/2026): lo que hay en una fila de datos. */
+const RE_DATO = /^-?[\d.,/ ]*\d[\d.,/ ]*$/;
+const esFilaDeDatos = (f: unknown[] | undefined) => (f ?? []).some((v) => typeof v === 'number' || v instanceof Date || RE_DATO.test(texto(v)));
+
+/**
+ * Fila de titulos cuando no se ha reconocido ninguna: la primera (de las 15
+ * primeras) con dos o mas textos que no son cifras y seguida de una fila con
+ * datos. -1 si no hay.
+ */
+export function filaDeTitulos(filas: unknown[][]): number {
+  for (let r = 0; r < Math.min(filas.length - 1, 15); r++) {
+    const textos = (filas[r] ?? []).map(texto).filter((v) => v && !RE_DATO.test(v));
+    if (textos.length >= 2 && esFilaDeDatos(filas[r + 1])) return r;
+  }
+  return -1;
+}
+
+/** Columnas de la hoja con dos ejemplos de filas con datos, para que la persona pueda elegir. */
 export function describirColumnasHoja(filas: unknown[][], filaCabecera: number): ColumnaHoja[] {
+  const tit = filaCabecera >= 0 ? filaCabecera : filaDeTitulos(filas);
   const ancho = Math.max(0, ...filas.slice(0, 200).map((f) => (f ?? []).length));
-  const cab = filaCabecera >= 0 ? filas[filaCabecera] ?? [] : [];
+  const cab = tit >= 0 ? filas[tit] ?? [] : [];
+  // Las filas de ejemplo: las primeras con alguna cifra o codigo (no una linea de titulo suelta).
+  const conDatos: number[] = [];
+  for (let r = tit + 1; r < filas.length && r < tit + 200 && conDatos.length < 5; r++) if (esFilaDeDatos(filas[r])) conDatos.push(r);
   const out: ColumnaHoja[] = [];
   for (let i = 0; i < Math.min(ancho, 60); i++) {
-    let ejemplo = '';
-    for (let r = filaCabecera + 1; r < filas.length && r < filaCabecera + 50; r++) {
-      const v = texto(filas[r]?.[i]);
-      if (v) {
-        ejemplo = v.slice(0, 40);
-        break;
+    const ejemplos = conDatos.map((r) => texto(filas[r]?.[i]).slice(0, 40)).filter(Boolean).slice(0, 2);
+    let ejemplo = ejemplos[0] ?? '';
+    if (!ejemplo) {
+      for (let r = tit + 1; r < filas.length && r < tit + 50; r++) {
+        const v = texto(filas[r]?.[i]);
+        if (v) {
+          ejemplo = v.slice(0, 40);
+          break;
+        }
       }
     }
-    out.push({ indice: i, letra: letraColumna(i), titulo: texto(cab[i]) || `Columna ${letraColumna(i)}`, ejemplo });
+    out.push({ indice: i, letra: letraColumna(i), titulo: texto(cab[i]) || `Columna ${letraColumna(i)}`, ejemplo, ejemplos: ejemplos.length ? ejemplos : ejemplo ? [ejemplo] : [] });
+  }
+  return out;
+}
+
+/** Primeras filas no vacias de la hoja, como texto (para ver que es). */
+export function muestraHoja(filas: unknown[][], n = 6): string[][] {
+  const out: string[][] = [];
+  for (const f of filas) {
+    const celdas = (f ?? []).slice(0, 12).map((v) => texto(v).slice(0, 30));
+    if (celdas.some(Boolean)) out.push(celdas);
+    if (out.length >= n) break;
   }
   return out;
 }
@@ -578,9 +622,21 @@ export function extraerHoja(tipo: TipoHoja, filasHoja: unknown[][], opciones: Op
   let m: Partial<Record<Campo, number>> = manual ?? opciones.cabecera?.campos ?? {};
   const formato = opciones.formato ?? 'xlsx';
   const base: ResultadoExtraccion = { extraccion: null, mapeo: m, avisos, error: null, codigosExpandidos: 0 };
+  /** Fila de titulos (1-based; 0 = sin titulos): la reconocida o, si no hay, la que lo parece. */
+  const filaTitulos = () => (desde >= 0 ? desde : filaDeTitulos(filasHoja)) + 1;
 
   if (tipo === 'DESCONOCIDO') {
-    return { ...base, error: { mensaje: 'No sé qué es esta hoja: elige qué tipo de listado es o quítala de la carga.', necesitaMapeo: false, faltan: [], columnas: [] } };
+    return {
+      ...base,
+      error: {
+        mensaje: 'No sé qué es esta hoja: mira sus primeras filas y elige qué tipo de listado es, o quítala de la carga.',
+        necesitaMapeo: false,
+        faltan: [],
+        columnas: describirColumnasHoja(filasHoja, desde),
+        filaTitulos: filaTitulos(),
+        muestra: muestraHoja(filasHoja),
+      },
+    };
   }
   if (tipo === 'PYG' || tipo === 'BALANCE') {
     const totales = extraerTotalesOficiales(filasHoja);
@@ -608,13 +664,14 @@ export function extraerHoja(tipo: TipoHoja, filasHoja: unknown[][], opciones: Op
         necesitaMapeo: true,
         faltan: regla.faltan(m),
         columnas: describirColumnasHoja(filasHoja, desde),
+        filaTitulos: filaTitulos(),
       },
     };
   }
 
   const { filas, expandidos } = expandirCodigos(filasSinRepetir, [m.cuenta, m.cuentaAmortAcum, m.cuentaDotacion].filter((c): c is number => c !== undefined), opciones.longitud, desde);
   if (expandidos) avisos.push(`${expandidos} ${expandidos === 1 ? 'código venía' : 'códigos venían'} con punto de relleno («430.1»): se han completado con ceros.`);
-  const conMapeo = { ...base, mapeo: m, codigosExpandidos: expandidos };
+  const conMapeo = { ...base, mapeo: m, codigosExpandidos: expandidos, columnas: describirColumnasHoja(filasHoja, desde), filaTitulos: filaTitulos() };
 
   try {
     switch (tipo) {
@@ -661,6 +718,7 @@ export function extraerHoja(tipo: TipoHoja, filasHoja: unknown[][], opciones: Op
         necesitaMapeo: !!detalles?.necesitaMapeo,
         faltan: [],
         columnas: describirColumnasHoja(filasHoja, desde),
+        filaTitulos: filaTitulos(),
       },
     };
   }
