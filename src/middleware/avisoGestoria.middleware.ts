@@ -1,9 +1,12 @@
 import type { RequestHandler } from 'express';
 import { llevanzaExterna } from '../services/periodos.service';
 
-/** Texto del aviso en los modelos de un año que llevo la gestoria. */
+/**
+ * Texto del aviso en los modelos de un año que llevo la gestoria. Vale para la
+ * pantalla de un modelo y para la lista de todos los del año (Estado fiscal).
+ */
 export const textoModeloGestoria = (anio: number) =>
-  `Este modelo de ${anio} lo presenta tu gestoría: lo que ves aquí sale solo de lo que hay en la app de ${anio}. No lo presentes desde aquí.`;
+  `Los modelos de ${anio} los presenta tu gestoría: lo que ves aquí sale solo de lo que hay en la app de ${anio}. No los presentes desde aquí.`;
 
 /**
  * Modelos de la AEAT de un año que llevo la gestoria (Traer la contabilidad de
