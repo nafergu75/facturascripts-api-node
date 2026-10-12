@@ -25,7 +25,8 @@ export const TAM_MAX_TROZO = 4 * 1024 * 1024;
 const MAX_TROZOS = 200;
 const CADUCIDAD_MS = 24 * 60 * 60 * 1000;
 const ID_RE = /^[a-f0-9-]{36}$/;
-const EXTENSIONES = /\.(xlsx|xls|csv|txt)$/i;
+// .dbf: tablas de ContaPlus para Traer la contabilidad de 2026.
+const EXTENSIONES = /\.(xlsx|xls|csv|txt|dbf)$/i;
 
 interface MetaSubida {
   nombre: string;
@@ -113,7 +114,7 @@ export async function recibirTrozo(
   let subidaId: string;
   if (indice === 0) {
     const nombre = String(datos.nombre ?? '').trim();
-    if (!EXTENSIONES.test(nombre)) throw badRequest('El fichero tiene que ser un Excel (.xlsx, .xls) o un CSV.');
+    if (!EXTENSIONES.test(nombre)) throw badRequest('El fichero tiene que ser un Excel (.xlsx, .xls), un CSV o una tabla de ContaPlus (.dbf).');
     const tamano = entero(datos.tamano, 'tamano');
     if (tamano === 0) throw badRequest('El fichero está vacío.');
     if (tamano > TAM_MAX_SUBIDA) throw badRequest(`El fichero pesa demasiado (máximo ${TAM_MAX_SUBIDA / 1024 / 1024} MB).`);
