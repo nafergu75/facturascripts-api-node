@@ -4,6 +4,7 @@ import { badRequest, conflict, HttpError, notFound } from '../utils/http-errors'
 import { aCentimos } from '../utils/money';
 import { hoyEspana, vencimientoPorDefecto } from '../utils/fechas';
 import { PGC_BASE } from '../domain/pgc-model';
+import { INICIO_LLEVANZA_APP } from '../domain/calendarioFiscal';
 import {
   ESTADOS_SIN_CONTABILIZAR,
   TIPO_GASTO_INFO,
@@ -490,7 +491,17 @@ export async function bloqueoPeriodoGasto(
     return presentado ? { motivo: `El ${codigo} del ${presentado.periodo} de ${ejercicio} ya está presentado`, modelo: codigo, ejercicio, periodo: presentado.periodo } : null;
   };
   const retenciones = retencion === 'PROFESIONAL' ? await presentadoEn('111', fecha) : retencion === 'ARRENDAMIENTO' ? await presentadoEn('115', fecha) : null;
-  return retenciones ?? presentadoEn('303', fechaIva);
+  if (retenciones) return retenciones;
+  const iva = await presentadoEn('303', fechaIva);
+  if (iva) return iva;
+  // El IVA va a un periodo de antes de llevar la contabilidad en la app (una
+  // ERROR_IVA que reduce sobre una factura de 2026): su 303 se presento fuera.
+  if (fechaIva !== fecha && fechaIva < INICIO_LLEVANZA_APP) {
+    const ejercicio = Number(fechaIva.slice(0, 4));
+    const periodo = `${Math.ceil(Number(fechaIva.slice(5, 7)) / 3)}T`;
+    return { motivo: `El 303 del ${periodo} de ${ejercicio} se presentó fuera de la app`, modelo: '303', ejercicio, periodo };
+  }
+  return null;
 }
 
 /** El motivo de bloqueoPeriodoGasto, o null si se puede tocar. */
