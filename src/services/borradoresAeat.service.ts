@@ -13,7 +13,20 @@ import type { DatosModelo347, DesgloseIva, FacturaFiscal } from '../domain/impue
 import { construirModelo347, declarados347Desde, type Declaracion347 } from '../aeat/oficial/modelo347';
 import { construirModelo390, type Declaracion390, type Entrada390 } from '../aeat/oficial/modelo390';
 import { construirModelo200, type Declaracion200 } from '../aeat/oficial/modelo200';
-import { agregar303, agregar347, agregar390, exigirModelosAeat, esEmpresaEspanolaFiscal, MENSAJE_SIN_MODELOS, obtenerFacturasFiscales } from './impuestosCalculo.service';
+import {
+  agregar303,
+  agregar347,
+  agregar390,
+  agruparPorTipoIva,
+  avisoIntraSinCuota,
+  cuotaAutoliquidadaCentimos,
+  devengaIva,
+  exigirModelosAeat,
+  esEmpresaEspanolaFiscal,
+  MENSAJE_SIN_MODELOS,
+  obtenerFacturasFiscales,
+  tipoAutoliquidado,
+} from './impuestosCalculo.service';
 import { calcularEstadosFinancieros } from './impuestoSociedadesCalculo.service';
 import { listarCuentasBancarias } from './bancos.service';
 import { periodoFiscal } from './nominas/fiscal';
@@ -125,20 +138,36 @@ async function ficheroCongelado(companyId: string, codigo: string, ejercicio: nu
 // 390
 // ---------------------------------------------------------------------------
 
-/** Adquisiciones intracomunitarias autoliquidadas por tipo: si la factura no trae cuota, se calcula al tipo de la linea o al 21 %. */
+/**
+ * Adquisiciones intracomunitarias autoliquidadas por tipo, con la misma regla
+ * que el 303 (cuotaAutoliquidadaCentimos: la cuota de la factura o, si no la
+ * trae, al tipo de la linea o al 21 %). Así el 390 cuadra con los cuatro 303.
+ */
 function autoliquidadas(compras: FacturaFiscal[]): DesgloseIva[] {
   const mapa = new Map<number, { base: number; cuota: number }>();
   for (const f of compras) {
     for (const l of f.lineas) {
-      const tipo = l.tipoIva > 0 ? l.tipoIva : 21;
-      const cuota = aCentimos(l.cuota) !== 0 ? aCentimos(l.cuota) : Math.round((aCentimos(l.base) * tipo) / 100);
+      const tipo = tipoAutoliquidado(l);
       const a = mapa.get(tipo) ?? { base: 0, cuota: 0 };
       a.base += aCentimos(l.base);
-      a.cuota += cuota;
+      a.cuota += cuotaAutoliquidadaCentimos(l);
       mapa.set(tipo, a);
     }
   }
   return [...mapa.entries()].map(([tipo, a]) => ({ tipo, base: a.base / 100, cuota: a.cuota / 100 }));
+}
+
+/** Base y cuota sumadas (céntimos a euros), con la cuota de cada línea que da `cuota`. */
+function totalLineas(facturas: FacturaFiscal[], cuota: (f: FacturaFiscal, l: FacturaFiscal['lineas'][number]) => number): { base: number; cuota: number } {
+  let b = 0;
+  let c = 0;
+  for (const f of facturas) {
+    for (const l of f.lineas) {
+      b += aCentimos(l.base);
+      c += cuota(f, l);
+    }
+  }
+  return { base: b / 100, cuota: c / 100 };
 }
 
 function porTipo(facturas: FacturaFiscal[]): DesgloseIva[] {
@@ -173,8 +202,21 @@ export function entrada390Desde(
   const { resultados303, ...resto } = extra;
   const datos = agregar390(facturas, ejercicio);
   const delAno = facturas.filter((f) => f.fecha.startsWith(String(ejercicio)));
-  const compras = delAno.filter((f) => f.tipo === 'compra');
+  // Rectificativas: como en el 303, no van en las filas por tipo. Las de venta
+  // (y el autodevengo de las compras intracomunitarias anuladas) van a
+  // «Modificación de bases y cuotas» [29]/[30], como [14]/[15] del 303; las
+  // compras deducibles anuladas, a «Rectificación de deducciones» [639]/[62],
+  // como [40]/[41] del 303.
+  const ventasRectificativas = delAno.filter((f) => devengaIva(f) && f.rectificativa);
+  const todasCompras = delAno.filter((f) => f.tipo === 'compra');
+  const comprasRectificativas = todasCompras.filter((f) => f.rectificativa);
+  const compras = todasCompras.filter((f) => !f.rectificativa);
   const deducibles = compras.filter((f) => f.deducible !== false);
+  const cuotaCompra = (f: FacturaFiscal, l: FacturaFiscal['lineas'][number]) => (f.operacion === 'intracomunitaria' ? cuotaAutoliquidadaCentimos(l) : aCentimos(l.cuota));
+  const modVentas = totalLineas(ventasRectificativas, (_f, l) => aCentimos(l.cuota));
+  const modIntra = totalLineas(comprasRectificativas.filter((f) => f.operacion === 'intracomunitaria'), cuotaCompra);
+  const modificaciones = { base: (aCentimos(modVentas.base) + aCentimos(modIntra.base)) / 100, cuota: (aCentimos(modVentas.cuota) + aCentimos(modIntra.cuota)) / 100 };
+  const rectificacionDeducciones = totalLineas(comprasRectificativas.filter((f) => f.deducible !== false), cuotaCompra);
   // Autoliquidadas: todas al devengado (también las de IVA no deducible, como en
   // el 303 [10]/[11]); al deducible, solo las deducibles.
   const intraTodas = compras.filter((f) => f.operacion === 'intracomunitaria');
@@ -184,11 +226,12 @@ export function entrada390Desde(
   const periodos = resultados303?.periodos ?? ['1T', '2T', '3T', '4T'];
   const resultados = resultados303?.resultados ?? periodos.map((p) => agregar303(facturas, periodoFiscal(ejercicio, p)).resultado);
   const advertencias = [...(datos.advertencias ?? []), ...(resultados303?.avisos ?? [])];
-  if (intraTodas.length) {
-    advertencias.push(
-      'Las adquisiciones intracomunitarias se autoliquidan en el 390 (devengado y deducible por el mismo importe, al tipo de la línea o al 21 %). Comprueba que coincide con lo que declaraste en los 303.',
-    );
-  }
+  // Mismo aviso que el 303 cuando una compra intracomunitaria no trae la cuota en la factura.
+  const intraSinCuota = [...intraTodas, ...comprasRectificativas.filter((f) => f.operacion === 'intracomunitaria')]
+    .flatMap((f) => f.lineas)
+    .filter((l) => aCentimos(l.cuota) === 0)
+    .reduce((a, l) => a + aCentimos(l.base), 0);
+  if (intraSinCuota !== 0) advertencias.push(avisoIntraSinCuota(intraSinCuota));
   const importaciones = deducibles
     .filter((f) => f.operacion === 'exportacion')
     .map((f) => ({ ...f, lineas: f.lineas.filter((l) => aCentimos(l.cuota) !== 0) }));
@@ -199,7 +242,9 @@ export function entrada390Desde(
     entrada: {
       ejercicio,
       identificacion,
-      devengado: datos.resumenDevengado,
+      devengado: agruparPorTipoIva(delAno.filter((f) => devengaIva(f) && !f.rectificativa)),
+      ...(aCentimos(modificaciones.base) !== 0 || aCentimos(modificaciones.cuota) !== 0 ? { modificaciones } : {}),
+      ...(aCentimos(rectificacionDeducciones.base) !== 0 || aCentimos(rectificacionDeducciones.cuota) !== 0 ? { rectificacionDeducciones } : {}),
       adquisicionesIntraBienes: autoliquidadas(intraTodas.filter((f) => !esServicio(f))),
       adquisicionesIntraServicios: autoliquidadas(intraTodas.filter(esServicio)),
       deducibleIntraBienes: autoliquidadas(intra.filter((f) => !esServicio(f))),
