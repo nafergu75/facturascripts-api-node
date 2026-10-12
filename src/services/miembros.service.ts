@@ -1,5 +1,5 @@
 /**
- * Quien tiene acceso a una empresa (Configuracion > Tu acceso y usuarios).
+ * Quien tiene acceso a una empresa (Configuracion > Tu acceso).
  * Solo lectura: la gestion (altas, roles, quitar el acceso) esta en
  * Configuracion > Usuarios (usuariosEmpresa.service) y en Administracion global. Nunca devuelve hashes, tokens ni datos de otras empresas.
  */

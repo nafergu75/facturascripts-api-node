@@ -55,7 +55,8 @@ export const PANTALLAS: PantallaApp[] = [
   { ruta: 'Más → Configuración → Series de numeración', href: '/dashboard/configuracion/series', descripcion: 'Series de las facturas y su numeración.' },
   { ruta: 'Más → Configuración → Facturación', href: '/dashboard/configuracion/facturacion', descripcion: 'Forma de pago, vencimiento, cuenta e IBAN, IRPF habitual y pie de las facturas.' },
   { ruta: 'Más → Configuración → Impuestos', href: '/dashboard/configuracion/impuestos', descripcion: 'IVA trimestral o mensual, SII, REDEME, recargo de equivalencia, criterio de caja y prorrata.' },
-  { ruta: 'Más → Configuración → Tu acceso y usuarios', href: '/dashboard/configuracion/acceso', descripcion: 'Qué puedes ver y cambiar en la empresa y, si eres administrador, quién más entra.' },
+  { ruta: 'Más → Configuración → Usuarios', href: '/dashboard/configuracion/usuarios', descripcion: 'Solo administradores: alta de usuarios en la empresa, su perfil, lo que pueden ver y cambiar, y su contraseña provisional.' },
+  { ruta: 'Más → Configuración → Tu acceso', href: '/dashboard/configuracion/acceso', descripcion: 'Qué puedes ver y cambiar en la empresa y, si eres administrador, quién más entra.' },
 ];
 
 /** Prefijos de rutas con identificador que también existen (/dashboard/facturas/{id}...). */
