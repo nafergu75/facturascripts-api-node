@@ -79,11 +79,23 @@ export interface AnalisisCarga {
   huella: string;
 }
 
-/** Cuenta de amortizacion acumulada y de dotacion que le tocan a un bien por su cuenta (213x -> 2813x y 681x). */
+/**
+ * Bienes que no se amortizan: terrenos (210, 220), inmovilizado en curso y
+ * anticipos (23x, 209) y los que vienen con coeficiente 0.
+ */
+export function noSeAmortiza(cuentaBien: string, coeficiente?: number): boolean {
+  return /^(210|220|23|209)/.test(cuentaBien) || coeficiente === 0;
+}
+
+/**
+ * Cuenta de amortizacion acumulada y de dotacion que le tocan a un bien por su
+ * cuenta (213x -> 2813x y 681x; 206 -> 2806 y 680). Las inversiones
+ * inmobiliarias (22x) van a la 282, que el PGC no subdivide.
+ */
 export function cuentasDeAmortizacion(cuentaBien: string): { amortAcum: string; dotacion: string } {
   const largo = Math.max(cuentaBien.length, 4);
   const grupo = cuentaBien.slice(1, 2); // 0 intangible, 1 material, 2 inversiones inmobiliarias
-  const sub = cuentaBien.slice(2, 3);
+  const sub = grupo === '2' ? '' : cuentaBien.slice(2, 3);
   return { amortAcum: `28${grupo}${sub}`.padEnd(largo, '0'), dotacion: `68${grupo}`.padEnd(largo, '0') };
 }
 
@@ -156,8 +168,20 @@ export async function analizarCarga(
         sinCuenta++;
         continue;
       }
+      // Terrenos, inmovilizado en curso o coeficiente 0: sin cuentas de amortizacion (no existen en el PGC).
+      if (noSeAmortiza(a.cuentaBien, a.coeficiente) && !a.cuentaAmortAcum) {
+        activos.push({ ...a, cuentaBien: a.cuentaBien, coeficiente: 0, cuentaAmortAcum: '', cuentaDotacion: '' });
+        continue;
+      }
       const d = cuentasDeAmortizacion(a.cuentaBien);
-      activos.push({ ...a, cuentaBien: a.cuentaBien, cuentaAmortAcum: a.cuentaAmortAcum ?? d.amortAcum, cuentaDotacion: a.cuentaDotacion ?? d.dotacion });
+      // Sin la cuenta en el fichero: si la que le toca no tiene saldo y la gestoria usa una sola 28x
+      // de ese tipo (2811000000 para todo el material, 2820000000...), la de la gestoria.
+      let amortAcum = a.cuentaAmortAcum ?? d.amortAcum;
+      if (!a.cuentaAmortAcum && saldos && !saldosApertura.has(amortAcum)) {
+        const conSaldo = [...saldosApertura.keys()].filter((c) => c.startsWith(amortAcum.slice(0, 3)));
+        if (conSaldo.length === 1) amortAcum = conSaldo[0];
+      }
+      activos.push({ ...a, cuentaBien: a.cuentaBien, cuentaAmortAcum: amortAcum, cuentaDotacion: a.cuentaDotacion ?? d.dotacion });
     }
     const suma = (clave: (a: ActivoResuelto) => string, valor: (a: ActivoResuelto) => number) => {
       const m = new Map<string, number>();
@@ -171,6 +195,7 @@ export async function analizarCarga(
         if (aCentimos(fichas) !== aCentimos(saldo)) diferencias.push({ codigo, fichas, saldo, diferencia: round2(fichas - saldo) });
       }
       for (const [codigo, fichas] of suma((a) => a.cuentaAmortAcum, (a) => a.amortAcumulada)) {
+        if (!codigo) continue;
         const saldo = -(saldosApertura.get(codigo) ?? 0);
         if (aCentimos(fichas) !== aCentimos(saldo)) diferencias.push({ codigo, fichas, saldo: round2(saldo), diferencia: round2(fichas - saldo) });
       }
@@ -194,8 +219,8 @@ export async function analizarCarga(
   if (inmovilizado && !inmovilizadoFuera) {
     for (const a of inmovilizado.activos) {
       anadir(a.cuentaBien, a.descripcion);
-      anadir(a.cuentaAmortAcum, '');
-      anadir(a.cuentaDotacion, '');
+      if (a.cuentaAmortAcum) anadir(a.cuentaAmortAcum, '');
+      if (a.cuentaDotacion) anadir(a.cuentaDotacion, '');
     }
   }
   if (saldos && saldos.analisis.lineas.some((l) => l.cuenta === saldos!.analisis.cuenta129)) anadir(saldos.analisis.cuenta129, 'Resultado del ejercicio');
