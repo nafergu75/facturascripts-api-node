@@ -11,6 +11,7 @@ import { redondear2 } from '../../utils/money';
 import { AVISO_NO_FACTURA, sugerirCuentaConRetencion, type GastoExtraido, type TipoDocumentoGasto } from '../gastos-extractor.service';
 import type { InvoiceExtraction } from '../invoice-extractor.service';
 import type { LecturaNormalizada, ResultadoValidacion } from './tipos';
+import { estadoPorConfianza } from './validaciones';
 
 const sumar = (xs: Array<number | null | undefined>) => redondear2(xs.reduce<number>((s, x) => s + (x ?? 0), 0));
 
@@ -52,7 +53,16 @@ export function aGastoExtraido(l: LecturaNormalizada, validaciones: ResultadoVal
     confianza: confianza ?? 0,
     errores: [...new Set(errores)],
     tipoDocumento,
+    direccionProveedor: direccionProveedor(l),
   };
+}
+
+/** Dirección leída del emisor, separada como la ficha del proveedor (calle, CP, municipio y provincia). */
+function direccionProveedor(l: LecturaNormalizada): GastoExtraido['direccionProveedor'] {
+  const d = l.emisor.direccion.valor;
+  if (!d || !(d.calle || d.cp || d.municipio || d.provincia)) return null;
+  const t = (v: string | undefined) => (v ?? '').trim() || null;
+  return { calle: t(d.calle), cp: t(d.cp), municipio: t(d.municipio), provincia: t(d.provincia), revisar: estadoPorConfianza(l.emisor.direccion).nivel !== 'ok' };
 }
 
 export interface TramoGasto {
