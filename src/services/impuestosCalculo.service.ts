@@ -93,6 +93,28 @@ export function cuotaAutoliquidadaCentimos(l: { tipoIva: number; base: number; c
   return Math.sign(base) * Math.round((Math.abs(base) * tipoAutoliquidado(l)) / 100);
 }
 
+/**
+ * IVA que autoliquida la empresa en una adquisicion intracomunitaria, por tipo
+ * (el de tipoAutoliquidado), para el asiento: la suma de cuotaAutoliquidadaCentimos
+ * de las lineas, la misma cifra de [11] y [37] del 303. Solo las lineas sin
+ * cuota en la factura: si el proveedor la cobro (facturas antiguas, hoy el alta
+ * no lo admite), esa cuota ya va a la 472 y al proveedor y no se autoliquida.
+ */
+export function autoliquidacionPorTipo(lineas: Array<{ tipoIva: number; baseLine: number; ivaImporte: number }>): Array<{ tipoIva: number; base: number; cuota: number }> {
+  const porTipo = new Map<number, { base: number; cuota: number }>();
+  for (const l of lineas) {
+    if (aCentimos(l.ivaImporte) !== 0 || aCentimos(l.baseLine) === 0) continue;
+    const tipo = tipoAutoliquidado(l);
+    const t = porTipo.get(tipo) ?? { base: 0, cuota: 0 };
+    t.base += aCentimos(l.baseLine);
+    t.cuota += cuotaAutoliquidadaCentimos({ tipoIva: l.tipoIva, base: l.baseLine, cuota: 0 });
+    porTipo.set(tipo, t);
+  }
+  return [...porTipo]
+    .filter(([, t]) => t.cuota !== 0)
+    .map(([tipoIva, t]) => ({ tipoIva, base: t.base / 100, cuota: t.cuota / 100 }));
+}
+
 /** Aviso del 303 y del 390 cuando hay compras intracomunitarias sin IVA en la factura (base en centimos). */
 export function avisoIntraSinCuota(baseCentimos: number): string {
   return `Hay compras a proveedores de otros países de la UE sin IVA en la factura (base ${eur(baseCentimos / 100)}): la app calcula su IVA al tipo de la línea o, si no lo tiene, al 21 %, lo autoliquida en las casillas [10]/[11] y, si es deducible, lo deduce en [36]/[37]. Si el tipo que corresponde es otro, ponlo en la factura.`;

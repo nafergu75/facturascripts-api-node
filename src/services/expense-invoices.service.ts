@@ -20,6 +20,7 @@ import {
 } from '../domain/factura-gasto.model';
 import { esFechaReal, validarFacturaGasto, type FacturaGastoBody } from '../schemas/factura-gasto.schemas';
 import { contabilizarFacturaGasto, desgloseIvaPorTipo } from './accounting-engine.service';
+import { autoliquidacionPorTipo, clasificarCompra } from './impuestosCalculo.service';
 import { asegurarPlanContableEmpresa } from './chart-of-accounts.service';
 import { tieneCobrosActivos } from './cobrosPagos.service';
 import { comprobarFechaAbierta, periodoNoAbierto } from './periodos.service';
@@ -557,7 +558,7 @@ const NOMBRE_CUENTA = new Map(PGC_BASE.map((n) => [n.code, n.name]));
  */
 export function datosContablesGasto(
   f: FacturaConLineas,
-  s: { id: string; nifCif: string; nombreFiscal: string },
+  s: { id: string; nifCif: string; nombreFiscal: string; pais?: string | null },
   extra: {
     estadoAsiento: 'POSTED' | 'DRAFT';
     numeroAsiento?: string;
@@ -598,6 +599,11 @@ export function datosContablesGasto(
       tipoRetencion: f.tipoRetencion,
       lineas: f.lineas.map((l) => ({ tipoRetencion: l.tipoRetencion, baseLine: Number(l.baseLine), retencionImporte: Number(l.retencionImporte) })),
     }),
+    // Adquisicion intracomunitaria (misma clasificacion que el 303 en su fecha
+    // contable): el IVA que autoliquida la empresa va a la 472 y a la 477.
+    ...(clasificarCompra(fechaContableGasto(f), s.pais, s.nifCif) === 'intracomunitaria'
+      ? { autoliquidacion: autoliquidacionPorTipo(f.lineas.map((l) => ({ tipoIva: l.tipoIva, baseLine: Number(l.baseLine), ivaImporte: Number(l.ivaImporte) }))) }
+      : {}),
     estadoAsiento: extra.estadoAsiento,
     ...(extra.numeroAsiento ? { numeroAsiento: extra.numeroAsiento } : {}),
     ...(extra.cuentaAcreedor ? { cuentaAcreedor: extra.cuentaAcreedor } : {}),
@@ -616,7 +622,7 @@ export async function datosContablesGastoConSubcuenta(
   tx: TransaccionBD,
   companyId: string,
   f: FacturaConLineas,
-  s: { id: string; nifCif: string; nombreFiscal: string },
+  s: { id: string; nifCif: string; nombreFiscal: string; pais?: string | null },
   extraSinNombres: { estadoAsiento: 'POSTED' | 'DRAFT'; numeroAsiento?: string; cuentaAcreedor?: string | null },
 ): Promise<Parameters<typeof contabilizarFacturaGasto>[2]> {
   // Cuentas de gasto con el nombre del plan (las subcuentas propias llevan el suyo).
