@@ -47,7 +47,7 @@ import {
 } from '../../aeat/modelo202/modelo202.dr';
 import { ErrorDisenoRegistro } from '../../aeat/common/disenoRegistro';
 import { avisoPresentado, declaranteEmpresa, filaModelo, opcionesDe, presentacionDe } from './comun';
-import { contextoDeclaracion, type ContextoDeclaracion } from '../declaracionesAeat/declaraciones.service';
+import { contextoDeclaracion, filaPresentada, type ContextoDeclaracion } from '../declaracionesAeat/declaraciones.service';
 
 export interface Opciones202 {
   modalidad: 'A' | 'B';
@@ -103,7 +103,8 @@ export function perfilSociedad(ejercicio: number, incn: number | null): { marcas
 async function cifraNegocios(companyId: string, ejercicio: number): Promise<number | null> {
   const previo = await prisma.priorYearData.findUnique({ where: { companyId_ejercicio: { companyId, ejercicio } }, select: { ingresos: true } });
   if (previo && Number(previo.ingresos) > 0) return Number(previo.ingresos);
-  const m200 = await filaModelo(companyId, '200', ejercicio, '0A');
+  // Lo presentado del 200 (también con una rectificativa en preparación) y, si no, su fila de trabajo.
+  const m200 = (await filaPresentada(companyId, '200', ejercicio, '0A')) ?? (await filaModelo(companyId, '200', ejercicio, '0A'));
   const incn = (m200?.datos as { pyg?: { importeNetoCifraNegocios?: number } } | null)?.pyg?.importeNetoCifraNegocios;
   return typeof incn === 'number' ? incn : null;
 }
@@ -146,9 +147,15 @@ export async function calcularBorrador202(companyId: string, ejercicio: number, 
   if (opciones.baseManual !== null) {
     base = { origen: 'manual', ejercicio200: ej200, importe: opciones.baseManual };
   } else {
-    const m200 = await filaModelo(companyId, '200', ej200, '0A');
+    // La última declaración presentada del 200 (del historial): con una
+    // rectificativa en preparación, ModeloImpuesto vuelve a 'vigente', pero lo
+    // presentado sigue siendo la base.
+    const m200 = await filaPresentada(companyId, '200', ej200, '0A');
     const d = m200?.datos as { cuotaLiquida?: number; retenciones?: number } | null;
-    if (m200?.estado === 'presentado' && typeof d?.cuotaLiquida === 'number') {
+    if (m200 && typeof d?.cuotaLiquida === 'number') {
+      if (m200.rectificacionEnCurso) {
+        avisos.push(`Hay una rectificativa del 200 de ${ej200} en preparación: la base sale del 200 presentado. Cuando presentes la rectificativa, revisa este 202.`);
+      }
       if (typeof d.retenciones === 'number') {
         // Art. 40.2 LIS: cuota menos deducciones, bonificaciones, retenciones e ingresos a cuenta.
         const importe = Math.max(0, Math.round(d.cuotaLiquida * 100) - Math.round(d.retenciones * 100)) / 100;
