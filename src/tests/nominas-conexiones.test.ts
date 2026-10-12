@@ -101,6 +101,8 @@ describe('111: rendimientos del trabajo (casillas 01-06)', () => {
   it('vencimientos: 111 el dia 20 del mes siguiente al trimestre; RLC el ultimo dia del mes siguiente', () => {
     expect(vencimiento111(2026, 1)).toBe('2026-04-20');
     expect(vencimiento111(2026, 4)).toBe('2027-01-20');
+    // 20-7-2025 fue domingo: el 2T de 2025 vencía el lunes 21.
+    expect(vencimiento111(2025, 2)).toBe('2025-07-21');
     expect(fechaCargoPorDefecto(2026, 1)).toBe('2026-02-28');
     expect(fechaCargoPorDefecto(2026, 12)).toBe('2027-01-31');
   });

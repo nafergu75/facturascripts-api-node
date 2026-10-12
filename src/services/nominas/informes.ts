@@ -14,6 +14,7 @@ import { prisma } from '../../config/database';
 import { badRequest, notFound } from '../../utils/http-errors';
 import { aCentimos } from '../../utils/money';
 import { hoyEspana } from '../../utils/fechas';
+import { plazoAeat } from '../../domain/plazosAeat';
 import { CAMPOS_IMPORTE, type ImportesNomina } from '../../domain/nominas.model';
 import { nombreCompleto } from '../empleados.service';
 import { cuadreNomina } from './calculo';
@@ -208,9 +209,12 @@ export interface PagoPrevisto {
   vencido: boolean;
 }
 
-/** Fecha limite del 111 de un trimestre (dia 20 del mes siguiente; el 4T, el 20 de enero). */
+/**
+ * Fecha limite del 111 de un trimestre: dia 20 del mes siguiente (el 4T, el 20
+ * de enero) o, si cae en sabado, domingo o fiesta nacional, el siguiente habil.
+ */
 export function vencimiento111(ejercicio: number, trimestre: number): string {
-  return trimestre === 4 ? `${ejercicio + 1}-01-20` : `${ejercicio}-${mm(trimestre * 3 + 1)}-20`;
+  return plazoAeat(trimestre === 4 ? `${ejercicio + 1}-01-20` : `${ejercicio}-${mm(trimestre * 3 + 1)}-20`);
 }
 
 /**
