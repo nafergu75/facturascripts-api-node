@@ -253,3 +253,48 @@ export function lineasDiferencia(original: LineaRect[], corregida: LineaRect[]):
   }
   return { lineas, avisos };
 }
+
+// ---------------------------------------------------------------------------
+// Retencion de un abono en el 111 y el 115 (decision P1 del usuario)
+// ---------------------------------------------------------------------------
+
+const euroTexto = (c: number) => {
+  const [e, d] = (Math.abs(c) / 100).toFixed(2).split('.');
+  return `${c < 0 ? '-' : ''}${e.replace(/\B(?=(\d{3})+(?!\d))/g, '.')},${d} €`;
+};
+
+/**
+ * Casilla del 111 o del 115 con abonos: la retencion de un abono resta en el
+ * periodo de su fecha contable, como mucho hasta cero. Lo que no cabe (en
+ * centimos) no se resta en ningun otro periodo: se recupera rectificando el
+ * modelo en que se declaro.
+ */
+export function topeCero(centimos: number): { valor: number; exceso: number } {
+  return centimos < 0 ? { valor: 0, exceso: -centimos } : { valor: centimos, exceso: 0 };
+}
+
+/** Periodo de una fecha como lo lee la persona: «4T de 2026». */
+export const periodoTexto = (fecha: string) => `${Math.ceil(Number(fecha.slice(5, 7)) / 3)}T de ${fecha.slice(0, 4)}`;
+
+/**
+ * Aviso del exceso de retencion de los abonos de un periodo (en centimos):
+ * cuanto restan, cuanto se ha podido restar, donde se recupera el resto y que
+ * hacer en la contabilidad (de la 4751 a la 4709).
+ */
+export function avisoExcesoRetencion(r: {
+  modelo: '111' | '115';
+  abonos: Array<{ numero: string; retencion: number; fechaOriginal: string | null }>;
+  restado: number;
+  exceso: number;
+}): string {
+  const total = r.abonos.reduce((a, x) => a + Math.abs(x.retencion), 0);
+  const nums = r.abonos.map((a) => a.numero);
+  const quien = nums.length === 1 ? `La rectificativa ${nums[0]} resta` : `Las rectificativas ${nums.slice(0, -1).join(', ')} y ${nums[nums.length - 1]} restan`;
+  const periodos = [...new Set(r.abonos.map((a) => (a.fechaOriginal ? periodoTexto(a.fechaOriginal) : null)).filter((x): x is string => !!x))];
+  const donde = periodos.length ? `del ${r.modelo} ${periodos.length === 1 ? `del ${periodos[0]}` : `de ${periodos.join(', ')}`}, en el que se declararon` : `del ${r.modelo} en el que se declararon`;
+  return (
+    `${quien} ${euroTexto(total)} de retención y en este periodo solo se pueden restar ${euroTexto(r.restado)}. ` +
+    `Los ${euroTexto(r.exceso)} restantes no se restan en ningún otro periodo: se recuperan pidiendo la rectificación ${donde} (art. 120.3 LGT). ` +
+    'En la contabilidad, pásalos de la 4751 a la 4709 (Hacienda deudora por devolución de impuestos).'
+  );
+}
