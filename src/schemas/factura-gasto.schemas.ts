@@ -10,7 +10,17 @@ import { z } from 'zod';
 import { TIPOS_GASTO, TIPO_GASTO_INFO, TIPOS_IVA_GASTO, type TipoGasto } from '../domain/factura-gasto.model';
 import { badRequest } from '../utils/http-errors';
 import { aCentimos } from '../utils/money';
-import { r2GastoConSigno } from '../domain/rectificativa-gasto.model';
+import {
+  CAUSA_INFO,
+  CAUSAS_NO_ADMITIDAS,
+  TEXTO_IMPAGO_CONCURSO,
+  TIPOS_RECTIFICATIVA,
+  esCausa,
+  lineasDiferencia,
+  r2GastoConSigno,
+  sentido,
+  type Causa,
+} from '../domain/rectificativa-gasto.model';
 
 /** true si AAAA-MM-DD es una fecha que existe (no 2026-02-30). */
 export function esFechaReal(s: string): boolean {
@@ -35,7 +45,8 @@ const LineaSchema = z.object({
     .min(1, 'Falta la descripción de la línea.')
     .max(500, 'La descripción de la línea es demasiado larga (500 caracteres como mucho).'),
   cantidad: numero('la cantidad').positive('La cantidad tiene que ser mayor que cero.').max(1_000_000, 'La cantidad es demasiado grande.'),
-  precioUnitario: numero('el precio').min(0, 'El precio no puede ser negativo.').max(1e10, 'El precio es demasiado grande.'),
+  // Con signo solo en los abonos y rectificativas (se comprueba en validarFacturaGasto).
+  precioUnitario: numero('el precio').min(-1e10, 'El precio es demasiado grande.').max(1e10, 'El precio es demasiado grande.'),
   descuentoPorcentaje: numero('el descuento').min(0, 'El descuento va de 0 a 100 %.').max(100, 'El descuento va de 0 a 100 %.').default(0),
   tipoIva: numero('el IVA').refine((v) => (TIPOS_IVA_GASTO as readonly number[]).includes(v), 'El IVA tiene que ser 0, 4, 5, 10 o 21 %.'),
   tipoRetencion: numero('la retención').int('La retención tiene que ser un porcentaje entero.').min(0, 'La retención no puede ser negativa.').max(50, 'La retención no puede pasar del 50 %.').default(0),
@@ -52,6 +63,48 @@ const ProveedorSchema = z
     { required_error: 'Elige el proveedor de la factura.', invalid_type_error: 'Elige el proveedor de la factura.' },
   )
   .refine((p) => !!p.id !== !!p.nuevo, 'Elige un proveedor dado de alta o da de alta uno nuevo.');
+
+const OriginalSchema = z.object({
+  /** Factura de la app. */
+  id: z.string().trim().min(1).optional(),
+  /** Factura de fuera de la app: numero que puso el proveedor y fecha de expedicion. */
+  numero: z
+    .string()
+    .trim()
+    .min(1, 'Escribe el número de la factura que rectifica.')
+    .max(60, 'El número de la factura que rectifica es demasiado largo (60 caracteres como mucho).')
+    .optional(),
+  fecha: fecha('la fecha de la factura que rectifica').optional(),
+  /** Reparto de la rectificacion entre varias originales, con signo. */
+  base: numero('la base del reparto').optional(),
+  cuota: numero('la cuota del reparto').optional(),
+  retencion: numero('la retención del reparto').optional(),
+});
+
+const LineasCompletas = (nombre: string) =>
+  z.object({
+    lineas: z
+      .array(LineaSchema, { required_error: `Faltan las líneas de ${nombre}.`, invalid_type_error: `Faltan las líneas de ${nombre}.` })
+      .min(1, `Faltan las líneas de ${nombre}.`)
+      .max(200, 'Una factura admite como mucho 200 líneas.'),
+  });
+
+/** Bloque de un abono o rectificativa de proveedor (domain/rectificativa-gasto.model.ts). */
+const RectificativaSchema = z.object({
+  tipo: z.enum(TIPOS_RECTIFICATIVA, { errorMap: () => ({ message: 'Elige si la rectificativa es por diferencias o por sustitución.' }) }),
+  causa: z.string({ required_error: 'Elige la causa de la rectificación.', invalid_type_error: 'Elige la causa de la rectificación.' }),
+  motivo: z.string().trim().max(500, 'El motivo es demasiado largo (500 caracteres como mucho).').optional(),
+  originales: z.array(OriginalSchema).max(50, 'Una rectificativa puede rectificar como mucho 50 facturas.').default([]),
+  periodo: z.object({ desde: fecha('el inicio del periodo'), hasta: fecha('el final del periodo') }).optional(),
+  corregida: LineasCompletas('la factura corregida').optional(),
+  importesOriginales: LineasCompletas('la factura original').optional(),
+  /** La pantalla lo manda tras el 409 rectificar_303 (seccion 11). */
+  confirmaRectificar303: z.boolean().optional(),
+  /** Original de fuera: false = «No, se descuenta de lo que le debo» (compensacion de fuera). */
+  yaPagada: z.boolean().optional(),
+});
+
+export type RectificativaBody = Omit<z.infer<typeof RectificativaSchema>, 'causa'> & { causa: Causa };
 
 export const FacturaGastoSchema = z.object({
   proveedor: ProveedorSchema,
@@ -79,10 +132,18 @@ export const FacturaGastoSchema = z.object({
   totalDocumento: numero('el total de la factura').optional(),
   /** Serie del registro interno (por defecto 'G'). No se cambia al modificar. */
   serie: z.string().regex(/^[A-Z0-9]{1,10}$/, 'La serie tiene que ser de 1 a 10 letras mayúsculas o cifras.').optional(),
+  /** Abono o rectificativa de proveedor. Sin el, una factura normal. */
+  rectificativa: RectificativaSchema.optional(),
 });
 
-export type FacturaGastoBody = z.infer<typeof FacturaGastoSchema>;
-export type LineaGastoBody = z.infer<typeof LineaSchema>;
+/** Linea validada. `ivaFijado` solo lo pone el servidor (diferencias de una sustitucion). */
+export type LineaGastoBody = z.infer<typeof LineaSchema> & { ivaFijado?: number };
+export type FacturaGastoBody = Omit<z.infer<typeof FacturaGastoSchema>, 'lineas' | 'rectificativa'> & {
+  lineas: LineaGastoBody[];
+  rectificativa?: RectificativaBody;
+  /** Avisos que no impiden el alta (por ejemplo, la cuota de una diferencia por redondeo). */
+  avisos?: string[];
+};
 
 /**
  * Totales de una factura de gasto (el mismo redondeo que el alta: por linea y
@@ -124,13 +185,26 @@ export function validarFacturaGasto(
   const bruto = { ...((cuerpo ?? {}) as Record<string, unknown>) };
   if (bruto.proveedor === undefined && bruto.provider !== undefined) bruto.proveedor = bruto.provider;
   if (!opciones.permitirSerie) delete bruto.serie;
+  if (bruto.rectificativa === null) delete bruto.rectificativa;
+  // Sustitucion: las lineas del cuerpo son las de la factura corregida (despues se cambian por la diferencia).
+  const rb = bruto.rectificativa as { tipo?: unknown; corregida?: { lineas?: unknown } } | undefined;
+  if (rb && typeof rb === 'object' && rb.tipo === 'S') {
+    if (!rb.corregida?.lineas) throw error('Por sustitución hacen falta las líneas de la factura corregida.', 'rectificativa.corregida');
+    bruto.lineas = rb.corregida.lineas;
+  }
 
   const r = FacturaGastoSchema.safeParse(bruto);
   if (!r.success) {
     const primero = r.error.issues[0];
     throw error(primero.message, primero.path.join('.') || 'cuerpo', r.error.flatten());
   }
-  const d = r.data;
+  const d = r.data as FacturaGastoBody;
+  if (!d.rectificativa) {
+    const i = d.lineas.findIndex((l) => l.precioUnitario < 0);
+    if (i >= 0) throw error('El precio no puede ser negativo.', `lineas.${i}.precioUnitario`);
+  } else {
+    validarBloqueRectificativa(d);
+  }
 
   if (d.fechaRegistro && d.fechaRegistro < d.fechaEmision) {
     throw error('La fecha de registro no puede ser anterior a la fecha de la factura.', 'fechaRegistro');
@@ -170,9 +244,16 @@ export function validarFacturaGasto(
       );
     }
   }
+  if (d.rectificativa) {
+    comprobarImportesRectificativa(d);
+    return d;
+  }
   const t = totalesLineas(d.lineas);
   if (aCentimos(t.base) <= 0) {
-    throw error('El importe tiene que ser mayor que cero. Las facturas rectificativas de proveedor aún no están disponibles.', 'lineas');
+    throw error(
+      'El importe tiene que ser mayor que cero. Si es un abono o una rectificativa del proveedor, regístrala como abono: Compras › Nueva › Abono o rectificativa.',
+      'lineas',
+    );
   }
   if (d.totalDocumento !== undefined && Math.abs(aCentimos(d.totalDocumento) - aCentimos(t.total)) > 2) {
     throw error(
@@ -181,4 +262,123 @@ export function validarFacturaGasto(
     );
   }
   return d;
+}
+
+const ddmmaaaa = (f: string) => `${f.slice(8, 10)}/${f.slice(5, 7)}/${f.slice(0, 4)}`;
+
+/**
+ * Reglas del bloque `rectificativa` que no necesitan la BD (seccion 7.2 de la
+ * especificacion): causa, tipo, originales o periodo, fechas y, en la
+ * sustitucion con una original de fuera, las lineas de diferencia. Las que
+ * miran las originales de la app (empresa, proveedor, anuladas, lo pendiente)
+ * van en el alta.
+ */
+function validarBloqueRectificativa(d: FacturaGastoBody): void {
+  const r = d.rectificativa!;
+  const causa = String(r.causa ?? '').trim().toUpperCase();
+  if ((CAUSAS_NO_ADMITIDAS as readonly string[]).includes(causa)) throw error(TEXTO_IMPAGO_CONCURSO, 'rectificativa.causa');
+  if (!esCausa(causa)) throw error('Elige la causa de la rectificación.', 'rectificativa.causa');
+  r.causa = causa;
+
+  if (r.originales.length && r.periodo) {
+    throw error('Indica las facturas que rectifica o el periodo, no las dos cosas.', 'rectificativa.periodo');
+  }
+  if (!r.originales.length && !r.periodo) {
+    throw error('Indica qué factura rectifica, o el periodo si es un descuento por volumen.', 'rectificativa.originales');
+  }
+  if (r.periodo) {
+    if (!CAUSA_INFO[causa].admitePeriodo) {
+      throw error('Un periodo solo vale para un rappel o un descuento por volumen: indica la factura que rectifica.', 'rectificativa.periodo');
+    }
+    if (r.periodo.hasta < r.periodo.desde) throw error('El final del periodo no puede ser anterior al inicio.', 'rectificativa.periodo.hasta');
+    if (r.tipo === 'S') throw error('Una rectificativa por sustitución corrige una factura concreta: indica cuál.', 'rectificativa.periodo');
+  }
+  r.originales.forEach((o, i) => {
+    if (o.id) return;
+    if (!o.numero) throw error('Escribe el número de la factura que rectifica.', `rectificativa.originales.${i}.numero`);
+    if (!o.fecha) throw error('Indica la fecha de la factura que rectifica.', `rectificativa.originales.${i}.fecha`);
+    if (o.fecha > d.fechaEmision) {
+      throw error(`La rectificativa no puede tener fecha anterior a la de la factura que rectifica (${ddmmaaaa(o.fecha)}).`, 'fechaEmision');
+    }
+  });
+  if (r.tipo === 'S') {
+    if (r.originales.length !== 1) throw error('Una rectificativa por sustitución corrige una sola factura.', 'rectificativa.originales');
+    const o = r.originales[0];
+    if (!o.id && !r.importesOriginales) {
+      throw error('La factura original no está en la app: escribe sus líneas para calcular la diferencia.', 'rectificativa.importesOriginales');
+    }
+    if (r.importesOriginales?.lineas.some((l) => l.precioUnitario < 0) || r.corregida?.lineas.some((l) => l.precioUnitario < 0)) {
+      throw error('En una rectificativa por sustitución, las dos facturas van con sus importes en positivo.', 'rectificativa.corregida');
+    }
+    if (!o.id) {
+      const dif = lineasDiferencia(r.importesOriginales!.lineas, r.corregida!.lineas);
+      d.lineas = dif.lineas.map((l) => ({ ...l, descuentoPorcentaje: 0, tipoRetencion: l.tipoRetencion ?? 0 }));
+      if (dif.avisos.length) d.avisos = [...(d.avisos ?? []), ...dif.avisos];
+    }
+  }
+}
+
+/** Base, IVA (con la cuota fijada de las lineas de diferencia) y retencion de unas lineas, con signo. */
+export function totalesRectificativa(lineas: LineaGastoBody[]): { base: number; iva: number; retencion: number; total: number } {
+  let base = 0;
+  let iva = 0;
+  let ret = 0;
+  for (const l of lineas) {
+    const t = totalesLineas([l]);
+    base += aCentimos(t.base);
+    iva += l.ivaFijado !== undefined ? aCentimos(r2GastoConSigno(l.ivaFijado)) : aCentimos(t.iva);
+    ret += aCentimos(t.retencion);
+  }
+  return { base: base / 100, iva: iva / 100, retencion: ret / 100, total: (base + iva - ret) / 100 };
+}
+
+/**
+ * Reglas de importes de una rectificativa con las lineas ya definitivas (en la
+ * sustitucion, la diferencia): que cambie algun importe, el signo segun la
+ * causa, el total del documento y el reparto entre originales. La usan
+ * validarFacturaGasto y el alta de una sustitucion con la original en la app,
+ * despues de calcular la diferencia.
+ */
+export function comprobarImportesRectificativa(d: FacturaGastoBody): void {
+  const r = d.rectificativa!;
+  const { base, iva, total } = totalesRectificativa(d.lineas);
+  if (d.lineas.length === 0 || (aCentimos(base) === 0 && aCentimos(iva) === 0)) {
+    throw error(
+      'Esta rectificativa no cambia ningún importe: no se registra como abono. Guarda el documento junto a la factura original y, si cambia algún dato que no es fiscal (la dirección, por ejemplo), corrígelo en la ficha del proveedor.',
+      'lineas',
+    );
+  }
+  if (CAUSA_INFO[r.causa].soloBaja && r.tipo === 'I' && sentido(base, iva) !== 'ABONO') {
+    throw error('Un descuento o una devolución resta: revisa el signo.', 'lineas');
+  }
+  if (d.totalDocumento !== undefined) {
+    // Por sustitucion, el documento trae el total de la factura corregida.
+    const esperado = r.tipo === 'S' && r.corregida ? totalesLineas(r.corregida.lineas).total : total;
+    if (Math.abs(aCentimos(d.totalDocumento) - aCentimos(esperado)) > 2) {
+      throw error(
+        `El total calculado (${eur(esperado)}) no coincide con el de la factura (${eur(d.totalDocumento)}): revisa las bases, el IVA, la retención y el signo.`,
+        'totalDocumento',
+      );
+    }
+  }
+  if (r.originales.length > 1 && r.originales.some((o) => o.base !== undefined || o.cuota !== undefined)) {
+    const i = r.originales.findIndex((o) => o.base === undefined);
+    if (i >= 0) throw error('Indica la base que corresponde a cada factura, o deja que la app la reparta.', `rectificativa.originales.${i}.base`);
+    const sumaBase = r.originales.reduce((a, o) => a + aCentimos(o.base ?? 0), 0);
+    if (sumaBase !== aCentimos(base)) {
+      throw error(
+        `El reparto entre las facturas que rectifica (${eur(sumaBase / 100)}) no suma la base de la rectificativa (${eur(base)}).`,
+        'rectificativa.originales',
+      );
+    }
+    if (r.originales.every((o) => o.cuota !== undefined)) {
+      const sumaCuota = r.originales.reduce((a, o) => a + aCentimos(o.cuota ?? 0), 0);
+      if (sumaCuota !== aCentimos(iva)) {
+        throw error(
+          `El reparto del IVA entre las facturas que rectifica (${eur(sumaCuota / 100)}) no suma el IVA de la rectificativa (${eur(iva)}).`,
+          'rectificativa.originales',
+        );
+      }
+    }
+  }
 }
