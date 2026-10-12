@@ -39,6 +39,7 @@ import {
   subcuentasSinEnlazar,
   tercerosDesdeJson,
 } from '../services/puestaEnMarcha/planAnterior';
+import { validarEjercicio } from '../utils/anios';
 
 type ConFichero = Request & { file?: { buffer: Buffer; originalname: string } };
 
@@ -131,11 +132,8 @@ async function entradaPlan(req: ConFichero) {
   throw badRequest('Adjunta el fichero del plan de cuentas en el campo "archivo".');
 }
 
-function ejercicioDe(raw: unknown): number {
-  const e = Number(raw);
-  if (!Number.isInteger(e)) throw badRequest('Parámetro "ejercicio" no válido.');
-  return e;
-}
+/** Ejercicio de la petición: de 1990 al año que viene (hora de España). */
+const ejercicioDe = (raw: unknown): number => validarEjercicio(raw);
 
 export const puestaEnMarchaController = {
   /** POST /subidas — un trozo de un fichero grande (campo "trozo"). */

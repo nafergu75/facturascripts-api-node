@@ -11,9 +11,10 @@
 import { fechaTexto } from '../../utils/fechas';
 import type { Response } from 'express';
 import { prisma } from '../../config/database';
-import { badRequest, conflict, forbidden } from '../../utils/http-errors';
+import { conflict, forbidden } from '../../utils/http-errors';
 import { erroresContactoAeat } from '../../aeat/common/normalizacion';
 import { contextoDeclaracion, incluyeRegistro, type ContextoDeclaracion } from '../declaracionesAeat/declaraciones.service';
+import { validarEjercicio } from '../../utils/anios';
 
 export interface DeclaranteEmpresa {
   nif: string;
@@ -108,9 +109,7 @@ export async function guardarOpciones(companyId: string, codigo: string, ejercic
 
 /** Ejercicio de la peticion (año de cuatro cifras). */
 export function ejercicioDe(raw: unknown): number {
-  const e = Number(raw);
-  if (!Number.isInteger(e) || e < 2000 || e > 2100) throw badRequest('Indica el ejercicio (año con cuatro cifras).');
-  return e;
+  return validarEjercicio(raw);
 }
 
 /** Fichero de texto en ISO-8859-1 (la Ñ y la Ç en un byte), como lo importa la sede. */

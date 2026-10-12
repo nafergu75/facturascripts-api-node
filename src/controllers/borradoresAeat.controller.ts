@@ -17,6 +17,7 @@ import {
 import { DISENO_390 } from '../aeat/oficial/modelo390';
 import { DISENO_200 } from '../aeat/oficial/modelo200';
 import type { PaginaOficial } from '../aeat/oficial/diseno';
+import { validarEjercicio } from '../utils/anios';
 
 /**
  * Borradores de los modelos 347, 390 y 200 con el diseño oficial de la AEAT
@@ -35,11 +36,8 @@ function modeloDe(req: Request): Modelo {
   return m as Modelo;
 }
 
-function ejercicioDe(req: Request): number {
-  const e = Number(req.query.ejercicio);
-  if (!Number.isInteger(e) || e < 2000 || e > 2100) throw badRequest('Indica el ejercicio (por ejemplo, ?ejercicio=2027).');
-  return e;
-}
+/** Ejercicio de la consulta: de 1990 al año que viene (hora de España). */
+const ejercicioDe = (req: Request): number => validarEjercicio(req.query.ejercicio);
 
 const opciones390 = (req: Request): Opciones390 => opciones390De(req.query as Record<string, unknown>);
 const opciones200 = (req: Request): Opciones200 => opciones200De(req.query as Record<string, unknown>);
