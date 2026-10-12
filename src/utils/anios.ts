@@ -17,6 +17,7 @@ import { prisma } from '../config/database';
 import { badRequest } from './http-errors';
 import { anioEspana, hoyEspana } from './fechas';
 import { fiscalYearsService } from '../services/fiscalYears.service';
+import { INICIO_LLEVANZA_APP } from '../domain/calendarioFiscal';
 import type { EstadoEfectivoEjercicio } from '../services/fiscalYears.service';
 
 /** Primer año que se acepta en cualquier pantalla o petición. */
@@ -138,6 +139,41 @@ export async function primerDiaConDatos(companyId: string): Promise<string | nul
     .filter(FECHA_RAZONABLE)
     .map((f) => f.slice(0, 10));
   return fechas.length ? fechas.reduce((a, b) => (b < a ? b : a)) : null;
+}
+
+/**
+ * Inicio en la app cuando la empresa no lo ha indicado: el primer dia con
+ * algo suyo en la app (ejercicio, factura, asiento, banco o nomina) y, si no
+ * tiene nada, el dia en que se dio de alta (hora de España). null si la
+ * empresa no existe.
+ */
+export async function inicioDeducido(companyId: string): Promise<string | null> {
+  const primero = await primerDiaConDatos(companyId);
+  if (primero) return primero;
+  const empresa = await prisma.company.findUnique({ where: { id: companyId }, select: { createdAt: true } });
+  return empresa ? hoyEspana(empresa.createdAt) : null;
+}
+
+/**
+ * Desde cuando lleva la empresa su contabilidad en la app: lo de antes se
+ * llevaba fuera y sus 303 se presentaron fuera (un abono que reduce su IVA
+ * obliga a rectificarlos). Es la fecha que indico en Configuracion > Impuestos
+ * (AjustesFiscales.inicioEnApp). Si no la indico, la que se deduce de sus
+ * datos (inicioDeducido), pero nunca antes del 1-1-2027 (INICIO_LLEVANZA_APP):
+ * 2026 se lleva fuera de la app, aunque haya datos de prueba de ese año, y en
+ * la duda es mejor pedir que se confirme la rectificacion del 303 que no
+ * avisar. Sin datos, el 1-1-2027.
+ */
+export async function inicioLlevanzaApp(companyId: string): Promise<string> {
+  try {
+    const ajustes = await prisma.ajustesFiscales.findUnique({ where: { companyId }, select: { inicioEnApp: true } });
+    if (ajustes?.inicioEnApp) return ajustes.inicioEnApp;
+    const deducido = await inicioDeducido(companyId);
+    return deducido && deducido > INICIO_LLEVANZA_APP ? deducido : INICIO_LLEVANZA_APP;
+  } catch {
+    // Sin BD (tests en memoria): la fecha de siempre.
+    return INICIO_LLEVANZA_APP;
+  }
 }
 
 /** Años de la empresa para los desplegables (GET /companies/:companyId/anios). */
