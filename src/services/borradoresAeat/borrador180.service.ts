@@ -156,7 +156,8 @@ export async function calcularBorrador180(companyId: string, ejercicio: number):
       const ret = desglose.reduce((a, d) => a + cent(d.cuota), 0);
       const fecha = fechaContableGasto(f);
       const activos = inmuebles.filter((i) => i.supplierId === f.supplierId && i.activo);
-      const inmueble = (f.inmuebleArrendadoId && inmuebles.find((i) => i.id === f.inmuebleArrendadoId)) || (activos.length === 1 ? activos[0] : null);
+      // El inmueble guardado en la factura solo vale si es de su arrendador (una factura cambiada de proveedor no arrastra el del anterior).
+      const inmueble = (f.inmuebleArrendadoId && inmuebles.find((i) => i.id === f.inmuebleArrendadoId && i.supplierId === f.supplierId)) || (activos.length === 1 ? activos[0] : null);
       const fila180: FacturaAlquiler180 = {
         id: f.id,
         factura: f.numeroFacturaProveedor ?? f.numeroCompleto,
