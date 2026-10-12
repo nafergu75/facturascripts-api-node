@@ -192,6 +192,10 @@ export function eur(n: number): string {
 
 const error = (mensaje: string, campo: string, errores?: unknown) => badRequest(mensaje, { campo, ...(errores ? { errores } : {}) });
 
+/** Guia para quien mete un abono como factura normal (precio o importe en negativo). */
+export const COMO_ABONO =
+  'Si es un abono o una rectificativa del proveedor, regístrala como abono: Compras › Nueva factura de gasto › Abono o rectificativa.';
+
 /**
  * Valida el cuerpo de una factura de gasto: forma (Zod) y reglas que cruzan
  * campos. `paisProveedor` es el del proveedor elegido o el del nuevo (ISO-2).
@@ -220,7 +224,7 @@ export function validarFacturaGasto(
   const d = r.data as FacturaGastoBody;
   if (!d.rectificativa) {
     const i = d.lineas.findIndex((l) => l.precioUnitario < 0);
-    if (i >= 0) throw error('El precio no puede ser negativo.', `lineas.${i}.precioUnitario`);
+    if (i >= 0) throw error(`El precio no puede ser negativo. ${COMO_ABONO}`, `lineas.${i}.precioUnitario`);
   } else {
     validarBloqueRectificativa(d);
   }
@@ -270,7 +274,7 @@ export function validarFacturaGasto(
   const t = totalesLineas(d.lineas);
   if (aCentimos(t.base) <= 0) {
     throw error(
-      'El importe tiene que ser mayor que cero. Si es un abono o una rectificativa del proveedor, regístrala como abono: Compras › Nueva › Abono o rectificativa.',
+      `El importe tiene que ser mayor que cero. ${COMO_ABONO}`,
       'lineas',
     );
   }

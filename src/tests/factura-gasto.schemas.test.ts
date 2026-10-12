@@ -141,10 +141,10 @@ describe('abonos y rectificativas de proveedor (bloque rectificativa)', () => {
   it('sin el bloque, una factura normal sigue sin admitir precios negativos ni base cero, y explica cómo registrar un abono', () => {
     const c = valida();
     c.lineas[0].precioUnitario = -10;
-    expect(error(c)).toMatchObject({ status: 400, message: 'El precio no puede ser negativo.', campo: 'lineas.0.precioUnitario' });
+    expect(error(c)).toMatchObject({ status: 400, message: 'El precio no puede ser negativo. Si es un abono o una rectificativa del proveedor, regístrala como abono: Compras › Nueva factura de gasto › Abono o rectificativa.', campo: 'lineas.0.precioUnitario' });
     c.lineas[0].precioUnitario = 0;
     expect(error(c).message).toBe(
-      'El importe tiene que ser mayor que cero. Si es un abono o una rectificativa del proveedor, regístrala como abono: Compras › Nueva › Abono o rectificativa.',
+      'El importe tiene que ser mayor que cero. Si es un abono o una rectificativa del proveedor, regístrala como abono: Compras › Nueva factura de gasto › Abono o rectificativa.',
     );
   });
 

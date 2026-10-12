@@ -114,7 +114,7 @@ export const FICHAS: FichaFAQ[] = [
       'nota de abono recibida',
     ],
     respuesta:
-      'Entra en Compras → Nueva y elige «Abono o rectificativa», o abre la factura original y pulsa «Registrar abono o rectificativa». Indica qué factura corrige (o el periodo, si es un rappel), la causa y los importes. El abono resta de lo pendiente de esa factura; si sobra, queda a tu favor: registra la devolución que te haga el proveedor o aplícalo a otra de sus facturas. Si lo lees con el Lector de gastos, propone la factura original.',
+      'Entra en Compras → Nueva factura de gasto y elige «Abono o rectificativa», o abre la factura original y pulsa «Registrar abono o rectificativa». Indica qué factura corrige (o el periodo, si es un rappel), la causa y los importes. El abono resta de lo pendiente de esa factura; si sobra, queda a tu favor: registra la devolución que te haga el proveedor o aplícalo a otra de sus facturas. Si lo lees con el Lector de gastos, propone la factura original.',
     fuente: APP('/dashboard/compras', 'Compras'),
     ...VERIFICADA,
     enlaceApp: { texto: 'Registrar un abono de proveedor', href: '/dashboard/compras/nueva?tipo=rectificativa' },
