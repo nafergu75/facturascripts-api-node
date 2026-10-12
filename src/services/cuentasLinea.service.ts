@@ -109,14 +109,24 @@ export async function listarCuentasLinea(
   filtro: { q?: string; madre?: string } = {},
   opciones: { verUsoContable?: boolean } = {},
 ): Promise<ListadoCuentasLinea> {
-  await asegurarPlanContableEmpresa(companyId);
   const { prefijo, porDefecto } = REGLA[tipo];
   const madre = filtro.madre?.replace(/\D/g, '') || undefined;
-  const filas = await prisma.chartOfAccounts.findMany({
-    where: { companyId, activo: true, codigo: { startsWith: madre ?? prefijo } },
-    select: { codigo: true, nombre: true, parentCodigo: true, esPersonalizadaEmpresa: true },
-    orderBy: { codigo: 'asc' },
+  const filasPlan = await prisma.chartOfAccounts.findMany({
+    where: { companyId, codigo: { startsWith: madre ?? prefijo } },
+    select: { codigo: true, nombre: true, parentCodigo: true, esPersonalizadaEmpresa: true, activo: true },
   });
+  // Sin escribir nada (es un GET): las cuentas del plan base que la empresa aun
+  // no tiene en el suyo se listan desde el plan base; se copian a su plan al
+  // crear una subcuenta o al contabilizar. Una desactivada en su plan no sale.
+  const enPlan = new Set(filasPlan.map((c) => c.codigo));
+  const delBase = PGC_BASE.filter((n) => n.code.startsWith(madre ?? prefijo) && !enPlan.has(n.code)).map((n) => ({
+    codigo: n.code,
+    nombre: n.name,
+    parentCodigo: n.parentCode ?? null,
+    esPersonalizadaEmpresa: false,
+    activo: true,
+  }));
+  const filas = [...filasPlan, ...delBase].filter((c) => c.activo).sort((a, b) => (a.codigo < b.codigo ? -1 : a.codigo > b.codigo ? 1 : 0));
   const q = filtro.q?.trim() ? sinTildes(filtro.q.trim()) : null;
   const todas = filas
     .filter((c) => c.codigo.length >= 3 && c.codigo.startsWith(prefijo))
@@ -178,8 +188,8 @@ export function siguienteCodigoBajo(
   throw badRequest(`No quedan subcuentas libres de ${longitud} dígitos bajo la ${madre}. Habla con tu asesor.`);
 }
 
-/** Cuenta madre valida para el tipo: en el plan de la empresa, activa, de 3 o mas digitos y mas corta que la longitud. */
-async function madreValida(db: Db, companyId: string, tipo: TipoCuentaLinea, madreRaw: unknown, longitud: number) {
+/** Codigo de la cuenta madre pedida, si tiene forma valida: del tipo, de 3 o mas digitos y mas corta que la longitud. */
+function codigoMadre(tipo: TipoCuentaLinea, madreRaw: unknown, longitud: number): string {
   const madre = typeof madreRaw === 'string' || typeof madreRaw === 'number' ? String(madreRaw).replace(/\D/g, '') : '';
   if (!madre) throw badRequest('Indica la cuenta de la que cuelga la subcuenta (por ejemplo, 628).', { campo: 'madre' });
   if (!esCuentaDeTipo(madre, tipo)) {
@@ -188,6 +198,12 @@ async function madreValida(db: Db, companyId: string, tipo: TipoCuentaLinea, mad
   if (madre.length >= longitud) {
     throw badRequest(`La cuenta ${madre} ya es una subcuenta de ${madre.length} dígitos: elige la cuenta de la que cuelga.`, { campo: 'madre' });
   }
+  return madre;
+}
+
+/** Cuenta madre valida para el tipo: en el plan de la empresa, activa, de 3 o mas digitos y mas corta que la longitud. */
+async function madreValida(db: Db, companyId: string, tipo: TipoCuentaLinea, madreRaw: unknown, longitud: number) {
+  const madre = codigoMadre(tipo, madreRaw, longitud);
   const fila = await db.chartOfAccounts.findFirst({ where: { companyId, codigo: madre } });
   if (!fila) throw badRequest(`La cuenta ${madre} no está en tu plan contable.`, { campo: 'madre' });
   if (!fila.activo) throw badRequest(`La cuenta ${madre} está desactivada en tu plan contable.`, { campo: 'madre' });
@@ -204,11 +220,16 @@ export interface PropuestaSubcuenta {
 
 /** Codigo que recibiria ahora una subcuenta nueva bajo `madre`. */
 export async function proponerSubcuenta(companyId: string, tipo: TipoCuentaLinea, madreRaw: unknown): Promise<PropuestaSubcuenta> {
-  await asegurarPlanContableEmpresa(companyId);
+  // Solo lee (es un GET): si la madre aun no esta en el plan de la empresa pero
+  // si en el plan base, vale la del plan base (se copia al crear la subcuenta).
   const longitud = await longitudSubcuentasEmpresa(companyId);
-  const madre = await madreValida(prisma, companyId, tipo, madreRaw, longitud);
-  const plan = await prisma.chartOfAccounts.findMany({ where: { companyId, codigo: { startsWith: madre.codigo } }, select: { codigo: true, parentCodigo: true } });
-  return { tipo, madre: madre.codigo, nombreMadre: madre.nombre, longitud, codigo: siguienteCodigoBajo(madre.codigo, plan, longitud) };
+  const codigo = codigoMadre(tipo, madreRaw, longitud);
+  const fila = await prisma.chartOfAccounts.findFirst({ where: { companyId, codigo }, select: { codigo: true, nombre: true, activo: true } });
+  const nombreMadre = fila ? fila.nombre : NOMBRE_BASE.get(codigo);
+  if (nombreMadre === undefined) throw badRequest(`La cuenta ${codigo} no está en tu plan contable.`, { campo: 'madre' });
+  if (fila && !fila.activo) throw badRequest(`La cuenta ${codigo} está desactivada en tu plan contable.`, { campo: 'madre' });
+  const plan = await prisma.chartOfAccounts.findMany({ where: { companyId, codigo: { startsWith: codigo } }, select: { codigo: true, parentCodigo: true } });
+  return { tipo, madre: codigo, nombreMadre, longitud, codigo: siguienteCodigoBajo(codigo, plan, longitud) };
 }
 
 export interface SubcuentaCreada {

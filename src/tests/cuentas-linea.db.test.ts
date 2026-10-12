@@ -125,6 +125,23 @@ describe('cuentas elegibles y subcuenta nueva', () => {
     expect((await proponerSubcuenta(E, 'servicio', '705')).codigo).toBe('70500011');
   });
 
+  it('los GET no escriben: sin plan todavia, listan y proponen desde el plan base y no lo crean', async () => {
+    const sinPlan = `${E}-sin-plan`;
+    await prisma.company.create({ data: { id: sinPlan, name: 'Sin Plan SL', fsBaseUrl: 'http://localhost', fsApiKeyEnc: 'k' } });
+    const g = await listarCuentasLinea(sinPlan, 'gasto', {}, { verUsoContable: true });
+    expect(g.cuentas.map((c) => c.codigo)).toEqual(expect.arrayContaining(['600', '621', '628', '629']));
+    expect(g.otras.map((c) => c.codigo)).toEqual(expect.arrayContaining(['640']));
+    expect((await listarCuentasLinea(sinPlan, 'venta')).cuentas.map((c) => c.codigo)).toEqual(expect.arrayContaining(['700', '705']));
+    expect(await proponerSubcuenta(sinPlan, 'gasto', '628')).toMatchObject({ madre: '628', codigo: '62800001' });
+    await expect(proponerSubcuenta(sinPlan, 'gasto', '6289')).rejects.toMatchObject({ statusCode: 400, details: { campo: 'madre' } });
+    expect(await prisma.chartOfAccounts.count({ where: { companyId: sinPlan } })).toBe(0);
+    // Una cuenta del plan base desactivada en el de la empresa no sale (aunque el resto falte).
+    await asegurarPlanContableEmpresa(sinPlan);
+    await prisma.chartOfAccounts.updateMany({ where: { companyId: sinPlan, codigo: '629' }, data: { activo: false } });
+    expect((await listarCuentasLinea(sinPlan, 'gasto')).cuentas.map((c) => c.codigo)).not.toContain('629');
+    await expect(proponerSubcuenta(sinPlan, 'gasto', '629')).rejects.toMatchObject({ statusCode: 400, message: expect.stringContaining('desactivada') });
+  });
+
   it('madre de otro tipo, inexistente, sin nombre: 400', async () => {
     await expect(crearSubcuentaLinea(E, { tipo: 'gasto', madre: '700', nombre: 'X' })).rejects.toMatchObject({ statusCode: 400, details: { campo: 'madre' } });
     await expect(crearSubcuentaLinea(E, { tipo: 'venta', madre: '70999', nombre: 'X' })).rejects.toMatchObject({ statusCode: 400 });
