@@ -383,7 +383,7 @@ describe('200 rectificativa: lo ya ingresado va a [01578] y no se pide otra vez'
     expect(campo(pg['01000'], 149, 15)).toBe('1' + '2002025000001' + '1');
     expect(campo(pg['DID00'], 425, 18)).toBe('I' + n17(3530)); // se ingresa solo la diferencia
     expect(d.liquidacion).toMatchObject({ resultado: 3530, resultadoAnterior: 1540, rectificacion: 0, tipoDeclaracion: 'I' });
-    expect(d.advertencias.join(' ')).toMatch(/solo se ingresa la diferencia, 3530,00 €.*Sociedades WEB/);
+    expect(d.advertencias.join(' ')).toMatch(/solo se ingresa la diferencia, 3\.530,00 €.*Sociedades WEB/);
   });
 
   it('si ahora sale menos de lo ingresado, la diferencia va a [00866] y se devuelve a la cuenta', () => {
