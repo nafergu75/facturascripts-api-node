@@ -151,6 +151,15 @@ describe('lecturas del lector de ventas', () => {
       [200, 21, null],
       [50, 10, '705'],
     ]);
+    // Con su asiento, en borrador (viene del lector): 430N del cliente, 700, 705 (la elegida) y 477.
+    expect(r.body.data).toMatchObject({ contabilizada: true, asientoEnBorrador: true });
+    const asiento = await prisma.journalEntry.findFirstOrThrow({ where: { companyId: E2, invoiceId: r.body.data.facturaId }, include: { lineas: true } });
+    expect(asiento.id).toBe(r.body.data.asientoId);
+    expect(asiento.estado).toBe('DRAFT');
+    const cliente = await prisma.customer.findFirstOrThrow({ where: { companyId: E2 } });
+    expect(cliente.subcuenta430).toMatch(/^430\d+$/);
+    const porCuenta = Object.fromEntries(asiento.lineas.map((l) => [l.accountCode, [Number(l.debe), Number(l.haber)]]));
+    expect(porCuenta).toEqual({ [cliente.subcuenta430!]: [297, 0], '700': [0, 200], '705': [0, 50], '477': [0, 47] });
   });
 
   it('con recargo o rectificativa, confirmar da 400 con el mensaje de V05 o de V19', async () => {

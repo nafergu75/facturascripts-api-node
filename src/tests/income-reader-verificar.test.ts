@@ -41,6 +41,7 @@ jest.mock('../config/database', () => ({
       update: jest.fn(async () => ({})),
     },
     supplier: { findMany: jest.fn(async () => []) },
+    journalEntry: { findFirst: jest.fn(async () => ({ estado: 'DRAFT' })) },
     chartOfAccounts: { findMany: jest.fn(async () => []) },
     $queryRaw: jest.fn(async () => []),
     $transaction: jest.fn(async (fn: (tx: unknown) => unknown) => fn(jest.requireMock<{ prisma: unknown }>('../config/database').prisma)),
@@ -48,6 +49,11 @@ jest.mock('../config/database', () => ({
 }));
 const crearIngreso = jest.fn(async (_dto: unknown) => ({ id: 'fac-1' }));
 jest.mock('../services/income-invoices.service', () => ({ incomeInvoicesService: { crearIngreso: (d: never) => crearIngreso(d) } }));
+
+const contabilizar = jest.fn(async (_companyId: string, _facturaId: string) => ({ contabilizada: true, journalEntryId: 'as-1' }));
+jest.mock('../services/accounting-hooks.service', () => ({
+  accountingHooksService: { onIncomeInvoiceConfirmed: (c: string, f: string) => contabilizar(c, f) },
+}));
 
 import { incomeReaderService } from '../services/income-reader.service';
 
@@ -66,5 +72,11 @@ describe('income-reader: verificar y crear factura', () => {
     const dto = crearIngreso.mock.calls[0][0] as { lineas: Array<Record<string, unknown>> };
     expect(dto.lineas[0]).not.toHaveProperty('cuenta');
     expect(dto.lineas[1]).toMatchObject({ descripcion: 'Consultoria', cuenta: '70500001' });
+  });
+
+  it('la factura registrada se contabiliza (asiento en borrador, como al emitir en la app)', async () => {
+    contabilizar.mockClear();
+    await incomeReaderService.verificarYCrearFactura('c1', 'doc-1').catch(() => undefined);
+    expect(contabilizar).toHaveBeenCalledWith('c1', 'fac-1');
   });
 });

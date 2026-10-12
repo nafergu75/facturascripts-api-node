@@ -5,6 +5,7 @@ import { hoyEspana } from '../utils/fechas';
 import { incomeInvoicesService, type CrearLineaIngresoDTO } from './income-invoices.service';
 import { invoiceExtractorService, type InvoiceExtraction } from './invoice-extractor.service';
 import { archivarVentaSinRomper } from './archivoFacturas.service';
+import { accountingHooksService } from './accounting-hooks.service';
 import { paisDelCliente } from '../domain/tipo-operacion.model';
 import { comprobarRevisionVenta, vincularLectura } from './lectura/confirmar';
 
@@ -166,6 +167,38 @@ export function comprobarTotales(lineas: CrearLineaIngresoDTO[], e: InvoiceExtra
   }
 }
 
+/** Lo que ha pasado con el asiento de una factura registrada desde el lector. */
+export interface ContabilidadVentaLeida {
+  contabilizada: boolean;
+  /** El asiento creado (para el enlace «Ver el asiento»). */
+  asientoId?: string;
+  /** El asiento esta en borrador: cuenta en el balance cuando se aprueba en el Motor contable. */
+  asientoEnBorrador?: boolean;
+  /** Por que no se ha creado el asiento (se puede contabilizar despues desde la ficha). */
+  motivoSinAsiento?: string | null;
+}
+
+/**
+ * Asiento de una factura de venta registrada desde un lector, igual que al
+ * emitir una en la app (POST /income-invoices). Como viene del lector (el
+ * documento ya esta enlazado), queda en borrador hasta aprobarlo en el Motor
+ * contable. No es critico: si falla, la factura ya esta registrada y se
+ * contabiliza desde su ficha.
+ */
+export async function contabilizarVentaLeida(companyId: string, facturaId: string): Promise<ContabilidadVentaLeida> {
+  try {
+    const r = await accountingHooksService.onIncomeInvoiceConfirmed(companyId, facturaId);
+    if (!r.contabilizada || !r.journalEntryId) return { contabilizada: false, motivoSinAsiento: r.motivo ?? null };
+    const asiento = await prisma.journalEntry.findFirst({ where: { id: r.journalEntryId, companyId }, select: { estado: true } });
+    return { contabilizada: true, asientoId: r.journalEntryId, asientoEnBorrador: asiento?.estado !== 'POSTED' };
+  } catch (err) {
+    const motivo = err instanceof Error ? err.message : String(err);
+    // eslint-disable-next-line no-console
+    console.error(`Aviso: no se pudo contabilizar la factura ${facturaId} del lector:`, motivo);
+    return { contabilizada: false, motivoSinAsiento: motivo };
+  }
+}
+
 export const ingresosExtractorService = {
   /** Lee la factura (PDF o imagen) y la deja pendiente de confirmar. */
   async extraer(
@@ -182,7 +215,7 @@ export const ingresosExtractorService = {
     companyId: string,
     documentId: string,
     opciones: { revisado?: boolean; userId?: string; lineas?: unknown } = {},
-  ): Promise<{ facturaId: string; numeroCompleto: string; total: number }> {
+  ): Promise<{ facturaId: string; numeroCompleto: string; total: number } & ContabilidadVentaLeida> {
     const doc = await prisma.incomeReaderDocument.findFirst({
       where: { id: documentId, companyId, sourceType: 'EXTRACTOR_IA' },
     });
@@ -248,6 +281,9 @@ export const ingresosExtractorService = {
     await archivarVentaSinRomper(companyId, factura.id);
     await vincularLectura(companyId, { incomeReaderDocumentId: documentId }, { incomeInvoiceId: factura.id, userId: opciones.userId, revisada: opciones.revisado === true });
 
-    return { facturaId: factura.id, numeroCompleto: factura.numeroCompleto ?? '', total: factura.totalFactura };
+    // Despues de enlazar el documento: asi el asiento sale en borrador, como el de las compras leidas.
+    const contable = await contabilizarVentaLeida(companyId, factura.id);
+
+    return { facturaId: factura.id, numeroCompleto: factura.numeroCompleto ?? '', total: factura.totalFactura, ...contable };
   },
 };

@@ -801,6 +801,11 @@ export const incomeReaderService = {
     // Archivo por trimestres: se guarda el original subido (no bloqueante).
     await archivarVentaSinRomper(companyId, factura.id);
 
+    // Su asiento, como al emitir una factura en la app: en borrador (viene del
+    // lector) hasta aprobarlo en el Motor contable. No bloquea si falla.
+    const { contabilizarVentaLeida } = await import('./ingresos-extractor.service');
+    await contabilizarVentaLeida(companyId, factura.id);
+
     return await this.obtenerDetalle(companyId, documentId);
   },
 
