@@ -325,9 +325,15 @@ export interface DatosModelo115 {
   perceptores?: Array<{ nif: string; nombre: string; base: number; retencion: number; facturas: number }>;
   /** Facturas anuladas cuya retencion sigue en un 115 presentado, y el exceso de retencion de los abonos. */
   avisos?: string[];
-  /** Retencion de abonos que no cabe en este periodo ([03] como mucho hasta cero): pasa de la 4751 a la 4709. */
+  /**
+   * Retencion de abonos que no cabe en este periodo (la que no cabe en la de su
+   * arrendador en el año, mas lo que deja [03] por debajo de cero): pasa de la
+   * 4751 a la 4709.
+   */
   excesoAbonos?: number;
-  /** Base de esos abonos que no cabe ([02] como mucho hasta cero). El 180 la descuenta al cuadrar con los 115. */
+  /** Parte de excesoAbonos por dejar [03] como mucho a cero: el 180 la netea en el año y la descuenta al cuadrar con los 115. */
+  excesoTopeAbonos?: number;
+  /** Base de abonos que no cabe en [02] (como mucho hasta cero). El 180 la descuenta al cuadrar con los 115. */
   excesoBaseAbonos?: number;
 }
 
