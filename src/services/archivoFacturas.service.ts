@@ -25,6 +25,7 @@ import { generarPdfFactura } from './facturaPdf.service';
 import { perfilEmpresa } from './perfilEmpresa.service';
 import { GASTO_VIGENTE } from '../domain/factura-gasto.model';
 import { validarEjercicio } from '../utils/anios';
+import { anioEspana } from '../utils/fechas';
 
 export type CarpetaArchivo = 'ventas' | 'gastos';
 
@@ -498,8 +499,8 @@ export async function arbolArchivo(companyId: string): Promise<AnioArbol[]> {
   }
   for (const d of sueltos) sumar(d.anio, d.trimestre, d.tipo === 'ingreso' ? 'ventas' : 'gastos', d.total);
 
-  // El año en curso aparece siempre, aunque esté vacío.
-  nodo(new Date().getFullYear());
+  // El año en curso (hora de España) aparece siempre, aunque esté vacío.
+  nodo(anioEspana());
   return [...anios.values()].sort((a, b) => b.anio - a.anio);
 }
 

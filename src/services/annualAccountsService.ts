@@ -10,11 +10,12 @@ import { filasCuentasAnuales, filasMemoria } from './cuentasAnualesPdf';
 import { generarMemoria, limpiarNotasMemoria, NotasMemoria } from './memoria.service';
 import { generarXbrl } from './xbrl.service';
 import { EstadoCuentas, ModeloCuentas, puedeTransicionarCuentas, RESOLUCIONES_CUENTAS } from '../domain/registroMercantil.model';
+import { anioEspana } from '../utils/fechas';
 
 function ejercicioDe(fy: { label: string; fechaFin: string }): number {
   const n = Number(fy.label);
   if (Number.isFinite(n) && n > 1900) return n;
-  return Number(fy.fechaFin.slice(0, 4)) || new Date().getFullYear();
+  return Number(fy.fechaFin.slice(0, 4)) || anioEspana();
 }
 
 export const annualAccountsService = {

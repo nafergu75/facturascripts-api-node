@@ -6,6 +6,7 @@ import { guardarArtefacto } from './registroMercantil.helpers';
 import { fiscalYearsService } from './fiscalYears.service';
 import { TipoLibro, TIPOS_LIBRO } from '../domain/registroMercantil.model';
 import { generarLibroDiario, generarLibroInventarios, generarCuentasAnuales } from './cuentasAnuales.service';
+import { anioEspana, formatearHusoMadrid } from '../utils/fechas';
 
 const TITULO_LIBRO: Record<TipoLibro, string> = {
   DIARIO: 'Libro Diario',
@@ -20,7 +21,8 @@ function ejercicioDe(fy: { label: string; closingDate: string | null; fechaFin?:
   const n = Number(fy.label);
   if (Number.isFinite(n) && n > 1900) return n;
   const d = fy.closingDate ?? fy.fechaFin;
-  return d ? new Date(d).getFullYear() : new Date().getFullYear();
+  // AAAA-MM-DD: el año son sus cuatro primeras cifras (sin pasar por Date ni husos).
+  return d && /^\d{4}-/.test(d) ? Number(d.slice(0, 4)) : anioEspana();
 }
 
 const imp = (n: number): string => Number(n).toLocaleString('es-ES', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -30,7 +32,7 @@ function cabecera(fy: { companyId: string; label: string; closingDate: string | 
     `Empresa (companyId): ${fy.companyId}`,
     `Ejercicio: ${fy.label}`,
     `Fecha de cierre: ${fy.closingDate ?? fy.fechaFin ?? '-'}`,
-    `Generado: ${new Date().toISOString()}`,
+    `Generado: ${formatearHusoMadrid(new Date())}`,
     '',
   ];
 }
