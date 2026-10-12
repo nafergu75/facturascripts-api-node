@@ -25,6 +25,7 @@ import { DISENO_202 } from '../domain/aeat/disenos';
 import { comprobarFicheroPorTrozos, posiciones } from './dorado-dr';
 import { calcularBorrador202, ficheroModelo202 } from '../services/borradoresAeat/borrador202.service';
 import { autorrellenarModelo, generarTxtModelo, listarModelosImpuesto } from '../services/impuestosModulo.service';
+import { prepararRectificacionModelo } from '../services/declaracionesAeat/presentar';
 
 const SUFIJO = `${Date.now()}`;
 const NIF = `B4655555${controlCif('4655555').cifra}`;
@@ -212,5 +213,20 @@ describe('202: remates (CNAE, cifra de negocios, microempresa y retenciones del 
     expect(b.base).toEqual({ origen: 'modelo200', ejercicio200: 2026, importe: 10000 });
     expect(b.entrada.casillas).toMatchObject({ '01': 10000, '03': 1800 });
     expect(b.avisos).toContainEqual(expect.stringMatching(/cuota líquida 12345,67 € menos retenciones e ingresos a cuenta 2345,67 €/));
+  });
+
+  it('con una rectificativa del 200 en preparación, la base sigue siendo la del 200 presentado', async () => {
+    const E = await empresa(2_500_000);
+    await prisma.modeloImpuesto.create({
+      data: { companyId: E, codigo: '200', ejercicio: 2026, periodo: '0A', estado: 'presentado', datos: { cuotaLiquida: 10000, retenciones: 150, pyg: { importeNetoCifraNegocios: 2500000 } } as never },
+    });
+    await prepararRectificacionModelo(E, 'u-202', '200', 2026, '0A', { tipo: 'C', justificanteAnterior: '2002026123456' });
+    // ModeloImpuesto vuelve a 'vigente' (diseño B4), pero lo presentado está en el historial.
+    expect((await prisma.modeloImpuesto.findFirst({ where: { companyId: E, codigo: '200' } }))?.estado).toBe('vigente');
+    const b = await calcularBorrador202(E, 2027, '2P');
+    expect(b.base).toEqual({ origen: 'modelo200', ejercicio200: 2026, importe: 9850 });
+    expect(b.entrada.casillas).toMatchObject({ '01': 9850, '03': 1773 });
+    expect(b.avisos).toContainEqual(expect.stringMatching(/rectificativa del 200 de 2026 en preparación: la base sale del 200 presentado/));
+    expect(b.avisos.join(' ')).not.toMatch(/No hay un 200 de 2026 presentado/);
   });
 });
