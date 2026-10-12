@@ -277,6 +277,8 @@ describe('D2 y errores', () => {
     expect(r.vista.comprobaciones.nivel).toBe('FALTAN_DATOS');
     expect(r.vista.comprobaciones.excluidos).toEqual(['DIARIO']);
     expect(r.vista.historico).toMatchObject({ seImporta: false, cuadraConSumasYSaldos: false });
+    // Lo escrito a mano vuelve en el resumen, para corregirlo en pantalla.
+    expect(r.vista.resultadoDeclarado).toBe(7200);
     await confirmarCarga(E, 2027, r.carga.id, r.vista.huella, USUARIO);
     await aplicarTodo(E, r.carga.id);
     expect(await prisma.journalEntry.count({ where: { companyId: E, origen: { startsWith: 'HISTORICO' } } })).toBe(0);

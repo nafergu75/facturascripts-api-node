@@ -151,6 +151,7 @@ describe('rutas y permisos', () => {
     const f = await request(app(['impuestos:write'])).put('/arranque/2027/datos-fiscales').send({ resultado303T4: '1.785,00', basesNegativas: [{ ejercicio: 2024, importe: 500 }] });
     expect(f.status).toBe(200);
     expect(datos(f).puntos.some((p: { clave: string }) => p.clave.startsWith('iva:'))).toBe(false);
+    expect(datos(f).datosFiscales).toMatchObject({ resultado303T4: 1785, basesNegativas: [{ ejercicio: 2024, importe: 500 }] });
 
     // Datos de la empresa: el aviso se acepta con un motivo (solo el administrador).
     expect((await request(app(['contabilidad:write'])).post('/arranque/2027/avisos/empresa:datos/aceptar').send({ motivo: 'Los pongo mañana' })).status).toBe(403);
