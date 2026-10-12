@@ -49,6 +49,7 @@ import { casillasAGuardadas, ficheroDeclaracion, formularioDeclaracion, type For
 import type { Modelo190 } from './nominas/fiscal';
 import { DR190 } from './aeatRetenciones/diseno';
 import { comprobarDiseno190 } from './nominas/modelo190';
+import { textoExceso, traspaso4709De, type Traspaso4709 } from './aeatRetenciones/traspaso4709';
 
 /** Aviso del diseño del 190 para la pantalla (null si esta publicado; sin error para ejercicios antiguos). */
 function avisoDiseno190(ejercicio: number): string | null {
@@ -152,6 +153,17 @@ export async function ficheroRetenciones(companyId: string, codigo: '111' | '115
   const periodo = periodoRetenciones(periodoEntrada);
   const r = await declaracionRetenciones(companyId, codigo, ejercicio, periodo);
   return { nombre: `${codigo}_${ejercicio}_${periodo}.txt`, contenido: ficheroDeclaracion(r.declaracion) };
+}
+
+/**
+ * Exceso de retencion de abonos del 111 o 115 (decision P1) y su traspaso a la
+ * 4709, para la pantalla: el importe, el asiento si ya esta hecho y el aviso.
+ */
+async function excesoConTraspaso(companyId: string, codigo: '111' | '115', ejercicio: number, periodo: string, exceso: number | undefined) {
+  if (!exceso || Math.round(exceso * 100) <= 0) return { excesoAbonos: null, traspaso4709: null, aviso: null };
+  const hecho = await traspaso4709De(companyId, codigo, ejercicio, periodo);
+  // Sin hacer, ya lo dice el aviso del calculo (avisoExcesoRetencion); hecho, se dice con su asiento.
+  return { excesoAbonos: exceso, traspaso4709: hecho, aviso: hecho ? textoExceso(codigo, exceso, hecho) : null };
 }
 
 export class TaxModelsService {
@@ -297,6 +309,10 @@ export class TaxModelsService {
     /** Formulario oficial (identificacion, casillas 01-30, liquidacion): misma declaracion que el fichero. */
     formulario: FormularioRetenciones;
     id: string;
+    /** Retencion de abonos que no cabe en [09] (decision P1): se pasa de la 4751 a la 4709. null si no hay. */
+    excesoAbonos: number | null;
+    /** Asiento de ese traspaso, si ya esta hecho. */
+    traspaso4709: Traspaso4709 | null;
   }> {
     const periodo = periodoRetenciones(periodoEntrada);
     // La misma funcion que el fichero: presentado = lo guardado; sin presentar, calculado (no se guarda).
@@ -306,6 +322,8 @@ export class TaxModelsService {
     const pantalla = casillasPantalla111(oficiales, datos.actividadesPorTipo);
     const formulario = formularioDeclaracion(r.declaracion);
     const avisos = [...(datos.avisos ?? []), ...avisosFuente(r, 'las nóminas o las facturas')];
+    const exceso = await excesoConTraspaso(companyId, '111', ejercicio, periodo, datos.excesoAbonos);
+    if (exceso.aviso) avisos.push(exceso.aviso);
 
     return {
       id: r.fila.id,
@@ -321,6 +339,8 @@ export class TaxModelsService {
       origen: r.fila.origen,
       avisos,
       formulario,
+      excesoAbonos: exceso.excesoAbonos,
+      traspaso4709: exceso.traspaso4709,
     };
   }
 
@@ -356,6 +376,10 @@ export class TaxModelsService {
     avisos: string[];
     /** Formulario oficial (identificacion, casillas 01-05, liquidacion): misma declaracion que el fichero. */
     formulario: FormularioRetenciones;
+    /** Retencion de abonos que no cabe en [03] (decision P1): se pasa de la 4751 a la 4709. null si no hay. */
+    excesoAbonos: number | null;
+    /** Asiento de ese traspaso, si ya esta hecho. */
+    traspaso4709: Traspaso4709 | null;
   }> {
     const periodo = periodoRetenciones(periodoEntrada);
     // La misma funcion que el fichero: presentado = lo guardado; sin presentar, calculado (no se guarda).
@@ -363,6 +387,8 @@ export class TaxModelsService {
     const datos = r.datos as DatosModelo115;
     const c = r.declaracion.casillas;
     const avisos: string[] = [...(datos.avisos ?? []), ...avisosFuente(r, 'las facturas')];
+    const exceso = await excesoConTraspaso(companyId, '115', ejercicio, periodo, datos.excesoAbonos);
+    if (exceso.aviso) avisos.push(exceso.aviso);
 
     const baseImponible = c['02'];
     const retencion = c['03'];
@@ -382,6 +408,8 @@ export class TaxModelsService {
       perceptores: datos.perceptores ?? [],
       avisos,
       formulario: formularioDeclaracion(r.declaracion),
+      excesoAbonos: exceso.excesoAbonos,
+      traspaso4709: exceso.traspaso4709,
     };
   }
 
