@@ -74,6 +74,10 @@ export interface Movimiento349 {
   base: number;
   /** Periodo anterior que rectifica (si no, va en las operaciones del periodo). */
   rectifica?: { ejercicio: number; periodo: string };
+  /** Abono de una factura de fuera de la app: la base declarada de su periodo hay que pedirla. */
+  fuera?: boolean;
+  /** Aviso del movimiento (un rappel que abarca varios periodos del 349). */
+  aviso?: string;
 }
 
 export interface Borrador349 {
@@ -94,6 +98,12 @@ export interface Borrador349 {
   /** Lo que lleva el fichero, leido con el diseno (null si no se puede componer). */
   pantalla: Pantalla349 | null;
   movimientos: Movimiento349[];
+  /**
+   * Bases declaradas que hay que escribir a mano: rectificaciones de periodos
+   * cuyo 349 no esta en la app (las facturas de 2026 llevadas fuera). Se
+   * guardan con PUT /349/opciones { basesDeclaradas: { [clave]: importe } }.
+   */
+  basesPedidas: Array<{ clave: string; nombre: string; claveOperacion: string; ejercicio: number; periodo: string; base: number | null }>;
 }
 
 const cent = (n: number) => Math.round(n * 100);
@@ -158,7 +168,11 @@ export async function movimientos349(companyId: string, p: PeriodoFiscal): Promi
   // Compras: facturas de gasto por fecha contable (una anulada con contraasiento resta en su periodo).
   const compras = await prisma.expenseInvoice.findMany({
     where: whereGastosFiscales(companyId, p.fechaInicio, p.fechaFin),
-    include: { supplier: { select: { nifCif: true, nombreFiscal: true, pais: true } }, lineas: { select: { baseLine: true } } },
+    include: {
+      supplier: { select: { nifCif: true, nombreFiscal: true, pais: true } },
+      lineas: { select: { baseLine: true } },
+      rectifica: { include: { original: { select: { id: true, fechaEmision: true, fechaRegistro: true, esRectificativa: true } } } },
+    },
   });
   for (const f of compras) {
     for (const ap of aparicionesEntre(f, p.fechaInicio, p.fechaFin)) {
@@ -175,6 +189,34 @@ export async function movimientos349(companyId: string, p: PeriodoFiscal): Promi
       if (!clave) continue;
       const base = f.lineas.length ? f.lineas.reduce((a, l) => a + cent(Number(l.baseLine)), 0) : cent(Number(f.baseTotal));
       const contable = fechaContableGasto(f);
+      // Abono o rectificativa: por cada factura (o periodo) que rectifica, su
+      // parte. Si la original es de un periodo anterior, es un registro de
+      // rectificacion de ese periodo; si no, resta en el registro normal.
+      if (f.esRectificativa && ap.signo > 0 && f.rectifica.length) {
+        for (const e of f.rectifica) {
+          const origen = await fechaOrigen349(companyId, e);
+          const parte = f.rectifica.length === 1 || e.baseRectificada === null ? base : cent(Number(e.baseRectificada));
+          const varios = e.periodoDesde && e.periodoHasta && periodoDeFecha(e.periodoDesde, p.tipo).periodo !== periodoDeFecha(e.periodoHasta, p.tipo).periodo;
+          out.push({
+            id: f.id,
+            factura: f.numeroFacturaProveedor ?? f.numeroCompleto,
+            tipo: 'compra',
+            fecha: ap.fecha,
+            nifIva: f.supplier.nifCif,
+            pais,
+            nombre: f.supplier.nombreFiscal,
+            clave,
+            base: parte / 100,
+            ...(origen && origen < p.fechaInicio ? { rectifica: periodoDeFecha(origen, p.tipo), ...(e.originalId ? {} : { fuera: true }) } : {}),
+            ...(varios
+              ? {
+                  aviso: `El rappel ${f.numeroFacturaProveedor ?? f.numeroCompleto} abarca varios periodos del 349 (del ${e.periodoDesde} al ${e.periodoHasta}): se rectifica entero en el periodo de su inicio. Si hay que repartirlo, regístralo en un abono por periodo.`,
+                }
+              : {}),
+          });
+        }
+        continue;
+      }
       out.push({
         id: f.id,
         factura: f.numeroFacturaProveedor ?? f.numeroCompleto,
@@ -190,6 +232,39 @@ export async function movimientos349(companyId: string, p: PeriodoFiscal): Promi
     }
   }
   return out.sort((a, b) => a.fecha.localeCompare(b.fecha) || a.factura.localeCompare(b.factura));
+}
+
+/**
+ * Fecha de la operacion que corrige un enlace de rectificativa, para el 349:
+ * la contable de la original de la app (siguiendo la cadena si la original es
+ * a su vez una rectificativa), la de una original de fuera o el inicio del periodo.
+ */
+async function fechaOrigen349(
+  companyId: string,
+  e: { originalId: string | null; fechaOriginal: string | null; periodoDesde: string | null; original: { id: string; fechaEmision: string; fechaRegistro: string | null; esRectificativa: boolean } | null },
+): Promise<string | null> {
+  if (!e.originalId || !e.original) return e.fechaOriginal ?? e.periodoDesde;
+  let o = e.original;
+  for (let i = 0; i < 10 && o.esRectificativa; i++) {
+    const sig = await prisma.expenseInvoiceRectificada.findFirst({
+      where: { companyId, rectificativaId: o.id },
+      include: { original: { select: { id: true, fechaEmision: true, fechaRegistro: true, esRectificativa: true } } },
+    });
+    if (!sig) break;
+    if (!sig.original) return sig.fechaOriginal ?? sig.periodoDesde ?? fechaContableGasto(o);
+    o = sig.original;
+  }
+  return fechaContableGasto(o);
+}
+
+/** Base declarada a mano de un operador, clave y periodo (opciones del 349 que se prepara o de otro del mismo periodo rectificado). */
+async function basesDeclaradasManuales(companyId: string, opc: Record<string, unknown>): Promise<Map<string, number>> {
+  const out = new Map<string, number>();
+  const otras = await prisma.modeloImpuesto.findMany({ where: { companyId, codigo: '349' }, select: { casillas: true } });
+  for (const casillas of [...otras.map((o) => (o.casillas ?? {}) as Record<string, unknown>), Object.fromEntries(Object.entries(opc).map(([k, v]) => [`opc_${k}`, v]))]) {
+    for (const [k, v] of Object.entries(casillas)) if (k.startsWith('opc_base:') && typeof v === 'number') out.set(k.slice(9), v);
+  }
+  return out;
 }
 
 /** Operadores del periodo: una linea por operador y clave con la suma de sus bases (sin las rectificaciones). */
@@ -241,24 +316,41 @@ export async function calcularBorrador349(companyId: string, ejercicio: number, 
   ]);
   const avisos: string[] = [];
   if (conCambio) avisos.push(`Cambio de periodicidad: la declaración de ${p.periodo} recoge también las operaciones del mes anterior.`);
+  for (const m of movimientos) if (m.aviso && !avisos.includes(m.aviso)) avisos.push(m.aviso);
 
   // Rectificaciones: por operador, clave y periodo corregido.
-  const grupos = new Map<string, { m: Movimiento349; c: number; ejercicio: number; periodo: string }>();
+  const grupos = new Map<string, { m: Movimiento349; c: number; ejercicio: number; periodo: string; fuera: boolean }>();
   for (const m of movimientos) {
     if (!m.rectifica) continue;
     const k = `${claveOperador(m)}|${m.rectifica.ejercicio}|${m.rectifica.periodo}`;
-    const g = grupos.get(k) ?? { m, c: 0, ...m.rectifica };
+    const g = grupos.get(k) ?? { m, c: 0, ...m.rectifica, fuera: false };
     g.c += cent(m.base);
+    if (m.fuera) g.fuera = true;
     grupos.set(k, g);
   }
   const anteriores = new Map<string, { fila: FilaCalendario | null; calculados?: Operador349[] }>();
   const rectificaciones: Rectificacion349[] = [];
+  const manuales = grupos.size ? await basesDeclaradasManuales(companyId, opc) : new Map<string, number>();
+  const basesPedidas: Borrador349['basesPedidas'] = [];
+  const erroresBases: string[] = [];
   for (const g of grupos.values()) {
     if (g.c === 0) continue;
     const kp = `${g.ejercicio}|${g.periodo}`;
     if (!anteriores.has(kp)) anteriores.set(kp, { fila: await filaModelo(companyId, '349', g.ejercicio, g.periodo) });
     const ant = anteriores.get(kp)!;
     let base: number | null = ant.fila?.estado === 'presentado' ? baseEnDeclaracion(ant.fila.datos, claveOperador(g.m)) : null;
+    // Abono de una factura llevada fuera de la app: su 349 tampoco esta en la
+    // app y la base declarada no se puede calcular (daria 0): se pide a mano.
+    if (base === null && g.fuera) {
+      const clave = `${claveOperador(g.m)}|${g.ejercicio}|${g.periodo}`;
+      const manual = manuales.get(clave);
+      basesPedidas.push({ clave, nombre: g.m.nombre, claveOperacion: g.m.clave, ejercicio: g.ejercicio, periodo: g.periodo, base: manual ?? null });
+      if (manual === undefined) {
+        erroresBases.push(`Indica la base que declaraste para ${g.m.nombre} (clave ${g.m.clave}) en el 349 del ${g.periodo} de ${g.ejercicio}: sin ella no se puede rectificar.`);
+        continue;
+      }
+      base = manual;
+    }
     if (base === null) {
       ant.calculados ??= agruparOperadores(await movimientos349(companyId, periodoFiscal(g.ejercicio, g.periodo)));
       base = ant.calculados.find((o) => claveOperador(o) === claveOperador(g.m))?.base ?? 0;
@@ -311,7 +403,7 @@ export async function calcularBorrador349(companyId: string, ejercicio: number, 
   // complementaria sin nada elegido, se dice qué hay que marcar.
   const sinRegistros = (e: string) =>
     e === ERROR_SIN_REGISTROS_349 && decl.seleccion ? 'La complementaria no lleva ningún registro: marca los operadores que se quedaron fuera de la declaración anterior.' : e;
-  const errores = presentada ? [] : [...erroresContacto(declarante), ...erroresEntrada349(entrada).map(sinRegistros)];
+  const errores = presentada ? [] : [...erroresContacto(declarante), ...erroresBases, ...erroresEntrada349(entrada).map(sinRegistros)];
   if (presentada) avisos.unshift(avisoPresentado(presentada));
   else if (!entrada.declarante.numeroDeclaracion) avisos.push(AVISO_SIN_NUMERO);
 
@@ -334,6 +426,7 @@ export async function calcularBorrador349(companyId: string, ejercicio: number, 
     avisos,
     pantalla,
     movimientos,
+    basesPedidas,
   };
 }
 
