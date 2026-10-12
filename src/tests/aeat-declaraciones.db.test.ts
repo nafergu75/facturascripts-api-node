@@ -221,6 +221,8 @@ describe('B4: 111 complementaria', () => {
     expect(c.body.data).toMatchObject({ estado: 'en-curso', enCurso: { tipo: 'C', justificanteAnterior: '1112026000001', resultadoAnterior: 150 } });
     const pantalla = (await request(app()).get(ruta('/tax-models/111?ejercicio=2026&periodo=1T'))).body.data;
     expect(pantalla.formulario.liquidacion).toMatchObject({ complementaria: true, justificanteAnterior: '1112026000001' });
+    // La fila vuelve a 'vigente', pero la pantalla no dice «Sin presentar»: lo dice el texto del estado.
+    expect(pantalla).toMatchObject({ estado: 'vigente', estadoTexto: 'Presentado · complementaria en preparación' });
     const txt = (await ficheroRetenciones(E, '111', 2026, '1T')).contenido;
     const casilla = (pos: number) => Number(txt.slice(328 + pos - 1, 328 + pos - 1 + 17)) / 100;
     expect([casilla(487), casilla(504), casilla(521)]).toEqual([300, 150, 150]); // [28], [29], [30]
@@ -239,6 +241,7 @@ describe('B4: 111 complementaria', () => {
     // Cancelada: vuelve a lo presentado (la segunda complementaria).
     expect((await request(app()).delete(ruta('/tax-models/111/declaraciones/rectificacion?ejercicio=2026&periodo=1T'))).status).toBe(200);
     expect((await contextoDeclaracion(E, '111', 2026, '1T')).congelada).toBe(true);
+    expect((await request(app()).get(ruta('/tax-models/111?ejercicio=2026&periodo=1T'))).body.data.estadoTexto).toBeNull();
     expect(Number((await ficheroRetenciones(E, '111', 2026, '1T')).contenido.slice(328 + 503, 328 + 520)) / 100).toBe(150); // [29]
   });
 });
