@@ -539,10 +539,13 @@ async function faseComparativo({ tx, c, a, estado, anterior, creado }: ContextoF
     return 'Sin sumas y saldos no hay comparativo de 2026.';
   }
   let cuentas = sys.cuentas.filter((x) => Math.round(x.saldo * 100) !== 0);
-  // Regularizado: los gastos e ingresos salen del diario antes de regularizar, si se ha importado.
+  // Regularizado: los gastos e ingresos salen del diario antes de regularizar, si se ha importado;
+  // si no, de las partidas de la PyG oficial (una cuenta de 3 digitos por partida).
   if (a.saldos.analisis.tipo === 'REGULARIZADO' && a.diario && !a.excluidos.includes('DIARIO')) {
     const pyg = saldosDesdeDiario(a.diario.asientos).filter((x) => /^[67]/.test(x.codigo) && Math.round(x.saldo * 100) !== 0);
     cuentas = [...cuentas.filter((x) => !/^[67]/.test(x.codigo)), ...pyg];
+  } else if (a.saldos.analisis.tipo === 'REGULARIZADO' && a.pygComparativo) {
+    cuentas = [...cuentas.filter((x) => !/^[67]/.test(x.codigo)), ...a.pygComparativo];
   }
   // El comparativo se guarda en un campo de texto de 64 KB: con miles de subcuentas se agrupa
   // por cuentas de 4 (o 3) digitos, que es lo que usan el balance y la PyG del año anterior.
