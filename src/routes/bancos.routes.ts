@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import express from 'express';
 import { bancosController } from '../controllers/bancos.controller';
+import { partidasController } from '../controllers/partidas.controller';
 import { authorize } from '../middleware/authorize.middleware';
 
 const router = Router({ mergeParams: true });
@@ -20,5 +21,7 @@ router.post(
 // movimiento -> cuenta contable (555 partidas pendientes, 526 dividendos...).
 router.post('/movimientos/:movId/conciliar-factura', authorize('tesoreria:write'), bancosController.conciliarConFactura);
 router.post('/movimientos/:movId/conciliar-cuenta', authorize('tesoreria:write'), bancosController.conciliarConCuenta);
+// Casar con una factura de 2026 pendiente (partida de «Traer la contabilidad de 2026»): { partidaId }.
+router.post('/movimientos/:movId/conciliar-partida', authorize('tesoreria:write'), partidasController.conciliar);
 
 export default router;

@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import multer from 'multer';
 import { arranqueController as c } from '../controllers/arranque.controller';
+import { partidasController as partidas } from '../controllers/partidas.controller';
 import { authorize } from '../middleware/authorize.middleware';
 import { badRequest } from '../utils/http-errors';
 import { EXTENSIONES_CARGA, MAX_FICHEROS_CARGA } from '../services/arranque/lectorLibros';
@@ -26,6 +27,11 @@ const subida = multer({
 });
 
 router.get('/aviso', authorize('contabilidad:read'), c.aviso);
+// Facturas de 2026 pendientes de cobro y de pago (antes de /:ejercicio, que las tomaria por un año).
+router.get('/partidas', authorize('ventas:read', 'compras:read', 'tesoreria:read', 'contabilidad:read'), partidas.listar);
+router.get('/partidas/:id', authorize('ventas:read', 'compras:read', 'tesoreria:read', 'contabilidad:read'), partidas.detalle);
+router.post('/partidas/liquidaciones/:id/anular', authorize('tesoreria:write'), partidas.anular);
+router.post('/partidas/:id/liquidar', authorize('tesoreria:write'), partidas.liquidar);
 router.get('/:ejercicio', authorize('contabilidad:read'), c.estado);
 router.post('/:ejercicio/cargas', authorize('contabilidad:write'), subida.array('archivos', MAX_FICHEROS_CARGA), c.subir);
 router.post('/:ejercicio/cargas/:cargaId/analizar', authorize('contabilidad:write'), c.analizar);
