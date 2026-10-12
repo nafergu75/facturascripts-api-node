@@ -10,14 +10,16 @@
  *    presentado), va un asiento COMPLEMENTARIO de apertura (APAJ) solo con las
  *    diferencias, con un motivo; y no puede tocar el IVA (472 y 477).
  *  - Los bancos (572) no pueden cambiar: el saldo a 31-12 es un hecho.
- *  - Facturas pendientes con cobros o pagos de 2027: siguen si la nueva cartera
- *    las trae igual; si desaparecen o cambian, error con la lista.
+ *  - Facturas pendientes con cobros o pagos de 2027, o con abonos del proveedor
+ *    ya descontados: siguen si la nueva cartera las trae igual; si desaparecen
+ *    o cambian, error con la lista.
  *  - Bienes con amortizacion apuntada en 2027: igual.
  */
 import { prisma } from '../../config/database';
 import { FILTRO_ASIENTOS_APERTURA } from '../../domain/asientosCierre';
 import { aCentimos, importeTexto } from '../../utils/money';
 import { rangoEjercicio } from '../puestaEnMarcha/asientosEnBloque';
+import { partidasConMovimientos } from './partidas.service';
 
 const r2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100;
 const lista = (xs: string[]) => (xs.length > 10 ? `${xs.slice(0, 10).join(', ')} y ${xs.length - 10} más` : xs.join(', '));
@@ -134,34 +136,38 @@ export async function analizarRepeticion(e: Entrada): Promise<AnalisisRepeticion
   }
 
   if (e.vigente) {
-    // Facturas pendientes de la carga vigente con cobros o pagos de 2027.
+    // Facturas pendientes de la carga vigente con cobros o pagos de 2027, o con abonos ya descontados.
     const partidas = await prisma.partidaPendiente.findMany({
       where: { companyId: e.companyId, cargaId: e.vigente.id, estado: { not: 'ANULADA' } },
       select: { id: true, tipo: true, subcuenta: true, numeroDocumento: true, importePendiente: true },
     });
-    const pagos = partidas.length
-      ? await prisma.invoicePayment.groupBy({
-          by: ['invoiceId'],
-          where: { companyId: e.companyId, invoiceType: 'PARTIDA', estado: 'ACTIVO', invoiceId: { in: partidas.map((p) => p.id) } },
-          _count: { _all: true },
-        })
-      : [];
-    const conCobros = new Set(pagos.map((p) => p.invoiceId));
+    const movimientos = await partidasConMovimientos(prisma, e.companyId, partidas.map((p) => p.id));
     const nuevas = new Map((e.partidas ?? []).map((p) => [clavePartida(p), p]));
     const problemas: string[] = [];
-    for (const p of partidas.filter((x) => conCobros.has(x.id))) {
+    let conAbonos = false;
+    for (const p of partidas.filter((x) => movimientos.has(x.id))) {
       const clave = clavePartida({ tipo: p.tipo, subcuenta: p.subcuenta, documento: p.numeroDocumento });
       if (!e.partidas) {
         out.partidasMantenidas.push({ id: p.id, clave });
         continue;
       }
       const n = nuevas.get(clave);
-      if (n && aCentimos(n.pendiente) === aCentimos(Number(p.importePendiente))) out.partidasMantenidas.push({ id: p.id, clave });
-      else problemas.push(`${p.numeroDocumento} (${p.subcuenta})${n ? `: pendiente ${importeTexto(Number(p.importePendiente))} y ahora ${importeTexto(n.pendiente)}` : ': ya no está'}`);
+      if (n && aCentimos(n.pendiente) === aCentimos(Number(p.importePendiente))) {
+        out.partidasMantenidas.push({ id: p.id, clave });
+        continue;
+      }
+      const abonos = movimientos.get(p.id)!.abonos;
+      if (aCentimos(abonos) !== 0) conAbonos = true;
+      const descontado = aCentimos(abonos) !== 0 ? `, con ${importeTexto(Math.abs(abonos))} descontados con abonos` : '';
+      problemas.push(`${p.numeroDocumento} (${p.subcuenta})${n ? `: pendiente ${importeTexto(Number(p.importePendiente))} y ahora ${importeTexto(n.pendiente)}` : ': ya no está'}${descontado}`);
     }
     if (problemas.length) {
+      const que = conAbonos ? 'cobros, pagos o abonos descontados' : 'cobros o pagos';
+      const anular = conAbonos
+        ? 'Anula antes esos cobros o pagos, y la aplicación de los abonos en su ficha de Compras («Aplicado a otras facturas»)'
+        : 'Anula antes esos cobros o pagos';
       errores.push(
-        `${problemas.length === 1 ? 'Una factura pendiente que ya tiene cobros o pagos de ' + e.ejercicio + ' cambia' : `${problemas.length} facturas pendientes que ya tienen cobros o pagos de ${e.ejercicio} cambian`} en la cartera nueva: ${lista(problemas)}. Anula antes esos cobros o pagos, o pide a la gestoría que la cartera las traiga igual.`,
+        `${problemas.length === 1 ? `Una factura pendiente que ya tiene ${que} de ${e.ejercicio} cambia` : `${problemas.length} facturas pendientes que ya tienen ${que} de ${e.ejercicio} cambian`} en la cartera nueva: ${lista(problemas)}. ${anular}, o pide a la gestoría que la cartera las traiga igual.`,
       );
     }
 
