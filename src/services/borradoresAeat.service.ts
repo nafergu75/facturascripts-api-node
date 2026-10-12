@@ -37,6 +37,8 @@ async function datosSociedad(companyId: string) {
     email: legal?.email ?? null,
     actividad: legal?.actividad ?? null,
     cnae: legal?.cnae ?? null,
+    claveActividad: legal?.claveActividad ?? null,
+    epigrafeIae: legal?.epigrafeIae ?? null,
     fechaConstitucion: legal?.fechaConstitucion ?? null,
     ejercicioInicio: legal?.ejercicioInicio ?? '01-01',
     ejercicioFin: legal?.ejercicioFin ?? '12-31',
@@ -344,6 +346,9 @@ export async function borrador390(companyId: string, ejercicio: number, opciones
       razonSocial: soc.razonSocial,
       actividad: soc.actividad,
       cnae: soc.cnae,
+      // Clave de actividad y epígrafe del IAE (posiciones 188 y 191 de la página 1).
+      claveActividad: soc.claveActividad,
+      epigrafeIae: soc.epigrafeIae,
       presenta347: agregar347(facturas, ejercicio).operaciones.length > 0,
       criterioCaja: !!ajustes?.criterioCaja,
       redeme: !!ajustes?.redeme,

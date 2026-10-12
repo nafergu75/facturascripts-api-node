@@ -10,6 +10,7 @@ import { describe, it, expect, beforeAll } from '@jest/globals';
 import { prisma } from '../config/database';
 import { borrador390 } from '../services/borradoresAeat.service';
 import { presentarDeclaracion } from '../services/declaracionesAeat/presentar';
+import { limpiarLegalConfig } from '../services/legalConfig.service';
 
 const T = Date.now();
 const TRIM = `aeat390-trim-${T}`;
@@ -83,5 +84,21 @@ describe('390 con los 303 presentados', () => {
     expect(b.liquidaciones.periodos).toEqual(['01', '02', '03', '04', '05', '06', '07', '08', '09', '10', '11', '12']);
     expect(b.liquidaciones.finales.slice(0, 2)).toEqual([160, 21]); // [69] + [78] de enero = 210, menos los 50 del año anterior
     expect(b.liquidaciones.casilla85).toBe(50);
+  });
+
+  it('clave de actividad y epígrafe del IAE de Registro Mercantil > Datos en las posiciones 188 y 191', async () => {
+    const sin = await borrador390(TRIM, 2026);
+    expect(sin.advertencias.join(' ')).toMatch(/clave de actividad o el epígrafe del IAE.*Registro Mercantil/);
+    await prisma.legalConfig.update({ where: { companyId: TRIM }, data: limpiarLegalConfig({ claveActividad: 'a03', epigrafeIae: '615.1' }) as never });
+    const b = await borrador390(TRIM, 2026);
+    const p1 = b.paginas.find((p) => p.codigo === '01000')!.linea;
+    expect(p1.slice(187, 194)).toBe('A03' + '6151');
+    expect(b.advertencias.join(' ')).not.toMatch(/epígrafe del IAE/);
+  });
+
+  it('la clave y el epígrafe se validan al guardarlos', () => {
+    expect(() => limpiarLegalConfig({ claveActividad: 'X1' })).toThrow(/letra y dos cifras/);
+    expect(() => limpiarLegalConfig({ epigrafeIae: '61511' })).toThrow(/4 cifras/);
+    expect(limpiarLegalConfig({ claveActividad: '', epigrafeIae: '' })).toMatchObject({ claveActividad: null, epigrafeIae: null });
   });
 });

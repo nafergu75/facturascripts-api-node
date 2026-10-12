@@ -261,7 +261,11 @@ export function construirModelo390(e: Entrada390): Declaracion390 {
     .texto(191, id.epigrafeIae ?? '')
     .crudo(430, id.presenta347 ? '1' : '0');
   if (!id.actividad) advertencias.push('Falta la actividad principal (página 1, apartado 3): complétala en la sede.');
-  if (!id.claveActividad || !id.epigrafeIae) advertencias.push('Falta la clave de actividad y el epígrafe del IAE de la actividad principal (página 1): complétalos en la sede.');
+  if (!id.claveActividad || !id.epigrafeIae) {
+    advertencias.push(
+      'Falta la clave de actividad o el epígrafe del IAE de la actividad principal (página 1 del 390). Rellénalos en Registro Mercantil > Datos de la sociedad, o complétalos en la sede después de importar el fichero.',
+    );
+  }
 
   // --- Página 02000: IVA devengado ---
   const p2 = pag('02000');
