@@ -17,13 +17,14 @@ const SUFIJO = `${Date.now()}${randomBytes(3).toString('hex')}`;
 const CON_DATOS = `anios-a-${SUFIJO}`;
 const VACIA = `anios-b-${SUFIJO}`;
 const AJENA = `anios-c-${SUFIJO}`;
+const GESTORIA = `anios-d-${SUFIJO}`;
 const EMAIL = `anios-${SUFIJO}@test.local`;
 let userId = '';
 /** Token firmado con el reloj del momento (con el reloj falso, caduca respecto a él). */
 const token = () => authService.generateToken({ userId, email: EMAIL, roles: [], companies: [] });
 
 beforeAll(async () => {
-  for (const id of [CON_DATOS, VACIA, AJENA]) {
+  for (const id of [CON_DATOS, VACIA, AJENA, GESTORIA]) {
     await prisma.company.create({ data: { id, name: `Empresa ${id}`, fsBaseUrl: 'http://localhost:8080', fsApiKeyEnc: 'k' } });
   }
   // Datos de 2023 (asiento), 2024 (ejercicio) y 2025 (banco).
@@ -35,9 +36,13 @@ beforeAll(async () => {
   await prisma.bankMovement.create({
     data: { companyId: CON_DATOS, cuentaBancariaId: cuenta.id, fecha: '2025-03-15', importe: 10, concepto: 'Prueba', origen: 'csv' },
   });
+  // 2026 lo llevó la gestoría (Traer la contabilidad de 2026) y tiene datos de la carga.
+  await prisma.fiscalYear.create({
+    data: { companyId: GESTORIA, label: '2026', fechaInicio: '2026-01-01', fechaFin: '2026-12-31', estado: 'OPEN', llevanza: 'EXTERNA' },
+  });
   // Solo ve Nóminas en las dos primeras; en la tercera no es miembro.
   const u = await prisma.user.create({ data: { email: EMAIL, passwordHash: hashPassword(randomBytes(18).toString('base64url')) } });
-  for (const companyId of [CON_DATOS, VACIA]) {
+  for (const companyId of [CON_DATOS, VACIA, GESTORIA]) {
     await prisma.membership.create({ data: { userId: u.id, companyId, role: 'solo_lectura', permisosPersonalizados: ['nominas:read'] } });
   }
   userId = u.id;
@@ -48,8 +53,8 @@ afterAll(async () => {
   await prisma.bankMovement.deleteMany({ where: { companyId: CON_DATOS } });
   await prisma.bankAccount.deleteMany({ where: { companyId: CON_DATOS } });
   await prisma.journalEntry.deleteMany({ where: { companyId: CON_DATOS } });
-  await prisma.fiscalYear.deleteMany({ where: { companyId: { in: [CON_DATOS, VACIA] } } });
-  await prisma.company.deleteMany({ where: { id: { in: [CON_DATOS, VACIA, AJENA] } } });
+  await prisma.fiscalYear.deleteMany({ where: { companyId: { in: [CON_DATOS, VACIA, GESTORIA] } } });
+  await prisma.company.deleteMany({ where: { id: { in: [CON_DATOS, VACIA, AJENA, GESTORIA] } } });
 });
 
 afterEach(relojReal);
@@ -64,6 +69,8 @@ describe('GET /companies/:id/anios', () => {
       actual: 2026,
       conDatos: [2025, 2024, 2023],
       ejercicios: [{ anio: 2024, estado: 'CERRADO_SIN_ASIENTOS' }],
+      primeroEnApp: 2023,
+      aniosGestoria: [],
     });
     // La lista de ejercicios sí pide contabilidad:read.
     const fys = await request(app).get(`/companies/${CON_DATOS}/fiscal-years`).set('Authorization', `Bearer ${token()}`);
@@ -78,7 +85,13 @@ describe('GET /companies/:id/anios', () => {
   it('empresa sin nada: primero = actual', async () => {
     relojEn('2026-10-12T10:00:00Z');
     const res = await request(app).get(`/companies/${VACIA}/anios`).set('Authorization', `Bearer ${token()}`);
-    expect(res.body.data).toEqual({ primero: 2026, actual: 2026, conDatos: [], ejercicios: [] });
+    expect(res.body.data).toEqual({ primero: 2026, actual: 2026, conDatos: [], ejercicios: [], primeroEnApp: 2026, aniosGestoria: [] });
+  });
+
+  it('con 2026 de la gestoría, el primer año en la app es 2027 (el que abren el 303 y el Estado fiscal)', async () => {
+    relojEn('2027-01-18T10:00:00Z');
+    const res = await request(app).get(`/companies/${GESTORIA}/anios`).set('Authorization', `Bearer ${token()}`);
+    expect(res.body.data).toMatchObject({ primero: 2026, actual: 2027, primeroEnApp: 2027, aniosGestoria: [2026] });
   });
 
   it('a las 00:30 del 1-1-2027 en Madrid el año actual ya es 2027', async () => {

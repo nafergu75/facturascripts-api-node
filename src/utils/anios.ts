@@ -78,6 +78,16 @@ export interface AniosEmpresa {
   conDatos: number[];
   /** Ejercicios dados de alta, de mayor a menor, con su estado. */
   ejercicios: EjercicioDeLaLista[];
+  /**
+   * Primer año que se lleva en la app: el de la fecha de inicio
+   * (Configuracion > Impuestos o la deducida, nunca un año que llevo la
+   * gestoria), y como pronto `primero`. Es el que abren por defecto el 303 y
+   * el Estado fiscal: un año de la gestoria tiene datos (la carga) pero sus
+   * modelos no se presentan desde aqui.
+   */
+  primeroEnApp: number;
+  /** Años que llevo la gestoria (llevanza EXTERNA), de mayor a menor. */
+  aniosGestoria: number[];
 }
 
 type FilaAnio = { anio: number | bigint | string | null };
@@ -245,7 +255,17 @@ export async function aniosEmpresa(companyId: string, ahora: Date = new Date()):
     .sort((a, b) => b.anio - a.anio);
   const conDatos = [...new Set([...datos, ...ejercicios.map((e) => e.anio)])].sort((a, b) => b - a);
   const primero = conDatos.length ? Math.min(...conDatos) : actual;
-  return { primero, actual, conDatos, ejercicios };
+  const [inicio, externos] = await Promise.all([
+    inicioLlevanzaApp(companyId),
+    prisma.fiscalYear.findMany({ where: { companyId, llevanza: 'EXTERNA' }, select: { label: true } }),
+  ]);
+  const anioInicio = Number(inicio.slice(0, 4));
+  const primeroEnApp = ANIO_RAZONABLE(anioInicio) ? Math.max(primero, anioInicio) : primero;
+  const aniosGestoria = externos
+    .map((f) => Number(f.label))
+    .filter(ANIO_RAZONABLE)
+    .sort((a, b) => b - a);
+  return { primero, actual, conDatos, ejercicios, primeroEnApp, aniosGestoria };
 }
 
 /**
