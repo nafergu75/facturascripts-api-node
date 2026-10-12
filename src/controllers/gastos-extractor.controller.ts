@@ -121,7 +121,15 @@ export const gastosExtractorController = {
     }
 
     // Lectura con Azure (POST /lecturas): llega por el extra del formulario. Sin ella, como siempre.
-    const lectura = typeof cuerpo.lecturaId === 'string' && cuerpo.lecturaId ? await comprobarLecturaParaConfirmar(companyId, cuerpo.lecturaId, 'GASTO', cuerpo) : null;
+    // Primero lo de la lectura (que exista y siga sin registrar); despues, el proveedor; y por ultimo,
+    // en un abono leido, que rectifica: la factura original solo se puede elegir entre las del proveedor.
+    const lectura =
+      typeof cuerpo.lecturaId === 'string' && cuerpo.lecturaId
+        ? await comprobarLecturaParaConfirmar(companyId, cuerpo.lecturaId, 'GASTO', cuerpo).catch(async (e: unknown) => {
+            if ((e as { details?: { codigo?: unknown } })?.details?.codigo === 'FALTA_RECTIFICATIVA') await exigirProveedorDadoDeAlta(companyId, cuerpo);
+            throw e;
+          })
+        : null;
     // El proveedor tiene que estar dado de alta (llega su id): el lector ya no lo crea solo.
     await exigirProveedorDadoDeAlta(companyId, cuerpo);
 
