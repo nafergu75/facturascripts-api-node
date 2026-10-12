@@ -48,7 +48,7 @@ import {
 } from '../../aeat/modelo202/modelo202.dr';
 import { ErrorDisenoRegistro } from '../../aeat/common/disenoRegistro';
 import { avisoPresentado, declaranteEmpresa, filaModelo, opcionesDe, presentacionDe } from './comun';
-import { contextoDeclaracion, filaPresentada, type ContextoDeclaracion } from '../declaracionesAeat/declaraciones.service';
+import { contextoDeclaracion, estadosEnRectificacion, filaPresentada, type ContextoDeclaracion } from '../declaracionesAeat/declaraciones.service';
 
 export interface Opciones202 {
   modalidad: 'A' | 'B';
@@ -66,6 +66,8 @@ export interface Borrador202 {
   ejercicio: number;
   periodo: Periodo202;
   estado: string;
+  /** Presentado con una complementaria, sustitutiva o rectificativa en preparación (si no, null). */
+  estadoTexto: string | null;
   opciones: Opciones202;
   /** De donde sale la base [01]. */
   base: { origen: 'manual' | 'modelo200' | 'ninguno'; ejercicio200: number; importe: number };
@@ -230,6 +232,7 @@ export async function calcularBorrador202(companyId: string, ejercicio: number, 
     ejercicio,
     periodo,
     estado: fila?.estado ?? 'vigente',
+    estadoTexto: (await estadosEnRectificacion(companyId, '202', ejercicio)).get(periodo) ?? null,
     opciones,
     base,
     cifraNegociosAnterior: incn,
