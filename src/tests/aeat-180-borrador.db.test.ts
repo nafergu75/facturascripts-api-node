@@ -15,7 +15,8 @@ import { describe, it, expect, beforeAll } from '@jest/globals';
 import express from 'express';
 import request from 'supertest';
 import { prisma } from '../config/database';
-import { expenseInvoicesService } from '../services/expense-invoices.service';
+import { editarGasto, expenseInvoicesService } from '../services/expense-invoices.service';
+import { proveedoresService } from '../services/proveedores.service';
 import borradoresAeatRoutes from '../routes/borradores-aeat.routes';
 import declaracionesAeatRoutes from '../routes/declaraciones-aeat.routes';
 import { errorMiddleware } from '../middleware/error.middleware';
@@ -191,6 +192,58 @@ describe('180 de 2027 desde las facturas de alquiler', () => {
     expect(lista.body.data).toHaveLength(2);
     const cambio = await request(app(E)).put(`/companies/${E}/tax-models/180/inmuebles/${madridCentro}`).send({ puerta: '3B' });
     expect(cambio.body.data).toMatchObject({ puerta: '3B', referenciaCatastral: '0847106VK4704F0001LK' });
+  });
+});
+
+describe('inmuebles del 180 al cambiar o borrar el arrendador', () => {
+  const E = `aeat180-cambio-${SUFIJO}`;
+  const DNI_B = `30303030${letraDni('30303030')}`;
+  let a: string;
+  let b: string;
+  let localA: string;
+
+  beforeAll(async () => {
+    await prisma.company.create({ data: { id: E, name: 'Inquilina Dos SL', fsBaseUrl: 'http://localhost:8080', fsApiKeyEnc: 'k' } });
+    await prisma.legalConfig.create({ data: { companyId: E, denominacion: 'Inquilina Dos, S.L.', nif: NIF, telefono: '963000111', personaContacto: 'Pérez Gil Luis' } });
+    a = (await prisma.supplier.create({ data: { companyId: E, nombreFiscal: 'Martínez Peña José', nifCif: DNI, cp: '46002', provincia: 'Valencia' } })).id;
+    b = (await prisma.supplier.create({ data: { companyId: E, nombreFiscal: 'Gómez Ruiz Ana', nifCif: DNI_B, cp: '46003', provincia: 'Valencia' } })).id;
+    localA = (await request(app(E)).post(`/companies/${E}/tax-models/180/inmuebles`).send({ supplierId: a, ...localValencia })).body.data.id;
+    // B tiene dos locales: el 180 no puede elegir uno solo.
+    for (const ref of ['0847106VK4704F0001LK', '0847106VK4704F0002BL']) {
+      await request(app(E)).post(`/companies/${E}/tax-models/180/inmuebles`).send({ supplierId: b, ...localValencia, referenciaCatastral: ref });
+    }
+  });
+
+  it('una factura de alquiler cambiada a otro arrendador pierde el inmueble del anterior y el 180 pide elegirlo', async () => {
+    const f = await alquiler(E, a, '2027-03-01', 'CAMBIO-1', 1000);
+    expect((await request(app(E)).put(`/companies/${E}/tax-models/180/facturas/${f.id}/inmueble`).send({ inmuebleArrendadoId: localA })).status).toBe(200);
+    await editarGasto(E, f.id, {
+      proveedor: { id: b },
+      numeroFacturaProveedor: 'CAMBIO-1',
+      fechaEmision: '2027-03-01',
+      tipoGasto: 'ALQUILER',
+      lineas: [{ descripcion: 'Alquiler del local', cantidad: 1, precioUnitario: 1000, tipoIva: 21, tipoRetencion: 19 }],
+    });
+    expect((await prisma.expenseInvoice.findUnique({ where: { id: f.id } }))?.inmuebleArrendadoId).toBeNull();
+    const borr = await calcularBorrador180(E, 2027);
+    expect(borr.sinInmueble.map((x) => x.id)).toEqual([f.id]);
+    expect(borr.facturas.find((x) => x.id === f.id)?.inmuebleArrendadoId).toBeNull();
+  });
+
+  it('una factura que aún apunta al inmueble de otro arrendador no lo usa en el 180', async () => {
+    const f = await alquiler(E, b, '2027-04-01', 'CAMBIO-2', 500);
+    await prisma.expenseInvoice.update({ where: { id: f.id }, data: { inmuebleArrendadoId: localA } });
+    const borr = await calcularBorrador180(E, 2027);
+    expect(borr.sinInmueble.map((x) => x.id)).toContain(f.id);
+    expect(borr.facturas.find((x) => x.id === f.id)?.inmuebleArrendadoId).toBeNull();
+  });
+
+  it('borrar un proveedor sin facturas que tiene un inmueble dado de alta: se borra con su inmueble (no un 500)', async () => {
+    const c = (await prisma.supplier.create({ data: { companyId: E, nombreFiscal: 'Sin Facturas Lopez Eva', nifCif: `40404040${letraDni('40404040')}`, cp: '46005' } })).id;
+    expect((await request(app(E)).post(`/companies/${E}/tax-models/180/inmuebles`).send({ supplierId: c, ...localValencia })).status).toBe(201);
+    await proveedoresService.remove(E, c);
+    expect(await prisma.supplier.count({ where: { id: c } })).toBe(0);
+    expect(await prisma.inmuebleArrendado.count({ where: { companyId: E, supplierId: c } })).toBe(0);
   });
 });
 
