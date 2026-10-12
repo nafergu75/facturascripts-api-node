@@ -587,8 +587,8 @@ export async function previsualizarComparativo(
   };
 }
 
-async function guardarSaldosComparativo(companyId: string, ejercicio: number, cuentas: CuentaSaldo[], parte: ParteComparativo, origen: string) {
-  const previo = await prisma.priorYearData.findFirst({ where: { companyId, ejercicio } });
+export async function guardarSaldosComparativo(companyId: string, ejercicio: number, cuentas: CuentaSaldo[], parte: ParteComparativo, origen: string, db: Tx | typeof prisma = prisma) {
+  const previo = await db.priorYearData.findFirst({ where: { companyId, ejercicio } });
   const combinadas = combinar(leerDatosComparativo(previo?.datosJSON)?.cuentas ?? [], cuentas, parte);
   const r = resumenComparativo(combinadas);
   const datos = {
@@ -599,8 +599,8 @@ async function guardarSaldosComparativo(companyId: string, ejercicio: number, cu
     datosJSON: JSON.stringify({ formato: 'saldos-v1', cuentas: combinadas } satisfies DatosComparativo),
     observaciones: `${origen} el ${new Date().toISOString().slice(0, 10)}`,
   };
-  if (previo) return prisma.priorYearData.update({ where: { id: previo.id }, data: datos });
-  return prisma.priorYearData.create({ data: { companyId, ejercicio, ...datos } });
+  if (previo) return db.priorYearData.update({ where: { id: previo.id }, data: datos });
+  return db.priorYearData.create({ data: { companyId, ejercicio, ...datos } });
 }
 
 export async function confirmarComparativo(
