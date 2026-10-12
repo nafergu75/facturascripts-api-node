@@ -1010,6 +1010,10 @@ model BankAccount {
   bic             String?
   /// Saldo que el usuario declara al dar de alta la cuenta (pantalla de tesoreria).
   saldoInicial    Decimal        @default(0) @db.Decimal(14, 2)
+  /// Fecha (AAAA-MM-DD) a la que corresponde saldoInicial. Null = como hasta ahora.
+  fechaSaldoInicial    String?  @db.VarChar(10)
+  /// Saldo de la 572 en la apertura, para ensenar la diferencia con el extracto.
+  saldoContableInicial Decimal? @db.Decimal(14, 2)
   /// Moneda de la cuenta (ISO 4217). Al darla de alta, la moneda de cuenta de la empresa.
   moneda          String         @default("EUR") @db.VarChar(3)
   activa          Boolean        @default(true)
@@ -1414,6 +1418,9 @@ model FiscalYear {
   legalizationDeadline    String? // cierre + 4 meses
   accountsDepositDeadline String? // cierre + 7 meses
   asientosBloqueados      Boolean               @default(false)
+  /// APP = la contabilidad de este año esta en la app; EXTERNA = la llevo la gestoria
+  /// en su programa y en la app es solo de lectura (Traer la contabilidad de 2026).
+  llevanza                String                @default("APP") @db.VarChar(10)
   /// Notas de la memoria que no salen de la contabilidad (plantilla media, partes
   /// vinculadas, hechos posteriores...). Ver services/memoria.service.ts.
   memoriaNotas            Json?
@@ -1806,4 +1813,121 @@ model AjustePlataforma {
   valor       Json
   cambiadoPor String?
   cambiadoEn  DateTime @updatedAt
+}
+
+/// Una carga de la contabilidad del ano anterior (Traer la contabilidad de 2026):
+/// los ficheros de la gestoria y lo que se hizo con ellos.
+model CargaArranque {
+  id            String    @id @default(cuid())
+  companyId     String
+  /// Ejercicio de destino: 2027.
+  ejercicio     Int
+  version       Int
+  /// PROVISIONAL | DEFINITIVA
+  tipo          String    @db.VarChar(12)
+  /// BORRADOR | APLICANDO | CONFIRMADA | SUSTITUIDA | DESHECHA
+  estado        String    @db.VarChar(12)
+  /// [{ nombre, sha256, tamano, clave, hojas: [{ hoja, tipo, programa, confianza }] }]
+  ficheros      Json
+  /// Decisiones de la persona: tipo y mapeo por hoja, exclusiones, datos a mano.
+  ajustes       Json?
+  /// SHA-256 del resumen analizado: si cambia al confirmar, 409.
+  huella        String?   @db.VarChar(64)
+  /// [{ fase, estado, inicio, fin, cursor, error }]
+  fases         Json?
+  /// Ids creados por fase (cuentas, fichas, asientos, partidas, activos).
+  creado        Json?
+  /// Valores previos para deshacer (nombres, longitud, enlaces, llevanza, ids retirados...).
+  anterior      Json?
+  /// Cifras, comprobaciones, avisos aceptados y datos fiscales.
+  resumen       Json?
+  createdBy     String
+  confirmadaPor String?
+  confirmadaEn  DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@unique([companyId, ejercicio, version])
+  @@index([companyId, ejercicio, estado])
+}
+
+/// Factura de 2026 pendiente de cobro o pago a 31-12. No genera asiento ni IVA:
+/// su saldo ya esta en la apertura.
+model PartidaPendiente {
+  id               String   @id @default(cuid())
+  companyId        String
+  cargaId          String
+  /// COBRO | PAGO
+  tipo             String   @db.VarChar(5)
+  subcuenta        String   @db.VarChar(15)
+  customerId       String?
+  supplierId       String?
+  /// Si la factura se emitio o registro en la app en 2026.
+  incomeInvoiceId  String?
+  expenseInvoiceId String?
+  numeroDocumento  String   @db.VarChar(60)
+  fechaDocumento   String?  @db.VarChar(10)
+  fechaVencimiento String?  @db.VarChar(10)
+  importeOriginal  Decimal? @db.Decimal(14, 2)
+  /// A 31-12; negativo = anticipo o abono.
+  importePendiente Decimal  @db.Decimal(14, 2)
+  moneda           String   @default("EUR") @db.VarChar(3)
+  /// Partida «Saldo sin detalle a 31-12-2026».
+  sinDetalle       Boolean  @default(false)
+  /// PENDIENTE | PARCIAL | LIQUIDADA | ANULADA
+  estado           String   @default("PENDIENTE") @db.VarChar(10)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@unique([companyId, cargaId, tipo, subcuenta, numeroDocumento])
+  @@index([companyId, estado])
+  @@index([companyId, subcuenta])
+}
+
+/// Elemento de inmovilizado con amortizacion lineal.
+model ActivoFijo {
+  id                      String                 @id @default(cuid())
+  companyId               String
+  cargaId                 String?
+  descripcion             String                 @db.VarChar(191)
+  /// 2xx
+  subcuentaBien           String                 @db.VarChar(15)
+  /// 28x
+  subcuentaAmortAcum      String                 @db.VarChar(15)
+  /// 68x
+  subcuentaDotacion       String                 @db.VarChar(15)
+  fechaAlta               String                 @db.VarChar(10)
+  fechaInicioAmortizacion String                 @db.VarChar(10)
+  coste                   Decimal                @db.Decimal(14, 2)
+  valorResidual           Decimal                @default(0) @db.Decimal(14, 2)
+  amortAcumuladaInicial   Decimal                @default(0) @db.Decimal(14, 2)
+  /// 2026-12-31 en los traidos.
+  fechaAmortAcumulada     String?                @db.VarChar(10)
+  /// % anual
+  coeficiente             Decimal                @db.Decimal(6, 3)
+  metodo                  String                 @default("LINEAL") @db.VarChar(10)
+  fechaBaja               String?                @db.VarChar(10)
+  activo                  Boolean                @default(true)
+  createdAt               DateTime               @default(now())
+  updatedAt               DateTime               @updatedAt
+  dotaciones              DotacionAmortizacion[]
+
+  @@index([companyId])
+}
+
+/// Dotacion de un activo en un mes: impide amortizar dos veces el mismo mes.
+model DotacionAmortizacion {
+  id             String     @id @default(cuid())
+  companyId      String
+  activoFijoId   String
+  /// AAAA-MM
+  periodo        String     @db.VarChar(7)
+  importe        Decimal    @db.Decimal(14, 2)
+  journalEntryId String
+  anulada        Boolean    @default(false)
+  createdAt      DateTime   @default(now())
+  activoFijo     ActivoFijo @relation(fields: [activoFijoId], references: [id])
+
+  @@unique([activoFijoId, periodo])
+  @@index([companyId, periodo])
 }
