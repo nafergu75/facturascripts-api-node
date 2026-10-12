@@ -273,6 +273,90 @@ export function topeCero(centimos: number): { valor: number; exceso: number } {
   return centimos < 0 ? { valor: 0, exceso: -centimos } : { valor: centimos, exceso: 0 };
 }
 
+/** Una fila de retencion (111/190 o 115/180) para repartir los abonos por perceptor. Importes en centimos, con signo. */
+export interface FilaRetencionPerceptor {
+  /** Perceptor y registro del 190/180 al que va (proveedor y subclave, o arrendador, inmueble y devengo). */
+  clave: string;
+  /** Fecha contable. */
+  fecha: string;
+  base: number;
+  retencion: number;
+  /** Abono cuya factura original es de un ejercicio anterior. */
+  deAnioAnterior?: boolean;
+}
+
+/** Lo que cuenta de cada fila (centimos) y lo que no cabe de un abono. */
+export interface RetencionContada {
+  base: number;
+  retencion: number;
+  /** Retencion del abono que no se resta (positiva): pasa de la 4751 a la 4709. */
+  exceso: number;
+  /** Base del abono que no se resta (positiva). */
+  excesoBase: number;
+}
+
+/** Ultimo dia del trimestre de una fecha. */
+function finTrimestre(fecha: string): string {
+  const anio = Number(fecha.slice(0, 4));
+  const mes = Math.ceil(Number(fecha.slice(5, 7)) / 3) * 3;
+  return `${anio}-${String(mes).padStart(2, '0')}-${String(new Date(Date.UTC(anio, mes, 0)).getUTCDate()).padStart(2, '0')}`;
+}
+
+/**
+ * Retencion de los abonos por perceptor (decision P1, con la revision de
+ * integracion-4). La retencion de un abono solo resta de lo que se le
+ * retuvo a ese mismo perceptor (y en ese mismo registro del 190 o del 180) en
+ * el año, hasta el trimestre del abono, menos lo que ya restaron sus abonos
+ * anteriores. Nunca resta de otro perceptor: asi ningun perceptor sale en
+ * negativo en el 190 o el 180 y los 111/115 no recuperan la retencion de uno
+ * con la de otro. Lo que no cabe no cuenta en ningun modelo: se recupera
+ * rectificando el modelo en que se declaro (art. 120.3 LGT) y pasa de la 4751
+ * a la 4709.
+ *
+ * El abono de una factura de un ejercicio anterior no cuenta en el año: su
+ * retencion se declaro en el 111/115 y el 190/180 de ese año, y se recupera
+ * rectificandolos.
+ *
+ * `filas` son todas las del año hasta el final del periodo que se calcula (o
+ * del año entero en el 190/180). Devuelve lo que cuenta de cada una, en el
+ * mismo orden. Las filas con la retencion en positivo cuentan enteras.
+ */
+export function retencionesPorPerceptor(filas: readonly FilaRetencionPerceptor[]): RetencionContada[] {
+  const out: RetencionContada[] = filas.map((f) => ({ base: f.base, retencion: f.retencion, exceso: 0, excesoBase: 0 }));
+  const abonos = filas
+    .map((f, i) => i)
+    .filter((i) => filas[i].retencion < 0)
+    .sort((a, b) => filas[a].fecha.localeCompare(filas[b].fecha) || a - b);
+  const usado = new Map<string, { base: number; retencion: number }>();
+  for (const i of abonos) {
+    const f = filas[i];
+    if (f.deAnioAnterior) {
+      out[i] = { base: 0, retencion: 0, exceso: -f.retencion, excesoBase: Math.max(0, -f.base) };
+      continue;
+    }
+    const hasta = finTrimestre(f.fecha);
+    let base = 0;
+    let retencion = 0;
+    for (const g of filas) {
+      if (g.clave === f.clave && g.retencion >= 0 && g.fecha <= hasta) {
+        base += g.base;
+        retencion += g.retencion;
+      }
+    }
+    const u = usado.get(f.clave) ?? { base: 0, retencion: 0 };
+    const cabeRetencion = Math.max(0, retencion - u.retencion);
+    const cabeBase = Math.max(0, base - u.base);
+    // `|| 0`: sin -0 cuando no cabe nada.
+    const r = Math.max(f.retencion, -cabeRetencion) || 0;
+    const b = f.base < 0 ? Math.max(f.base, -cabeBase) || 0 : f.base;
+    u.retencion -= r;
+    if (b < 0) u.base -= b;
+    usado.set(f.clave, u);
+    out[i] = { base: b, retencion: r, exceso: r - f.retencion, excesoBase: b - f.base };
+  }
+  return out;
+}
+
 /** Periodo de una fecha como lo lee la persona: «4T de 2026». */
 export const periodoTexto = (fecha: string) => `${Math.ceil(Number(fecha.slice(5, 7)) / 3)}T de ${fecha.slice(0, 4)}`;
 
