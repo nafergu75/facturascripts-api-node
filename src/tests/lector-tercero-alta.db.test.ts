@@ -57,6 +57,7 @@ import clientesRoutes from '../routes/clientes.routes';
 import proveedoresRoutes from '../routes/proveedores.routes';
 import incomeReaderRoutes from '../routes/income-reader.routes';
 import { _reiniciarPausa } from '../services/lectura/azure-di.client';
+import { exigirPlanAnteriorAntesDeAlta } from '../services/terceros/planAnteriorAlta';
 import { controlCif } from '../utils/nif';
 import { aceptado, CLAVE, ENDPOINT, fixtureAzure, NIF_EMISOR, NIF_EMPRESA, respuesta, resultado } from './fixtures/azure-di';
 
@@ -111,6 +112,9 @@ async function empresa(nif: string): Promise<string> {
   const id = `${BASE}-${++n}`;
   await prisma.company.create({ data: { id, name: `Empresa ${n}`, fsBaseUrl: 'http://localhost:8080', fsApiKeyEnc: 'k' } });
   await prisma.legalConfig.create({ data: { companyId: id, denominacion: `Empresa ${n} SL`, nif } });
+  // Empresa nueva sin el plan de la gestoria: se confirma de antemano el aviso del primer
+  // cliente o proveedor (arranque-primer-tercero lo prueba aparte).
+  await exigirPlanAnteriorAntesDeAlta(id, true, 'test');
   return id;
 }
 
