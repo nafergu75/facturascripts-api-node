@@ -107,18 +107,20 @@ describe('modelos con el inicio deducido', () => {
 
 /**
  * Inicio de la llevanza en la app para los abonos (integracion-4): decide si el
- * 303 de la factura que rectifica se presentó fuera. Manda la fecha indicada;
- * si no hay, la deducida, pero nunca antes del 1-1-2027 (2026 se lleva fuera).
+ * 303 de la factura que rectifica se presentó fuera. Es el mismo que usa el
+ * calendario: la fecha indicada o, si no hay, la deducida de los datos (así la
+ * pantalla del 303 y el aviso del abono dicen lo mismo de un periodo).
  */
 describe('inicioLlevanzaApp', () => {
   it('la fecha indicada en Configuración > Impuestos manda, aunque sea anterior a 2027', async () => {
     expect(await inicioLlevanzaApp(INDICADA)).toBe('2024-01-01');
   });
 
-  it('sin fecha indicada y con datos de 2025 o dada de alta en 2026, el 1-1-2027', async () => {
-    expect(await inicioLlevanzaApp(CON_FACTURA)).toBe('2027-01-01');
-    expect(await inicioLlevanzaApp(VACIA)).toBe('2027-01-01');
+  it('sin fecha indicada, la misma que el calendario: el primer día con datos o, sin datos, el alta', async () => {
+    expect(await inicioLlevanzaApp(CON_FACTURA)).toBe('2025-05-10');
+    expect(await inicioLlevanzaApp(VACIA)).toBe('2026-10-12');
     expect(await inicioLlevanzaApp(DE_2027)).toBe('2027-01-01');
+    for (const id of [CON_FACTURA, VACIA, DE_2027, DE_MARZO]) expect(await inicioLlevanzaApp(id)).toBe(await inicioImplicito(id));
   });
 
   it('sin fecha indicada, si los datos empiezan después del 1-1-2027 cuenta ese día', async () => {
