@@ -12,6 +12,7 @@
 
 import { badRequest, notFound } from '../utils/http-errors';
 import { prisma } from '../config/database';
+import { estadosEnRectificacion } from './declaracionesAeat/declaraciones.service';
 import { taxDocumentsService } from './tax-documents.service';
 import { reportsService } from './reports.service';
 import { registrarAuditoria } from './auditoria.service';
@@ -290,6 +291,7 @@ export class TaxModelsService {
     totalBase: number;
     totalRetenido: number;
     estado: string;
+    estadoTexto: string | null;
     origen: string | null;
     avisos: string[];
     /** Formulario oficial (identificacion, casillas 01-30, liquidacion): misma declaracion que el fichero. */
@@ -315,6 +317,7 @@ export class TaxModelsService {
       totalBase: pantalla.totalBase,
       totalRetenido: pantalla.totalRetenido,
       estado: r.fila.estado,
+      estadoTexto: (await estadosEnRectificacion(companyId, '111', ejercicio)).get(periodo) ?? null,
       origen: r.fila.origen,
       avisos,
       formulario,
@@ -346,6 +349,7 @@ export class TaxModelsService {
     retencion: number;
     operaciones: number;
     estado: string;
+    estadoTexto: string | null;
     casillas: Record<string, number>;
     casillasOficiales: CasillasGuardadas;
     perceptores: NonNullable<DatosModelo115['perceptores']>;
@@ -372,6 +376,7 @@ export class TaxModelsService {
       retencion,
       operaciones: (datos.perceptores ?? []).reduce((a, p) => a + p.facturas, 0),
       estado: r.fila.estado,
+      estadoTexto: (await estadosEnRectificacion(companyId, '115', ejercicio)).get(periodo) ?? null,
       casillas: { '01': c['01'], '02': baseImponible, '03': retencion, '04': c['04'], '05': c['05'] },
       casillasOficiales: casillasAGuardadas('115', c),
       perceptores: datos.perceptores ?? [],
@@ -393,7 +398,7 @@ export class TaxModelsService {
     totalRetenido: number;
     estado: 'vigente';
     casillas: Record<string, never>;
-    desgloseTrimestral: Array<{ numero: number; base: number; cuota: number; operaciones: number; estado: string }>;
+    desgloseTrimestral: Array<{ numero: number; base: number; cuota: number; operaciones: number; estado: string; estadoTexto: string | null }>;
     arrendadores: NonNullable<DatosModelo115['perceptores']>;
     avisos: string[];
   }> {
@@ -403,6 +408,7 @@ export class TaxModelsService {
       select: { periodo: true, estado: true },
     });
     const desgloseTrimestral = [];
+    const enRectificacion = await estadosEnRectificacion(companyId, '115', ejercicio);
     for (const numero of [1, 2, 3, 4]) {
       const d = await calcularModelo115(companyId, periodoFiscal(ejercicio, `${numero}T`));
       desgloseTrimestral.push({
@@ -411,6 +417,7 @@ export class TaxModelsService {
         cuota: d.retenciones,
         operaciones: (d.perceptores ?? []).reduce((a, p) => a + p.facturas, 0),
         estado: guardados.find((g) => g.periodo === `${numero}T`)?.estado ?? 'vigente',
+        estadoTexto: enRectificacion.get(`${numero}T`) ?? null,
       });
     }
     const anual = await calcularModelo115(companyId, periodoFiscal(ejercicio, '0A'));
@@ -447,6 +454,7 @@ export class TaxModelsService {
     totalBase: number;
     totalRetenido: number;
     estado: string;
+    estadoTexto: string | null;
     casillas: any;
     desgloseTrimestral: any[];
     avisos: string[];
@@ -513,6 +521,7 @@ export class TaxModelsService {
       totalBase: v('importe_percepciones'),
       totalRetenido: v('retenciones_ingresos_cuenta'),
       estado: modelo?.estado ?? 'vigente',
+      estadoTexto: (await estadosEnRectificacion(companyId, '190', ejercicio)).get('0A') ?? null,
       casillas,
       desgloseTrimestral,
       avisos: datos.avisos ?? [],
