@@ -178,6 +178,12 @@ export interface GastoDetalle extends ExpenseInvoiceResp {
   pendiente: number;
   /** Solo en los abonos: lo que queda a favor de la empresa (en positivo). */
   aFavor?: number;
+  /**
+   * Abono registrado (o aprobado) despues de presentar el 303 de su IVA: el
+   * recordatorio de preparar la autoliquidacion rectificativa. Sale siempre en
+   * la ficha, no solo al guardarlo. enlace null si ese 303 se llevo fuera de la app.
+   */
+  rectificar303: { ejercicio: number; periodo: string; confirmadoEn: string; aviso: string; enlace: string | null } | null;
 }
 
 export interface FiltrosGastos {
@@ -530,6 +536,34 @@ export const detallesRectificar303 = (b: BloqueoPeriodo, campo: string) => ({
 const MESES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
 /** «el 1T de 2027» o «abril de 2027». */
 const periodoTexto = (b: BloqueoPeriodo) => (/^\d{2}$/.test(b.periodo ?? '') ? `${MESES[Number(b.periodo) - 1]} de ${b.ejercicio}` : `el ${b.periodo} de ${b.ejercicio}`);
+
+/**
+ * Recordatorio fijo de la ficha de un abono confirmado contra un 303 ya
+ * presentado (rectificar303ConfirmadoEn): el 303 del periodo de su IVA.
+ */
+async function recordatorioRectificar303(
+  companyId: string,
+  f: { estado: string; rectificar303ConfirmadoEn: string | null; fechaImputacionIva: string | null; fechaEmision: string; fechaRegistro: string | null },
+): Promise<GastoDetalle['rectificar303']> {
+  if (!f.rectificar303ConfirmadoEn || f.estado === 'ANULADA') return null;
+  const fecha = fechaIvaGasto(f);
+  const ejercicio = Number(fecha.slice(0, 4));
+  const mes = fecha.slice(5, 7);
+  const trimestre = `${Math.ceil(Number(mes) / 3)}T`;
+  const fila = await prisma.modeloImpuesto.findFirst({ where: { companyId, codigo: '303', ejercicio, periodo: { in: [trimestre, mes] }, estado: 'presentado' }, select: { periodo: true } });
+  const fuera = !fila && fecha < INICIO_LLEVANZA_APP;
+  const periodo = fila?.periodo ?? trimestre;
+  const cual = /^\d{2}$/.test(periodo) ? `el 303 de ${MESES[Number(periodo) - 1]} de ${ejercicio}` : `el 303 del ${periodo} de ${ejercicio}`;
+  return {
+    ejercicio,
+    periodo,
+    confirmadoEn: f.rectificar303ConfirmadoEn,
+    aviso:
+      `Registrado después de presentar ${cual}${fuera ? ' (presentado fuera de la app)' : ''}: prepara su autoliquidación rectificativa. ` +
+      'En la contabilidad, apunta a mano la regularización del IVA (472 y 4750), el recargo (678) y los intereses de demora (669) cuando los pagues.',
+    enlace: fuera ? null : ENLACE_303,
+  };
+}
 
 /** Aviso del alta (o de la aprobacion) de un abono registrado en un 303 ya presentado. */
 export const avisoRectificar303 = (b: BloqueoPeriodo) =>
@@ -1577,11 +1611,12 @@ async function obtenerDetalle(companyId: string, id: string): Promise<GastoDetal
   });
   if (!f) throw notFound('Factura de gasto no encontrada.');
 
-  const [{ pagado, activos }, perfil, rect, compensaciones] = await Promise.all([
+  const [{ pagado, activos }, perfil, rect, compensaciones, rectificar303] = await Promise.all([
     pagosDe(companyId, id),
     perfilEmpresa(companyId),
     datosRectificativaDeFicha(companyId, f),
     compensacionesDe(companyId, id),
+    recordatorioRectificar303(companyId, f),
   ]);
   // Aplicaciones de abonos que impiden anularla (el mismo texto que el 409 de anularGasto).
   const bloqueoCompensaciones =
@@ -1682,6 +1717,7 @@ async function obtenerDetalle(companyId: string, id: string): Promise<GastoDetal
     },
     esRectificativa: f.esRectificativa,
     ...rect,
+    rectificar303,
     createdAt: f.createdAt,
     updatedAt: f.updatedAt,
   };
