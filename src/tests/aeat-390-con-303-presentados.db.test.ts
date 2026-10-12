@@ -9,12 +9,13 @@
 import { describe, it, expect, beforeAll } from '@jest/globals';
 import { prisma } from '../config/database';
 import { borrador390 } from '../services/borradoresAeat.service';
-import { presentarDeclaracion } from '../services/declaracionesAeat/presentar';
+import { prepararRectificacionModelo, presentarDeclaracion } from '../services/declaracionesAeat/presentar';
 import { limpiarLegalConfig } from '../services/legalConfig.service';
 
 const T = Date.now();
 const TRIM = `aeat390-trim-${T}`;
 const MES = `aeat390-mes-${T}`;
+const RECT = `aeat390-rect-${T}`;
 
 let numero = 0;
 async function venta(companyId: string, customerId: string, fecha: string, base: number) {
@@ -41,7 +42,7 @@ async function venta(companyId: string, customerId: string, fecha: string, base:
 const clientes: Record<string, string> = {};
 
 beforeAll(async () => {
-  for (const id of [TRIM, MES]) {
+  for (const id of [TRIM, MES, RECT]) {
     await prisma.company.create({ data: { id, name: `390 ${id}`, fsBaseUrl: 'http://localhost:8080', fsApiKeyEnc: 'k' } });
     await prisma.legalConfig.create({ data: { companyId: id, denominacion: 'Resumen Anual, S.L.', nif: 'B46000006', telefono: '961234567', personaContacto: 'García Pérez Ana', cnae: '4646' } });
     clientes[id] = (await prisma.customer.create({ data: { companyId: id, nombreFiscal: 'Cliente Turia, S.L.', nifCif: 'B12345674', pais: 'ES', cp: '46001' } })).id;
@@ -64,6 +65,20 @@ describe('390 con los 303 presentados', () => {
     expect(avisos).toMatch(/Los 303 de 2T, 3T, 4T no están marcados como presentados/);
     // El devengado del año sí incluye la factura nueva: no cuadra con lo presentado y se avisa.
     expect(avisos).toMatch(/\[86\] \(735\.00 €\) no cuadra con los 303 del año \(a ingresar 630\.00 €/);
+  });
+
+  it('un 303 presentado con su rectificativa en preparación cuenta como presentado: el 390 usa lo presentado y lo dice', async () => {
+    await venta(RECT, clientes[RECT], '2026-05-10', 1000); // 210 de IVA en el 2T
+    await presentarDeclaracion(RECT, 'u-390', '303', 2026, '2T', { numero: '3032026000002', fecha: '2026-07-15' });
+    await venta(RECT, clientes[RECT], '2026-06-10', 500); // 105 más: la rectificativa los llevará
+    await prepararRectificacionModelo(RECT, 'u-390', '303', 2026, '2T', { tipo: 'C' });
+    expect((await prisma.modeloImpuesto.findFirst({ where: { companyId: RECT, codigo: '303', periodo: '2T' } }))?.estado).toBe('vigente');
+
+    const b = await borrador390(RECT, 2026);
+    expect(b.liquidaciones.finales).toEqual([0, 210, 0, 0]); // lo presentado, no los 315 de hoy
+    const avisos = b.advertencias.join(' ');
+    expect(avisos).toMatch(/Los 303 de 1T, 3T, 4T no están marcados como presentados/);
+    expect(avisos).toMatch(/El 303 de 2T tiene una rectificativa en preparación: el 390 usa lo presentado/);
   });
 
   it('mensual: doce meses, el de enero presentado, y [85] con el [110] de enero', async () => {
