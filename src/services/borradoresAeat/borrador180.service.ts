@@ -283,9 +283,17 @@ export async function ficheroModelo180(companyId: string, ejercicio: number): Pr
   }
 }
 
-/** Clave de un registro del 180: arrendador, inmueble (referencia catastral) y ejercicio de devengo. */
+/**
+ * Clave de un registro del 180: arrendador, inmueble y ejercicio de devengo.
+ * El inmueble es su referencia catastral; si no la tiene (situación 4), su
+ * dirección (municipio, vía, número, planta y puerta), para que dos locales del
+ * mismo arrendador sin referencia no se confundan en una complementaria.
+ */
 export function clavePerceptor180(p: Pick<Perceptor180, 'nif' | 'inmueble' | 'ejercicioDevengo'>): string {
-  const nif = String(p.nif ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '');
-  const ref = String(p.inmueble?.referenciaCatastral ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '') || '-';
+  const limpio = (v: unknown) => String(v ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const nif = limpio(p.nif);
+  const i = p.inmueble;
+  const direccion = i ? [i.codigoMunicipio, i.tipoVia, i.nombreVia, i.numeroCasa, i.bloque, i.portal, i.escalera, i.planta, i.puerta].map(limpio).join('.') : '';
+  const ref = limpio(i?.referenciaCatastral) || (direccion.replace(/\./g, '') ? `D:${direccion}` : '-');
   return `${nif}|${ref}|${p.ejercicioDevengo ?? ''}`;
 }

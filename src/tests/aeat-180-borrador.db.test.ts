@@ -22,7 +22,7 @@ import { errorMiddleware } from '../middleware/error.middleware';
 import { controlCif, letraDni } from '../utils/nif';
 import { DISENO_180 } from '../domain/aeat/disenos';
 import { comprobarFicheroPorLineas, posiciones } from './dorado-dr';
-import { calcularBorrador180 } from '../services/borradoresAeat/borrador180.service';
+import { calcularBorrador180, clavePerceptor180 } from '../services/borradoresAeat/borrador180.service';
 import { calcularModelo115 } from '../services/impuestosCalculo.service';
 import { periodoFiscal } from '../services/nominas/fiscal';
 
@@ -191,5 +191,17 @@ describe('180 de 2027 desde las facturas de alquiler', () => {
     expect(lista.body.data).toHaveLength(2);
     const cambio = await request(app(E)).put(`/companies/${E}/tax-models/180/inmuebles/${madridCentro}`).send({ puerta: '3B' });
     expect(cambio.body.data).toMatchObject({ puerta: '3B', referenciaCatastral: '0847106VK4704F0001LK' });
+  });
+});
+
+describe('clave de los registros del 180 (complementaria)', () => {
+  it('dos locales del mismo arrendador sin referencia catastral no comparten clave', () => {
+    const local = (nombreVia: string, numeroCasa: string) => ({ situacion: 4 as const, referenciaCatastral: '', tipoVia: 'CL', nombreVia, numeroCasa, codigoMunicipio: '46250' });
+    const a = clavePerceptor180({ nif: '20202020W', inmueble: local('Colón', '1'), ejercicioDevengo: undefined });
+    const b = clavePerceptor180({ nif: '20202020W', inmueble: local('Colón', '3'), ejercicioDevengo: undefined });
+    expect(a).not.toBe(b);
+    expect(a).toMatch(/^20202020W\|D:/);
+    // Con referencia catastral, la clave es la de siempre.
+    expect(clavePerceptor180({ nif: '20202020W', inmueble: { situacion: 1, referenciaCatastral: '9872023 VH5797S 0001 WX' }, ejercicioDevengo: 2026 })).toBe('20202020W|9872023VH5797S0001WX|2026');
   });
 });
