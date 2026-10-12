@@ -11,7 +11,7 @@
  */
 import { prisma } from '../config/database';
 import { obtenerAsientosHastaFinDe, saldosDelEjercicio, AsientoSimple } from './contabilidadDatos.service';
-import { listarPeriodos, cambiarEstadoPeriodo } from './periodos.service';
+import { listarPeriodos, cambiarEstadoPeriodo, ENLACE_ARRANQUE, llevanzaExterna } from './periodos.service';
 import { obtenerCierreConfig } from './cierreConfig.service';
 import { calcularCuadreBancos } from './cuadreBancos.service';
 import { legalConfigService } from './legalConfig.service';
@@ -195,6 +195,13 @@ async function siguienteCerradoSinAsientos(companyId: string, ejercicio: number)
 }
 
 export async function previsualizarCierre(companyId: string, ejercicio: number, opciones: { reemplazarApertura?: boolean } = {}): Promise<VistaCierre> {
+  // El cierre de un año llevado por la gestoria lo hizo ella: entra con la apertura importada del año siguiente.
+  if (await llevanzaExterna(companyId, ejercicio)) {
+    throw conflict(`El cierre de ${ejercicio} lo hace tu gestoría: en la app su resultado entra con la apertura de ${ejercicio + 1}.`, {
+      motivo: 'llevanza_externa',
+      enlace: ENLACE_ARRANQUE,
+    });
+  }
   const [existentes, fy, periodos, config, siguiente] = await Promise.all([
     asientosDeCierre(companyId, ejercicio),
     prisma.fiscalYear.findFirst({ where: { companyId, label: String(ejercicio) } }),
