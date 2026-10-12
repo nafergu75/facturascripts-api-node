@@ -254,7 +254,7 @@ describe('349 de 2027 desde las facturas', () => {
     expect(r.body.data.estado).toBe('presentada');
     expect(r.body.data.declaraciones[0]).toMatchObject({ secuencia: 1, tipo: 'N', estado: 'presentada', justificante: '3492027210001', numero: '3492027000002' });
     const b1 = await calcularBorrador349(E, 2027, '1T');
-    expect(b1.avisos[0]).toMatch(/^Presentado \(justificante 3492027210001, 2027-04-18\)/);
+    expect(b1.avisos[0]).toMatch(/^Presentado \(justificante 3492027210001, 18\/04\/2027\)/);
     // Rossi estaba en lo presentado: su anulacion deja la base rectificada a cero, sin error.
     const b = await calcularBorrador349(E, 2027, '2T');
     expect(b.errores).toEqual([]);
