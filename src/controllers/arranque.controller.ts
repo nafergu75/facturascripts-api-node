@@ -10,6 +10,7 @@ import { autorizado } from '../services/rbac.service';
 import { reensamblarSubida, borrarSubida } from '../services/puestaEnMarcha/subidasTrozos';
 import { aplicarFase, confirmarCarga, NOMBRE_FASE } from '../services/arranque/aplicar.service';
 import { avisoArranque } from '../services/arranque/aviso.service';
+import { deshacerCarga } from '../services/arranque/deshacer.service';
 import { estadoArranque, quitarFichero, reanalizar, subirYAnalizar, validarEjercicio } from '../services/arranque/cargas.service';
 import {
   aceptarAviso,
@@ -95,6 +96,25 @@ export const arranqueController = {
   /** POST /:ejercicio/cargas/:cargaId/aplicar — la siguiente fase (la pantalla la llama hasta «terminada»). */
   aplicar: asyncHandler(async (req, res) => {
     sendOk(res, await aplicarFase(req.companyId!, req.params.ejercicio, req.params.cargaId, req.user!.userId));
+  }),
+
+  /** GET /:ejercicio/cargas/:cargaId/deshacer — qué se revertiría (no cambia nada). */
+  vistaDeshacer: asyncHandler(async (req, res) => {
+    sendOk(res, await deshacerCarga(req.companyId!, req.params.ejercicio, req.params.cargaId, { simular: true }, req.user!.userId));
+  }),
+
+  /**
+   * DELETE /:ejercicio/cargas/:cargaId — deshace la carga. Body opcional:
+   * { devolverAsientos2026?: boolean, borrarFichas?: string[] }. Con ?simular=1, solo la vista previa.
+   */
+  deshacer: asyncHandler(async (req, res) => {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const simular = req.query.simular === '1' || req.query.simular === 'true';
+    if (body.borrarFichas !== undefined && (!Array.isArray(body.borrarFichas) || body.borrarFichas.some((x) => typeof x !== 'string'))) {
+      throw badRequest('«borrarFichas» tiene que ser una lista de fichas.', { campo: 'borrarFichas' });
+    }
+    const opciones = { simular, devolverAsientos2026: body.devolverAsientos2026 === true, borrarFichas: (body.borrarFichas as string[] | undefined) ?? [] };
+    sendOk(res, await deshacerCarga(req.companyId!, req.params.ejercicio, req.params.cargaId, opciones, req.user!.userId));
   }),
 
   /** GET /:ejercicio/comprobaciones — A4 en vivo (o las del borrador; null si no hay nada). */
