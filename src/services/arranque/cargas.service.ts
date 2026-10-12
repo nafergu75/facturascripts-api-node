@@ -137,6 +137,7 @@ export function limpiarAjustes(raw: unknown, previos: AjustesCarga = {}): Ajuste
     else if (typeof r.fechaCorte === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(r.fechaCorte)) out.fechaCorte = r.fechaCorte;
     else throw badRequest('La fecha del sumas y saldos tiene que ser AAAA-MM-DD.');
   }
+  if (r.motivoAjuste !== undefined) out.motivoAjuste = r.motivoAjuste === null ? null : String(r.motivoAjuste).trim().slice(0, 300) || null;
   if (r.bancos !== undefined) out.bancos = r.bancos === null ? {} : { ...(previos.bancos ?? {}), ...limpiarBancos(r.bancos) };
   if (r.datosFiscales !== undefined) out.datosFiscales = r.datosFiscales === null ? {} : limpiarDatosFiscales(r.datosFiscales, previos.datosFiscales);
   if (r.hojas !== undefined) {

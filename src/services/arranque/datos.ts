@@ -40,6 +40,8 @@ export interface AjustesCarga {
   bancos?: Record<string, AjusteBanco>;
   /** Datos fiscales que se arrastran de 2026 (303 del 4T, cuotas a compensar, bases negativas...). */
   datosFiscales?: DatosFiscales;
+  /** Motivo del asiento de ajuste de la apertura cuando enero ya esta bloqueado. */
+  motivoAjuste?: string | null;
 }
 
 /** Saldo del extracto a 31-12 de una 572 y con que cuenta bancaria se enlaza. */
