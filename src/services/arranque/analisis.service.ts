@@ -18,11 +18,12 @@ import type { CuentaSaldo } from '../puestaEnMarcha/lectorContable';
 import { analizarPlanSinEscribir, nombreComparable, type CuentaDelPlan, type PermisosAlta, type TerceroDelListado, type VistaPlan } from '../puestaEnMarcha/planAnterior';
 import { esSubcuentaDeTercero } from '../terceros/numeracion';
 import { cuadrarCartera, type ResultadoCartera } from './cartera';
-import { comprobarCarga, type FicheroExcluido, type ResultadoComprobaciones } from './comprobaciones';
+import { comprobarCarga, juntarComprobaciones, type BancoComprobar, type FicheroExcluido, type ResultadoComprobaciones } from './comprobaciones';
 import { miles, type AjustesCarga, type DatosCarga, type HojaAnalizada, type TipoCarga } from './datos';
 import type { ActivoLeido, PartidaLeida } from './extractores';
 import { analizarDiario, saldosDesdeDiario, type AnalisisDiario } from './historico';
 import { analizarSaldos, saldosDeLineas, type AnalisisSaldos, type LineaApertura } from './saldos';
+import { puntosVivos } from './vivas.service';
 
 /** Ejercicio de destino de la carga (por ahora solo 2027) y el que se trae. */
 export const EJERCICIO_ARRANQUE = 2027;
@@ -44,6 +45,7 @@ export interface ActivoResuelto extends ActivoLeido {
 export interface AnalisisCarga {
   ejercicio: number;
   tipoCarga: TipoCarga;
+  ajustes: AjustesCarga;
   datos: DatosCarga;
   /** Saldos a 31-12 de los que sale la apertura (del sumas y saldos o, sin el, del diario). */
   saldos: { analisis: AnalisisSaldos; origen: 'SUMAS_Y_SALDOS' | 'DIARIO' } | null;
@@ -62,6 +64,8 @@ export interface AnalisisCarga {
   marcaLlevanzaExterna: boolean;
   retirados: Record<string, number>;
   cargaVigente: { id: string; version: number } | null;
+  /** Bancos (572) de la apertura con el saldo del extracto escrito a mano y su cuenta de Tesoreria. */
+  bancos: BancoComprobar[] | null;
   comprobaciones: ResultadoComprobaciones;
   erroresEstado: string[];
   huella: string;
@@ -327,6 +331,17 @@ export async function analizarCarga(
     if (conCobros) erroresEstado.push(`La carga vigente (versión ${ctx.vigente.version}) ya tiene cobros o pagos de 2027 sobre sus facturas pendientes: no se puede sustituir.`);
   }
 
+  // Cuentas de Tesoreria elegidas a mano para cada 572: tienen que ser de la empresa y de esa subcuenta.
+  const elegidas = Object.entries(ajustes.bancos ?? {}).filter(([, b]) => b.bankAccountId);
+  if (elegidas.length) {
+    const cuentas = await prisma.bankAccount.findMany({ where: { companyId, id: { in: elegidas.map(([, b]) => b.bankAccountId!) } }, select: { id: true, subcuentaCodigo: true } });
+    for (const [codigo, b] of elegidas) {
+      const c = cuentas.find((x) => x.id === b.bankAccountId);
+      if (!c) erroresEstado.push(`La cuenta bancaria elegida para la ${codigo} no existe en esta empresa: elige otra o escribe su IBAN.`);
+      else if (c.subcuentaCodigo !== codigo) erroresEstado.push(`La cuenta bancaria elegida para la ${codigo} va a la subcuenta ${c.subcuentaCodigo}: elige la que corresponde o escribe su IBAN para darla de alta.`);
+    }
+  }
+
   const comprobaciones = comprobarCarga({
     ejercicioOrigen: anioOrigen,
     tipoCarga,
@@ -370,9 +385,12 @@ export async function analizarCarga(
   const excluidos = [...new Set<FicheroExcluido>([...comprobaciones.excluidos, ...(diarioFuera ? (['DIARIO'] as const) : []), ...(inmovilizadoFuera ? (['INMOVILIZADO'] as const) : [])])];
   comprobaciones.excluidos = excluidos;
 
+  const vivos = await puntosVivos(companyId, ejercicio, { apertura: apertura?.lineas ?? null, bancos: ajustes.bancos ?? {}, datosFiscales: ajustes.datosFiscales ?? {}, importada: false });
+
   const analisis: Omit<AnalisisCarga, 'huella'> = {
     ejercicio,
     tipoCarga,
+    ajustes,
     datos,
     saldos,
     diario,
@@ -387,16 +405,22 @@ export async function analizarCarga(
     marcaLlevanzaExterna,
     retirados,
     cargaVigente: ctx.vigente,
+    bancos: vivos.bancos,
     comprobaciones,
     erroresEstado,
   };
-  return { ...analisis, huella: huellaDe(analisis, ajustes) };
+  // La huella sale de lo que traen los ficheros; lo que se arregla fuera (bancos, datos fiscales,
+  // datos de la empresa, series) se recalcula cada vez y no la cambia.
+  const huella = huellaDe(analisis, ajustes);
+  const juntas = juntarComprobaciones(comprobaciones, vivos.puntos, anioOrigen, [], () => false);
+  return { ...analisis, comprobaciones: { nivel: juntas.nivel, mensaje: juntas.mensaje, puntos: juntas.puntos, excluidos: juntas.excluidos }, huella };
 }
 
 /** SHA-256 de lo que haria la importacion: si cambia entre el resumen y la confirmacion, 409. */
 function huellaDe(a: Omit<AnalisisCarga, 'huella'>, ajustes: AjustesCarga): string {
+  const { bancos: _b, datosFiscales: _d, ...ajustesFicheros } = ajustes;
   const resumen = {
-    ajustes,
+    ajustes: ajustesFicheros,
     hojas: a.datos.hojas.map((h) => [h.id, h.tipo, h.excluida, h.mapeo]),
     cuentasNuevas: a.plan.cuentasNuevas.map((c) => c.codigo),
     nombres: a.plan.nombres?.cambian.map((n) => [n.codigo, n.nuevo]) ?? [],
@@ -469,6 +493,9 @@ export interface VistaCarga {
   llevanzaExterna: boolean;
   retirados: Record<string, number>;
   sustituyeVersion: number | null;
+  /** Bancos de la apertura: saldo contable, extracto escrito y cuenta de Tesoreria. */
+  bancos: BancoComprobar[] | null;
+  datosFiscales: AjustesCarga['datosFiscales'] | null;
   comprobaciones: ResultadoComprobaciones;
   /** Frase del dialogo de confirmacion. */
   confirmacion: string;
@@ -550,6 +577,8 @@ export function vistaDe(a: AnalisisCarga): VistaCarga {
     llevanzaExterna: a.marcaLlevanzaExterna,
     retirados: a.retirados,
     sustituyeVersion: a.cargaVigente?.version ?? null,
+    bancos: a.bancos,
+    datosFiscales: a.ajustes.datosFiscales ?? null,
     comprobaciones: a.comprobaciones,
     confirmacion: `Se crearán ${lista}. Podrás deshacerlo mientras no haya cobros ni pagos de ${a.ejercicio} sobre estos datos.`,
     puedeConfirmar: a.comprobaciones.nivel !== 'ERRORES',
