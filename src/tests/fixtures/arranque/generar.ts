@@ -562,6 +562,26 @@ export function sumasSaldosCuentaSinMadre(): FicheroPrueba {
   return { nombre: 'sys_sin_madre.xlsx', contenido: libro([['SyS', filasSumasYSaldos(con, 'Sumas y saldos')]]) };
 }
 
+/**
+ * Los ficheros de la empresa A con el cierre definitivo de la gestoria: el
+ * diario de siempre mas unos asientos de ultima hora, y el sumas y saldos que
+ * sale de el. La cartera y el inmovilizado se pueden cambiar tambien.
+ */
+export function ficherosEmpresaADefinitiva(
+  extra: AsientoPrueba[],
+  cambios: { cartera?: PartidaPrueba[]; inmovilizado?: typeof INMOVILIZADO_A } = {},
+): Record<'plan' | 'sumasSaldos' | 'diario' | 'clientes' | 'proveedores' | 'cartera' | 'inmovilizado', FicheroPrueba> {
+  const diario = [...DIARIO_A, ...extra];
+  const base = ficherosEmpresaA();
+  return {
+    ...base,
+    sumasSaldos: { nombre: 'sumas_y_saldos_2026_definitivo.xlsx', contenido: libro([['Hoja1', filasSumasYSaldos(sumasYSaldos(diario, PLAN_A), 'Balance de sumas y saldos')]]) },
+    diario: { nombre: 'diario_2026_definitivo.xlsx', contenido: libro([['Diario', filasDiario(diario, PLAN_A)]]) },
+    ...(cambios.cartera ? { cartera: { nombre: 'cartera_definitiva.xlsx', contenido: libro([['Cartera', filasCartera(cambios.cartera)]]) } } : {}),
+    ...(cambios.inmovilizado ? { inmovilizado: { nombre: 'inmovilizado_definitivo.xlsx', contenido: libro([['Inmovilizado', filasInmovilizado(cambios.inmovilizado)]]) } } : {}),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Datos que se escriben a mano en el resumen (no vienen en los ficheros)
 // ---------------------------------------------------------------------------
