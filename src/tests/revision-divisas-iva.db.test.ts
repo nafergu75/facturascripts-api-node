@@ -207,7 +207,8 @@ describe('devengo: la operacion de un trimestre facturada en el siguiente', () =
       lineas: [usd(11000)],
       borrador: true,
     });
-    const f = await incomeInvoicesService.finalizar(companyId, b.id, { fechaEmision: '2024-04-03' });
+    // Es la primera factura de la empresa: el 1T de 2024 queda antes de su inicio en la app y se confirma.
+    const f = await incomeInvoicesService.finalizar(companyId, b.id, { fechaEmision: '2024-04-03', confirmaDevengoFuera: true });
     expect(f).toMatchObject({ fechaOperacion: '2024-03-27', fechaTipoCambio: '2024-03-27', tipoCambio: 1.1, baseTotal: 10000, ivaTotal: 2100 });
 
     expect((await calcularModelo303(companyId, T1_24)).totalCuotaDevengada).toBe(2100);
