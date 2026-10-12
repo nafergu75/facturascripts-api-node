@@ -13,13 +13,14 @@
  *   GET /terceros/:tipo?soloConSaldo=1&q=   tipo = clientes | proveedores
  *   GET /terceros/:tipo/:terceroId
  */
-import { Router, type Response } from 'express';
+import { Router, type Request, type Response } from 'express';
 import { authorize } from '../middleware/authorize.middleware';
 import { asyncHandler } from '../utils/async-handler';
 import { sendOk } from '../utils/response';
 import { badRequest } from '../utils/http-errors';
 import { resolverPeriodo, type FiltroCuentas, type NivelSumas, type Periodo, type TipoTercero } from '../services/informesContables.calculo';
 import { nombreFichero, tablaAPdf, tablaAXlsx, type TablaInforme } from '../services/informesContables.documentos';
+import { avisosDeInforme } from '../services/arranque/seguimiento.service';
 import {
   buscarTerceros,
   ejerciciosDisponibles,
@@ -43,8 +44,22 @@ function periodo(query: Record<string, unknown>): Periodo {
 
 const si = (v: unknown) => v === '1' || v === 'true' || v === 'si';
 
+/**
+ * Avisos de un informe de un año que llevo la gestoria (solo lectura) o de un
+ * año con la apertura provisional: van en las notas y en llevanzaExterna /
+ * aperturaProvisional para la pantalla.
+ */
+async function anotar(req: Request, informe: { tabla: TablaInforme }) {
+  const p = resolverPeriodo(req.query as Record<string, unknown>);
+  if (typeof p === 'string') return informe;
+  const avisos = await avisosDeInforme(req.companyId!, p.ejercicio);
+  if (avisos.notas.length) informe.tabla.notas = [...avisos.notas, ...(informe.tabla.notas ?? [])];
+  return Object.assign(informe, { llevanzaExterna: avisos.llevanzaExterna, aperturaProvisional: avisos.aperturaProvisional });
+}
+
 /** Responde el informe en JSON o lo descarga en PDF / Excel. */
-async function responder(res: Response, formato: unknown, informe: { tabla: TablaInforme }) {
+async function responder(res: Response, formato: unknown, informe0: { tabla: TablaInforme }, req?: Request) {
+  const informe = req ? await anotar(req, informe0) : informe0;
   if (formato === 'pdf') {
     const pdf = await tablaAPdf(informe.tabla);
     res.setHeader('Content-Type', 'application/pdf');
@@ -93,7 +108,7 @@ informesContablesRoutes.get(
   '/balance',
   authorize('contabilidad:read'),
   asyncHandler(async (req, res) => {
-    await responder(res, req.query.formato, await informeBalance(req.companyId!, periodo(req.query)));
+    await responder(res, req.query.formato, await informeBalance(req.companyId!, periodo(req.query)), req);
   }),
 );
 
@@ -101,7 +116,7 @@ informesContablesRoutes.get(
   '/perdidas-ganancias',
   authorize('contabilidad:read'),
   asyncHandler(async (req, res) => {
-    await responder(res, req.query.formato, await informePerdidasGanancias(req.companyId!, periodo(req.query)));
+    await responder(res, req.query.formato, await informePerdidasGanancias(req.companyId!, periodo(req.query)), req);
   }),
 );
 
@@ -119,6 +134,7 @@ informesContablesRoutes.get(
         filtro: filtroCuentas(req.query),
         ocultarSinMovimiento: ocultar === undefined || ocultar === '' ? true : si(ocultar),
       }),
+      req,
     );
   }),
 );
@@ -132,7 +148,7 @@ informesContablesRoutes.get(
     const tercero = terceroId ? await terceroParaMayor(req.companyId!, tipoFicha(req.query.tipoTercero), terceroId) : undefined;
     const filtro = filtroCuentas(req.query);
     if (!tercero && !filtro) throw badRequest('Indica una cuenta (p. ej. 572), un rango de cuentas o un cliente o proveedor.');
-    await responder(res, req.query.formato, await informeMayor(req.companyId!, periodo(req.query), filtro ?? {}, tercero));
+    await responder(res, req.query.formato, await informeMayor(req.companyId!, periodo(req.query), filtro ?? {}, tercero), req);
   }),
 );
 
@@ -151,7 +167,7 @@ informesContablesRoutes.get(
   '/diario',
   authorize('contabilidad:read'),
   asyncHandler(async (req, res) => {
-    await responder(res, req.query.formato, await informeDiario(req.companyId!, periodo(req.query), si(req.query.incluirCierre)));
+    await responder(res, req.query.formato, await informeDiario(req.companyId!, periodo(req.query), si(req.query.incluirCierre)), req);
   }),
 );
 
@@ -163,7 +179,7 @@ informesContablesRoutes.get(
       soloConSaldo: si(req.query.soloConSaldo),
       q: typeof req.query.q === 'string' ? req.query.q : undefined,
     });
-    await responder(res, req.query.formato, informe);
+    await responder(res, req.query.formato, informe, req);
   }),
 );
 
@@ -172,6 +188,6 @@ informesContablesRoutes.get(
   authorize('contabilidad:read'),
   asyncHandler(async (req, res) => {
     const informe = await informeDetalleTercero(req.companyId!, tipoTercero(req.params.tipo), periodo(req.query), req.params.terceroId);
-    await responder(res, req.query.formato, informe);
+    await responder(res, req.query.formato, informe, req);
   }),
 );

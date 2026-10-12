@@ -11,6 +11,7 @@ import { Router } from 'express';
 import multer from 'multer';
 import { invoiceExtractorController } from '../controllers/invoice-extractor.controller';
 import { authorize } from '../middleware/authorize.middleware';
+import { exigirPlanAnterior } from '../middleware/planAnterior.middleware';
 
 const router = Router({ mergeParams: true });
 
@@ -21,6 +22,6 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 
 router.post('/extract', authorize('ventas:write'), upload.single('archivo'), invoiceExtractorController.extraer);
 router.get('/:id', authorize('ventas:read', 'contabilidad:read'), invoiceExtractorController.detalle);
 router.put('/:id', authorize('ventas:write'), invoiceExtractorController.corregir);
-router.post('/:id/confirm', authorize('ventas:write'), invoiceExtractorController.confirmar);
+router.post('/:id/confirm', authorize('ventas:write'), exigirPlanAnterior, invoiceExtractorController.confirmar);
 
 export default router;

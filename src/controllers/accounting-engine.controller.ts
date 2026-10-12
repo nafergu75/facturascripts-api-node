@@ -16,7 +16,7 @@ import { prisma, type TransaccionBD } from '../config/database';
 import { basePorCuenta, nombresDeCuentas } from '../services/cuentasLinea.service';
 import { aCentimos, cuadraEnCentimos } from '../utils/money';
 import { asegurarPlanContableEmpresa } from '../services/chart-of-accounts.service';
-import { comprobarFechaAbierta, periodoNoAbierto } from '../services/periodos.service';
+import { comprobarFechaAbierta, exigirFechaContabilizable, periodoNoAbierto } from '../services/periodos.service';
 import { perfilEmpresa } from '../services/perfilEmpresa.service';
 import { motivoSinTipoFijado, notaDivisa } from '../domain/divisas';
 import { esTipoOperacion, fechaDevengoVenta } from '../domain/tipo-operacion.model';
@@ -37,6 +37,7 @@ import { crearCompensacionesAuto } from '../services/compensacionesGasto.service
 import { bloquearFacturasGasto } from '../services/rectificativasGasto.service';
 import { conReintentoSubcuenta, fichaDeSubcuenta, subcuentaClienteParaApunte, type FichaDeSubcuenta } from '../services/terceros/subcuentas';
 import { esSubcuentaGenerica } from '../services/terceros/numeracion';
+import { ESTADO_SUSTITUIDO, TEXTO_SUSTITUIDO } from '../domain/asientosCierre';
 
 /** Mismo cliente o proveedor. */
 const mismaFicha = (a: { tipo: string; id: string } | null | undefined, b: { tipo: string; id: string } | null | undefined) =>
@@ -393,6 +394,7 @@ export class AccountingEngineController {
 
       // Validar estado: los asientos AUTO se crean en DRAFT y los MANUAL en
       // PENDING_REVIEW; ambos son aprobables (mismo criterio que ajustarLineaAsiento).
+      if (asiento.estado === 'SUSTITUIDO') throw conflict(TEXTO_SUSTITUIDO, { estado: asiento.estado });
       if (!['DRAFT', 'PENDING_REVIEW'].includes(asiento.estado)) {
         throw badRequest(
           `No se puede aprobar un asiento en estado ${asiento.estado}. Solo se pueden aprobar asientos en DRAFT o PENDING_REVIEW.`
@@ -405,6 +407,8 @@ export class AccountingEngineController {
       // lleva a la factura: su fecha de registro (si se recibio mas tarde) se
       // cambia, la fecha que puso el proveedor no.
       const fechaAsiento = asiento.fecha.toISOString().slice(0, 10);
+      // Un año llevado por la gestoria es de solo lectura, tambien para los borradores.
+      await exigirFechaContabilizable(companyId, fechaAsiento);
       const gasto =
         asiento.origen === 'FACTURA_GASTO' && asiento.invoiceId
           ? await prisma.expenseInvoice.findFirst({
@@ -652,6 +656,7 @@ export class AccountingEngineController {
         // Lo mismo que acepta aprobarAsiento.
         permitidoAprobar: ['DRAFT', 'PENDING_REVIEW'].includes(asiento.estado),
         permitidoAjustar: ['DRAFT', 'PENDING_REVIEW'].includes(asiento.estado),
+        ...(asiento.estado === 'SUSTITUIDO' ? { estadoTexto: ESTADO_SUSTITUIDO } : {}),
       };
     } catch (err) {
       if (err instanceof Error && 'statusCode' in err) {
@@ -743,6 +748,7 @@ export class AccountingEngineController {
       }
 
       // Validar estado
+      if (asiento.estado === 'SUSTITUIDO') throw conflict(TEXTO_SUSTITUIDO, { estado: asiento.estado });
       if (!['DRAFT', 'PENDING_REVIEW'].includes(asiento.estado)) {
         throw badRequest(
           `No se puede ajustar un asiento en estado ${asiento.estado}. Solo se pueden ajustar asientos en DRAFT o PENDING_REVIEW.`

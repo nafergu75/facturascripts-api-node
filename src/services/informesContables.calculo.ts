@@ -547,8 +547,13 @@ export function crearResolvedorTercero(ctx: ContextoTerceros): ResolvedorTercero
  * acumula toda la historia sin apertura, regularizacion ni cierre. Solo se
  * respeta una apertura que no tiene nada antes (la que trae los saldos de una
  * empresa que empieza a llevar la contabilidad aqui).
+ *
+ * `inicio`: si el año anterior lo llevo la gestoria (Traer la contabilidad de
+ * 2026), su apertura ya trae el saldo de cada subcuenta de cliente y
+ * proveedor: se parte de ella y lo anterior (el diario historico) no se suma.
  */
-export function asientosParaTerceros(todos: AsientoInforme[], hasta: string): AsientoInforme[] {
+export function asientosParaTerceros(todos: AsientoInforme[], hasta: string, inicio?: string | null): AsientoInforme[] {
+  if (inicio) return todos.filter((a) => a.fecha >= inicio && a.fecha <= hasta && a.tipo !== 'REGULARIZACION' && a.tipo !== 'CIERRE');
   const validos = todos.filter((a) => a.fecha <= hasta && a.tipo !== 'REGULARIZACION' && a.tipo !== 'CIERRE');
   const primeraNormal = validos.filter((a) => a.tipo !== 'APERTURA').reduce((m, a) => (!m || a.fecha < m ? a.fecha : m), '');
   return validos.filter((a) => a.tipo !== 'APERTURA' || !primeraNormal || a.fecha <= primeraNormal);
@@ -588,6 +593,7 @@ export function calcularMayorTerceros(
   periodo: Periodo,
   ctx: ContextoTerceros,
   nombreCuenta: (c: string) => string,
+  inicio?: string | null,
 ): SaldoTercero[] {
   const resolvedor = crearResolvedorTercero(ctx);
   const signo = ctx.tipo === 'clientes' ? 1 : -1;
@@ -602,7 +608,7 @@ export function calcularMayorTerceros(
     return t;
   };
 
-  for (const a of ordenarAsientos(asientosParaTerceros(todos, periodo.hasta))) {
+  for (const a of ordenarAsientos(asientosParaTerceros(todos, periodo.hasta, inicio))) {
     for (const l of a.lineas) {
       if (!esCuentaDeTercero(ctx.tipo, l.cuenta)) continue;
       const t = tercero(resolvedor.clave(a, l));

@@ -16,6 +16,7 @@ import { notFound } from '../utils/http-errors';
 import { anioEspana } from '../utils/fechas';
 import { calcularPendiente, cobradoPorFactura } from './cobrosPagos.service';
 import { saldosDelEjercicio, type AsientoSimple } from './contabilidadDatos.service';
+import { fuenteEjercicioAnterior } from './fuenteEjercicioAnterior';
 import { calcularEstadosDesdeSaldos } from './impuestoSociedadesCalculo.service';
 import { calcularPyGModelo } from '../domain/modelos-cuentas-anuales';
 import type { BalancePartida as PartidaDominio } from '../domain/impuesto-sociedades.model';
@@ -179,6 +180,9 @@ function filasMasa(actual: BalancePartida[], anterior: BalancePartida[], sangria
   return filas;
 }
 
+/** Nota de la columna del año anterior cuando sale de los saldos importados. */
+const NOTA_COMPARATIVO = (anio: number) => `La columna ${anio} sale de los saldos que dio la gestoría (comparativo importado).`;
+
 const suma = (ps: BalancePartida[]) => round2(ps.reduce((s, p) => s + p.importe, 0));
 
 export async function informeBalance(companyId: string, periodo: Periodo) {
@@ -186,7 +190,10 @@ export async function informeBalance(companyId: string, periodo: Periodo) {
   const todos = (await cargarAsientos(companyId, periodo.hasta)).map(aSimple);
   const corte = (d: string) => todos.filter((a) => a.fecha <= d);
   const saldos = saldosDelEjercicio(corte(periodo.hasta), periodo.ejercicio);
-  const saldosAnt = saldosDelEjercicio(corte(hastaAnt), periodo.ejercicio - 1);
+  const cierreAnual = periodo.hasta.endsWith('-12-31');
+  // Al cierre del año, la columna N-1 sigue la regla unica (los saldos de la gestoria si ese año lo llevo ella).
+  const fuenteAnt = cierreAnual ? await fuenteEjercicioAnterior(companyId, periodo.ejercicio - 1, saldosDelEjercicio(corte(hastaAnt), periodo.ejercicio - 1)) : null;
+  const saldosAnt = fuenteAnt ? fuenteAnt.saldos : saldosDelEjercicio(corte(hastaAnt), periodo.ejercicio - 1);
   const saldosAnt2 = saldosDelEjercicio(corte(unAnioAntes(hastaAnt)), periodo.ejercicio - 2);
   const { balance: bal } = calcularEstadosDesdeSaldos(saldos, saldosAnt);
   const { balance: balAnt } = calcularEstadosDesdeSaldos(saldosAnt, saldosAnt2);
@@ -201,7 +208,6 @@ export async function informeBalance(companyId: string, periodo: Periodo) {
   const balance = normalizar(bal);
   const anterior = normalizar(balAnt);
 
-  const cierreAnual = periodo.hasta.endsWith('-12-31');
   const cols: ColumnasEstado = cierreAnual
     ? { actual: String(periodo.ejercicio), anterior: String(periodo.ejercicio - 1) }
     : { actual: fechaES(periodo.hasta), anterior: fechaES(hastaAnt) };
@@ -234,6 +240,7 @@ export async function informeBalance(companyId: string, periodo: Periodo) {
   ];
 
   const notas: string[] = ['Modelo de balance del PGC de PYMES. No incluye los asientos de regularización ni de cierre.'];
+  if (fuenteAnt?.fuente === 'COMPARATIVO') notas.push(NOTA_COMPARATIVO(periodo.ejercicio - 1));
   if (balance.descuadre) {
     notas.push(`Atención: el balance no cuadra (diferencia de ${num(balance.descuadre)} ${await simboloCuenta(companyId)}). Revisa los asientos.`);
   }
@@ -277,9 +284,10 @@ export async function informePerdidasGanancias(companyId: string, periodo: Perio
     return r;
   };
   const actual = calcularPyGModelo(pygPeriodo(periodo.desde, periodo.hasta, periodo.ejercicio));
-  const anterior = calcularPyGModelo(pygPeriodo(desdeAnt, hastaAnt, periodo.ejercicio - 1));
-
   const anualCompleto = periodo.desde.endsWith('-01-01') && periodo.hasta.endsWith('-12-31');
+  // Año completo: la columna N-1 sigue la regla unica (los saldos de la gestoria si ese año lo llevo ella).
+  const fuenteAnt = anualCompleto ? await fuenteEjercicioAnterior(companyId, periodo.ejercicio - 1, saldosDelEjercicio(todos.filter((a) => a.fecha <= hastaAnt), periodo.ejercicio - 1)) : null;
+  const anterior = calcularPyGModelo(fuenteAnt ? fuenteAnt.saldos.pyg : pygPeriodo(desdeAnt, hastaAnt, periodo.ejercicio - 1));
   const ant = new Map(anterior.partidas.map((p) => [p.codigo, p.importe]));
   const valores = {
     explotacion: [actual.resultadoExplotacion, anterior.resultadoExplotacion],
@@ -308,7 +316,10 @@ export async function informePerdidasGanancias(companyId: string, periodo: Perio
       { titulo: anualCompleto ? String(periodo.ejercicio - 1) : `${fechaES(desdeAnt)}-${fechaES(hastaAnt)}`, tipo: 'importe', ancho: 2 },
     ],
     filas,
-    notas: ['Modelo de cuenta de pérdidas y ganancias del PGC de PYMES. Ingresos en positivo y gastos en negativo. Sin asientos de regularización ni de cierre.'],
+    notas: [
+      'Modelo de cuenta de pérdidas y ganancias del PGC de PYMES. Ingresos en positivo y gastos en negativo. Sin asientos de regularización ni de cierre.',
+      ...(fuenteAnt?.fuente === 'COMPARATIVO' ? [NOTA_COMPARATIVO(periodo.ejercicio - 1)] : []),
+    ],
     fichero: `perdidas_ganancias_${periodo.desde}_${periodo.hasta}`,
   };
   return { periodo, actual, anterior, tabla };
@@ -507,8 +518,26 @@ const TITULO_TERCEROS: Record<TipoTercero, string> = { clientes: 'Mayor de clien
 
 const sinTildes = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
 
+/**
+ * Desde donde se suma el mayor de terceros: si un año anterior lo llevo la
+ * gestoria y el siguiente tiene la apertura importada, desde esa apertura.
+ */
+async function inicioTercerosTrasGestoria(companyId: string, hasta: string, todos: Array<{ fecha: string; tipo?: string }>): Promise<string | null> {
+  const anio = Number(hasta.slice(0, 4));
+  const externo = await prisma.fiscalYear.findFirst({
+    where: { companyId, llevanza: 'EXTERNA' },
+    orderBy: { label: 'desc' },
+    select: { label: true },
+  });
+  const siguiente = externo ? Number(externo.label) + 1 : NaN;
+  if (!Number.isInteger(siguiente) || siguiente > anio) return null;
+  const inicio = `${siguiente}-01-01`;
+  return todos.some((a) => a.tipo === 'APERTURA' && a.fecha.startsWith(`${siguiente}-`)) ? inicio : null;
+}
+
 async function calcularTerceros(companyId: string, tipo: TipoTercero, periodo: Periodo) {
   const todos = await cargarAsientos(companyId, periodo.hasta);
+  const inicio = await inicioTercerosTrasGestoria(companyId, periodo.hasta, todos);
   const nombre = await nombrador(companyId, todos);
   const [facturas, fichas] =
     tipo === 'clientes'
@@ -538,6 +567,7 @@ async function calcularTerceros(companyId: string, tipo: TipoTercero, periodo: P
     periodo,
     { tipo, facturas, fichas: fichas.map((f) => ({ id: f.id, nombre: f.nombreFiscal, nif: f.nifCif, subcuentas: f.subcuentas })) },
     nombre,
+    inicio,
   );
   // Subcuentas propias de cada ficha (para la columna Subcuenta y las fichas sin movimientos).
   const subcuentas = new Map(fichas.map((f) => [f.id, f.subcuentas]));

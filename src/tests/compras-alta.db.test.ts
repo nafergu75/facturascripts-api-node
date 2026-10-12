@@ -11,6 +11,7 @@ import { describe, it, expect, beforeAll } from '@jest/globals';
 import express from 'express';
 import request from 'supertest';
 import { prisma } from '../config/database';
+import { exigirPlanAnteriorAntesDeAlta } from '../services/terceros/planAnteriorAlta';
 import expenseInvoicesRoutes from '../routes/expense-invoices.routes';
 import { errorMiddleware } from '../middleware/error.middleware';
 import { cambiarEstadoPeriodo } from '../services/periodos.service';
@@ -30,6 +31,8 @@ async function nuevaEmpresa(nombre: string): Promise<string> {
   const id = `compras-alta-${nombre}-${SUFIJO}`;
   await prisma.company.create({ data: { id, name: `Compras ${nombre} SL`, fsBaseUrl: 'http://localhost:8080', fsApiKeyEnc: 'k' } });
   await prisma.legalConfig.create({ data: { companyId: id, denominacion: `Compras ${nombre} SL`, nif: 'B10000000' } });
+  // Empresa nueva sin plan de la gestoria: se confirma de antemano el aviso del primer cliente o proveedor.
+  await exigirPlanAnteriorAntesDeAlta(id, true, 'test');
   return id;
 }
 

@@ -15,6 +15,7 @@ import { randomBytes } from 'crypto';
 import request from 'supertest';
 import { app } from '../app';
 import { prisma } from '../config/database';
+import { exigirPlanAnteriorAntesDeAlta } from '../services/terceros/planAnteriorAlta';
 import { authService, huellaContrasena } from '../services/auth.service';
 import { controlCif } from '../utils/nif';
 import { authMiddleware } from '../middleware/auth.middleware';
@@ -87,6 +88,8 @@ describeBd('permisos a medida y contraseña provisional (BD real)', () => {
       prisma.company.create({ data: { name: `Permisos ${n} ${SUFIJO}`, fsBaseUrl: '', fsApiKeyEnc: '', isActive: true }, select: { id: true } });
     E = (await empresa('E')).id;
     E2 = (await empresa('E2')).id;
+    // Empresa nueva sin plan de la gestoria: se confirma de antemano el aviso del primer cliente o proveedor.
+    for (const id of [E, E2]) await exigirPlanAnteriorAntesDeAlta(id, true, 'test');
     G = await prisma.user.create({
       data: { email: `g-${SUFIJO}@test.local`, passwordHash: hashPassword(CONTRASENA), isGlobalAdmin: true, debeCambiarContrasena: false },
       select: { id: true, email: true },

@@ -122,9 +122,48 @@ const campoFecha = (accion: string) => (accion.startsWith('emitir') ? { campo: '
 const esFacturaRecibida = (accion: string) => accion.includes('factura de gasto');
 const NO_CAMBIES_LA_FECHA = 'No cambies la fecha de la factura: es la que puso el proveedor.';
 
+// ---------------------------------------------------------------------------
+// Ejercicio llevado por la gestoria (Traer la contabilidad de 2026)
+// ---------------------------------------------------------------------------
+
+/** Pantalla donde se trae la contabilidad del año anterior. */
+export const ENLACE_ARRANQUE = '/dashboard/contabilidad/arranque';
+
+const anioDe = (fecha: string | Date): number | null => {
+  if (fecha instanceof Date) return Number.isNaN(fecha.getTime()) ? null : fecha.getUTCFullYear();
+  const m = /^(\d{4})-\d{2}-\d{2}/.exec(String(fecha));
+  return m ? Number(m[1]) : null;
+};
+
+/**
+ * true si la contabilidad de ese año la llevo la gestoria fuera de la app
+ * (FiscalYear.llevanza = EXTERNA): en la app es solo de lectura.
+ */
+export async function llevanzaExterna(companyId: string, ejercicio: number): Promise<boolean> {
+  if (typeof (prisma as { fiscalYear?: { findFirst?: unknown } }).fiscalYear?.findFirst !== 'function') return false;
+  const fy = await prisma.fiscalYear.findFirst({ where: { companyId, label: String(ejercicio) }, select: { llevanza: true } });
+  return fy?.llevanza === 'EXTERNA';
+}
+
+/** Texto para quien intenta apuntar algo en un año llevado por la gestoria. */
+export const textoLlevanzaExterna = (anio: number) =>
+  `${anio} lo lleva tu gestoría: en la app no se puede apuntar nada con fecha de ${anio}. Usa una fecha de ${anio + 1}.`;
+
+/**
+ * Guarda comun de todos los asientos: ninguno con fecha de un año llevado por
+ * la gestoria (409). Solo la propia carga graba alli el diario historico, sin
+ * pasar por aqui. Va tambien en los sitios que crean asientos sin llamar a
+ * comprobarFechaAbierta (red de seguridad).
+ */
+export async function exigirFechaContabilizable(companyId: string, fecha: string | Date): Promise<void> {
+  const anio = anioDe(fecha);
+  if (anio === null || !(await llevanzaExterna(companyId, anio))) return;
+  throw conflict(textoLlevanzaExterna(anio), { motivo: 'llevanza_externa', enlace: ENLACE_ARRANQUE });
+}
+
 /** Por que no se puede apuntar nada en una fecha y como se sale de ahi. */
 export interface PeriodoNoAbierto {
-  motivo: 'periodo_bloqueado' | 'periodo_cerrado' | 'ejercicio_cerrado';
+  motivo: 'periodo_bloqueado' | 'periodo_cerrado' | 'ejercicio_cerrado' | 'llevanza_externa';
   /** «el mes 03/2026 está bloqueado» o «el ejercicio 2024 está cerrado». */
   situacion: string;
   /**
@@ -142,6 +181,15 @@ export interface PeriodoNoAbierto {
  * que (mes bloqueado o cerrado, ejercicio cerrado) y que hacer.
  */
 export async function periodoNoAbierto(companyId: string, fecha: string): Promise<PeriodoNoAbierto | null> {
+  const anio = anioDe(fecha);
+  if (anio !== null && (await llevanzaExterna(companyId, anio))) {
+    return {
+      motivo: 'llevanza_externa',
+      situacion: `${anio} lo lleva tu gestoría`,
+      queHacer: `En la app no se puede apuntar nada con fecha de ${anio}: lo que no esté en el balance que te dio la gestoría va en ${anio + 1}.`,
+      enlace: ENLACE_ARRANQUE,
+    };
+  }
   const estado = await estadoPeriodoEnFecha(companyId, fecha);
   const mes = `${fecha.slice(5, 7)}/${fecha.slice(0, 4)}`;
   const ejercicio = Number(fecha.slice(0, 4));
@@ -180,6 +228,8 @@ export async function periodoNoAbierto(companyId: string, fecha: string): Promis
  * usen sin importarse en circulo; cobrosPagos la reexporta.
  */
 export async function comprobarFechaAbierta(companyId: string, fecha: string, accion?: string): Promise<void> {
+  // Antes que el mes: un año llevado por la gestoria es de solo lectura aunque sus meses esten abiertos.
+  await exigirFechaContabilizable(companyId, fecha);
   if (accion && esFacturaRecibida(accion)) {
     // Contabilizar una factura anterior: ya cuenta en ese periodo, asi que no
     // se puede modificar ni anular mientras siga asi (no se manda a hacerlo).

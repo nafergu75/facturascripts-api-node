@@ -28,9 +28,10 @@
 import { randomUUID } from 'crypto';
 import { prisma, type TransaccionBD } from '../../config/database';
 import { PGC_BASE } from '../../domain/pgc-model';
+import { naturalezaDe, PGC_OFICIAL } from '../../domain/pgc-oficial';
 import { paisDelCliente } from '../../domain/tipo-operacion.model';
 import { badRequest, conflict, forbidden, notFound } from '../../utils/http-errors';
-import { normalizarNif } from '../../utils/nif';
+import { esNifEspanolValido, normalizarNif } from '../../utils/nif';
 import { leerFilasArchivo } from '../extractoBancario.service';
 import { asegurarPlanContableEmpresa } from '../chart-of-accounts.service';
 import { esLongitudSubcuentasValida, esSubcuentaDeTercero, longitudEnUso } from '../terceros/numeracion';
@@ -44,6 +45,7 @@ import {
 } from '../terceros/subcuentas';
 import { OPCIONES_TX } from './asientosEnBloque';
 import { cuentaYNombre, normalizarCuenta, normalizarTitulo, texto } from './lectorContable';
+import type { DatosFicha } from '../arranque/extractores';
 
 // ---------------------------------------------------------------------------
 // Lectura del fichero del plan
@@ -54,6 +56,8 @@ export interface CuentaDelPlan {
   nombre: string;
   /** NIF del titular (solo en las subcuentas de clientes y proveedores que lo traen). */
   nif?: string;
+  /** Domicilio, correo... del titular, si el plan los trae (ContaPlus). Para la ficha nueva. */
+  ficha?: DatosFicha;
 }
 
 /** Fila de un listado de clientes o proveedores del programa anterior. */
@@ -61,6 +65,8 @@ export interface TerceroDelListado {
   subcuenta?: string;
   nif?: string;
   nombre?: string;
+  /** Domicilio, correo... del listado, para la ficha nueva. */
+  ficha?: DatosFicha;
 }
 
 export interface LecturaPlan {
@@ -186,6 +192,11 @@ export interface CuentaNuevaPlan {
   codigo: string;
   nombre: string;
   madre: string;
+  /**
+   * Subgrupo o cuenta del PGC oficial que la app no trae de serie (13, 130,
+   * 211, 281...): se crea con su naturaleza oficial y como cuenta del PGC.
+   */
+  oficial?: { naturaleza: string };
 }
 
 export interface VistaPlan {
@@ -198,6 +209,12 @@ export interface VistaPlan {
   longitud: { delPlan: number | null; actual: number; seFija: boolean; motivo: string | null };
   terceros: SubcuentaTercero[];
   resumen: { enlazar: number; crear: number; pendientes: number; yaEnlazadas: number; noSeEnlazan: number };
+  /**
+   * Solo con `nombresGestoria` (Traer la contabilidad de 2026, A3): cuentas que
+   * ya estaban con otro nombre. Las propias de la empresa toman el de la
+   * gestoria; las del PGC y las de una ficha conservan el suyo.
+   */
+  nombres?: { cambian: Array<{ codigo: string; actual: string; nuevo: string }>; seQuedan: Array<{ codigo: string; actual: string; nuevo: string; motivo: string }> };
   errores: string[];
   avisos: string[];
   puedeConfirmar: boolean;
@@ -266,7 +283,7 @@ type FichaCliente = { id: string; nombreFiscal: string; nifCif: string; subcuent
 type FichaProveedor = { id: string; nombreFiscal: string; nifCif: string; subcuenta400: string | null; subcuenta410: string | null };
 
 interface Contexto {
-  plan: Map<string, { nombre: string; activo: boolean }>;
+  plan: Map<string, { nombre: string; activo: boolean; base: boolean }>;
   clientes: FichaCliente[];
   proveedores: FichaProveedor[];
   conApuntes: Set<string>;
@@ -276,15 +293,16 @@ interface Contexto {
 
 async function cargarContexto(db: TransaccionBD | typeof prisma, companyId: string, codigos: string[]): Promise<Contexto> {
   const [planEmpresa, clientes, proveedores, longitudActual, longitudGuardada] = await Promise.all([
-    db.chartOfAccounts.findMany({ where: { companyId }, select: { codigo: true, nombre: true, activo: true } }),
+    db.chartOfAccounts.findMany({ where: { companyId }, select: { codigo: true, nombre: true, activo: true, esBasePGC: true } }),
     db.customer.findMany({ where: { companyId }, select: { id: true, nombreFiscal: true, nifCif: true, subcuenta430: true }, orderBy: { createdAt: 'asc' } }),
     db.supplier.findMany({ where: { companyId }, select: { id: true, nombreFiscal: true, nifCif: true, subcuenta400: true, subcuenta410: true }, orderBy: { createdAt: 'asc' } }),
     longitudSubcuentasEmpresa(companyId, db),
     longitudSubcuentasGuardada(companyId, db),
   ]);
-  const plan = new Map<string, { nombre: string; activo: boolean }>();
-  for (const n of PGC_BASE) plan.set(n.code, { nombre: n.name, activo: true });
-  for (const c of planEmpresa) plan.set(c.codigo, { nombre: c.nombre, activo: c.activo });
+  const plan = new Map<string, { nombre: string; activo: boolean; base: boolean }>();
+  const codigosBase = new Set(PGC_BASE.map((n) => n.code));
+  for (const n of PGC_BASE) plan.set(n.code, { nombre: n.name, activo: true, base: true });
+  for (const c of planEmpresa) plan.set(c.codigo, { nombre: c.nombre, activo: c.activo, base: c.esBasePGC || codigosBase.has(c.codigo) });
   // Subcuentas de las fichas con apuntes: esas no se sustituyen.
   const deFichas = [
     ...clientes.map((c) => c.subcuenta430),
@@ -319,7 +337,10 @@ export function longitudDelPlan(codigos: string[], esTercero: (c: string) => boo
   return mejor;
 }
 
-const nifValido = (n: string | null | undefined): n is string => !!n && /^[A-Z0-9]{5,15}$/.test(n);
+/** Tiene forma de NIF español (DNI, NIE, K/L/M o CIF): esos se validan con su letra o su digito de control. */
+const pareceNifEspanol = (n: string) => /^(\d{8}|[KLMXYZ]\d{7})[A-Z]$|^[ABCDEFGHJNPQRSUVW]\d{7}[0-9A-J]$/.test(n);
+/** NIF que vale para crear o enlazar una ficha: los españoles, con su control; los extranjeros (VAT), por la forma. */
+const nifValido = (n: string | null | undefined): n is string => !!n && /^[A-Z0-9]{5,15}$/.test(n) && (!pareceNifEspanol(n) || esNifEspanolValido(n));
 
 /** Elige el texto en singular o en plural segun el numero: segun(1, 'trae', 'traen'). */
 const segun = (n: number, singular: string, plural: string) => (n === 1 ? singular : plural);
@@ -336,22 +357,48 @@ async function analizar(
   listado: TerceroDelListado[],
   lectura: Omit<LecturaPlan, 'cuentas'> | null,
   permisos: PermisosAlta = TODOS_PERMISOS,
+  opciones: OpcionesPlan = {},
 ): Promise<Analisis> {
   const errores: string[] = [];
   const avisos: string[] = [...(lectura?.avisos ?? [])];
   const ctx = await cargarContexto(db, companyId, cuentasEntrada.map((c) => c.codigo));
 
   // 1. Cuentas: grupos 1 a 7 con su madre; las de 8 y 9 no se usan en la app.
+  //    El plan base de la app no trae todas las cuentas del PGC (211, 281, 130,
+  //    260...): las que falten se crean con su nombre oficial, con su subgrupo,
+  //    aunque el fichero solo traiga las subcuentas (SUBCTA.DBF de ContaPlus).
+  const deEntrada = new Set(cuentasEntrada.map((c) => c.codigo));
+  const delPgc = new Map<string, CuentaDelPlan>();
+  const anadirDelPgc = (codigo: string) => {
+    if (ctx.plan.has(codigo) || deEntrada.has(codigo) || delPgc.has(codigo)) return;
+    const oficial = PGC_OFICIAL.get(codigo);
+    if (oficial) delPgc.set(codigo, { codigo, nombre: oficial.nombre });
+  };
+  for (const c of cuentasEntrada) {
+    if (!/^[1-7]\d\d/.test(c.codigo)) continue;
+    const cuenta = c.codigo.slice(0, 3);
+    // Solo si su cuenta de 3 digitos es del PGC o ya esta (en la app o en el fichero): una 139 no.
+    if (!PGC_OFICIAL.has(cuenta) && !ctx.plan.has(cuenta) && !deEntrada.has(cuenta)) continue;
+    anadirDelPgc(cuenta.slice(0, 2));
+    anadirDelPgc(cuenta);
+  }
   const omitidas: VistaPlan['omitidas'] = [];
   const conocidas = new Set(ctx.plan.keys());
   const validas: CuentaDelPlan[] = [];
-  for (const c of [...cuentasEntrada].sort((a, b) => a.codigo.length - b.codigo.length || a.codigo.localeCompare(b.codigo))) {
+  for (const c of [...cuentasEntrada, ...delPgc.values()].sort((a, b) => a.codigo.length - b.codigo.length || a.codigo.localeCompare(b.codigo))) {
     if (!/^[1-7]/.test(c.codigo)) {
       omitidas.push({ codigo: c.codigo, motivo: 'Grupos 8 y 9: la app no los usa.' });
       continue;
     }
     if (c.codigo.length > 3 && !madreDe(c.codigo, conocidas)) {
       omitidas.push({ codigo: c.codigo, motivo: `No encaja en el PGC (no existe la cuenta ${c.codigo.slice(0, 3)}).` });
+      continue;
+    }
+    // Un subgrupo o una cuenta de 3 digitos que la app no trae de serie vale si es del PGC
+    // oficial, o (una cuenta de 3) si su subgrupo existe; si no, no encaja y sus subcuentas
+    // tampoco (antes quedaban sin madre).
+    if (c.codigo.length <= 3 && !ctx.plan.has(c.codigo) && !PGC_OFICIAL.has(c.codigo) && !(c.codigo.length === 3 && conocidas.has(c.codigo.slice(0, 2)))) {
+      omitidas.push({ codigo: c.codigo, motivo: 'Cuenta de 3 dígitos que no está en el PGC de PYMES.' });
       continue;
     }
     conocidas.add(c.codigo);
@@ -369,15 +416,17 @@ async function analizar(
       if (c.nombre && ya.nombre !== c.nombre && c.codigo.length > 3) existentesConOtroNombre.push(c.codigo);
       continue;
     }
-    if (c.codigo.length <= 3) {
-      omitidas.push({ codigo: c.codigo, motivo: 'Cuenta de 3 dígitos que no está en el PGC de PYMES.' });
-      continue;
-    }
-    const madre = madreDe(c.codigo, conocidasPlan)!;
+    const madre = c.codigo.length <= 3 ? c.codigo.slice(0, c.codigo.length - 1) : madreDe(c.codigo, conocidasPlan)!;
     conocidasPlan.add(c.codigo);
-    nuevas.push({ codigo: c.codigo, nombre: c.nombre || `${ctx.plan.get(madre)?.nombre ?? nuevas.find((n) => n.codigo === madre)?.nombre ?? 'Cuenta'} (${c.codigo})`, madre });
+    const oficial = c.codigo.length <= 3 ? PGC_OFICIAL.get(c.codigo) : undefined;
+    nuevas.push({
+      codigo: c.codigo,
+      nombre: c.nombre || oficial?.nombre || `${ctx.plan.get(madre)?.nombre ?? nuevas.find((n) => n.codigo === madre)?.nombre ?? 'Cuenta'} (${c.codigo})`,
+      madre,
+      ...(oficial ? { oficial: { naturaleza: naturalezaDe(oficial.tipo) } } : {}),
+    });
   }
-  if (existentesConOtroNombre.length) {
+  if (existentesConOtroNombre.length && !opciones.nombresGestoria) {
     avisos.push(
       `${existentesConOtroNombre.length} ${segun(existentesConOtroNombre.length, 'subcuenta ya estaba en el plan con otro nombre: se deja el nombre que tiene', 'subcuentas ya estaban en el plan con otro nombre: se deja el nombre que tienen')} (${existentesConOtroNombre.slice(0, 5).join(', ')}${existentesConOtroNombre.length > 5 ? '…' : ''}).`,
     );
@@ -391,7 +440,7 @@ async function analizar(
   const subcuentas = validas.filter((c) => esTercero(c.codigo));
 
   // 3. Longitud: la del plan, si no la impiden las subcuentas que ya tienen las fichas.
-  const delPlan = longitudDelPlan(validas.map((c) => c.codigo).filter((c) => c.length > 3), esTercero);
+  const delPlan = opciones.longitudFija ?? longitudDelPlan(validas.map((c) => c.codigo).filter((c) => c.length > 3), esTercero);
 
   // 4. Enlaces por NIF.
   const nifDeListado = new Map<string, TerceroDelListado>();
@@ -446,12 +495,12 @@ async function analizar(
         ? ((tipo === 'cliente' ? clientesPorNombre : proveedoresPorNombre).get(nombreComparable(nombreFichero)) ?? [])
         : [];
       if (candidatas.length !== 1) {
-        const sinNif = nif ? `El NIF «${nif}» no es válido` : 'Sin NIF';
+        const sinNif = nif ? `El NIF «${nif}» no es válido${pareceNifEspanol(nif) ? ' (letra o dígito de control)' : ''}` : 'Sin NIF';
         terceros.push({
           ...base,
           accion: 'pendiente',
           ficha: null,
-          motivo: candidatas.length > 1 ? `${sinNif} y hay ${candidatas.length} fichas con ese nombre: enlázala a mano.` : nif ? `${sinNif}: enlázala a mano.` : 'Sin NIF: enlázala a una ficha después.',
+          motivo: candidatas.length > 1 ? `${sinNif} y hay ${candidatas.length} fichas con ese nombre: enlázala a mano.` : nif ? `${sinNif}: corrígelo o enlázala a mano.` : 'Sin NIF: enlázala a una ficha después.',
         });
         continue;
       }
@@ -539,6 +588,27 @@ async function analizar(
     yaEnlazadas: terceros.filter((t) => t.accion === 'ya-enlazada').length,
     noSeEnlazan: terceros.filter((t) => t.accion === 'no-se-enlaza').length,
   };
+  // A3: los nombres de la gestoria pisan los de las cuentas propias de la empresa.
+  let nombres: VistaPlan['nombres'];
+  if (opciones.nombresGestoria) {
+    const conFicha = new Set(terceros.filter((t) => ['enlazar', 'crear', 'ya-enlazada'].includes(t.accion)).map((t) => t.codigo));
+    for (const codigo of fichaDeCodigo.keys()) conFicha.add(codigo);
+    nombres = { cambian: [], seQuedan: [] };
+    const nombreDe = new Map(validas.map((c) => [c.codigo, c.nombre]));
+    for (const codigo of existentesConOtroNombre) {
+      const actual = ctx.plan.get(codigo)!;
+      const nuevo = nombreDe.get(codigo)!.slice(0, 190);
+      if (actual.base) nombres.seQuedan.push({ codigo, actual: actual.nombre, nuevo, motivo: 'Cuenta del Plan General Contable: conserva su nombre oficial.' });
+      else if (conFicha.has(codigo)) nombres.seQuedan.push({ codigo, actual: actual.nombre, nuevo, motivo: 'Es de un cliente o proveedor: conserva su nombre fiscal.' });
+      else nombres.cambian.push({ codigo, actual: actual.nombre, nuevo });
+    }
+    if (nombres.cambian.length) {
+      avisos.push(
+        `${nombres.cambian.length} ${segun(nombres.cambian.length, 'cuenta ya estaba con otro nombre: toma el', 'cuentas ya estaban con otro nombre: toman el')} de la gestoría.`,
+      );
+    }
+  }
+
   // Las pendientes lo son por dos motivos distintos: sin NIF valido, o sin permiso para crear su ficha.
   const sinNif = resumen.pendientes - sinPermiso.cliente - sinPermiso.proveedor;
   if (sinNif) {
@@ -567,12 +637,47 @@ async function analizar(
       longitud,
       terceros,
       resumen,
+      ...(nombres ? { nombres } : {}),
       errores,
       avisos,
       puedeConfirmar: errores.length === 0,
     },
     cuentasValidas: validas,
   };
+}
+
+/** Opciones de Traer la contabilidad de 2026 (las de la puesta en marcha son las de por defecto). */
+export interface OpcionesPlan {
+  /** A3: los nombres de la gestoria pisan los de las cuentas propias que ya existian. */
+  nombresGestoria?: boolean;
+  /** Nota de las cuentas creadas (por defecto, la de la puesta en marcha). */
+  nota?: string;
+  /**
+   * Como mucho, cuantas fichas se enlazan o crean en esta llamada (las demas
+   * quedan para la siguiente: Traer la contabilidad de 2026 lo hace por trozos
+   * para que ninguna peticion sea larga). Sin limite, todas.
+   */
+  limiteTerceros?: number;
+  /**
+   * Longitud de las subcuentas que fija el plan de la gestoria. Traer la
+   * contabilidad de 2026 junta las cuentas de todos los ficheros, pero la
+   * longitud la manda la hoja del plan, no la mayoria de todas.
+   */
+  longitudFija?: number | null;
+}
+
+/**
+ * La misma vista previa sin escribir nada (ni el plan base de la empresa):
+ * para el analisis de Traer la contabilidad de 2026.
+ */
+export async function analizarPlanSinEscribir(
+  companyId: string,
+  cuentas: CuentaDelPlan[],
+  terceros: TerceroDelListado[],
+  permisos: PermisosAlta = TODOS_PERMISOS,
+  opciones: OpcionesPlan = {},
+): Promise<VistaPlan> {
+  return (await analizar(prisma, companyId, cuentas, terceros, null, permisos, opciones)).vista;
 }
 
 export interface EntradaPlan {
@@ -613,13 +718,26 @@ export interface ResultadoPlan {
   /** Subcuentas que no se han podido enlazar solas (su ficha ya va con otra): tambien salen en «Subcuentas sin enlazar». */
   noSeEnlazan: number;
   longitudFijada: number | null;
+  /** Lo que se ha creado o cambiado, para poder deshacerlo (Traer la contabilidad de 2026). */
+  creado: CreadoPorPlan;
+  /** Fichas que quedan por enlazar o crear (con limiteTerceros). */
+  quedan: number;
+}
+
+export interface CreadoPorPlan {
+  cuentas: string[];
+  clientes: string[];
+  proveedores: string[];
+  enlaces: Array<{ tipo: TipoFicha; fichaId: string; codigo: string; sustituida: string | null }>;
+  nombresAnteriores: Array<{ codigo: string; nombre: string }>;
+  longitudAnterior: number | null;
 }
 
 const NOTA_PLAN = 'Traída del plan contable anterior (puesta en marcha).';
 
 /** Crea las cuentas nuevas por orden de longitud: la madre siempre existe antes que sus hijas. */
-async function crearCuentas(tx: TransaccionBD, companyId: string, nuevas: CuentaNuevaPlan[]): Promise<number> {
-  if (!nuevas.length) return 0;
+async function crearCuentas(tx: TransaccionBD, companyId: string, nuevas: CuentaNuevaPlan[], nota = NOTA_PLAN): Promise<string[]> {
+  if (!nuevas.length) return [];
   const madres = new Map(
     (await tx.chartOfAccounts.findMany({ where: { companyId, codigo: { in: [...new Set(nuevas.map((n) => n.madre))] } } })).map((m) => [m.codigo, m]),
   );
@@ -630,7 +748,7 @@ async function crearCuentas(tx: TransaccionBD, companyId: string, nuevas: Cuenta
     if (!porLongitud.has(n.codigo.length)) porLongitud.set(n.codigo.length, []);
     porLongitud.get(n.codigo.length)!.push(n);
   }
-  let creadas = 0;
+  const creadas: string[] = [];
   for (const l of [...porLongitud.keys()].sort((a, b) => a - b)) {
     const data = [];
     for (const n of porLongitud.get(l)!) {
@@ -643,21 +761,21 @@ async function crearCuentas(tx: TransaccionBD, companyId: string, nuevas: Cuenta
         nombre: n.nombre.slice(0, 190),
         grupo: m.grupo,
         nivel: m.nivel + 1,
-        naturaleza: m.naturaleza,
+        naturaleza: n.oficial?.naturaleza ?? m.naturaleza,
         tipoUso: m.tipoUso,
-        esBasePGC: false,
-        esPersonalizadaEmpresa: true,
+        esBasePGC: !!n.oficial,
+        esPersonalizadaEmpresa: !n.oficial,
         activo: true,
         parentId: m.id,
         parentCodigo: m.codigo,
-        notas: NOTA_PLAN,
+        notas: nota,
       };
       data.push(fila);
       madres.set(fila.codigo, { ...m, ...fila });
     }
     if (data.length) {
       await tx.chartOfAccounts.createMany({ data });
-      creadas += data.length;
+      creadas.push(...data.map((d) => d.codigo));
     }
   }
   return creadas;
@@ -708,57 +826,100 @@ async function enlazarEnTx(tx: TransaccionBD, companyId: string, codigo: string,
 
 export async function confirmarPlan(companyId: string, entrada: EntradaPlan): Promise<ResultadoPlan> {
   await asegurarPlanContableEmpresa(companyId);
+  return conReintentoSubcuenta(() => prisma.$transaction((tx) => confirmarPlanEnTx(tx, companyId, entrada), OPCIONES_TX));
+}
+
+/** Pais de la ficha nueva: el que diga el fichero (ISO de 2 letras) o el del NIF. */
+const paisFicha = (nif: string, ficha?: DatosFicha) => paisDelCliente({ pais: ficha?.pais && /^[A-Z]{2}$/.test(ficha.pais) ? ficha.pais : 'ES', nifCif: nif });
+
+/** Datos de contacto de la ficha nueva (los que traiga el fichero). */
+function datosContacto(ficha?: DatosFicha) {
+  if (!ficha) return {};
+  const { direccion, cp, municipio, provincia, email, telefono } = ficha;
+  return Object.fromEntries(Object.entries({ direccion, cp, municipio, provincia, email, telefono }).filter(([, v]) => v));
+}
+
+/**
+ * Confirmacion dentro de una transaccion que ya existe (Traer la contabilidad
+ * de 2026 la usa con su propia transaccion para guardar a la vez lo creado).
+ * El plan base de la empresa tiene que estar ya creado.
+ */
+export async function confirmarPlanEnTx(tx: TransaccionBD, companyId: string, entrada: EntradaPlan, opciones: OpcionesPlan = {}): Promise<ResultadoPlan> {
   const { cuentas, lectura } = separar(entrada);
-  return conReintentoSubcuenta(() =>
-    prisma.$transaction(async (tx) => {
-      const { vista } = await analizar(tx, companyId, cuentas, entrada.terceros ?? [], lectura, entrada.permisos);
-      if (!vista.puedeConfirmar) throw badRequest(vista.errores[0], { errores: vista.errores });
+  const { vista } = await analizar(tx, companyId, cuentas, entrada.terceros ?? [], lectura, entrada.permisos, opciones);
+  if (!vista.puedeConfirmar) throw badRequest(vista.errores[0], { errores: vista.errores });
 
-      const cuentasCreadas = await crearCuentas(tx, companyId, vista.cuentasNuevas);
-      // Primero la longitud: las fichas nuevas y las gemelas 410N salen con ella.
-      let longitudFijada: number | null = null;
-      if (vista.longitud.seFija && vista.longitud.delPlan) {
-        await fijarLongitud(tx, companyId, vista.longitud.delPlan);
-        longitudFijada = vista.longitud.delPlan;
-      } else if (vista.longitud.delPlan && vista.longitud.delPlan !== vista.longitud.actual && (await longitudSubcuentasGuardada(companyId, tx)) === null) {
-        // El plan trae otra longitud que no se puede usar: se guarda la que ya usaba la
-        // empresa, para que las subcuentas traidas no la cambien al deducirla.
-        await fijarLongitud(tx, companyId, vista.longitud.actual);
-        longitudFijada = vista.longitud.actual;
-      }
+  const longitudAnterior = await longitudSubcuentasGuardada(companyId, tx);
+  const creadas = await crearCuentas(tx, companyId, vista.cuentasNuevas, opciones.nota);
+  // A3: nombres de la gestoria en las cuentas propias que ya existian.
+  const nombresAnteriores: CreadoPorPlan['nombresAnteriores'] = [];
+  for (const n of vista.nombres?.cambian ?? []) {
+    await tx.chartOfAccounts.updateMany({ where: { companyId, codigo: n.codigo }, data: { nombre: n.nuevo } });
+    nombresAnteriores.push({ codigo: n.codigo, nombre: n.actual });
+  }
+  // Primero la longitud: las fichas nuevas y las gemelas 410N salen con ella.
+  let longitudFijada: number | null = null;
+  if (vista.longitud.seFija && vista.longitud.delPlan) {
+    await fijarLongitud(tx, companyId, vista.longitud.delPlan);
+    longitudFijada = vista.longitud.delPlan;
+  } else if (vista.longitud.delPlan && vista.longitud.delPlan !== vista.longitud.actual && longitudAnterior === null) {
+    // El plan trae otra longitud que no se puede usar: se guarda la que ya usaba la
+    // empresa, para que las subcuentas traidas no la cambien al deducirla.
+    await fijarLongitud(tx, companyId, vista.longitud.actual);
+    longitudFijada = vista.longitud.actual;
+  }
 
-      let fichasEnlazadas = 0;
-      let fichasCreadas = 0;
-      const nuevasPorNif = new Map<string, string>();
-      const proveedoresTocados = new Set<string>();
-      for (const t of vista.terceros) {
-        if (t.accion === 'enlazar' && t.ficha?.id) {
-          await enlazarEnTx(tx, companyId, t.codigo, { tipo: t.tipo, id: t.ficha.id });
-          if (t.tipo === 'proveedor') proveedoresTocados.add(t.ficha.id);
-          fichasEnlazadas++;
-        } else if (t.accion === 'crear' && t.nif) {
-          const clave = `${t.tipo}:${t.nif}`;
-          let id = nuevasPorNif.get(clave);
-          if (!id) {
-            id =
-              t.tipo === 'cliente'
-                ? (await tx.customer.create({ data: { companyId, nombreFiscal: t.nombre, nifCif: t.nif, pais: paisDelCliente({ pais: 'ES', nifCif: t.nif }) } })).id
-                : (await tx.supplier.create({ data: { companyId, nombreFiscal: t.nombre, nifCif: t.nif, pais: paisDelCliente({ pais: 'ES', nifCif: t.nif }) } })).id;
-            nuevasPorNif.set(clave, id);
-            fichasCreadas++;
-          }
-          await enlazarEnTx(tx, companyId, t.codigo, { tipo: t.tipo, id });
-          if (t.tipo === 'proveedor') proveedoresTocados.add(id);
-        }
+  // Datos de contacto para las fichas nuevas: los del plan o los del listado.
+  const fichaDe = new Map<string, DatosFicha>();
+  for (const c of cuentas) if (c.ficha) fichaDe.set(c.codigo, c.ficha);
+  for (const t of entrada.terceros ?? []) if (t.subcuenta && t.ficha) fichaDe.set(t.subcuenta, { ...fichaDe.get(t.subcuenta), ...t.ficha });
+
+  let fichasEnlazadas = 0;
+  const nuevasPorNif = new Map<string, string>();
+  const proveedoresTocados = new Set<string>();
+  const creado: CreadoPorPlan = { cuentas: creadas, clientes: [], proveedores: [], enlaces: [], nombresAnteriores, longitudAnterior };
+  const accionables = vista.terceros.filter((t) => (t.accion === 'enlazar' && t.ficha?.id) || (t.accion === 'crear' && t.nif));
+  const limite = opciones.limiteTerceros && opciones.limiteTerceros > 0 ? opciones.limiteTerceros : accionables.length;
+  // No se corta entre la 400 y la 410 del mismo NIF: van a la misma ficha nueva.
+  let corte = Math.min(limite, accionables.length);
+  while (corte > 0 && corte < accionables.length && accionables[corte].nif && accionables[corte].nif === accionables[corte - 1].nif) corte++;
+  for (const t of accionables.slice(0, corte)) {
+    if (t.accion === 'enlazar' && t.ficha?.id) {
+      const { sustituida } = await enlazarEnTx(tx, companyId, t.codigo, { tipo: t.tipo, id: t.ficha.id });
+      creado.enlaces.push({ tipo: t.tipo, fichaId: t.ficha.id, codigo: t.codigo, sustituida });
+      if (t.tipo === 'proveedor') proveedoresTocados.add(t.ficha.id);
+      fichasEnlazadas++;
+    } else if (t.accion === 'crear' && t.nif) {
+      const clave = `${t.tipo}:${t.nif}`;
+      let id = nuevasPorNif.get(clave);
+      if (!id) {
+        const ficha = fichaDe.get(t.codigo);
+        const data = { companyId, nombreFiscal: t.nombre, nifCif: t.nif, pais: paisFicha(t.nif, ficha), ...datosContacto(ficha) };
+        id = t.tipo === 'cliente' ? (await tx.customer.create({ data })).id : (await tx.supplier.create({ data })).id;
+        nuevasPorNif.set(clave, id);
+        (t.tipo === 'cliente' ? creado.clientes : creado.proveedores).push(id);
       }
-      // Proveedores con solo una de las dos: la gemela con el mismo numero (si esta libre).
-      for (const id of proveedoresTocados) {
-        const p = await tx.supplier.findUniqueOrThrow({ where: { id }, select: { id: true, subcuenta400: true, subcuenta410: true } });
-        await asignarSubcuentasProveedor(tx, companyId, p);
-      }
-      return { vista, cuentasCreadas, fichasEnlazadas, fichasCreadas, pendientes: vista.resumen.pendientes, noSeEnlazan: vista.resumen.noSeEnlazan, longitudFijada };
-    }, OPCIONES_TX),
-  );
+      const { sustituida } = await enlazarEnTx(tx, companyId, t.codigo, { tipo: t.tipo, id });
+      creado.enlaces.push({ tipo: t.tipo, fichaId: id, codigo: t.codigo, sustituida });
+      if (t.tipo === 'proveedor') proveedoresTocados.add(id);
+    }
+  }
+  // Proveedores con solo una de las dos: la gemela con el mismo numero (si esta libre).
+  for (const id of proveedoresTocados) {
+    const p = await tx.supplier.findUniqueOrThrow({ where: { id }, select: { id: true, subcuenta400: true, subcuenta410: true } });
+    await asignarSubcuentasProveedor(tx, companyId, p);
+  }
+  return {
+    vista,
+    cuentasCreadas: creadas.length,
+    fichasEnlazadas,
+    fichasCreadas: creado.clientes.length + creado.proveedores.length,
+    pendientes: vista.resumen.pendientes,
+    noSeEnlazan: vista.resumen.noSeEnlazan,
+    longitudFijada,
+    creado,
+    quedan: accionables.length - corte,
+  };
 }
 
 // ---------------------------------------------------------------------------

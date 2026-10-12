@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { incomeInvoicesController } from '../controllers/income-invoices.controller';
 import { authorize } from '../middleware/authorize.middleware';
+import { exigirPlanAnterior } from '../middleware/planAnterior.middleware';
 import { cobrosController } from '../controllers/cobrosPagos.controller';
 
 const router = Router({ mergeParams: true });
@@ -10,7 +11,7 @@ const router = Router({ mergeParams: true });
  * POST /api/invoices/income
  * Con { proforma: true } crea una factura proforma (serie P, sin efectos fiscales).
  */
-router.post('/', authorize('ventas:write'), incomeInvoicesController.crearIngreso);
+router.post('/', authorize('ventas:write'), exigirPlanAnterior, incomeInvoicesController.crearIngreso);
 
 /**
  * Listar facturas de ingreso (sin proformas).

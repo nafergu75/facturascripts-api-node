@@ -210,6 +210,36 @@ export const FICHAS: FichaFAQ[] = [
     enlaceApp: { texto: 'Ir a Puesta en marcha', href: '/dashboard/contabilidad/puesta-en-marcha' },
     etiquetas: ['importar', 'apertura', 'migrar', 'puesta en marcha', 'diario'],
   },
+  // Pendientes de aprobar por Ignacio o su asesor (verificada: false): no se sirven hasta entonces.
+  {
+    id: 'app-traer-contabilidad-2026',
+    bloque: 'app',
+    pregunta: '¿Cómo traigo a la app la contabilidad de 2026 que lleva mi gestoría?',
+    variantes: ['pasar a la app lo que lleva la gestoria', 'subir los ficheros de la gestoria', 'importar el cierre de 2026 de la gestoria', 'cargar el sumas y saldos que me da la gestoria', 'la gestoria me ha mandado el plan de cuentas', 'empezar 2027 con los saldos de la gestoria', 'traer el diario de 2026 de la gestoria'],
+    respuesta:
+      'En Contabilidad → Traer la contabilidad de 2026 subes de una vez los ficheros que te dé la gestoría en Excel o CSV: plan de cuentas, sumas y saldos a 31-12, diario, clientes, proveedores, cartera pendiente e inmovilizado. La app reconoce cada uno, te enseña un resumen con lo que falta o no cuadra y, con una sola confirmación, crea las cuentas, las fichas, el diario de 2026 como consulta y la apertura del 1-1-2027. En enero puedes traer una provisional y, cuando la gestoría cierre, la definitiva. Hazlo antes de dar de alta clientes o proveedores.',
+    fuente: APP('/dashboard/contabilidad/arranque', 'Traer la contabilidad de 2026'),
+    verificada: false,
+    verificadaEl: '2026-10-12',
+    revisarAntes: '2027-10-12',
+    enlaceApp: { texto: 'Ir a Traer la contabilidad de 2026', href: '/dashboard/contabilidad/arranque' },
+    intencionRelacionada: 'INT-40',
+    etiquetas: ['gestoria', 'arranque', '2026', 'apertura', 'importar', 'sumas y saldos'],
+  },
+  {
+    id: 'app-inmovilizado',
+    bloque: 'app',
+    pregunta: '¿Cómo apunto la amortización del inmovilizado?',
+    variantes: ['donde estan los bienes de la empresa', 'calcular la amortizacion de cada mes', 'dar de alta un ordenador como inmovilizado', 'amortizar la maquinaria en la app', 'dar de baja un bien vendido', 'asiento de amortizacion mensual'],
+    respuesta:
+      'En Contabilidad → Inmovilizado tienes cada bien con su coste, lo amortizado y su valor neto. Los de 2026 llegan con la contabilidad de la gestoría; los nuevos los das de alta tú. El botón de amortización calcula los meses que faltan (lineal, por días) y deja un asiento en borrador por mes, que apruebas en Contabilidad → Motor contable. Un mes ya amortizado no se repite. Si vendes o tiras un bien, dale de baja con su fecha.',
+    fuente: APP('/dashboard/contabilidad/inmovilizado', 'Inmovilizado'),
+    verificada: false,
+    verificadaEl: '2026-10-12',
+    revisarAntes: '2027-10-12',
+    enlaceApp: { texto: 'Ir a Inmovilizado', href: '/dashboard/contabilidad/inmovilizado' },
+    etiquetas: ['inmovilizado', 'amortizacion', 'bienes', 'activo'],
+  },
   {
     id: 'app-modelo-303',
     bloque: 'app',

@@ -10,6 +10,7 @@ import {
   generarAsientoCompraDesdeFactura,
 } from './contabilidadReglas.service';
 import { badRequest, notFound } from '../utils/http-errors';
+import { exigirFechaContabilizable } from './periodos.service';
 import { crearVencimientos, generarVencimientosDesdeFactura } from './vencimientos.service';
 
 const round2 = (n: number): number => Math.round((n + Number.EPSILON) * 100) / 100;
@@ -416,6 +417,9 @@ export async function crearAsientoConApuntes(
       throw badRequest(`El asiento "${params.concepto}" no cuadra: Debe ${(debe / 100).toFixed(2)} y Haber ${(haber / 100).toFixed(2)}.`);
     }
   }
+
+  // Un año llevado por la gestoria es de solo lectura (red de seguridad de comprobarFechaAbierta).
+  await exigirFechaContabilizable(companyId, params.fecha);
 
   if (params.tx) {
     const tx = params.tx;

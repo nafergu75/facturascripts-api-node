@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { expenseInvoicesController } from '../controllers/expense-invoices.controller';
 import { authorize } from '../middleware/authorize.middleware';
+import { exigirPlanAnterior } from '../middleware/planAnterior.middleware';
 import { pagosController } from '../controllers/cobrosPagos.controller';
 
 const router = Router({ mergeParams: true });
@@ -11,7 +12,8 @@ router.get('/', authorize('compras:read', 'contabilidad:read'), expenseInvoicesC
 
 // POST /companies/:companyId/expense-invoices - Alta con su asiento en firme
 // (con el bloque `rectificativa`, un abono o rectificativa del proveedor)
-router.post('/', authorize('compras:write'), expenseInvoicesController.create);
+router.post('/', authorize('compras:write'), exigirPlanAnterior, expenseInvoicesController.create);
+
 
 // GET /companies/:companyId/expense-invoices/originales - Candidatas a original de un abono
 // (antes de /:id, para que «originales» no se tome por un id)

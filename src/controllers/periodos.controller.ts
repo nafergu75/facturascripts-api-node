@@ -5,6 +5,8 @@ import { cambiarBloqueoMes, listarPeriodos, modelosPresentadosDelMes, type Estad
 import { deshacerCierreEjercicio, ejecutarCierreEjercicio, previsualizarCierre } from '../services/cierreEjercicio.service';
 import { registrarAuditoria } from '../services/auditoria.service';
 import { validarEjercicio } from '../utils/anios';
+import { avisoAmortizacionPendiente } from '../services/arranque/inmovilizado.service';
+
 
 // A mano solo se bloquea o se desbloquea un mes: 'cerrado' lo pone el cierre del ejercicio.
 const ESTADOS_MANUALES: EstadoMesManual[] = ['abierto', 'bloqueado'];
@@ -46,7 +48,9 @@ export const periodosController = {
       resourceId: `${ejercicio}-${String(mes).padStart(2, '0')}`,
       meta: r.modelosPresentados ? { modelosPresentados: r.modelosPresentados } : undefined,
     });
-    sendOk(res, r);
+    // Al bloquear: aviso (sin frenar) si falta amortización por apuntar hasta ese mes.
+    const avisoAmortizacion = estado === 'bloqueado' ? await avisoAmortizacionPendiente(req.companyId!, `${ejercicio}-${String(mes).padStart(2, '0')}`) : null;
+    sendOk(res, avisoAmortizacion ? { ...r, avisoAmortizacion } : r);
   }),
   cierre: asyncHandler(async (req, res) => {
     const ejercicio = parseEjercicio(req.query.ejercicio);

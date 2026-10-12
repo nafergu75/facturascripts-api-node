@@ -8,6 +8,7 @@ import { esVencida, textoEstadoGasto, textoEstadoPago } from '../domain/factura-
 import { proveedoresService, buscarProveedores } from '../services/proveedores.service';
 import { aplicadoPorFactura } from '../services/cobrosPagos.service';
 import { authorize } from '../middleware/authorize.middleware';
+import { exigirPlanAnterior } from '../middleware/planAnterior.middleware';
 import * as contactos from '../services/suppliers/supplierContact.service';
 import * as cuentas from '../services/suppliers/supplierBankAccount.service';
 import * as auditoria from '../services/suppliers/supplierAudit.service';
@@ -38,7 +39,7 @@ router.get('/por-nif/:nif', authorize('compras:read', 'contabilidad:read'), asyn
 router.get('/:id', authorize('compras:read', 'contabilidad:read'), asyncHandler(async (req, res) => {
   sendOk(res, await proveedoresService.getById(empresa(req), req.params.id));
 }));
-router.post('/', authorize('compras:write'), asyncHandler(async (req, res) => {
+router.post('/', authorize('compras:write'), exigirPlanAnterior, asyncHandler(async (req, res) => {
   sendOk(res, await proveedoresService.create(empresa(req), req.body ?? {}, req.user?.email), undefined, 201);
 }));
 // PUT y PATCH: modificacion parcial (solo los campos que llegan). La pestana "Datos" de la ficha guarda con PATCH.

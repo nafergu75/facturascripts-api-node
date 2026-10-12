@@ -1,8 +1,9 @@
 import { prisma, type TransaccionBD as Tx } from '../config/database';
-import { badRequest, notFound } from '../utils/http-errors';
+import { badRequest, conflict, notFound } from '../utils/http-errors';
+import { partidaDeFactura } from './arranque/partidas.service';
 import { aCentimos } from '../utils/money';
 import { hoyEspana } from '../utils/fechas';
-import { comprobarFechaAbierta } from './periodos.service';
+import { comprobarFechaAbierta, exigirFechaContabilizable } from './periodos.service';
 import {
   calcularCobroDivisa,
   comprobarTipoManual,
@@ -421,6 +422,7 @@ async function crearAsiento(
   const debe = round2(p.apuntes.reduce((s, a) => s + a.debe, 0));
   const haber = round2(p.apuntes.reduce((s, a) => s + a.haber, 0));
   if (aCentimos(debe) !== aCentimos(haber)) throw badRequest(`El asiento no cuadra: Debe ${debe} y Haber ${haber}.`);
+  await exigirFechaContabilizable(companyId, p.fecha);
   return tx.journalEntry.create({
     data: {
       companyId,
@@ -586,7 +588,13 @@ export async function registrarCobroFactura(
   // Abono de proveedor (total < 0): lo que se registra es la devolucion recibida.
   const esAbono = tipo === 'GASTO' && aCentimos(f.totalFactura) < 0;
   const t = esAbono ? TXT_DEVOLUCION : TXT[tipo];
+  // Factura de 2026 que la gestoria trajo pendiente: se cobra (o se paga) contra su partida, no dos veces.
+  const enlazada = await partidaDeFactura(companyId, tipo, invoiceId);
+  if (enlazada) {
+    throw conflict(`Esta factura está entre las pendientes de 2026 que trajo la gestoría (${enlazada.numeroDocumento}): el ${t.cobro} se apunta desde allí.`, { codigo: 'FACTURA_CON_PARTIDA_2026', partidaId: enlazada.id });
+  }
   if (!esAbono && aCentimos(f.totalFactura) <= 0) {
+
     throw badRequest(`La factura tiene importe cero o negativo (rectificativa): no admite ${t.cobro}s desde aquí.`);
   }
   const fecha = validarFecha(datos.fecha);

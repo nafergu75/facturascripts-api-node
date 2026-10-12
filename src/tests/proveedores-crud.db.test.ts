@@ -10,6 +10,7 @@ import { describe, it, expect, beforeAll } from '@jest/globals';
 import express from 'express';
 import request from 'supertest';
 import { prisma } from '../config/database';
+import { exigirPlanAnteriorAntesDeAlta } from '../services/terceros/planAnteriorAlta';
 import proveedoresRoutes from '../routes/proveedores.routes';
 import { errorMiddleware } from '../middleware/error.middleware';
 import { controlCif } from '../utils/nif';
@@ -32,6 +33,8 @@ function app(rol = 'contable') {
 
 beforeAll(async () => {
   await prisma.company.create({ data: { id: E, name: 'Proveedores SL', fsBaseUrl: 'http://localhost:8080', fsApiKeyEnc: 'k' } });
+  // Empresa nueva sin plan de la gestoria: se confirma de antemano el aviso del primer cliente o proveedor.
+  await exigirPlanAnteriorAntesDeAlta(E, true, 'test');
 });
 
 describe('alta', () => {

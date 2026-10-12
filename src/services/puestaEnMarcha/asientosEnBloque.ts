@@ -19,8 +19,22 @@ export interface LineaNueva {
 export interface AsientoNuevo {
   fecha: string; // yyyy-mm-dd
   concepto: string;
-  origen: 'APERTURA' | 'REGULARIZACION' | 'CIERRE' | 'IMPORTACION';
+  origen:
+    | 'APERTURA'
+    | 'REGULARIZACION'
+    | 'CIERRE'
+    | 'IMPORTACION'
+    // Traer la contabilidad de 2026: diario historico de la gestoria y ajuste de la apertura.
+    | 'HISTORICO'
+    | 'HISTORICO_APERTURA'
+    | 'HISTORICO_REGULARIZACION'
+    | 'HISTORICO_CIERRE'
+    | 'APERTURA_AJUSTE'
+    // Dotacion mensual de la amortizacion del inmovilizado (en borrador, para aprobar).
+    | 'AMORTIZACION';
   lineas: LineaNueva[];
+  /** POSTED por defecto; DRAFT para los que se aprueban despues en el Motor contable. */
+  estado?: 'POSTED' | 'DRAFT';
 }
 
 const PREFIJO: Record<AsientoNuevo['origen'], string> = {
@@ -28,10 +42,16 @@ const PREFIJO: Record<AsientoNuevo['origen'], string> = {
   REGULARIZACION: 'REGUL',
   CIERRE: 'CIERRE',
   IMPORTACION: 'IMP',
+  HISTORICO: 'HIST',
+  HISTORICO_APERTURA: 'HIST',
+  HISTORICO_REGULARIZACION: 'HIST',
+  HISTORICO_CIERRE: 'HIST',
+  APERTURA_AJUSTE: 'APAJ',
+  AMORTIZACION: 'AMORT',
 };
 
 /**
- * Graba varios asientos POSTED dentro de una transaccion, con numero
+ * Graba varios asientos (POSTED salvo que digan otra cosa) dentro de una transaccion, con numero
  * correlativo por prefijo (APERT-00001...). Toma el mayor numero existente,
  * no el recuento: si se anula o borra alguno no se repiten numeros.
  * Rechaza cualquier asiento que no cuadre al centimo.
@@ -77,7 +97,7 @@ export async function grabarAsientos(tx: Tx, companyId: string, asientos: Asient
       numeroAsiento: numero,
       descripcion: a.concepto.slice(0, 190),
       origen: a.origen,
-      estado: 'POSTED',
+      estado: a.estado ?? 'POSTED',
     });
     for (const l of a.lineas) {
       lineas.push({

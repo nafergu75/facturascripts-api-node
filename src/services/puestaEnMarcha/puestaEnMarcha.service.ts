@@ -10,6 +10,7 @@
  */
 import { prisma } from '../../config/database';
 import { badRequest, conflict } from '../../utils/http-errors';
+import { registrarAuditoria } from '../auditoria.service';
 import { aCentimos } from '../../utils/money';
 import type { SaldosEjercicio } from '../contabilidadDatos.service';
 import { anularAsientos, grabarAsientos, OPCIONES_TX, rangoEjercicio, type AsientoNuevo, type Tx } from './asientosEnBloque';
@@ -24,8 +25,9 @@ import {
 } from './lectorContable';
 import { analizarCuentas, crearCuentasNuevas, prepararPlanEmpresa, type CuentaNueva } from './planCuentas';
 // Cerrado: con asientos de regularizacion o cierre (los de ahora y los de cierres anteriores) o marcado CLOSED.
-import { ejercicioCerrado, listarPeriodos } from '../periodos.service';
+import { ejercicioCerrado, ENLACE_ARRANQUE, listarPeriodos, llevanzaExterna, textoLlevanzaExterna } from '../periodos.service';
 import { anioEspana, hoyEspana } from '../../utils/fechas';
+
 
 /**
  * Meses (MM/AAAA) bloqueados o cerrados del ejercicio que tocan esas fechas.
@@ -38,6 +40,34 @@ async function mesesNoAbiertos(companyId: string, ejercicio: number, fechas: str
   const periodos = await listarPeriodos(companyId, ejercicio);
   return periodos.filter((p) => meses.has(p.mes) && p.estado !== 'abierto').map((p) => `${String(p.mes).padStart(2, '0')}/${ejercicio}`);
 }
+
+const TEXTO_DE_CARGA = 'Esto se cambia desde «Traer la contabilidad de 2026»: la apertura y el diario de ese año vienen de la gestoría.';
+
+/**
+ * ¿La apertura de ese ejercicio la puso una carga de «Traer la contabilidad de
+ * 2026» (confirmada o importandose)? Entonces la puesta en marcha no la toca.
+ */
+async function aperturaDeCarga(companyId: string, ejercicio: number): Promise<boolean> {
+  if (typeof (prisma as { cargaArranque?: { findMany?: unknown } }).cargaArranque?.findMany !== 'function') return false;
+  const cargas = await prisma.cargaArranque.findMany({ where: { companyId, ejercicio, estado: { in: ['CONFIRMADA', 'APLICANDO'] } }, select: { estado: true, creado: true } });
+  // Una carga a medias puede poner la apertura en cualquier momento; una confirmada, si la puso.
+  return cargas.some((c) => c.estado === 'APLICANDO' || !!(c.creado as { apertura?: unknown } | null)?.apertura);
+}
+
+/**
+ * ¿El comparativo de ese ejercicio lo trajo una carga de «Traer la contabilidad
+ * de 2026» (año llevado por la gestoria, o carga confirmada o importandose del
+ * año siguiente que lo guardo)? Entonces la puesta en marcha no lo cambia ni lo borra.
+ */
+async function comparativoDeCarga(companyId: string, ejercicio: number): Promise<boolean> {
+  if (typeof (prisma as { cargaArranque?: { findMany?: unknown } }).cargaArranque?.findMany !== 'function') return false;
+  if (await llevanzaExterna(companyId, ejercicio)) return true;
+  const cargas = await prisma.cargaArranque.findMany({ where: { companyId, ejercicio: ejercicio + 1, estado: { in: ['CONFIRMADA', 'APLICANDO'] } }, select: { estado: true, creado: true } });
+  return cargas.some((c) => c.estado === 'APLICANDO' || !!(c.creado as { comparativo?: unknown } | null)?.comparativo);
+}
+
+const textoComparativoDeCarga = (ejercicio: number) =>
+  `El comparativo de ${ejercicio} lo trajo «Traer la contabilidad de 2026»: se cambia desde allí, trayendo otra versión o deshaciendo la carga.`;
 
 const textoMesesBloqueados = (meses: string[], salida: string) =>
   `${meses.length === 1 ? `El mes ${meses[0]} está bloqueado o cerrado` : `Los meses ${meses.join(', ')} están bloqueados o cerrados`}: ` +
@@ -181,6 +211,8 @@ export async function previsualizarApertura(
 
   const errores: string[] = [];
   const avisos: string[] = [...(entrada.lectura?.avisos ?? [])];
+  if (await aperturaDeCarga(companyId, ejercicio)) errores.push(TEXTO_DE_CARGA);
+  if (await llevanzaExterna(companyId, ejercicio)) errores.push(textoLlevanzaExterna(ejercicio));
 
   const { nombres, nuevas, errores: erroresPlan } = await analizarCuentas(companyId, cuentas);
   errores.push(...erroresPlan);
@@ -262,6 +294,7 @@ export async function confirmarApertura(
   opciones: OpcionesApertura,
 ): Promise<{ vista: VistaApertura; asiento: { id: string; numero: string }; anulados: number; cuentasCreadas: number; comparativoGuardado: boolean }> {
   const vista = await previsualizarApertura(companyId, entrada, opciones);
+  if (vista.errores.includes(TEXTO_DE_CARGA)) throw conflict(TEXTO_DE_CARGA, { enlace: ENLACE_ARRANQUE });
   if (vista.aperturaExistente && !opciones.reemplazar) {
     throw conflict(vista.errores.find((e) => e.startsWith('Ya hay')) ?? 'Ya hay un asiento de apertura de ese ejercicio.', { aperturaExistente: vista.aperturaExistente });
   }
@@ -304,6 +337,7 @@ export async function confirmarApertura(
 
 /** Anula la apertura del ejercicio (p. ej. para volver a importar). */
 export async function anularApertura(companyId: string, ejercicio: number): Promise<{ anulados: number }> {
+  if (await aperturaDeCarga(companyId, ejercicio)) throw conflict(TEXTO_DE_CARGA, { enlace: ENLACE_ARRANQUE });
   if (await ejercicioCerrado(companyId, ejercicio)) throw badRequest(`El ejercicio ${ejercicio} está cerrado: deshaz antes el cierre.`);
   const bloqueados = await mesesNoAbiertos(companyId, ejercicio, await fechasDeOrigen(companyId, ejercicio, 'APERTURA'));
   if (bloqueados.length) throw badRequest(textoMesesBloqueados(bloqueados, 'déjala como está'));
@@ -391,6 +425,8 @@ async function prepararDiario(companyId: string, lectura: LecturaDiario, opcione
   errores.push(...erroresPlan);
 
   if (await ejercicioCerrado(companyId, ejercicio)) errores.push(`El ejercicio ${ejercicio} está cerrado: no se pueden añadir asientos.`);
+  // Un año llevado por la gestoria es de solo lectura: su diario entra con Traer la contabilidad de 2026.
+  if (await llevanzaExterna(companyId, ejercicio)) errores.push(`${textoLlevanzaExterna(ejercicio)} ${TEXTO_DE_CARGA}`);
 
   const ap = await aperturaDelEjercicio(companyId, ejercicio);
   const apertura = ap ? { numero: ap.numeroAsiento, fecha: ap.fecha.toISOString().slice(0, 10) } : null;
@@ -456,6 +492,7 @@ export async function confirmarDiario(
   opciones: OpcionesDiario,
 ): Promise<{ vista: VistaDiario; asientosCreados: number; anulados: number; cuentasCreadas: number }> {
   const { vista, aImportar, nombres } = await prepararDiario(companyId, lectura, opciones);
+  if (await llevanzaExterna(companyId, vista.ejercicio)) throw conflict(`${textoLlevanzaExterna(vista.ejercicio)} ${TEXTO_DE_CARGA}`, { enlace: ENLACE_ARRANQUE });
   if (vista.importacionPrevia && !opciones.reemplazar) {
     throw conflict(vista.errores.find((e) => e.startsWith('Ya se importaron')) ?? 'Ya hay asientos importados de ese ejercicio.');
   }
@@ -491,6 +528,7 @@ export async function confirmarDiario(
 
 /** Anula los asientos importados de un ejercicio. */
 export async function anularDiarioImportado(companyId: string, ejercicio: number): Promise<{ anulados: number }> {
+  if (await llevanzaExterna(companyId, ejercicio)) throw conflict(TEXTO_DE_CARGA, { enlace: ENLACE_ARRANQUE });
   if (await ejercicioCerrado(companyId, ejercicio)) throw badRequest(`El ejercicio ${ejercicio} está cerrado: deshaz antes el cierre.`);
   const bloqueados = await mesesNoAbiertos(companyId, ejercicio, await fechasDeOrigen(companyId, ejercicio, 'IMPORTACION'));
   if (bloqueados.length) throw badRequest(textoMesesBloqueados(bloqueados, 'deja la importación como está'));
@@ -588,8 +626,8 @@ export async function previsualizarComparativo(
   };
 }
 
-async function guardarSaldosComparativo(companyId: string, ejercicio: number, cuentas: CuentaSaldo[], parte: ParteComparativo, origen: string) {
-  const previo = await prisma.priorYearData.findFirst({ where: { companyId, ejercicio } });
+export async function guardarSaldosComparativo(companyId: string, ejercicio: number, cuentas: CuentaSaldo[], parte: ParteComparativo, origen: string, db: Tx | typeof prisma = prisma) {
+  const previo = await db.priorYearData.findFirst({ where: { companyId, ejercicio } });
   const combinadas = combinar(leerDatosComparativo(previo?.datosJSON)?.cuentas ?? [], cuentas, parte);
   const r = resumenComparativo(combinadas);
   const datos = {
@@ -600,8 +638,8 @@ async function guardarSaldosComparativo(companyId: string, ejercicio: number, cu
     datosJSON: JSON.stringify({ formato: 'saldos-v1', cuentas: combinadas } satisfies DatosComparativo),
     observaciones: `${origen} el ${hoyEspana()}`,
   };
-  if (previo) return prisma.priorYearData.update({ where: { id: previo.id }, data: datos });
-  return prisma.priorYearData.create({ data: { companyId, ejercicio, ...datos } });
+  if (previo) return db.priorYearData.update({ where: { id: previo.id }, data: datos });
+  return db.priorYearData.create({ data: { companyId, ejercicio, ...datos } });
 }
 
 export async function confirmarComparativo(
@@ -611,12 +649,19 @@ export async function confirmarComparativo(
 ): Promise<VistaComparativo> {
   const vista = await previsualizarComparativo(companyId, entrada, opciones);
   if (vista.errores.length) throw badRequest(vista.errores[0], { errores: vista.errores });
+  if (await comparativoDeCarga(companyId, vista.ejercicio)) throw conflict(textoComparativoDeCarga(vista.ejercicio), { enlace: ENLACE_ARRANQUE });
   await guardarSaldosComparativo(companyId, vista.ejercicio, vista.cuentas, vista.parte, 'Importado');
   return vista;
 }
 
-export async function borrarComparativo(companyId: string, ejercicio: number): Promise<{ borrado: boolean }> {
+/** Borra el comparativo de un ejercicio (con rastro en AuditLog). El que trajo una carga, no: 409. */
+export async function borrarComparativo(companyId: string, ejercicio: number, userId = 'desconocido'): Promise<{ borrado: boolean }> {
+  if (await comparativoDeCarga(companyId, ejercicio)) throw conflict(textoComparativoDeCarga(ejercicio), { enlace: ENLACE_ARRANQUE });
+  const previo = await prisma.priorYearData.findFirst({ where: { companyId, ejercicio }, select: { id: true, observaciones: true } });
   const r = await prisma.priorYearData.deleteMany({ where: { companyId, ejercicio } });
+  if (r.count) {
+    await registrarAuditoria({ userId, companyId, action: 'BORRAR_COMPARATIVO', resourceType: 'PriorYearData', resourceId: previo?.id, meta: { ejercicio, observaciones: previo?.observaciones ?? null } });
+  }
   return { borrado: r.count > 0 };
 }
 

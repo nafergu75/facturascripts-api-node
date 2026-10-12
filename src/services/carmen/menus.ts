@@ -28,6 +28,8 @@ export const PANTALLAS: PantallaApp[] = [
   { ruta: 'Contabilidad → Informes contables', href: '/dashboard/informes', descripcion: 'Balance, pérdidas y ganancias, sumas y saldos, mayor y diario, en PDF o Excel.' },
   { ruta: 'Contabilidad → Mayor de clientes y proveedores', href: '/dashboard/mayor-terceros', descripcion: 'Saldo contable de cada cliente y proveedor con su detalle.' },
   { ruta: 'Contabilidad → Puesta en marcha', href: '/dashboard/contabilidad/puesta-en-marcha', descripcion: 'Importar el balance de apertura, el diario del año y saldos anteriores.' },
+  { ruta: 'Contabilidad → Traer la contabilidad de 2026', href: '/dashboard/contabilidad/arranque', descripcion: 'Subir los ficheros de la gestoría (plan, sumas y saldos, diario, clientes, proveedores, cartera e inmovilizado), comprobarlos y traerlos con una confirmación; lo pendiente de cobro y pago de 2026.' },
+  { ruta: 'Contabilidad → Inmovilizado', href: '/dashboard/contabilidad/inmovilizado', descripcion: 'Bienes de la empresa, su valor neto y la amortización de cada mes.' },
   { ruta: 'Contabilidad → Cierre y traspaso de saldos', href: '/dashboard/contabilidad/cierre-ejercicio', descripcion: 'Regularización, cierre del ejercicio y apertura del siguiente.' },
   { ruta: 'Contabilidad → Archivo de cierres', href: '/dashboard/cierre-contable', descripcion: 'Estado y documentos de los cierres de cada ejercicio.' },
   { ruta: 'Tesorería → Resumen', href: '/dashboard/tesoreria', descripcion: 'Posición de tesorería.' },

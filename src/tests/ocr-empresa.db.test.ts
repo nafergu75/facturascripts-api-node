@@ -21,6 +21,7 @@ import * as fs from 'fs';
 import request from 'supertest';
 import { app } from '../app';
 import { prisma } from '../config/database';
+import { exigirPlanAnteriorAntesDeAlta } from '../services/terceros/planAnteriorAlta';
 import { authService } from '../services/auth.service';
 import { hashPassword } from '../utils/password';
 import OCRPersistenceService from '../services/ocr-persistence.service';
@@ -84,6 +85,8 @@ describeBd('OCR por empresa (app entera, BD real)', () => {
   beforeAll(async () => {
     for (const id of [EMPRESA_A, EMPRESA_B]) {
       await prisma.company.create({ data: { id, name: `Empresa ${id}`, fsBaseUrl: 'http://localhost:8080', fsApiKeyEnc: 'k' } });
+      // Empresa nueva sin plan de la gestoria: se confirma de antemano el aviso del primer cliente o proveedor.
+      await exigirPlanAnteriorAntesDeAlta(id, true, 'test');
     }
     usuarios.a = await crearUsuario('ocr-a', EMPRESA_A, 'contable');
     usuarios.b = await crearUsuario('ocr-b', EMPRESA_B, 'contable');

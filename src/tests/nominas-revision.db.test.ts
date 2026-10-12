@@ -25,6 +25,7 @@ import express from 'express';
 import request from 'supertest';
 import * as XLSX from 'xlsx';
 import { prisma } from '../config/database';
+import { exigirPlanAnteriorAntesDeAlta } from '../services/terceros/planAnteriorAlta';
 import { controlCif, letraNif } from '../utils/nif';
 import { anularNominas, borrarNomina, confirmarImportacion, contabilizarNominas, crearNomina, actualizarNomina } from '../services/nominas.service';
 import { crearEmpleado } from '../services/empleados.service';
@@ -90,6 +91,8 @@ const binario = (res: NodeJS.ReadableStream & { setEncoding?: unknown }, cb: (e:
 beforeAll(async () => {
   for (const id of [R1, R2, R3, R4, R5, R6]) {
     await prisma.company.create({ data: { id, name: `Empresa ${id}`, fsBaseUrl: 'http://localhost:8080', fsApiKeyEnc: 'k' } });
+    // Empresa nueva sin plan de la gestoria: se confirma de antemano el aviso del primer cliente o proveedor.
+    await exigirPlanAnteriorAntesDeAlta(id, true, 'test');
     bancos[id] = (await prisma.bankAccount.create({ data: { companyId: id, iban: `ES00000000000000000${String(Math.floor(Math.random() * 1e5)).padStart(5, '0')}`, bancoNombre: 'Banco Prueba', subcuentaCodigo: '572001' } })).id;
   }
 });

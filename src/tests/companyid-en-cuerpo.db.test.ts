@@ -51,6 +51,7 @@ jest.mock('../services/auditoria.service', () => ({ registrarAuditoria: jest.fn(
 import request from 'supertest';
 import { app } from '../app';
 import { prisma } from '../config/database';
+import { exigirPlanAnteriorAntesDeAlta } from '../services/terceros/planAnteriorAlta';
 import { authService } from '../services/auth.service';
 import { hashPassword } from '../utils/password';
 import { incomeInvoicesService } from '../services/income-invoices.service';
@@ -76,6 +77,8 @@ describeBd('companyId en el cuerpo (permisos reales)', () => {
   beforeAll(async () => {
     for (const id of [EMPRESA_A, EMPRESA_B]) {
       await prisma.company.create({ data: { id, name: `Empresa ${id}`, fsBaseUrl: 'http://localhost:8080', fsApiKeyEnc: 'k' } });
+      // Empresa nueva sin plan de la gestoria: se confirma de antemano el aviso del primer cliente o proveedor.
+      await exigirPlanAnteriorAntesDeAlta(id, true, 'test');
     }
     // Puede todo en A; en B solo lee.
     const email = `cic-${SUFIJO}@test.local`;

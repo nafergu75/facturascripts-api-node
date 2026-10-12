@@ -32,6 +32,8 @@ export const CAMPOS_DECIMALES: ReadonlySet<string> = new Set([
   // Abonos de proveedor: parte de cada original (nombres propios: DocumentoArchivo
   // tiene base, iva y retencion en Decimal y su codigo los usa como Decimal).
   "baseRectificada", "cuotaRectificada", "retencionRectificada",
+  // Traer la contabilidad de 2026: bancos, partidas pendientes e inmovilizado.
+  "saldoContableInicial", "importeOriginal", "importePendiente", "coste", "valorResidual", "amortAcumuladaInicial", "coeficiente",
 ]);
 
 /**
@@ -147,6 +149,20 @@ export const importesComoNumero = Prisma.defineExtension({
     },
     bankAccount: {
       saldoInicial: { needs: { saldoInicial: true }, compute: (r) => aNumero(r.saldoInicial) },
+      saldoContableInicial: { needs: { saldoContableInicial: true }, compute: (r) => aNumero(r.saldoContableInicial) },
+    },
+    partidaPendiente: {
+      importeOriginal: { needs: { importeOriginal: true }, compute: (r) => aNumero(r.importeOriginal) },
+      importePendiente: { needs: { importePendiente: true }, compute: (r) => aNumero(r.importePendiente) },
+    },
+    activoFijo: {
+      coste: { needs: { coste: true }, compute: (r) => aNumero(r.coste) },
+      valorResidual: { needs: { valorResidual: true }, compute: (r) => aNumero(r.valorResidual) },
+      amortAcumuladaInicial: { needs: { amortAcumuladaInicial: true }, compute: (r) => aNumero(r.amortAcumuladaInicial) },
+      coeficiente: { needs: { coeficiente: true }, compute: (r) => aNumero(r.coeficiente) },
+    },
+    dotacionAmortizacion: {
+      importe: { needs: { importe: true }, compute: (r) => aNumero(r.importe) },
     },
     bankMovement: {
       importe: { needs: { importe: true }, compute: (r) => aNumero(r.importe) },
