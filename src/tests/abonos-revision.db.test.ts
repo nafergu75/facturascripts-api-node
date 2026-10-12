@@ -281,6 +281,35 @@ describe('error de IVA que reduce sobre una factura de 2026 (llevada fuera de la
     expect(ficha.rectificar303?.aviso).toMatch(/^Registrado después de presentar el 303 del 1T de 2027: prepara/);
   });
 
+  it('el 303 se presentó fuera si va antes del inicio en la app que indicó la empresa (no solo antes de 2027)', async () => {
+    const E = await empresa('ivainicio');
+    await prisma.ajustesFiscales.create({ data: { companyId: E, inicioEnApp: '2027-04-01' } });
+    const prov = (await proveedoresService.create(E, { nombreFiscal: 'Electricidad Patraix SL', nifCif: cif() })).id;
+    const cuerpo = factura(prov, 'RX-3', '2027-05-15', -1000, {
+      lineas: [lin(-1000), lin(1000, { tipoIva: 10 })],
+      rectificativa: { tipo: 'I', causa: 'ERROR_IVA', originales: [{ numero: 'F-2027/12', fecha: '2027-02-10' }] },
+    });
+    const e = await error(registrarGasto(E, cuerpo, { contabilizar: 'POSTED' }));
+    expect(e.status).toBe(409);
+    expect(e.message).toMatch(/El 303 del 1T de 2027 se presentó fuera de la app\./);
+  });
+
+  it('sin inicio indicado, el de 2026 deducido de los datos no cuenta: el 1T de 2027 sin presentar no pide nada', async () => {
+    const E = await empresa('ivadeducido');
+    const prov = (await proveedoresService.create(E, { nombreFiscal: 'Electricidad Malvarrosa SL', nifCif: cif() })).id;
+    // Datos de 2026 en la app (de prueba o de antes de llevarla aquí).
+    await registrarGasto(E, factura(prov, 'F-2026/3', '2026-03-10', 100), { contabilizar: 'POSTED' });
+    const r = await registrarGasto(
+      E,
+      factura(prov, 'RX-4', '2027-05-15', -1000, {
+        lineas: [lin(-1000), lin(1000, { tipoIva: 10 })],
+        rectificativa: { tipo: 'I', causa: 'ERROR_IVA', originales: [{ numero: 'F-2027/13', fecha: '2027-02-10' }] },
+      }),
+      { contabilizar: 'POSTED' },
+    );
+    expect((r.factura.avisos ?? []).filter((a) => a.includes('303'))).toEqual([]);
+  });
+
   it('una ERROR_IVA de una factura de 2027 sin presentar sigue sin pedir nada', async () => {
     const E = await empresa('iva2027');
     const prov = (await proveedoresService.create(E, { nombreFiscal: 'Electricidad Benicalap SL', nifCif: cif() })).id;
