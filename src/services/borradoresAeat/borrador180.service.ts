@@ -17,6 +17,7 @@
  *    app (los presentados o calculados) y, si no estan, con el 115 calculado.
  */
 import { prisma } from '../../config/database';
+import { importeTexto } from '../../utils/money';
 import { badRequest } from '../../utils/http-errors';
 import { aparicionesRetencionEntre, desgloseRetencionGasto, fechaContableGasto, whereGastosFiscales } from '../../domain/factura-gasto.model';
 import { calcularModelo115, exigirModelosAeat } from '../impuestosCalculo.service';
@@ -242,7 +243,7 @@ export async function calcularBorrador180(companyId: string, ejercicio: number):
   const cuadre = { ...cuadre180Con115(decl.seleccion ? { ...entrada, perceptores: todos } : entrada, periodos), periodos };
   if (!presentada && !cuadre.coincide) {
     errores.push(
-      `El 180 no cuadra con los 115 del año: bases ${cuadre.base180.toFixed(2)} € frente a ${cuadre.base115.toFixed(2)} € y retenciones ${cuadre.retenciones180.toFixed(2)} € frente a ${cuadre.retenciones115.toFixed(2)} €. Revisa los 115 guardados antes de presentar.`,
+      `El 180 no cuadra con los 115 del año: bases ${importeTexto(cuadre.base180)} frente a ${importeTexto(cuadre.base115)} y retenciones ${importeTexto(cuadre.retenciones180)} frente a ${importeTexto(cuadre.retenciones115)}. Revisa los 115 guardados antes de presentar.`,
     );
   }
   const noPresentados = periodos.filter((p) => p.estado !== 'presentado').map((p) => p.periodo);
