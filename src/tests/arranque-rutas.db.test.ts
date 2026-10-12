@@ -119,8 +119,58 @@ describe('rutas y permisos', () => {
     const estado = datos(await request(app(['contabilidad:read'])).get('/arranque/2027'));
     expect(estado.vigente).toMatchObject({ id: cargaId, estado: 'CONFIRMADA' });
     expect(estado.llevanzaAnterior).toBe('EXTERNA');
-    // Todo correcto: el panel ya no avisa (ni invita).
-    expect(datos(await request(app(['contabilidad:read'])).get('/arranque/aviso'))).toBeNull();
+    // Falta lo que se escribe a mano: el panel lo avisa.
+    const aviso = datos(await request(app(['contabilidad:read'])).get('/arranque/aviso'));
+    expect(aviso).toMatchObject({ nivel: 'FALTAN_DATOS', total: 4 });
+  });
+
+  it('lo que falta se completa después, cada cosa con su permiso, hasta que el panel deja de avisar', async () => {
+    const lector = app(['contabilidad:read']);
+    const c0 = datos(await request(lector).get('/arranque/2027/comprobaciones'));
+    expect(c0).toMatchObject({ nivel: 'FALTAN_DATOS', completado: false, deBorrador: false, carga: { id: cargaId } });
+    expect(c0.puntos.filter((p: { nivel: string }) => p.nivel === 'FALTA').map((p: { clave: string }) => p.clave)).toEqual(['bancos:extracto', 'bancos:cuenta', 'iva:303-4t', 'empresa:datos']);
+
+    // Bancos: tesorería o contabilidad.
+    const bancos = { '5720000001': { saldoExtracto: '18.600,00', nueva: { iban: 'ES91 2100 0418 4502 0005 1332', bancoNombre: 'Sabadell' } } };
+    expect((await request(app(['tesoreria:read'])).put('/arranque/2027/bancos').send({ bancos })).status).toBe(403);
+    const b = await request(app(['tesoreria:write'])).put('/arranque/2027/bancos').send({ bancos });
+    expect(b.status).toBe(200);
+    // 30 € de diferencia con la contabilidad: hay que aceptarlo o revisarlo.
+    expect(datos(b).puntos.find((p: { clave: string }) => p.clave === 'bancos:diferencia')).toMatchObject({ nivel: 'FALTA' });
+    const cuenta = await prisma.bankAccount.findFirstOrThrow({ where: { companyId: E, subcuentaCodigo: '5720000001' } });
+    expect(cuenta).toMatchObject({ iban: 'ES9121000418450200051332', saldoInicial: 18600, fechaSaldoInicial: '2026-12-31', saldoContableInicial: 18630 });
+    const b2 = await request(app(['contabilidad:write'])).put('/arranque/2027/bancos').send({ bancos: { '5720000001': { saldoExtracto: 18600, aceptarDiferencia: true } } });
+    expect(datos(b2).puntos.find((p: { clave: string }) => p.clave === 'bancos:transito')).toMatchObject({ nivel: 'INFO' });
+    expect((await request(app(['contabilidad:write'])).put('/arranque/2027/bancos').send({ bancos: { '5720000009': { saldoExtracto: 1 } } })).status).toBe(400);
+
+    // 303 del 4T: impuestos o contabilidad.
+    expect((await request(app(['impuestos:read'])).put('/arranque/2027/datos-fiscales').send({ resultado303T4: 1785 })).status).toBe(403);
+    const f = await request(app(['impuestos:write'])).put('/arranque/2027/datos-fiscales').send({ resultado303T4: '1.785,00', basesNegativas: [{ ejercicio: 2024, importe: 500 }] });
+    expect(f.status).toBe(200);
+    expect(datos(f).puntos.some((p: { clave: string }) => p.clave.startsWith('iva:'))).toBe(false);
+
+    // Datos de la empresa: el aviso se acepta con un motivo (solo el administrador).
+    expect((await request(app(['contabilidad:write'])).post('/arranque/2027/avisos/empresa:datos/aceptar').send({ motivo: 'Los pongo mañana' })).status).toBe(403);
+    expect((await request(app(['*'])).post('/arranque/2027/avisos/empresa:datos/aceptar').send({ motivo: '' })).status).toBe(400);
+    expect((await request(app(['*'])).post('/arranque/2027/avisos/no-existe/aceptar').send({ motivo: 'Porque sí' })).status).toBe(404);
+    const ac = await request(app(['*'])).post('/arranque/2027/avisos/empresa:datos/aceptar').send({ motivo: 'Los pongo mañana' });
+    expect(ac.status).toBe(200);
+    expect(datos(ac)).toMatchObject({ nivel: 'CORRECTO', completado: true, aceptados: [{ clave: 'empresa:datos', motivo: 'Los pongo mañana', userId: 'u-rutas' }] });
+    expect(datos(await request(lector).get('/arranque/aviso'))).toBeNull();
+    expect(await prisma.auditLog.count({ where: { companyId: E, action: 'ARRANQUE_AVISO_ACEPTADO' } })).toBe(1);
+
+    // Series de 2027: con permiso de Ventas.
+    expect((await request(lector).post('/arranque/2027/series')).status).toBe(403);
+    const s = await request(app(['ventas:write'])).post('/arranque/2027/series');
+    expect(s.status).toBe(201);
+    expect(datos(s).series).toEqual(['F2027', 'R2027']);
+    expect(await prisma.invoiceSeries.findMany({ where: { companyId: E, porDefecto: true }, select: { codigo: true }, orderBy: { codigo: 'asc' } })).toEqual(
+      expect.arrayContaining([{ codigo: 'F2027' }, { codigo: 'R2027' }]),
+    );
+
+    // 2026 no vuelve a la app con una carga importada.
+    expect((await request(app(['contabilidad:write'])).post('/arranque/2027/ejercicios/llevanza')).status).toBe(403);
+    expect((await request(app(['*'])).post('/arranque/2027/ejercicios/llevanza')).status).toBe(409);
   });
 
   it('quitar un fichero del borrador', async () => {
