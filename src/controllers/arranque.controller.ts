@@ -130,7 +130,9 @@ export const arranqueController = {
   /** PUT /:ejercicio/bancos — { bancos: { '5720000001': { saldoExtracto, bankAccountId?, nueva?, aceptarDiferencia? } } }. */
   bancos: asyncHandler(async (req, res) => {
     const body = (req.body ?? {}) as Record<string, unknown>;
-    sendOk(res, await guardarBancos(req.companyId!, req.params.ejercicio, body.bancos ?? body, req.user!.userId));
+    // Con solo Contabilidad se escribe el saldo; dar de alta o cambiar la cuenta bancaria pide Tesoreria.
+    const puedeTesoreria = autorizado(req.user!, req.companyId, ['tesoreria:write']);
+    sendOk(res, await guardarBancos(req.companyId!, req.params.ejercicio, body.bancos ?? body, req.user!.userId, puedeTesoreria));
   }),
 
   /** PUT /:ejercicio/datos-fiscales — { resultado303T4, cuotasIvaACompensar, basesNegativas, deducciones, resultadoDeclarado }. */
