@@ -138,8 +138,9 @@ export async function crearCompensacionesAuto(tx: TransaccionBD, companyId: stri
     await recalcularEstadoPagoGasto(tx, companyId, o.id);
   }
   // «No, se descuenta de lo que le debo»: el abono de una factura llevada fuera se aplica a ella.
+  // Sin `fuera` (aprobacion del borrador del lector), la respuesta guardada en el alta.
   const fuera = abono.rectifica.find((e) => !e.originalId && !e.periodoDesde && e.numeroOriginal && e.fechaOriginal);
-  if (opciones.fuera && fuera && aFavor > 0) {
+  if ((opciones.fuera ?? abono.compensarFuera === true) && fuera && aFavor > 0) {
     await tx.compensacionGasto.create({
       data: { companyId, abonoId, facturaId: null, numeroFuera: fuera.numeroOriginal, fechaFuera: fuera.fechaOriginal, fecha, importe: aFavor / 100, origen: 'AUTO', userId: opciones.userId ?? null },
     });
