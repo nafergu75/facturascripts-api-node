@@ -3,7 +3,7 @@ import { prisma } from '../config/database';
 import { badRequest } from '../utils/http-errors';
 import { avisoRetencionAnulada, codigoProvincia, retencionDeclaradaEn, retencionesActividades, retencionesTrabajo } from './nominas/fiscal';
 import { normalizarNif } from '../utils/nif';
-import { aCentimos } from '../utils/money';
+import { aCentimos, importeTexto } from '../utils/money';
 import { obtenerAsientosEjercicio, calcularSaldosPorSubcuenta } from './contabilidadDatos.service';
 import {
   DatosModelo111,
@@ -38,7 +38,7 @@ import {
 
 const round2 = (n: number): number => Math.round((n + Number.EPSILON) * 100) / 100;
 const UMBRAL_347 = 3005.06;
-const eur = (n: number): string => `${n.toFixed(2)} €`;
+const eur = importeTexto;
 
 // ---------------------------------------------------------------------------
 // Helpers de agregacion (logica pura, testeable)
@@ -370,7 +370,7 @@ export function agregar303(
 
   for (const [tipo, d] of sinFila) {
     advertencias.push(
-      `Hay ventas al ${tipo} % (base ${d.base.toFixed(2)} €, cuota ${d.cuota.toFixed(2)} €): ese tipo no tiene fila en el régimen general del 303. Revísalas antes de presentar.`,
+      `Hay ventas al ${tipo} % (base ${importeTexto(d.base)}, cuota ${importeTexto(d.cuota)}): ese tipo no tiene fila en el régimen general del 303. Revísalas antes de presentar.`,
     );
   }
   if (exentasSinDeduccion !== 0) {
