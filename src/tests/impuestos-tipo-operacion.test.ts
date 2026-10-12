@@ -3,7 +3,7 @@
  * (puro, sin BD): cada tipo va a su casilla, y las facturas anteriores (sin
  * tipo, solo `operacion`) dan EXACTAMENTE lo mismo que antes.
  */
-import { agregar303, agregar347, agregar349, agregar390, casillaAdicional303 } from '../services/impuestosCalculo.service';
+import { agregar303, agregar347, agregar349, agregar390, casillaAdicional303, cuotaAutoliquidadaCentimos } from '../services/impuestosCalculo.service';
 import type { FacturaFiscal, PeriodoFiscal } from '../domain/impuestos.model';
 import { agregar303Anterior, agregar347Anterior, agregar349Anterior, agregar390Anterior } from './agregadores-anteriores';
 
@@ -81,8 +81,10 @@ describe('facturas anteriores (sin tipo): exactamente lo de siempre', () => {
       { tipo: 21, base: 1000, cuota: 210 },
       { tipo: 10, base: 200, cuota: 20 },
     ]);
-    expect(m.totalCuotaDevengada).toBe(230);
-    expect(m.totalCuotaDeducible).toBe(84);
+    // La compra intracomunitaria sin IVA se autoliquida al 21 % (10,50) en el
+    // devengado y en el deducible: el resultado no cambia.
+    expect(m.totalCuotaDevengada).toBe(240.5);
+    expect(m.totalCuotaDeducible).toBe(94.5);
     expect(m.resultado).toBe(146);
     expect(m.entregasIntracomunitarias).toBe(2000);
     expect(m.exportaciones).toBe(800);
@@ -90,8 +92,8 @@ describe('facturas anteriores (sin tipo): exactamente lo de siempre', () => {
     expect(m).not.toHaveProperty('noSujetasLocalizacion');
     expect(m).not.toHaveProperty('inversionSujetoPasivo');
     // Lo unico nuevo es el diseno 2026: la compra intracomunitaria sin IVA va en
-    // [10] y [36] (autodevengo) con un aviso para autoliquidar su cuota.
-    expect(m.advertencias).toEqual([expect.stringMatching(/proveedores de otros países de la UE sin IVA \(base 50\.00 €\).*\[10\]\/\[11\]/)]);
+    // [10]/[11] y [36]/[37] (autodevengo al 21 %) con un aviso.
+    expect(m.advertencias).toEqual([expect.stringMatching(/proveedores de otros países de la UE sin IVA en la factura \(base 50\.00 €\).*\[10\]\/\[11\]/)]);
     expect(Object.keys(m.casillas).sort()).toEqual(
       [
         '04_base_devengada_10',
@@ -101,7 +103,9 @@ describe('facturas anteriores (sin tipo): exactamente lo de siempre', () => {
         '08_tipo',
         '09_cuota_devengada_21',
         '10_base_adquisiciones_intracomunitarias',
+        '11_cuota_adquisiciones_intracomunitarias',
         '36_base_adquisiciones_intracomunitarias',
+        '37_cuota_adquisiciones_intracomunitarias',
         '27_total_devengado',
         '28_base_deducible',
         '29_cuota_deducible',
@@ -189,7 +193,6 @@ describe('facturas anteriores al azar: igual que la copia congelada de los agreg
           totalBaseDevengada: d.totalBaseDevengada,
           ivaDeducible: d.ivaDeducible,
           totalBaseDeducible: d.totalBaseDeducible,
-          totalCuotaDeducible: d.totalCuotaDeducible,
           cuotasACompensarAnteriores: d.cuotasACompensarAnteriores,
           entregasIntracomunitarias: d.entregasIntracomunitarias,
           exportaciones: d.exportaciones,
@@ -203,8 +206,14 @@ describe('facturas anteriores al azar: igual que la copia congelada de los agreg
         const c = ahora.casillasOficiales ?? {};
         const autodevengo = fs
           .filter((f) => f.tipo === 'compra' && f.operacion === 'intracomunitaria' && f.fecha >= periodo.fechaInicio && f.fecha <= periodo.fechaFin)
-          .reduce((a, f) => a + f.lineas.reduce((x, l) => x + cent(l.cuota), 0), 0);
+          .reduce((a, f) => a + f.lineas.reduce((x, l) => x + cuotaAutoliquidadaCentimos(l), 0), 0);
         expect(cent(c['27'])).toBe(cent(antes.totalCuotaDevengada) - sinFila + autodevengo);
+        // ...y el deducible [45], solo por la cuota autoliquidada de las compras
+        // intracomunitarias deducibles que vienen sin cuota (la misma regla del 390).
+        const autodeducido = fs
+          .filter((f) => f.tipo === 'compra' && f.operacion === 'intracomunitaria' && f.deducible !== false && f.fecha >= periodo.fechaInicio && f.fecha <= periodo.fechaFin)
+          .reduce((a, f) => a + f.lineas.filter((l) => cent(l.cuota) === 0).reduce((x, l) => x + cuotaAutoliquidadaCentimos(l), 0), 0);
+        expect(cent(ahora.totalCuotaDeducible)).toBe(cent(antes.totalCuotaDeducible) + autodeducido);
         expect(cent(c['46'])).toBe(cent(c['27']) - cent(c['45']));
 
         const antes349 = agregar349Anterior(fs, periodo);
