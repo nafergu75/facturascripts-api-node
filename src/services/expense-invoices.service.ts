@@ -4,7 +4,7 @@ import { badRequest, conflict, HttpError, notFound } from '../utils/http-errors'
 import { aCentimos } from '../utils/money';
 import { hoyEspana, vencimientoPorDefecto } from '../utils/fechas';
 import { PGC_BASE } from '../domain/pgc-model';
-import { INICIO_LLEVANZA_APP } from '../domain/calendarioFiscal';
+import { inicioLlevanzaApp } from '../utils/anios';
 import {
   ESTADOS_SIN_CONTABILIZAR,
   TIPO_GASTO_INFO,
@@ -501,7 +501,7 @@ export async function bloqueoPeriodoGasto(
   if (iva) return iva;
   // El IVA va a un periodo de antes de llevar la contabilidad en la app (una
   // ERROR_IVA que reduce sobre una factura de 2026): su 303 se presento fuera.
-  if (fechaIva !== fecha && fechaIva < INICIO_LLEVANZA_APP) {
+  if (fechaIva !== fecha && fechaIva < (await inicioLlevanzaApp(companyId))) {
     const ejercicio = Number(fechaIva.slice(0, 4));
     const periodo = `${Math.ceil(Number(fechaIva.slice(5, 7)) / 3)}T`;
     return { motivo: `El 303 del ${periodo} de ${ejercicio} se presentó fuera de la app`, modelo: '303', ejercicio, periodo };
@@ -550,7 +550,7 @@ async function recordatorioRectificar303(
   const mes = fecha.slice(5, 7);
   const trimestre = `${Math.ceil(Number(mes) / 3)}T`;
   const fila = await prisma.modeloImpuesto.findFirst({ where: { companyId, codigo: '303', ejercicio, periodo: { in: [trimestre, mes] }, estado: 'presentado' }, select: { periodo: true } });
-  const fuera = !fila && fecha < INICIO_LLEVANZA_APP;
+  const fuera = !fila && fecha < (await inicioLlevanzaApp(companyId));
   const periodo = fila?.periodo ?? trimestre;
   const cual = /^\d{2}$/.test(periodo) ? `el 303 de ${MESES[Number(periodo) - 1]} de ${ejercicio}` : `el 303 del ${periodo} de ${ejercicio}`;
   return {
