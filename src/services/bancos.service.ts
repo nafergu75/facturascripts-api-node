@@ -156,14 +156,34 @@ export async function separarRepetidos<T extends { fecha: string; importe: numbe
   return { nuevos, repetidos };
 }
 
-/** Guarda los movimientos nuevos de un extracto (los repetidos se omiten). */
+/**
+ * Movimientos con fecha hasta la del saldo inicial de la cuenta (el saldo del
+ * extracto a 31-12 que trajo la contabilidad de la gestoria): ya estan dentro
+ * de ese saldo, asi que no se guardan. Sin fecha del saldo inicial, ninguno.
+ */
+export async function separarAnterioresAlSaldoInicial<T extends { fecha: string }>(
+  cuentaBancariaId: string,
+  movimientos: T[],
+): Promise<{ posteriores: T[]; anteriores: T[]; fechaSaldoInicial: string | null }> {
+  const c = await prisma.bankAccount.findUnique({ where: { id: cuentaBancariaId }, select: { fechaSaldoInicial: true } });
+  const corte = c?.fechaSaldoInicial ?? null;
+  if (!corte) return { posteriores: movimientos, anteriores: [], fechaSaldoInicial: null };
+  return { posteriores: movimientos.filter((m) => m.fecha > corte), anteriores: movimientos.filter((m) => m.fecha <= corte), fechaSaldoInicial: corte };
+}
+
+/** Texto del aviso de los movimientos que no se guardan por ser anteriores al saldo inicial. */
+export const textoAnterioresAlSaldoInicial = (n: number, fecha: string) =>
+  `${n === 1 ? 'Un movimiento es' : `${n} movimientos son`} de antes del ${fecha.slice(8, 10)}-${fecha.slice(5, 7)}-${fecha.slice(0, 4)}: ya están dentro del saldo inicial de la cuenta, así que no se guardan.`;
+
+/** Guarda los movimientos nuevos de un extracto (los repetidos y los anteriores al saldo inicial se omiten). */
 export async function guardarMovimientos(
   companyId: string,
   cuentaBancariaId: string,
   movimientos: Array<{ fecha: string; importe: number; concepto: string; referencia?: string }>,
   origen: 'csv' | 'excel' | 'norma43',
-): Promise<{ importados: MovimientoBancarioImportado[]; repetidos: number; categorizados: number }> {
-  const { nuevos, repetidos } = await separarRepetidos(cuentaBancariaId, movimientos);
+): Promise<{ importados: MovimientoBancarioImportado[]; repetidos: number; categorizados: number; anteriores: number }> {
+  const { posteriores, anteriores } = await separarAnterioresAlSaldoInicial(cuentaBancariaId, movimientos);
+  const { nuevos, repetidos } = await separarRepetidos(cuentaBancariaId, posteriores);
   const importados: MovimientoBancarioImportado[] = [];
   for (const mov of nuevos) {
     const creado = await prisma.bankMovement.create({
@@ -188,7 +208,7 @@ export async function guardarMovimientos(
   } catch (e) {
     logger.warn(`tesoreria: no se pudieron aplicar las reglas de categorias (${(e as Error).message}).`);
   }
-  return { importados, repetidos: repetidos.length, categorizados };
+  return { importados, repetidos: repetidos.length, categorizados, anteriores: anteriores.length };
 }
 
 /**
@@ -217,12 +237,14 @@ export async function importarExtractoArchivo(
     entradas: Number(extracto.filas.filter((f) => f.importe > 0).reduce((t, f) => t + f.importe, 0).toFixed(2)),
     salidas: Number(extracto.filas.filter((f) => f.importe < 0).reduce((t, f) => t + f.importe, 0).toFixed(2)),
   };
+  const { posteriores, anteriores, fechaSaldoInicial } = await separarAnterioresAlSaldoInicial(cuentaBancariaId, extracto.filas);
+  if (anteriores.length && fechaSaldoInicial) resumen.avisos = [...resumen.avisos, textoAnterioresAlSaldoInicial(anteriores.length, fechaSaldoInicial)];
   if (opciones.vistaPrevia) {
-    const { nuevos, repetidos } = await separarRepetidos(cuentaBancariaId, extracto.filas);
-    return { ...resumen, nuevos: nuevos.length, repetidos: repetidos.length, muestra: extracto.filas.slice(0, 15) };
+    const { nuevos, repetidos } = await separarRepetidos(cuentaBancariaId, posteriores);
+    return { ...resumen, nuevos: nuevos.length, repetidos: repetidos.length, anteriores: anteriores.length, muestra: extracto.filas.slice(0, 15) };
   }
-  const r = await guardarMovimientos(companyId, cuentaBancariaId, extracto.filas, origen);
-  return { ...resumen, importados: r.importados.length, repetidos: r.repetidos, categorizados: r.categorizados };
+  const r = await guardarMovimientos(companyId, cuentaBancariaId, posteriores, origen);
+  return { ...resumen, importados: r.importados.length, repetidos: r.repetidos, anteriores: anteriores.length, categorizados: r.categorizados };
 }
 
 export async function listarMovimientos(companyId: string, cuentaBancariaId?: string): Promise<MovimientoBancarioImportado[]> {
