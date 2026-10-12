@@ -20,9 +20,9 @@ import { prisma } from '../../config/database';
 import { estadosEnRectificacion } from '../declaracionesAeat/declaraciones.service';
 import { importeTexto } from '../../utils/money';
 import { badRequest } from '../../utils/http-errors';
-import { aparicionesRetencionEntre, desgloseRetencionGasto, fechaContableGasto, whereGastosFiscales } from '../../domain/factura-gasto.model';
-import { calcularModelo115, exigirModelosAeat } from '../impuestosCalculo.service';
-import { codigoProvincia, periodoFiscal, retencionDeclaradaEn } from '../nominas/fiscal';
+import { fechaContableGasto } from '../../domain/factura-gasto.model';
+import { calcularModelo115, exigirModelosAeat, retencionesAlquilerDelAnio } from '../impuestosCalculo.service';
+import { codigoProvincia, periodoFiscal } from '../nominas/fiscal';
 import {
   cuadre180Con115,
   ErrorEntrada180,
@@ -121,7 +121,8 @@ async function periodos115(companyId: string, ejercicio: number) {
     const c = (f?.casillas as Record<string, unknown> | null) ?? {};
     // El calculo da tambien lo que no cupo de los abonos (el 115 guardado no lo lleva).
     const m = await calcularModelo115(companyId, periodoFiscal(ejercicio, periodo));
-    const exceso = { excesoBase: m.excesoBaseAbonos ?? 0, excesoRetenciones: m.excesoAbonos ?? 0 };
+    // Solo lo que deja la casilla por debajo de cero: lo que no cabe en su arrendador no cuenta ni en el 115 ni en el 180.
+    const exceso = { excesoBase: m.excesoBaseAbonos ?? 0, excesoRetenciones: m.excesoTopeAbonos ?? 0 };
     if (f && typeof c['02_base'] === 'number' && typeof c['03_retenciones'] === 'number') {
       out.push({ periodo, base: c['02_base'] as number, retenciones: c['03_retenciones'] as number, ...exceso, fuente: 'guardado' as const, estado: f.estado, estadoTexto: enRectificacion.get(periodo) ?? null });
     } else {
@@ -137,13 +138,10 @@ export async function calcularBorrador180(companyId: string, ejercicio: number):
   const hasta = `${ejercicio}-12-31`;
   await exigirModelosAeat(companyId, desde, hasta);
 
-  const facturasBd = await prisma.expenseInvoice.findMany({
-    // Con los abonos (retencion en negativo): se netean por arrendador e inmueble en el año.
-    where: { AND: [whereGastosFiscales(companyId, desde, hasta), { tipoGasto: 'ALQUILER', retencionTotal: { not: 0 } }] },
-    include: { lineas: true, supplier: { select: { id: true, nifCif: true, nombreFiscal: true, cp: true, provincia: true, pais: true } } },
-  });
-  const inmuebles = await prisma.inmuebleArrendado.findMany({ where: { companyId } });
-  const declaradaEn = await retencionDeclaradaEn(companyId, '115', facturasBd);
+  // Con los abonos (retencion en negativo): se netean por arrendador e inmueble en el año, y
+  // cada abono solo resta de lo de su registro (lo que no cabe, o el de una factura de un
+  // ejercicio anterior, no cuenta: se recupera rectificando el 115 y el 180 en que se declaro).
+  const { filas: delAnio, inmuebles } = await retencionesAlquilerDelAnio(companyId, ejercicio, hasta);
   const [declarante, fila, periodos, decl] = await Promise.all([
     declaranteEmpresa(companyId),
     filaModelo(companyId, '180', ejercicio, '0A'),
@@ -156,52 +154,45 @@ export async function calcularBorrador180(companyId: string, ejercicio: number):
   const grupos = new Map<string, Perceptor180 & { cb: number; cr: number; ultima: string }>();
   const facturas: FacturaAlquiler180[] = [];
   const sinInmueble: FacturaAlquiler180[] = [];
-  for (const f of facturasBd) {
-    const declarada = declaradaEn(f);
-    for (const _ of aparicionesRetencionEntre(f, desde, hasta, declarada !== null)) {
-      const desglose = desgloseRetencionGasto(f);
-      const base = desglose.reduce((a, d) => a + cent(d.base), 0);
-      const ret = desglose.reduce((a, d) => a + cent(d.cuota), 0);
-      const fecha = fechaContableGasto(f);
-      const activos = inmuebles.filter((i) => i.supplierId === f.supplierId && i.activo);
-      // El inmueble guardado en la factura solo vale si es de su arrendador (una factura cambiada de proveedor no arrastra el del anterior).
-      const inmueble = (f.inmuebleArrendadoId && inmuebles.find((i) => i.id === f.inmuebleArrendadoId && i.supplierId === f.supplierId)) || (activos.length === 1 ? activos[0] : null);
-      const fila180: FacturaAlquiler180 = {
-        id: f.id,
-        factura: f.numeroFacturaProveedor ?? f.numeroCompleto,
-        fecha,
-        proveedor: f.supplier.nombreFiscal,
-        supplierId: f.supplierId,
-        inmuebleArrendadoId: inmueble?.id ?? null,
-        base: base / 100,
-        retencion: ret / 100,
-      };
-      facturas.push(fila180);
-      if (!inmueble) sinInmueble.push(fila180);
-      const devengo = Number(f.fechaEmision.slice(0, 4)) < ejercicio ? Number(f.fechaEmision.slice(0, 4)) : null;
-      const k = `${f.supplierId}|${inmueble?.id ?? '-'}|${devengo ?? ''}`;
-      const g = grupos.get(k) ?? {
-        nif: f.supplier.nifCif,
-        nombre: f.supplier.nombreFiscal,
-        provincia: codigoProvincia(f.supplier.cp, f.supplier.provincia) ?? '',
-        base: 0,
-        porcentaje: 0,
-        retenciones: 0,
-        ejercicioDevengo: devengo,
-        inmueble: inmueble ? inmuebleDiseno(inmueble) : SIN_INMUEBLE,
-        cb: 0,
-        cr: 0,
-        ultima: '',
-      };
-      g.cb += base;
-      g.cr += ret;
-      // El % es el de la ultima factura del año.
-      if (fecha >= g.ultima) {
-        g.ultima = fecha;
-        g.porcentaje = desglose.length ? desglose[desglose.length - 1].porcentaje : Number(f.tipoRetencion) || 0;
-      }
-      grupos.set(k, g);
+  for (const { f, desglose, contada, registro } of delAnio) {
+    if (contada.base === 0 && contada.retencion === 0) continue;
+    const base = contada.base;
+    const ret = contada.retencion;
+    const fecha = fechaContableGasto(f);
+    const { inmueble, devengo, clave: k } = registro;
+    const fila180: FacturaAlquiler180 = {
+      id: f.id,
+      factura: f.numeroFacturaProveedor ?? f.numeroCompleto,
+      fecha,
+      proveedor: f.supplier.nombreFiscal,
+      supplierId: f.supplierId,
+      inmuebleArrendadoId: inmueble?.id ?? null,
+      base: base / 100,
+      retencion: ret / 100,
+    };
+    facturas.push(fila180);
+    if (!inmueble) sinInmueble.push(fila180);
+    const g = grupos.get(k) ?? {
+      nif: f.supplier.nifCif,
+      nombre: f.supplier.nombreFiscal,
+      provincia: codigoProvincia(f.supplier.cp, f.supplier.provincia) ?? '',
+      base: 0,
+      porcentaje: 0,
+      retenciones: 0,
+      ejercicioDevengo: devengo,
+      inmueble: inmueble ? inmuebleDiseno(inmueble) : SIN_INMUEBLE,
+      cb: 0,
+      cr: 0,
+      ultima: '',
+    };
+    g.cb += base;
+    g.cr += ret;
+    // El % es el de la ultima factura del año.
+    if (fecha >= g.ultima) {
+      g.ultima = fecha;
+      g.porcentaje = desglose.length ? desglose[desglose.length - 1].porcentaje : Number(f.tipoRetencion) || 0;
     }
+    grupos.set(k, g);
   }
   for (const s of sinInmueble) {
     const tiene = inmuebles.filter((i) => i.supplierId === s.supplierId && i.activo).length;
