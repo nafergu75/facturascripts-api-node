@@ -807,7 +807,10 @@ export async function obtenerFacturasFiscales(companyId: string, desde: string, 
     // rectificativa ERROR_IVA que reduce lleva ademas la fecha de su IVA
     // (fechaIva, el periodo de la original): sale si cualquiera de las dos cae en el rango.
     const enRangoAp = (x: string) => x >= desde && x <= hasta;
-    for (const { fecha, fechaIva, signo } of aparicionesConIva(f)) {
+    for (const { fecha: contable, fechaIva, signo } of aparicionesConIva(f)) {
+      // Una compra (no rectificativa) con fecha de IVA propia es una intracomunitaria cuyo IVA
+      // se devengo en un periodo de la gestoria: todo (303, 390, 349 y 347) va a esa fecha.
+      const fecha = !f.esRectificativa && signo > 0 && f.fechaImputacionIva ? fechaIva : contable;
       if (!enRangoAp(fecha) && !enRangoAp(fechaIva)) continue;
       out.push({
         idFactura: f.numeroFacturaProveedor ?? f.numeroCompleto,
@@ -816,7 +819,7 @@ export async function obtenerFacturasFiscales(companyId: string, desde: string, 
         nombreTercero: f.supplier?.nombreFiscal ?? '',
         fecha,
         ...(fechaIva !== fecha && { fechaIva }),
-        operacion: clasificarCompra(fecha, f.supplier?.pais, f.supplier?.nifCif),
+        operacion: clasificarCompra(contable, f.supplier?.pais, f.supplier?.nifCif),
         // La anulacion (en negativo) y los abonos y rectificativas de proveedor
         // van en la rectificacion de deducciones ([40]/[41]); una ERROR_IVA que
         // reduce, no: netea en las casillas de su periodo (seccion 10.1).
