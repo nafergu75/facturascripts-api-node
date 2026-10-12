@@ -279,3 +279,21 @@ describe('390: remates (marcas de la página 1, [117] y prorrata, intracomunitar
   });
 });
 
+
+describe('390: compra con una parte exenta (al 0 %, sin cuota)', () => {
+  it('la parte exenta no entra en el deducible interior: [605]/[606] y [48]/[49] solo llevan la parte con IVA', () => {
+    const facturas = [
+      venta('2025-02-15', [{ tipoIva: 21, base: 10000, cuota: 2100 }]),
+      compra('2025-03-10', [
+        { tipoIva: 21, base: 100, cuota: 21 },
+        { tipoIva: 0, base: 400, cuota: 0 },
+      ]),
+    ];
+    const d = construirModelo390(entrada390Desde(facturas, 2025, ID).entrada);
+    expect(d.errores).toEqual([]);
+    expect(d.casillas['605']).toBe(100);
+    expect(d.casillas['606']).toBe(21);
+    expect(d.casillas['48']).toBe(100);
+    expect(d.casillas['49']).toBe(21);
+  });
+});
