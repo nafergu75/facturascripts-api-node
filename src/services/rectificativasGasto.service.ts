@@ -243,9 +243,7 @@ export async function prepararRectificativa(
   // Enlaces: una fila por original (con su parte) o una de periodo.
   let enlaces: EnlaceRectificativa[];
   if (r.periodo) {
-    enlaces = [
-      { originalId: null, numeroOriginal: null, fechaOriginal: null, periodoDesde: r.periodo.desde, periodoHasta: r.periodo.hasta, baseRectificada: t.base, cuotaRectificada: t.iva, retencionRectificada: t.retencion },
-    ];
+    enlaces = await enlacesDePeriodo(companyId, supplierId, r.periodo, t, opciones.excluirId);
   } else {
     const n = r.originales.length;
     let bases: number[];
@@ -322,6 +320,84 @@ export async function prepararRectificativa(
     compensarFuera: r.yaPagada === false && !originalesApp.length && !r.periodo && totalCent < 0,
     avisos,
   };
+}
+
+/** Tramos de un mes (recortados a desde y hasta) entre dos fechas AAAA-MM-DD. */
+export function tramosMensuales(desde: string, hasta: string): Array<{ desde: string; hasta: string }> {
+  const out: Array<{ desde: string; hasta: string }> = [];
+  let a = Number(desde.slice(0, 4));
+  let m = Number(desde.slice(5, 7));
+  for (let i = 0; i < 600; i++) {
+    const ini = `${a}-${String(m).padStart(2, '0')}-01`;
+    if (ini > hasta) break;
+    const fin = `${a}-${String(m).padStart(2, '0')}-${String(new Date(Date.UTC(a, m, 0)).getUTCDate()).padStart(2, '0')}`;
+    out.push({ desde: ini < desde ? desde : ini, hasta: fin > hasta ? hasta : fin });
+    if (++m > 12) {
+      m = 1;
+      a++;
+    }
+  }
+  return out;
+}
+
+const diasEntre = (desde: string, hasta: string) => Math.round((Date.parse(`${hasta}T00:00:00Z`) - Date.parse(`${desde}T00:00:00Z`)) / 86_400_000) + 1;
+
+/**
+ * Filas de periodo de un rappel (art. 15.4 RD 1619/2012). Si el periodo cae en
+ * un solo mes, una fila. Si abarca varios, una por tramo, para que el 349
+ * rectifique cada periodo con su parte: la que indica la persona o, sin ella,
+ * una por mes en proporcion a lo comprado a ese proveedor ese mes (por dias si
+ * no hay compras). Los tramos que quedan a cero no se guardan.
+ */
+async function enlacesDePeriodo(
+  companyId: string,
+  supplierId: string | null,
+  periodo: NonNullable<NonNullable<FacturaGastoBody['rectificativa']>['periodo']>,
+  t: { base: number; iva: number; retencion: number },
+  excluirId?: string,
+): Promise<EnlaceRectificativa[]> {
+  const fila = (desde: string, hasta: string, base: number, cuota: number, retencion: number): EnlaceRectificativa => ({
+    originalId: null,
+    numeroOriginal: null,
+    fechaOriginal: null,
+    periodoDesde: desde,
+    periodoHasta: hasta,
+    baseRectificada: base,
+    cuotaRectificada: cuota,
+    retencionRectificada: retencion,
+  });
+  const dados = periodo.reparto ?? [];
+  const tramos = dados.length ? [...dados].sort((a, b) => a.desde.localeCompare(b.desde)) : tramosMensuales(periodo.desde, periodo.hasta);
+  if (tramos.length <= 1 && !dados.length) return [fila(periodo.desde, periodo.hasta, t.base, t.iva, t.retencion)];
+
+  let bases: number[];
+  if (dados.length) bases = dados.map((x) => x.base);
+  else {
+    const compradas = supplierId
+      ? await prisma.expenseInvoice.findMany({
+          where: {
+            companyId,
+            supplierId,
+            esRectificativa: false,
+            estado: { notIn: ['DRAFT', 'ANULADA'] },
+            ...(excluirId ? { id: { not: excluirId } } : {}),
+            OR: [{ fechaRegistro: { gte: periodo.desde, lte: periodo.hasta } }, { fechaRegistro: null, fechaEmision: { gte: periodo.desde, lte: periodo.hasta } }],
+          },
+          select: { fechaEmision: true, fechaRegistro: true, baseTotal: true },
+        })
+      : [];
+    const pesos = tramos.map((x) =>
+      compradas.filter((f) => fechaContableGasto(f) >= x.desde && fechaContableGasto(f) <= x.hasta).reduce((a, f) => a + Math.max(0, Number(f.baseTotal)), 0),
+    );
+    bases = repartir(t.base, pesos.some((p) => p > 0) ? pesos : tramos.map((x) => diasEntre(x.desde, x.hasta)));
+  }
+  // El IVA y la retencion, como los da la persona o en proporcion a la base de cada tramo.
+  const pesoBase = bases.map((b) => b || 0);
+  const cuotas = dados.length && dados.every((x) => x.cuota !== undefined) ? dados.map((x) => x.cuota!) : repartir(t.iva, pesoBase);
+  const retenciones = dados.length && dados.every((x) => x.retencion !== undefined) ? dados.map((x) => x.retencion!) : repartir(t.retencion, pesoBase);
+  const filas = tramos.map((x, i) => fila(x.desde, x.hasta, bases[i], cuotas[i], retenciones[i]));
+  const conImporte = filas.filter((f) => aCentimos(f.baseRectificada) !== 0 || aCentimos(f.cuotaRectificada) !== 0 || aCentimos(f.retencionRectificada) !== 0);
+  return conImporte.length ? conImporte : [fila(periodo.desde, periodo.hasta, t.base, t.iva, t.retencion)];
 }
 
 /** Columnas de ExpenseInvoice de una rectificativa (alta y correccion). */
