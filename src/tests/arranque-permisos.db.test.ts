@@ -17,6 +17,7 @@ import { errorMiddleware } from '../middleware/error.middleware';
 import arranqueRoutes from '../routes/arranque.routes';
 import bancosRoutes from '../routes/bancos.routes';
 import inmovilizadoRoutes from '../routes/inmovilizado.routes';
+import periodosRoutes from '../routes/periodos.routes';
 import { AJUSTES_A, ficherosEmpresaA } from './fixtures/arranque/generar';
 import { empresaDePrueba, traerCarga } from './fixtures/arranque/importar';
 
@@ -33,6 +34,7 @@ function app(permisos: string[]) {
   a.use('/arranque', arranqueRoutes);
   a.use('/bancos', bancosRoutes);
   a.use('/inmovilizado', inmovilizadoRoutes);
+  a.use('/periodos', periodosRoutes);
   a.use(errorMiddleware);
   return a;
 }
@@ -101,5 +103,16 @@ describe('inmovilizado', () => {
     const d = await request(app(['contabilidad:write'])).post('/inmovilizado/dotaciones').send({ hasta: '2027-01' });
     expect(d.status).toBe(200);
     expect(datos(d).meses).toHaveLength(1);
+  });
+
+  it('al bloquear un mes, avisa (sin frenar) de la amortización que falta hasta ese mes', async () => {
+    const contable = app(['contabilidad:read', 'contabilidad:write']);
+    const marzo = await request(contable).put('/periodos/3/estado?ejercicio=2027').send({ estado: 'bloqueado' });
+    expect(marzo.status).toBe(200);
+    expect(datos(marzo).estado).toBe('bloqueado');
+    expect(datos(marzo).avisoAmortizacion).toMatch(/^Falta por apuntar la amortización de 2 meses \(de 02\/2027 a 03\/2027\): [\d.,]+\s€\. Calcúlala en Contabilidad > Inmovilizado\.$/);
+    const enero = await request(contable).put('/periodos/1/estado?ejercicio=2027').send({ estado: 'bloqueado' });
+    expect(datos(enero).avisoAmortizacion).toBeUndefined();
+    for (const mes of [1, 3]) await request(contable).put(`/periodos/${mes}/estado?ejercicio=2027`).send({ estado: 'abierto' });
   });
 });
