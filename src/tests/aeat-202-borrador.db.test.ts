@@ -212,7 +212,7 @@ describe('202: remates (CNAE, cifra de negocios, microempresa y retenciones del 
     const b = await calcularBorrador202(E, 2027, '2P');
     expect(b.base).toEqual({ origen: 'modelo200', ejercicio200: 2026, importe: 10000 });
     expect(b.entrada.casillas).toMatchObject({ '01': 10000, '03': 1800 });
-    expect(b.avisos).toContainEqual(expect.stringMatching(/cuota líquida 12345,67 € menos retenciones e ingresos a cuenta 2345,67 €/));
+    expect(b.avisos).toContainEqual(expect.stringMatching(/cuota líquida 12\.345,67 € menos retenciones e ingresos a cuenta 2\.345,67 €/));
   });
 
   it('con una rectificativa del 200 en preparación, la base sigue siendo la del 200 presentado', async () => {
