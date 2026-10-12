@@ -352,7 +352,8 @@ describe('modelo 190 por perceptor (ejercicio 2025, diseno de registro verificad
     expect(pantalla.id).toBeNull();
     const modulo = await autorrellenarModelo(COMPANY_190, idVirtual('190', 2025, '0A'));
     expect(modulo.casillas).toMatchObject({ num_percepciones: 4, importe_percepciones: 6250, retenciones_ingresos_cuenta: 860, cuadra_con_111: 'si' });
-    expect(modulo.resumen.fechaVencimiento).toBe('2026-01-31');
+    // 31-1-2026 fue sábado: el 190 de 2025 vencía el lunes 2-2-2026.
+    expect(modulo.resumen.fechaVencimiento).toBe('2026-02-02');
     const fila = await prisma.modeloImpuesto.findUniqueOrThrow({ where: { companyId_codigo_ejercicio_periodo: { companyId: COMPANY_190, codigo: '190', ejercicio: 2025, periodo: '0A' } } });
     expect(JSON.stringify(fila)).not.toContain(nif(50000001));
     expect(JSON.stringify(fila)).not.toContain('Prueba Uno');
