@@ -1,5 +1,6 @@
 import { prisma, type TransaccionBD as Tx } from '../config/database';
-import { badRequest, notFound } from '../utils/http-errors';
+import { badRequest, conflict, notFound } from '../utils/http-errors';
+import { partidaDeFactura } from './arranque/partidas.service';
 import { aCentimos } from '../utils/money';
 import { hoyEspana } from '../utils/fechas';
 import { comprobarFechaAbierta, exigirFechaContabilizable } from './periodos.service';
@@ -547,6 +548,11 @@ export async function registrarCobroFactura(
 ): Promise<{ cobro: CobroResp; resumen: ResumenCobros }> {
   const t = TXT[tipo];
   const f = await cargarFactura(prisma, companyId, tipo, invoiceId);
+  // Factura de 2026 que la gestoria trajo pendiente: se cobra (o se paga) contra su partida, no dos veces.
+  const enlazada = await partidaDeFactura(companyId, tipo, invoiceId);
+  if (enlazada) {
+    throw conflict(`Esta factura está entre las pendientes de 2026 que trajo la gestoría (${enlazada.numeroDocumento}): el ${t.cobro} se apunta desde allí.`, { codigo: 'FACTURA_CON_PARTIDA_2026', partidaId: enlazada.id });
+  }
   if (aCentimos(f.totalFactura) <= 0) {
     throw badRequest(`La factura tiene importe cero o negativo (rectificativa): no admite ${t.cobro}s desde aquí.`);
   }
