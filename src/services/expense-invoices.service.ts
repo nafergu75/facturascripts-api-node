@@ -1236,7 +1236,7 @@ export async function editarGasto(
     throw badRequest(
       actual.esRectificativa
         ? 'Es un abono o una rectificativa: envía también el bloque «rectificativa». Para convertirla en una factura normal, anúlala y regístrala de nuevo.'
-        : 'Una factura no se convierte en abono: registra el abono aparte (Compras › Nueva › Abono o rectificativa).',
+        : 'Una factura no se convierte en abono: registra el abono aparte (Compras › Nueva factura de gasto › Abono o rectificativa).',
       { campo: 'rectificativa' },
     );
   }
@@ -1677,7 +1677,8 @@ function filtroPago(pago: string, hoy: string): Prisma.ExpenseInvoiceWhereInput 
   if (pago === 'por_pagar') return { ...noAnulada, estadoPago: { not: 'PAGADA' } };
   if (pago === 'parcial') return { ...noAnulada, estadoPago: 'PARCIAL' };
   if (pago === 'pagada') return { estadoPago: 'PAGADA', totalFactura: { gte: 0 } };
-  if (pago === 'a_favor') return { estado: { not: 'ANULADA' }, totalFactura: { lt: 0 }, estadoPago: { not: 'PAGADA' } };
+  // Un abono en borrador (lector) aun no cuenta: al aprobarlo se descuenta solo de su original.
+  if (pago === 'a_favor') return { estado: { notIn: ['ANULADA', 'DRAFT'] }, totalFactura: { lt: 0 }, estadoPago: { not: 'PAGADA' } };
   return { ...noAnulada, estadoPago: { not: 'PAGADA' }, fechaVencimiento: { lt: hoy } }; // vencida
 }
 
@@ -1744,7 +1745,7 @@ async function listarGastos(companyId: string, filtros: FiltrosGastos = {}): Pro
     prisma.expenseInvoice.count({ where: { AND: [whereBase, filtroPago('por_pagar', hoy)] } }),
     prisma.expenseInvoice.count({ where: { AND: [whereBase, filtroPago('vencida', hoy)] } }),
     prisma.expenseInvoice.aggregate({ where: sinAnuladas, _sum: { baseTotal: true, ivaTotal: true, retencionTotal: true, totalFactura: true } }),
-    prisma.expenseInvoice.findMany({ where: sinAnuladas, select: { id: true, totalFactura: true } }),
+    prisma.expenseInvoice.findMany({ where: sinAnuladas, select: { id: true, totalFactura: true, estado: true } }),
     perfilEmpresa(companyId),
     prisma.expenseInvoice.count({ where: { AND: [whereBase, filtroPago('a_favor', hoy)] } }),
   ]);
@@ -1755,7 +1756,7 @@ async function listarGastos(companyId: string, filtros: FiltrosGastos = {}): Pro
   // Pendiente de pago (sin los abonos) y a favor (los abonos), por separado.
   const pendienteDe = (f: { id: string; totalFactura: number }) => aCentimos(Number(f.totalFactura)) - aCentimos(pagado.get(f.id) ?? 0);
   const pendienteFiltrado = idsFiltrados.filter((f) => aCentimos(Number(f.totalFactura)) >= 0).reduce((a, f) => a + pendienteDe(f), 0) / 100;
-  const aFavorFiltrado = -idsFiltrados.filter((f) => aCentimos(Number(f.totalFactura)) < 0).reduce((a, f) => a + pendienteDe(f), 0) / 100;
+  const aFavorFiltrado = -idsFiltrados.filter((f) => aCentimos(Number(f.totalFactura)) < 0 && f.estado !== 'DRAFT').reduce((a, f) => a + pendienteDe(f), 0) / 100;
 
   return {
     items: items.map((f) => {
