@@ -35,6 +35,7 @@ jest.mock('../utils/storage', () => ({
 import express from 'express';
 import request from 'supertest';
 import { prisma } from '../config/database';
+import { exigirPlanAnteriorAntesDeAlta } from '../services/terceros/planAnteriorAlta';
 import { errorMiddleware } from '../middleware/error.middleware';
 import ingresosRoutes from '../routes/ingresos-extractor.routes';
 import { _reiniciarPausa } from '../services/lectura/azure-di.client';
@@ -95,6 +96,8 @@ beforeAll(async () => {
   await prisma.company.create({ data: { id: E, name: 'Imprenta Levante SL', fsBaseUrl: 'http://localhost:8080', fsApiKeyEnc: 'k' } });
   // En ventas la empresa es la emisora de los fixtures.
   await prisma.legalConfig.create({ data: { companyId: E, denominacion: 'Imprenta Levante SL', nif: NIF_EMISOR } });
+  // Empresa nueva sin plan de la gestoria: se confirma de antemano el aviso del primer cliente o proveedor.
+  await exigirPlanAnteriorAntesDeAlta(E, true, 'test');
 });
 
 describe('lecturas del lector de ventas', () => {
@@ -132,6 +135,7 @@ describe('lecturas del lector de ventas', () => {
     const E2 = `${E}-cuentas`;
     await prisma.company.create({ data: { id: E2, name: 'Imprenta Levante SL', fsBaseUrl: 'http://localhost:8080', fsApiKeyEnc: 'k' } });
     await prisma.legalConfig.create({ data: { companyId: E2, denominacion: 'Imprenta Levante SL', nif: NIF_EMISOR } });
+    await exigirPlanAnteriorAntesDeAlta(E2, true, 'test');
     const confirmar = (cuerpo: Record<string, unknown>) => request(app(E2)).post('/ingresos-extractor/confirmar').send(cuerpo);
     const data = await leer('resultado-iva-multiple', E2);
     // Una linea por tipo de IVA, en el orden en que se registraran.
@@ -236,6 +240,7 @@ describe('sin total leido', () => {
   beforeAll(async () => {
     await prisma.company.create({ data: { id: SIN_TOTAL, name: 'Imprenta Levante SL', fsBaseUrl: 'http://localhost:8080', fsApiKeyEnc: 'k' } });
     await prisma.legalConfig.create({ data: { companyId: SIN_TOTAL, denominacion: 'Imprenta Levante SL', nif: NIF_EMISOR } });
+    await exigirPlanAnteriorAntesDeAlta(SIN_TOTAL, true, 'test');
   });
 
   it('QR que coincide, sin InvoiceTotal ni AmountDue: el total es el calculado y cotejado, y la factura se registra', async () => {

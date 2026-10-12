@@ -23,7 +23,8 @@ jest.mock('../config/database', () => ({
     },
     // El alta asigna la subcuenta 430 en una transaccion (services/terceros/subcuentas).
     chartOfAccounts: { findMany: jest.fn().mockResolvedValue([]) },
-    supplier: { findMany: jest.fn().mockResolvedValue([]) },
+    // La empresa ya tiene un proveedor: el aviso del primer tercero sin plan anterior no salta.
+    supplier: { findMany: jest.fn().mockResolvedValue([]), findFirst: jest.fn().mockResolvedValue({ id: 'PROV1' }) },
     $transaction: jest.fn(async (fn: (tx: unknown) => unknown) => fn(jest.requireMock<{ prisma: unknown }>('../config/database').prisma)),
     $queryRaw: jest.fn().mockResolvedValue([]),
   },
