@@ -202,6 +202,24 @@ async function liquidadoPorPartida(db: Db, companyId: string, ids: string[], has
   return out;
 }
 
+/**
+ * Partidas que ya tienen algo de este ejercicio: cobros o pagos activos y
+ * abonos descontados (lo mismo que cuenta como liquidado). Solo salen las que
+ * tienen algo. Lo usan la definitiva y deshacer la carga: una partida asi no
+ * se puede quitar ni cambiar sin deshacer antes lo que tiene encima.
+ */
+export async function partidasConMovimientos(db: Db, companyId: string, ids: string[]): Promise<Map<string, { cobros: number; abonos: number }>> {
+  const out = new Map<string, { cobros: number; abonos: number }>();
+  if (!ids.length) return out;
+  const [pagos, compensado] = await Promise.all([
+    db.invoicePayment.groupBy({ by: ['invoiceId'], where: { companyId, invoiceType: 'PARTIDA', estado: 'ACTIVO', invoiceId: { in: ids } }, _count: { _all: true } }),
+    soloCompensado(db, companyId, ids),
+  ]);
+  for (const p of pagos) out.set(p.invoiceId, { cobros: p._count._all, abonos: 0 });
+  for (const [id, euros] of compensado) out.set(id, { cobros: out.get(id)?.cobros ?? 0, abonos: euros });
+  return out;
+}
+
 /** Lo que queda de cada partida: lo pendiente a 31-12 menos lo liquidado (pagos y abonos aplicados). */
 export async function pendientePorPartida(db: Db, companyId: string, ids: string[]): Promise<Map<string, number>> {
   if (!ids.length) return new Map();
@@ -701,4 +719,32 @@ export async function partidaDeFactura(companyId: string, tipo: 'INGRESO' | 'GAS
     where: { companyId, estado: { not: 'ANULADA' }, ...(tipo === 'INGRESO' ? { incomeInvoiceId: invoiceId } : { expenseInvoiceId: invoiceId }) },
     select: { id: true, numeroDocumento: true },
   });
+}
+
+/**
+ * Partida de una factura de proveedor que ya contabilizo la gestoria: de pago,
+ * no anulada, del mismo proveedor (por su ficha o por su subcuenta 400/410) y
+ * con el mismo numero (sin espacios ni mayusculas). Solo si la factura se
+ * expidio antes del ejercicio de la carga: una del ejercicio nuevo con el mismo
+ * numero (proveedores que vuelven a numerar desde 1 cada año) es otra factura.
+ * `excluirFacturaId`: la factura de la app enlazada a la partida no choca consigo misma.
+ */
+export async function partidaDeFacturaProveedor(
+  db: Db,
+  companyId: string,
+  q: { supplierId: string; numero: string; fechaEmision: string; excluirFacturaId?: string },
+): Promise<{ id: string; numeroDocumento: string } | null> {
+  const numero = numeroComparable(q.numero);
+  if (!numero) return null;
+  const prov = await db.supplier.findFirst({ where: { id: q.supplierId, companyId }, select: { subcuenta400: true, subcuenta410: true } });
+  const subcuentas = [prov?.subcuenta400, prov?.subcuenta410].filter((s): s is string => !!s);
+  const candidatas = await db.partidaPendiente.findMany({
+    where: { companyId, tipo: 'PAGO', estado: { not: 'ANULADA' }, OR: [{ supplierId: q.supplierId }, ...(subcuentas.length ? [{ supplierId: null, subcuenta: { in: subcuentas } }] : [])] },
+    select: { id: true, numeroDocumento: true, cargaId: true, expenseInvoiceId: true },
+  });
+  const mismas = candidatas.filter((p) => numeroComparable(p.numeroDocumento) === numero && (!q.excluirFacturaId || p.expenseInvoiceId !== q.excluirFacturaId));
+  if (!mismas.length) return null;
+  const apertura = await aperturaPorCarga(db, companyId, mismas.map((p) => p.cargaId));
+  const p = mismas.find((x) => q.fechaEmision < (apertura.get(x.cargaId) ?? '0000-01-01'));
+  return p ? { id: p.id, numeroDocumento: p.numeroDocumento } : null;
 }
