@@ -26,7 +26,7 @@ import { confirmarPlanEnTx, type CreadoPorPlan, type PermisosAlta } from '../pue
 import { asegurarEjercicio, guardarSaldosComparativo } from '../puestaEnMarcha/puestaEnMarcha.service';
 import { conReintentoSubcuenta } from '../terceros/subcuentas';
 import { CONCEPTO_APERTURA_ARRANQUE, type AnalisisCarga } from './analisis.service';
-import { analizarCargaGuardada, cargaDeEmpresa, validarEjercicio, type CargaFila } from './cargas.service';
+import { analizarCargaGuardada, cargaDeEmpresa, firmaEntrada, validarEjercicio, type CargaFila } from './cargas.service';
 import { aplicarBancos, saldos572 } from './bancos.service';
 import { claveActivo, clavePartida } from './definitiva';
 import { comprobacionesArranque, type ComprobacionesArranque } from './seguimiento.service';
@@ -104,18 +104,26 @@ export async function confirmarCarga(companyId: string, ejercicioRaw: unknown, c
   const fases: EstadoFase[] = FASES.map((fase) => ({ fase, estado: 'PENDIENTE' }));
   const otra = await prisma.cargaArranque.findFirst({ where: { companyId, ejercicio, estado: 'APLICANDO' }, select: { id: true } });
   if (otra) throw conflict('Ya hay otra carga importándose en esta empresa.');
+  // Bloqueo optimista: si alguien ha subido un fichero o cambiado los ajustes desde que se leyo
+  // (updatedAt), no se confirma lo que nadie ha revisado.
   const r = await prisma.cargaArranque.updateMany({
-    where: { id: c.id, estado: 'BORRADOR', huella },
+    where: { id: c.id, estado: 'BORRADOR', huella, updatedAt: c.updatedAt },
     data: {
       estado: 'APLICANDO',
       fases: json(fases),
       confirmadaPor: userId,
-      resumen: json({ ...objeto(c.resumen), confirmacion: { huella, nivel: a.comprobaciones.nivel, comprobaciones: a.comprobaciones, en: new Date().toISOString() } }),
+      resumen: json({ ...objeto(c.resumen), confirmacion: { huella, firma: firmaEntrada(c), nivel: a.comprobaciones.nivel, comprobaciones: a.comprobaciones, en: new Date().toISOString() } }),
       creado: json({}),
       anterior: json({}),
     },
   });
-  if (r.count !== 1) throw conflict('Otra persona ha confirmado o cambiado esta carga a la vez: vuelve a cargar la página.');
+  if (r.count !== 1) {
+    const ahora = await prisma.cargaArranque.findUnique({ where: { id: c.id }, select: { estado: true } });
+    if (ahora?.estado === 'BORRADOR') {
+      throw conflict('Alguien ha cambiado la carga mientras la confirmabas (un fichero o un ajuste): revisa el resumen de nuevo.', { codigo: 'HUELLA_CAMBIADA' });
+    }
+    throw conflict('Otra persona ha confirmado esta carga a la vez: vuelve a cargar la página.');
+  }
   // Dos cargas distintas confirmadas a la vez: solo sigue la primera.
   const aplicando = await prisma.cargaArranque.findMany({ where: { companyId, ejercicio, estado: 'APLICANDO' }, orderBy: { updatedAt: 'asc' }, select: { id: true } });
   if (aplicando.length > 1 && aplicando[0].id !== c.id) {
@@ -156,11 +164,19 @@ export async function aplicarFase(companyId: string, ejercicioRaw: unknown, carg
   if (c0.estado !== 'APLICANDO') throw conflict(c0.estado === 'CONFIRMADA' ? 'Esta carga ya está importada.' : 'Confirma antes la carga.', { estado: c0.estado });
   const pendiente = fasesDe(c0).find((f) => f.estado === 'PENDIENTE');
   if (!pendiente) throw conflict('Esta carga no tiene nada pendiente.');
+  // Lo que se importa tiene que ser lo que se confirmo (mismos ficheros y ajustes).
+  const firma = objeto((objeto(c0.resumen).confirmacion as Prisma.JsonValue) ?? null).firma;
+  if (typeof firma === 'string' && firma !== firmaEntrada(c0)) {
+    throw conflict('Los ficheros o los ajustes de esta carga han cambiado después de confirmarla: deshaz lo aplicado y vuelve a traerla.', { codigo: 'CARGA_CAMBIADA' });
+  }
   const a = await analizarCargaGuardada(c0, TODOS);
   if (pendiente.fase === 'PLAN_Y_TERCEROS') await asegurarPlanContableEmpresa(companyId);
 
   const ejecutar = async (tx: TransaccionBD): Promise<{ hecho: string; fases: EstadoFase[] }> => {
-    // Se vuelve a leer dentro de la transaccion: dos llamadas a la vez no hacen la misma fase.
+    // Se bloquea la fila de la carga y se vuelve a leer dentro de la transaccion: una segunda
+    // llamada a la vez (un reintento tras un corte, dos pestañas) espera, ve el cursor ya
+    // avanzado y sale con 409, en vez de repetir la fase (bienes o bancos duplicados).
+    await tx.$queryRaw`SELECT id FROM CargaArranque WHERE id = ${c0.id} FOR UPDATE`;
     const c = await tx.cargaArranque.findUniqueOrThrow({ where: { id: c0.id } });
     const fases = fasesDe(c);
     const estado = fases.find((f) => f.estado === 'PENDIENTE');
