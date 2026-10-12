@@ -2,7 +2,7 @@
  * Lector de facturas de INGRESO. Montado en /companies/:companyId/ingresos-extractor.
  *
  *  POST /extraer-ia   lee una factura emitida (PDF/imagen) y la deja pendiente
- *  POST /confirmar    { documentId, revisado? }: la registra como factura de ingreso
+ *  POST /confirmar    { documentId, revisado?, lineas?: [{ cuenta }] }: la registra como factura de ingreso (con la cuenta elegida en cada linea)
  *  POST /lecturas, GET /lecturas/:id, POST /lecturas/:id/descartar   lectura con Azure, 4 MB como mucho (ver lecturas.controller.ts)
  */
 import { Router } from 'express';

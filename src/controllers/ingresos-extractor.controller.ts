@@ -16,13 +16,15 @@ export const ingresosExtractorController = {
   }),
 
   /**
-   * POST /confirmar { documentId }: crea la factura de ingreso con los datos
-   * guardados al leer. El resto del cuerpo se ignora a proposito.
+   * POST /confirmar { documentId, revisado?, lineas?: [{ cuenta }] }: crea la
+   * factura de ingreso con los datos guardados al leer. Del cuerpo solo se toma
+   * la cuenta de cada linea («Cambiar cuenta»); el resto se ignora a proposito.
    */
   confirmar: asyncHandler(async (req: Request, res: Response) => {
     const documentId = (req.body ?? {}).documentId;
     if (typeof documentId !== 'string' || !documentId) throw badRequest('Falta documentId.');
     const revisado = (req.body ?? {}).revisado === true;
-    sendOk(res, await ingresosExtractorService.confirmar(req.companyId!, documentId, { revisado, userId: req.user?.userId }), undefined, 201);
+    const lineas = (req.body ?? {}).lineas;
+    sendOk(res, await ingresosExtractorService.confirmar(req.companyId!, documentId, { revisado, userId: req.user?.userId, lineas }), undefined, 201);
   }),
 };

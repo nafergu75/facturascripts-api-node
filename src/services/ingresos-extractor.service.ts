@@ -38,6 +38,11 @@ export interface IngresoExtraido {
   confianza: number;
   /** Problemas que impiden confirmar. */
   errores: string[];
+  /**
+   * Las lineas con que se registrara (una por tipo de IVA), en el mismo orden
+   * que en el confirmar: la pantalla deja elegir la cuenta de cada una.
+   */
+  lineas: Array<{ descripcion: string; base: number; tipoIva: number }>;
 }
 
 /** Cuenta de ventas por defecto del PGC (700 Ventas de mercaderias / prestacion de servicios). */
@@ -56,13 +61,14 @@ export function aIngresoExtraido(documentId: string, e: InvoiceExtraction): Ingr
   if (e.amounts.bases.length === 0) errores.push('No se ha podido leer ninguna base imponible.');
   if (e.amounts.withholdings.length > 1) errores.push('La factura tiene varias retenciones; registrala a mano.');
 
+  const concepto = e.lines.find((l) => l.description)?.description ?? null;
   return {
     documentId,
     numeroFactura: [e.invoice.series, e.invoice.number].filter(Boolean).join('-') || null,
     cliente: e.customer.name,
     nifCliente: limpiarNif(e.customer.tax_id),
     fecha: e.invoice.issue_date,
-    concepto: e.lines.find((l) => l.description)?.description ?? null,
+    concepto,
     cuentaContable: CUENTA_VENTAS,
     base: e.amounts.subtotal,
     iva: e.amounts.tax_total,
@@ -70,7 +76,32 @@ export function aIngresoExtraido(documentId: string, e: InvoiceExtraction): Ingr
     total: e.amounts.total_net,
     confianza: e.confidence,
     errores,
+    lineas: e.amounts.bases.map((b) => ({ descripcion: descripcionLinea(concepto), base: b.base_amount, tipoIva: b.tax_rate })),
   };
+}
+
+/** Texto de las lineas de una factura digitalizada: el concepto leido o uno generico. */
+const descripcionLinea = (concepto: string | null) => concepto ?? 'Factura digitalizada';
+
+/**
+ * Cuentas de ingresos elegidas en la pantalla con «Cambiar cuenta»: una por
+ * linea, en el mismo orden que `lineas` de IngresoExtraido. De cada linea solo
+ * se toma la cuenta; lo demas sale de lo leido y guardado en el servidor. null
+ * o vacia = la de por defecto (700). Que sea una cuenta de ventas activa del
+ * plan lo comprueba el alta de la factura (400 con campo lineas.N.cuenta).
+ */
+export function cuentasElegidas(raw: unknown, numLineas: number): Array<string | undefined> {
+  if (raw === undefined || raw === null) return [];
+  if (!Array.isArray(raw)) throw badRequest('Las cuentas de las líneas no tienen el formato esperado.', { campo: 'lineas' });
+  if (raw.length > numLineas) {
+    throw badRequest(`Llegan cuentas para ${raw.length} líneas y la factura leída tiene ${numLineas === 1 ? 'una' : numLineas}. Vuelve a leerla.`, { campo: 'lineas' });
+  }
+  return raw.map((l, i) => {
+    const c = l && typeof l === 'object' ? (l as { cuenta?: unknown }).cuenta : undefined;
+    if (c === undefined || c === null) return undefined;
+    if (typeof c !== 'string' || c.length > 20) throw badRequest(`Línea ${i + 1}: la cuenta de ingresos no es válida.`, { campo: `lineas.${i}.cuenta` });
+    return c.replace(/[\s.]/g, '') || undefined;
+  });
 }
 
 /**
@@ -102,7 +133,7 @@ export function lineasDesdeExtraccion(e: InvoiceExtraction, concepto: string | n
   return e.amounts.bases.map((b) => {
     if (!Number.isInteger(b.tax_rate)) throw badRequest(`Tipo de IVA no valido: ${b.tax_rate}%.`);
     return {
-      descripcion: concepto ?? 'Factura digitalizada',
+      descripcion: descripcionLinea(concepto),
       cantidad: 1,
       precioUnitario: b.base_amount,
       descuentoPorcentaje: 0,
@@ -150,7 +181,7 @@ export const ingresosExtractorService = {
   async confirmar(
     companyId: string,
     documentId: string,
-    opciones: { revisado?: boolean; userId?: string } = {},
+    opciones: { revisado?: boolean; userId?: string; lineas?: unknown } = {},
   ): Promise<{ facturaId: string; numeroCompleto: string; total: number }> {
     const doc = await prisma.incomeReaderDocument.findFirst({
       where: { id: documentId, companyId, sourceType: 'EXTRACTOR_IA' },
@@ -165,7 +196,9 @@ export const ingresosExtractorService = {
     if (resumen.errores.length > 0) throw badRequest(`No se puede registrar: ${resumen.errores.join(' ')}`);
 
     const { serie, numero } = separarNumero(e.invoice.series, e.invoice.number, e.invoice.issue_date);
-    const lineas = lineasDesdeExtraccion(e, resumen.concepto);
+    // La cuenta de cada linea, si se cambio en la pantalla (no cambia importes).
+    const cuentas = cuentasElegidas(opciones.lineas, e.amounts.bases.length);
+    const lineas = lineasDesdeExtraccion(e, resumen.concepto).map((l, i) => (cuentas[i] ? { ...l, cuenta: cuentas[i] } : l));
     comprobarTotales(lineas, e);
 
     const nif = resumen.nifCliente as string;

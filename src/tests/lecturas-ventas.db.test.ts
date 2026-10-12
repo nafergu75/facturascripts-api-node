@@ -79,13 +79,13 @@ afterEach(() => {
   delete process.env.AZURE_DOCUMENT_INTELLIGENCE_KEY;
 });
 
-async function leer(fixture: string): Promise<Record<string, any>> {
-  const p = await request(app()).post('/ingresos-extractor/lecturas').attach('archivo', PDF, 'emitida.pdf');
+async function leer(fixture: string, companyId = E): Promise<Record<string, any>> {
+  const p = await request(app(companyId)).post('/ingresos-extractor/lecturas').attach('archivo', PDF, 'emitida.pdf');
   expect(p.status).toBe(202);
   const id = p.body.data.lecturaId;
   await prisma.lecturaDocumento.update({ where: { id }, data: { azureProximaConsulta: new Date(Date.now() - 1000) } });
   colaGet.push(() => resultado(fixture));
-  const r = await request(app()).get(`/ingresos-extractor/lecturas/${id}`);
+  const r = await request(app(companyId)).get(`/ingresos-extractor/lecturas/${id}`);
   expect(r.status).toBe(200);
   expect(r.body.data.estado).toBe('LISTA');
   return r.body.data;
@@ -120,6 +120,37 @@ describe('lecturas del lector de ventas', () => {
     const otra = await leer('resultado-simple');
     expect(otra.lectura.estado).toBe('error');
     expect(otra.ingreso.errores).toContain('Ya registraste esta factura (F2026-12).');
+  });
+
+  it('«Cambiar cuenta»: el confirmar lleva la cuenta de cada linea y solo toma eso del cuerpo', async () => {
+    // Otra empresa: el numero del fixture ya esta registrado en la de los demas casos.
+    const E2 = `${E}-cuentas`;
+    await prisma.company.create({ data: { id: E2, name: 'Imprenta Levante SL', fsBaseUrl: 'http://localhost:8080', fsApiKeyEnc: 'k' } });
+    await prisma.legalConfig.create({ data: { companyId: E2, denominacion: 'Imprenta Levante SL', nif: NIF_EMISOR } });
+    const confirmar = (cuerpo: Record<string, unknown>) => request(app(E2)).post('/ingresos-extractor/confirmar').send(cuerpo);
+    const data = await leer('resultado-iva-multiple', E2);
+    // Una linea por tipo de IVA, en el orden en que se registraran.
+    expect(data.ingreso.lineas.map((l: { base: number; tipoIva: number }) => [l.base, l.tipoIva])).toEqual([
+      [200, 21],
+      [50, 10],
+    ]);
+    // Mas cuentas que lineas, o una que no es de ventas: 400 sin registrar nada.
+    const demas = await confirmar({ documentId: data.ingreso.documentId, revisado: true, lineas: [{}, {}, { cuenta: '705' }] });
+    expect(demas.status).toBe(400);
+    expect(demas.body.details).toMatchObject({ campo: 'lineas' });
+    const mala = await confirmar({ documentId: data.ingreso.documentId, revisado: true, lineas: [{ cuenta: '600' }] });
+    expect(mala.status).toBe(400);
+    expect(mala.body.details).toMatchObject({ campo: 'lineas.0.cuenta' });
+    expect(mala.body.message).toMatch(/600 no es de ventas/);
+    // La segunda linea a la 705; la primera, sin cuenta, va a la de por defecto. El precio del cuerpo se ignora.
+    const r = await confirmar({ documentId: data.ingreso.documentId, revisado: true, lineas: [{ cuenta: null, precioUnitario: 1 }, { cuenta: '705' }] });
+    expect(r.status).toBe(201);
+    expect(r.body.data.total).toBe(297);
+    const lineas = await prisma.incomeInvoiceLine.findMany({ where: { invoiceId: r.body.data.facturaId }, orderBy: { tipoIva: 'desc' } });
+    expect(lineas.map((l) => [Number(l.precioUnitario), l.tipoIva, l.accountCode ?? null])).toEqual([
+      [200, 21, null],
+      [50, 10, '705'],
+    ]);
   });
 
   it('con recargo o rectificativa, confirmar da 400 con el mensaje de V05 o de V19', async () => {
