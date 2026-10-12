@@ -34,6 +34,7 @@ import { completarConClaude, decidirComplemento } from './claude-complemento';
 import { claudeConfigurado, claudeVisionExtractor } from './claude-vision.adapter';
 import { MENSAJE_LECTURA_NO_ENCONTRADA } from './confirmar';
 import { contextoValidacion, gastoDuplicado, proveedorPorNif } from './contexto';
+import { rectificativaLeida, type RectificativaLeida } from './rectificativa';
 import type {
   ArchivoLectura,
   CampoId,
@@ -109,7 +110,8 @@ export interface LecturaGastoLista {
   lecturaId: string;
   estado: 'LISTA';
   /** tramos: uno por tipo de IVA (base y cuota), para poner una linea por tipo. */
-  gasto: GastoExtraidoEmpresa & { tramos: TramoGasto[] };
+  /** rectificativa: si es una rectificativa o un abono, la original propuesta, el tipo y la causa (null si no lo es). */
+  gasto: GastoExtraidoEmpresa & { tramos: TramoGasto[]; rectificativa: RectificativaLeida | null };
   lectura: InfoLectura;
 }
 export interface LecturaIngresoLista {
@@ -379,7 +381,9 @@ async function respuestaDe(fila: FilaLectura): Promise<RespuestaLectura> {
     const duplicada = proveedorExistente ? await gastoDuplicado(fila.companyId, proveedorExistente.id, g.numeroFactura) : null;
     // La cuenta que suele llevar ese proveedor: la pantalla la propone en cada linea leida.
     const cuentaHabitual = proveedorExistente ? await cuentaHabitualDeProveedor(fila.companyId, proveedorExistente.id) : null;
-    return { lecturaId: fila.id, estado: 'LISTA', gasto: { ...g, tramos: tramosGasto(guardado.lectura), proveedorExistente, duplicada, cuentaHabitual }, lectura };
+    // Rectificativa o abono: la factura que rectifica y lo que se propone para el formulario.
+    const rectificativa = await rectificativaLeida(fila.companyId, guardado.lectura);
+    return { lecturaId: fila.id, estado: 'LISTA', gasto: { ...g, tramos: tramosGasto(guardado.lectura), proveedorExistente, duplicada, cuentaHabitual, rectificativa }, lectura };
   }
   const extraccion = aInvoiceExtraction(guardado.lectura, validaciones, { confianza: fila.confianza, nombreArchivo: fila.archivoNombre, mime: fila.archivoTipo });
   const ingreso = aIngresoExtraido(fila.incomeReaderDocumentId ?? '', extraccion);
