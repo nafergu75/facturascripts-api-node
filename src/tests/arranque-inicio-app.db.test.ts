@@ -49,6 +49,13 @@ describe('inicio en la app al traer la contabilidad de 2026', () => {
     expect((c.creado as Record<string, unknown>).inicioEnApp).toBeUndefined();
   });
 
+  it('si luego se borra la fecha, la deducida sigue en el 1-1-2027: 2026 lo llevó la gestoría', async () => {
+    await prisma.ajustesFiscales.update({ where: { companyId: CON_FECHA }, data: { inicioEnApp: null } });
+    expect(await inicioLlevanzaApp(CON_FECHA)).toBe('2027-01-01');
+    relojEn('2027-02-15T10:00:00Z');
+    expect(claves(await listarModelosImpuesto(CON_FECHA, 2026)).filter((c) => c.startsWith('303:'))).toEqual([]);
+  });
+
   it('deshacer la carga lo avisa y deja la fecha sin indicar, como estaba', async () => {
     const plan = await deshacerCarga(SIN_FECHA, 2027, carga, { simular: true }, USUARIO_PRUEBA);
     expect(plan.acciones).toContain('La fecha desde la que llevas los impuestos con la app vuelve a quedar sin indicar.');

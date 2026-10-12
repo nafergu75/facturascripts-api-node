@@ -20,7 +20,8 @@ const DE_2027 = `ided-b-${SUFIJO}`; // dada de alta el 12-10-2026, solo con el e
 const CON_FACTURA = `ided-c-${SUFIJO}`; // primer asiento el 10-5-2025
 const INDICADA = `ided-d-${SUFIJO}`; // datos de 2025, pero indica inicio el 1-1-2024
 const DE_MARZO = `ided-e-${SUFIJO}`; // primer asiento el 15-3-2027
-const TODAS = [VACIA, DE_2027, CON_FACTURA, INDICADA, DE_MARZO];
+const EXTERNA = `ided-f-${SUFIJO}`; // 2026 lo llevó la gestoría, con su diario aquí como histórico
+const TODAS = [VACIA, DE_2027, CON_FACTURA, INDICADA, DE_MARZO, EXTERNA];
 const ALTA = new Date('2026-10-12T08:00:00Z');
 
 const claves = (lista: Array<{ codigo: string; periodo: string }>) => lista.map((m) => `${m.codigo}:${m.periodo}`).sort();
@@ -39,6 +40,12 @@ beforeAll(async () => {
     data: { companyId: DE_MARZO, fecha: new Date('2027-03-15T00:00:00Z'), numeroAsiento: `A-${SUFIJO}`, descripcion: 'Primer gasto', origen: 'AJUSTE_MANUAL' },
   });
   await prisma.ajustesFiscales.create({ data: { companyId: INDICADA, inicioEnApp: '2024-01-01' } });
+  await prisma.fiscalYear.create({
+    data: { companyId: EXTERNA, label: '2026', fechaInicio: '2026-01-01', fechaFin: '2026-12-31', llevanza: 'EXTERNA' },
+  });
+  await prisma.journalEntry.create({
+    data: { companyId: EXTERNA, fecha: new Date('2026-01-01T00:00:00Z'), numeroAsiento: `A-${SUFIJO}`, descripcion: 'Apertura 2026', origen: 'AJUSTE_MANUAL' },
+  });
 });
 
 afterAll(async () => {
@@ -125,6 +132,15 @@ describe('inicioLlevanzaApp', () => {
 
   it('sin fecha indicada, si los datos empiezan después del 1-1-2027 cuenta ese día', async () => {
     expect(await inicioLlevanzaApp(DE_MARZO)).toBe('2027-03-15');
+  });
+
+  it('un año que llevó la gestoría no cuenta como llevado en la app, aunque su diario esté aquí', async () => {
+    expect(await primerDiaConDatos(EXTERNA)).toBe('2026-01-01');
+    expect(await inicioLlevanzaApp(EXTERNA)).toBe('2027-01-01');
+    expect(await inicioImplicito(EXTERNA)).toBe('2027-01-01');
+    expect((await obtenerAjustesFiscales(EXTERNA)).inicioDeducido).toBe('2027-01-01');
+    relojEn('2027-02-15T10:00:00Z');
+    expect((await listarModelosImpuesto(EXTERNA, 2026)).filter((m) => m.codigo === '303')).toEqual([]);
   });
 
   it('una empresa que no existe se queda con el 1-1-2027', async () => {
