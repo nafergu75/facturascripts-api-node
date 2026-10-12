@@ -31,7 +31,7 @@ import {
   whereGastosFiscales,
   type DatosFiscalesGasto,
 } from '../../domain/factura-gasto.model';
-import { avisoExcesoRetencion, topeCero } from '../../domain/rectificativa-gasto.model';
+import { avisoExcesoRetencion, retencionesPorPerceptor, topeCero } from '../../domain/rectificativa-gasto.model';
 
 const euros = (centimos: number): number => Math.round(centimos) / 100;
 const mm = (n: number) => String(n).padStart(2, '0');
@@ -346,8 +346,18 @@ export interface RetencionesActividades {
   porTipo: Array<{ porcentaje: number; perceptores: number; base: number; cuota: number }>;
   /** Facturas anuladas cuya retencion sigue en un 111 presentado, y el exceso de retencion de los abonos. */
   avisos?: string[];
-  /** Retencion de abonos que no cabe en este periodo ([09] como mucho hasta cero): pasa de la 4751 a la 4709. */
+  /**
+   * Retencion de abonos que no cabe en este periodo (la que no cabe en la de su
+   * perceptor en el año, mas lo que deja [09] por debajo de cero): pasa de la
+   * 4751 a la 4709.
+   */
   excesoAbonos?: number;
+  /**
+   * Parte de excesoAbonos que si cuenta en el 190 (el perceptor la netea en el
+   * año) pero no en este 111 ([09] como mucho hasta cero): el 190 la descuenta
+   * al cuadrar con los 111.
+   */
+  excesoTope?: number;
 }
 
 /** Desglose de las facturas con retencion por su tipo (puro). */
@@ -403,23 +413,31 @@ export const avisoRetencionAnulada = (numero: string, proveedor: string, codigo:
  * anulada no resta nunca y solo cuenta, en su periodo, si su 111 ya estaba
  * presentado (con un aviso). Los alquileres no entran (van al 115). La base es
  * la de las lineas con retencion.
+ *
+ * La retencion de un abono solo resta de la de su mismo perceptor en el año
+ * (retencionesPorPerceptor): por eso se leen las del año desde el 1 de enero y
+ * se devuelven las del periodo con lo que cuenta de cada una y lo que no cabe.
  */
 async function retencionesProfesionalesEntre(companyId: string, desde: string, hasta: string) {
   type Fila = {
     supplierId: string;
     signo: 1;
+    /** Lo que cuenta en el modelo (en un abono, lo que cabe). */
     baseTotal: number;
     retencionTotal: number;
     tipoRetencion: number;
     supplier: { nifCif: string; nombreFiscal: string; cp: string | null; provincia: string | null };
-    /** Abono o rectificativa con la retencion en negativo: su numero y la fecha de lo que rectifica. */
-    abono?: { numero: string; fechaOriginal: string | null };
+    /** Abono o rectificativa con la retencion en negativo: su numero, la fecha de lo que rectifica y su retencion entera (centimos). */
+    abono?: { numero: string; fechaOriginal: string | null; retencion: number };
+    /** Retencion del abono que no cabe (centimos, positiva). */
+    excesoRetencion: number;
   };
   const filas: Fila[] = [];
   const avisos: string[] = [];
   if (!tablaLista('expenseInvoice')) return { filas, avisos };
+  const inicioAnio = `${desde.slice(0, 4)}-01-01`;
   const facturas = await prisma.expenseInvoice.findMany({
-    where: { AND: [whereGastosFiscales(companyId, desde, hasta), { tipoGasto: { not: 'ALQUILER' }, retencionTotal: { not: 0 } }] },
+    where: { AND: [whereGastosFiscales(companyId, inicioAnio, hasta), { tipoGasto: { not: 'ALQUILER' }, retencionTotal: { not: 0 } }] },
     include: {
       lineas: true,
       supplier: { select: { nifCif: true, nombreFiscal: true, cp: true, provincia: true } },
@@ -427,22 +445,41 @@ async function retencionesProfesionalesEntre(companyId: string, desde: string, h
     },
   });
   const declaradaEn = await retencionDeclaradaEn(companyId, '111', facturas);
+  const todas: Array<Omit<Fila, 'excesoRetencion'> & { fecha: string; enPeriodo: boolean; clave: string; deAnioAnterior: boolean }> = [];
   for (const f of facturas) {
     const periodo = declaradaEn(f);
-    for (const { signo } of aparicionesRetencionEntre(f, desde, hasta, periodo !== null)) {
-      if (periodo) avisos.push(avisoRetencionAnulada(f.numeroFacturaProveedor ?? f.numeroCompleto, f.supplier.nombreFiscal, '111', periodo, fechaContableGasto(f).slice(0, 4)));
-      const abono =
-        aCentimos(Number(f.retencionTotal)) < 0
-          ? {
-              numero: f.numeroFacturaProveedor ?? f.numeroCompleto,
-              fechaOriginal: f.rectifica[0] ? (f.rectifica[0].original ? fechaContableGasto(f.rectifica[0].original) : (f.rectifica[0].fechaOriginal ?? f.rectifica[0].periodoDesde)) : null,
-            }
-          : undefined;
+    for (const { fecha } of aparicionesRetencionEntre(f, inicioAnio, hasta, periodo !== null)) {
+      const enPeriodo = fecha >= desde && fecha <= hasta;
+      if (periodo && enPeriodo) avisos.push(avisoRetencionAnulada(f.numeroFacturaProveedor ?? f.numeroCompleto, f.supplier.nombreFiscal, '111', periodo, fechaContableGasto(f).slice(0, 4)));
+      const esAbono = aCentimos(Number(f.retencionTotal)) < 0;
+      const enlace = esAbono ? f.rectifica?.[0] : undefined;
+      const fechaOriginal = enlace ? (enlace.original ? fechaContableGasto(enlace.original) : (enlace.fechaOriginal ?? enlace.periodoDesde)) : null;
       for (const d of desgloseRetencionGasto(f)) {
-        filas.push({ supplierId: f.supplierId, signo, baseTotal: d.base, retencionTotal: d.cuota, tipoRetencion: d.porcentaje, supplier: f.supplier, ...(abono ? { abono } : {}) });
+        todas.push({
+          supplierId: f.supplierId,
+          signo: 1,
+          baseTotal: d.base,
+          retencionTotal: d.cuota,
+          tipoRetencion: d.porcentaje,
+          supplier: f.supplier,
+          ...(esAbono ? { abono: { numero: f.numeroFacturaProveedor ?? f.numeroCompleto, fechaOriginal, retencion: aCentimos(d.cuota) } } : {}),
+          fecha,
+          enPeriodo,
+          // El registro del 190 (proveedor y subclave): ninguno puede quedar en negativo.
+          clave: `${f.supplierId}|${subclaveG(d.porcentaje)}`,
+          deAnioAnterior: esAbono && !!fechaOriginal && fechaOriginal < `${fecha.slice(0, 4)}-01-01`,
+        });
       }
     }
   }
+  const contadas = retencionesPorPerceptor(
+    todas.map((f) => ({ clave: f.clave, fecha: f.fecha, base: aCentimos(Number(f.baseTotal)), retencion: aCentimos(Number(f.retencionTotal)), deAnioAnterior: f.deAnioAnterior })),
+  );
+  todas.forEach((t, i) => {
+    if (!t.enPeriodo) return;
+    const { fecha: _fecha, enPeriodo: _enPeriodo, clave: _clave, deAnioAnterior: _anterior, ...f } = t;
+    filas.push({ ...f, baseTotal: euros(contadas[i].base), retencionTotal: euros(contadas[i].retencion), excesoRetencion: contadas[i].exceso });
+  });
   return { filas, avisos };
 }
 
@@ -452,31 +489,35 @@ async function retencionesProfesionalesEntre(companyId: string, desde: string, h
  */
 export async function retencionesActividades(companyId: string, periodo: PeriodoFiscal): Promise<RetencionesActividades> {
   const { filas: conIrpf, avisos } = await retencionesProfesionalesEntre(companyId, periodo.fechaInicio, periodo.fechaFin);
-  // La retencion de un abono resta en este periodo, casilla a casilla y como
-  // mucho hasta cero (decision P1). Lo que no cabe se avisa: se recupera
+  // La retencion de un abono resta en este periodo, solo de la de su mismo
+  // perceptor en el año (retencionesPorPerceptor), y la casilla queda como
+  // mucho a cero (decision P1). Lo que no cabe se avisa: se recupera
   // rectificando el 111 en que se declaro y no cuenta en ningun otro periodo.
   const base = topeCero(conIrpf.reduce((a, f) => a + aCentimos(Number(f.baseTotal)), 0));
   const ret = topeCero(conIrpf.reduce((a, f) => a + aCentimos(Number(f.retencionTotal)), 0));
-  if (ret.exceso > 0) {
+  const exceso = conIrpf.reduce((a, f) => a + f.excesoRetencion, 0) + ret.exceso;
+  if (exceso > 0) {
     const porAbono = new Map<string, { numero: string; retencion: number; fechaOriginal: string | null }>();
     for (const f of conIrpf) {
       if (!f.abono) continue;
-      const a = porAbono.get(f.abono.numero) ?? { ...f.abono, retencion: 0 };
-      a.retencion += aCentimos(Number(f.retencionTotal));
+      const a = porAbono.get(f.abono.numero) ?? { numero: f.abono.numero, fechaOriginal: f.abono.fechaOriginal, retencion: 0 };
+      a.retencion += f.abono.retencion;
       porAbono.set(f.abono.numero, a);
     }
     const abonos = [...porAbono.values()];
     const total = abonos.reduce((s, a) => s - a.retencion, 0);
-    avisos.push(avisoExcesoRetencion({ modelo: '111', abonos, restado: total - ret.exceso, exceso: ret.exceso }));
+    avisos.push(avisoExcesoRetencion({ modelo: '111', abonos, restado: total - exceso, exceso }));
   }
+  const conImporte = conIrpf.filter((f) => aCentimos(Number(f.baseTotal)) !== 0 || aCentimos(Number(f.retencionTotal)) !== 0);
   return {
     // [07]: quien solo tiene abonos en el periodo no cuenta como perceptor.
     perceptores: new Set(conIrpf.filter((f) => !f.abono).map((f) => f.supplierId)).size,
     percepciones: euros(base.valor),
     retenciones: euros(ret.valor),
-    porTipo: desgloseActividadesPorTipo(conIrpf),
+    porTipo: desgloseActividadesPorTipo(conImporte),
     ...(avisos.length ? { avisos } : {}),
-    ...(ret.exceso > 0 ? { excesoAbonos: euros(ret.exceso) } : {}),
+    ...(exceso > 0 ? { excesoAbonos: euros(exceso) } : {}),
+    ...(ret.exceso > 0 ? { excesoTope: euros(ret.exceso) } : {}),
   };
 }
 
@@ -864,7 +905,9 @@ export async function calcularModelo190(companyId: string, ejercicio: number): P
   avisos.push(...avisosAnuladas);
 
   // Clave G: solo personas fisicas y entidades en atribucion de rentas (las sociedades, fuera, con aviso).
-  const g = revisarPerceptoresG(perceptoresProfesionales(facturas as never), facturas);
+  // Sin los abonos que no cuentan en el año (los de una factura de un ejercicio anterior, o lo que no cabe en su perceptor).
+  const conImporte = facturas.filter((f) => aCentimos(Number(f.baseTotal)) !== 0 || aCentimos(Number(f.retencionTotal)) !== 0);
+  const g = revisarPerceptoresG(perceptoresProfesionales(conImporte as never), conImporte);
   avisos.push(...g.avisos);
   // Abonos que superan lo facturado en el año: un perceptor no se declara en negativo.
   for (const p of g.perceptores) {
@@ -966,9 +1009,10 @@ export async function calcularModelo190(companyId: string, ejercicio: number): P
     trimestres.push({ periodo: d.periodo, retenciones: euros(centimos), fuente: 'presentado', meses: mesesPresentados });
   }
   const total = euros(trimestres.reduce((a, t) => a + c(t.retenciones), 0));
-  // Lo que no cupo de los abonos en cada 111: el 190 lo netea en el año y los 111 lo llevan de mas.
-  const conExceso = desglose.filter((d) => c(d.actividades.excesoAbonos ?? 0) > 0);
-  const exceso = conExceso.reduce((a, d) => a + c(d.actividades.excesoAbonos ?? 0), 0);
+  // Lo que no cupo de los abonos en la casilla de cada 111: el 190 lo netea en el año y los 111 lo llevan de mas.
+  // (Lo que no cabe en su perceptor no cuenta ni en el 111 ni en el 190.)
+  const conExceso = desglose.filter((d) => c(d.actividades.excesoTope ?? 0) > 0);
+  const exceso = conExceso.reduce((a, d) => a + c(d.actividades.excesoTope ?? 0), 0);
   const coincide = c(total) === c(totales.retenciones) + exceso;
   if (exceso > 0) {
     avisos.push(
