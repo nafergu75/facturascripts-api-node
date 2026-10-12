@@ -286,7 +286,20 @@ async function faseEjercicios({ tx, c, a, anterior, creado }: ContextoFase): Pro
   }
   anterior.sustituidos = [...((anterior.sustituidos as string[] | undefined) ?? []), ...retirar.map((r) => r.id)];
   creado.llevanzaExterna = true;
-  return `${anio} queda como llevado por la gestoría (solo lectura)${retirar.length ? `; se retiran ${varios(retirar.length, 'asiento', 'asientos')} de ${anio} hechos en la app` : ''}.`;
+  // Los impuestos de la app empiezan el 1 de enero del ejercicio de destino si
+  // la empresa no habia indicado otra fecha: sin ella, el primer dia con datos
+  // seria uno de 2026 (el diario importado) y los 303 de 2026 saldrian
+  // pendientes. Se guarda el valor de antes para deshacer.
+  const inicio = `${c.ejercicio}-01-01`;
+  const ajustes = await tx.ajustesFiscales.findUnique({ where: { companyId: c.companyId }, select: { inicioEnApp: true } });
+  let textoInicio = '';
+  if (!ajustes?.inicioEnApp) {
+    if (!('inicioEnApp' in anterior)) anterior.inicioEnApp = { existia: !!ajustes, valor: null };
+    await tx.ajustesFiscales.upsert({ where: { companyId: c.companyId }, create: { companyId: c.companyId, inicioEnApp: inicio }, update: { inicioEnApp: inicio } });
+    creado.inicioEnApp = inicio;
+    textoInicio = `; los impuestos se llevan en la app desde el ${inicio.split('-').reverse().join('/')}`;
+  }
+  return `${anio} queda como llevado por la gestoría (solo lectura)${retirar.length ? `; se retiran ${varios(retirar.length, 'asiento', 'asientos')} de ${anio} hechos en la app` : ''}${textoInicio}.`;
 }
 
 /** 1 y 2. Plan y subcuentas (A3) con clientes y proveedores enlazados, en la misma transaccion. */
