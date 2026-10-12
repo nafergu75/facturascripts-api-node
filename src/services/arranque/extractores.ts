@@ -101,6 +101,74 @@ export interface TotalesOficiales {
   /** Balance: total activo y total patrimonio neto y pasivo. */
   totalActivo: number | null;
   totalPnPasivo: number | null;
+  /**
+   * PyG: importe de cada partida principal (1 a 18 de la PyG de PYMES, por su
+   * texto: el numero cambia entre el modelo normal y el abreviado). Ingresos
+   * en positivo y gastos en negativo, como salen en la PyG.
+   */
+  partidas?: Record<string, number>;
+}
+
+/** Partidas de la PyG por su texto (el orden importa: la mas concreta antes). */
+const PARTIDAS_PYG_TEXTO: Array<[RegExp, string]> = [
+  [/cifra de negocios/, '1'],
+  [/variacion de existencias/, '2'],
+  [/trabajos realizados/, '3'],
+  [/aprovisionamientos/, '4'],
+  [/otros ingresos de explotacion/, '5'],
+  [/gastos de personal/, '6'],
+  [/otros gastos de explotacion/, '7'],
+  [/amortizacion del inmovilizado/, '8'],
+  [/imputacion de subvenciones/, '9'],
+  [/excesos? de provisiones/, '10'],
+  [/enajenaciones? de instrumentos financieros/, '17'],
+  [/enajenaciones? del inmovilizado/, '11'],
+  [/diferencia negativa de combinaciones|otros resultados/, '12'],
+  [/ingresos financieros/, '13'],
+  [/gastos financieros/, '14'],
+  [/valor razonable/, '15'],
+  [/diferencias de cambio/, '16'],
+  [/impuestos? sobre (los )?beneficios/, '18'],
+];
+
+/**
+ * Cuenta de 3 digitos que representa cada partida de la PyG en el comparativo
+ * (la misma partida a la que la lleva domain/modelos-cuentas-anuales.ts).
+ */
+const CUENTA_DE_PARTIDA: Record<string, [string, string]> = {
+  '1': ['700', 'Importe neto de la cifra de negocios'],
+  '2': ['710', 'Variación de existencias de productos terminados y en curso'],
+  '3': ['730', 'Trabajos realizados por la empresa para su activo'],
+  '4': ['600', 'Aprovisionamientos'],
+  '5': ['759', 'Otros ingresos de explotación'],
+  '6': ['640', 'Gastos de personal'],
+  '7': ['629', 'Otros gastos de explotación'],
+  '8': ['681', 'Amortización del inmovilizado'],
+  '9': ['746', 'Imputación de subvenciones de inmovilizado no financiero y otras'],
+  '10': ['795', 'Excesos de provisiones'],
+  '11': ['671', 'Deterioro y resultado por enajenaciones del inmovilizado'],
+  '12': ['678', 'Otros resultados'],
+  '13': ['769', 'Ingresos financieros'],
+  '14': ['662', 'Gastos financieros'],
+  '15': ['663', 'Variación de valor razonable en instrumentos financieros'],
+  '16': ['668', 'Diferencias de cambio'],
+  '17': ['667', 'Deterioro y resultado por enajenaciones de instrumentos financieros'],
+  '18': ['630', 'Impuestos sobre beneficios'],
+};
+
+/**
+ * Saldos de 2026 de los grupos 6 y 7 sacados de la PyG oficial, para el
+ * comparativo cuando el sumas y saldos viene regularizado y no hay diario.
+ * null si la PyG no trae sus partidas o no suman el resultado (entonces no
+ * sirve: el comparativo quedaria mal).
+ */
+export function cuentasDePygOficial(t: TotalesOficiales | null): Array<{ codigo: string; nombre: string; saldo: number }> | null {
+  if (!t?.partidas || t.resultado === null) return null;
+  const entradas = Object.entries(t.partidas).filter(([, v]) => Math.round(v * 100) !== 0);
+  if (!entradas.length) return null;
+  const suma = round2(entradas.reduce((s, [, v]) => s + v, 0));
+  if (Math.round(suma * 100) !== Math.round(t.resultado * 100)) return null;
+  return entradas.map(([p, v]) => ({ codigo: CUENTA_DE_PARTIDA[p][0], nombre: CUENTA_DE_PARTIDA[p][1], saldo: round2(-v) })).sort((a, b) => a.codigo.localeCompare(b.codigo));
 }
 
 export type Extraccion =
@@ -464,6 +532,7 @@ function extraerInmovilizado(filas: unknown[][], m: Partial<Record<Campo, number
 /** Totales de la PyG o el balance en formato oficial (etiqueta y, a su derecha, el importe del ejercicio). */
 function extraerTotalesOficiales(filas: unknown[][]): TotalesOficiales {
   const out: TotalesOficiales = { resultado: null, cifraNegocios: null, totalActivo: null, totalPnPasivo: null };
+  const partidas: Record<string, number> = {};
   for (const f of filas) {
     if (!f) continue;
     const i = f.findIndex((c) => texto(c) !== '');
@@ -471,11 +540,17 @@ function extraerTotalesOficiales(filas: unknown[][]): TotalesOficiales {
     const etiqueta = normalizarTitulo(f[i]);
     const importe = f.slice(i + 1).map((c) => (typeof c === 'number' ? c : parsearImporte(c))).find((n) => Number.isFinite(n));
     if (importe === undefined) continue;
+    // Partidas principales: «1. Importe neto…», «7. Otros gastos…» (no las «a) …» de detalle).
+    if (/^\d{1,2} /.test(etiqueta) && !/resultado (de explotacion|financiero|antes|del ejercicio|de las operaciones)/.test(etiqueta)) {
+      const partida = PARTIDAS_PYG_TEXTO.find(([re]) => re.test(etiqueta))?.[1];
+      if (partida && partidas[partida] === undefined) partidas[partida] = round2(importe);
+    }
     if (/resultado del ejercicio/.test(etiqueta)) out.resultado = round2(importe);
     else if (/importe neto de la cifra de negocios/.test(etiqueta) && out.cifraNegocios === null) out.cifraNegocios = round2(importe);
     else if (/^total activo|total del activo|^activo total|total \(a\+b\)|^total a b$/.test(etiqueta) && out.totalActivo === null) out.totalActivo = round2(importe);
     else if (/total patrimonio neto y pasivo|^total pasivo|total \(a\+b\+c\)|^total a b c$/.test(etiqueta) && out.totalPnPasivo === null) out.totalPnPasivo = round2(importe);
   }
+  if (Object.keys(partidas).length) out.partidas = partidas;
   return out;
 }
 
