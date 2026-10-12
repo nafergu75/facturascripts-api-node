@@ -37,7 +37,11 @@ const periodos303 = async (empresa: string, ejercicio: number) =>
   (await prisma.modeloImpuesto.findMany({ where: { companyId: empresa, codigo: '303', ejercicio } })).map((f) => f.periodo).sort();
 
 beforeAll(async () => {
-  for (const id of TODAS) await prisma.company.create({ data: { id, name: `Empresa ${id}`, fsBaseUrl: 'http://localhost:8080', fsApiKeyEnc: 'k' } });
+  // Dadas de alta hace años: sin inicioEnApp ni datos, el inicio deducido es el
+  // día del alta (ver inicio-deducido.db.test.ts).
+  for (const id of TODAS) {
+    await prisma.company.create({ data: { id, name: `Empresa ${id}`, fsBaseUrl: 'http://localhost:8080', fsApiKeyEnc: 'k', createdAt: new Date('2020-01-01T00:00:00Z') } });
+  }
   const u = await prisma.user.create({ data: { email: EMAIL, passwordHash: hashPassword(randomBytes(18).toString('base64url')) } });
   userId = u.id;
   for (const companyId of TODAS) await prisma.membership.create({ data: { userId, companyId, role: 'admin' } });

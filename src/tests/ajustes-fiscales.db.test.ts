@@ -128,8 +128,10 @@ describe('GET/PUT /ajustes-fiscales', () => {
   afterAll(relojReal);
   beforeAll(async () => {
     relojEn('2026-04-10T10:00:00Z');
+    // Dadas de alta hace años: sin datos, el inicio en la app que se deduce es
+    // el día del alta, y aquí se quiere el calendario entero.
     for (const [id, name] of [[ES, 'Fiscal SL'], [US, 'Fiscal Inc'], [AUT, 'Autonoma'], [TARDE, 'Configura Tarde SL']]) {
-      await prisma.company.create({ data: { id, name, fsBaseUrl: 'http://localhost:8080', fsApiKeyEnc: 'k' } });
+      await prisma.company.create({ data: { id, name, fsBaseUrl: 'http://localhost:8080', fsApiKeyEnc: 'k', createdAt: new Date('2020-01-01T00:00:00Z') } });
     }
     await prisma.legalConfig.create({ data: { companyId: US, pais: 'US', monedaCuenta: 'USD' } });
     await prisma.legalConfig.create({ data: { companyId: AUT, tipoSociedad: 'AUTONOMO' } });
