@@ -228,3 +228,28 @@ describe('347: registros aparte del mismo proveedor (alquiler de local e inversi
     for (const l of t2) expect(validarRegistro(reg('2D'), l)).toEqual([]);
   });
 });
+
+describe('347 con abonos de proveedor: ejemplo de la sede y umbral en valor absoluto', () => {
+  // Una devolución de 4.000 € de una compra del año anterior va como -4.000 en el 1T.
+  const datos = agregar347(
+    [
+      compra('A11111119', 'Proveedor del Abono SL', '2025-02-10', -4000, 0, { cpTercero: '46001', lineas: [{ tipoIva: 0, base: -4000, cuota: 0 }] }),
+      compra('B87654323', 'Proveedor Pequeño SL', '2025-03-10', -2000, 0, { lineas: [{ tipoIva: 0, base: -2000, cuota: 0 }] }),
+    ],
+    2025,
+  );
+
+  it('el tercero con saldo anual negativo por encima del umbral se declara con signo; el de por debajo, no', () => {
+    expect(datos.operaciones.map((o) => [o.cifnif, o.baseAnual, o.trimestres])).toEqual([['A11111119', -4000, [-4000, 0, 0, 0]]]);
+  });
+
+  it('el fichero escribe la «N» del signo en el anual y en el trimestre', () => {
+    const decl = construirModelo347(2025, DECLARANTE, declarados347Desde(datos));
+    expect(decl.errores).toEqual([]);
+    const l = decl.fichero.split('\r\n')[1];
+    expect(validarRegistro(reg('2D'), l)).toEqual([]);
+    expect(campo(l, 83, 83)).toBe('N');
+    expect(campo(l, 84, 98)).toBe('000000000400000');
+    expect(campo(l, 136, 136)).toBe('N');
+  });
+});
