@@ -309,6 +309,8 @@ export interface DatosModelo111 {
   resultadoIngresar: number; // [casilla 30] = [28] - [29]
   /** Avisos del calculo (nominas en borrador, meses solo con el resumen antiguo...). */
   avisos?: string[];
+  /** Retencion de abonos que no cabe en este periodo ([09] como mucho hasta cero): pasa de la 4751 a la 4709. */
+  excesoAbonos?: number;
 }
 
 /** Modelo 115 — retenciones por arrendamiento de inmuebles urbanos. */

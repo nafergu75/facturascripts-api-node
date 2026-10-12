@@ -1038,5 +1038,6 @@ export async function calcularModelo111(companyId: string, periodo: PeriodoFisca
     totalRetenciones,
     resultadoIngresar: totalRetenciones, // [30] = [28] - resultados anteriores [29] (0)
     avisos: [...trabajo.avisos, ...(actividades.avisos ?? [])],
+    ...(actividades.excesoAbonos ? { excesoAbonos: actividades.excesoAbonos } : {}),
   };
 }
