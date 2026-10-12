@@ -23,7 +23,7 @@
 import { cabeceraAux, cierreAux, programaAeat, type ProgramaAeat } from '../common/cabeceraAux';
 import dr200 from '../../domain/aeat/dr200-2025.json';
 import type { BalanceSituacion, CuentaPerdidasGanancias } from '../../domain/impuesto-sociedades.model';
-import { aCentimos } from '../../utils/money';
+import { aCentimos, importeTexto } from '../../utils/money';
 import { CampoOficial, exigirDiseno, PaginaOficial, RegistroAeat } from './diseno';
 import { errorNifDeclarante, ibanAeat, nifAeat, telefonoAeat, textoAeat } from '../common/normalizacion';
 
@@ -298,7 +298,7 @@ export function construirModelo200(e: Entrada200): Declaracion200 {
   } else {
     advertencias.push(`Tipo de gravamen: ${tg.descripcion} Revísalo cada año (Ley 7/2024).`);
   }
-  if (c550 < 0) advertencias.push(`La base imponible sale negativa (${eur(c550).toFixed(2)} €): queda pendiente de compensar en los próximos ejercicios.`);
+  if (c550 < 0) advertencias.push(`La base imponible sale negativa (${importeTexto(eur(c550))}): queda pendiente de compensar en los próximos ejercicios.`);
   if (id.fechaConstitucion && Number(id.fechaConstitucion.slice(0, 4)) >= e.ejercicio - 2 && !e.nuevaCreacion) {
     advertencias.push('La sociedad es de constitución reciente: comprueba si le toca el tipo del 15 % de las entidades de nueva creación.');
   }
@@ -313,7 +313,7 @@ export function construirModelo200(e: Entrada200): Declaracion200 {
     // Marca de rectificativa, justificante de la anterior y motivo «Rectificaciones».
     if (!/^\d{13}$/.test(e.rectificativa.justificanteAnterior)) errores.push('La autoliquidación rectificativa del 200 necesita el número de justificante de la anterior (13 cifras).');
     else p1.crudo(149, '1').crudo(150, e.rectificativa.justificanteAnterior).crudo(163, '1');
-    const txt = (n: number) => eur(n).toFixed(2).replace('.', ',');
+    const txt = (n: number) => importeTexto(eur(n)).replace(' €', '');
     advertencias.push(
       c866 > 0
         ? `Autoliquidación rectificativa: con la anterior se ingresaron ${txt(c1578)} € ([01578]). Ahora sale ${txt(c621)} € ([00621]): la AEAT devuelve ${txt(c866)} € por la rectificación ([00866]) a la cuenta de la empresa. Revísalo en Sociedades WEB antes de presentarla.`
@@ -389,7 +389,7 @@ export function construirModelo200(e: Entrada200): Declaracion200 {
     .importe(anteriores >= 0 ? '00196' : '00197', eur(anteriores))
     .importe('00210', eur(suma(b.pasivoNoCorriente)));
   p6.importe('00228', eur(suma(b.pasivoCorriente))).importe('00239', eur(d4)).importe('00252', b.totalPatrimonioNetoYPasivo);
-  if (c(b.descuadre ?? 0) !== 0) errores.push(`El balance no cuadra (diferencia ${Number(b.descuadre).toFixed(2)} €): revisa los asientos antes de generar el 200.`);
+  if (c(b.descuadre ?? 0) !== 0) errores.push(`El balance no cuadra (diferencia ${importeTexto(Number(b.descuadre))}): revisa los asientos antes de generar el 200.`);
 
   // --- PyG: páginas 07000 y 08000 ---
   const p7 = pag('07000');
