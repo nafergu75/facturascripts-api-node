@@ -23,7 +23,7 @@ import { prisma } from '../../config/database';
 import { badRequest } from '../../utils/http-errors';
 import { aparicionesEntre, fechaContableGasto, whereGastosFiscales } from '../../domain/factura-gasto.model';
 import { fechaDevengoVenta, paisDelCliente, PAISES_UE } from '../../domain/tipo-operacion.model';
-import { clasificarOperacion, clave349De, exigirModelosAeat, obtenerFacturasFiscales } from '../impuestosCalculo.service';
+import { clasificarOperacion, clave349De, exigirModelosAeat, INICIO_COMPRAS_ISO2, obtenerFacturasFiscales } from '../impuestosCalculo.service';
 import { periodoFiscal } from '../nominas/fiscal';
 import type { PeriodoFiscal } from '../../domain/impuestos.model';
 import {
@@ -55,8 +55,8 @@ import {
   type FilaCalendario,
 } from './comun';
 
-/** Desde este dia las compras se clasifican por el pais ISO-2 y llevan A o I. */
-const INICIO_COMPRAS_ISO2 = '2027-01-01';
+// Desde INICIO_COMPRAS_ISO2 las compras se clasifican por el pais ISO-2 y llevan A o I
+// (el mismo dia y el mismo criterio que en el 303 y el 390: clasificarCompra).
 
 /** Una factura (o su anulacion) en el 349 del periodo. */
 export interface Movimiento349 {
