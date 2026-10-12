@@ -209,3 +209,174 @@ describe('aprobar el borrador del lector con su mes bloqueado', () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// Abonos de proveedor con el 303 presentado (seccion 11 de la especificacion)
+// ---------------------------------------------------------------------------
+
+const linea = (precio: number, extra: Record<string, unknown> = {}) => ({ descripcion: 'Mercancía', cantidad: 1, precioUnitario: precio, tipoIva: 21, ...extra });
+const compra = (supplierId: string, numero: string, fecha: string, lineas: Array<Record<string, unknown>>, extra: Record<string, unknown> = {}) => ({
+  proveedor: { id: supplierId },
+  numeroFacturaProveedor: numero,
+  fechaEmision: fecha,
+  tipoGasto: 'COMPRA',
+  lineas,
+  ...extra,
+});
+const presentar = (companyId: string, codigo: string, ejercicio: number, periodo: string) =>
+  prisma.modeloImpuesto.create({ data: { companyId, codigo, ejercicio, periodo, estado: 'presentado' } });
+/** Abono de 100 € + 21 % de la factura `originalId`, con la causa indicada. */
+const abonoDe = (sup: string, originalId: string, numero: string, fecha: string, causa = 'DEVOLUCION', extra: Record<string, unknown> = {}) => ({
+  ...compra(sup, numero, fecha, [linea(-100, { cuenta: '608' })]),
+  rectificativa: { tipo: 'I', causa, originales: [{ id: originalId }], ...extra } as Record<string, unknown>,
+});
+const ENLACE_303 = '/dashboard/fiscal/modelo-303';
+const RECARGO = 'saldrá más a ingresar y fuera de plazo, con el recargo y, en su caso, los intereses del art. 27 LGT.';
+
+describe('abonos con el 303 presentado', () => {
+  it('art. 80 que reduce, con el 303 de su trimestre presentado: 409 rectificar_303; confirmado, se registra con la marca y el aviso', async () => {
+    const E = await nuevaEmpresa('rect303');
+    const sup = await proveedor(E);
+    const o = await request(app(E)).post('/expense-invoices').send(compra(sup, 'F-1', '2027-01-10', [linea(1000)]));
+    expect(o.status).toBe(201);
+    await presentar(E, '303', 2027, '1T');
+
+    const abono = abonoDe(sup, o.body.data.id, 'R-1', '2027-02-15');
+    const r = await request(app(E)).post('/expense-invoices').send(abono);
+    expect(r.status).toBe(409);
+    expect(r.body.message).toBe(
+      `Esta rectificativa reduce el IVA que dedujiste y se declara en el periodo en que la recibiste. El 303 del 1T de 2027 ya está presentado. Si la recibiste en ese periodo, regístrala igualmente y presenta una autoliquidación rectificativa de ese 303: ${RECARGO} Si te llegó más tarde, pon la fecha en que te llegó.`,
+    );
+    expect(r.body.details).toEqual({ campo: 'fechaRegistro', motivo: 'rectificar_303', modelo: '303', ejercicio: 2027, periodo: '1T', enlace: ENLACE_303 });
+
+    const ok = await request(app(E))
+      .post('/expense-invoices')
+      .send({ ...abono, rectificativa: { ...abono.rectificativa, confirmaRectificar303: true } });
+    expect(ok.status).toBe(201);
+    const f = await prisma.expenseInvoice.findUniqueOrThrow({ where: { id: ok.body.data.id } });
+    expect(f.rectificar303ConfirmadoEn).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/);
+    expect(ok.body.data.avisos).toContainEqual(
+      'Registrada en el 1T de 2027, que ya está presentado: prepara la autoliquidación rectificativa de ese 303. En la contabilidad, apunta a mano la regularización del IVA (472 y 4750), el recargo (678) y los intereses de demora (669) cuando los pagues.',
+    );
+    const marca = await prisma.auditLog.findFirstOrThrow({ where: { companyId: E, action: 'RECTIFICAR_303_PENDIENTE', resourceId: f.id } });
+    expect(marca.meta).toMatchObject({ modelo: '303', ejercicio: 2027, periodo: '1T', cuota: -21 });
+    // El asiento va en el periodo abierto (solo esta presentado el 303).
+    const asiento = await prisma.journalEntry.findFirstOrThrow({ where: { companyId: E, invoiceId: f.id, origen: 'FACTURA_GASTO' } });
+    expect(asiento).toMatchObject({ estado: 'POSTED' });
+    expect(asiento.fecha.toISOString().slice(0, 10)).toBe('2027-02-15');
+  });
+
+  it('un cargo (lo aumenta) con el 303 presentado: el texto de siempre, sin rectificar_303', async () => {
+    const E = await nuevaEmpresa('cargo303');
+    const sup = await proveedor(E);
+    const o = await request(app(E)).post('/expense-invoices').send(compra(sup, 'F-1', '2027-01-10', [linea(1000)]));
+    await presentar(E, '303', 2027, '1T');
+    const r = await request(app(E))
+      .post('/expense-invoices')
+      .send(compra(sup, 'R-2', '2027-02-15', [linea(50)], { rectificativa: { tipo: 'I', causa: 'ERROR_DERECHO', originales: [{ id: o.body.data.id }], confirmaRectificar303: true } }));
+    expect(r.status).toBe(409);
+    expect(r.body.message).toMatch(/^El 303 del 1T de 2027 ya está presentado: si la recibiste más tarde/);
+    expect(r.body.details).toEqual({ campo: 'fechaRegistro' });
+  });
+
+  it('con el 111 presentado y retención en el abono, confirmar el 303 no basta', async () => {
+    const E = await nuevaEmpresa('ret111');
+    const sup = await proveedor(E);
+    const prof = (lineas: Array<Record<string, unknown>>, numero: string, fecha: string, extra: Record<string, unknown> = {}) => ({
+      ...compra(sup, numero, fecha, lineas, extra),
+      tipoGasto: 'SERVICIO_PROFESIONAL',
+    });
+    const o = await request(app(E)).post('/expense-invoices').send(prof([linea(1000, { tipoRetencion: 15 })], 'P-1', '2027-01-10'));
+    expect(o.status).toBe(201);
+    await presentar(E, '303', 2027, '1T');
+    await presentar(E, '111', 2027, '1T');
+    const r = await request(app(E))
+      .post('/expense-invoices')
+      .send(
+        prof([linea(-100, { tipoRetencion: 15 })], 'P-1R', '2027-02-15', {
+          rectificativa: { tipo: 'I', causa: 'ANULACION_PRECIO', originales: [{ id: o.body.data.id }], confirmaRectificar303: true },
+        }),
+      );
+    expect(r.status).toBe(409);
+    expect(r.body.message).toMatch(/^El 111 del 1T de 2027 ya está presentado/);
+    expect(r.body.details).toEqual({ campo: 'fechaRegistro' });
+  });
+
+  it('ERROR_IVA que reduce: se mira el 303 de la original, no el de la fecha de registro', async () => {
+    const E = await nuevaEmpresa('erroriva');
+    const sup = await proveedor(E);
+    const o = await request(app(E)).post('/expense-invoices').send(compra(sup, 'F-1', '2027-01-10', [linea(1000)]));
+    const cuerpo = compra(sup, 'R-3', '2027-05-10', [linea(-100), linea(100, { tipoIva: 10 })], {
+      rectificativa: { tipo: 'I', causa: 'ERROR_IVA', originales: [{ id: o.body.data.id }] },
+    });
+
+    await presentar(E, '303', 2027, '2T');
+    await presentar(E, '303', 2027, '1T');
+    const r = await request(app(E)).post('/expense-invoices').send(cuerpo);
+    expect(r.status).toBe(409);
+    expect(r.body.message).toBe(
+      `Esta rectificativa corrige un IVA mal aplicado y reduce el que dedujiste: se declara en el periodo de la factura que corrige. El 303 del 1T de 2027 ya está presentado. Regístrala igualmente y presenta una autoliquidación rectificativa de ese 303: ${RECARGO}`,
+    );
+    expect(r.body.details).toEqual({ campo: 'rectificativa', motivo: 'rectificar_303', modelo: '303', ejercicio: 2027, periodo: '1T', enlace: ENLACE_303 });
+
+    // Sin el 1T presentado se registra, aunque el 2T (el de la fecha de registro) lo este: su IVA va al 1T.
+    await prisma.modeloImpuesto.deleteMany({ where: { companyId: E, codigo: '303', periodo: '1T' } });
+    const ok = await request(app(E)).post('/expense-invoices').send(cuerpo);
+    expect(ok.status).toBe(201);
+    expect(ok.body.data.rectificativa.imputacionIva).toEqual({ fecha: '2027-01-10', casillas: '28-29' });
+
+    // Presentado despues el 1T: anularla hace contraasiento (no REVERSED), porque ya cuenta en lo presentado.
+    await presentar(E, '303', 2027, '1T');
+    await prisma.modeloImpuesto.deleteMany({ where: { companyId: E, codigo: '303', periodo: '2T' } });
+    const ficha = await request(app(E)).get(`/expense-invoices/${ok.body.data.id}`);
+    expect(ficha.body.data.acciones.anular).toMatchObject({ permitido: true, conContraasiento: true });
+    const anu = await request(app(E)).post(`/expense-invoices/${ok.body.data.id}/anular`).send({ motivo: 'Mal registrada', fecha: '2027-05-20' });
+    expect(anu.status).toBe(200);
+    expect(anu.body.data.contraasiento).toBe(true);
+  });
+
+  it('el borrador de un abono confirmado se aprueba sin 409; uno sin confirmar da rectificar_303 y se confirma al aprobar', async () => {
+    const E = await nuevaEmpresa('aprobar303');
+    const sup = await proveedor(E);
+    const o = await expenseInvoicesService.registrarGasto(E, compra(sup, 'F-1', '2027-01-10', [linea(1000)]), { contabilizar: 'POSTED' });
+
+    // Sin confirmar: el borrador se dio de alta antes de presentar el 303.
+    const sinConfirmar = await expenseInvoicesService.registrarGasto(E, abonoDe(sup, o.factura.id, 'R-A', '2027-02-15'), { contabilizar: 'DRAFT' });
+    await presentar(E, '303', 2027, '1T');
+    await expect(motor.aprobarAsiento(E, sinConfirmar.asientoId, 'u-percer')).rejects.toMatchObject({
+      statusCode: 409,
+      message: expect.stringMatching(/^Esta rectificativa reduce el IVA que dedujiste/),
+      details: { campo: 'fechaRegistro', facturaId: sinConfirmar.factura.id, motivo: 'rectificar_303', modelo: '303', ejercicio: 2027, periodo: '1T', enlace: ENLACE_303 },
+    });
+    const porRuta = await request(appMotor(E)).post(`/companies/${E}/accounting/journal-entries/${sinConfirmar.asientoId}/approve`).send({ confirmaRectificar303: true });
+    expect(porRuta.status).toBe(200);
+    const f = await prisma.expenseInvoice.findUniqueOrThrow({ where: { id: sinConfirmar.factura.id } });
+    expect(f).toMatchObject({ estado: 'ACCOUNTED' });
+    expect(f.rectificar303ConfirmadoEn).toBeTruthy();
+    expect(await prisma.auditLog.count({ where: { companyId: E, action: 'RECTIFICAR_303_PENDIENTE', resourceId: f.id } })).toBe(1);
+
+    // Confirmado en el alta (como lo manda el lector): se aprueba sin mas.
+    const confirmado = await expenseInvoicesService.registrarGasto(E, abonoDe(sup, o.factura.id, 'R-B', '2027-02-16', 'DEVOLUCION', { confirmaRectificar303: true }), {
+      contabilizar: 'DRAFT',
+    });
+    await expect(motor.aprobarAsiento(E, confirmado.asientoId, 'u-percer')).resolves.toMatchObject({ estado: 'POSTED' });
+  });
+
+  it('un abono confirmado se puede corregir sin volver a frenar; llevarlo a otro periodo presentado pide confirmar de nuevo', async () => {
+    const E = await nuevaEmpresa('editar303');
+    const sup = await proveedor(E);
+    const o = await expenseInvoicesService.registrarGasto(E, compra(sup, 'F-1', '2027-01-10', [linea(1000)]), { contabilizar: 'POSTED' });
+    await presentar(E, '303', 2027, '1T');
+    const cuerpo = abonoDe(sup, o.factura.id, 'R-1', '2027-02-15', 'DEVOLUCION', { confirmaRectificar303: true });
+    const r = await expenseInvoicesService.registrarGasto(E, cuerpo, { contabilizar: 'POSTED' });
+    const sinRepetir = { ...cuerpo, observaciones: 'Cajas rotas', rectificativa: { ...cuerpo.rectificativa, confirmaRectificar303: undefined } };
+    const put = await request(app(E)).put(`/expense-invoices/${r.factura.id}`).send(sinRepetir);
+    expect(put.status).toBe(200);
+    expect(put.body.data.observaciones).toBe('Cajas rotas');
+
+    await presentar(E, '303', 2027, '04');
+    const otro = await request(app(E)).put(`/expense-invoices/${r.factura.id}`).send({ ...sinRepetir, fechaRegistro: '2027-04-03' });
+    expect(otro.status).toBe(409);
+    expect(otro.body.details).toMatchObject({ motivo: 'rectificar_303', periodo: '04' });
+  });
+});
