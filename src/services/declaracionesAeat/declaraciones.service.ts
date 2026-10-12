@@ -133,8 +133,41 @@ export interface DatosPresentada {
 
 /** Opciones de una declaración en curso (las que no son columnas). */
 export interface DatosEnCurso {
-  /** 303: devoluciones acordadas por la AEAT de la autoliquidación anterior ([109]). */
+  /** 303 y 200: devoluciones acordadas por la AEAT de la autoliquidación anterior ([109] del 303, [01584] del 200). */
   devolucionAcordada?: number;
+  /**
+   * Sustitutiva de una informativa: números que hay que dar de baja en la sede
+   * antes de presentarla. El primero es el que cita la sustitutiva; los demás,
+   * las complementarias que se presentaron después.
+   */
+  bajas?: string[];
+}
+
+/**
+ * Declaración que sustituye una sustitutiva: la última normal o sustitutiva
+ * presentada (la «original» de la cadena), no una complementaria. La sede de la
+ * AEAT («Modificar una declaración informativa mediante fichero») dice que la
+ * sustitutiva anula una sola declaración y que antes hay que darla de baja con
+ * «Baja de declaración por sustitución». Las complementarias presentadas
+ * después de esa original también se dan de baja: la sustitutiva lleva todos
+ * los registros y, si no, quedarían declarados dos veces.
+ */
+export function anteriorDeSustitutiva(presentadas: FilaDeclaracion[] | DeclaracionAeat[]): { base: DeclaracionAeat | FilaDeclaracion | null; complementarias: Array<DeclaracionAeat | FilaDeclaracion> } {
+  const lista = presentadas as Array<DeclaracionAeat | FilaDeclaracion>;
+  let i = lista.length - 1;
+  while (i >= 0 && lista[i].tipo === 'C') i--;
+  if (i < 0) return { base: lista[0] ?? null, complementarias: lista.slice(1) };
+  return { base: lista[i], complementarias: lista.slice(i + 1) };
+}
+
+/** Aviso de la sustitutiva de una informativa: qué hay que dar de baja en la sede antes de presentarla. */
+export function avisoBajasSustitutiva(codigo: string, bajas: string[]): string | null {
+  if (!bajas.length) return null;
+  const [original, ...resto] = bajas;
+  const otras = resto.length
+    ? ` Da de baja también ${resto.length === 1 ? 'la complementaria' : 'las complementarias'} ${resto.join(', ')}: la sustitutiva lleva todos los registros y, si no, quedarían declarados dos veces.`
+    : '';
+  return `Antes de presentar la sustitutiva del ${codigo}, da de baja en la sede de la AEAT la declaración ${original} («Consulta y bajas de declaraciones» > «Baja de declaración por sustitución»). La sustitutiva cita ese número.${otras} Apunta los números antes de darlas de baja: después la sede ya no las enseña.`;
 }
 
 export const datosDe = (f: FilaDeclaracion | null | undefined): DatosPresentada => (f?.datos ?? {}) as DatosPresentada;
@@ -489,7 +522,14 @@ export async function prepararRectificacion(
         vivas = await tx.declaracionAeat.findMany({ where: { ...delPeriodo(companyId, codigo, ejercicio, periodo), estado: { not: 'anulada' } }, orderBy: { secuencia: 'asc' } });
       }
       const presentadas = vivas.filter((d) => d.estado === 'presentada');
-      const anterior = presentadas[presentadas.length - 1] ?? null;
+      // La complementaria cita la última presentada; la sustitutiva de una
+      // informativa, la original (la última normal o sustitutiva), y deja
+      // apuntado lo que hay que dar de baja antes de presentarla.
+      const sustitucion = e.tipo === 'S' && config.clase === 'informativa' ? anteriorDeSustitutiva(presentadas) : null;
+      const anterior = sustitucion ? sustitucion.base : presentadas[presentadas.length - 1] ?? null;
+      const bajas = sustitucion
+        ? [sustitucion.base, ...sustitucion.complementarias].map((d) => d?.numero ?? d?.justificante ?? '').filter(Boolean)
+        : [];
       const justificanteAnterior = e.justificanteAnterior ?? (config.numero ? anterior?.numero ?? anterior?.justificante : anterior?.justificante) ?? null;
       if (!justificanteAnterior || !/^[0-9A-Z]{13}$/.test(justificanteAnterior)) {
         throw badRequest(
@@ -498,7 +538,8 @@ export async function prepararRectificacion(
             : `El ${codigo} de este periodo no está marcado como presentado en la app: escribe el número de la declaración anterior para preparar la ${config.nombres[e.tipo]}.`,
         );
       }
-      if (config.clase === 'autoliquidacion' && !anterior && e.resultadoAnterior === null && codigo !== '390' && codigo !== '200') {
+      // El 390 no lleva lo ingresado. El 200 sí ([01578]): sin él se volvería a pedir el ingreso entero.
+      if (config.clase === 'autoliquidacion' && !anterior && e.resultadoAnterior === null && codigo !== '390') {
         throw badRequest('Como la declaración anterior no está en la app, indica lo que se ingresó con ella (resultado anterior).');
       }
       const resultadoAnterior = config.clase === 'autoliquidacion' ? e.resultadoAnterior ?? calculo.resultadoAnterior(presentadas) : null;
@@ -515,7 +556,10 @@ export async function prepararRectificacion(
           justificanteAnterior,
           resultadoAnterior,
           registros: registros === null ? Prisma.DbNull : (registros as Prisma.InputJsonValue),
-          datos: (e.devolucionAcordada ? { devolucionAcordada: e.devolucionAcordada } : {}) as Prisma.InputJsonValue,
+          datos: {
+            ...(e.devolucionAcordada ? { devolucionAcordada: e.devolucionAcordada } : {}),
+            ...(bajas.length ? { bajas } : {}),
+          } as Prisma.InputJsonValue,
           creadoPor: userId,
         },
       });
@@ -618,7 +662,18 @@ export interface HistorialDeclaraciones {
     presentadoPor: string | null;
     presentadoEn: string | null;
   }>;
-  enCurso: { tipo: TipoDeclaracionAeat; tipoTexto: string; numero: string | null; justificanteAnterior: string | null; resultadoAnterior: number | null; registros: string[] | null } | null;
+  enCurso: {
+    tipo: TipoDeclaracionAeat;
+    tipoTexto: string;
+    numero: string | null;
+    justificanteAnterior: string | null;
+    resultadoAnterior: number | null;
+    registros: string[] | null;
+    /** Sustitutiva de una informativa: números que hay que dar de baja en la sede antes de presentarla. */
+    bajas: string[];
+    /** Texto para la pantalla con lo que hay que hacer en la sede antes de presentar (o null). */
+    aviso: string | null;
+  } | null;
 }
 
 /** Historial de un modelo y periodo (no escribe). */
@@ -629,6 +684,7 @@ export async function historialDeclaraciones(companyId: string, codigo: string, 
     : null;
   const presentadoSinHistorial = legado?.estado === 'presentado';
   const todas = await prisma.declaracionAeat.findMany({ where: delPeriodo(companyId, codigo, ejercicio, periodo), orderBy: { secuencia: 'asc' } });
+  const bajasEnCurso = (((ctx.enCurso?.datos ?? {}) as DatosEnCurso).bajas ?? []).map(String);
   return {
     codigo,
     ejercicio,
@@ -662,6 +718,8 @@ export async function historialDeclaraciones(companyId: string, codigo: string, 
           justificanteAnterior: ctx.enCurso.justificanteAnterior,
           resultadoAnterior: ctx.enCurso.resultadoAnterior === null ? null : Number(ctx.enCurso.resultadoAnterior),
           registros: ctx.registros,
+          bajas: bajasEnCurso,
+          aviso: avisoBajasSustitutiva(codigo, bajasEnCurso),
         }
       : null,
   };

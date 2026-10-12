@@ -308,6 +308,20 @@ describe('B4 y B5: 347 normal, complementaria y sustitutiva', () => {
     expect(sus[0].slice(107, 135)).toBe('3472026000003' + ' S' + '3472026000001');
     // Otra empresa empieza su propia numeración.
     expect((await request(app()).post(ruta('/tax-models/347/declaraciones/numero', OTRA)).send({ ejercicio: 2026 })).body.data.enCurso.numero).toBe('3472026000001');
+
+    // Se presenta una complementaria y después se prepara una sustitutiva: cita la
+    // original (no la complementaria) y avisa de las dos bajas que hay que hacer en la sede.
+    expect((await request(app()).delete(ruta('/tax-models/347/declaraciones/rectificacion?ejercicio=2026'))).status).toBe(200);
+    const c2 = await request(app()).post(ruta('/tax-models/347/declaraciones/rectificacion')).send({ ejercicio: 2026, tipo: 'C' });
+    expect(c2.body.data.enCurso).toMatchObject({ tipo: 'C', numero: '3472026000004', justificanteAnterior: '3472026000001', bajas: [], aviso: null });
+    expect((await request(app()).post(ruta('/tax-models/347/presentado')).send({ ejercicio: 2026, justificante: { numero: '3472026000004', fecha: '2027-02-25' } })).status).toBe(200);
+    const s2 = await request(app()).post(ruta('/tax-models/347/declaraciones/rectificacion')).send({ ejercicio: 2026, tipo: 'S' });
+    expect(s2.status).toBe(201);
+    expect(s2.body.data.enCurso).toMatchObject({ tipo: 'S', numero: '3472026000005', justificanteAnterior: '3472026000001', bajas: ['3472026000001', '3472026000004'] });
+    expect(s2.body.data.enCurso.aviso).toMatch(/da de baja en la sede de la AEAT la declaración 3472026000001.*Baja de declaración por sustitución.*la complementaria 3472026000004/);
+    const s2txt = (await fichero347(E, 2026)).contenido.split('\r\n').filter(Boolean);
+    expect(s2txt[0].slice(107, 135)).toBe('3472026000005' + ' S' + '3472026000001');
+    expect(s2txt).toHaveLength(3); // todos los declarados
   });
 });
 
@@ -321,13 +335,22 @@ describe('B4: 390 sustitutiva y 200 rectificativa', () => {
     const p1 = b.paginas.find((x: { codigo: string }) => x.codigo === '01000').linea as string;
     expect(p1.slice(132, 147)).toBe('1' + '0' + '3902026000001');
 
+    // Sin la anterior en la app hay que decir lo que se ingresó: si no, se pediría otra vez entero.
+    const sin = await request(app()).post(ruta('/tax-models/200/declaraciones/rectificacion')).send({ ejercicio: 2026, tipo: 'C', justificanteAnterior: '2002026000001' });
+    expect(sin.status).toBe(400);
+    expect(sin.body.message).toMatch(/lo que se ingresó/);
     // El 200 de prueba no cuadra con unas cuentas vacías, pero la rectificativa se marca igual.
-    const ctx200 = await request(app()).post(ruta('/tax-models/200/declaraciones/rectificacion')).send({ ejercicio: 2026, tipo: 'C', justificanteAnterior: '2002026000001' });
+    const ctx200 = await request(app())
+      .post(ruta('/tax-models/200/declaraciones/rectificacion'))
+      .send({ ejercicio: 2026, tipo: 'C', justificanteAnterior: '2002026000001', resultadoAnterior: 1540 });
     expect(ctx200.status).toBe(201);
     const d200 = (await request(app()).get(ruta('/impuestos/borradores/200?ejercicio=2026'))).body.data;
     const pag = d200.paginas.find((x: { codigo: string }) => x.codigo === '01000').linea as string;
     // Posición 149: rectificativa; 150-162: justificante; 163: motivo «Rectificaciones».
     expect(pag.slice(148, 163)).toBe('1' + '2002026000001' + '1');
+    expect(d200.liquidacion.resultadoAnterior).toBe(1540);
+    const p14b = d200.paginas.find((x: { codigo: string }) => x.codigo === '14B00').linea as string;
+    expect(Number(p14b.slice(1084, 1101)) / 100).toBe(1540); // [01578]
     expect(d200.advertencias.join(' ')).toMatch(/Sociedades WEB/);
   });
 });
