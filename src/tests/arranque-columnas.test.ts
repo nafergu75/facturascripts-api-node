@@ -55,3 +55,41 @@ describe('columna de la cuenta', () => {
     expect(r.error?.columnas.length).toBeGreaterThan(0);
   });
 });
+
+describe('hoja sin reconocer y columnas para elegir', () => {
+  const RARO = [
+    ['Listado'],
+    ['Codigo contable X', 'Denominacion Y', 'Importe A', 'Importe B'],
+    ['57200001', 'Banco', '9000,00', '0,00'],
+    ['10000000', 'Capital', '0,00', '9000,00'],
+  ];
+
+  it('enseña sus primeras filas y las columnas con su título y dos ejemplos de datos', () => {
+    const r = extraerHoja('DESCONOCIDO', RARO, { cabecera: null, longitud: 8, formato: 'csv' });
+    expect(r.error?.muestra?.slice(0, 2)).toEqual([['Listado'], ['Codigo contable X', 'Denominacion Y', 'Importe A', 'Importe B']]);
+    expect(r.error?.columnas.map((c) => [c.letra, c.titulo, c.ejemplos])).toEqual([
+      ['A', 'Codigo contable X', ['57200001', '10000000']],
+      ['B', 'Denominacion Y', ['Banco', 'Capital']],
+      ['C', 'Importe A', ['9000,00', '0,00']],
+      ['D', 'Importe B', ['0,00', '9000,00']],
+    ]);
+    expect(r.error?.filaTitulos).toBe(2);
+  });
+
+  it('al elegir «Sumas y saldos» el mapeo enseña títulos reales y la fila de títulos para mandarla', () => {
+    const r = extraerHoja('SUMAS_Y_SALDOS', RARO, { cabecera: null, longitud: 8, formato: 'csv' });
+    const columnas = r.error?.columnas ?? r.columnas ?? [];
+    expect(columnas[0]).toMatchObject({ titulo: 'Codigo contable X', ejemplo: '57200001' });
+    // Con las columnas y la fila de titulos elegidas a mano, se lee bien.
+    const m = extraerHoja('SUMAS_Y_SALDOS', RARO, { cabecera: null, mapeo: { cuenta: 0, nombre: 1, saldoDeudor: 2, saldoAcreedor: 3 }, filaCabecera: 2, longitud: 8, formato: 'csv' });
+    expect(m.error).toBeNull();
+    const e = m.extraccion as Extract<Extraccion, { tipo: 'SUMAS_Y_SALDOS' }>;
+    expect(e.lectura.cuentas.map((c) => [c.codigo, c.saldo]).sort()).toEqual([
+      ['10000000', -9000],
+      ['57200001', 9000],
+    ]);
+    // Una hoja leida trae tambien sus columnas, para revisarlas.
+    expect(m.columnas?.map((c) => c.titulo)).toEqual(['Codigo contable X', 'Denominacion Y', 'Importe A', 'Importe B']);
+    expect(m.filaTitulos).toBe(2);
+  });
+});
