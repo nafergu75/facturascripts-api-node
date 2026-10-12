@@ -53,7 +53,9 @@ export interface EstadoFase {
 }
 
 /** Asientos del diario que se graban en cada llamada. */
-export const TROZO_HISTORICO = 2000;
+export const TROZO_HISTORICO = 1000;
+/** Clientes y proveedores que se enlazan o crean en cada llamada. */
+export const TROZO_TERCEROS = 100;
 
 /** Quien confirma es administrador de la empresa: puede dar de alta clientes y proveedores. */
 const TODOS: PermisosAlta = { cliente: true, proveedor: true };
@@ -194,6 +196,19 @@ export async function aplicarFase(companyId: string, ejercicioRaw: unknown, carg
 // Fases
 // ---------------------------------------------------------------------------
 
+/** Lo creado por el plan en varias llamadas, junto. */
+function juntarCreado(previo: CreadoPorPlan | undefined, nuevo: CreadoPorPlan): CreadoPorPlan {
+  if (!previo) return nuevo;
+  return {
+    cuentas: [...previo.cuentas, ...nuevo.cuentas],
+    clientes: [...previo.clientes, ...nuevo.clientes],
+    proveedores: [...previo.proveedores, ...nuevo.proveedores],
+    enlaces: [...previo.enlaces, ...nuevo.enlaces],
+    nombresAnteriores: [...previo.nombresAnteriores, ...nuevo.nombresAnteriores],
+    longitudAnterior: previo.longitudAnterior,
+  };
+}
+
 const FUNCIONES: Record<Fase, (ctx: ContextoFase) => Promise<string>> = {
   EJERCICIOS: faseEjercicios,
   PLAN_Y_TERCEROS: fasePlan,
@@ -226,23 +241,36 @@ async function faseEjercicios({ tx, c, a, anterior, creado }: ContextoFase): Pro
 }
 
 /** 1 y 2. Plan y subcuentas (A3) con clientes y proveedores enlazados, en la misma transaccion. */
-async function fasePlan({ tx, c, a, creado, anterior }: ContextoFase): Promise<string> {
+async function fasePlan({ tx, c, a, creado, anterior, estado }: ContextoFase): Promise<string> {
   if (!a.cuentas.length) {
     return 'La carga no trae cuentas.';
   }
-  const r = await confirmarPlanEnTx(tx, c.companyId, { cuentas: a.cuentas, terceros: a.listado, permisos: TODOS }, { nombresGestoria: true, nota: `Arranque ${c.ejercicio}, carga ${c.id}` });
-  creado.plan = r.creado satisfies CreadoPorPlan;
+  // Por trozos: cada llamada enlaza o crea como mucho TROZO_TERCEROS fichas; las ya hechas salen como «ya enlazadas».
+  const r = await confirmarPlanEnTx(
+    tx,
+    c.companyId,
+    { cuentas: a.cuentas, terceros: a.listado, permisos: TODOS },
+    { nombresGestoria: true, nota: `Arranque ${c.ejercicio}, carga ${c.id}`, limiteTerceros: TROZO_TERCEROS },
+  );
+  creado.plan = juntarCreado(creado.plan as CreadoPorPlan | undefined, r.creado);
+  const hechas = (estado.cursor ?? 0) + r.creado.enlaces.length;
+  estado.cursor = hechas;
+  estado.total = hechas + r.quedan;
+  if (r.quedan) return `${varios(hechas, 'cliente o proveedor', 'clientes y proveedores')} de ${(hechas + r.quedan).toLocaleString('es-ES')}.`;
   // Marca de plan anterior traido: el aviso del primer cliente o proveedor ya no salta.
   const reglas = await tx.reglasContables.findUnique({ where: { companyId: c.companyId }, select: { data: true } });
   const data = objeto((reglas?.data as Prisma.JsonValue) ?? null);
   anterior.planAnterior = data.planAnterior ?? null;
   const nueva = { ...data, planAnterior: { cargaId: c.id, fecha: new Date().toISOString() } };
   await tx.reglasContables.upsert({ where: { companyId: c.companyId }, update: { data: json(nueva) }, create: { companyId: c.companyId, data: json(nueva) } });
+  const todo = creado.plan as CreadoPorPlan;
+  const creadas = todo.clientes.length + todo.proveedores.length;
+  const enlazadas = new Set(todo.enlaces.map((e) => e.fichaId)).size - creadas;
   const partes = [
-    varios(r.cuentasCreadas, 'cuenta nueva', 'cuentas nuevas'),
-    r.creado.nombresAnteriores.length ? varios(r.creado.nombresAnteriores.length, 'nombre cambiado', 'nombres cambiados') : '',
-    varios(r.fichasCreadas, 'ficha creada', 'fichas creadas'),
-    varios(r.fichasEnlazadas, 'ficha enlazada', 'fichas enlazadas'),
+    varios(todo.cuentas.length, 'cuenta nueva', 'cuentas nuevas'),
+    todo.nombresAnteriores.length ? varios(todo.nombresAnteriores.length, 'nombre cambiado', 'nombres cambiados') : '',
+    varios(creadas, 'ficha creada', 'fichas creadas'),
+    varios(Math.max(0, enlazadas), 'ficha enlazada', 'fichas enlazadas'),
     r.pendientes ? varios(r.pendientes, 'subcuenta pendiente de enlazar', 'subcuentas pendientes de enlazar') : '',
   ].filter(Boolean);
   return `${partes.join(', ')}.`;
@@ -389,6 +417,19 @@ async function faseInmovilizado({ tx, c, a, estado, anterior, creado }: Contexto
   return `${varios(a.inmovilizado.activos.length, 'bien', 'bienes')} de inmovilizado.`;
 }
 
+/** Tamano maximo del comparativo (PriorYearData.datosJSON es TEXT, 64 KB). */
+const MAX_COMPARATIVO = 60_000;
+
+/** Saldos sumados por cuenta de `digitos` digitos. */
+function agruparCuentas(cuentas: Array<{ codigo: string; nombre: string; saldo: number }>, digitos: number) {
+  const m = new Map<string, number>();
+  for (const x of cuentas) {
+    const k = x.codigo.slice(0, digitos);
+    m.set(k, Math.round(((m.get(k) ?? 0) + x.saldo) * 100) / 100);
+  }
+  return [...m.entries()].filter(([, v]) => Math.round(v * 100) !== 0).map(([codigo, saldo]) => ({ codigo, nombre: '', saldo })).sort((a, b) => a.codigo.localeCompare(b.codigo));
+}
+
 /** 8. Comparativo de 2026 (columna N-1 de los informes de 2027) desde el sumas y saldos. */
 async function faseComparativo({ tx, c, a, estado, anterior, creado }: ContextoFase): Promise<string> {
   const sys = a.datos.sumasSaldos;
@@ -402,14 +443,22 @@ async function faseComparativo({ tx, c, a, estado, anterior, creado }: ContextoF
     const pyg = saldosDesdeDiario(a.diario.asientos).filter((x) => /^[67]/.test(x.codigo) && Math.round(x.saldo * 100) !== 0);
     cuentas = [...cuentas.filter((x) => !/^[67]/.test(x.codigo)), ...pyg];
   }
+  // El comparativo se guarda en un campo de texto de 64 KB: con miles de subcuentas se agrupa
+  // por cuentas de 4 (o 3) digitos, que es lo que usan el balance y la PyG del año anterior.
+  let nivel = 0;
+  for (const digitos of [4, 3]) {
+    if (JSON.stringify({ formato: 'saldos-v1', cuentas }).length <= MAX_COMPARATIVO) break;
+    cuentas = agruparCuentas(cuentas, digitos);
+    nivel = digitos;
+  }
   const anio = c.ejercicio - 1;
   const previo = await tx.priorYearData.findFirst({ where: { companyId: c.companyId, ejercicio: anio } });
   anterior.comparativo = previo ? { datosJSON: previo.datosJSON, observaciones: previo.observaciones } : null;
   // Se sustituye entero (no se mezcla con lo que hubiera).
   if (previo) await tx.priorYearData.delete({ where: { id: previo.id } });
   await guardarSaldosComparativo(c.companyId, anio, cuentas, 'todo', `Traído de la gestoría (carga ${c.version})`, tx);
-  creado.comparativo = true;
-  return `${varios(cuentas.length, 'cuenta', 'cuentas')} de ${anio} como comparativo de ${c.ejercicio}.`;
+  creado.comparativo = nivel ? { agrupadoA: nivel } : true;
+  return `${varios(cuentas.length, 'cuenta', 'cuentas')} de ${anio} como comparativo de ${c.ejercicio}${nivel ? ` (agrupadas en cuentas de ${nivel} dígitos)` : ''}.`;
 }
 
 /** 9. Comprobacion final: la carga queda CONFIRMADA y la anterior SUSTITUIDA. */
