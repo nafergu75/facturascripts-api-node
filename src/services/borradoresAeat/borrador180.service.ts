@@ -136,7 +136,8 @@ export async function calcularBorrador180(companyId: string, ejercicio: number):
   await exigirModelosAeat(companyId, desde, hasta);
 
   const facturasBd = await prisma.expenseInvoice.findMany({
-    where: { AND: [whereGastosFiscales(companyId, desde, hasta), { tipoGasto: 'ALQUILER', retencionTotal: { gt: 0 } }] },
+    // Con los abonos (retencion en negativo): se netean por arrendador e inmueble en el año.
+    where: { AND: [whereGastosFiscales(companyId, desde, hasta), { tipoGasto: 'ALQUILER', retencionTotal: { not: 0 } }] },
     include: { lineas: true, supplier: { select: { id: true, nifCif: true, nombreFiscal: true, cp: true, provincia: true, pais: true } } },
   });
   const inmuebles = await prisma.inmuebleArrendado.findMany({ where: { companyId } });
@@ -212,6 +213,13 @@ export async function calcularBorrador180(companyId: string, ejercicio: number):
   // Complementaria o sustitutiva y su anterior: las pone el historial de declaraciones (B4).
   const tipoDeclaracion = decl.tipoDeclaracion;
   const opciones = { tipoDeclaracion, declaracionAnterior: decl.declaracionAnterior };
+  for (const g of grupos.values()) {
+    if (g.cb < 0 || g.cr < 0) {
+      errores.push(
+        `${g.nombre} sale con importes negativos en ${ejercicio} (sus abonos superan lo facturado): no se puede declarar así en el 180. Revisa sus facturas y abonos del año o consúltalo con tu asesor.`,
+      );
+    }
+  }
   const todos = [...grupos.values()]
     .filter((g) => g.cb !== 0 || g.cr !== 0)
     .map(({ cb, cr, ultima, ...g }) => ({ ...g, base: cb / 100, retenciones: cr / 100 }))
