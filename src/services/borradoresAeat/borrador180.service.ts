@@ -17,6 +17,7 @@
  *    app (los presentados o calculados) y, si no estan, con el 115 calculado.
  */
 import { prisma } from '../../config/database';
+import { estadosEnRectificacion } from '../declaracionesAeat/declaraciones.service';
 import { importeTexto } from '../../utils/money';
 import { badRequest } from '../../utils/http-errors';
 import { aparicionesRetencionEntre, desgloseRetencionGasto, fechaContableGasto, whereGastosFiscales } from '../../domain/factura-gasto.model';
@@ -63,6 +64,8 @@ export interface FacturaAlquiler180 {
 export interface Borrador180 {
   ejercicio: number;
   estado: string;
+  /** Presentado con una complementaria, sustitutiva o rectificativa en preparación (si no, null). */
+  estadoTexto: string | null;
   /** Tipo y anterior: los pone el historial de declaraciones (B4). */
   opciones: { tipoDeclaracion: 'C' | 'S' | null; declaracionAnterior: string | null };
   /** Numero identificativo (B5); null hasta que se descarga o se presenta. */
@@ -112,14 +115,15 @@ async function periodos115(companyId: string, ejercicio: number) {
   const mensual = filas.some((f) => /^\d{2}$/.test(f.periodo)) && !filas.some((f) => /^[1-4]T$/.test(f.periodo));
   const periodos = mensual ? Array.from({ length: 12 }, (_, i) => String(i + 1).padStart(2, '0')) : ['1T', '2T', '3T', '4T'];
   const out = [];
+  const enRectificacion = await estadosEnRectificacion(companyId, '115', ejercicio);
   for (const periodo of periodos) {
     const f = filas.find((x) => x.periodo === periodo);
     const c = (f?.casillas as Record<string, unknown> | null) ?? {};
     if (f && typeof c['02_base'] === 'number' && typeof c['03_retenciones'] === 'number') {
-      out.push({ periodo, base: c['02_base'] as number, retenciones: c['03_retenciones'] as number, fuente: 'guardado' as const, estado: f.estado });
+      out.push({ periodo, base: c['02_base'] as number, retenciones: c['03_retenciones'] as number, fuente: 'guardado' as const, estado: f.estado, estadoTexto: enRectificacion.get(periodo) ?? null });
     } else {
       const m = await calcularModelo115(companyId, periodoFiscal(ejercicio, periodo));
-      out.push({ periodo, base: m.baseRetenciones, retenciones: m.retenciones, fuente: 'calculado' as const, estado: f?.estado ?? 'vigente' });
+      out.push({ periodo, base: m.baseRetenciones, retenciones: m.retenciones, fuente: 'calculado' as const, estado: f?.estado ?? 'vigente', estadoTexto: enRectificacion.get(periodo) ?? null });
     }
   }
   return out;
@@ -258,6 +262,8 @@ export async function calcularBorrador180(companyId: string, ejercicio: number):
   return {
     ejercicio,
     estado: fila?.estado ?? 'vigente',
+    // Presentado con una complementaria o sustitutiva en preparación (ModeloImpuesto vuelve a 'vigente').
+    estadoTexto: (await estadosEnRectificacion(companyId, '180', ejercicio)).get('0A') ?? null,
     opciones,
     numeroDeclaracion: entrada.declarante.numeroDeclaracion ?? null,
     entrada,
