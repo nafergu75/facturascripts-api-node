@@ -334,7 +334,7 @@ export async function resultados303DelAno(companyId: string, ejercicio: number, 
   if (enCurso.length) {
     const uno = enCurso.length === 1;
     avisos.push(
-      `El ejercicio ${ejercicio} aún no ha terminado: ${uno ? 'el 303 de' : 'los 303 de'} ${enCurso.join(', ')} todavía no se ${uno ? 'puede' : 'pueden'} presentar y ${uno ? 'sale' : 'salen'} de las facturas de hoy. Esto es una vista previa: el 390 se presenta a partir del 1 de enero de ${ejercicio + 1}.`,
+      `El ejercicio ${ejercicio} aún no ha terminado: ${uno ? 'el 303 de' : 'los 303 de'} ${enCurso.join(', ')} todavía no se ${uno ? 'puede' : 'pueden'} presentar y ${uno ? 'sale' : 'salen'} de las facturas de hoy.`,
     );
   }
   if (enRectificacion.length) {
