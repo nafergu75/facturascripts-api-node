@@ -195,6 +195,13 @@ describe('347 dorado: diseño oficial "Ejercicio 2025 y siguientes"', () => {
     expect(campo(t1, 123, 135)).toBe('3470000000001');
     expect(validarRegistro(reg('1'), t1)).toEqual([]);
   });
+
+  it('sin declarados: la normal dice que no hace falta presentarlo (3.005,06 €); una complementaria vacía no lo dice', () => {
+    const normal = construirModelo347(2025, DECLARANTE, []);
+    expect(normal.advertencias).toContainEqual(expect.stringMatching(/No hay terceros que superen 3\.005,06 € en 2025: no hace falta presentar el 347/));
+    const comp = construirModelo347(2025, { ...DECLARANTE, complementaria: { tipo: 'C', numeroAnterior: '3470000000001' } }, []);
+    expect(comp.advertencias.join(' ')).not.toMatch(/no hace falta presentar/);
+  });
 });
 
 describe('347: registros aparte del mismo proveedor (alquiler de local e inversión del sujeto pasivo)', () => {
