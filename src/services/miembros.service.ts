@@ -1,14 +1,14 @@
 /**
  * Quien tiene acceso a una empresa (Configuracion > Tu acceso y usuarios).
- * Solo lectura: la gestion (altas, roles, quitar el acceso) sigue en
- * Administracion global. Nunca devuelve hashes, tokens ni datos de otras empresas.
+ * Solo lectura: la gestion (altas, roles, quitar el acceso) esta en
+ * Configuracion > Usuarios (usuariosEmpresa.service) y en Administracion global. Nunca devuelve hashes, tokens ni datos de otras empresas.
  */
 import { prisma } from '../config/database';
 import { accesoPersonalizado, areasDeAcceso, type Areas } from './rbac.service';
 
 export interface MiembroEmpresa {
   userId: string;
-  /** La app todavia no guarda el nombre de los usuarios: siempre null (se muestra el email). */
+  /** Nombre y apellidos; null en los usuarios dados de alta sin el (se muestra el email). */
   nombre: string | null;
   email: string;
   /** Rol en ESTA empresa, como en el enum Role de la BD: admin | contable | ventas | solo_lectura. */
@@ -24,12 +24,12 @@ export interface MiembroEmpresa {
 export async function listarMiembros(companyId: string): Promise<MiembroEmpresa[]> {
   const membresias = await prisma.membership.findMany({
     where: { companyId },
-    select: { userId: true, role: true, permisosPersonalizados: true, user: { select: { email: true, isActive: true } } },
+    select: { userId: true, role: true, permisosPersonalizados: true, user: { select: { email: true, isActive: true, nombre: true } } },
   });
   return membresias
     .map((m) => ({
       userId: m.userId,
-      nombre: null,
+      nombre: m.user.nombre,
       email: m.user.email,
       rol: String(m.role),
       activo: m.user.isActive,
