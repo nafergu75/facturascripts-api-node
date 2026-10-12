@@ -5,8 +5,8 @@
  *  - FALTAN_DATOS (ambar): a la carga vigente le faltan datos (comprobaciones
  *    en vivo, sin los avisos aceptados con motivo); hasta 5 puntos y el total.
  *  - INVITACION: empresa española sin carga ni plan anterior traido, a la que
- *    conviene traer la contabilidad de la gestoria antes de dar de alta
- *    clientes o proveedores.
+ *    conviene traer la contabilidad de la gestoria (antes de dar de alta
+ *    clientes o proveedores, si aun no tiene ninguno).
  *  - null: nada que avisar (todo correcto o empresa extranjera).
  */
 import { prisma } from '../../config/database';
@@ -55,15 +55,21 @@ export async function avisoArranque(companyId: string): Promise<AvisoArranque | 
     };
   }
   // Sin carga: se invita solo si tampoco se trajo el plan desde la puesta en marcha ni se dijo que no hace falta.
-  const [reglas, planPuestaEnMarcha] = await Promise.all([
+  const [reglas, planPuestaEnMarcha, clientes, proveedores] = await Promise.all([
     prisma.reglasContables.findUnique({ where: { companyId }, select: { data: true } }),
     prisma.auditLog.count({ where: { companyId, action: 'IMPORTAR_PLAN_ANTERIOR' } }),
+    prisma.customer.count({ where: { companyId } }),
+    prisma.supplier.count({ where: { companyId } }),
   ]);
   const data = (reglas?.data ?? {}) as { planAnterior?: unknown; altaSinPlanAnterior?: unknown };
   if (data.planAnterior || data.altaSinPlanAnterior || planPuestaEnMarcha) return null;
+  // Con clientes o proveedores ya dados de alta, «antes de darlos de alta» no se ajusta a lo que hay.
+  const conFichas = clientes + proveedores > 0;
   return {
     nivel: 'INVITACION',
-    texto: `Trae la contabilidad de ${anio} de tu gestoría antes de dar de alta clientes o proveedores: así sus subcuentas siguen la numeración que ya usaba.`,
+    texto: conFichas
+      ? `Trae la contabilidad de ${anio} de tu gestoría para empezar ${EJERCICIO_ARRANQUE} con sus saldos, las facturas pendientes y su plan de cuentas.`
+      : `Trae la contabilidad de ${anio} de tu gestoría antes de dar de alta clientes o proveedores: así sus subcuentas siguen la numeración que ya usaba.`,
     puntos: [],
     total: 0,
     enlace: ENLACE_ARRANQUE,
