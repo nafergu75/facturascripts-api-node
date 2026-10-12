@@ -10,6 +10,7 @@
  */
 import { prisma } from '../../config/database';
 import { badRequest, conflict } from '../../utils/http-errors';
+import { registrarAuditoria } from '../auditoria.service';
 import { aCentimos } from '../../utils/money';
 import type { SaldosEjercicio } from '../contabilidadDatos.service';
 import { anularAsientos, grabarAsientos, OPCIONES_TX, rangoEjercicio, type AsientoNuevo, type Tx } from './asientosEnBloque';
@@ -50,6 +51,21 @@ async function aperturaDeCarga(companyId: string, ejercicio: number): Promise<bo
   // Una carga a medias puede poner la apertura en cualquier momento; una confirmada, si la puso.
   return cargas.some((c) => c.estado === 'APLICANDO' || !!(c.creado as { apertura?: unknown } | null)?.apertura);
 }
+
+/**
+ * ¿El comparativo de ese ejercicio lo trajo una carga de «Traer la contabilidad
+ * de 2026» (año llevado por la gestoria, o carga confirmada o importandose del
+ * año siguiente que lo guardo)? Entonces la puesta en marcha no lo cambia ni lo borra.
+ */
+async function comparativoDeCarga(companyId: string, ejercicio: number): Promise<boolean> {
+  if (typeof (prisma as { cargaArranque?: { findMany?: unknown } }).cargaArranque?.findMany !== 'function') return false;
+  if (await llevanzaExterna(companyId, ejercicio)) return true;
+  const cargas = await prisma.cargaArranque.findMany({ where: { companyId, ejercicio: ejercicio + 1, estado: { in: ['CONFIRMADA', 'APLICANDO'] } }, select: { estado: true, creado: true } });
+  return cargas.some((c) => c.estado === 'APLICANDO' || !!(c.creado as { comparativo?: unknown } | null)?.comparativo);
+}
+
+const textoComparativoDeCarga = (ejercicio: number) =>
+  `El comparativo de ${ejercicio} lo trajo «Traer la contabilidad de 2026»: se cambia desde allí, trayendo otra versión o deshaciendo la carga.`;
 
 const textoMesesBloqueados = (meses: string[], salida: string) =>
   `${meses.length === 1 ? `El mes ${meses[0]} está bloqueado o cerrado` : `Los meses ${meses.join(', ')} están bloqueados o cerrados`}: ` +
@@ -631,12 +647,19 @@ export async function confirmarComparativo(
 ): Promise<VistaComparativo> {
   const vista = await previsualizarComparativo(companyId, entrada, opciones);
   if (vista.errores.length) throw badRequest(vista.errores[0], { errores: vista.errores });
+  if (await comparativoDeCarga(companyId, vista.ejercicio)) throw conflict(textoComparativoDeCarga(vista.ejercicio), { enlace: ENLACE_ARRANQUE });
   await guardarSaldosComparativo(companyId, vista.ejercicio, vista.cuentas, vista.parte, 'Importado');
   return vista;
 }
 
-export async function borrarComparativo(companyId: string, ejercicio: number): Promise<{ borrado: boolean }> {
+/** Borra el comparativo de un ejercicio (con rastro en AuditLog). El que trajo una carga, no: 409. */
+export async function borrarComparativo(companyId: string, ejercicio: number, userId = 'desconocido'): Promise<{ borrado: boolean }> {
+  if (await comparativoDeCarga(companyId, ejercicio)) throw conflict(textoComparativoDeCarga(ejercicio), { enlace: ENLACE_ARRANQUE });
+  const previo = await prisma.priorYearData.findFirst({ where: { companyId, ejercicio }, select: { id: true, observaciones: true } });
   const r = await prisma.priorYearData.deleteMany({ where: { companyId, ejercicio } });
+  if (r.count) {
+    await registrarAuditoria({ userId, companyId, action: 'BORRAR_COMPARATIVO', resourceType: 'PriorYearData', resourceId: previo?.id, meta: { ejercicio, observaciones: previo?.observaciones ?? null } });
+  }
   return { borrado: r.count > 0 };
 }
 
