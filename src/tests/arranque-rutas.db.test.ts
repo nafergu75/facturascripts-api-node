@@ -186,6 +186,25 @@ describe('rutas y permisos', () => {
     expect((await request(escritor).delete(`/arranque/2027/cargas/${carga.id}/ficheros/${sha}`)).status).toBe(404);
   });
 
+  it('deshacer: la vista previa con contabilidad:read; deshacerla, solo el administrador', async () => {
+    const lector = app(['contabilidad:read']);
+    const v = await request(lector).get(`/arranque/2027/cargas/${cargaId}/deshacer`);
+    expect(v.status).toBe(200);
+    expect(datos(v)).toMatchObject({ cargaId, puede: true });
+    expect(datos(v).acciones.length).toBeGreaterThan(3);
+    expect((await request(app(['contabilidad:read', 'contabilidad:write'])).delete(`/arranque/2027/cargas/${cargaId}`)).status).toBe(403);
+    const admin = app(['*']);
+    expect((await request(admin).delete(`/arranque/2027/cargas/${cargaId}`).send({ borrarFichas: 'todas' })).status).toBe(400);
+    const s = await request(admin).delete(`/arranque/2027/cargas/${cargaId}?simular=1`);
+    expect(s.status).toBe(200);
+    expect((await prisma.cargaArranque.findUniqueOrThrow({ where: { id: cargaId } })).estado).toBe('CONFIRMADA');
+    const d = await request(admin).delete(`/arranque/2027/cargas/${cargaId}`).send({ devolverAsientos2026: true });
+    expect(d.status).toBe(200);
+    expect(datos(d).hecho).toBe('Carga 1 deshecha.');
+    expect(datos(await request(lector).get('/arranque/2027')).vigente).toBeNull();
+    expect((await request(admin).delete(`/arranque/2027/cargas/${cargaId}`)).status).toBe(409);
+  });
+
   it('una empresa de EE. UU. no trae contabilidad de gestoría española', async () => {
     const r = await request(app(['*'], EXT)).post('/arranque/2027/cargas').attach('archivos', a.plan.contenido, a.plan.nombre);
     expect(r.status).toBe(400);
