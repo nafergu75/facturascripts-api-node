@@ -31,7 +31,7 @@ import { PGC_BASE } from '../../domain/pgc-model';
 import { naturalezaDe, PGC_OFICIAL } from '../../domain/pgc-oficial';
 import { paisDelCliente } from '../../domain/tipo-operacion.model';
 import { badRequest, conflict, forbidden, notFound } from '../../utils/http-errors';
-import { normalizarNif } from '../../utils/nif';
+import { esNifEspanolValido, normalizarNif } from '../../utils/nif';
 import { leerFilasArchivo } from '../extractoBancario.service';
 import { asegurarPlanContableEmpresa } from '../chart-of-accounts.service';
 import { esLongitudSubcuentasValida, esSubcuentaDeTercero, longitudEnUso } from '../terceros/numeracion';
@@ -337,7 +337,10 @@ export function longitudDelPlan(codigos: string[], esTercero: (c: string) => boo
   return mejor;
 }
 
-const nifValido = (n: string | null | undefined): n is string => !!n && /^[A-Z0-9]{5,15}$/.test(n);
+/** Tiene forma de NIF español (DNI, NIE, K/L/M o CIF): esos se validan con su letra o su digito de control. */
+const pareceNifEspanol = (n: string) => /^(\d{8}|[KLMXYZ]\d{7})[A-Z]$|^[ABCDEFGHJNPQRSUVW]\d{7}[0-9A-J]$/.test(n);
+/** NIF que vale para crear o enlazar una ficha: los españoles, con su control; los extranjeros (VAT), por la forma. */
+const nifValido = (n: string | null | undefined): n is string => !!n && /^[A-Z0-9]{5,15}$/.test(n) && (!pareceNifEspanol(n) || esNifEspanolValido(n));
 
 /** Elige el texto en singular o en plural segun el numero: segun(1, 'trae', 'traen'). */
 const segun = (n: number, singular: string, plural: string) => (n === 1 ? singular : plural);
@@ -492,12 +495,12 @@ async function analizar(
         ? ((tipo === 'cliente' ? clientesPorNombre : proveedoresPorNombre).get(nombreComparable(nombreFichero)) ?? [])
         : [];
       if (candidatas.length !== 1) {
-        const sinNif = nif ? `El NIF «${nif}» no es válido` : 'Sin NIF';
+        const sinNif = nif ? `El NIF «${nif}» no es válido${pareceNifEspanol(nif) ? ' (letra o dígito de control)' : ''}` : 'Sin NIF';
         terceros.push({
           ...base,
           accion: 'pendiente',
           ficha: null,
-          motivo: candidatas.length > 1 ? `${sinNif} y hay ${candidatas.length} fichas con ese nombre: enlázala a mano.` : nif ? `${sinNif}: enlázala a mano.` : 'Sin NIF: enlázala a una ficha después.',
+          motivo: candidatas.length > 1 ? `${sinNif} y hay ${candidatas.length} fichas con ese nombre: enlázala a mano.` : nif ? `${sinNif}: corrígelo o enlázala a mano.` : 'Sin NIF: enlázala a una ficha después.',
         });
         continue;
       }
