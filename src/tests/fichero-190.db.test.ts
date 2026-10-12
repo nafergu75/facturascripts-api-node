@@ -11,6 +11,10 @@
  * Necesita MySQL. Los NIF son inventados (con su letra de control).
  */
 import { describe, it, expect, beforeAll } from '@jest/globals';
+import express from 'express';
+import request from 'supertest';
+import nominasRoutes from '../routes/nominas.routes';
+import { errorMiddleware } from '../middleware/error.middleware';
 import { prisma } from '../config/database';
 import { letraNif } from '../utils/nif';
 import { contabilizarNominas, crearNomina } from '../services/nominas.service';
@@ -83,6 +87,23 @@ describe('presentado, sustitutiva y complementaria (B4)', () => {
     expect((await ficheroModelo190(COMPANY, 2025)).contenido).toBe(presentado);
     // Otra vez presentado: 409 (hay que preparar una complementaria o sustitutiva).
     await expect(presentarDeclaracion(COMPANY, 'u1', '190', 2025, '0A', { numero: '1902025000001', fecha: '2026-01-25' })).rejects.toMatchObject({ statusCode: 409 });
+  });
+
+  it('presentado: /perceptores enseña los perceptores y el resumen presentados, y cuenta aparte los nuevos', async () => {
+    const a = express();
+    a.use(express.json());
+    a.use((req, _res, next) => {
+      req.user = { userId: 'u1', roles: ['contable'], companies: [COMPANY], rolesPorEmpresa: { [COMPANY]: ['contable'] } } as never;
+      req.companyId = COMPANY;
+      next();
+    });
+    a.use('/nominas', nominasRoutes);
+    a.use(errorMiddleware);
+    const r = (await request(a).get('/nominas/190/2025/perceptores')).body.data;
+    expect(r.declaracion.congelada).toBe(true);
+    expect(r.perceptores.map((p: { nif: string }) => p.nif).sort()).toEqual([nif(60000001), nif(60000002)]);
+    expect(r.resumen.map((c: { valor: number }) => c.valor)).toEqual([2, 3500, 450]);
+    expect(r.avisoCongelada).toMatch(/1 registro nuevo.*complementaria/);
   });
 
   it('sustitutiva: numero nuevo, cita la anterior y lleva todos los perceptores; cancelada, su numero no se reutiliza', async () => {

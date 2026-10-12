@@ -33,7 +33,7 @@ import {
 import { calcularModelo190, periodoFiscal, presenta111Mensual, retencionesTrabajo } from '../services/nominas/fiscal';
 import { comprobarDiseno190, errorNifPerceptor190, idRegistro190, informe190Excel, resumen190 } from '../services/nominas/modelo190';
 import { ficheroModelo190 } from '../services/nominas/fichero190';
-import { contextoDeclaracion } from '../services/declaracionesAeat/declaraciones.service';
+import { contextoDeclaracion, datosDe, incluyeRegistro } from '../services/declaracionesAeat/declaraciones.service';
 import {
   anularDocumentoNominas,
   descargarDocumentoNominas,
@@ -208,23 +208,40 @@ export const nominasConexionesController = {
     })();
     // Declaracion en curso del historial (B4): numero, tipo y perceptores elegidos para una complementaria.
     const decl = await contextoDeclaracion(req.companyId!, '190', ejercicio, '0A');
-    const seleccion = decl.registros ? new Set(decl.registros) : null;
-    const elegidos = seleccion ? m.perceptores.filter((p) => seleccion.has(idRegistro190(p))) : m.perceptores;
+    // Complementaria: los elegidos y los que han aparecido después de prepararla (sin presentar antes).
+    const incluye = incluyeRegistro(decl);
+    const elegidos = incluye ? m.perceptores.filter((p) => incluye(idRegistro190(p))) : m.perceptores;
+    // Presentada (congelada): la lista y el resumen son los de lo presentado. Los
+    // perceptores que han aparecido después no se mezclan: se cuentan aparte.
+    const presentados = decl.congelada ? m.perceptores.filter((p) => decl.registrosPresentados.has(idRegistro190(p))) : null;
+    const nuevos = decl.congelada ? m.perceptores.length - (presentados?.length ?? 0) : 0;
+    const totalesPresentados = decl.congelada ? (datosDe(decl.ultimaPresentada).fila?.datos as { totales?: { registros: number; percepciones: number; retenciones: number } } | undefined)?.totales : undefined;
+    const resumen = presentados
+      ? resumen190(presentados).map((r) => {
+          if (!totalesPresentados) return r;
+          const v = r.tipo === 'numero' ? totalesPresentados.registros : /retenc/i.test(r.rotulo) ? totalesPresentados.retenciones : totalesPresentados.percepciones;
+          return { ...r, valor: v, signo: r.tipo === 'importe' && v < 0 ? ('N' as const) : (' ' as const) };
+        })
+      : resumen190(elegidos);
     sendOk(res, {
       ...m,
       // Cada registro con su id: con el se eligen los que van en una complementaria.
-      perceptores: m.perceptores.map((p) => ({
+      perceptores: (presentados ?? m.perceptores).map((p) => ({
         ...p,
         id: idRegistro190(p),
         presentado: decl.registrosPresentados.has(idRegistro190(p)),
-        incluido: seleccion ? seleccion.has(idRegistro190(p)) : true,
+        incluido: incluye ? incluye(idRegistro190(p)) : true,
         // NIF con la letra o el control mal: se ve aquí antes de descargar (el fichero da 400).
         errorNif: errorNifPerceptor190(p),
       })),
       ficheroDisponible: diseno !== null,
       avisoDiseno: diseno?.aviso ?? null,
-      // En una complementaria, el resumen 01-03 es el de los perceptores elegidos.
-      resumen: resumen190(elegidos),
+      // En una complementaria, el resumen 01-03 es el de los perceptores elegidos; presentada, el de lo presentado.
+      resumen,
+      avisoCongelada:
+        decl.congelada && nuevos > 0
+          ? `Se enseñan los perceptores de la declaración presentada. Desde entonces hay ${nuevos} ${nuevos === 1 ? 'registro nuevo' : 'registros nuevos'}: si hay que declararlos, prepara una complementaria.`
+          : null,
       declaracion: { tipo: decl.tipo, numero: decl.numero, justificanteAnterior: decl.justificanteAnterior, congelada: decl.congelada },
     });
   }),
