@@ -561,3 +561,32 @@ export function sumasSaldosCuentaSinMadre(): FicheroPrueba {
   const con = SALDOS_A.map((s) => (s.codigo === '1120000000' ? { ...s, codigo: '1390000000', nombre: 'Cuenta rara' } : s));
   return { nombre: 'sys_sin_madre.xlsx', contenido: libro([['SyS', filasSumasYSaldos(con, 'Sumas y saldos')]]) };
 }
+
+// ---------------------------------------------------------------------------
+// Datos que se escriben a mano en el resumen (no vienen en los ficheros)
+// ---------------------------------------------------------------------------
+
+/** IBAN de prueba (formato valido) para la cuenta del Sabadell de la empresa A. */
+export const IBAN_A = 'ES9121000418450200051332';
+
+/** Ajustes de la empresa A con todo lo que se escribe a mano: resultado, extracto del banco y 303 del 4T. */
+export const AJUSTES_A = {
+  resultadoDeclarado: 7200,
+  bancos: { '5720000001': { saldoExtracto: 18630, nueva: { iban: IBAN_A, bancoNombre: 'Banco Sabadell' } } },
+  datosFiscales: { resultado303T4: 1785 },
+};
+
+/** Datos de la empresa completos (los que piden los modelos de Hacienda). */
+export const datosEmpresaCompletos = (companyId: string, nif = 'B10000000') => ({
+  companyId,
+  denominacion: `Empresa ${companyId}`,
+  nif,
+  domicilioSocial: 'Calle Mayor 1',
+  codigoPostal: '46001',
+  municipio: 'Valencia',
+  provincia: 'Valencia',
+  telefono: '960000000',
+  personaContacto: 'GARCIA LOPEZ ANA',
+  claveActividad: 'A03',
+  epigrafeIae: '6151',
+});

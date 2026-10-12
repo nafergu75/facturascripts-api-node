@@ -22,7 +22,9 @@ import { longitudSubcuentasGuardada } from '../services/terceros/subcuentas';
 import type { HttpError } from '../utils/http-errors';
 import {
   a3SumasSaldos,
+  AJUSTES_A,
   CARTERA_A,
+  datosEmpresaCompletos,
   contaplusDiario,
   contaplusSubcuentas,
   diarioQueNoCuadraConSaldos,
@@ -40,7 +42,7 @@ const USUARIO = 'usuario-arranque';
 
 async function empresa(id: string) {
   await prisma.company.create({ data: { id, name: `Arranque ${id}`, fsBaseUrl: 'http://localhost', fsApiKeyEnc: 'k' } });
-  await prisma.legalConfig.create({ data: { companyId: id, denominacion: `Arranque ${id}`, nif: 'B10000000' } });
+  await prisma.legalConfig.create({ data: datosEmpresaCompletos(id) });
 }
 
 const ficheros = (fs: FicheroPrueba[]) => fs.map((f) => ({ nombre: f.nombre, contenido: f.contenido }));
@@ -88,7 +90,7 @@ describe('empresa A: todo junto, sin regularizar, con diario', () => {
 
   it('el análisis reconoce cada fichero, no escribe nada contable y da «Todo correcto»', async () => {
     const antes = await contar(E);
-    r = await subirYAnalizar(E, 2027, USUARIO, ficheros(todosA()), { resultadoDeclarado: 7200 }, TODOS);
+    r = await subirYAnalizar(E, 2027, USUARIO, ficheros(todosA()), AJUSTES_A, TODOS);
     expect(await contar(E)).toEqual(antes);
     expect(r.carga).toMatchObject({ version: 1, estado: 'BORRADOR', tipo: 'PROVISIONAL' });
     expect(r.vista.hojas.map((h) => h.tipo).sort()).toEqual(['CARTERA', 'DIARIO', 'INMOVILIZADO', 'PLAN', 'SUMAS_Y_SALDOS', 'TERCEROS_CLIENTES', 'TERCEROS_PROVEEDORES']);
@@ -117,13 +119,13 @@ describe('empresa A: todo junto, sin regularizar, con diario', () => {
     expect(e.statusCode).toBe(409);
     expect(e.details).toMatchObject({ codigo: 'HUELLA_CAMBIADA' });
     const c = await confirmarCarga(E, 2027, r.carga.id, r.vista.huella, USUARIO);
-    expect(c.fases.map((f) => f.fase)).toEqual(['EJERCICIOS', 'PLAN_Y_TERCEROS', 'HISTORICO', 'APERTURA', 'CARTERA', 'INMOVILIZADO', 'COMPARATIVO', 'FINAL']);
+    expect(c.fases.map((f) => f.fase)).toEqual(['EJERCICIOS', 'PLAN_Y_TERCEROS', 'HISTORICO', 'APERTURA', 'CARTERA', 'INMOVILIZADO', 'BANCOS', 'COMPARATIVO', 'FINAL']);
     expect((await error(confirmarCarga(E, 2027, r.carga.id, r.vista.huella, USUARIO))).statusCode).toBe(409);
   });
 
   it('las fases importan todo en orden', async () => {
     const pasos = await aplicarTodo(E, r.carga.id);
-    expect(pasos.map((p) => p.fase)).toEqual(['EJERCICIOS', 'PLAN_Y_TERCEROS', 'HISTORICO', 'APERTURA', 'CARTERA', 'INMOVILIZADO', 'COMPARATIVO', 'FINAL']);
+    expect(pasos.map((p) => p.fase)).toEqual(['EJERCICIOS', 'PLAN_Y_TERCEROS', 'HISTORICO', 'APERTURA', 'CARTERA', 'INMOVILIZADO', 'BANCOS', 'COMPARATIVO', 'FINAL']);
     expect(pasos.at(-1)?.hecho).toBe('La contabilidad de 2026 está completa y cuadra. Ya puedes seguir con 2027.');
 
     // Ejercicios: 2026 llevado fuera y de solo lectura.
@@ -193,7 +195,7 @@ describe('empresa A: todo junto, sin regularizar, con diario', () => {
   });
 
   it('repetir la carga (versión 2) sustituye la apertura, el histórico y las partidas sin duplicar nada', async () => {
-    const v2 = await subirYAnalizar(E, 2027, USUARIO, ficheros(todosA()), { resultadoDeclarado: 7200 }, TODOS);
+    const v2 = await subirYAnalizar(E, 2027, USUARIO, ficheros(todosA()), AJUSTES_A, TODOS);
     expect(v2.carga.version).toBe(2);
     expect(v2.avisos).toHaveLength(7);
     expect(v2.avisos[0]).toMatch(/mismo fichero que ya trajiste en la versión 1/);
@@ -220,7 +222,7 @@ describe('empresa B: 8 dígitos, regularizado, PyG aparte, sin diario', () => {
     const b = ficherosEmpresaB();
     const r = await subirYAnalizar(E, 2027, USUARIO, ficheros(Object.values(b)), undefined, TODOS);
     expect(r.vista.comprobaciones.nivel).toBe('FALTAN_DATOS');
-    expect(r.vista.comprobaciones.puntos.filter((p) => p.nivel === 'FALTA').map((p) => p.clave)).toEqual(['falta:DIARIO', 'resultado-declarado']);
+    expect(r.vista.comprobaciones.puntos.filter((p) => p.nivel === 'FALTA').map((p) => p.clave)).toEqual(['falta:DIARIO', 'resultado-declarado', 'bancos:extracto', 'bancos:cuenta', 'iva:303-4t']);
     expect(r.vista.apertura).toMatchObject({ tipoSumasSaldos: 'REGULARIZADO', resultado: 3000 });
     expect(r.vista.plan.longitud.delPlan).toBe(8);
     await confirmarCarga(E, 2027, r.carga.id, r.vista.huella, USUARIO);
@@ -233,7 +235,17 @@ describe('empresa B: 8 dígitos, regularizado, PyG aparte, sin diario', () => {
     expect((await prisma.fiscalYear.findFirst({ where: { companyId: E, label: '2026' } }))?.llevanza).toBe('EXTERNA');
     expect(await prisma.customer.findFirst({ where: { companyId: E, nifCif: NIF.gamma }, select: { subcuenta430: true } })).toEqual({ subcuenta430: '43000001' });
     // El panel avisa de lo que falta.
-    expect(await avisoArranque(E)).toMatchObject({ nivel: 'FALTAN_DATOS', total: 2, puntos: [expect.stringMatching(/^Falta el libro diario/), expect.stringMatching(/^Escribe el resultado de 2026/)] });
+    expect(await avisoArranque(E)).toMatchObject({
+      nivel: 'FALTAN_DATOS',
+      total: 5,
+      puntos: [
+        expect.stringMatching(/^Falta el libro diario/),
+        expect.stringMatching(/^Escribe el resultado de 2026/),
+        expect.stringMatching(/^Escribe el saldo del extracto/),
+        expect.stringMatching(/cuenta de bancos no está enlazada/),
+        expect.stringMatching(/^Escribe el resultado del 303 del 4T/),
+      ],
+    });
   });
 });
 
@@ -327,7 +339,7 @@ describe('formatos de los programas de las gestorías', () => {
     expect(r.vista.historico).toMatchObject({ asientos: DIARIO_A.length, cuadraConSumasYSaldos: true });
     expect(r.vista.apertura).toMatchObject({ resultado: 7200 });
     // El plan de ContaPlus trae el NIF de todos: los listados no hacen falta; falta la cartera.
-    expect(r.vista.comprobaciones.puntos.filter((p) => p.nivel === 'FALTA').map((p) => p.clave)).toEqual(['falta:CARTERA', 'cartera:cuadre']);
+    expect(r.vista.comprobaciones.puntos.filter((p) => p.nivel === 'FALTA').map((p) => p.clave)).toEqual(['falta:CARTERA', 'cartera:cuadre', 'bancos:extracto', 'bancos:cuenta', 'iva:303-4t']);
     expect(r.vista.cartera?.sinDetalle).toBe(5);
   });
 
