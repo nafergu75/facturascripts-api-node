@@ -20,7 +20,7 @@ import { esSubcuentaDeTercero } from '../terceros/numeracion';
 import { cuadrarCartera, type ResultadoCartera } from './cartera';
 import { comprobarCarga, juntarComprobaciones, type BancoComprobar, type FicheroExcluido, type ResultadoComprobaciones } from './comprobaciones';
 import { miles, type AjustesCarga, type DatosCarga, type HojaAnalizada, type TipoCarga } from './datos';
-import type { ActivoLeido, PartidaLeida } from './extractores';
+import { cuentasDePygOficial, type ActivoLeido, type PartidaLeida } from './extractores';
 import { analizarDiario, saldosDesdeDiario, type AnalisisDiario } from './historico';
 import { analizarSaldos, saldosDeLineas, type AnalisisSaldos, type LineaApertura } from './saldos';
 import { puntosVivos } from './vivas.service';
@@ -51,6 +51,11 @@ export interface AnalisisCarga {
   /** Saldos a 31-12 de los que sale la apertura (del sumas y saldos o, sin el, del diario). */
   saldos: { analisis: AnalisisSaldos; origen: 'SUMAS_Y_SALDOS' | 'DIARIO' } | null;
   diario: AnalisisDiario | null;
+  /**
+   * Gastos e ingresos de 2026 para el comparativo cuando el sumas y saldos viene
+   * regularizado y no hay diario que importar: las partidas de la PyG oficial.
+   */
+  pygComparativo: Array<{ codigo: string; nombre: string; saldo: number }> | null;
   excluidos: FicheroExcluido[];
   /** Cuentas que se crean o se renombran (plan ∪ sumas y saldos ∪ diario ∪ cartera ∪ inmovilizado). */
   cuentas: CuentaDelPlan[];
@@ -135,6 +140,11 @@ export async function analizarCarga(
   if (sys) saldos = { analisis: sys, origen: 'SUMAS_Y_SALDOS' };
   else if (diario && !diarioMalo) saldos = { analisis: analizarSaldos(saldosDesdeDiario(diario.asientos), nombres), origen: 'DIARIO' };
   const saldosApertura = saldos && saldos.analisis.tipo !== 'CON_CIERRE' ? saldosDeLineas(saldos.analisis.lineas) : new Map<string, number>();
+  // Regularizado y sin diario: los gastos e ingresos del comparativo salen de la PyG oficial
+  // (si trae sus partidas y suman lo mismo que la 129).
+  const sinGastosNiIngresos = !!sys && sys.tipo === 'REGULARIZADO' && !usarDiario;
+  const pygOficial = sinGastosNiIngresos ? cuentasDePygOficial(datos.pyg) : null;
+  const pygComparativo = pygOficial && sys && aCentimos(sys.saldo129) === aCentimos(datos.pyg!.resultado ?? NaN) ? pygOficial : null;
 
   // 3. Inmovilizado: cuentas de cada bien y cuadre con 2xx/28x (D2).
   let inmovilizado: AnalisisCarga['inmovilizado'] = null;
@@ -358,6 +368,7 @@ export async function analizarCarga(
     sumasSaldos: sys && datos.sumasSaldos ? { analisis: sys, fechaCorte: datos.sumasSaldos.fechaCorte } : null,
     saldosDesdeDiario: !sys && !!diario,
     apertura: saldos?.analisis ?? null,
+    comparativoSinPyg: sinGastosNiIngresos && !pygComparativo,
     pyg: datos.pyg,
     resultadoDeclarado: ajustes.resultadoDeclarado ?? null,
     diario,
@@ -402,6 +413,7 @@ export async function analizarCarga(
     datos,
     saldos,
     diario,
+    pygComparativo,
     excluidos,
     cuentas: listaCuentas,
     fueraDelPlan,
