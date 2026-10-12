@@ -461,6 +461,8 @@ export const columnasRectificativa = (p: PlanRectificativa | null) =>
         datosSustitucion: p.datosSustitucion ?? undefined,
         clave349: p.clave349,
         inmuebleArrendadoId: p.inmuebleArrendadoId,
+        // La respuesta a «¿Ya has pagado…?»: el borrador del lector la aplica al aprobarlo.
+        compensarFuera: p.compensarFuera,
       }
     : {};
 
@@ -499,6 +501,7 @@ export async function datosRectificativaDeFicha(
     fechaImputacionIva: string | null;
     fechaEmision: string;
     fechaRegistro: string | null;
+    compensarFuera?: boolean | null;
   },
 ) {
   const vigentes = await rectificativasVigentesDe(prisma, companyId, [f.id]);
@@ -539,6 +542,8 @@ export async function datosRectificativaDeFicha(
       originales,
       periodo: f.rectificaDesde && f.rectificaHasta ? { desde: f.rectificaDesde, hasta: f.rectificaHasta } : null,
       imputacionIva: { fecha: fechaIva, casillas: f.fechaImputacionIva ? '28-29' : '40-41' },
+      // Con la original de fuera: true si se descuenta de lo que se le debe (se aplica al contabilizarlo).
+      compensarFuera: f.compensarFuera ?? null,
     },
     rectificativas,
     facturaOriginalId: conApp.length === 1 && originales.length === 1 ? conApp[0].id : null,
