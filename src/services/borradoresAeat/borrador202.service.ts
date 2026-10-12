@@ -30,6 +30,7 @@
  * errores, porque de ellos dependen el tipo y las marcas.
  */
 import { prisma } from '../../config/database';
+import { importeTexto } from '../../utils/money';
 import { badRequest } from '../../utils/http-errors';
 import { esEmpresaEspanolaFiscal, MENSAJE_SIN_MODELOS } from '../impuestosCalculo.service';
 import { listarCuentasBancarias } from '../bancos.service';
@@ -162,7 +163,7 @@ export async function calcularBorrador202(companyId: string, ejercicio: number, 
         base = { origen: 'modelo200', ejercicio200: ej200, importe };
         if (d.retenciones > 0) {
           avisos.push(
-            `La base sale del 200 de ${ej200}: cuota líquida ${d.cuotaLiquida.toFixed(2).replace('.', ',')} € menos retenciones e ingresos a cuenta ${d.retenciones.toFixed(2).replace('.', ',')} €.`,
+            `La base sale del 200 de ${ej200}: cuota líquida ${importeTexto(d.cuotaLiquida)} menos retenciones e ingresos a cuenta ${importeTexto(d.retenciones)}.`,
           );
         }
       } else {
