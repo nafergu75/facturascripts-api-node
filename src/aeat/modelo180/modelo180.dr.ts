@@ -218,6 +218,13 @@ export interface Cuadre180 {
   retenciones115: number;
   diferenciaBase: number;
   diferenciaRetenciones: number;
+  /**
+   * Base y retencion de abonos que no cupieron en su 115 (como mucho hasta
+   * cero, decision P1): los 115 los llevan de mas frente al 180, que netea el
+   * año. Se recuperan rectificando el 115 en que se declaro la original.
+   */
+  excesoBase: number;
+  excesoRetenciones: number;
   /** Trimestres (o meses) del 115 que no estan. */
   faltan: string[];
 }
@@ -228,21 +235,29 @@ export interface Cuadre180 {
  * Del lado del 180 se usan los mismos totales que el registro de tipo 1
  * (totales180), para que lo que cuadra sea lo que va en el fichero.
  */
-export function cuadre180Con115(e: Entrada180, periodos115: Array<{ periodo: string; base: number; retenciones: number }>): Cuadre180 {
+export function cuadre180Con115(
+  e: Entrada180,
+  periodos115: Array<{ periodo: string; base: number; retenciones: number; excesoBase?: number; excesoRetenciones?: number }>,
+): Cuadre180 {
   const { bases: b180, retenciones: r180 } = totales180(e.perceptores);
   const b115 = periodos115.reduce((a, p) => a + centimos(p.base), 0);
   const r115 = periodos115.reduce((a, p) => a + centimos(p.retenciones), 0);
+  const eb = periodos115.reduce((a, p) => a + centimos(p.excesoBase ?? 0), 0);
+  const er = periodos115.reduce((a, p) => a + centimos(p.excesoRetenciones ?? 0), 0);
   const mensual = periodos115.some((p) => /^\d{2}$/.test(p.periodo));
   const esperados = mensual ? Array.from({ length: 12 }, (_, i) => String(i + 1).padStart(2, '0')) : ['1T', '2T', '3T', '4T'];
   const faltan = esperados.filter((x) => !periodos115.some((p) => p.periodo === x));
   return {
-    coincide: b180 === b115 && r180 === r115 && faltan.length === 0,
+    // El 180 mas lo que no cupo en los 115 tiene que dar lo de los 115.
+    coincide: b180 + eb === b115 && r180 + er === r115 && faltan.length === 0,
     base180: b180 / 100,
     retenciones180: r180 / 100,
     base115: b115 / 100,
     retenciones115: r115 / 100,
-    diferenciaBase: (b180 - b115) / 100,
-    diferenciaRetenciones: (r180 - r115) / 100,
+    diferenciaBase: (b180 + eb - b115) / 100,
+    diferenciaRetenciones: (r180 + er - r115) / 100,
+    excesoBase: eb / 100,
+    excesoRetenciones: er / 100,
     faltan,
   };
 }

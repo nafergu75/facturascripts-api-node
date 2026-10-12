@@ -163,10 +163,23 @@ describe('180 dorado: fichero con el diseño oficial', () => {
       retenciones115: 3515,
       diferenciaBase: 0,
       diferenciaRetenciones: 0,
+      excesoBase: 0,
+      excesoRetenciones: 0,
       faltan: [],
     });
     const malo = cuadre180Con115(entrada(), trimestres.slice(0, 3));
     expect(malo).toMatchObject({ coincide: false, diferenciaBase: 4500, diferenciaRetenciones: 855, faltan: ['4T'] });
+  });
+
+  it('descuenta de los 115 lo que no cupo de los abonos (decisión P1): el 180 netea el año', () => {
+    // Los 115 suman 500 € de base y 95 € de retención más que el 180: un abono del 4T que no cupo.
+    const trimestres = [
+      { periodo: '1T', base: 5000, retenciones: 950 },
+      { periodo: '2T', base: 4500, retenciones: 855 },
+      { periodo: '3T', base: 4500, retenciones: 855 },
+      { periodo: '4T', base: 5000, retenciones: 950, excesoBase: 500, excesoRetenciones: 95 },
+    ];
+    expect(cuadre180Con115(entrada(), trimestres)).toMatchObject({ coincide: true, base115: 19000, retenciones115: 3610, excesoBase: 500, excesoRetenciones: 95, diferenciaBase: 0 });
   });
 });
 
