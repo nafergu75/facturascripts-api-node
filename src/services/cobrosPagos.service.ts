@@ -114,8 +114,12 @@ export interface ResumenCobros {
   monedaCuenta: string;
   /** Total, cobrado y pendiente en la MONEDA DE LA FACTURA. */
   totalFactura: number;
-  /** Suma de cobros/pagos activos. */
+  /** Suma de cobros/pagos activos (y, en gastos, de lo compensado con abonos). */
   importeCobrado: number;
+  /** Gastos: lo compensado con abonos (incluido en importeCobrado). En un abono, en negativo. */
+  importeCompensado: number;
+  /** Gastos: true si es un abono (total < 0): sus «pagos» son devoluciones recibidas. */
+  esAbono: boolean;
   importePendiente: number;
   /** Lo mismo en la moneda de cuenta (cuadra con el saldo de la 430/400). */
   totalFacturaCuenta: number;
@@ -142,6 +146,8 @@ const TXT = {
   INGRESO: { cobro: 'cobro', Cobro: 'Cobro', prefijo: 'COBRO', cobrado: 'cobrada' },
   GASTO: { cobro: 'pago', Cobro: 'Pago', prefijo: 'PAGO', cobrado: 'pagada' },
 } as const;
+/** Un abono de proveedor no se paga: el proveedor devuelve lo que queda a tu favor. */
+const TXT_DEVOLUCION = { cobro: 'devolución', Cobro: 'Devolución recibida', prefijo: 'DEVOL', cobrado: 'devuelta' } as const;
 
 interface FacturaBase {
   id: string;
@@ -215,6 +221,12 @@ export function estadoTrasCobros(
     if (aCentimos(pendiente) <= 0) return 'PAID';
     return f.fechaVencimiento < hoy ? 'OVERDUE' : 'PENDING';
   }
+  // Un abono (total < 0): devuelto o aplicado cuando lo pendiente llega a 0 por
+  // arriba. Sin esto, un abono recien dado de alta saldria PAGADA (pendiente < 0).
+  if (aCentimos(f.totalFactura) < 0) {
+    if (aCentimos(pendiente) >= 0) return 'PAGADA';
+    return aCentimos(cobrado) < 0 ? 'PARCIAL' : 'PENDIENTE';
+  }
   if (aCentimos(pendiente) <= 0) return 'PAGADA';
   return aCentimos(cobrado) > 0 ? 'PARCIAL' : 'PENDIENTE';
 }
@@ -234,10 +246,36 @@ async function sumaActivos(
     where: { companyId, invoiceType: tipo, invoiceId, estado: 'ACTIVO' },
     select: { importe: true, importeDoc: true },
   });
+  // Gastos: tambien lo compensado con abonos (CompensacionGasto), sin movimiento de dinero.
+  const compensado = tipo === 'GASTO' ? await compensadoDe(db, companyId, invoiceId) : 0;
   return {
-    doc: round2(filas.reduce((s, p) => s + Number(p.importeDoc ?? p.importe), 0)),
-    cuenta: round2(filas.reduce((s, p) => s + Number(p.importe), 0)),
+    doc: round2(filas.reduce((s, p) => s + Number(p.importeDoc ?? p.importe), 0) + compensado),
+    cuenta: round2(filas.reduce((s, p) => s + Number(p.importe), 0) + compensado),
   };
+}
+
+/**
+ * Lo compensado en una factura de gasto: lo que ha recibido de abonos (en
+ * positivo) menos lo que ella, si es un abono, ha aplicado a otras.
+ */
+async function compensadoDe(db: Tx | typeof prisma, companyId: string, invoiceId: string): Promise<number> {
+  const tabla = (db as unknown as { compensacionGasto?: { aggregate?: unknown } }).compensacionGasto;
+  if (typeof tabla?.aggregate !== 'function') return 0;
+  const [recibido, aplicado] = await Promise.all([
+    db.compensacionGasto.aggregate({ where: { companyId, facturaId: invoiceId, estado: 'ACTIVO' }, _sum: { importe: true } }),
+    db.compensacionGasto.aggregate({ where: { companyId, abonoId: invoiceId, estado: 'ACTIVO' }, _sum: { importe: true } }),
+  ]);
+  return (aCentimos(Number(recibido._sum.importe ?? 0)) - aCentimos(Number(aplicado._sum.importe ?? 0))) / 100;
+}
+
+/** Recalcula el estado de pago de una factura de gasto (pagos, devoluciones y compensaciones). */
+export async function recalcularEstadoPagoGasto(tx: Tx, companyId: string, invoiceId: string): Promise<string> {
+  const f = await tx.expenseInvoice.findFirst({ where: { id: invoiceId, companyId }, select: { id: true, totalFactura: true, fechaVencimiento: true } });
+  if (!f) throw notFound('Factura de gasto no encontrada.');
+  const cobrado = await sumaActivos(tx, companyId, 'GASTO', invoiceId);
+  const estado = estadoTrasCobros('GASTO', { totalFactura: Number(f.totalFactura), fechaVencimiento: f.fechaVencimiento }, cobrado.doc);
+  await tx.expenseInvoice.update({ where: { id: invoiceId }, data: { estadoPago: estado } });
+  return estado;
 }
 
 /** Guarda el estado de cobro/pago de la factura segun sus cobros activos (en la moneda de la factura). */
@@ -269,9 +307,8 @@ export async function cuentaTerceroDeFactura(
     include: { lineas: true },
     orderBy: { createdAt: 'desc' },
   });
-  const linea = asiento?.lineas.find((l) =>
-    tipo === 'INGRESO' ? l.accountCode.startsWith('43') && l.debe > 0 : /^4[01]/.test(l.accountCode) && l.haber > 0,
-  );
+  // En gastos, por la cuenta y sin mirar el lado: un abono lleva la 400N/410N al debe.
+  const linea = asiento?.lineas.find((l) => (tipo === 'INGRESO' ? l.accountCode.startsWith('43') && l.debe > 0 : /^4[01]/.test(l.accountCode)));
   if (tipo === 'INGRESO') {
     const f = await tx.incomeInvoice.findFirst({ where: { id: invoiceId, companyId }, select: { customerId: true, customer: { select: { nombreFiscal: true } } } });
     if (!f) throw notFound('Factura no encontrada.');
@@ -298,9 +335,7 @@ async function cuentaTerceroParaVer(companyId: string, tipo: TipoDocumento, invo
     include: { lineas: true },
     orderBy: { createdAt: 'desc' },
   });
-  const linea = asiento?.lineas.find((l) =>
-    tipo === 'INGRESO' ? l.accountCode.startsWith('43') && l.debe > 0 : /^4[01]/.test(l.accountCode) && l.haber > 0,
-  );
+  const linea = asiento?.lineas.find((l) => (tipo === 'INGRESO' ? l.accountCode.startsWith('43') && l.debe > 0 : /^4[01]/.test(l.accountCode)));
   if (linea) return linea.accountCode;
   if (tipo === 'INGRESO') {
     const f = await prisma.incomeInvoice.findFirst({ where: { id: invoiceId, companyId }, select: { customer: { select: { subcuenta430: true } } } });
@@ -479,8 +514,9 @@ export async function listarCobros(companyId: string, tipo: TipoDocumento, invoi
     : [];
   const numeros = new Map(asientos.map((a) => [a.id, a.numeroAsiento]));
   const activos = filas.filter((p) => p.estado === 'ACTIVO');
-  const cobrado = round2(activos.reduce((s, p) => s + (p.importeDoc ?? p.importe), 0));
-  const cobradoCuenta = round2(activos.reduce((s, p) => s + p.importe, 0));
+  const compensado = tipo === 'GASTO' ? await compensadoDe(prisma, companyId, invoiceId) : 0;
+  const cobrado = round2(activos.reduce((s, p) => s + (p.importeDoc ?? p.importe), 0) + compensado);
+  const cobradoCuenta = round2(activos.reduce((s, p) => s + p.importe, 0) + compensado);
   const enDoc = { totalFactura: f.totalDoc, fechaVencimiento: f.fechaVencimiento };
   const estado =
     tipo === 'INGRESO'
@@ -496,6 +532,8 @@ export async function listarCobros(companyId: string, tipo: TipoDocumento, invoi
     monedaCuenta,
     totalFactura: f.totalDoc,
     importeCobrado: cobrado,
+    importeCompensado: compensado,
+    esAbono: tipo === 'GASTO' && aCentimos(f.totalFactura) < 0,
     importePendiente: calcularPendiente(tipo, f.totalDoc, f.estado, cobrado),
     totalFacturaCuenta: f.totalFactura,
     importeCobradoCuenta: cobradoCuenta,
@@ -544,9 +582,11 @@ export async function registrarCobroFactura(
   invoiceId: string,
   datos: DatosCobro,
 ): Promise<{ cobro: CobroResp; resumen: ResumenCobros }> {
-  const t = TXT[tipo];
   const f = await cargarFactura(prisma, companyId, tipo, invoiceId);
-  if (aCentimos(f.totalFactura) <= 0) {
+  // Abono de proveedor (total < 0): lo que se registra es la devolucion recibida.
+  const esAbono = tipo === 'GASTO' && aCentimos(f.totalFactura) < 0;
+  const t = esAbono ? TXT_DEVOLUCION : TXT[tipo];
+  if (!esAbono && aCentimos(f.totalFactura) <= 0) {
     throw badRequest(`La factura tiene importe cero o negativo (rectificativa): no admite ${t.cobro}s desde aquí.`);
   }
   const fecha = validarFecha(datos.fecha);
@@ -591,26 +631,37 @@ export async function registrarCobroFactura(
       await bloquearFactura(tx, tipo, invoiceId);
       const actual = await cargarFactura(tx, companyId, tipo, invoiceId);
       const cobrado = await sumaActivos(tx, companyId, tipo, invoiceId);
-      const pendiente = calcularPendiente(tipo, actual.totalDoc, actual.estado, cobrado.doc);
-      if (aCentimos(pendiente) <= 0) throw badRequest(`La factura ${numero} ya está ${t.cobrado}: no queda nada pendiente.`);
+      // En un abono todo va con el signo cambiado: lo pendiente es lo que queda a tu favor.
+      const s = esAbono ? -1 : 1;
+      const pendiente = s * calcularPendiente(tipo, actual.totalDoc, actual.estado, cobrado.doc);
+      if (aCentimos(pendiente) <= 0) {
+        throw badRequest(
+          esAbono
+            ? `No queda nada a tu favor en el abono ${numero}: ya está devuelto o aplicado.`
+            : `La factura ${numero} ya está ${t.cobrado}: no queda nada pendiente.`,
+        );
+      }
       const importeDoc = solicitado === undefined ? pendiente : round2(solicitado);
       if (aCentimos(importeDoc) <= 0) throw badRequest('El importe tiene que ser mayor que cero.');
       if (aCentimos(importeDoc) > aCentimos(pendiente)) {
         const simbolo = moneda === 'EUR' ? '€' : moneda;
         throw badRequest(
-          `El importe (${importeDoc.toFixed(2)} ${simbolo}) supera lo pendiente de la factura (${pendiente.toFixed(2)} ${simbolo}).`,
+          esAbono
+            ? `El importe (${importeDoc.toFixed(2)} ${simbolo}) supera lo que queda a tu favor en el abono (${pendiente.toFixed(2)} ${simbolo}).`
+            : `El importe (${importeDoc.toFixed(2)} ${simbolo}) supera lo pendiente de la factura (${pendiente.toFixed(2)} ${simbolo}).`,
         );
       }
 
+      // La devolucion de un abono son los apuntes de un cobro: banco al debe y proveedor al haber.
       const calculo = calcularCobroDivisa({
-        tipo,
+        tipo: esAbono ? 'INGRESO' : tipo,
         moneda,
         monedaCuenta,
         monedaTesoreria: tesoreria.moneda ?? monedaCuenta,
-        totalCuenta: actual.totalFactura,
-        totalDoc: actual.totalDoc,
-        cobradoCuenta: cobrado.cuenta,
-        cobradoDoc: cobrado.doc,
+        totalCuenta: s * actual.totalFactura,
+        totalDoc: s * actual.totalDoc,
+        cobradoCuenta: s * cobrado.cuenta,
+        cobradoDoc: s * cobrado.doc,
         importeDoc,
         importeRecibido: hay(datos.importeRecibido) ? Number(datos.importeRecibido) : null,
         tipoCambio: delDia?.tipoCambio ?? null,
@@ -627,7 +678,7 @@ export async function registrarCobroFactura(
       const divisa = enDivisa
         ? ` [${importeConMoneda(calculo.importeDoc, moneda)}; ${textoTipo(monedaCuenta, moneda, calculo.tipoCambio)}]`
         : '';
-      const descripcion = `${t.Cobro} factura ${numero} - ${actual.tercero}${divisa}${nota ? ` (${nota})` : ''}`;
+      const descripcion = `${t.Cobro} ${esAbono ? 'del abono' : 'factura'} ${numero} - ${actual.tercero}${divisa}${nota ? ` (${nota})` : ''}`;
       // La subcuenta del tercero que uso la factura (o la suya, si aun no tiene asiento).
       const tercero = await cuentaTerceroDeFactura(tx, companyId, tipo, invoiceId);
       const apuntes = apuntesDeCobro(calculo.apuntes, {
@@ -649,10 +700,11 @@ export async function registrarCobroFactura(
           invoiceType: tipo,
           invoiceId,
           fecha,
-          importe: calculo.importe,
+          // La devolucion de un abono se guarda en negativo (el signo de la factura): total - aplicado sigue dando lo pendiente.
+          importe: s * calculo.importe,
           moneda,
-          importeDoc: calculo.importeDoc,
-          importeTesoreria: calculo.importeTesoreria,
+          importeDoc: s * calculo.importeDoc,
+          importeTesoreria: s * calculo.importeTesoreria,
           tipoCambio: calculo.tipoCambio,
           fuenteTipoCambio: calculo.fuenteTipoCambio,
           diferenciaCambio: calculo.diferenciaCambio,
@@ -688,8 +740,8 @@ export async function anularCobroFactura(
   cobroId: string,
   opciones: { fecha?: string } = {},
 ): Promise<{ resumen: ResumenCobros; contraasiento: boolean }> {
-  const t = TXT[tipo];
   const pago = await prisma.invoicePayment.findFirst({ where: { id: cobroId, companyId, invoiceType: tipo, invoiceId } });
+  const t = pago && tipo === 'GASTO' && pago.importe < 0 ? TXT_DEVOLUCION : TXT[tipo];
   if (!pago) throw notFound(`${t.Cobro} no encontrado.`);
   if (pago.estado !== 'ACTIVO') throw badRequest(`El ${t.cobro} ya está anulado.`);
   const f = await cargarFactura(prisma, companyId, tipo, invoiceId);
@@ -743,6 +795,8 @@ export async function anularCobroFactura(
  * En la moneda de cuenta: lo aplicado a la 430/400 (cuadra con el mayor).
  */
 export async function cobradoPorFactura(companyId: string, tipo: TipoDocumento, hasta?: string): Promise<Map<string, number>> {
+  // Gastos: pagos, devoluciones de abonos y compensaciones (lo aplicado).
+  if (tipo === 'GASTO') return aplicadoPorFactura(companyId, undefined, hasta);
   const filas = await prisma.invoicePayment.groupBy({
     by: ['invoiceId'],
     where: { companyId, invoiceType: tipo, estado: 'ACTIVO', ...(hasta ? { fecha: { lte: hasta } } : {}) },
@@ -751,11 +805,50 @@ export async function cobradoPorFactura(companyId: string, tipo: TipoDocumento, 
   return new Map(filas.map((r) => [r.invoiceId, round2(Number(r._sum.importe ?? 0))]));
 }
 
+/**
+ * Lo aplicado a cada factura de GASTO (con fecha <= hasta): pagos activos
+ * (las devoluciones de un abono van en negativo, con el signo de la factura)
+ * mas las compensaciones activas, en positivo en la factura que recibe el
+ * abono y en negativo en el abono que se aplica. Pendiente = total - aplicado,
+ * con signo: en un abono de -121 aplicado entero, -121 - (-121) = 0.
+ */
+export async function aplicadoPorFactura(companyId: string, ids?: string[], hasta?: string, db: Tx | typeof prisma = prisma): Promise<Map<string, number>> {
+  if (ids && !ids.length) return new Map();
+  const fecha = hasta ? { fecha: { lte: hasta } } : {};
+  const [pagos, recibidas, aplicadas] = await Promise.all([
+    db.invoicePayment.groupBy({
+      by: ['invoiceId'],
+      where: { companyId, invoiceType: 'GASTO', estado: 'ACTIVO', ...fecha, ...(ids ? { invoiceId: { in: ids } } : {}) },
+      _sum: { importe: true },
+    }),
+    db.compensacionGasto.groupBy({
+      by: ['facturaId'],
+      where: { companyId, estado: 'ACTIVO', ...fecha, ...(ids ? { facturaId: { in: ids } } : { facturaId: { not: null } }) },
+      _sum: { importe: true },
+    }),
+    db.compensacionGasto.groupBy({
+      by: ['abonoId'],
+      where: { companyId, estado: 'ACTIVO', ...fecha, ...(ids ? { abonoId: { in: ids } } : {}) },
+      _sum: { importe: true },
+    }),
+  ]);
+  const c = new Map<string, number>();
+  const sumar = (id: string | null, euros: unknown, signo: 1 | -1) => {
+    if (!id) return;
+    c.set(id, (c.get(id) ?? 0) + signo * aCentimos(Number(euros ?? 0)));
+  };
+  for (const p of pagos) sumar(p.invoiceId, p._sum.importe, 1);
+  for (const r of recibidas) sumar(r.facturaId, r._sum.importe, 1);
+  for (const a of aplicadas) sumar(a.abonoId, a._sum.importe, -1);
+  return new Map([...c].map(([id, cent]) => [id, cent / 100]));
+}
+
 /** Suma de los cobros/pagos activos con fecha entre `desde` y `hasta` (ambas incluidas). */
 export async function totalCobradoEntre(companyId: string, tipo: TipoDocumento, desde: string, hasta: string, invoiceIds?: string[]): Promise<number> {
   const r = await prisma.invoicePayment.aggregate({
     // Con invoiceIds, solo los cobros o pagos de esas facturas (las de un cliente o un proveedor).
-    where: { companyId, invoiceType: tipo, estado: 'ACTIVO', fecha: { gte: desde, lte: hasta }, ...(invoiceIds ? { invoiceId: { in: invoiceIds } } : {}) },
+    // Sin las devoluciones de abonos (importe < 0): no son pagos a proveedores.
+    where: { companyId, invoiceType: tipo, estado: 'ACTIVO', importe: { gt: 0 }, fecha: { gte: desde, lte: hasta }, ...(invoiceIds ? { invoiceId: { in: invoiceIds } } : {}) },
     _sum: { importe: true },
   });
   return round2(Number(r._sum.importe ?? 0));

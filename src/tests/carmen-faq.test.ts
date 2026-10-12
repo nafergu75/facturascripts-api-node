@@ -21,6 +21,7 @@ const PARAFRASIS: Record<string, [string, string]> = {
   'app-rectificativa': ['¿Cómo hago una factura rectificativa?', 'tengo que anular una factura que ya mandé'],
   'app-proformas': ['¿Qué es una factura proforma?', '¿cómo convierto una proforma en factura?'],
   'app-registrar-gasto': ['¿Cómo registro una factura de compra?', '¿Dónde meto los gastos de proveedores?'],
+  'app-abono-proveedor': ['¿Dónde meto el abono que me ha hecho un proveedor?', 'un proveedor me ha devuelto dinero por una devolución de mercancía'],
   'app-importar-extracto': ['¿Cómo subo el extracto bancario?', 'importar el fichero norma 43 del banco'],
   'app-conciliar': ['¿Cómo funciona la conciliación bancaria?', '¿cómo cruzo los movimientos del banco con las facturas?'],
   'app-categorizar': ['¿Cómo pongo categorías a los movimientos del banco?', 'desglosar un cargo del banco en varias categorias'],

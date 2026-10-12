@@ -58,3 +58,22 @@ describe('decimalesANumero', () => {
     for (const campo of ['base', 'iva', 'retencion', 'total']) expect(CAMPOS_DECIMALES.has(campo)).toBe(false);
   });
 });
+
+describe('abonos de proveedor: importes de las tablas nuevas', () => {
+  it('lo rectificado por cada original y lo compensado se leen como number', () => {
+    const fila = decimalesANumero({
+      baseRectificada: D('-100.00'),
+      cuotaRectificada: D('-21.00'),
+      retencionRectificada: D('-15.00'),
+      compensaciones: [{ importe: D('121.00') }],
+    });
+    expect(fila).toEqual({ baseRectificada: -100, cuotaRectificada: -21, retencionRectificada: -15, compensaciones: [{ importe: 121 }] });
+  });
+
+  it('los nombres propios no tocan DocumentoArchivo: su retencion sigue llegando como Decimal', () => {
+    const doc = decimalesANumero({ base: D('100.00'), retencion: D('15.00') }) as { base: unknown; retencion: unknown };
+    expect(doc.retencion).toBeInstanceOf(Prisma.Decimal);
+    expect((doc.retencion as Prisma.Decimal).toNumber()).toBe(15);
+    expect(CAMPOS_DECIMALES.has('retencion')).toBe(false);
+  });
+});

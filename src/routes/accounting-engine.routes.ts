@@ -152,7 +152,9 @@ accountingEngineRoutes.get(
  * Aprobar/contabilizar un asiento (PENDING_REVIEW → POSTED)
  *
  * Body:
- *   { observaciones?: string }
+ *   { observaciones?: string, confirmaRectificar303?: boolean }
+ *   confirmaRectificar303: tras el 409 rectificar_303 (abono que reduce el IVA
+ *   de un 303 presentado), aprueba igualmente y deja la marca en la factura.
  *
  * Auth: Requiere role 'contable' o 'admin'
  *
@@ -166,14 +168,15 @@ accountingEngineRoutes.post(
   async (req: Request, res: Response) => {
     try {
       const { companyId, journalEntryId } = req.params;
-      const { observaciones } = req.body;
+      const { observaciones, confirmaRectificar303 } = req.body ?? {};
       const userId = req.user?.userId ?? 'unknown';
 
       const resultado = await accountingEngineController.aprobarAsiento(
         companyId,
         journalEntryId,
         userId,
-        observaciones
+        observaciones,
+        { confirmaRectificar303: confirmaRectificar303 === true },
       );
 
       res.json(resultado);

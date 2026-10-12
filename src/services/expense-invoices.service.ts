@@ -4,6 +4,7 @@ import { badRequest, conflict, HttpError, notFound } from '../utils/http-errors'
 import { aCentimos } from '../utils/money';
 import { hoyEspana, vencimientoPorDefecto } from '../utils/fechas';
 import { PGC_BASE } from '../domain/pgc-model';
+import { INICIO_LLEVANZA_APP } from '../domain/calendarioFiscal';
 import {
   ESTADOS_SIN_CONTABILIZAR,
   TIPO_GASTO_INFO,
@@ -19,9 +20,23 @@ import {
   type TipoGasto,
 } from '../domain/factura-gasto.model';
 import { esFechaReal, validarFacturaGasto, type FacturaGastoBody } from '../schemas/factura-gasto.schemas';
+import { fechaIvaGasto, r2GastoConSigno } from '../domain/rectificativa-gasto.model';
 import { contabilizarFacturaGasto, desgloseIvaPorTipo } from './accounting-engine.service';
+import { autoliquidacionPorTipo, clasificarCompra } from './impuestosCalculo.service';
+import {
+  bloquearFacturasGasto,
+  columnasRectificativa,
+  comprobarOriginalesEnTx,
+  comprobarSinRectificativas,
+  datosRectificativaDeFicha,
+  guardarEnlaces,
+  originalesDelPlan,
+  prepararRectificativa,
+  type PlanRectificativa,
+} from './rectificativasGasto.service';
 import { asegurarPlanContableEmpresa } from './chart-of-accounts.service';
-import { tieneCobrosActivos } from './cobrosPagos.service';
+import { aplicadoPorFactura, tieneCobrosActivos } from './cobrosPagos.service';
+import { anularCompensacionesAuto, comprobarCompensaciones, compensacionesDe, crearCompensacionesAuto, type CompensacionResp } from './compensacionesGasto.service';
 import { comprobarFechaAbierta, periodoNoAbierto } from './periodos.service';
 import { archivarGastoSinRomper } from './archivoFacturas.service';
 import { perfilEmpresa } from './perfilEmpresa.service';
@@ -56,6 +71,12 @@ export interface CrearLineaGastoDTO {
   tipoIva?: number; // 0, 4, 10, 21
   descuentoPorcentaje?: number;
   tipoRetencion?: number; // IRPF: 0, 7, 15, 19
+  /**
+   * Cuota fijada (interno, nunca llega del cliente): las lineas de diferencia
+   * de una rectificativa por sustitucion llevan la cuota calculada por tipo con
+   * los totales de las dos facturas, no la que sale de su base.
+   */
+  ivaFijado?: number;
 }
 
 export interface CrearFacturaGastoDTO {
@@ -141,6 +162,28 @@ export interface GastoDetalle extends ExpenseInvoiceResp {
     /** Factura anterior sin contabilizar y sin asiento: se contabiliza con el boton. */
     contabilizar: boolean;
   };
+  /** Abono o rectificativa de proveedor (importes con signo). */
+  esRectificativa: boolean;
+  /** En una rectificativa: que rectifica, tipo, causa y donde va su IVA. */
+  rectificativa: Awaited<ReturnType<typeof datosRectificativaDeFicha>>['rectificativa'];
+  /** En una original: sus rectificativas vigentes. */
+  rectificativas: Awaited<ReturnType<typeof datosRectificativaDeFicha>>['rectificativas'];
+  /** La original, si es una sola de la app (como en ventas). */
+  facturaOriginalId: string | null;
+  /** Avisos del alta o la correccion que no la impiden. */
+  avisos?: string[];
+  /** Aplicaciones del abono a otras facturas, o de abonos a esta factura. */
+  compensaciones: CompensacionResp[];
+  /** Pendiente con signo (total - pagos - compensaciones): en un abono, lo que queda a tu favor en negativo. */
+  pendiente: number;
+  /** Solo en los abonos: lo que queda a favor de la empresa (en positivo). */
+  aFavor?: number;
+  /**
+   * Abono registrado (o aprobado) despues de presentar el 303 de su IVA: el
+   * recordatorio de preparar la autoliquidacion rectificativa. Sale siempre en
+   * la ficha, no solo al guardarlo. enlace null si ese 303 se llevo fuera de la app.
+   */
+  rectificar303: { ejercicio: number; periodo: string; confirmadoEn: string; aviso: string; enlace: string | null } | null;
 }
 
 export interface FiltrosGastos {
@@ -149,6 +192,8 @@ export interface FiltrosGastos {
   q?: unknown;
   estado?: unknown;
   pago?: unknown;
+  /** facturas | abonos (abonos y rectificativas). */
+  tipo?: unknown;
   supplierId?: unknown;
   desde?: unknown;
   hasta?: unknown;
@@ -176,13 +221,35 @@ export interface ListadoGastos {
     retencionTotal: number;
     totalFactura: number;
     importePendiente: number;
+    esRectificativa: boolean;
+    /** Abono (total < 0). */
+    esAbono: boolean;
   }>;
   total: number;
   page: number;
   limit: number;
   paginas: number;
-  contadores: { todas: number; sinContabilizar: number; pendientesRevision: number; contabilizadas: number; anuladas: number; pendientesPago: number; vencidas: number };
-  totales: { base: number; iva: number; retencion: number; total: number; pendiente: number };
+  contadores: {
+    todas: number;
+    sinContabilizar: number;
+    pendientesRevision: number;
+    contabilizadas: number;
+    anuladas: number;
+    pendientesPago: number;
+    vencidas: number;
+    /** Abonos con algo a favor de la empresa. */
+    abonosAFavor: number;
+  };
+  totales: {
+    base: number;
+    iva: number;
+    retencion: number;
+    total: number;
+    /** Pendiente de pago de las facturas (sin los abonos). */
+    pendiente: number;
+    /** Suma de lo que queda a favor en los abonos (en positivo). */
+    aFavor: number;
+  };
   monedaCuenta: string;
 }
 
@@ -262,7 +329,9 @@ async function resolverNumeroFactura(companyId: string, serie: string, numeroSug
 }
 
 /**
- * Calcula totales a partir de las líneas de gasto.
+ * Calcula totales a partir de las líneas de gasto. Redondeo por linea con
+ * r2GastoConSigno: el de siempre en positivo y, en las lineas en negativo de
+ * un abono, el espejo exacto (-10,125 da -10,13, como 10,125 da 10,13).
  */
 export function calcularTotales(lineas: CrearLineaGastoDTO[]): {
   baseTotal: number;
@@ -280,12 +349,12 @@ export function calcularTotales(lineas: CrearLineaGastoDTO[]): {
     const tipoRetencion = l.tipoRetencion ?? 0;
     const descuentoPorcentaje = l.descuentoPorcentaje ?? 0;
 
-    const pvpSinDescuento = round2(l.cantidad * l.precioUnitario);
-    const descuentoImporte = round2((pvpSinDescuento * descuentoPorcentaje) / 100);
-    const baseLine = round2(pvpSinDescuento - descuentoImporte);
+    const pvpSinDescuento = r2GastoConSigno(l.cantidad * l.precioUnitario);
+    const descuentoImporte = r2GastoConSigno((pvpSinDescuento * descuentoPorcentaje) / 100);
+    const baseLine = r2GastoConSigno(pvpSinDescuento - descuentoImporte);
 
-    const ivaImporte = round2((baseLine * tipoIva) / 100);
-    const retencionImporte = round2((baseLine * tipoRetencion) / 100);
+    const ivaImporte = l.ivaFijado !== undefined ? r2GastoConSigno(l.ivaFijado) : r2GastoConSigno((baseLine * tipoIva) / 100);
+    const retencionImporte = r2GastoConSigno((baseLine * tipoRetencion) / 100);
 
     baseTotal = round2(baseTotal + baseLine);
     ivaTotal = round2(ivaTotal + ivaImporte);
@@ -383,34 +452,137 @@ async function asientoVigente(db: TransaccionBD | typeof prisma, companyId: stri
 
 /** Retencion de la factura para buscar el modelo presentado: 111 (profesionales) o 115 (alquileres). */
 export const retencionDe = (f: { retencionTotal: number; tipoGasto: string }) =>
-  aCentimos(Number(f.retencionTotal) || 0) > 0 ? tipoRetencionLibro(f.tipoGasto) : null;
+  aCentimos(Number(f.retencionTotal) || 0) !== 0 ? tipoRetencionLibro(f.tipoGasto) : null;
+
+/** Por que no se puede tocar una factura de gasto en una fecha (bloqueoPeriodoGasto). */
+export interface BloqueoPeriodo {
+  /** «El 303 del 1T de 2027 ya está presentado», «El periodo de 03/2026 está bloqueado»... */
+  motivo: string;
+  /** El modelo presentado; null si el mes esta bloqueado o el ejercicio cerrado. */
+  modelo: '303' | '111' | '115' | null;
+  ejercicio: number;
+  /** Periodo del modelo presentado ('1T' o '04'); null si es un periodo cerrado. */
+  periodo: string | null;
+}
 
 /**
- * null si se puede tocar la contabilidad de esa fecha; si no, el motivo: el
- * periodo o el ejercicio estan cerrados (comprobarFechaAbierta) o el 303 del
- * trimestre (o del mes), o el 111/115 si hay retencion, ya esta presentado.
+ * null si se puede tocar la contabilidad de esa fecha; si no, por que: el mes
+ * o el ejercicio estan cerrados (comprobarFechaAbierta, con la fecha contable),
+ * el 111/115 del periodo de la fecha contable esta presentado (si hay
+ * retencion) o lo esta el 303 del periodo de `fechaIva`. `fechaIva` es la que
+ * cuenta en el IVA (fechaIvaGasto): la contable salvo en una ERROR_IVA que
+ * reduce, que va al periodo de la original. Que ese periodo este cerrado no
+ * frena nada: solo se mira si su 303 esta presentado.
  */
+export async function bloqueoPeriodoGasto(
+  companyId: string,
+  fecha: string,
+  retencion: 'PROFESIONAL' | 'ARRENDAMIENTO' | null,
+  fechaIva: string = fecha,
+): Promise<BloqueoPeriodo | null> {
+  try {
+    await comprobarFechaAbierta(companyId, fecha);
+  } catch (e) {
+    if (e instanceof HttpError) return { motivo: e.message.replace(/: no se pueden añadir asientos con esa fecha\.?$/, ''), modelo: null, ejercicio: Number(fecha.slice(0, 4)), periodo: null };
+    throw e;
+  }
+  const presentadoEn = async (codigo: '303' | '111' | '115', f: string): Promise<BloqueoPeriodo | null> => {
+    const ejercicio = Number(f.slice(0, 4));
+    const mes = f.slice(5, 7);
+    const presentado = await prisma.modeloImpuesto.findFirst({
+      where: { companyId, codigo, ejercicio, periodo: { in: [`${Math.ceil(Number(mes) / 3)}T`, mes] }, estado: 'presentado' },
+      select: { periodo: true },
+    });
+    return presentado ? { motivo: `El ${codigo} del ${presentado.periodo} de ${ejercicio} ya está presentado`, modelo: codigo, ejercicio, periodo: presentado.periodo } : null;
+  };
+  const retenciones = retencion === 'PROFESIONAL' ? await presentadoEn('111', fecha) : retencion === 'ARRENDAMIENTO' ? await presentadoEn('115', fecha) : null;
+  if (retenciones) return retenciones;
+  const iva = await presentadoEn('303', fechaIva);
+  if (iva) return iva;
+  // El IVA va a un periodo de antes de llevar la contabilidad en la app (una
+  // ERROR_IVA que reduce sobre una factura de 2026): su 303 se presento fuera.
+  if (fechaIva !== fecha && fechaIva < INICIO_LLEVANZA_APP) {
+    const ejercicio = Number(fechaIva.slice(0, 4));
+    const periodo = `${Math.ceil(Number(fechaIva.slice(5, 7)) / 3)}T`;
+    return { motivo: `El 303 del ${periodo} de ${ejercicio} se presentó fuera de la app`, modelo: '303', ejercicio, periodo };
+  }
+  return null;
+}
+
+/** El motivo de bloqueoPeriodoGasto, o null si se puede tocar. */
 export async function motivoPeriodoBloqueado(
   companyId: string,
   fecha: string,
   retencion: 'PROFESIONAL' | 'ARRENDAMIENTO' | null,
+  fechaIva: string = fecha,
 ): Promise<string | null> {
-  try {
-    await comprobarFechaAbierta(companyId, fecha);
-  } catch (e) {
-    if (e instanceof HttpError) return e.message.replace(/: no se pueden añadir asientos con esa fecha\.?$/, '');
-    throw e;
-  }
+  return (await bloqueoPeriodoGasto(companyId, fecha, retencion, fechaIva))?.motivo ?? null;
+}
+
+/** Pantalla del 303, para el enlace del 409 rectificar_303. */
+const ENLACE_303 = '/dashboard/fiscal/modelo-303';
+
+/** details del 409 de un abono que reduce el IVA de un 303 ya presentado. */
+export const detallesRectificar303 = (b: BloqueoPeriodo, campo: string) => ({
+  campo,
+  motivo: 'rectificar_303',
+  modelo: '303',
+  ejercicio: b.ejercicio,
+  periodo: b.periodo,
+  enlace: ENLACE_303,
+});
+
+const MESES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
+/** «el 1T de 2027» o «abril de 2027». */
+const periodoTexto = (b: BloqueoPeriodo) => (/^\d{2}$/.test(b.periodo ?? '') ? `${MESES[Number(b.periodo) - 1]} de ${b.ejercicio}` : `el ${b.periodo} de ${b.ejercicio}`);
+
+/**
+ * Recordatorio fijo de la ficha de un abono confirmado contra un 303 ya
+ * presentado (rectificar303ConfirmadoEn): el 303 del periodo de su IVA.
+ */
+async function recordatorioRectificar303(
+  companyId: string,
+  f: { estado: string; rectificar303ConfirmadoEn: string | null; fechaImputacionIva: string | null; fechaEmision: string; fechaRegistro: string | null },
+): Promise<GastoDetalle['rectificar303']> {
+  if (!f.rectificar303ConfirmadoEn || f.estado === 'ANULADA') return null;
+  const fecha = fechaIvaGasto(f);
   const ejercicio = Number(fecha.slice(0, 4));
   const mes = fecha.slice(5, 7);
-  const periodos = [`${Math.ceil(Number(mes) / 3)}T`, mes];
-  const codigos = ['303', ...(retencion === 'PROFESIONAL' ? ['111'] : retencion === 'ARRENDAMIENTO' ? ['115'] : [])];
-  const presentado = await prisma.modeloImpuesto.findFirst({
-    where: { companyId, codigo: { in: codigos }, ejercicio, periodo: { in: periodos }, estado: 'presentado' },
-    select: { codigo: true, periodo: true },
+  const trimestre = `${Math.ceil(Number(mes) / 3)}T`;
+  const fila = await prisma.modeloImpuesto.findFirst({ where: { companyId, codigo: '303', ejercicio, periodo: { in: [trimestre, mes] }, estado: 'presentado' }, select: { periodo: true } });
+  const fuera = !fila && fecha < INICIO_LLEVANZA_APP;
+  const periodo = fila?.periodo ?? trimestre;
+  const cual = /^\d{2}$/.test(periodo) ? `el 303 de ${MESES[Number(periodo) - 1]} de ${ejercicio}` : `el 303 del ${periodo} de ${ejercicio}`;
+  return {
+    ejercicio,
+    periodo,
+    confirmadoEn: f.rectificar303ConfirmadoEn,
+    aviso:
+      `Registrado después de presentar ${cual}${fuera ? ' (presentado fuera de la app)' : ''}: prepara su autoliquidación rectificativa. ` +
+      'En la contabilidad, apunta a mano la regularización del IVA (472 y 4750), el recargo (678) y los intereses de demora (669) cuando los pagues.',
+    enlace: fuera ? null : ENLACE_303,
+  };
+}
+
+/** Aviso del alta (o de la aprobacion) de un abono registrado en un 303 ya presentado. */
+export const avisoRectificar303 = (b: BloqueoPeriodo) =>
+  `Registrada en ${periodoTexto(b)}, que ya está presentado: prepara la autoliquidación rectificativa de ese 303. ` +
+  'En la contabilidad, apunta a mano la regularización del IVA (472 y 4750), el recargo (678) y los intereses de demora (669) cuando los pagues.';
+
+/**
+ * Marca en AuditLog de un abono que se registra (o se aprueba) en un 303 ya
+ * presentado: recuerda la rectificativa del 303 y los asientos que hay que
+ * hacer a mano (seccion 11 de la especificacion).
+ */
+export async function marcarRectificar303(companyId: string, facturaId: string, b: BloqueoPeriodo, cuota: number, userId?: string): Promise<void> {
+  await registrarAuditoria({
+    userId: userId ?? 'SYSTEM',
+    companyId,
+    action: 'RECTIFICAR_303_PENDIENTE',
+    resourceType: 'ExpenseInvoice',
+    resourceId: facturaId,
+    meta: { modelo: '303', ejercicio: b.ejercicio, periodo: b.periodo, cuota, aviso: avisoRectificar303(b) },
   });
-  if (presentado) return `El ${presentado.codigo} del ${presentado.periodo} de ${ejercicio} ya está presentado`;
-  return null;
 }
 
 /**
@@ -549,6 +721,58 @@ function lineasParaGuardar(v: FacturaGastoBody) {
 
 const NOMBRE_CUENTA = new Map(PGC_BASE.map((n) => [n.code, n.name]));
 
+/** Lo que el asiento lleva de una rectificativa (descripcion y libro de IVA). */
+interface DatosRectificativaAsiento {
+  rectifica?: string;
+  fechaLibroIva?: string | null;
+  observacionesLibroIva?: string;
+}
+
+/** Datos del asiento de una rectificativa a partir de su plan (vacio si no lo es). */
+const extraRectificativa = (p: PlanRectificativa | null): DatosRectificativaAsiento & { cuentaAcreedor?: string | null } =>
+  p ? { cuentaAcreedor: p.cuentaAcreedor, rectifica: p.rectifica, fechaLibroIva: p.fechaImputacionIva, observacionesLibroIva: p.observacionesLibro } : {};
+
+/**
+ * Esta rectificativa reduce el IVA deducido de un periodo cuyo 303 ya esta
+ * presentado (seccion 11 de la especificacion de abonos).
+ */
+const RECARGO_303 = 'saldrá más a ingresar y fuera de plazo, con el recargo y, en su caso, los intereses de demora (arts. 26 y 27 LGT).';
+
+/**
+ * 409 de un abono que reduce el IVA de un 303 ya presentado. Por el art. 80
+ * (devolucion, descuento...) se declara en el periodo en que se recibe; una
+ * ERROR_IVA que reduce, en el de la factura que corrige (art. 114 LIVA). En
+ * los dos casos hay recargo e intereses de demora (arts. 26 y 27 LGT, por el
+ * art. 114.Dos.2.º LIVA, comprobado en el BOE: version vigente desde el 31-10-2012).
+ */
+export const textoRectificar303 = (motivo: string, deLaOriginal: boolean) =>
+  deLaOriginal
+    ? `Esta rectificativa corrige un IVA mal aplicado y reduce el que dedujiste: se declara en el periodo de la factura que corrige. ${motivo}. Regístrala igualmente y presenta una autoliquidación rectificativa de ese 303: ${RECARGO_303}`
+    : `Esta rectificativa reduce el IVA que dedujiste y se declara en el periodo en que la recibiste. ${motivo}. Si la recibiste en ese periodo, regístrala igualmente y presenta una autoliquidación rectificativa de ese 303: ${RECARGO_303} Si te llegó más tarde, pon la fecha en que te llegó.`;
+
+/**
+ * Con el periodo bloqueado (bloqueoPeriodoGasto): si es un abono que reduce el
+ * IVA de un 303 presentado y esta confirmado (confirmaRectificar303, o ya lo
+ * estaba para ese mismo periodo), devuelve el bloqueo para guardar la marca;
+ * sin confirmar, el 409 rectificar_303. Lo demas (un cargo, un 111/115
+ * presentado, un periodo cerrado) lanza el 409 de siempre (`otroError`).
+ */
+async function comprobarRectificar303(
+  b: BloqueoPeriodo,
+  p: {
+    rect: { fechaImputacionIva: string | null } | null;
+    ivaTotal: number;
+    confirma: boolean;
+    otroError?: (b: BloqueoPeriodo) => Promise<HttpError> | HttpError;
+  },
+): Promise<BloqueoPeriodo> {
+  const reduce = !!p.rect && b.modelo === '303' && aCentimos(p.ivaTotal) < 0;
+  if (!reduce) throw p.otroError ? await p.otroError(b) : conflict(textoPeriodoPresentado(b.motivo), { campo: 'fechaRegistro' });
+  const deLaOriginal = !!p.rect?.fechaImputacionIva;
+  if (!p.confirma) throw conflict(textoRectificar303(b.motivo, deLaOriginal), detallesRectificar303(b, deLaOriginal ? 'rectificativa' : 'fechaRegistro'));
+  return b;
+}
+
 /**
  * Datos del motor contable a partir de la factura guardada y su proveedor: la
  * fecha de registro, la cuenta de cada linea y la base de las lineas con
@@ -556,7 +780,7 @@ const NOMBRE_CUENTA = new Map(PGC_BASE.map((n) => [n.code, n.name]));
  */
 export function datosContablesGasto(
   f: FacturaConLineas,
-  s: { id: string; nifCif: string; nombreFiscal: string },
+  s: { id: string; nifCif: string; nombreFiscal: string; pais?: string | null },
   extra: {
     estadoAsiento: 'POSTED' | 'DRAFT';
     numeroAsiento?: string;
@@ -564,7 +788,7 @@ export function datosContablesGasto(
     nombreCuentaAcreedor?: string | null;
     /** Nombre de las cuentas de gasto en el plan de la empresa (sus subcuentas: 6280001 «Luz oficina»). */
     nombresCuentas?: Map<string, string>;
-  },
+  } & DatosRectificativaAsiento,
 ): Parameters<typeof contabilizarFacturaGasto>[2] {
   const tipo: TipoGasto = esTipoGasto(f.tipoGasto) ? f.tipoGasto : 'COMPRA';
   const porCuenta = new Map<string, number>();
@@ -597,7 +821,15 @@ export function datosContablesGasto(
       tipoRetencion: f.tipoRetencion,
       lineas: f.lineas.map((l) => ({ tipoRetencion: l.tipoRetencion, baseLine: Number(l.baseLine), retencionImporte: Number(l.retencionImporte) })),
     }),
+    // Adquisicion intracomunitaria (misma clasificacion que el 303 en su fecha
+    // contable): el IVA que autoliquida la empresa va a la 472 y a la 477.
+    ...(clasificarCompra(fechaContableGasto(f), s.pais, s.nifCif) === 'intracomunitaria'
+      ? { autoliquidacion: autoliquidacionPorTipo(f.lineas.map((l) => ({ tipoIva: l.tipoIva, baseLine: Number(l.baseLine), ivaImporte: Number(l.ivaImporte) }))) }
+      : {}),
     estadoAsiento: extra.estadoAsiento,
+    ...(extra.rectifica !== undefined ? { rectifica: extra.rectifica } : {}),
+    ...(extra.fechaLibroIva ? { fechaLibroIva: extra.fechaLibroIva } : {}),
+    ...(extra.observacionesLibroIva ? { observacionesLibroIva: extra.observacionesLibroIva } : {}),
     ...(extra.numeroAsiento ? { numeroAsiento: extra.numeroAsiento } : {}),
     ...(extra.cuentaAcreedor ? { cuentaAcreedor: extra.cuentaAcreedor } : {}),
     ...(extra.nombreCuentaAcreedor ? { nombreCuentaAcreedor: extra.nombreCuentaAcreedor } : {}),
@@ -615,8 +847,8 @@ export async function datosContablesGastoConSubcuenta(
   tx: TransaccionBD,
   companyId: string,
   f: FacturaConLineas,
-  s: { id: string; nifCif: string; nombreFiscal: string },
-  extraSinNombres: { estadoAsiento: 'POSTED' | 'DRAFT'; numeroAsiento?: string; cuentaAcreedor?: string | null },
+  s: { id: string; nifCif: string; nombreFiscal: string; pais?: string | null },
+  extraSinNombres: { estadoAsiento: 'POSTED' | 'DRAFT'; numeroAsiento?: string; cuentaAcreedor?: string | null } & DatosRectificativaAsiento,
 ): Promise<Parameters<typeof contabilizarFacturaGasto>[2]> {
   // Cuentas de gasto con el nombre del plan (las subcuentas propias llevan el suyo).
   const tipo: TipoGasto = esTipoGasto(f.tipoGasto) ? f.tipoGasto : 'COMPRA';
@@ -647,8 +879,9 @@ export async function cuentaAcreedorDePagos(companyId: string, invoiceId: string
   });
   const ids = pagos.map((p) => p.journalEntryId).filter((x): x is string => !!x);
   if (!ids.length) return null;
+  // Por la cuenta, sin mirar el lado (la devolucion de un abono lleva el proveedor al haber).
   const lineas = await prisma.journalEntryLine.findMany({
-    where: { companyId, entryId: { in: ids }, debe: { gt: 0 } },
+    where: { companyId, entryId: { in: ids } },
     select: { accountCode: true },
   });
   return lineas.find((l) => /^4[01]/.test(l.accountCode))?.accountCode ?? null;
@@ -692,25 +925,18 @@ async function borrarLibrosDeAsiento(tx: TransaccionBD, companyId: string, asien
   await tx.retentionBook.deleteMany({ where: { companyId, asientoId } });
 }
 
-/** Lo pagado (pagos activos) y cuantos pagos activos tiene una factura. */
+/** Lo aplicado (pagos, devoluciones y compensaciones activos) y cuantos pagos activos tiene una factura. */
 async function pagosDe(companyId: string, invoiceId: string): Promise<{ pagado: number; activos: number }> {
-  const r = await prisma.invoicePayment.aggregate({
-    where: { companyId, invoiceType: 'GASTO', invoiceId, estado: 'ACTIVO' },
-    _sum: { importe: true },
-    _count: { _all: true },
-  });
-  return { pagado: round2(Number(r._sum.importe ?? 0)), activos: r._count._all };
+  const [aplicado, activos] = await Promise.all([
+    aplicadoPorFactura(companyId, [invoiceId]),
+    prisma.invoicePayment.count({ where: { companyId, invoiceType: 'GASTO', invoiceId, estado: 'ACTIVO' } }),
+  ]);
+  return { pagado: round2(aplicado.get(invoiceId) ?? 0), activos };
 }
 
-/** Lo pagado por factura (pagos activos) de un conjunto de facturas. */
+/** Lo aplicado por factura (pagos, devoluciones y compensaciones activos) de un conjunto de facturas. */
 async function pagadoPorFacturas(companyId: string, ids: string[]): Promise<Map<string, number>> {
-  if (!ids.length) return new Map();
-  const filas = await prisma.invoicePayment.groupBy({
-    by: ['invoiceId'],
-    where: { companyId, invoiceType: 'GASTO', estado: 'ACTIVO', invoiceId: { in: ids } },
-    _sum: { importe: true },
-  });
-  return new Map(filas.map((r) => [r.invoiceId, round2(Number(r._sum.importe ?? 0))]));
+  return aplicadoPorFactura(companyId, ids);
 }
 
 const mensajeConPagos = 'La factura tiene pagos registrados: anúlalos antes de modificarla.';
@@ -788,6 +1014,8 @@ export async function registrarGasto(companyId: string, cuerpo: unknown, opcione
   // Empresa no establecida en Espana: sin IVA español ni retenciones (como en ventas).
   const { espanola } = await perfilEmpresa(companyId);
   const v = validarFacturaGasto(bruto, { paisProveedor: prov.pais, permitirSerie: true, empresaEspanola: espanola });
+  // Abono o rectificativa: enlaces con lo que rectifica y herencia de la original (puede cambiar las lineas y el tipo de gasto).
+  const rect = v.rectificativa ? await prepararRectificativa(companyId, v, prov.existente?.id ?? null) : null;
   const { lineas, baseTotal, ivaTotal, retencionTotal, totalFactura, cabecera } = lineasParaGuardar(v);
   await comprobarCuentas(companyId, v, lineas.map((l) => l.accountCode));
   await comprobarCuentasNomina(companyId, v, lineas.map((l) => l.accountCode));
@@ -799,8 +1027,11 @@ export async function registrarGasto(companyId: string, cuerpo: unknown, opcione
   await comprobarFechaAbierta(companyId, fechaContable);
   // Presentar el 303 (o el 111/115) no cierra el mes: sin esto la factura
   // entraria en un trimestre ya declarado y su IVA no se deduciria en ninguno.
-  const presentado = await motivoPeriodoBloqueado(companyId, fechaContable, retencionTotal > 0 ? tipoRetencionLibro(v.tipoGasto) : null);
-  if (presentado) throw conflict(textoPeriodoPresentado(presentado), { campo: 'fechaRegistro' });
+  // El 303 se mira en el periodo de su IVA (el de la original en una ERROR_IVA que reduce).
+  const retencion = aCentimos(retencionTotal) !== 0 ? tipoRetencionLibro(v.tipoGasto) : null;
+  const presentado = await bloqueoPeriodoGasto(companyId, fechaContable, retencion, rect?.fechaImputacionIva ?? fechaContable);
+  // Un abono que reduce el IVA de un 303 presentado se registra si se confirma (seccion 11).
+  const confirmado303 = presentado ? await comprobarRectificar303(presentado, { rect, ivaTotal, confirma: v.rectificativa?.confirmaRectificar303 === true }) : null;
   await asegurarPlanContableEmpresa(companyId);
 
   const { fechaEmision, fechaVencimiento } = resolverFechasGasto({ fechaEmision: v.fechaEmision, fechaVencimiento: v.fechaVencimiento });
@@ -812,6 +1043,11 @@ export async function registrarGasto(companyId: string, cuerpo: unknown, opcione
   for (let intento = 1; !resultado; intento++) {
     try {
       resultado = await prisma.$transaction(async (tx) => {
+        // Un abono bloquea sus originales antes de leer nada y vuelve a mirarlas (anulada, limite) con ellas bloqueadas.
+        if (rect && prov.existente) {
+          await bloquearFacturasGasto(tx, originalesDelPlan(rect));
+          await comprobarOriginalesEnTx(tx, companyId, rect, prov.existente.id);
+        }
         const supplier: ProveedorBasico = prov.existente ?? (await crearProveedorEnTx(tx, companyId, prov.nuevo!));
         const ultima = await tx.expenseInvoice.findFirst({ where: { companyId, serie }, orderBy: { numero: 'desc' }, select: { numero: true } });
         const numero = (ultima?.numero ?? 0) + 1;
@@ -837,12 +1073,17 @@ export async function registrarGasto(companyId: string, cuerpo: unknown, opcione
             tipoRetencion: cabecera.tipoRetencion,
             totalFactura,
             observaciones,
+            ...columnasRectificativa(rect),
+            ...(confirmado303 ? { rectificar303ConfirmadoEn: new Date().toISOString() } : {}),
             lineas: { create: lineas },
           },
           include: { lineas: true },
         });
-        const datos = await datosContablesGastoConSubcuenta(tx, companyId, f, supplier, { estadoAsiento: opciones.contabilizar });
+        if (rect) await guardarEnlaces(tx, companyId, f.id, rect.enlaces);
+        const datos = await datosContablesGastoConSubcuenta(tx, companyId, f, supplier, { estadoAsiento: opciones.contabilizar, ...extraRectificativa(rect) });
         const { asientoId } = await contabilizarFacturaGasto(companyId, f.id, datos, tx);
+        // Un abono en firme resta de lo pendiente de su original (las del lector, al aprobar el asiento).
+        if (rect && opciones.contabilizar === 'POSTED') await crearCompensacionesAuto(tx, companyId, f.id, { fuera: rect.compensarFuera, userId: opciones.userId });
         return { id: f.id, asientoId, supplierId: supplier.id };
       }, OPCIONES_TX);
     } catch (e) {
@@ -867,9 +1108,12 @@ export async function registrarGasto(companyId: string, cuerpo: unknown, opcione
     action: opciones.contabilizar === 'POSTED' ? 'ALTA_FACTURA_GASTO' : 'ALTA_FACTURA_GASTO_LECTOR',
     resourceType: 'ExpenseInvoice',
     resourceId: resultado.id,
-    meta: { asientoId: resultado.asientoId, proveedorCreado },
+    meta: { asientoId: resultado.asientoId, proveedorCreado, ...(rect ? { rectificativa: { tipo: rect.tipo, causa: rect.causa, rectifica: rect.rectifica } } : {}) },
   });
-  return { factura: await obtenerDetalle(companyId, resultado.id), asientoId: resultado.asientoId, proveedorCreado };
+  if (confirmado303) await marcarRectificar303(companyId, resultado.id, confirmado303, ivaTotal, opciones.userId);
+  const factura = await obtenerDetalle(companyId, resultado.id);
+  const avisos = [...(rect?.avisos ?? v.avisos ?? []), ...(confirmado303 ? [avisoRectificar303(confirmado303)] : [])];
+  return { factura: avisos.length ? { ...factura, avisos } : factura, asientoId: resultado.asientoId, proveedorCreado };
 }
 
 /**
@@ -1032,17 +1276,39 @@ export async function editarGasto(
     const b = await bloqueoAnterior(companyId, fecha, motivo, 'modificar');
     return conflict(b.texto, b.details);
   };
-  if (enModelos) {
-    const motivo = await motivoPeriodoBloqueado(companyId, fechaContableGasto(actual), retencionDe(actual));
-    if (motivo) throw await bloqueo(motivo, fechaContableGasto(actual));
-  }
+  // Un abono confirmado en un 303 ya presentado (seccion 11) se puede corregir sin volver a frenar.
+  const bloqueoActual = enModelos ? await bloqueoPeriodoGasto(companyId, fechaContableGasto(actual), retencionDe(actual), fechaIvaGasto(actual)) : null;
+  const confirmadoAntes = bloqueoActual?.modelo === '303' && !!actual.rectificar303ConfirmadoEn ? bloqueoActual : null;
+  if (bloqueoActual && !confirmadoAntes) throw await bloqueo(bloqueoActual.motivo, fechaContableGasto(actual));
 
   const bruto = { ...((cuerpo ?? {}) as Record<string, unknown>) };
   if (bruto.proveedor === undefined && bruto.provider !== undefined) bruto.proveedor = bruto.provider;
+  if (bruto.rectificativa === null) delete bruto.rectificativa;
+  if (actual.esRectificativa !== (bruto.rectificativa !== undefined)) {
+    throw badRequest(
+      actual.esRectificativa
+        ? 'Es un abono o una rectificativa: envía también el bloque «rectificativa». Para convertirla en una factura normal, anúlala y regístrala de nuevo.'
+        : 'Una factura no se convierte en abono: registra el abono aparte (Compras › Nueva factura de gasto › Abono o rectificativa).',
+      { campo: 'rectificativa' },
+    );
+  }
   const prov = await prepararProveedor(companyId, bruto.proveedor);
   const { espanola } = await perfilEmpresa(companyId);
   const v = validarFacturaGasto(bruto, { paisProveedor: prov.pais, permitirSerie: false, empresaEspanola: espanola });
+  const rect = v.rectificativa ? await prepararRectificativa(companyId, v, prov.existente?.id ?? null, { excluirId: id }) : null;
   const { lineas, baseTotal, ivaTotal, retencionTotal, totalFactura, cabecera } = lineasParaGuardar(v);
+  // Con rectificativas vigentes, sus importes y su proveedor no cambian (los demas datos, si).
+  const cambiaImportes =
+    prov.existente?.id !== actual.supplierId ||
+    [
+      [baseTotal, actual.baseTotal],
+      [ivaTotal, actual.ivaTotal],
+      [retencionTotal, actual.retencionTotal],
+      [totalFactura, actual.totalFactura],
+    ].some(([a, b]) => aCentimos(Number(a)) !== aCentimos(Number(b)));
+  if (cambiaImportes) await comprobarSinRectificativas(companyId, id, 'corregir');
+  // Lo compensado con abonos cuenta como pagado: el total no puede bajar de ahi; un abono aplicado a mano no se corrige.
+  await comprobarCompensaciones(prisma, companyId, id, { totalNuevo: totalFactura });
   await comprobarCuentas(companyId, v, lineas.map((l) => l.accountCode));
   await comprobarCuentasNomina(companyId, v, lineas.map((l) => l.accountCode));
   const numeroActivo = normalizarNumeroProveedor(v.numeroFacturaProveedor);
@@ -1050,10 +1316,30 @@ export async function editarGasto(
 
   const fechaNueva = v.fechaRegistro ?? v.fechaEmision;
   await comprobarFechaAbierta(companyId, fechaNueva);
+  let confirmado303: BloqueoPeriodo | null = null;
   if (enModelos) {
-    const motivo = await motivoPeriodoBloqueado(companyId, fechaNueva, retencionTotal > 0 ? tipoRetencionLibro(v.tipoGasto) : null);
-    if (motivo) throw await bloqueo(motivo, fechaNueva);
+    const retencionNueva = aCentimos(retencionTotal) !== 0 ? tipoRetencionLibro(v.tipoGasto) : null;
+    const b = await bloqueoPeriodoGasto(companyId, fechaNueva, retencionNueva, rect?.fechaImputacionIva ?? fechaNueva);
+    if (b) {
+      // Ya confirmado para ese mismo 303: no se vuelve a pedir.
+      const mismo303 = !!confirmadoAntes && confirmadoAntes.ejercicio === b.ejercicio && confirmadoAntes.periodo === b.periodo;
+      confirmado303 = await comprobarRectificar303(b, {
+        rect,
+        ivaTotal,
+        confirma: mismo303 || v.rectificativa?.confirmaRectificar303 === true,
+        otroError: (x) => bloqueo(x.motivo, fechaNueva),
+      });
+    }
   }
+  // La marca solo sigue si el abono sigue en un 303 presentado; con otra fecha, se quita.
+  // Un borrador del lector la conserva: se vuelve a mirar al aprobar el asiento.
+  const marca303 = !actual.esRectificativa || !enModelos
+    ? undefined
+    : !confirmado303
+      ? null
+      : confirmadoAntes && confirmadoAntes.ejercicio === confirmado303.ejercicio && confirmadoAntes.periodo === confirmado303.periodo
+        ? actual.rectificar303ConfirmadoEn
+        : new Date().toISOString();
   if (asiento) await asegurarPlanContableEmpresa(companyId);
 
   const { fechaEmision, fechaVencimiento } = resolverFechasGasto({ fechaEmision: v.fechaEmision, fechaVencimiento: v.fechaVencimiento });
@@ -1062,8 +1348,12 @@ export async function editarGasto(
   let r: { asientoNuevo: string | null; supplierId: string };
   try {
     r = await conReintentoSubcuenta(() => prisma.$transaction(async (tx) => {
-      // Lo comprobado arriba se vuelve a mirar con la factura bloqueada.
+      // Lo comprobado arriba se vuelve a mirar con la factura (y, en un abono, sus originales) bloqueada.
+      if (rect) await bloquearFacturasGasto(tx, [id, ...originalesDelPlan(rect)]);
       await bloquearSinCambios(tx, companyId, id, actual, asiento, mensajeConPagos);
+      if (rect && prov.existente) await comprobarOriginalesEnTx(tx, companyId, rect, prov.existente.id, id);
+      if (cambiaImportes) await comprobarSinRectificativas(companyId, id, 'corregir', tx);
+      await comprobarCompensaciones(tx, companyId, id, { totalNuevo: totalFactura });
       const supplier: ProveedorBasico = prov.existente ?? (await crearProveedorEnTx(tx, companyId, prov.nuevo!));
       await tx.expenseInvoiceLine.deleteMany({ where: { invoiceId: id } });
       const f = await tx.expenseInvoice.update({
@@ -1086,23 +1376,33 @@ export async function editarGasto(
           tipoRetencion: cabecera.tipoRetencion,
           totalFactura,
           observaciones: v.observaciones?.trim() || null,
+          ...columnasRectificativa(rect),
+          ...(marca303 !== undefined ? { rectificar303ConfirmadoEn: marca303 } : {}),
           lineas: { create: lineas },
         },
         include: { lineas: true },
       });
+      if (rect) await guardarEnlaces(tx, companyId, id, rect.enlaces);
       if (!asiento) return { asientoNuevo: null, supplierId: supplier.id };
 
       await borrarLibrosDeAsiento(tx, companyId, asiento.id);
       if (asiento.estado === 'POSTED') {
         await tx.journalEntry.update({ where: { id: asiento.id }, data: { estado: 'REVERSED' } });
+        // Las compensaciones AUTO de un abono se rehacen con sus importes nuevos (despues del asiento).
+        if (actual.esRectificativa) await anularCompensacionesAuto(tx, companyId, id);
         const previos = await tx.journalEntry.count({ where: { companyId, invoiceId: id, origen: 'FACTURA_GASTO' } });
         // Con el proveedor o el tipo de gasto nuevos: su subcuenta (400N o 410N).
         const nuevo = await contabilizarFacturaGasto(
           companyId,
           id,
-          await datosContablesGastoConSubcuenta(tx, companyId, f, supplier, { estadoAsiento: 'POSTED', numeroAsiento: `FAC-GAST-${f.numeroCompleto}-R${previos}` }),
+          await datosContablesGastoConSubcuenta(tx, companyId, f, supplier, {
+            estadoAsiento: 'POSTED',
+            numeroAsiento: `FAC-GAST-${f.numeroCompleto}-R${previos}`,
+            ...extraRectificativa(rect),
+          }),
           tx,
         );
+        if (rect) await crearCompensacionesAuto(tx, companyId, id, { fuera: rect.compensarFuera, userId: ctx.userId });
         return { asientoNuevo: nuevo.asientoId, supplierId: supplier.id };
       }
       // Borrador (o pendiente de revisar): se rehace con el mismo numero y estado.
@@ -1110,7 +1410,7 @@ export async function editarGasto(
       const nuevo = await contabilizarFacturaGasto(
         companyId,
         id,
-        await datosContablesGastoConSubcuenta(tx, companyId, f, supplier, { estadoAsiento: 'DRAFT', numeroAsiento: asiento.numeroAsiento }),
+        await datosContablesGastoConSubcuenta(tx, companyId, f, supplier, { estadoAsiento: 'DRAFT', numeroAsiento: asiento.numeroAsiento, ...extraRectificativa(rect) }),
         tx,
       );
       if (asiento.estado !== 'DRAFT') await tx.journalEntry.update({ where: { id: nuevo.asientoId }, data: { estado: asiento.estado } });
@@ -1131,7 +1431,12 @@ export async function editarGasto(
     resourceId: id,
     meta: { asientoAnterior: asiento?.id ?? null, asientoNuevo: r.asientoNuevo },
   });
-  return obtenerDetalle(companyId, id);
+  // Confirmado ahora (no lo estaba para ese 303): marca en AuditLog y aviso, como en el alta.
+  const nuevaMarca = confirmado303 && marca303 !== actual.rectificar303ConfirmadoEn ? confirmado303 : null;
+  if (nuevaMarca) await marcarRectificar303(companyId, id, nuevaMarca, ivaTotal, ctx.userId);
+  const detalle = await obtenerDetalle(companyId, id);
+  const avisos = [...(rect?.avisos ?? v.avisos ?? []), ...(nuevaMarca ? [avisoRectificar303(nuevaMarca)] : [])];
+  return avisos.length ? { ...detalle, avisos } : detalle;
 }
 
 /**
@@ -1151,6 +1456,8 @@ export async function anularGasto(
   if (!f) throw notFound('Factura de gasto no encontrada.');
   if (f.estado === 'ANULADA') throw conflict('La factura ya está anulada.');
   if (await tieneCobrosActivos(companyId, 'GASTO', id)) throw conflict('La factura tiene pagos registrados: anúlalos antes de anularla.');
+  await comprobarSinRectificativas(companyId, id, 'anular');
+  await comprobarCompensaciones(prisma, companyId, id);
 
   const motivo = typeof datos.motivo === 'string' ? datos.motivo.trim() : '';
   if (motivo.length < 3) throw badRequest('Indica el motivo de la anulación.', { campo: 'motivo' });
@@ -1163,7 +1470,9 @@ export async function anularGasto(
   const fechaPedida = typeof datos.fecha === 'string' && datos.fecha ? datos.fecha : null;
 
   const asiento = await asientoVigente(prisma, companyId, id);
-  const declarada = cuentaEnModelos(f.estado, asiento) ? await motivoPeriodoBloqueado(companyId, fechaContableGasto(f), retencionDe(f)) : null;
+  // El 303 con la fecha de su IVA: una ERROR_IVA imputada a un 303 presentado se anula con
+  // contraasiento. Aunque se confirmara al registrarla (rectificar303ConfirmadoEn), manda lo presentado.
+  const declarada = cuentaEnModelos(f.estado, asiento) ? await motivoPeriodoBloqueado(companyId, fechaContableGasto(f), retencionDe(f), fechaIvaGasto(f)) : null;
   // Una factura anterior sin asiento ya cuenta en los modelos: si su periodo
   // esta declarado, anularla sin contraasiento cambiaria lo presentado.
   if (declarada && !asiento) {
@@ -1182,10 +1491,14 @@ export async function anularGasto(
   }
 
   const contraId = await prisma.$transaction(async (tx) => {
-    // Lo comprobado arriba se vuelve a mirar con la factura bloqueada.
+    // Lo comprobado arriba se vuelve a mirar con la factura bloqueada (tambien un abono o una aplicacion registrados entretanto).
     await bloquearSinCambios(tx, companyId, id, f, asiento, 'La factura tiene pagos registrados: anúlalos antes de anularla.');
+    await comprobarSinRectificativas(companyId, id, 'anular', tx);
+    await comprobarCompensaciones(tx, companyId, id);
 
     let contra: string | null = null;
+    // Las compensaciones AUTO del abono se anulan con el (lo que restaba de su original vuelve a estar pendiente).
+    if (f.esRectificativa) await anularCompensacionesAuto(tx, companyId, id, conContraasiento ? fechaAnulacion : hoyEspana());
     if (asiento && !conContraasiento) {
       await borrarLibrosDeAsiento(tx, companyId, asiento.id);
       await tx.journalEntry.update({ where: { id: asiento.id }, data: { estado: 'REVERSED' } });
@@ -1297,7 +1610,18 @@ async function obtenerDetalle(companyId: string, id: string): Promise<GastoDetal
   });
   if (!f) throw notFound('Factura de gasto no encontrada.');
 
-  const [{ pagado, activos }, perfil] = await Promise.all([pagosDe(companyId, id), perfilEmpresa(companyId)]);
+  const [{ pagado, activos }, perfil, rect, compensaciones, rectificar303] = await Promise.all([
+    pagosDe(companyId, id),
+    perfilEmpresa(companyId),
+    datosRectificativaDeFicha(companyId, f),
+    compensacionesDe(companyId, id),
+    recordatorioRectificar303(companyId, f),
+  ]);
+  // Aplicaciones de abonos que impiden anularla (el mismo texto que el 409 de anularGasto).
+  const bloqueoCompensaciones =
+    f.estado === 'ANULADA' ? null : await comprobarCompensaciones(prisma, companyId, id).then(() => null, (e: unknown) => (e instanceof HttpError ? e.message : null));
+  const pendiente = f.estado === 'ANULADA' ? 0 : round2(Number(f.totalFactura) - pagado);
+  const esAbono = aCentimos(Number(f.totalFactura)) < 0;
   // En una anulada se ensena el asiento original (aunque este REVERSED); el contraasiento va en `anulacion`.
   const asiento =
     f.estado === 'ANULADA'
@@ -1313,7 +1637,10 @@ async function obtenerDetalle(companyId: string, id: string): Promise<GastoDetal
   const tipo = esTipoGasto(f.tipoGasto) ? f.tipoGasto : null;
 
   // Lo que se puede hacer (las mismas reglas que editarGasto y anularGasto, sin lanzar errores).
-  const bloqueo = cuentaEnModelos(f.estado, asiento) ? await motivoPeriodoBloqueado(companyId, fechaContableGasto(f), retencionDe(f)) : null;
+  const bloqueoModelos = cuentaEnModelos(f.estado, asiento) ? await bloqueoPeriodoGasto(companyId, fechaContableGasto(f), retencionDe(f), fechaIvaGasto(f)) : null;
+  const bloqueo = bloqueoModelos?.motivo ?? null;
+  // Un abono confirmado en un 303 ya presentado se puede corregir (anularlo sigue con contraasiento).
+  const bloqueoEdicion = bloqueoModelos?.modelo === '303' && f.rectificar303ConfirmadoEn ? null : bloqueo;
   const [bloqueoEditar, bloqueoAnular] =
     bloqueo && !asiento
       ? await Promise.all([
@@ -1326,8 +1653,14 @@ async function obtenerDetalle(companyId: string, id: string): Promise<GastoDetal
       ? { permitido: false, motivo: 'La factura está anulada: no se puede modificar.' }
       : activos > 0
         ? { permitido: false, motivo: mensajeConPagos }
-        : bloqueo
-          ? { permitido: false, motivo: bloqueoEditar ? bloqueoEditar.texto : textoNoModificable(bloqueo) }
+        : bloqueoEdicion
+          ? {
+              permitido: false,
+              // En una factura (no en un abono): lo que manda el proveedor se registra, no se anula la original.
+              motivo: bloqueoEditar
+                ? bloqueoEditar.texto
+                : `${textoNoModificable(bloqueoEdicion)}${f.esRectificativa ? '' : ' Si el proveedor te ha mandado un abono o una rectificativa, regístrala con «Registrar abono o rectificativa».'}`,
+            }
           : { permitido: true };
   const anular =
     f.estado === 'ANULADA'
@@ -1336,7 +1669,15 @@ async function obtenerDetalle(companyId: string, id: string): Promise<GastoDetal
         ? { permitido: false, motivo: 'La factura tiene pagos registrados: anúlalos antes de anularla.', conContraasiento: false }
         : bloqueoAnular
           ? { permitido: false, motivo: bloqueoAnular.texto, conContraasiento: false }
-          : { permitido: true, conContraasiento: !!bloqueo };
+          : rect.rectificativas.length
+            ? {
+                permitido: false,
+                motivo: `Tiene ${rect.rectificativas.length === 1 ? 'la rectificativa' : 'las rectificativas'} ${rect.rectificativas.map((x) => x.numero ?? x.numeroCompleto).join(', ')}: ${rect.rectificativas.length === 1 ? 'anúlala' : 'anúlalas'} antes de anular la factura.`,
+                conContraasiento: false,
+              }
+            : bloqueoCompensaciones
+              ? { permitido: false, motivo: bloqueoCompensaciones, conContraasiento: false }
+              : { permitido: true, conContraasiento: !!bloqueo };
 
   return {
     id: f.id,
@@ -1364,7 +1705,10 @@ async function obtenerDetalle(companyId: string, id: string): Promise<GastoDetal
     retencionTotal: f.retencionTotal,
     totalFactura: f.totalFactura,
     importePagado: pagado,
-    importePendiente: f.estado === 'ANULADA' ? 0 : round2(Number(f.totalFactura) - pagado),
+    importePendiente: pendiente,
+    pendiente,
+    ...(esAbono ? { aFavor: round2(-pendiente) || 0 } : {}),
+    compensaciones,
     observaciones: f.observaciones ?? undefined,
     monedaCuenta: perfil.monedaCuenta,
     supplier: { id: f.supplier.id, nombreFiscal: f.supplier.nombreFiscal, nifCif: f.supplier.nifCif, pais: f.supplier.pais },
@@ -1376,6 +1720,9 @@ async function obtenerDetalle(companyId: string, id: string): Promise<GastoDetal
       anular,
       contabilizar: ESTADOS_SIN_CONTABILIZAR.includes(f.estado) && !asiento,
     },
+    esRectificativa: f.esRectificativa,
+    ...rect,
+    rectificar303,
     createdAt: f.createdAt,
     updatedAt: f.updatedAt,
   };
@@ -1389,12 +1736,15 @@ const ESTADOS_FILTRO: Record<string, Prisma.ExpenseInvoiceWhereInput> = {
 };
 
 function filtroPago(pago: string, hoy: string): Prisma.ExpenseInvoiceWhereInput {
-  const noAnulada = { estado: { not: 'ANULADA' } };
+  // Los abonos (total < 0) no se pagan ni vencen: tienen su propio filtro (tipo=abonos).
+  const noAnulada = { estado: { not: 'ANULADA' }, totalFactura: { gte: 0 } };
   if (pago === 'pendiente') return { ...noAnulada, estadoPago: 'PENDIENTE' };
   // Lo que cuenta el contador «Pendientes de pago»: sin pagar del todo (pendientes y pagadas en parte).
   if (pago === 'por_pagar') return { ...noAnulada, estadoPago: { not: 'PAGADA' } };
   if (pago === 'parcial') return { ...noAnulada, estadoPago: 'PARCIAL' };
-  if (pago === 'pagada') return { estadoPago: 'PAGADA' };
+  if (pago === 'pagada') return { estadoPago: 'PAGADA', totalFactura: { gte: 0 } };
+  // Un abono en borrador (lector) aun no cuenta: al aprobarlo se descuenta solo de su original.
+  if (pago === 'a_favor') return { estado: { notIn: ['ANULADA', 'DRAFT'] }, totalFactura: { lt: 0 }, estadoPago: { not: 'PAGADA' } };
   return { ...noAnulada, estadoPago: { not: 'PAGADA' }, fechaVencimiento: { lt: hoy } }; // vencida
 }
 
@@ -1410,11 +1760,15 @@ async function listarGastos(companyId: string, filtros: FiltrosGastos = {}): Pro
   const q = texto(filtros.q);
   const estado = texto(filtros.estado);
   const pago = texto(filtros.pago);
+  const tipo = texto(filtros.tipo);
   const supplierId = texto(filtros.supplierId);
   const desde = texto(filtros.desde);
   const hasta = texto(filtros.hasta);
   if (estado && !ESTADOS_FILTRO[estado]) throw badRequest('Estado no válido: usa sin_contabilizar, pendiente_revision, contabilizada o anulada.');
-  if (pago && !['pendiente', 'parcial', 'por_pagar', 'pagada', 'vencida'].includes(pago)) throw badRequest('Filtro de pago no válido: usa pendiente, parcial, por_pagar, pagada o vencida.');
+  if (pago && !['pendiente', 'parcial', 'por_pagar', 'pagada', 'vencida', 'a_favor'].includes(pago)) {
+    throw badRequest('Filtro de pago no válido: usa pendiente, parcial, por_pagar, pagada, vencida o a_favor.');
+  }
+  if (tipo && !['facturas', 'abonos'].includes(tipo)) throw badRequest('Tipo no válido: usa facturas o abonos.');
   for (const [nombre, f] of [['desde', desde], ['hasta', hasta]] as const) {
     if (f && !/^\d{4}-\d{2}-\d{2}$/.test(f)) throw badRequest(`La fecha «${nombre}» tiene que ser AAAA-MM-DD.`);
     if (f && !esFechaReal(f)) throw badRequest(`La fecha «${nombre}» no existe.`);
@@ -1423,6 +1777,7 @@ async function listarGastos(companyId: string, filtros: FiltrosGastos = {}): Pro
   const hoy = hoyEspana();
   const comunes: Prisma.ExpenseInvoiceWhereInput[] = [{ companyId }];
   if (supplierId) comunes.push({ supplierId });
+  if (tipo) comunes.push({ esRectificativa: tipo === 'abonos' });
   if (q) {
     comunes.push({
       OR: [
@@ -1443,7 +1798,7 @@ async function listarGastos(companyId: string, filtros: FiltrosGastos = {}): Pro
   };
   const sinAnuladas: Prisma.ExpenseInvoiceWhereInput = { AND: [where, { estado: { not: 'ANULADA' } }] };
 
-  const [items, total, porEstado, pendientesPago, vencidas, suma, idsFiltrados, perfil] = await Promise.all([
+  const [items, total, porEstado, pendientesPago, vencidas, suma, idsFiltrados, perfil, abonosAFavor] = await Promise.all([
     prisma.expenseInvoice.findMany({
       where,
       include: { supplier: { select: { id: true, nombreFiscal: true, nifCif: true } } },
@@ -1456,14 +1811,18 @@ async function listarGastos(companyId: string, filtros: FiltrosGastos = {}): Pro
     prisma.expenseInvoice.count({ where: { AND: [whereBase, filtroPago('por_pagar', hoy)] } }),
     prisma.expenseInvoice.count({ where: { AND: [whereBase, filtroPago('vencida', hoy)] } }),
     prisma.expenseInvoice.aggregate({ where: sinAnuladas, _sum: { baseTotal: true, ivaTotal: true, retencionTotal: true, totalFactura: true } }),
-    prisma.expenseInvoice.findMany({ where: sinAnuladas, select: { id: true } }),
+    prisma.expenseInvoice.findMany({ where: sinAnuladas, select: { id: true, totalFactura: true, estado: true } }),
     perfilEmpresa(companyId),
+    prisma.expenseInvoice.count({ where: { AND: [whereBase, filtroPago('a_favor', hoy)] } }),
   ]);
 
   const pagado = await pagadoPorFacturas(companyId, [...new Set([...items.map((f) => f.id), ...idsFiltrados.map((f) => f.id)])]);
   const cuenta = (estados: string[]) => porEstado.filter((g) => estados.includes(g.estado)).reduce((a, g) => a + g._count._all, 0);
   const totalFiltrado = round2(Number(suma._sum.totalFactura ?? 0));
-  const pagadoFiltrado = idsFiltrados.reduce((a, f) => a + aCentimos(pagado.get(f.id) ?? 0), 0) / 100;
+  // Pendiente de pago (sin los abonos) y a favor (los abonos), por separado.
+  const pendienteDe = (f: { id: string; totalFactura: number }) => aCentimos(Number(f.totalFactura)) - aCentimos(pagado.get(f.id) ?? 0);
+  const pendienteFiltrado = idsFiltrados.filter((f) => aCentimos(Number(f.totalFactura)) >= 0).reduce((a, f) => a + pendienteDe(f), 0) / 100;
+  const aFavorFiltrado = -idsFiltrados.filter((f) => aCentimos(Number(f.totalFactura)) < 0 && f.estado !== 'DRAFT').reduce((a, f) => a + pendienteDe(f), 0) / 100;
 
   return {
     items: items.map((f) => {
@@ -1490,6 +1849,8 @@ async function listarGastos(companyId: string, filtros: FiltrosGastos = {}): Pro
         retencionTotal: f.retencionTotal,
         totalFactura: f.totalFactura,
         importePendiente: f.estado === 'ANULADA' ? 0 : round2(Number(f.totalFactura) - (pagado.get(f.id) ?? 0)),
+        esRectificativa: f.esRectificativa,
+        esAbono: aCentimos(Number(f.totalFactura)) < 0,
       };
     }),
     total,
@@ -1504,13 +1865,15 @@ async function listarGastos(companyId: string, filtros: FiltrosGastos = {}): Pro
       anuladas: cuenta(['ANULADA']),
       pendientesPago,
       vencidas,
+      abonosAFavor,
     },
     totales: {
       base: round2(Number(suma._sum.baseTotal ?? 0)),
       iva: round2(Number(suma._sum.ivaTotal ?? 0)),
       retencion: round2(Number(suma._sum.retencionTotal ?? 0)),
       total: totalFiltrado,
-      pendiente: round2(totalFiltrado - pagadoFiltrado),
+      pendiente: round2(pendienteFiltrado),
+      aFavor: round2(aFavorFiltrado),
     },
     monedaCuenta: perfil.monedaCuenta,
   };

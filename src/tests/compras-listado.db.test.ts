@@ -81,7 +81,7 @@ describe('listado', () => {
 
   it('contadores reales (sin el filtro de estado ni el de pago)', async () => {
     const r = await request(app()).get('/expense-invoices?estado=contabilizada');
-    expect(r.body.data.contadores).toEqual({ todas: 30, sinContabilizar: 8, pendientesRevision: 6, contabilizadas: 12, anuladas: 4, pendientesPago: 26, vencidas: 3 });
+    expect(r.body.data.contadores).toEqual({ todas: 30, sinContabilizar: 8, pendientesRevision: 6, contabilizadas: 12, anuladas: 4, pendientesPago: 26, vencidas: 3, abonosAFavor: 0 });
     expect(r.body.data.total).toBe(12);
     expect(r.body.data.items.every((f: { estadoTexto: string }) => f.estadoTexto === 'Contabilizada')).toBe(true);
   });
@@ -104,7 +104,7 @@ describe('listado', () => {
   it('los totales son del conjunto filtrado entero y sin anuladas', async () => {
     const r = await request(app()).get('/expense-invoices?limit=5');
     expect(r.body.data.items).toHaveLength(5);
-    expect(r.body.data.totales).toEqual({ base: 2600, iva: 546, retencion: 0, total: 3146, pendiente: 3146 });
+    expect(r.body.data.totales).toEqual({ base: 2600, iva: 546, retencion: 0, total: 3146, pendiente: 3146, aFavor: 0 });
     const anuladas = await request(app()).get('/expense-invoices?estado=anulada');
     expect(anuladas.body.data.totales.total).toBe(0);
     expect(anuladas.body.data.items[0]).toMatchObject({ estadoTexto: 'Anulada', importePendiente: 0 });

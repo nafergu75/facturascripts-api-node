@@ -118,3 +118,161 @@ describe('validarFacturaGasto', () => {
     expect(error({ ...valida(), proveedor: { id: 'a', nuevo: {} } }).campo).toBe('proveedor');
   });
 });
+
+describe('abonos y rectificativas de proveedor (bloque rectificativa)', () => {
+  const abono = (rect: Record<string, unknown> = {}, extra: Record<string, unknown> = {}) => ({
+    proveedor: { id: 'sup_1' },
+    numeroFacturaProveedor: 'R-2027/004',
+    fechaEmision: '2027-02-10',
+    fechaRegistro: '2027-02-12',
+    tipoGasto: 'COMPRA',
+    lineas: [{ descripcion: 'Devolución 3 cajas', cantidad: 3, precioUnitario: -40, tipoIva: 21, cuenta: '608' }],
+    totalDocumento: -145.2,
+    rectificativa: { tipo: 'I', causa: 'DEVOLUCION', motivo: 'Mercancía dañada', originales: [{ id: 'ckx1' }], ...rect },
+    ...extra,
+  });
+
+  it('un abono por diferencias con su original pasa, con los importes en negativo', () => {
+    const d = validarFacturaGasto(abono());
+    expect(d.rectificativa).toMatchObject({ tipo: 'I', causa: 'DEVOLUCION', originales: [{ id: 'ckx1' }] });
+    expect(d.lineas[0].precioUnitario).toBe(-40);
+  });
+
+  it('sin el bloque, una factura normal sigue sin admitir precios negativos ni base cero, y explica cómo registrar un abono', () => {
+    const c = valida();
+    c.lineas[0].precioUnitario = -10;
+    expect(error(c)).toMatchObject({ status: 400, message: 'El precio no puede ser negativo. Si es un abono o una rectificativa del proveedor, regístrala como abono: Compras › Nueva factura de gasto › Abono o rectificativa.', campo: 'lineas.0.precioUnitario' });
+    c.lineas[0].precioUnitario = 0;
+    expect(error(c).message).toBe(
+      'El importe tiene que ser mayor que cero. Si es un abono o una rectificativa del proveedor, regístrala como abono: Compras › Nueva factura de gasto › Abono o rectificativa.',
+    );
+  });
+
+  it('causa: de la lista; impago y concurso no se admiten', () => {
+    expect(error(abono({ causa: 'OTRA' }))).toMatchObject({ status: 400, campo: 'rectificativa.causa' });
+    expect(error(abono({ causa: 'IMPAGO' })).message).toMatch(/^Las rectificativas por impago o concurso no se registran como un abono/);
+    expect(error(abono({ causa: 'CONCURSO' })).campo).toBe('rectificativa.causa');
+  });
+
+  it('tipo I o S', () => {
+    expect(error(abono({ tipo: 'X' }))).toMatchObject({ status: 400, message: 'Elige si la rectificativa es por diferencias o por sustitución.', campo: 'rectificativa.tipo' });
+  });
+
+  it('hace falta una original o un periodo, y el periodo solo en rappels y descuentos', () => {
+    expect(error(abono({ originales: [] }))).toMatchObject({
+      message: 'Indica qué factura rectifica, o el periodo si es un descuento por volumen.',
+      campo: 'rectificativa.originales',
+    });
+    expect(error(abono({ originales: [], periodo: { desde: '2027-01-01', hasta: '2027-03-31' } })).campo).toBe('rectificativa.periodo');
+    const rappel = abono({ causa: 'RAPPEL', originales: [], periodo: { desde: '2027-01-01', hasta: '2027-03-31' } });
+    expect(() => validarFacturaGasto(rappel)).not.toThrow();
+    expect(error(abono({ causa: 'RAPPEL', originales: [], periodo: { desde: '2027-03-31', hasta: '2027-01-01' } })).campo).toBe('rectificativa.periodo.hasta');
+  });
+
+  it('rappel de varios periodos: el reparto por periodo va dentro del periodo y suma la base', () => {
+    const periodo = (reparto: unknown[]) => ({ causa: 'RAPPEL', originales: [], periodo: { desde: '2027-01-01', hasta: '2027-06-30', reparto } });
+    const bien = [
+      { desde: '2027-01-01', hasta: '2027-03-31', base: -20 },
+      { desde: '2027-04-01', hasta: '2027-06-30', base: -100 },
+    ];
+    expect(validarFacturaGasto(abono(periodo(bien))).rectificativa?.periodo?.reparto).toHaveLength(2);
+    expect(error(abono(periodo([bien[0], { ...bien[1], base: -90 }])))).toMatchObject({
+      message: 'El reparto por periodos (-110,00 €) no suma la base de la rectificativa (-120,00 €).',
+      campo: 'rectificativa.periodo.reparto',
+    });
+    expect(error(abono(periodo([bien[0], { ...bien[1], hasta: '2027-07-31' }])))).toMatchObject({
+      message: 'Cada tramo del reparto tiene que estar dentro del periodo del rappel.',
+      campo: 'rectificativa.periodo.reparto.1',
+    });
+    expect(error(abono(periodo([bien[0], { ...bien[1], desde: '2027-03-01' }])))).toMatchObject({
+      message: 'Los tramos del reparto no pueden solaparse.',
+      campo: 'rectificativa.periodo.reparto.1',
+    });
+  });
+
+  it('cada original de fuera lleva número y fecha, y no puede ser posterior a la rectificativa', () => {
+    expect(error(abono({ originales: [{ numero: 'F-2026/118' }] }))).toMatchObject({ campo: 'rectificativa.originales.0.fecha' });
+    expect(error(abono({ originales: [{ fecha: '2026-11-30' }] }))).toMatchObject({ campo: 'rectificativa.originales.0.numero' });
+    expect(error(abono({ originales: [{ numero: 'F-2026/118', fecha: '2027-03-01' }] }))).toMatchObject({
+      message: 'La rectificativa no puede tener fecha anterior a la de la factura que rectifica (01/03/2027).',
+      campo: 'fechaEmision',
+    });
+    expect(() => validarFacturaGasto(abono({ originales: [{ numero: 'F-2026/118', fecha: '2026-11-30' }] }))).not.toThrow();
+  });
+
+  it('una rectificativa que no cambia ningún importe no se registra como abono', () => {
+    const c = abono({ causa: 'ERROR_IVA' }, { lineas: [{ descripcion: 'x', cantidad: 1, precioUnitario: 0, tipoIva: 21 }], totalDocumento: undefined });
+    expect(error(c).message).toMatch(/^Esta rectificativa no cambia ningún importe/);
+  });
+
+  it('un descuento o una devolución resta: el signo tiene que bajar el total', () => {
+    const c = abono({}, { lineas: [{ descripcion: 'x', cantidad: 1, precioUnitario: 40, tipoIva: 21 }], totalDocumento: undefined });
+    expect(error(c)).toMatchObject({ message: 'Un descuento o una devolución resta: revisa el signo.', campo: 'lineas' });
+    // Un error en el IVA puede subir o bajar, y mezclar tipos.
+    const mixta = abono(
+      { causa: 'ERROR_IVA' },
+      {
+        lineas: [
+          { descripcion: 'Al 21 %', cantidad: 1, precioUnitario: -100, tipoIva: 21 },
+          { descripcion: 'Al 10 %', cantidad: 1, precioUnitario: 100, tipoIva: 10 },
+        ],
+        totalDocumento: -11,
+      },
+    );
+    expect(() => validarFacturaGasto(mixta)).not.toThrow();
+  });
+
+  it('un error en el IVA no cambia la base: la factura entera en negativo no vale', () => {
+    const entera = abono(
+      { causa: 'ERROR_IVA' },
+      { lineas: [{ descripcion: 'Género', cantidad: 1, precioUnitario: -100, tipoIva: 21 }], totalDocumento: undefined },
+    );
+    expect(error(entera)).toMatchObject({ message: expect.stringMatching(/^Una rectificativa por un error en el IVA no cambia la base\./), campo: 'lineas' });
+  });
+
+  it('el total de la factura se cruza con signo', () => {
+    expect(error(abono({}, { totalDocumento: 145.2 })).campo).toBe('totalDocumento');
+  });
+
+  it('el reparto entre varias originales tiene que sumar la rectificación', () => {
+    const dos = (a: number, b: number) => abono({ originales: [{ id: 'a', base: a, cuota: -10.5 }, { id: 'b', base: b, cuota: -14.7 }] });
+    expect(() => validarFacturaGasto(dos(-50, -70))).not.toThrow();
+    expect(error(dos(-50, -60))).toMatchObject({
+      message: 'El reparto entre las facturas que rectifica (-110,00 €) no suma la base de la rectificativa (-120,00 €).',
+      campo: 'rectificativa.originales',
+    });
+    expect(error(abono({ originales: [{ id: 'a', base: -120 }, { id: 'b' }] })).campo).toBe('rectificativa.originales.1.base');
+  });
+
+  it('por sustitución: una sola original, y las líneas corregidas', () => {
+    const s = (rect: Record<string, unknown>) => abono({ tipo: 'S', ...rect }, { lineas: undefined, totalDocumento: undefined });
+    expect(error(s({}))).toMatchObject({ message: 'Por sustitución hacen falta las líneas de la factura corregida.', campo: 'rectificativa.corregida' });
+    const corregida = { lineas: [{ descripcion: 'Género', cantidad: 1, precioUnitario: 800, tipoIva: 21 }] };
+    expect(error(s({ corregida, originales: [{ id: 'a' }, { id: 'b' }] }))).toMatchObject({ campo: 'rectificativa.originales' });
+    expect(error(s({ corregida, originales: [{ numero: 'F-1', fecha: '2027-01-10' }] }))).toMatchObject({ campo: 'rectificativa.importesOriginales' });
+    const d = validarFacturaGasto(s({ corregida }));
+    expect(d.rectificativa?.corregida?.lineas).toHaveLength(1);
+  });
+
+  it('por sustitución con una original de fuera: las líneas son la diferencia, con la cuota por tipo de los totales', () => {
+    const d = validarFacturaGasto({
+      ...abono(),
+      lineas: undefined,
+      totalDocumento: undefined,
+      rectificativa: {
+        tipo: 'S',
+        causa: 'ERROR_IVA',
+        originales: [{ numero: 'F-1', fecha: '2027-01-10' }],
+        importesOriginales: {
+          lineas: [
+            { descripcion: 'a', cantidad: 1, precioUnitario: 0.07, tipoIva: 21 },
+            { descripcion: 'b', cantidad: 1, precioUnitario: 0.07, tipoIva: 21 },
+          ],
+        },
+        corregida: { lineas: [{ descripcion: 'c', cantidad: 1, precioUnitario: 0.14, tipoIva: 21 }] },
+      },
+    });
+    // Base 0,14 en las dos; cuota 0,01 + 0,01 frente a 0,03: la diferencia es base 0 y cuota +0,01.
+    expect(d.lineas).toEqual([expect.objectContaining({ cantidad: 1, precioUnitario: 0, tipoIva: 21, ivaFijado: 0.01 })]);
+  });
+});

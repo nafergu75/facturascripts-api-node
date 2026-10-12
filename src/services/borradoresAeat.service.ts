@@ -202,7 +202,8 @@ export function entrada390Desde(
 ): { entrada: Entrada390; advertencias: string[] } {
   const { resultados303, ...resto } = extra;
   const datos = agregar390(facturas, ejercicio);
-  const delAno = facturas.filter((f) => f.fecha.startsWith(String(ejercicio)));
+  // Como el 303: una compra rectificativa ERROR_IVA que reduce cuenta en el año de su original (fechaIva).
+  const delAno = facturas.filter((f) => (f.fechaIva ?? f.fecha).startsWith(String(ejercicio)));
   // Rectificativas: como en el 303, no van en las filas por tipo. Las de venta
   // (y el autodevengo de las compras intracomunitarias anuladas) van a
   // «Modificación de bases y cuotas» [29]/[30], como [14]/[15] del 303; las

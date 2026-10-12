@@ -10,10 +10,18 @@ const router = Router({ mergeParams: true });
 router.get('/', authorize('compras:read', 'contabilidad:read'), expenseInvoicesController.list);
 
 // POST /companies/:companyId/expense-invoices - Alta con su asiento en firme
+// (con el bloque `rectificativa`, un abono o rectificativa del proveedor)
 router.post('/', authorize('compras:write'), expenseInvoicesController.create);
+
+// GET /companies/:companyId/expense-invoices/originales - Candidatas a original de un abono
+// (antes de /:id, para que «originales» no se tome por un id)
+router.get('/originales', authorize('compras:read', 'contabilidad:read'), expenseInvoicesController.originales);
 
 // GET /companies/:companyId/expense-invoices/:id - Ficha de la factura
 router.get('/:id', authorize('compras:read', 'contabilidad:read'), expenseInvoicesController.getById);
+
+// GET /companies/:companyId/expense-invoices/:id/rectificar - Datos para prellenar un abono de la factura
+router.get('/:id/rectificar', authorize('compras:read', 'contabilidad:read'), expenseInvoicesController.paraRectificar);
 
 // PUT /companies/:companyId/expense-invoices/:id - Corregir (rehace el asiento y los libros)
 router.put('/:id', authorize('compras:write'), expenseInvoicesController.update);
@@ -29,5 +37,12 @@ router.patch('/:id/estado', authorize('compras:write'), expenseInvoicesControlle
 router.get('/:id/pagos', authorize('compras:read', 'contabilidad:read'), pagosController.listar);
 router.post('/:id/pagos', authorize('compras:write', 'contabilidad:write'), pagosController.registrar);
 router.post('/:id/pagos/:cobroId/anular', authorize('compras:write', 'contabilidad:write'), pagosController.anular);
+
+// Abonos de proveedor: aplicar el abono :id a otra factura (o a una de fuera de
+// la app) y anular una aplicacion. Sobre un abono, POST /:id/pagos registra la
+// devolucion recibida.
+router.get('/:id/compensaciones', authorize('compras:read', 'contabilidad:read'), expenseInvoicesController.compensaciones);
+router.post('/:id/compensaciones', authorize('compras:write', 'contabilidad:write'), expenseInvoicesController.aplicar);
+router.post('/:id/compensaciones/:cid/anular', authorize('compras:write', 'contabilidad:write'), expenseInvoicesController.anularAplicacion);
 
 export default router;

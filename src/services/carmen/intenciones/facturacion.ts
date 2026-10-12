@@ -18,6 +18,7 @@ import { hastaHoy, resolverCodigoPeriodo } from '../huecos/periodo';
 import { indiceTerceros } from '../terceros';
 import type { CarmenCtx, HuecosResueltos, Kpi, RespuestaDatos } from '../tipos';
 import { GASTO_VIGENTE } from '../../../domain/factura-gasto.model';
+import { expenseInvoicesService } from '../../expense-invoices.service';
 
 type Ejecutor = (ctx: CarmenCtx, h: HuecosResueltos) => Promise<RespuestaDatos>;
 
@@ -41,7 +42,11 @@ export const deudaConProveedores: Ejecutor = async (ctx, h) => {
   const permisoRequerido = 'compras:read|contabilidad:read';
   const enlaceCompras = { texto: 'Ver compras', href: '/dashboard/compras' };
 
-  let lista = facturas.map((f) => ({ ...f, proveedor: nombres.get(f.terceroId) ?? 'Proveedor', retraso: Math.max(0, diasEntre(f.fechaVencimiento, ctx.hoy)) }));
+  // Los abonos con algo a tu favor (pendiente en negativo) van aparte: no son
+  // facturas que pagar ni salen como vencidas.
+  const todas = facturas.map((f) => ({ ...f, proveedor: nombres.get(f.terceroId) ?? 'Proveedor', retraso: Math.max(0, diasEntre(f.fechaVencimiento, ctx.hoy)) }));
+  let lista = todas.filter((f) => f.importePendiente > 0);
+  let abonos = todas.filter((f) => f.importePendiente < 0);
   let proveedor: string | null = null;
   if (h.rol === 'proveedor' && h.terceroId) {
     proveedor = nombres.get(h.terceroId) ?? null;
@@ -49,7 +54,12 @@ export const deudaConProveedores: Ejecutor = async (ctx, h) => {
       return { entendido: 'Lo que debes a un proveedor', texto: 'No encuentro ese proveedor en esta empresa.', sinCifras: true, enlaces: [{ texto: 'Ver proveedores', href: '/dashboard/proveedores' }] };
     }
     lista = lista.filter((f) => f.terceroId === h.terceroId);
+    abonos = abonos.filter((f) => f.terceroId === h.terceroId);
   }
+  const aFavor = sumar(abonos.map((f) => -f.importePendiente));
+  const kpiAFavor: Kpi[] = aFavor > 0 ? [{ etiqueta: 'A tu favor', valor: eur(aFavor), detalle: plural(abonos.length, 'abono') }] : [];
+  const unAbono = abonos.length === 1;
+  const pideDevolucion = `${plural(abonos.length, 'abono')}: pide la devolución o ${unAbono ? 'aplícalo' : 'aplícalos'} a otra factura.`;
   lista.sort((a, b) => a.fechaVencimiento.localeCompare(b.fechaVencimiento) || (a.numeroCompleto ?? '').localeCompare(b.numeroCompleto ?? ''));
   const vencidas = lista.filter((f) => f.fechaVencimiento < ctx.hoy);
   const totalVencido = sumar(vencidas.map((f) => f.importePendiente));
@@ -117,8 +127,11 @@ export const deudaConProveedores: Ejecutor = async (ctx, h) => {
   if (!lista.length) {
     return {
       entendido,
-      texto: `${proveedor ? `No le debes nada a ${proveedor}` : 'No tienes facturas de proveedores pendientes de pago'} a ${fechaES(ctx.hoy)}. ${CRITERIO_PAGOS}`,
+      texto:
+        `${proveedor ? `No le debes nada a ${proveedor}` : 'No tienes facturas de proveedores pendientes de pago'} a ${fechaES(ctx.hoy)}.` +
+        `${aFavor > 0 ? ` Tienes ${eur(aFavor)} a tu favor en ${pideDevolucion}` : ''} ${CRITERIO_PAGOS}`,
       permisoRequerido,
+      ...(kpiAFavor.length ? { kpis: kpiAFavor } : {}),
       enlaces,
     };
   }
@@ -130,11 +143,18 @@ export const deudaConProveedores: Ejecutor = async (ctx, h) => {
       ? ' Todas están vencidas.'
       : ` ${plural(vencidas.length, 'está vencida', 'están vencidas')} (${eur(totalVencido)}).`
     : ' Ninguna ha vencido todavía.';
+  // A tu favor: con un proveedor cuyos abonos superan lo pendiente, el saldo neto.
+  const fraseAFavor =
+    aFavor <= 0
+      ? ''
+      : proveedor && aFavor > total
+        ? ` Con sus abonos (${eur(aFavor)}), el saldo es de ${eur(Math.round((aFavor - total) * 100) / 100)} a tu favor: pide la devolución o aplícalo a otra factura.`
+        : ` Además tienes ${eur(aFavor)} a tu favor en ${pideDevolucion}`;
   return {
     entendido,
-    texto: `${proveedor ? `Le debes ${eur(total)} a ${proveedor}` : `Debes ${eur(total)}${a}`} en ${plural(lista.length, 'factura')}${deCuantos}.${frase} ${CRITERIO_PAGOS}`,
+    texto: `${proveedor ? `Le debes ${eur(total)} a ${proveedor}` : `Debes ${eur(total)}${a}`} en ${plural(lista.length, 'factura')}${deCuantos}.${frase}${fraseAFavor} ${CRITERIO_PAGOS}`,
     permisoRequerido,
-    kpis: kpis(lista),
+    kpis: [...kpis(lista), ...kpiAFavor],
     tabla: tabla(proveedor ? `Facturas pendientes de ${proveedor}` : 'Próximos pagos a proveedores', `A ${fechaES(ctx.hoy)}`, COLS_PAGOS, lista.map(fila)),
     enlaces,
     botones: [
@@ -281,6 +301,8 @@ interface Encontrada {
   /** Solo emitidas: la factura que rectifica y cómo (S por sustitución, I por diferencias). */
   facturaOriginalId?: string | null;
   tipoRectificativa?: string | null;
+  /** Solo recibidas: el numero que puso el proveedor. */
+  numeroProveedor?: string | null;
 }
 
 /** Ventas válidas: emitidas, sin borradores (los antiguos quedaron con estado DRAFT y documento FINAL). */
@@ -323,7 +345,7 @@ export const buscarFactura: Ejecutor = async (ctx, h) => {
     compras
       ? prisma.expenseInvoice.findMany({
           where: { companyId: ctx.companyId, numero, ...GASTO_VIGENTE },
-          select: { id: true, numeroCompleto: true, fechaEmision: true, fechaVencimiento: true, totalFactura: true, supplier: { select: { nombreFiscal: true } } },
+          select: { id: true, numeroCompleto: true, numeroFacturaProveedor: true, fechaEmision: true, fechaVencimiento: true, totalFactura: true, supplier: { select: { nombreFiscal: true } } },
           take: 50,
         })
       : Promise.resolve([]),
@@ -345,7 +367,17 @@ export const buscarFactura: Ejecutor = async (ctx, h) => {
       })),
     ...recibidas
       .filter((f) => coincide(f.numeroCompleto))
-      .map((f) => ({ tipo: 'GASTO' as const, id: f.id, numero: f.numeroCompleto, tercero: f.supplier.nombreFiscal, fecha: f.fechaEmision, vence: f.fechaVencimiento, total: Number(f.totalFactura), proforma: false })),
+      .map((f) => ({
+        tipo: 'GASTO' as const,
+        id: f.id,
+        numero: f.numeroCompleto,
+        tercero: f.supplier.nombreFiscal,
+        fecha: f.fechaEmision,
+        vence: f.fechaVencimiento,
+        total: Number(f.totalFactura),
+        proforma: false,
+        numeroProveedor: f.numeroFacturaProveedor,
+      })),
   ];
   const donde = ventas && compras ? 'emitidas ni recibidas' : ventas ? 'emitidas' : 'recibidas';
   const entendido = `Buscar la factura ${buscado}`;
@@ -413,6 +445,9 @@ export const buscarFactura: Ejecutor = async (ctx, h) => {
       enlaces: [...enlaces, { texto: `Abrir la factura ${original}`, href: `/dashboard/facturas/${f.facturaOriginalId}` }],
     };
   }
+  // Recibidas: un abono del proveedor (total en negativo) dice qué rectifica, lo que ha restado y lo que queda a tu favor.
+  if (!emitida && f.total < 0) return explicarAbono(ctx, f, entendido);
+
   const rectificativas = emitida
     ? await prisma.incomeInvoice.findMany({
         where: { companyId: ctx.companyId, facturaOriginalId: f.id, ...VENTA_EMITIDA },
@@ -436,23 +471,42 @@ export const buscarFactura: Ejecutor = async (ctx, h) => {
   // de la factura y las mismas cifras en la de cuenta en los campos *Cuenta.
   const r = await listarCobros(ctx.companyId, f.tipo, f.id);
   const total = r.totalFacturaCuenta;
-  const cobrado = r.importeCobradoCuenta;
+  // En una recibida, lo compensado con abonos no es un pago: va aparte, como «abonado».
+  const compensado = emitida ? 0 : (r.importeCompensado ?? 0);
+  const cobrado = Math.round((r.importeCobradoCuenta - compensado) * 100) / 100;
   let pendiente = r.importePendienteCuenta;
-  let abonado = 0;
+  let abonado = compensado;
+  let abonos = rectificativas.filter((x) => Number(x.totalFactura) < 0).map((x) => x.numeroCompleto ?? 'sin número');
   if (emitida) {
     // Lo pendiente, con las mismas reglas que el panel: rectificativas, cobros con fecha futura y cobradas a mano.
     const fila = (await facturasPorCobrar(ctx.companyId, ctx.hoy)).facturas.find((x) => x.id === f.id);
     pendiente = fila?.pendiente ?? 0;
     abonado = fila?.abonado ?? sumar(rectificativas.filter((x) => Number(x.totalFactura) < 0).map((x) => -Number(x.totalFactura)));
+  } else if (compensado > 0) {
+    // Los abonos aplicados a esta factura (automáticos o a mano), con el número del proveedor.
+    const aplicados = await prisma.compensacionGasto.findMany({
+      where: { companyId: ctx.companyId, facturaId: f.id, estado: 'ACTIVO' },
+      select: { abonoId: true },
+    });
+    const facturasAbono = await prisma.expenseInvoice.findMany({
+      where: { companyId: ctx.companyId, id: { in: [...new Set(aplicados.map((x) => x.abonoId))] } },
+      select: { numeroCompleto: true, numeroFacturaProveedor: true },
+      orderBy: { numero: 'asc' },
+    });
+    abonos = facturasAbono.map((x) => x.numeroFacturaProveedor ?? x.numeroCompleto);
   }
-  const abonos = rectificativas.filter((x) => Number(x.totalFactura) < 0).map((x) => x.numeroCompleto ?? 'sin número');
   const retraso = diasEntre(f.vence, ctx.hoy);
   let estado: string;
   if (pendiente <= 0) {
-    estado = !emitida ? 'Está pagada.' : abonos.length && cobrado < total ? `No queda nada pendiente de cobro: la rectificativa ${abonos.join(', ')} la abona.` : 'Está cobrada.';
+    estado = !emitida
+      ? abonado > 0 && abonos.length
+        ? 'No queda nada pendiente de pago: ' + (abonos.length === 1 ? 'el abono ' + abonos[0] + ' la abona' : 'los abonos ' + abonos.join(', ') + ' la abonan') + (cobrado > 0 ? ' y el resto está pagado.' : '.')
+        : 'Está pagada.'
+      : abonos.length && cobrado < total ? `No queda nada pendiente de cobro: la rectificativa ${abonos.join(', ')} la abona.` : 'Está cobrada.';
   } else {
     const vencida = retraso > 0 ? ` Venció el ${fechaES(f.vence)} (hace ${plural(retraso, 'día')}).` : ` Vence el ${fechaES(f.vence)}.`;
-    const conAbono = abonado > 0 ? `${abonos.length ? ` La rectificativa ${abonos.join(', ')} le resta ${eur(abonado)}.` : ''}` : '';
+    const restan = emitida ? 'La rectificativa ' + abonos.join(', ') + ' le resta' : abonos.length === 1 ? 'El abono ' + abonos[0] + ' le resta' : 'Los abonos ' + abonos.join(', ') + ' le restan';
+    const conAbono = abonado > 0 && abonos.length ? ' ' + restan + ' ' + eur(abonado) + '.' : '';
     estado = `${cobrado > 0 ? `Lleva ${eur(cobrado)} ${emitida ? 'cobrados' : 'pagados'} y quedan` : 'Quedan'} ${eur(pendiente)} pendientes de ${de}.${conAbono}${vencida}`;
   }
   const sustituye = emitida && f.tipoRectificativa === 'S' && f.facturaOriginalId ? ` Sustituye a la factura ${await numeroDe(f.facturaOriginalId)}.` : '';
@@ -474,7 +528,7 @@ export const buscarFactura: Ejecutor = async (ctx, h) => {
     kpis: [
       { etiqueta: 'Total', valor: eur(total), ...(enDivisa ? { detalle: enDoc(r.totalFactura) } : {}) },
       { etiqueta: emitida ? 'Cobrado' : 'Pagado', valor: eur(cobrado), detalle: plural(activos.length, de) },
-      ...(abonado > 0 ? [{ etiqueta: 'Abonado por rectificativa', valor: eur(abonado) }] : []),
+      ...(abonado > 0 ? [{ etiqueta: emitida ? 'Abonado por rectificativa' : 'Abonado', valor: eur(abonado) }] : []),
       { etiqueta: 'Pendiente', valor: eur(pendiente) },
     ],
     ...(activos.length
@@ -496,4 +550,49 @@ export const buscarFactura: Ejecutor = async (ctx, h) => {
   };
 };
 
-export const EJECUTORES_FACTURACION = { deudaConProveedores, facturadoEnPeriodo, buscarFactura };
+/**
+ * Un abono o rectificativa de proveedor con total en negativo: qué rectifica,
+ * lo que ha restado de lo pendiente (compensaciones), lo que ha devuelto el
+ * proveedor y lo que queda a tu favor. Las cifras son las de su ficha.
+ */
+async function explicarAbono(ctx: CarmenCtx, f: Encontrada, entendido: string): Promise<RespuestaDatos> {
+  const d = await expenseInvoicesService.obtenerPorId(ctx.companyId, f.id);
+  const numero = d.numeroFacturaProveedor ?? d.numeroCompleto;
+  const total = Number(d.totalFactura);
+  const originales = d.rectificativa?.originales ?? [];
+  const periodo = d.rectificativa?.periodo;
+  const nombre = (o: { numero: string | null; numeroCompleto: string | null }) => o.numero ?? o.numeroCompleto ?? 'sin número';
+  const rectifica = originales.length
+    ? ` que rectifica ${originales.length === 1 ? 'la' : 'las'} ${originales.map(nombre).join(', ')}`
+    : periodo
+      ? ` que rectifica las compras del ${fechaES(periodo.desde)} al ${fechaES(periodo.hasta)}`
+      : '';
+  const activas = d.compensaciones.filter((c) => c.estado === 'ACTIVO');
+  const compensado = sumar(activas.map((c) => c.importe));
+  const aFavor = d.aFavor ?? 0;
+  const devuelto = Math.max(0, Math.round((-total - compensado - aFavor) * 100) / 100);
+  const destinos = [...new Set(activas.map((c) => c.otra.numero ?? c.otra.numeroCompleto ?? 'sin número'))];
+  const frases = [
+    `La ${numero} (registro ${d.numeroCompleto}) es un abono de ${f.tercero}${rectifica}, por ${eur(total)}.`,
+    ...(compensado > 0 ? [`Ha restado ${eur(compensado)} de lo pendiente de ${destinos.length === 1 ? 'la' : 'las'} ${destinos.join(', ')}.`] : []),
+    ...(devuelto > 0 ? [`El proveedor te ha devuelto ${eur(devuelto)}.`] : []),
+    ...(aFavor > 0 ? [`Te quedan ${eur(aFavor)} a tu favor: pide la devolución o aplícalo a otra factura.`] : []),
+  ];
+  return {
+    entendido,
+    texto: frases.join(' '),
+    permisoRequerido: 'compras:read',
+    kpis: [
+      { etiqueta: 'Importe del abono', valor: eur(total) },
+      ...(compensado > 0 ? [{ etiqueta: 'Restado de facturas', valor: eur(compensado) }] : []),
+      ...(devuelto > 0 ? [{ etiqueta: 'Devuelto', valor: eur(devuelto) }] : []),
+      { etiqueta: 'A tu favor', valor: eur(aFavor) },
+    ],
+    enlaces: [
+      { texto: `Abrir el abono ${d.numeroCompleto}`, href: `/dashboard/compras/${f.id}` },
+      ...originales.filter((o) => o.id).map((o) => ({ texto: `Abrir la factura ${nombre(o)}`, href: `/dashboard/compras/${o.id}` })),
+    ],
+  };
+}
+
+export const EJECUTORES_FACTURACION ={ deudaConProveedores, facturadoEnPeriodo, buscarFactura };

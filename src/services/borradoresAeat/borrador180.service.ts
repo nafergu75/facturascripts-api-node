@@ -119,11 +119,13 @@ async function periodos115(companyId: string, ejercicio: number) {
   for (const periodo of periodos) {
     const f = filas.find((x) => x.periodo === periodo);
     const c = (f?.casillas as Record<string, unknown> | null) ?? {};
+    // El calculo da tambien lo que no cupo de los abonos (el 115 guardado no lo lleva).
+    const m = await calcularModelo115(companyId, periodoFiscal(ejercicio, periodo));
+    const exceso = { excesoBase: m.excesoBaseAbonos ?? 0, excesoRetenciones: m.excesoAbonos ?? 0 };
     if (f && typeof c['02_base'] === 'number' && typeof c['03_retenciones'] === 'number') {
-      out.push({ periodo, base: c['02_base'] as number, retenciones: c['03_retenciones'] as number, fuente: 'guardado' as const, estado: f.estado, estadoTexto: enRectificacion.get(periodo) ?? null });
+      out.push({ periodo, base: c['02_base'] as number, retenciones: c['03_retenciones'] as number, ...exceso, fuente: 'guardado' as const, estado: f.estado, estadoTexto: enRectificacion.get(periodo) ?? null });
     } else {
-      const m = await calcularModelo115(companyId, periodoFiscal(ejercicio, periodo));
-      out.push({ periodo, base: m.baseRetenciones, retenciones: m.retenciones, fuente: 'calculado' as const, estado: f?.estado ?? 'vigente', estadoTexto: enRectificacion.get(periodo) ?? null });
+      out.push({ periodo, base: m.baseRetenciones, retenciones: m.retenciones, ...exceso, fuente: 'calculado' as const, estado: f?.estado ?? 'vigente', estadoTexto: enRectificacion.get(periodo) ?? null });
     }
   }
   return out;
@@ -136,7 +138,8 @@ export async function calcularBorrador180(companyId: string, ejercicio: number):
   await exigirModelosAeat(companyId, desde, hasta);
 
   const facturasBd = await prisma.expenseInvoice.findMany({
-    where: { AND: [whereGastosFiscales(companyId, desde, hasta), { tipoGasto: 'ALQUILER', retencionTotal: { gt: 0 } }] },
+    // Con los abonos (retencion en negativo): se netean por arrendador e inmueble en el año.
+    where: { AND: [whereGastosFiscales(companyId, desde, hasta), { tipoGasto: 'ALQUILER', retencionTotal: { not: 0 } }] },
     include: { lineas: true, supplier: { select: { id: true, nifCif: true, nombreFiscal: true, cp: true, provincia: true, pais: true } } },
   });
   const inmuebles = await prisma.inmuebleArrendado.findMany({ where: { companyId } });
@@ -212,6 +215,13 @@ export async function calcularBorrador180(companyId: string, ejercicio: number):
   // Complementaria o sustitutiva y su anterior: las pone el historial de declaraciones (B4).
   const tipoDeclaracion = decl.tipoDeclaracion;
   const opciones = { tipoDeclaracion, declaracionAnterior: decl.declaracionAnterior };
+  for (const g of grupos.values()) {
+    if (g.cb < 0 || g.cr < 0) {
+      errores.push(
+        `${g.nombre} sale con importes negativos en ${ejercicio} (sus abonos superan lo facturado): no se puede declarar así en el 180. Revisa sus facturas y abonos del año o consúltalo con tu asesor.`,
+      );
+    }
+  }
   const todos = [...grupos.values()]
     .filter((g) => g.cb !== 0 || g.cr !== 0)
     .map(({ cb, cr, ultima, ...g }) => ({ ...g, base: cb / 100, retenciones: cr / 100 }))
@@ -247,7 +257,19 @@ export async function calcularBorrador180(companyId: string, ejercicio: number):
   const cuadre = { ...cuadre180Con115(decl.seleccion ? { ...entrada, perceptores: todos } : entrada, periodos), periodos };
   if (!presentada && !cuadre.coincide) {
     errores.push(
-      `El 180 no cuadra con los 115 del año: bases ${importeTexto(cuadre.base180)} frente a ${importeTexto(cuadre.base115)} y retenciones ${importeTexto(cuadre.retenciones180)} frente a ${importeTexto(cuadre.retenciones115)}. Revisa los 115 guardados antes de presentar.`,
+      `El 180 no cuadra con los 115 del año: bases ${importeTexto(cuadre.base180)} frente a ${importeTexto(cuadre.base115)} y retenciones ${importeTexto(cuadre.retenciones180)} frente a ${importeTexto(cuadre.retenciones115)}` +
+        `${cuadre.excesoRetenciones > 0 || cuadre.excesoBase > 0 ? ` (ya descontado lo que no cupo de los abonos: ${importeTexto(cuadre.excesoBase)} de base y ${importeTexto(cuadre.excesoRetenciones)} de retención)` : ''}. Revisa los 115 guardados antes de presentar.`,
+    );
+  }
+  // Abonos de alquiler que no cupieron en su 115: el 180 netea el año y los 115 los llevan de mas.
+  const conExceso = periodos.filter((p) => p.excesoRetenciones > 0 || p.excesoBase > 0);
+  if (!presentada && conExceso.length) {
+    const er = conExceso.reduce((a, p) => a + cent(p.excesoRetenciones), 0) / 100;
+    const eb = conExceso.reduce((a, p) => a + cent(p.excesoBase), 0) / 100;
+    const donde = conExceso.map((p) => p.periodo).join(', ');
+    avisos.push(
+      `Los 115 llevan ${importeTexto(er)} de retención (y ${importeTexto(eb)} de base) más que el 180: son abonos de alquiler que no cupieron en el 115 del ${donde}. ` +
+        'El 180 ya los descuenta. Para recuperar esa retención, pide la rectificación del 115 en que se declaró la factura que rectifican (art. 120.3 LGT).',
     );
   }
   const noPresentados = periodos.filter((p) => p.estado !== 'presentado').map((p) => p.periodo);

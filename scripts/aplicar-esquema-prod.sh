@@ -63,6 +63,9 @@ MARCAS=(
   'epigrafeIae'
   'inicioEnApp'
   'model AjustesFiscalesVigencia'
+  'model ExpenseInvoiceRectificada'
+  'model CompensacionGasto'
+  'fechaImputacionIva'
 )
 for marca in "${MARCAS[@]}"; do
   grep -q "$marca" prisma/schema.prisma || {

@@ -17,7 +17,8 @@ import { empresaConNominas, expenseInvoicesService } from '../services/expense-i
 import { normalizarNumeroProveedor } from '../domain/factura-gasto.model';
 import { limpiarNif } from '../domain/tipo-operacion.model';
 import { normalizarNif } from '../utils/nif';
-import { comprobarLecturaParaConfirmar, prefijoObservaciones, vincularLectura } from '../services/lectura/confirmar';
+import { registrarAuditoria } from '../services/auditoria.service';
+import { comprobarLecturaParaConfirmar, esLecturaRectificativa, prefijoObservaciones, vincularLectura } from '../services/lectura/confirmar';
 import { exigirProveedorDadoDeAlta } from '../services/lectura/terceros-lector';
 
 /** Tamano maximo del archivo: el cuerpo de una funcion de Vercel no pasa de 4,5 MB. */
@@ -130,13 +131,24 @@ export const gastosExtractorController = {
       : pct !== null
         ? `Leída con el lector de gastos (confianza ${pct} %).`
         : 'Leída con el lector de gastos.';
-    const { cuentaContableBase: _antigua, lecturaId: _lectura, revisado: _revisado, ...resto } = cuerpo;
+    const { cuentaContableBase: _antigua, lecturaId: _lectura, revisado: _revisado, noEsRectificativa: _noEs, ...resto } = cuerpo;
     const r = await expenseInvoicesService.registrarGasto(
       companyId,
       { ...resto, ...(cuerpo.cuentaGasto === undefined && cuenta ? { cuentaGasto: cuenta } : {}) },
       { contabilizar: 'DRAFT', prefijoObservaciones: prefijo, usuarioEmail: req.user?.email, userId: req.user?.userId },
     );
     if (lectura) await vincularLectura(companyId, { lecturaId: lectura.id }, { expenseInvoiceId: r.factura.id, userId: req.user?.userId, revisada: cuerpo.revisado === true });
+    // El lector la leyo como rectificativa o abono y quien registra dice que no lo es: queda constancia.
+    if (lectura && esLecturaRectificativa(lectura) && cuerpo.noEsRectificativa === true && cuerpo.rectificativa == null) {
+      await registrarAuditoria({
+        userId: req.user?.userId ?? 'SYSTEM',
+        companyId,
+        action: 'LECTOR_NO_ES_RECTIFICATIVA',
+        resourceType: 'ExpenseInvoice',
+        resourceId: r.factura.id,
+        meta: { lecturaId: lectura.id },
+      });
+    }
     res.status(201).json({ ok: true, data: { factura: r.factura, asientoId: r.asientoId, asientoEstado: 'DRAFT', proveedorCreado: r.proveedorCreado } });
   }),
 };

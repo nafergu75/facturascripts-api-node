@@ -33,6 +33,12 @@ const TRIMESTRES = ['1T', '2T', '3T', '4T'];
 const PERIODOS_202 = ['1P', '2P', '3P'];
 /** Primer ejercicio con los 202 en la app. */
 export const PRIMER_EJERCICIO_202 = 2027;
+/**
+ * Desde cuando se lleva la contabilidad en la app (2026 y antes se llevan
+ * fuera). Un 303 de antes no esta en la app, pero ya se presento: un abono
+ * que reduce su IVA (ERROR_IVA de una factura de 2026) obliga a rectificarlo.
+ */
+export const INICIO_LLEVANZA_APP = '2027-01-01';
 const MESES = Array.from({ length: 12 }, (_, i) => String(i + 1).padStart(2, '0'));
 
 /** Modelos cuyo calendario depende de los ajustes fiscales o de la forma jurídica. */

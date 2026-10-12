@@ -20,6 +20,11 @@ export interface FacturaFiscal {
   cifnif: string;
   nombreTercero: string;
   fecha: string; // yyyy-mm-dd
+  /**
+   * Fecha que cuenta en el 303 y el 390 si no es `fecha` (compra rectificativa
+   * ERROR_IVA que reduce: el periodo de su original). El 347 y el 349 siguen `fecha`.
+   */
+  fechaIva?: string;
   operacion: 'interior' | 'intracomunitaria' | 'exportacion';
   /**
    * Tipo de operacion de IVA de una venta (domain/tipo-operacion.model.ts). Si
@@ -304,6 +309,8 @@ export interface DatosModelo111 {
   resultadoIngresar: number; // [casilla 30] = [28] - [29]
   /** Avisos del calculo (nominas en borrador, meses solo con el resumen antiguo...). */
   avisos?: string[];
+  /** Retencion de abonos que no cabe en este periodo ([09] como mucho hasta cero): pasa de la 4751 a la 4709. */
+  excesoAbonos?: number;
 }
 
 /** Modelo 115 — retenciones por arrendamiento de inmuebles urbanos. */
@@ -316,8 +323,12 @@ export interface DatosModelo115 {
   resultadoIngresar: number; // [05] = [03] - [04]
   /** Desglose por arrendador (pantalla y resumen anual, el contenido del 180). No va al fichero. */
   perceptores?: Array<{ nif: string; nombre: string; base: number; retencion: number; facturas: number }>;
-  /** Facturas anuladas cuya retencion sigue en un 115 presentado. */
+  /** Facturas anuladas cuya retencion sigue en un 115 presentado, y el exceso de retencion de los abonos. */
   avisos?: string[];
+  /** Retencion de abonos que no cabe en este periodo ([03] como mucho hasta cero): pasa de la 4751 a la 4709. */
+  excesoAbonos?: number;
+  /** Base de esos abonos que no cabe ([02] como mucho hasta cero). El 180 la descuenta al cuadrar con los 115. */
+  excesoBaseAbonos?: number;
 }
 
 /** Modelo 349 — operaciones intracomunitarias. */

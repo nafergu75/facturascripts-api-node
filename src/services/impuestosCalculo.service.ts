@@ -20,7 +20,8 @@ import {
   OperacionTercero,
   PeriodoFiscal,
 } from '../domain/impuestos.model';
-import { aparicionesEntre, aparicionesRetencionEntre, desgloseRetencionGasto, fechaContableGasto, whereGastosFiscales } from '../domain/factura-gasto.model';
+import { aparicionesConIva, aparicionesRetencionEntre, desgloseRetencionGasto, fechaContableGasto, whereGastosFiscales, whereGastosIva } from '../domain/factura-gasto.model';
+import { avisoExcesoRetencion, topeCero } from '../domain/rectificativa-gasto.model';
 import {
   esPaisEspana,
   esTipoOperacion,
@@ -91,6 +92,28 @@ export function cuotaAutoliquidadaCentimos(l: { tipoIva: number; base: number; c
   if (cuota !== 0) return cuota;
   const base = aCentimos(l.base);
   return Math.sign(base) * Math.round((Math.abs(base) * tipoAutoliquidado(l)) / 100);
+}
+
+/**
+ * IVA que autoliquida la empresa en una adquisicion intracomunitaria, por tipo
+ * (el de tipoAutoliquidado), para el asiento: la suma de cuotaAutoliquidadaCentimos
+ * de las lineas, la misma cifra de [11] y [37] del 303. Solo las lineas sin
+ * cuota en la factura: si el proveedor la cobro (facturas antiguas, hoy el alta
+ * no lo admite), esa cuota ya va a la 472 y al proveedor y no se autoliquida.
+ */
+export function autoliquidacionPorTipo(lineas: Array<{ tipoIva: number; baseLine: number; ivaImporte: number }>): Array<{ tipoIva: number; base: number; cuota: number }> {
+  const porTipo = new Map<number, { base: number; cuota: number }>();
+  for (const l of lineas) {
+    if (aCentimos(l.ivaImporte) !== 0 || aCentimos(l.baseLine) === 0) continue;
+    const tipo = tipoAutoliquidado(l);
+    const t = porTipo.get(tipo) ?? { base: 0, cuota: 0 };
+    t.base += aCentimos(l.baseLine);
+    t.cuota += cuotaAutoliquidadaCentimos({ tipoIva: l.tipoIva, base: l.baseLine, cuota: 0 });
+    porTipo.set(tipo, t);
+  }
+  return [...porTipo]
+    .filter(([, t]) => t.cuota !== 0)
+    .map(([tipoIva, t]) => ({ tipoIva, base: t.base / 100, cuota: t.cuota / 100 }));
 }
 
 /** Aviso del 303 y del 390 cuando hay compras intracomunitarias sin IVA en la factura (base en centimos). */
@@ -255,7 +278,8 @@ export function agregar303(
   cuotasACompensar = 0,
   opciones: OpcionesAgregar303 = {},
 ): DatosModelo303 {
-  const delPeriodo = facturas.filter((f) => enRango(f.fecha, periodo.fechaInicio, periodo.fechaFin));
+  // Las compras rectificativas ERROR_IVA que reducen cuentan en el periodo de su original (fechaIva).
+  const delPeriodo = facturas.filter((f) => enRango(f.fechaIva ?? f.fecha, periodo.fechaInicio, periodo.fechaFin));
 
   const ventasDevengo = delPeriodo.filter(devengaIva);
   // Solo gastos DEDUCIBLES (deducible===false los excluye; por defecto deducible)
@@ -442,7 +466,7 @@ export function agregar303(
  * [99], para no cambiar cifras ya calculadas, y se avisa si hay alguna fuera.
  */
 export function agregar390(facturas: FacturaFiscal[], ejercicio: number): DatosModelo390 {
-  const delAno = facturas.filter((f) => f.fecha.startsWith(String(ejercicio)));
+  const delAno = facturas.filter((f) => (f.fechaIva ?? f.fecha).startsWith(String(ejercicio)));
   const ventas = delAno.filter(devengaIva);
   // Mismo criterio que el 303: los gastos no deducibles no entran, o la suma de
   // los 303 del ano no cuadra con el 390.
@@ -524,7 +548,7 @@ export function agregar347(
   }
   const acumulado = new Map<string, Acum>();
   const totalTercero = new Map<string, number>();
-  const cent = (n: number) => Math.round(n * 100);
+  const cent = aCentimos;
 
   for (const f of delAno) {
     // Las compras con retencion de IRPF no van al 347: ya estan en el 190 o en
@@ -567,8 +591,10 @@ export function agregar347(
   const advertencias: string[] = [];
   const operaciones: OperacionTercero[] = [];
   for (const a of acumulado.values()) {
-    // El umbral se mira con todo lo del tercero en el ano; si lo supera, se declaran todos sus registros.
-    if ((totalTercero.get(`${a.op.tipo}:${a.op.cifnif}`) ?? 0) <= cent(umbral)) continue;
+    // El umbral se mira con todo lo del tercero en el ano, en valor absoluto (un
+    // tercero con mas abonos que compras tambien se declara, con signo); si lo
+    // supera, se declaran todos sus registros.
+    if (Math.abs(totalTercero.get(`${a.op.tipo}:${a.op.cifnif}`) ?? 0) <= cent(umbral)) continue;
     const anual = a.trim.reduce((x, y) => x + y, 0);
     const op: OperacionTercero = { ...a.op, baseAnual: anual / 100, trimestres: a.trim.map((c) => c / 100) as OperacionTercero['trimestres'] };
     if (a.contado > cent(6000)) {
@@ -731,7 +757,7 @@ export async function obtenerFacturasFiscales(companyId: string, desde: string, 
     // Compras: criterio unico de domain/factura-gasto.model (sin borradores del
     // lector ni anuladas; una anulada con contraasiento resta en su periodo).
     prisma.expenseInvoice.findMany({
-      where: whereGastosFiscales(companyId, desde, hasta),
+      where: whereGastosIva(companyId, desde, hasta),
       include: { supplier: true, lineas: true },
     }),
   ]);
@@ -777,17 +803,24 @@ export async function obtenerFacturasFiscales(companyId: string, desde: string, 
 
   for (const f of compras) {
     // Una aparicion por periodo: la factura en su fecha contable y, si se anulo
-    // con contraasiento, en negativo en la fecha de la anulacion.
-    for (const { fecha, signo } of aparicionesEntre(f, desde, hasta)) {
+    // con contraasiento, en negativo en la fecha de la anulacion. Una
+    // rectificativa ERROR_IVA que reduce lleva ademas la fecha de su IVA
+    // (fechaIva, el periodo de la original): sale si cualquiera de las dos cae en el rango.
+    const enRangoAp = (x: string) => x >= desde && x <= hasta;
+    for (const { fecha, fechaIva, signo } of aparicionesConIva(f)) {
+      if (!enRangoAp(fecha) && !enRangoAp(fechaIva)) continue;
       out.push({
         idFactura: f.numeroFacturaProveedor ?? f.numeroCompleto,
         tipo: 'compra',
         cifnif: f.supplier?.nifCif ?? '',
         nombreTercero: f.supplier?.nombreFiscal ?? '',
         fecha,
+        ...(fechaIva !== fecha && { fechaIva }),
         operacion: clasificarCompra(fecha, f.supplier?.pais, f.supplier?.nifCif),
-        // La anulacion (en negativo) es una rectificacion de deducciones ([40]/[41]).
-        ...(signo < 0 && { rectificativa: true }),
+        // La anulacion (en negativo) y los abonos y rectificativas de proveedor
+        // van en la rectificacion de deducciones ([40]/[41]); una ERROR_IVA que
+        // reduce, no: netea en las casillas de su periodo (seccion 10.1).
+        ...((signo < 0 || (f.esRectificativa && !f.fechaImputacionIva)) && { rectificativa: true }),
         ...(f.supplier?.cp && { cpTercero: f.supplier.cp }),
         ...(f.supplier?.provincia && { provinciaTercero: f.supplier.provincia }),
         ...(f.tipoGasto && f.tipoGasto !== 'COMPRA' && { tipoGasto: f.tipoGasto }),
@@ -800,7 +833,7 @@ export async function obtenerFacturasFiscales(companyId: string, desde: string, 
               // Bien de inversion: cuenta 2xx del PGC (casillas de bienes de inversion del 303).
               ...(String(l.accountCode ?? '').startsWith('2') ? { inversion: true } : {}),
             }))
-          : [{ tipoIva: 0, base: signo * round2(f.baseTotal), cuota: 0, ...(Number(f.retencionTotal) > 0 ? { conRetencion: true } : {}) }],
+          : [{ tipoIva: 0, base: signo * round2(f.baseTotal), cuota: 0, ...(aCentimos(Number(f.retencionTotal)) !== 0 ? { conRetencion: true } : {}) }],
       });
     }
   }
@@ -890,6 +923,16 @@ export async function calcularModelo349(companyId: string, periodo: PeriodoFisca
   return agregar349(facturas, periodo);
 }
 
+/**
+ * Fecha contable de la factura que rectifica un abono (la primera de sus
+ * enlaces): la de la original de la app o la que se escribio de una de fuera.
+ */
+export function fechaOriginalDe(f: { rectifica?: Array<{ fechaOriginal: string | null; periodoDesde: string | null; original: { fechaEmision: string; fechaRegistro: string | null } | null }> }): string | null {
+  const e = f.rectifica?.[0];
+  if (!e) return null;
+  return e.original ? fechaContableGasto(e.original) : (e.fechaOriginal ?? e.periodoDesde);
+}
+
 /** Arrendador del 115: su NIF normalizado o, si no lo tiene, el proveedor. */
 const claveArrendador = (f: { supplierId: string; supplier: { nifCif: string | null } }) => normalizarNif(f.supplier.nifCif) || `proveedor:${f.supplierId}`;
 
@@ -905,39 +948,48 @@ export async function calcularModelo115(companyId: string, periodo: PeriodoFisca
   const vacio: DatosModelo115 = { periodo, nPerceptores: 0, baseRetenciones: 0, retenciones: 0, resultadoAnteriores: 0, resultadoIngresar: 0, perceptores: [] };
   if (!dbFacturasListo()) return vacio;
   const facturas = await prisma.expenseInvoice.findMany({
-    where: { AND: [whereGastosFiscales(companyId, periodo.fechaInicio, periodo.fechaFin), { tipoGasto: 'ALQUILER', retencionTotal: { gt: 0 } }] },
-    include: { lineas: true, supplier: { select: { nifCif: true, nombreFiscal: true } } },
+    where: { AND: [whereGastosFiscales(companyId, periodo.fechaInicio, periodo.fechaFin), { tipoGasto: 'ALQUILER', retencionTotal: { not: 0 } }] },
+    include: { lineas: true, supplier: { select: { nifCif: true, nombreFiscal: true } }, rectifica: { include: { original: { select: { fechaEmision: true, fechaRegistro: true } } } } },
   });
   const c = (n: number) => Math.round(n * 100);
   // Una anulada no resta nunca (el 115 no admite negativos): solo cuenta, en su
   // periodo, si su 115 ya estaba presentado, y entonces con un aviso.
   const declaradaEn = await retencionDeclaradaEn(companyId, '115', facturas);
   const avisos: string[] = [];
-  const porArrendador = new Map<string, { nif: string; nombre: string; base: number; retencion: number; facturas: number }>();
+  const porArrendador = new Map<string, { nif: string; nombre: string; base: number; retencion: number; facturas: number; conCargo: boolean }>();
+  const abonos: Array<{ numero: string; retencion: number; fechaOriginal: string | null }> = [];
   for (const f of facturas) {
     const declarada = declaradaEn(f);
     for (const _ of aparicionesRetencionEntre(f, periodo.fechaInicio, periodo.fechaFin, declarada !== null)) {
       // [01] son arrendadores distintos por NIF: el mismo arrendador dado de alta dos veces cuenta una.
       if (declarada) avisos.push(avisoRetencionAnulada(f.numeroFacturaProveedor ?? f.numeroCompleto, f.supplier.nombreFiscal, '115', declarada, fechaContableGasto(f).slice(0, 4)));
-      const a = porArrendador.get(claveArrendador(f)) ?? { nif: f.supplier.nifCif, nombre: f.supplier.nombreFiscal, base: 0, retencion: 0, facturas: 0 };
+      const a = porArrendador.get(claveArrendador(f)) ?? { nif: f.supplier.nifCif, nombre: f.supplier.nombreFiscal, base: 0, retencion: 0, facturas: 0, conCargo: false };
       for (const d of desgloseRetencionGasto(f)) {
         a.base += c(d.base);
         a.retencion += c(d.cuota);
       }
       a.facturas += 1;
+      // [01]: quien solo tiene abonos en el periodo no cuenta como arrendador.
+      if (aCentimos(Number(f.retencionTotal)) > 0) a.conCargo = true;
+      else abonos.push({ numero: f.numeroFacturaProveedor ?? f.numeroCompleto, retencion: aCentimos(Number(f.retencionTotal)), fechaOriginal: fechaOriginalDe(f) });
       porArrendador.set(claveArrendador(f), a);
     }
   }
   const lista = [...porArrendador.values()];
-  const base = lista.reduce((s, a) => s + a.base, 0);
-  const retenciones = lista.reduce((s, a) => s + a.retencion, 0);
+  // Casilla a casilla y como mucho hasta cero (decision P1): el exceso se avisa.
+  const base = topeCero(lista.reduce((s, a) => s + a.base, 0));
+  const ret = topeCero(lista.reduce((s, a) => s + a.retencion, 0));
+  if (ret.exceso > 0) avisos.push(avisoExcesoRetencion({ modelo: '115', abonos, restado: abonos.reduce((s, x) => s - x.retencion, 0) - ret.exceso, exceso: ret.exceso }));
+  const retenciones = ret.valor;
   return {
     periodo,
-    nPerceptores: lista.length,
-    baseRetenciones: base / 100,
+    nPerceptores: lista.filter((a) => a.conCargo).length,
+    baseRetenciones: base.valor / 100,
     retenciones: retenciones / 100,
     resultadoAnteriores: 0,
     resultadoIngresar: retenciones / 100,
+    ...(ret.exceso > 0 ? { excesoAbonos: ret.exceso / 100 } : {}),
+    ...(base.exceso > 0 ? { excesoBaseAbonos: base.exceso / 100 } : {}),
     perceptores: lista
       .map((a) => ({ nif: a.nif, nombre: a.nombre, base: a.base / 100, retencion: a.retencion / 100, facturas: a.facturas }))
       .sort((x, y) => x.nombre.localeCompare(y.nombre, 'es')),
@@ -987,5 +1039,6 @@ export async function calcularModelo111(companyId: string, periodo: PeriodoFisca
     totalRetenciones,
     resultadoIngresar: totalRetenciones, // [30] = [28] - resultados anteriores [29] (0)
     avisos: [...trabajo.avisos, ...(actividades.avisos ?? [])],
+    ...(actividades.excesoAbonos ? { excesoAbonos: actividades.excesoAbonos } : {}),
   };
 }

@@ -14,6 +14,9 @@
  *  - /180/inmuebles (GET, POST, PUT /:id) inmuebles alquilados de cada proveedor
  *  - PUT /180/facturas/:invoiceId/inmueble   inmueble de una factura de alquiler
  *  - PUT /349/compras/:invoiceId/clave       clave A o I de una compra a la UE
+ * Y en el 111 y el 115, la retencion de abonos que no cabe (decision P1 de abonos):
+ *  - POST /<111|115>/traspaso-4709          asiento Debe 4709 / Haber 4751 por el exceso
+ *  - POST /<111|115>/traspaso-4709/anular   lo anula (REVERSED o contraasiento)
  */
 import { Router, type Request } from 'express';
 import { authorize } from '../middleware/authorize.middleware';
@@ -25,6 +28,7 @@ import { calcularBorrador180, ficheroModelo180 } from '../services/borradoresAea
 import { calcularBorrador202, ficheroModelo202, opcionesEntrada202 } from '../services/borradoresAeat/borrador202.service';
 import { ejercicioDe, enviarFicheroAeat, guardarOpciones } from '../services/borradoresAeat/comun';
 import { ficheroRetenciones, periodoRetenciones, taxModelsService } from '../services/tax-models.service';
+import { anularTraspaso4709, traspasarExcesoA4709 } from '../services/aeatRetenciones/traspaso4709';
 import {
   actualizarInmueble,
   asignarClave349Compra,
@@ -61,13 +65,23 @@ router.put(
   asyncHandler(async (req, res) => {
     const ejercicio = ejercicioDe(req.body?.ejercicio);
     const periodo = periodoDe(req.body?.periodo);
-    const opciones: Record<string, string | boolean | null> = {};
+    const opciones: Record<string, string | number | boolean | null> = {};
     if ('tipoDeclaracion' in (req.body ?? {}) || 'declaracionAnterior' in (req.body ?? {})) {
       throw badRequest('La complementaria o sustitutiva del 349 se prepara desde su historial de declaraciones, después de marcar la anterior como presentada.');
     }
     if ('cambioPeriodicidad' in (req.body ?? {})) {
       if (typeof req.body.cambioPeriodicidad !== 'boolean') throw badRequest('"cambioPeriodicidad" tiene que ser sí o no.');
       opciones.cambioPeriodicidad = req.body.cambioPeriodicidad || null;
+    }
+    // Bases declaradas a mano en 349 que no estan en la app (abonos de facturas de 2026 llevadas fuera).
+    if ('basesDeclaradas' in (req.body ?? {})) {
+      const b = req.body.basesDeclaradas as unknown;
+      if (!b || typeof b !== 'object' || Array.isArray(b)) throw badRequest('"basesDeclaradas" tiene que ser una lista de bases por operador y periodo.');
+      for (const [clave, v] of Object.entries(b as Record<string, unknown>)) {
+        if (!/^[A-Z0-9]{3,20}\|[A-Z]\|\d{4}\|(?:[1-4]T|0[1-9]|1[0-2])$/.test(clave)) throw badRequest(`La clave "${clave}" no es de una rectificación del 349.`);
+        if (v !== null && (typeof v !== 'number' || !Number.isFinite(v) || v < 0)) throw badRequest('La base declarada tiene que ser un importe de cero o más.');
+        opciones[`base:${clave}`] = v === null ? null : (v as number);
+      }
     }
     await guardarOpciones(empresa(req), '349', ejercicio, periodo, opciones);
     sendOk(res, await calcularBorrador349(empresa(req), ejercicio, periodo));
@@ -164,6 +178,31 @@ router.put(
     if (forma !== null && !['I', 'U', 'G'].includes(forma)) throw badRequest('La forma de pago es I (ingreso), U (domiciliación) o G (cuenta corriente tributaria).');
     await guardarOpciones(empresa(req), codigo, ejercicio, periodo, { forma_pago: forma });
     sendOk(res, codigo === '111' ? await taxModelsService.generarModelo111(empresa(req), ejercicio, periodo) : await taxModelsService.generarModelo115(empresa(req), ejercicio, periodo));
+  }),
+);
+
+// --- 111 y 115: retencion de abonos que no cabe en el modelo (decision P1), de la 4751 a la 4709 ---
+// Cuerpo: { ejercicio, periodo, fecha? }. Crea un asiento: impuestos o contabilidad, con permiso de escritura.
+router.post(
+  '/:codigo(111|115)/traspaso-4709',
+  authorize('impuestos:write', 'contabilidad:write'),
+  asyncHandler(async (req, res) => {
+    const r = await traspasarExcesoA4709(empresa(req), req.params.codigo as '111' | '115', ejercicioDe(req.body?.ejercicio), String(req.body?.periodo ?? ''), {
+      fecha: typeof req.body?.fecha === 'string' && req.body.fecha ? req.body.fecha : null,
+      userId: req.user?.userId,
+    });
+    sendOk(res, r, undefined, 201);
+  }),
+);
+router.post(
+  '/:codigo(111|115)/traspaso-4709/anular',
+  authorize('impuestos:write', 'contabilidad:write'),
+  asyncHandler(async (req, res) => {
+    const r = await anularTraspaso4709(empresa(req), req.params.codigo as '111' | '115', ejercicioDe(req.body?.ejercicio), String(req.body?.periodo ?? ''), {
+      fecha: typeof req.body?.fecha === 'string' && req.body.fecha ? req.body.fecha : null,
+      userId: req.user?.userId,
+    });
+    sendOk(res, r);
   }),
 );
 
