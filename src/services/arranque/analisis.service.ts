@@ -563,6 +563,8 @@ export interface VistaCarga {
   } | null;
   inmovilizado: { activos: number; coste: number; amortAcumulada: number; seImporta: boolean } | null;
   llevanzaExterna: boolean;
+  /** La carga fijara el inicio de los impuestos en la app el 1 de enero del ejercicio (no estaba indicado). */
+  fijaInicioEnApp: boolean;
   retirados: Record<string, number>;
   sustituyeVersion: number | null;
   /** Bancos de la apertura: saldo contable, extracto escrito y cuenta de Tesoreria. */
@@ -672,6 +674,7 @@ export function vistaDe(a: AnalisisCarga): VistaCarga {
         }
       : null,
     llevanzaExterna: a.marcaLlevanzaExterna,
+    fijaInicioEnApp: a.fijaInicioEnApp,
     retirados: a.retirados,
     sustituyeVersion: a.cargaVigente?.version ?? null,
     bancos: a.bancos,
