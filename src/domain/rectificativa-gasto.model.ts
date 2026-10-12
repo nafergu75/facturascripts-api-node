@@ -178,3 +178,78 @@ export function textoRectifica(r: {
   const causa = CAUSA_INFO[r.causa].texto;
   return `Rectificativa (${tipo}) de ${que}. Causa: ${causa.charAt(0).toLowerCase()}${causa.slice(1)}.`;
 }
+
+/** Linea de factura de gasto tal como llega en el cuerpo (precios con signo en los abonos). */
+export interface LineaRect {
+  descripcion: string;
+  cantidad: number;
+  precioUnitario: number;
+  descuentoPorcentaje?: number;
+  tipoIva: number;
+  tipoRetencion?: number;
+  cuenta?: string;
+  /** Cuota fijada por el servidor (lineas de diferencia de una sustitucion). */
+  ivaFijado?: number;
+}
+
+/** Base y cuota de una linea con el redondeo del alta. */
+function importesLinea(l: LineaRect): { base: number; cuota: number } {
+  const pvp = r2GastoConSigno(l.cantidad * l.precioUnitario);
+  const base = r2GastoConSigno(pvp - r2GastoConSigno((pvp * (l.descuentoPorcentaje ?? 0)) / 100));
+  return { base, cuota: l.ivaFijado !== undefined ? r2GastoConSigno(l.ivaFijado) : r2GastoConSigno((base * l.tipoIva) / 100) };
+}
+
+/**
+ * Rectificativa por sustitucion: las lineas de diferencia (corregida menos
+ * original), agrupadas por tipo de IVA, retencion y cuenta. La cuota de cada
+ * tipo es la diferencia de las cuotas de las dos facturas, no la que sale de
+ * la base de la diferencia: el IVA por lineas no es lineal (dos lineas de
+ * 0,07 € al 21 % dan 0,01 + 0,01; una de 0,14 € da 0,03). Va fijada en la
+ * linea (`ivaFijado`) y, si no coincide con aplicar el tipo a la base, se avisa.
+ */
+export function lineasDiferencia(original: LineaRect[], corregida: LineaRect[]): { lineas: LineaRect[]; avisos: string[] } {
+  const grupos = new Map<string, { tipoIva: number; tipoRetencion: number; cuenta?: string; base: number }>();
+  const cuotas = new Map<number, number>();
+  const sumar = (ls: LineaRect[], signo: 1 | -1) => {
+    for (const l of ls) {
+      const { base, cuota } = importesLinea(l);
+      const k = `${l.tipoIva}|${l.tipoRetencion ?? 0}|${l.cuenta ?? ''}`;
+      const g = grupos.get(k) ?? { tipoIva: l.tipoIva, tipoRetencion: l.tipoRetencion ?? 0, ...(l.cuenta ? { cuenta: l.cuenta } : {}), base: 0 };
+      g.base += signo * aCentimos(base);
+      grupos.set(k, g);
+      cuotas.set(l.tipoIva, (cuotas.get(l.tipoIva) ?? 0) + signo * aCentimos(cuota));
+    }
+  };
+  sumar(corregida, 1);
+  sumar(original, -1);
+  const lineas: LineaRect[] = [];
+  const avisos: string[] = [];
+  for (const [tipoIva, cuota] of cuotas) {
+    const delTipo = [...grupos.values()].filter((g) => g.tipoIva === tipoIva);
+    const conBase = delTipo.filter((g) => g.base !== 0);
+    if (!conBase.length && cuota === 0) continue;
+    const destino = conBase.length ? conBase : [delTipo[0]];
+    const reparto = repartir(cuota / 100, destino.map((g) => g.base || 1));
+    destino.forEach((g, i) => {
+      const base = g.base / 100;
+      const ivaFijado = reparto[i];
+      lineas.push({
+        descripcion: `Diferencia con la factura corregida (IVA ${tipoIva} %)`,
+        cantidad: 1,
+        precioUnitario: base,
+        tipoIva,
+        tipoRetencion: g.tipoRetencion,
+        ...(g.cuenta ? { cuenta: g.cuenta } : {}),
+        ivaFijado,
+      });
+      const deLaBase = r2GastoConSigno((base * tipoIva) / 100);
+      if (aCentimos(deLaBase) !== aCentimos(ivaFijado)) {
+        const dif = Math.abs(aCentimos(ivaFijado) - aCentimos(deLaBase)) / 100;
+        avisos.push(
+          `La cuota de la diferencia es ${dif.toFixed(2).replace('.', ',')} € distinta de aplicar el ${tipoIva} % a la base: viene del redondeo por líneas de las dos facturas.`,
+        );
+      }
+    });
+  }
+  return { lineas, avisos };
+}
