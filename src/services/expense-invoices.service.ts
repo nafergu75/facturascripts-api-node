@@ -1071,6 +1071,8 @@ export async function editarGasto(
         where: { id },
         data: {
           supplierId: supplier.id,
+          // El inmueble del 180 es del arrendador: con otro proveedor deja de valer (el 180 lo vuelve a proponer o pedir).
+          ...(actual.supplierId !== supplier.id ? { inmuebleArrendadoId: null } : {}),
           numeroFacturaProveedor: v.numeroFacturaProveedor,
           numeroProveedorActivo: numeroActivo,
           fechaEmision,
