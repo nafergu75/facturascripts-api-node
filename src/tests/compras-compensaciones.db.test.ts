@@ -173,6 +173,13 @@ describe('aplicar un abono a otra factura', () => {
     expect(c).toMatchObject({ origen: 'MANUAL', importe: 60.5, asientoId: null });
     expect(await ficha(E, f.factura.id)).toMatchObject({ importePendiente: 0, estadoPago: 'PAGADA' });
     expect(await ficha(E, abono)).toMatchObject({ aFavor: 60.5, estadoPago: 'PARCIAL' });
+    // La ficha ya no ofrece anular ninguna de las dos mientras la aplicación siga activa.
+    expect((await ficha(E, f.factura.id)).acciones.anular).toEqual({
+      permitido: false,
+      motivo: 'Tiene aplicado el abono R-10 por 60,50 €: anula antes esa aplicación.',
+      conContraasiento: false,
+    });
+    expect((await ficha(E, abono)).acciones.anular).toMatchObject({ permitido: false, motivo: 'Este abono está aplicado a la factura F-10 por 60,50 €: anula antes esa aplicación.' });
     expect(await error(anularGasto(E, f.factura.id, { motivo: 'Error' }))).toEqual({
       status: 409,
       message: 'Tiene aplicado el abono R-10 por 60,50 €: anula antes esa aplicación.',
