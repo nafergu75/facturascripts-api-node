@@ -10,6 +10,7 @@
  * tabla el fichero generado, asi lo que se ve es lo que se presenta.
  */
 import { DISENO_349 } from '../../domain/aeat/disenos';
+import { importeTexto } from '../../utils/money';
 import { componerRegistroDr, leerRegistroDr, registroDe, type CampoLeidoDr } from '../common/disenoRegistro';
 import { errorNifDeclarante, erroresContactoAeat, motivoNifIvaNoValido, nifDerecha, separarNifIva, telefonoAeat, textoAeat } from '../common/normalizacion';
 import { PAISES_UE } from '../../domain/tipo-operacion.model';
@@ -137,13 +138,13 @@ export function erroresEntrada349(e: Entrada349): string[] {
   };
   for (const o of e.operadores) {
     comprobarOperador(o, 'la operación');
-    if (o.base < 0) errores.push(`${etiqueta(o)}: la base de la clave ${o.clave} sale negativa (${o.base.toFixed(2)} €). Un abono de otro periodo va como rectificación de ese periodo.`);
+    if (o.base < 0) errores.push(`${etiqueta(o)}: la base de la clave ${o.clave} sale negativa (${importeTexto(o.base)}). Un abono de otro periodo va como rectificación de ese periodo.`);
   }
   if (!e.operadores.length && !(e.rectificaciones ?? []).length) errores.push(ERROR_SIN_REGISTROS_349);
   for (const r of e.rectificaciones ?? []) {
     comprobarOperador(r, 'la rectificación');
     if (!PERIODO_349.test(r.periodo) || !Number.isInteger(r.ejercicio)) errores.push(`${etiqueta(r)}: el periodo que se rectifica (${r.ejercicio} ${r.periodo}) no es válido.`);
-    if (r.baseRectificada < 0) errores.push(`${etiqueta(r)}: la base rectificada de ${r.ejercicio} ${r.periodo} sale negativa (${r.baseRectificada.toFixed(2)} €).`);
+    if (r.baseRectificada < 0) errores.push(`${etiqueta(r)}: la base rectificada de ${r.ejercicio} ${r.periodo} sale negativa (${importeTexto(r.baseRectificada)}).`);
     if (r.baseAnterior < 0) errores.push(`${etiqueta(r)}: la base declarada antes no puede ser negativa.`);
   }
   return errores;
