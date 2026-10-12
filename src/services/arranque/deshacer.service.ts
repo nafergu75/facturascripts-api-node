@@ -210,8 +210,16 @@ export async function deshacerCarga(companyId: string, ejercicioRaw: unknown, ca
   }
 
   const hecho = await prisma.$transaction(async (tx) => {
+    // Se bloquean la carga (para no cruzarse con un /aplicar), sus facturas pendientes (el mismo
+    // bloqueo que toma un cobro) y sus bienes (el de una amortizacion), y se vuelven a mirar
+    // los cobros y la amortizacion: si alguien ha cobrado o amortizado entre medias, 409.
+    await tx.$queryRaw`SELECT id FROM CargaArranque WHERE id = ${c0.id} FOR UPDATE`;
+    await tx.$queryRaw`SELECT id FROM PartidaPendiente WHERE cargaId = ${c0.id} FOR UPDATE`;
+    await tx.$queryRaw`SELECT id FROM ActivoFijo WHERE cargaId = ${c0.id} FOR UPDATE`;
     const c = await tx.cargaArranque.findUniqueOrThrow({ where: { id: c0.id } });
     if (c.estado !== c0.estado || c.updatedAt.getTime() !== c0.updatedAt.getTime()) throw conflict('La carga ha cambiado mientras tanto: vuelve a cargar la página.');
+    const ahora = await planDeshacer(c, tx);
+    if (!ahora.puede) throw conflict(ahora.bloqueos[0], { codigo: 'NO_SE_PUEDE_DESHACER', bloqueos: ahora.bloqueos });
     const creado = objeto(c.creado);
     const anterior = objeto(c.anterior);
     const anio = c.ejercicio - 1;
