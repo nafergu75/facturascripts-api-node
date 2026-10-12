@@ -18,6 +18,8 @@
 import type { AreaIntencion } from '../tipos';
 import type { RolTercero } from '../terceros';
 import { EJECUTORES, type Ejecutor } from './datos';
+import { estadoArranque } from './arranque';
+import { conPendiente2026 } from './pendiente2026';
 
 export type NombreHueco = 'periodo' | 'sentido' | 'tercero' | 'modelo' | 'numeroFactura' | 'importeMinimo' | 'diasMinimos' | 'texto' | 'soloVencidas' | 'foco';
 
@@ -75,7 +77,7 @@ export const INTENCIONES: Intencion[] = [
       'saldo pendiente del cliente',
       'me debe algo',
     ],
-    ejecutar: EJECUTORES.deudaDeCliente,
+    ejecutar: conPendiente2026('COBRO', EJECUTORES.deudaDeCliente),
   },
   {
     id: 'INT-02',
@@ -101,7 +103,7 @@ export const INTENCIONES: Intencion[] = [
       'cuanto dinero me deben',
       'quienes son mis deudores',
     ],
-    ejecutar: EJECUTORES.pendienteDeCobro,
+    ejecutar: conPendiente2026('COBRO', EJECUTORES.pendienteDeCobro),
   },
   {
     id: 'INT-03',
@@ -194,7 +196,7 @@ export const INTENCIONES: Intencion[] = [
       'cuanto le debo al proveedor',
       'deudas con proveedores',
     ],
-    ejecutar: EJECUTORES.deudaConProveedores,
+    ejecutar: conPendiente2026('PAGO', EJECUTORES.deudaConProveedores),
   },
   {
     id: 'INT-07',
@@ -475,6 +477,34 @@ export const INTENCIONES: Intencion[] = [
       'que hay de nuevo',
     ],
     ejecutar: EJECUTORES.resumenEmpresa,
+  },
+  {
+    id: 'INT-40',
+    titulo: 'Contabilidad de 2026 traída de la gestoría',
+    pregunta: '¿Está bien la contabilidad de 2026 que traje de la gestoría?',
+    area: 'contabilidad',
+    permisos: ['contabilidad:read'],
+    soloEspana: true,
+    conceptos: {
+      obligatorios: [
+        ['arranque', 'gestoria', 'contabilidad de 2026', 'contabilidad del 2026', 'cierre de 2026', 'saldos de 2026', 'carga de 2026', 'traer la contabilidad', 'importacion de 2026'],
+        ['bien', 'correct*', 'complet*', 'falta*', 'cuadra*', 'esta', 'estado', 'terminad*', 'traid*', 'traje', 'listo', 'lista'],
+      ],
+      excluyentes: ['como se', 'como hago', 'que es', 'donde se', 'modelo*', 'iva', 'factur*'],
+    },
+    huecos: [],
+    paginas: ['/dashboard/contabilidad/arranque', '/dashboard'],
+    ejemplos: [
+      'esta bien el arranque',
+      'como esta la contabilidad de 2026',
+      'esta todo bien con lo que traje de la gestoria',
+      'falta algo de la gestoria',
+      'cuadra la contabilidad de 2026',
+      'que falta para terminar el arranque',
+      'esta completa la carga de 2026',
+      'he traido bien los saldos de 2026',
+    ],
+    ejecutar: estadoArranque,
   },
 ];
 
