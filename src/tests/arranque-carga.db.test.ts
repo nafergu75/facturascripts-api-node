@@ -104,7 +104,7 @@ describe('empresa A: todo junto, sin regularizar, con diario', () => {
     expect(r.vista.inmovilizado).toMatchObject({ activos: 2, seImporta: true });
     expect(r.vista.llevanzaExterna).toBe(true);
     expect(r.vista.confirmacion).toMatch(
-      /^Se crearán \d+ cuentas, 6 clientes y proveedores, 11 asientos de 2026, la apertura del 1-1-2027, 5 facturas pendientes y 2 bienes de inmovilizado\. 2026 quedará como «lo llevó la gestoría»: se podrá consultar, pero no apuntar nada con fecha de 2026\. Podrás deshacerlo/,
+      /^Se crearán \d+ cuentas, 6 clientes y proveedores, 11 asientos de 2026, la apertura del 1-1-2027, 5 facturas pendientes y 2 bienes de inmovilizado\. 2026 quedará como «lo llevó la gestoría»: se podrá consultar, pero no apuntar nada con fecha de 2026\. Los impuestos se llevarán en la app desde el 1-1-2027: los modelos de 2026 los presentó la gestoría y no saldrán como pendientes\. Podrás deshacerlo/,
     );
     expect(r.vista.puedeConfirmar).toBe(true);
     // El mismo análisis da la misma huella.
