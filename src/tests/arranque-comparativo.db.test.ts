@@ -105,7 +105,7 @@ describe('avisos de los años de la gestoría y de la apertura provisional', () 
     app.use(avisoModelosGestoria);
     app.get('/modelo', (_req, res) => sendOk(res, { casillas: {} }));
     const r26 = await request(app).get('/modelo?ejercicio=2026');
-    expect(r26.body.data.avisoGestoria).toBe('Este modelo de 2026 lo presenta tu gestoría: lo que ves aquí sale solo de lo que hay en la app de 2026. No lo presentes desde aquí.');
+    expect(r26.body.data.avisoGestoria).toBe('Los modelos de 2026 los presenta tu gestoría: lo que ves aquí sale solo de lo que hay en la app de 2026. No los presentes desde aquí.');
     expect(r26.headers['x-aviso-gestoria']).toBeDefined();
     const r27 = await request(app).get('/modelo?ejercicio=2027');
     expect(r27.body.data.avisoGestoria).toBeUndefined();
