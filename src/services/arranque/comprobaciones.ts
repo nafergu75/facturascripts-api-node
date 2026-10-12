@@ -311,15 +311,194 @@ export function comprobarCarga(e: EntradaComprobaciones): ResultadoComprobacione
   }
 
   const excluidos = [...new Set(puntos.filter((x) => x.excluye && x.nivel !== 'ERROR').map((x) => x.excluye!))];
+  return { ...nivelDe(puntos, anio), puntos, excluidos };
+}
+
+/** Nivel y mensaje de A4 a partir de los puntos. */
+export function nivelDe(puntos: PuntoComprobacion[], anio: number): { nivel: NivelCarga; mensaje: string } {
   const errores = puntos.filter((x) => x.nivel === 'ERROR');
-  const faltan2 = puntos.filter((x) => x.nivel === 'FALTA');
-  const nivel: NivelCarga = errores.length ? 'ERRORES' : faltan2.length ? 'FALTAN_DATOS' : 'CORRECTO';
+  const faltan = puntos.filter((x) => x.nivel === 'FALTA');
+  const nivel: NivelCarga = errores.length ? 'ERRORES' : faltan.length ? 'FALTAN_DATOS' : 'CORRECTO';
   const resumen = (xs: PuntoComprobacion[]) => xs.slice(0, 3).map((x) => x.texto).join(' ') + (xs.length > 3 ? ` (y ${xs.length - 3} más)` : '');
   const mensaje =
     nivel === 'CORRECTO'
       ? `La contabilidad de ${anio} está completa y cuadra. Ya puedes seguir con ${anio + 1}.`
       : nivel === 'FALTAN_DATOS'
-        ? `Puedes seguir, pero faltan datos: ${resumen(faltan2)}`
+        ? `Puedes seguir, pero faltan datos: ${resumen(faltan)}`
         : `Todavía no se puede traer la contabilidad: ${resumen(errores)}`;
-  return { nivel, mensaje, puntos, excluidos };
+  return { nivel, mensaje };
+}
+
+// ---------------------------------------------------------------------------
+// Comprobaciones «vivas»: las que se arreglan fuera de los ficheros (bancos,
+// datos fiscales, datos de la empresa, series...) y se recalculan cada vez.
+// No cuentan para la huella de la carga.
+// ---------------------------------------------------------------------------
+
+/** Claves de los puntos que se recalculan cada vez (no salen de los ficheros). */
+export const esPuntoVivo = (clave: string) => /^(bancos|empresa|series|ejercicio):|^iva:(303|compensar)/.test(clave);
+
+export interface BancoComprobar {
+  subcuenta: string;
+  nombre: string;
+  /** Saldo de la 572 en la apertura (deudor > 0). */
+  saldoApertura: number;
+  saldoExtracto: number | null;
+  /** Cuenta de Tesoreria con la que se enlaza (IBAN), o null si no hay. */
+  cuenta: string | null;
+  aceptada: boolean;
+}
+
+export interface EntradaVivas {
+  ejercicioOrigen: number;
+  bancos: BancoComprobar[] | null;
+  /** Saldos de la apertura que tienen que ver con el 303 del 4T (positivos) y lo escrito a mano. */
+  iva: { saldo4750: number; saldo4700: number; resultado303: number | null; cuotasACompensar: number | null } | null;
+  /** Datos de la empresa que faltan (nombres para la persona). */
+  empresaFaltan: string[];
+  /** Tipos sin serie activa y predeterminada; series predeterminadas ya usadas en el año anterior. */
+  series: { faltan: string[]; usadasAntes: string[] };
+  /** null: se crea al importar. */
+  ejercicioCreado: boolean | null;
+  /** Solo con la carga ya importada: subcuentas de clientes y proveedores con saldo sin ficha con NIF. */
+  tercerosSinFicha?: Array<{ codigo: string; nombre: string }>;
+}
+
+/** Puntos de las comprobaciones vivas (funcion pura). */
+export function comprobarVivas(e: EntradaVivas): PuntoComprobacion[] {
+  const puntos: PuntoComprobacion[] = [];
+  const anio = e.ejercicioOrigen;
+  const fin = `31-12-${anio}`;
+
+  if (e.bancos) {
+    const sinExtracto = e.bancos.filter((b) => b.saldoExtracto === null);
+    if (sinExtracto.length) {
+      puntos.push({
+        clave: 'bancos:extracto',
+        nivel: 'FALTA',
+        texto: `Escribe el saldo del extracto a ${fin} de ${varios(sinExtracto.length, 'banco', 'bancos')} (lo da el banco, no la gestoría).`,
+        detalle: lista(sinExtracto.map((b) => `${b.subcuenta} ${b.nombre}: en la contabilidad ${eur(b.saldoApertura)}`)),
+      });
+    }
+    const sinCuenta = e.bancos.filter((b) => !b.cuenta);
+    if (sinCuenta.length) {
+      puntos.push({
+        clave: 'bancos:cuenta',
+        nivel: 'FALTA',
+        texto: `${varios(sinCuenta.length, 'cuenta de bancos no está enlazada', 'cuentas de bancos no están enlazadas')} con su cuenta de Tesorería: elige la cuenta o escribe su IBAN para darla de alta.`,
+        detalle: lista(sinCuenta.map((b) => `${b.subcuenta} ${b.nombre}`)),
+      });
+    }
+    const diferencias = e.bancos.filter((b) => b.saldoExtracto !== null && aCentimos(b.saldoExtracto) !== aCentimos(b.saldoApertura));
+    const sinAceptar = diferencias.filter((b) => !b.aceptada);
+    if (sinAceptar.length) {
+      puntos.push({
+        clave: 'bancos:diferencia',
+        nivel: 'FALTA',
+        texto: `El saldo del extracto no coincide con la contabilidad en ${varios(sinAceptar.length, 'banco', 'bancos')}. Si son cobros o pagos en tránsito a ${fin} (un cheque, un recibo que el banco cargó en enero...), acéptalo; si no, revísalo con la gestoría.`,
+        detalle: lista(sinAceptar.map((b) => `${b.subcuenta} ${b.nombre}: contabilidad ${eur(b.saldoApertura)}, extracto ${eur(b.saldoExtracto!)}, diferencia ${eur(b.saldoApertura - b.saldoExtracto!)}`)),
+      });
+    }
+    const aceptadas = diferencias.filter((b) => b.aceptada);
+    if (aceptadas.length) {
+      puntos.push({
+        clave: 'bancos:transito',
+        nivel: 'INFO',
+        texto: `${varios(aceptadas.length, 'banco tiene', 'bancos tienen')} partidas en tránsito a ${fin} aceptadas.`,
+        detalle: lista(aceptadas.map((b) => `${b.subcuenta} ${b.nombre}: diferencia ${eur(b.saldoApertura - b.saldoExtracto!)}`)),
+      });
+    }
+  }
+
+  if (e.iva) {
+    const { saldo4750, saldo4700, resultado303, cuotasACompensar } = e.iva;
+    if (resultado303 === null) {
+      puntos.push({
+        clave: 'iva:303-4t',
+        nivel: 'FALTA',
+        texto: `Escribe el resultado del 303 del 4T de ${anio} (a ingresar, en positivo; a devolver o a compensar, en negativo), para comprobarlo con las cuentas de IVA.`,
+      });
+    } else {
+      const esperado = aCentimos(saldo4750) ? saldo4750 : aCentimos(saldo4700) ? -saldo4700 : 0;
+      if (aCentimos(resultado303) !== aCentimos(esperado)) {
+        const cuentas = aCentimos(saldo4750)
+          ? `la 4750 (IVA a ingresar) tiene ${eur(saldo4750)}`
+          : aCentimos(saldo4700)
+            ? `la 4700 (IVA a devolver o a compensar) tiene ${eur(saldo4700)}`
+            : 'ni la 4750 ni la 4700 tienen saldo';
+        puntos.push({
+          clave: 'iva:303-4t',
+          nivel: 'FALTA',
+          texto: `El 303 del 4T que has escrito (${eur(resultado303)}) no cuadra con la contabilidad: ${cuentas}. Revísalo con la gestoría.`,
+        });
+      }
+      if (resultado303 < 0 && cuotasACompensar === null) {
+        puntos.push({
+          clave: 'iva:compensar',
+          nivel: 'FALTA',
+          texto: `El 303 del 4T salió negativo: escribe las cuotas de IVA que quedan por compensar en ${anio + 1} (0 si pediste la devolución). Saldrán solas en el 303 del 1T.`,
+        });
+      }
+    }
+  }
+
+  if (e.empresaFaltan.length) {
+    puntos.push({
+      clave: 'empresa:datos',
+      nivel: 'FALTA',
+      texto: `Faltan datos de la empresa que piden los modelos de Hacienda: ${e.empresaFaltan.join(', ')}. Complétalos en Más > Datos de la empresa.`,
+    });
+  }
+  if (e.series.faltan.length) {
+    puntos.push({
+      clave: 'series:2027',
+      nivel: 'FALTA',
+      texto: `No hay una serie activa y predeterminada de ${e.series.faltan.join(' ni de ')} para ${anio + 1}. Créalas con «Crear series ${anio + 1}».`,
+    });
+  } else if (e.series.usadasAntes.length) {
+    puntos.push({
+      clave: 'series:anteriores',
+      nivel: 'INFO',
+      texto: `La serie ${e.series.usadasAntes.join(' y la ')} ya se usó en ${anio}. Si quieres empezar ${anio + 1} con el número 1, crea las series de ${anio + 1}.`,
+    });
+  }
+  if (e.ejercicioCreado === false) {
+    puntos.push({ clave: 'ejercicio:2027', nivel: 'FALTA', texto: `Falta el ejercicio ${anio + 1}: créalo en Configuración > Ejercicios y periodos.` });
+  }
+  if (e.tercerosSinFicha?.length) {
+    puntos.push({
+      clave: 'terceros:sin-ficha',
+      nivel: 'FALTA',
+      texto: `${varios(e.tercerosSinFicha.length, 'cliente o proveedor con saldo no tiene', 'clientes o proveedores con saldo no tienen')} ficha con NIF. Enlázalos con su ficha en Contabilidad > Puesta en marcha > Plan anterior.`,
+      detalle: lista(e.tercerosSinFicha.map((t) => `${t.codigo} ${t.nombre}`)),
+    });
+  }
+  return puntos;
+}
+
+export interface AvisoAceptado {
+  clave: string;
+  motivo: string;
+  userId: string;
+  en: string;
+}
+
+/**
+ * Junta los puntos de los ficheros con los vivos (que sustituyen a los de la
+ * misma clase) y los avisos aceptados (que pasan a informacion), y calcula el
+ * nivel.
+ */
+export function juntarComprobaciones(
+  base: Pick<ResultadoComprobaciones, 'puntos' | 'excluidos'>,
+  vivos: PuntoComprobacion[],
+  anio: number,
+  aceptados: AvisoAceptado[] = [],
+  sustituir: (clave: string) => boolean = esPuntoVivo,
+): ResultadoComprobaciones & { aceptados: AvisoAceptado[] } {
+  const porClave = new Map(aceptados.map((a) => [a.clave, a]));
+  const puntos = [...base.puntos.filter((p) => !sustituir(p.clave)), ...vivos].map((p) => {
+    const a = p.nivel === 'FALTA' ? porClave.get(p.clave) : undefined;
+    return a ? { ...p, nivel: 'INFO' as const, texto: `${p.texto} (Aceptado: ${a.motivo})` } : p;
+  });
+  return { ...nivelDe(puntos, anio), puntos, excluidos: base.excluidos, aceptados: aceptados.filter((a) => puntos.some((p) => p.clave === a.clave)) };
 }
