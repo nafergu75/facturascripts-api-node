@@ -20,6 +20,7 @@
  *    rectificada = anterior + la diferencia.
  */
 import { prisma } from '../../config/database';
+import { importeTexto } from '../../utils/money';
 import { badRequest } from '../../utils/http-errors';
 import { aparicionesEntre, fechaContableGasto, whereGastosFiscales } from '../../domain/factura-gasto.model';
 import { fechaDevengoVenta, paisDelCliente, PAISES_UE } from '../../domain/tipo-operacion.model';
@@ -259,7 +260,7 @@ export async function calcularBorrador349(companyId: string, ejercicio: number, 
       ant.calculados ??= agruparOperadores(await movimientos349(companyId, periodoFiscal(g.ejercicio, g.periodo)));
       base = ant.calculados.find((o) => claveOperador(o) === claveOperador(g.m))?.base ?? 0;
       avisos.push(
-        `El 349 de ${g.periodo} de ${g.ejercicio} no consta como presentado en la app: la base declarada antes de ${g.m.nombre} (clave ${g.m.clave}) se ha calculado con las facturas (${base.toFixed(2)} €). Compruébala con la declaración que presentaste.`,
+        `El 349 de ${g.periodo} de ${g.ejercicio} no consta como presentado en la app: la base declarada antes de ${g.m.nombre} (clave ${g.m.clave}) se ha calculado con las facturas (${importeTexto(base)}). Compruébala con la declaración que presentaste.`,
       );
     }
     rectificaciones.push({
