@@ -384,9 +384,13 @@ describe('auditoria, PDF borrados, atrasos y lector de gastos', () => {
   });
 
   it('lector de gastos: el recibo de la SS se registra en una empresa sin trabajadores; con trabajadores, va a Nominas', async () => {
+    // La TGSS dada de alta como proveedor en las dos empresas: el lector ya no la crea al registrar.
+    const tgss = async (companyId: string) =>
+      (await prisma.supplier.create({ data: { companyId, nombreFiscal: 'Tesorería General de la Seguridad Social', nifCif: `Q2827003${controlCif('2827003').letra}` } })).id;
+    const tgssR4 = await tgss(R4);
     const recibo = {
       tipoDocumento: 'seguros_sociales',
-      proveedor: { nuevo: { nombreFiscal: 'Tesorería General de la Seguridad Social', nifCif: `Q2827003${controlCif('2827003').letra}` } },
+      proveedor: { id: await tgss(R5) },
       numeroFacturaProveedor: 'RLC-03',
       fechaEmision: '2026-03-31',
       tipoGasto: 'SUMINISTROS',
@@ -397,11 +401,11 @@ describe('auditoria, PDF borrados, atrasos y lector de gastos', () => {
     const sin = await request(app(R5)).post('/gastos-extractor/confirmar').send(recibo);
     expect(sin.status).toBe(201);
     expect(sin.body.data.factura).toMatchObject({ estado: 'DRAFT', cuentaGasto: '642', totalFactura: 320 });
-    const con = await request(app(R4)).post('/gastos-extractor/confirmar').send(recibo);
+    const con = await request(app(R4)).post('/gastos-extractor/confirmar').send({ ...recibo, proveedor: { id: tgssR4 } });
     expect(con.status).toBe(400);
     expect(con.body.message).toMatch(/Seguridad Social/);
     // Corregida la clasificacion en la pantalla ("Es una factura de gasto"), pero a la 642: tampoco.
-    const cuenta = await request(app(R4)).post('/gastos-extractor/confirmar').send({ ...recibo, tipoDocumento: 'factura' });
+    const cuenta = await request(app(R4)).post('/gastos-extractor/confirmar').send({ ...recibo, proveedor: { id: tgssR4 }, tipoDocumento: 'factura' });
     expect(cuenta.status).toBe(400);
     expect(cuenta.body.message).toMatch(/640, 641 y 642/);
   });
