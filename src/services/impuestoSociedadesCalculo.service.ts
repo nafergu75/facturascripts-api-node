@@ -14,7 +14,7 @@ import {
   PyGModelo,
 } from '../domain/modelos-cuentas-anuales';
 import { getFsClientForCompany } from './facturascripts-client';
-import { saldosComparativosImportados } from './puestaEnMarcha/puestaEnMarcha.service';
+import { fuenteEjercicioAnterior } from './fuenteEjercicioAnterior';
 
 const round2 = (n: number): number => Math.round((n + Number.EPSILON) * 100) / 100;
 
@@ -163,13 +163,10 @@ export interface EstadosFinancieros {
 export async function calcularEstadosFinancieros(companyId: string, ejercicio: number): Promise<EstadosFinancieros> {
   const todos = await obtenerAsientosHastaFinDe(companyId, ejercicio);
   const saldos = saldosDelEjercicio(todos, ejercicio);
-  // Si el ejercicio anterior no se llevo en esta aplicacion, la columna N-1 sale
-  // de los saldos importados en la puesta en marcha (si los hay).
-  const vacio = (s: SaldosEjercicio) => s.balance.size === 0 && s.pyg.size === 0;
-  let saldosAnt = saldosDelEjercicio(todos, ejercicio - 1);
-  if (vacio(saldosAnt)) saldosAnt = (await saldosComparativosImportados(companyId, ejercicio - 1)) ?? saldosAnt;
-  let saldosAnt2 = saldosDelEjercicio(todos, ejercicio - 2);
-  if (vacio(saldosAnt2)) saldosAnt2 = (await saldosComparativosImportados(companyId, ejercicio - 2)) ?? saldosAnt2;
+  // La columna N-1: los saldos de la gestoria si ese año lo llevo ella; si no, los
+  // asientos de la app; sin asientos, los importados en la puesta en marcha.
+  const saldosAnt = (await fuenteEjercicioAnterior(companyId, ejercicio - 1, saldosDelEjercicio(todos, ejercicio - 1))).saldos;
+  const saldosAnt2 = (await fuenteEjercicioAnterior(companyId, ejercicio - 2, saldosDelEjercicio(todos, ejercicio - 2))).saldos;
 
   const actual = calcularEstadosDesdeSaldos(saldos, saldosAnt);
   const anterior = calcularEstadosDesdeSaldos(saldosAnt, saldosAnt2);
