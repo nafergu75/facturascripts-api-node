@@ -31,6 +31,7 @@ import {
   whereGastosFiscales,
   type DatosFiscalesGasto,
 } from '../../domain/factura-gasto.model';
+import { avisoExcesoRetencion, topeCero } from '../../domain/rectificativa-gasto.model';
 
 const euros = (centimos: number): number => Math.round(centimos) / 100;
 const mm = (n: number) => String(n).padStart(2, '0');
@@ -343,8 +344,10 @@ export interface RetencionesActividades {
   retenciones: number;
   /** Desglose por el tipo de retencion de las facturas (15 %, 7 %...), para las pantallas. */
   porTipo: Array<{ porcentaje: number; perceptores: number; base: number; cuota: number }>;
-  /** Facturas anuladas cuya retencion sigue en un 111 presentado. */
+  /** Facturas anuladas cuya retencion sigue en un 111 presentado, y el exceso de retencion de los abonos. */
   avisos?: string[];
+  /** Retencion de abonos que no cabe en este periodo ([09] como mucho hasta cero): pasa de la 4751 a la 4709. */
+  excesoAbonos?: number;
 }
 
 /** Desglose de las facturas con retencion por su tipo (puro). */
@@ -409,21 +412,34 @@ async function retencionesProfesionalesEntre(companyId: string, desde: string, h
     retencionTotal: number;
     tipoRetencion: number;
     supplier: { nifCif: string; nombreFiscal: string; cp: string | null; provincia: string | null };
+    /** Abono o rectificativa con la retencion en negativo: su numero y la fecha de lo que rectifica. */
+    abono?: { numero: string; fechaOriginal: string | null };
   };
   const filas: Fila[] = [];
   const avisos: string[] = [];
   if (!tablaLista('expenseInvoice')) return { filas, avisos };
   const facturas = await prisma.expenseInvoice.findMany({
-    where: { AND: [whereGastosFiscales(companyId, desde, hasta), { tipoGasto: { not: 'ALQUILER' }, retencionTotal: { gt: 0 } }] },
-    include: { lineas: true, supplier: { select: { nifCif: true, nombreFiscal: true, cp: true, provincia: true } } },
+    where: { AND: [whereGastosFiscales(companyId, desde, hasta), { tipoGasto: { not: 'ALQUILER' }, retencionTotal: { not: 0 } }] },
+    include: {
+      lineas: true,
+      supplier: { select: { nifCif: true, nombreFiscal: true, cp: true, provincia: true } },
+      rectifica: { include: { original: { select: { fechaEmision: true, fechaRegistro: true } } } },
+    },
   });
   const declaradaEn = await retencionDeclaradaEn(companyId, '111', facturas);
   for (const f of facturas) {
     const periodo = declaradaEn(f);
     for (const { signo } of aparicionesRetencionEntre(f, desde, hasta, periodo !== null)) {
       if (periodo) avisos.push(avisoRetencionAnulada(f.numeroFacturaProveedor ?? f.numeroCompleto, f.supplier.nombreFiscal, '111', periodo, fechaContableGasto(f).slice(0, 4)));
+      const abono =
+        aCentimos(Number(f.retencionTotal)) < 0
+          ? {
+              numero: f.numeroFacturaProveedor ?? f.numeroCompleto,
+              fechaOriginal: f.rectifica[0] ? (f.rectifica[0].original ? fechaContableGasto(f.rectifica[0].original) : (f.rectifica[0].fechaOriginal ?? f.rectifica[0].periodoDesde)) : null,
+            }
+          : undefined;
       for (const d of desgloseRetencionGasto(f)) {
-        filas.push({ supplierId: f.supplierId, signo, baseTotal: d.base, retencionTotal: d.cuota, tipoRetencion: d.porcentaje, supplier: f.supplier });
+        filas.push({ supplierId: f.supplierId, signo, baseTotal: d.base, retencionTotal: d.cuota, tipoRetencion: d.porcentaje, supplier: f.supplier, ...(abono ? { abono } : {}) });
       }
     }
   }
@@ -436,12 +452,31 @@ async function retencionesProfesionalesEntre(companyId: string, desde: string, h
  */
 export async function retencionesActividades(companyId: string, periodo: PeriodoFiscal): Promise<RetencionesActividades> {
   const { filas: conIrpf, avisos } = await retencionesProfesionalesEntre(companyId, periodo.fechaInicio, periodo.fechaFin);
+  // La retencion de un abono resta en este periodo, casilla a casilla y como
+  // mucho hasta cero (decision P1). Lo que no cabe se avisa: se recupera
+  // rectificando el 111 en que se declaro y no cuenta en ningun otro periodo.
+  const base = topeCero(conIrpf.reduce((a, f) => a + aCentimos(Number(f.baseTotal)), 0));
+  const ret = topeCero(conIrpf.reduce((a, f) => a + aCentimos(Number(f.retencionTotal)), 0));
+  if (ret.exceso > 0) {
+    const porAbono = new Map<string, { numero: string; retencion: number; fechaOriginal: string | null }>();
+    for (const f of conIrpf) {
+      if (!f.abono) continue;
+      const a = porAbono.get(f.abono.numero) ?? { ...f.abono, retencion: 0 };
+      a.retencion += aCentimos(Number(f.retencionTotal));
+      porAbono.set(f.abono.numero, a);
+    }
+    const abonos = [...porAbono.values()];
+    const total = abonos.reduce((s, a) => s - a.retencion, 0);
+    avisos.push(avisoExcesoRetencion({ modelo: '111', abonos, restado: total - ret.exceso, exceso: ret.exceso }));
+  }
   return {
-    perceptores: new Set(conIrpf.map((f) => f.supplierId)).size,
-    percepciones: euros(conIrpf.reduce((a, f) => a + aCentimos(Number(f.baseTotal)), 0)),
-    retenciones: euros(conIrpf.reduce((a, f) => a + aCentimos(Number(f.retencionTotal)), 0)),
+    // [07]: quien solo tiene abonos en el periodo no cuenta como perceptor.
+    perceptores: new Set(conIrpf.filter((f) => !f.abono).map((f) => f.supplierId)).size,
+    percepciones: euros(base.valor),
+    retenciones: euros(ret.valor),
     porTipo: desgloseActividadesPorTipo(conIrpf),
     ...(avisos.length ? { avisos } : {}),
+    ...(ret.exceso > 0 ? { excesoAbonos: euros(ret.exceso) } : {}),
   };
 }
 
@@ -822,6 +857,15 @@ export async function calcularModelo190(companyId: string, ejercicio: number): P
   // Clave G: solo personas fisicas y entidades en atribucion de rentas (las sociedades, fuera, con aviso).
   const g = revisarPerceptoresG(perceptoresProfesionales(facturas as never), facturas);
   avisos.push(...g.avisos);
+  // Abonos que superan lo facturado en el año: un perceptor no se declara en negativo.
+  for (const p of g.perceptores) {
+    if (p.percepcionIntegra < 0 || p.retenciones < 0) {
+      p.faltan.push('importes del año en negativo (sus abonos superan lo facturado)');
+      avisos.push(
+        `${p.nombre} sale con importes negativos en ${ejercicio} (sus abonos superan lo facturado): no se puede declarar así en el 190. Revisa sus facturas y abonos del año o consúltalo con tu asesor.`,
+      );
+    }
+  }
   const perceptores = [
     ...perceptoresDeNominas(ejercicio, nominas, empleados),
     ...g.perceptores,
