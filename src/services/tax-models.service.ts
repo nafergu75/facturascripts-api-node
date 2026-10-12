@@ -160,10 +160,12 @@ export async function ficheroRetenciones(companyId: string, codigo: '111' | '115
  * 4709, para la pantalla: el importe, el asiento si ya esta hecho y el aviso.
  */
 async function excesoConTraspaso(companyId: string, codigo: '111' | '115', ejercicio: number, periodo: string, exceso: number | undefined) {
-  if (!exceso || Math.round(exceso * 100) <= 0) return { excesoAbonos: null, traspaso4709: null, aviso: null };
+  const cent = Math.max(0, Math.round((exceso ?? 0) * 100));
   const hecho = await traspaso4709De(companyId, codigo, ejercicio, periodo);
+  if (!cent && !hecho) return { excesoAbonos: null, traspaso4709: null, aviso: null };
   // Sin hacer, ya lo dice el aviso del calculo (avisoExcesoRetencion); hecho, se dice con su asiento.
-  return { excesoAbonos: exceso, traspaso4709: hecho, aviso: hecho ? textoExceso(codigo, exceso, hecho) : null };
+  // Si despues se corrige o se anula un abono (o entra otra factura), el asiento ya no coincide.
+  return { excesoAbonos: cent / 100, traspaso4709: hecho, aviso: hecho ? textoExceso(codigo, cent / 100, hecho) : null };
 }
 
 export class TaxModelsService {
