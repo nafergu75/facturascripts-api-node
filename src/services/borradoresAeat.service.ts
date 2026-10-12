@@ -8,7 +8,7 @@
  */
 import { prisma } from '../config/database';
 import { badRequest } from '../utils/http-errors';
-import { aCentimos } from '../utils/money';
+import { aCentimos, importeTexto } from '../utils/money';
 import type { DatosModelo347, DesgloseIva, FacturaFiscal } from '../domain/impuestos.model';
 import { construirModelo347, declarados347Desde, type Declaracion347 } from '../aeat/oficial/modelo347';
 import { construirModelo390, type Declaracion390, type Entrada390 } from '../aeat/oficial/modelo390';
@@ -516,7 +516,7 @@ export async function borrador200(companyId: string, ejercicio: number, opciones
   for (const [cuenta, saldo] of estados.saldos.balance) if (cuenta.startsWith('473')) saldo473 += saldo;
   if (round2(saldo473) !== 0 && opciones.retenciones === undefined && opciones.pagosFraccionados === undefined) {
     decl.advertencias.unshift(
-      `La cuenta 473 (retenciones y pagos a cuenta) tiene ${round2(saldo473).toFixed(2).replace('.', ',')} € al cierre: repártelos entre retenciones [01766] y pagos fraccionados [00601]-[00605].`,
+      `La cuenta 473 (retenciones y pagos a cuenta) tiene ${importeTexto(round2(saldo473))} al cierre: repártelos entre retenciones [01766] y pagos fraccionados [00601]-[00605].`,
     );
   }
   if (notas.plantillaMedia != null) decl.advertencias.push('La plantilla media de la memoria va entera como personal fijo [00041]: sepárala si hay personal no fijo.');
