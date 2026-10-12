@@ -9,7 +9,6 @@ import { Router } from 'express';
 import multer from 'multer';
 import { ingresosExtractorController } from '../controllers/ingresos-extractor.controller';
 import { authorize } from '../middleware/authorize.middleware';
-import { exigirPlanAnterior } from '../middleware/planAnterior.middleware';
 import { lecturasVentas, subirArchivoLectura } from '../controllers/lecturas.controller';
 
 const router = Router({ mergeParams: true });
@@ -18,7 +17,9 @@ const router = Router({ mergeParams: true });
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
 
 router.post('/extraer-ia', authorize('ventas:write'), upload.single('archivo'), ingresosExtractorController.extraer);
-router.post('/confirmar', authorize('ventas:write'), exigirPlanAnterior, ingresosExtractorController.confirmar);
+// Sin el aviso del plan anterior: el lector ya no da de alta al tercero (sin ficha, 400
+// TERCERO_NO_DADO_DE_ALTA). El aviso sale al darlo de alta desde su pantalla (POST /clientes o /proveedores).
+router.post('/confirmar', authorize('ventas:write'), ingresosExtractorController.confirmar);
 router.post('/lecturas', authorize('ventas:write'), subirArchivoLectura, lecturasVentas.crear);
 router.get('/lecturas/:id', authorize('ventas:read', 'ventas:write'), lecturasVentas.consultar);
 router.post('/lecturas/:id/descartar', authorize('ventas:write'), lecturasVentas.descartar);
