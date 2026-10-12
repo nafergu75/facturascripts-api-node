@@ -12,6 +12,7 @@
  * La pantalla lee el fichero generado con la misma tabla (leerFichero202).
  */
 import { DISENO_202 } from '../../domain/aeat/disenos';
+import { importeTexto } from '../../utils/money';
 import { componerRegistroDr, leerRegistroDr, registroDe, type CampoLeidoDr, type ValorDr } from '../common/disenoRegistro';
 import { errorNifDeclarante, ibanAeat, nifDerecha, textoAeat } from '../common/normalizacion';
 import { cabeceraAux, cierreAux, programaAeat, type ProgramaAeat } from '../common/cabeceraAux';
@@ -101,7 +102,7 @@ export function erroresEntrada202(e: Entrada202): string[] {
   for (const pagina of ['pagina01', 'pagina02']) {
     for (const c of camposCasilla(pagina)) {
       const v = e.casillas[c.casilla!];
-      if (v !== undefined && c.tipo === 'Num' && v < 0) errores.push(`La casilla [${c.casilla}] no admite importes negativos (${v.toFixed(2)} €).`);
+      if (v !== undefined && c.tipo === 'Num' && v < 0) errores.push(`La casilla [${c.casilla}] no admite importes negativos (${importeTexto(v)}).`);
     }
   }
   const aIngresar = e.modalidad === 'A' ? e.casillas['03'] ?? 0 : e.casillas['34'] ?? 0;
