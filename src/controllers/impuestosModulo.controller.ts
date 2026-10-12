@@ -17,6 +17,9 @@ import {
   calcularCasillasModelo,
   filaPorId,
   hayHistorialDeclaraciones,
+  marcarEjercicioPresentadoFueraApp,
+  marcarPresentadoFueraApp,
+  ORIGEN_FUERA_APP,
 } from '../services/impuestosModulo.service';
 import { anularUltimaPresentacion, justificanteDe, MODELOS_AEAT, type CodigoAeat } from '../services/declaracionesAeat/declaraciones.service';
 import { presentarDeclaracion } from '../services/declaracionesAeat/presentar';
@@ -91,15 +94,61 @@ export const impuestosModuloController = {
     });
     sendOk(res, r);
   }),
-  /** «No presentado»: con historial, la última presentada queda anulada (se marcó por error). */
+  /**
+   * «No presentado»: con historial, la última presentada queda anulada (se
+   * marcó por error). Lo marcado como presentado fuera de la app no tiene
+   * historial: vuelve a pendiente.
+   */
   noPresentado: asyncHandler(async (req, res) => {
     const f = await filaPorId(req.companyId!, req.params.modeloId);
+    if (f.origen === ORIGEN_FUERA_APP) {
+      const r = await marcarModeloNoPresentado(req.companyId!, req.params.modeloId);
+      await registrarAuditoria({
+        userId: req.user!.userId,
+        companyId: req.companyId,
+        action: 'MODELO_NO_PRESENTADO_FUERA_APP',
+        resourceType: 'MODELO_IMPUESTO',
+        resourceId: r.id,
+        meta: { codigo: r.codigo, periodo: r.periodoEtiqueta },
+      });
+      sendOk(res, r);
+      return;
+    }
     if (hayHistorialDeclaraciones() && f.codigo in MODELOS_AEAT && f.estado === 'presentado') {
       await anularUltimaPresentacion(req.companyId!, req.user!.userId, f.codigo, f.ejercicio, f.periodo);
       sendOk(res, await obtenerDetalleModelo(req.companyId!, f.id));
       return;
     }
     sendOk(res, await marcarModeloNoPresentado(req.companyId!, req.params.modeloId));
+  }),
+
+  /** POST /modelos/:modeloId/presentado-fuera-app: lo presentó otro (gestoría, sede); deja de estar pendiente. */
+  presentadoFueraApp: asyncHandler(async (req, res) => {
+    const r = await marcarPresentadoFueraApp(req.companyId!, req.params.modeloId);
+    await registrarAuditoria({
+      userId: req.user!.userId,
+      companyId: req.companyId,
+      action: 'MODELO_PRESENTADO_FUERA_APP',
+      resourceType: 'MODELO_IMPUESTO',
+      resourceId: r.id,
+      meta: { codigo: r.codigo, periodo: r.periodoEtiqueta },
+    });
+    sendOk(res, r);
+  }),
+
+  /** POST /ejercicios/:ejercicio/presentado-fuera-app: todo lo ya terminado del ejercicio, presentado fuera de la app. */
+  ejercicioPresentadoFueraApp: asyncHandler(async (req, res) => {
+    const ejercicio = validarEjercicio(req.params.ejercicio, { hasta: 'actual' });
+    const r = await marcarEjercicioPresentadoFueraApp(req.companyId!, ejercicio);
+    await registrarAuditoria({
+      userId: req.user!.userId,
+      companyId: req.companyId,
+      action: 'EJERCICIO_PRESENTADO_FUERA_APP',
+      resourceType: 'MODELO_IMPUESTO',
+      resourceId: String(ejercicio),
+      meta: { ejercicio, modelos: r.marcados.map((m) => `${m.codigo} ${m.periodoEtiqueta}`) },
+    });
+    sendOk(res, r);
   }),
 
   txt: asyncHandler(async (req, res) => {

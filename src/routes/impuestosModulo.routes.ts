@@ -25,6 +25,9 @@ router.post('/modelos/:modeloId/omitir', authorize('impuestos:write'), c.omitir)
 router.post('/modelos/:modeloId/recuperar', authorize('impuestos:write'), c.recuperar);
 router.post('/modelos/:modeloId/listo-para-presentar', authorize('impuestos:write'), c.listoParaPresentar);
 router.post('/modelos/:modeloId/no-presentado', authorize('impuestos:write'), c.noPresentado);
+// Presentado fuera de la app (gestoria, sede): un modelo o todo lo terminado de un ejercicio.
+router.post('/modelos/:modeloId/presentado-fuera-app', authorize('impuestos:write'), c.presentadoFueraApp);
+router.post('/ejercicios/:ejercicio/presentado-fuera-app', authorize('impuestos:write'), c.ejercicioPresentadoFueraApp);
 
 // Descargas
 router.get('/modelos/:modeloId/txt', authorize('impuestos:read'), c.txt);
