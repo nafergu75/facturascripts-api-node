@@ -1,10 +1,12 @@
 /**
  * Aviso antes del primer cliente o proveedor sin el plan de la gestoria: en
- * una empresa española sin fichas, sin plan anterior y sin carga, las ocho
+ * una empresa española sin fichas, sin plan anterior y sin carga, las seis
  * entradas que pueden dar de alta un tercero (Clientes, Proveedores, factura
- * nueva, compra nueva, lector de compras, lector de ventas y los dos
- * verificadores antiguos) dan 409 PLAN_ANTERIOR_PENDIENTE; con la
- * confirmacion siguen, queda la marca y AuditLog, y no vuelve a preguntar.
+ * nueva, compra nueva y los dos verificadores antiguos) dan 409
+ * PLAN_ANTERIOR_PENDIENTE; con la confirmacion siguen, queda la marca y
+ * AuditLog, y no vuelve a preguntar. Los dos lectores ya no dan de alta al
+ * tercero: piden antes la ficha (400 TERCERO_NO_DADO_DE_ALTA) y el aviso sale
+ * al darla de alta.
  * No salta con el plan traido, con carga, con fichas ni en una empresa de
  * EE. UU.
  *
@@ -54,8 +56,6 @@ const ENTRADAS: Array<[string, string]> = [
   ['post', '/proveedores'],
   ['post', '/income-invoices'],
   ['post', '/expense-invoices'],
-  ['post', '/gastos-extractor/confirmar'],
-  ['post', '/ingresos-extractor/confirmar'],
   ['post', '/income-reader/doc-x/verify'],
   ['post', '/invoice-extractor/doc-x/confirm'],
 ];
@@ -71,7 +71,7 @@ describe('primer cliente o proveedor sin el plan de la gestoría', () => {
     await empresa(E);
   });
 
-  it('las ocho entradas dan 409 con el código, el texto y el enlace', async () => {
+  it('las seis entradas dan 409 con el código, el texto y el enlace', async () => {
     const a = app(E);
     for (const [, ruta] of ENTRADAS) {
       const r = await request(a).post(ruta).send({});
@@ -81,6 +81,16 @@ describe('primer cliente o proveedor sin el plan de la gestoría', () => {
     const r = await request(a).post('/clientes').send({ nombreFiscal: 'Primero SL', nifCif: cifDe('4699001') });
     expect(JSON.stringify(r.body)).toMatch(/Antes de dar de alta el primer cliente o proveedor conviene traer el plan de cuentas de 2026 de tu gestoría/);
     expect(await prisma.customer.count({ where: { companyId: E } })).toBe(0);
+  });
+
+  it('en los lectores manda dar de alta al tercero: 400 TERCERO_NO_DADO_DE_ALTA, no el aviso del plan', async () => {
+    const a = app(E);
+    const gasto = await request(a)
+      .post('/gastos-extractor/confirmar')
+      .send({ proveedor: { nombreFiscal: 'Nuevo Proveedor SL', nifCif: cifDe('4699011') }, numeroFacturaProveedor: 'N-1', fechaEmision: '2027-01-10', tipoGasto: 'COMPRA', lineas: [{ descripcion: 'X', cantidad: 1, precioUnitario: 10, tipoIva: 21 }] });
+    expect(gasto.status).toBe(400);
+    expect(gasto.body.error?.details ?? gasto.body.details).toMatchObject({ codigo: 'TERCERO_NO_DADO_DE_ALTA' });
+    expect(await prisma.supplier.count({ where: { companyId: E } })).toBe(0);
   });
 
   it('sin permiso, el 403 va antes que el aviso', async () => {
