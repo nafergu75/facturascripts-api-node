@@ -16,6 +16,7 @@ import { construirModelo200, type Declaracion200 } from '../aeat/oficial/modelo2
 import {
   agregar303,
   agregar347,
+  avisosMetalicoPartidas,
   agregar390,
   agruparPorTipoIva,
   avisoIntraSinCuota,
@@ -80,11 +81,12 @@ export type Borrador347 = Declaracion347 & {
  */
 export async function borrador347(companyId: string, ejercicio: number, opts: { calcular?: boolean } = {}): Promise<Borrador347> {
   await exigirModelosAeat(companyId, `${ejercicio}-01-01`, `${ejercicio}-12-31`);
-  const [facturas, soc, contacto, decl] = await Promise.all([
+  const [facturas, soc, contacto, decl, metalicoPartidas] = await Promise.all([
     obtenerFacturasFiscales(companyId, `${ejercicio}-01-01`, `${ejercicio}-12-31`),
     datosSociedad(companyId),
     contactoEmpresa(companyId),
     declaracionInformativa(companyId, '347', ejercicio, '0A'),
+    avisosMetalicoPartidas(companyId, ejercicio),
   ]);
   // Presentado: la pantalla es la que se guardó al presentarlo.
   // `calcular`: lo de hoy aunque este presentado (para proponer los registros de una complementaria).
@@ -105,7 +107,7 @@ export async function borrador347(companyId: string, ejercicio: number, opts: { 
     },
     elegidos,
   );
-  const advertencias = [...(datos.advertencias ?? []), ...d.advertencias];
+  const advertencias = [...(datos.advertencias ?? []), ...metalicoPartidas, ...d.advertencias];
   if (!decl.numeroDeclaracion) advertencias.push(AVISO_SIN_NUMERO);
   const errores = [...d.errores];
   if (decl.seleccion && !elegidos.length) errores.push('La complementaria no lleva ningún declarado: marca los que se quedaron fuera de la declaración anterior.');
