@@ -59,6 +59,9 @@ export interface ComprobacionesArranque extends ResultadoComprobaciones {
   deBorrador: boolean;
   /** Bancos (572) de la apertura con su extracto y su cuenta de Tesoreria, para completarlos en pantalla. */
   bancos: BancoComprobar[] | null;
+  /** Datos fiscales y resultado de 2026 escritos hasta ahora, para corregirlos en pantalla. */
+  datosFiscales: DatosFiscales | null;
+  resultadoDeclarado: number | null;
 }
 
 /** A4 en vivo de la carga vigente; sin carga vigente, las del borrador; sin nada, null. */
@@ -76,6 +79,8 @@ export async function comprobacionesArranque(companyId: string, ejercicio = EJER
       completado: false,
       deBorrador: true,
       bancos: vista.bancos ?? null,
+      datosFiscales: vista.datosFiscales ?? null,
+      resultadoDeclarado: vista.resultadoDeclarado ?? ajustesDe(borrador).resultadoDeclarado ?? null,
     };
   }
   const resumen = resumenDe(vigente);
@@ -107,6 +112,8 @@ export async function comprobacionesArranque(companyId: string, ejercicio = EJER
     completado: r.nivel === 'CORRECTO',
     deBorrador: false,
     bancos: vivos.bancos,
+    datosFiscales: resumen.datosFiscales ?? null,
+    resultadoDeclarado: declarado ?? ajustesDe(vigente).resultadoDeclarado ?? null,
   };
 }
 
