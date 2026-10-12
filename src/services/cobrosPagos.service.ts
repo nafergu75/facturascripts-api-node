@@ -751,6 +751,44 @@ export async function cobradoPorFactura(companyId: string, tipo: TipoDocumento, 
   return new Map(filas.map((r) => [r.invoiceId, round2(Number(r._sum.importe ?? 0))]));
 }
 
+/**
+ * Lo aplicado a cada factura de GASTO (con fecha <= hasta): pagos activos
+ * (las devoluciones de un abono van en negativo, con el signo de la factura)
+ * mas las compensaciones activas, en positivo en la factura que recibe el
+ * abono y en negativo en el abono que se aplica. Pendiente = total - aplicado,
+ * con signo: en un abono de -121 aplicado entero, -121 - (-121) = 0.
+ */
+export async function aplicadoPorFactura(companyId: string, ids?: string[], hasta?: string, db: Tx | typeof prisma = prisma): Promise<Map<string, number>> {
+  if (ids && !ids.length) return new Map();
+  const fecha = hasta ? { fecha: { lte: hasta } } : {};
+  const [pagos, recibidas, aplicadas] = await Promise.all([
+    db.invoicePayment.groupBy({
+      by: ['invoiceId'],
+      where: { companyId, invoiceType: 'GASTO', estado: 'ACTIVO', ...fecha, ...(ids ? { invoiceId: { in: ids } } : {}) },
+      _sum: { importe: true },
+    }),
+    db.compensacionGasto.groupBy({
+      by: ['facturaId'],
+      where: { companyId, estado: 'ACTIVO', ...fecha, ...(ids ? { facturaId: { in: ids } } : { facturaId: { not: null } }) },
+      _sum: { importe: true },
+    }),
+    db.compensacionGasto.groupBy({
+      by: ['abonoId'],
+      where: { companyId, estado: 'ACTIVO', ...fecha, ...(ids ? { abonoId: { in: ids } } : {}) },
+      _sum: { importe: true },
+    }),
+  ]);
+  const c = new Map<string, number>();
+  const sumar = (id: string | null, euros: unknown, signo: 1 | -1) => {
+    if (!id) return;
+    c.set(id, (c.get(id) ?? 0) + signo * aCentimos(Number(euros ?? 0)));
+  };
+  for (const p of pagos) sumar(p.invoiceId, p._sum.importe, 1);
+  for (const r of recibidas) sumar(r.facturaId, r._sum.importe, 1);
+  for (const a of aplicadas) sumar(a.abonoId, a._sum.importe, -1);
+  return new Map([...c].map(([id, cent]) => [id, cent / 100]));
+}
+
 /** Suma de los cobros/pagos activos con fecha entre `desde` y `hasta` (ambas incluidas). */
 export async function totalCobradoEntre(companyId: string, tipo: TipoDocumento, desde: string, hasta: string, invoiceIds?: string[]): Promise<number> {
   const r = await prisma.invoicePayment.aggregate({
