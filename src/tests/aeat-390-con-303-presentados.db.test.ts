@@ -64,7 +64,7 @@ describe('390 con los 303 presentados', () => {
     const avisos = b.advertencias.join(' ');
     expect(avisos).toMatch(/Los 303 de 2T, 3T, 4T no están marcados como presentados/);
     // El devengado del año sí incluye la factura nueva: no cuadra con lo presentado y se avisa.
-    expect(avisos).toMatch(/\[86\] \(735\.00 €\) no cuadra con los 303 del año \(a ingresar 630\.00 €/);
+    expect(avisos).toMatch(/\[86\] \(735,00 €\) no cuadra con los 303 del año \(a ingresar 630,00 €/);
   });
 
   it('un 303 presentado con su rectificativa en preparación cuenta como presentado: el 390 usa lo presentado y lo dice', async () => {
