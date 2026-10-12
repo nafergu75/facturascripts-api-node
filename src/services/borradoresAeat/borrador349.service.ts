@@ -107,6 +107,7 @@ export interface Borrador349 {
 }
 
 const cent = (n: number) => Math.round(n * 100);
+const ddmm = (f: string) => `${f.slice(8, 10)}/${f.slice(5, 7)}/${f.slice(0, 4)}`;
 
 /** Periodo del 349 de una fecha, con la misma periodicidad que el que se declara. */
 function periodoDeFecha(fecha: string, tipo: PeriodoFiscal['tipo']): { ejercicio: number; periodo: string } {
@@ -207,10 +208,11 @@ export async function movimientos349(companyId: string, p: PeriodoFiscal): Promi
             nombre: f.supplier.nombreFiscal,
             clave,
             base: parte / 100,
-            ...(origen && origen < p.fechaInicio ? { rectifica: periodoDeFecha(origen, p.tipo), ...(e.originalId ? {} : { fuera: true }) } : {}),
+            // Original de fuera de la app (no un periodo de rappel): su base declarada se pide a mano.
+            ...(origen && origen < p.fechaInicio ? { rectifica: periodoDeFecha(origen, p.tipo), ...(e.originalId || e.periodoDesde ? {} : { fuera: true }) } : {}),
             ...(varios
               ? {
-                  aviso: `El rappel ${f.numeroFacturaProveedor ?? f.numeroCompleto} abarca varios periodos del 349 (del ${e.periodoDesde} al ${e.periodoHasta}): se rectifica entero en el periodo de su inicio. Si hay que repartirlo, regístralo en un abono por periodo.`,
+                  aviso: `Una parte del rappel ${f.numeroFacturaProveedor ?? f.numeroCompleto} abarca varios periodos del 349 (del ${ddmm(e.periodoDesde!)} al ${ddmm(e.periodoHasta!)}): se rectifica entera en el periodo de su inicio. Si hay que repartirla, corrige el reparto por periodos del abono.`,
                 }
               : {}),
           });
@@ -339,8 +341,14 @@ export async function calcularBorrador349(companyId: string, ejercicio: number, 
     if (!anteriores.has(kp)) anteriores.set(kp, { fila: await filaModelo(companyId, '349', g.ejercicio, g.periodo) });
     const ant = anteriores.get(kp)!;
     let base: number | null = ant.fila?.estado === 'presentado' ? baseEnDeclaracion(ant.fila.datos, claveOperador(g.m)) : null;
-    // Abono de una factura llevada fuera de la app: su 349 tampoco esta en la
-    // app y la base declarada no se puede calcular (daria 0): se pide a mano.
+    // Sin el 349 presentado en la app, la base declarada se calcula con las
+    // facturas. Si el abono es de una factura llevada fuera de la app, o resta
+    // de un periodo en el que la app no tiene compras de ese operador (un
+    // rappel de 2026, por ejemplo), no se puede calcular (daria 0): se pide a mano.
+    if (base === null && !g.fuera && g.c < 0) {
+      ant.calculados ??= agruparOperadores(await movimientos349(companyId, periodoFiscal(g.ejercicio, g.periodo)));
+      if (!ant.calculados.some((o) => claveOperador(o) === claveOperador(g.m) && cent(o.base) !== 0)) g.fuera = true;
+    }
     if (base === null && g.fuera) {
       const clave = `${claveOperador(g.m)}|${g.ejercicio}|${g.periodo}`;
       const manual = manuales.get(clave);
