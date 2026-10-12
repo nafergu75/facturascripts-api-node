@@ -135,9 +135,10 @@ describe('lecturas del lector de ventas', () => {
     const confirmar = (cuerpo: Record<string, unknown>) => request(app(E2)).post('/ingresos-extractor/confirmar').send(cuerpo);
     const data = await leer('resultado-iva-multiple', E2);
     // Una linea por tipo de IVA, en el orden en que se registraran.
-    expect(data.ingreso.lineas.map((l: { base: number; tipoIva: number }) => [l.base, l.tipoIva])).toEqual([
-      [200, 21],
-      [50, 10],
+    // Cada una con las partidas de su tipo (antes las dos llevaban «Folletos A5»).
+    expect(data.ingreso.lineas.map((l: { descripcion: string; base: number; tipoIva: number }) => [l.descripcion, l.base, l.tipoIva])).toEqual([
+      ['Folletos A5 y carteles A3', 200, 21],
+      ['Libros', 50, 10],
     ]);
     // Mas cuentas que lineas, o una que no es de ventas: 400 sin registrar nada.
     const demas = await confirmar({ documentId: data.ingreso.documentId, revisado: true, lineas: [{}, {}, { cuenta: '705' }] });
@@ -152,9 +153,9 @@ describe('lecturas del lector de ventas', () => {
     expect(r.status).toBe(201);
     expect(r.body.data.total).toBe(297);
     const lineas = await prisma.incomeInvoiceLine.findMany({ where: { invoiceId: r.body.data.facturaId }, orderBy: { tipoIva: 'desc' } });
-    expect(lineas.map((l) => [Number(l.precioUnitario), l.tipoIva, l.accountCode ?? null])).toEqual([
-      [200, 21, null],
-      [50, 10, '705'],
+    expect(lineas.map((l) => [l.descripcion, Number(l.precioUnitario), l.tipoIva, l.accountCode ?? null])).toEqual([
+      ['Folletos A5 y carteles A3', 200, 21, null],
+      ['Libros', 50, 10, '705'],
     ]);
     // Con su asiento, en borrador (viene del lector): 430N del cliente, 700, 705 (la elegida) y 477.
     expect(r.body.data).toMatchObject({ contabilizada: true, asientoEnBorrador: true });

@@ -125,7 +125,18 @@ export function aInvoiceExtraction(
   validaciones: ResultadoValidacion[],
   opciones: { confianza: number | null; nombreArchivo: string | null; mime: string | null },
 ): InvoiceExtraction {
-  const bases = l.desglose.map((t) => ({ tax_rate: t.tipoIva, base_amount: redondear2(t.base.valor ?? 0), tax_amount: redondear2(t.cuota.valor ?? 0) }));
+  // Cada tramo con su descripcion (sus partidas), como en gastos: en ventas cada
+  // linea puede ir a otra cuenta. Con un solo tipo, el texto neutro («Base al
+  // 21 %») no se manda: la linea lleva el concepto de la factura.
+  const bases = l.desglose.map((t) => {
+    const d = descripcionTramo(l, t.tipoIva);
+    return {
+      tax_rate: t.tipoIva,
+      base_amount: redondear2(t.base.valor ?? 0),
+      tax_amount: redondear2(t.cuota.valor ?? 0),
+      description: l.desglose.length > 1 || d !== descripcionNeutraTramo(t.tipoIva) ? d : null,
+    };
+  });
   const ret = l.retencion?.importe.valor ?? 0;
   const withholdings = ret ? [{ type: 'IRPF', rate: l.retencion?.tipo.valor ?? 0, amount: redondear2(ret) }] : [];
   const subtotal = sumar(bases.map((b) => b.base_amount));

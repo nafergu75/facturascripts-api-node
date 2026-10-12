@@ -106,6 +106,26 @@ describe('lineas y totales', () => {
     expect(() => comprobarTotales(lineas, extraccion())).not.toThrow();
   });
 
+  it('cada linea con la descripcion de su tipo de IVA; si no la hay, el concepto', () => {
+    const conTramos = extraccion({
+      bases: [
+        { tax_rate: 21, base_amount: 1000, tax_amount: 210, description: 'Consultoria' },
+        { tax_rate: 10, base_amount: 100, tax_amount: 10, description: 'Libros' },
+      ],
+    });
+    expect(lineasDesdeExtraccion(conTramos, 'Consultoria').map((l) => l.descripcion)).toEqual(['Consultoria', 'Libros']);
+    expect(aIngresoExtraido('d1', conTramos).lineas.map((l) => l.descripcion)).toEqual(['Consultoria', 'Libros']);
+    // Lector clasico (sin descripcion por tramo): la linea leida de ese tipo; sin ella, el concepto.
+    const clasica = extraccion();
+    clasica.lines = [
+      { description: 'Consultoria', quantity: 1, unit_price: 1000, line_total: 1000, tax_rate: 21 },
+      { description: 'Item 2', quantity: 1, unit_price: 100, line_total: 100, tax_rate: 10 },
+    ];
+    expect(lineasDesdeExtraccion(clasica, 'Consultoria').map((l) => l.descripcion)).toEqual(['Consultoria', 'Consultoria']);
+    clasica.lines[1].description = 'Libros de texto';
+    expect(lineasDesdeExtraccion(clasica, 'Consultoria').map((l) => l.descripcion)).toEqual(['Consultoria', 'Libros de texto']);
+  });
+
   it('si los importes leidos no cuadran al centimo, no se registra', () => {
     const e = extraccion({ total_net: 1155.01 });
     expect(() => comprobarTotales(lineasDesdeExtraccion(e, null), e)).toThrow(/no cuadran/);

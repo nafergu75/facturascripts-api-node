@@ -64,6 +64,8 @@ export interface InvoiceExtraction {
       tax_rate: number; // porcentaje, ej. 21.0
       base_amount: number;
       tax_amount: number;
+      /** Partidas de ese tipo de IVA (lector con Azure); sin ella, el concepto de la factura. */
+      description?: string | null;
     }>;
     withholdings: Array<{
       type: string; // "IRPF", etc.

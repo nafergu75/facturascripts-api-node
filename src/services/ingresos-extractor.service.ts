@@ -77,12 +77,28 @@ export function aIngresoExtraido(documentId: string, e: InvoiceExtraction): Ingr
     total: e.amounts.total_net,
     confianza: e.confidence,
     errores,
-    lineas: e.amounts.bases.map((b) => ({ descripcion: descripcionLinea(concepto), base: b.base_amount, tipoIva: b.tax_rate })),
+    lineas: e.amounts.bases.map((b) => ({ descripcion: descripcionLinea(e, b, concepto), base: b.base_amount, tipoIva: b.tax_rate })),
   };
 }
 
-/** Texto de las lineas de una factura digitalizada: el concepto leido o uno generico. */
-const descripcionLinea = (concepto: string | null) => concepto ?? 'Factura digitalizada';
+/** Texto de relleno de las lineas sin descripcion (aInvoiceExtraction pone «Item 2»...). */
+const RELLENO = /^Item \d+$/;
+
+/**
+ * Texto de la linea de un tipo de IVA: las partidas de ese tramo (lector con
+ * Azure); si no las hay, con varios tipos, la primera linea leida de ese tipo;
+ * si no, el concepto de la factura o uno generico. Asi cada linea dice lo que
+ * es (antes todas llevaban el concepto de la primera).
+ */
+function descripcionLinea(e: InvoiceExtraction, b: InvoiceExtraction['amounts']['bases'][number], concepto: string | null): string {
+  const propia = b.description?.trim();
+  if (propia) return propia;
+  if (e.amounts.bases.length > 1) {
+    const deSuTipo = e.lines.find((l) => l.tax_rate === b.tax_rate && l.description?.trim() && !RELLENO.test(l.description.trim()));
+    if (deSuTipo?.description) return deSuTipo.description.trim();
+  }
+  return concepto ?? 'Factura digitalizada';
+}
 
 /**
  * Cuentas de ingresos elegidas en la pantalla con «Cambiar cuenta»: una por
@@ -134,7 +150,7 @@ export function lineasDesdeExtraccion(e: InvoiceExtraction, concepto: string | n
   return e.amounts.bases.map((b) => {
     if (!Number.isInteger(b.tax_rate)) throw badRequest(`Tipo de IVA no valido: ${b.tax_rate}%.`);
     return {
-      descripcion: descripcionLinea(concepto),
+      descripcion: descripcionLinea(e, b, concepto),
       cantidad: 1,
       precioUnitario: b.base_amount,
       descuentoPorcentaje: 0,
