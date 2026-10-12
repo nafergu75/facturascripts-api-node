@@ -1400,6 +1400,32 @@ model AjustesFiscales {
   prorrata            Decimal? @db.Decimal(5, 2)
   updatedAt           DateTime @updatedAt
   updatedBy           String?
+  /// Primer dia (AAAA-MM-DD) en que la empresa lleva sus impuestos con la app.
+  /// Los periodos que acaban antes no se crean ni cuentan como pendientes (los
+  /// presento la gestoria). null = sin limite.
+  inicioEnApp         String?  @db.VarChar(10)
+}
+
+/// Regimen fiscal por fecha de efecto (spec arranque-2027, B.7): periodicidad
+/// del IVA, REDEME, SII y gran empresa desde `desde`. El calendario de cada
+/// periodo usa el regimen vigente al empezar ese periodo (los anuales, el del
+/// 1 de enero). Antes se deducia de AjustesFiscales.updatedAt, y guardar en
+/// 2027 cambiaba el calendario de 2026. Nunca se borra una fila salvo las de
+/// fecha posterior que un cambio nuevo deja sin efecto.
+model AjustesFiscalesVigencia {
+  id              String   @id @default(cuid())
+  companyId       String
+  /// Fecha de efecto (AAAA-MM-DD): primer dia al que se aplica.
+  desde           String   @db.VarChar(10)
+  /// TRIMESTRAL | MENSUAL
+  periodicidadIva String   @db.VarChar(10)
+  redeme          Boolean
+  sii             Boolean
+  granEmpresa     Boolean
+  creadoEn        DateTime @default(now())
+  creadoPor       String?
+
+  @@unique([companyId, desde])
 }
 
 /// Ejercicio contable de una empresa.
