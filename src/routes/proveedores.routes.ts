@@ -6,6 +6,7 @@ import { notFound } from '../utils/http-errors';
 import { hoyEspana } from '../utils/fechas';
 import { esVencida, textoEstadoGasto, textoEstadoPago } from '../domain/factura-gasto.model';
 import { proveedoresService, buscarProveedores } from '../services/proveedores.service';
+import { aplicadoPorFactura } from '../services/cobrosPagos.service';
 import { authorize } from '../middleware/authorize.middleware';
 import * as contactos from '../services/suppliers/supplierContact.service';
 import * as cuentas from '../services/suppliers/supplierBankAccount.service';
@@ -130,16 +131,11 @@ router.get('/:supplierId/audit-trail', authorize('compras:read', 'contabilidad:r
   sendOk(res, entradas);
 }));
 
-/** Lo pagado por factura (pagos activos). Sin la tabla (tests con prisma simulado), nada. */
+/** Lo aplicado por factura (pagos, devoluciones y compensaciones). Sin las tablas (tests con prisma simulado), nada. */
 async function pagadoPorFactura(companyId: string, ids: string[]): Promise<Map<string, number>> {
-  const tabla = (prisma as unknown as { invoicePayment?: { groupBy?: unknown } }).invoicePayment;
-  if (!ids.length || typeof tabla?.groupBy !== 'function') return new Map();
-  const filas = await prisma.invoicePayment.groupBy({
-    by: ['invoiceId'],
-    where: { companyId, invoiceType: 'GASTO', estado: 'ACTIVO', invoiceId: { in: ids } },
-    _sum: { importe: true },
-  });
-  return new Map(filas.map((r) => [r.invoiceId, Number(r._sum.importe ?? 0)]));
+  const db = prisma as unknown as { invoicePayment?: { groupBy?: unknown }; compensacionGasto?: { groupBy?: unknown } };
+  if (!ids.length || typeof db.invoicePayment?.groupBy !== 'function' || typeof db.compensacionGasto?.groupBy !== 'function') return new Map();
+  return aplicadoPorFactura(companyId, ids);
 }
 
 // Facturas de gasto del proveedor, con su estado, su pago y lo pendiente
