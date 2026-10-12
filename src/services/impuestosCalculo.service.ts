@@ -21,7 +21,7 @@ import {
   PeriodoFiscal,
 } from '../domain/impuestos.model';
 import { aparicionesConIva, aparicionesRetencionEntre, desgloseRetencionGasto, fechaContableGasto, whereGastosFiscales, whereGastosIva } from '../domain/factura-gasto.model';
-import { avisoExcesoRetencion, topeCero } from '../domain/rectificativa-gasto.model';
+import { avisoExcesoRetencion, retencionesPorPerceptor, topeCero } from '../domain/rectificativa-gasto.model';
 import {
   esPaisEspana,
   esTipoOperacion,
@@ -936,6 +936,74 @@ export function fechaOriginalDe(f: { rectifica?: Array<{ fechaOriginal: string |
 /** Arrendador del 115: su NIF normalizado o, si no lo tiene, el proveedor. */
 const claveArrendador = (f: { supplierId: string; supplier: { nifCif: string | null } }) => normalizarNif(f.supplier.nifCif) || `proveedor:${f.supplierId}`;
 
+/** Inmueble arrendado de una factura de alquiler (lo que necesita registro180De). */
+export type InmuebleDeAlquiler = { id: string; supplierId: string; activo: boolean };
+
+/**
+ * Registro del 180 al que va una factura de ALQUILER: arrendador, inmueble
+ * (el de la factura si es de su arrendador o, si no, su unico inmueble
+ * activo) y ejercicio de devengo (el de emision si es anterior). El 115 lo usa
+ * para que la retencion de un abono solo reste de la de ese mismo registro.
+ */
+export function registro180De<I extends InmuebleDeAlquiler>(
+  f: { supplierId: string; inmuebleArrendadoId?: string | null; fechaEmision: string },
+  inmuebles: readonly I[],
+  ejercicio: number,
+): { clave: string; inmueble: I | null; devengo: number | null } {
+  const activos = inmuebles.filter((i) => i.supplierId === f.supplierId && i.activo);
+  // El inmueble guardado en la factura solo vale si es de su arrendador (una factura cambiada de proveedor no arrastra el del anterior).
+  const inmueble = (f.inmuebleArrendadoId && inmuebles.find((i) => i.id === f.inmuebleArrendadoId && i.supplierId === f.supplierId)) || (activos.length === 1 ? activos[0] : null);
+  const devengo = Number(f.fechaEmision.slice(0, 4)) < ejercicio ? Number(f.fechaEmision.slice(0, 4)) : null;
+  return { clave: `${f.supplierId}|${inmueble?.id ?? '-'}|${devengo ?? ''}`, inmueble, devengo };
+}
+
+/**
+ * Facturas de ALQUILER con retencion del año hasta `hasta`, una fila por
+ * aparicion, con lo que cuenta de cada una en el 115 y el 180: la retencion de
+ * un abono solo resta de la de su mismo registro del 180 en el año
+ * (retencionesPorPerceptor) y la de una factura de un ejercicio anterior no
+ * cuenta. Lo usan el 115 (las del periodo) y el 180 (las del año).
+ */
+export async function retencionesAlquilerDelAnio(companyId: string, ejercicio: number, hasta: string) {
+  const desde = `${ejercicio}-01-01`;
+  const facturas = await prisma.expenseInvoice.findMany({
+    where: { AND: [whereGastosFiscales(companyId, desde, hasta), { tipoGasto: 'ALQUILER', retencionTotal: { not: 0 } }] },
+    include: {
+      lineas: true,
+      supplier: { select: { id: true, nifCif: true, nombreFiscal: true, cp: true, provincia: true, pais: true } },
+      rectifica: { include: { original: { select: { fechaEmision: true, fechaRegistro: true } } } },
+    },
+  });
+  const inmuebles = await prisma.inmuebleArrendado.findMany({ where: { companyId } });
+  // Una anulada no resta nunca (el 115 no admite negativos): solo cuenta, en su
+  // periodo, si su 115 ya estaba presentado, y entonces con un aviso.
+  const declaradaEn = await retencionDeclaradaEn(companyId, '115', facturas);
+  const filas = [];
+  for (const f of facturas) {
+    const declarada = declaradaEn(f);
+    for (const { fecha } of aparicionesRetencionEntre(f, desde, hasta, declarada !== null)) {
+      const desglose = desgloseRetencionGasto(f);
+      const base = desglose.reduce((a, d) => a + aCentimos(d.base), 0);
+      const retencion = desglose.reduce((a, d) => a + aCentimos(d.cuota), 0);
+      const fechaOriginal = fechaOriginalDe(f);
+      const esAbono = retencion < 0;
+      filas.push({
+        f,
+        fecha,
+        declarada,
+        base,
+        retencion,
+        desglose,
+        fechaOriginal,
+        registro: registro180De(f, inmuebles, ejercicio),
+        deAnioAnterior: esAbono && !!fechaOriginal && fechaOriginal < `${fecha.slice(0, 4)}-01-01`,
+      });
+    }
+  }
+  const contadas = retencionesPorPerceptor(filas.map((x) => ({ clave: x.registro.clave, fecha: x.fecha, base: x.base, retencion: x.retencion, deAnioAnterior: x.deAnioAnterior })));
+  return { filas: filas.map((x, i) => ({ ...x, contada: contadas[i] })), inmuebles };
+}
+
 /**
  * Modelo 115 (retenciones por arrendamiento de inmuebles urbanos): las
  * facturas de gasto de ALQUILER con retencion, con el criterio fiscal de las
@@ -947,39 +1015,32 @@ const claveArrendador = (f: { supplierId: string; supplier: { nifCif: string | n
 export async function calcularModelo115(companyId: string, periodo: PeriodoFiscal): Promise<DatosModelo115> {
   const vacio: DatosModelo115 = { periodo, nPerceptores: 0, baseRetenciones: 0, retenciones: 0, resultadoAnteriores: 0, resultadoIngresar: 0, perceptores: [] };
   if (!dbFacturasListo()) return vacio;
-  const facturas = await prisma.expenseInvoice.findMany({
-    where: { AND: [whereGastosFiscales(companyId, periodo.fechaInicio, periodo.fechaFin), { tipoGasto: 'ALQUILER', retencionTotal: { not: 0 } }] },
-    include: { lineas: true, supplier: { select: { nifCif: true, nombreFiscal: true } }, rectifica: { include: { original: { select: { fechaEmision: true, fechaRegistro: true } } } } },
-  });
-  const c = (n: number) => Math.round(n * 100);
-  // Una anulada no resta nunca (el 115 no admite negativos): solo cuenta, en su
-  // periodo, si su 115 ya estaba presentado, y entonces con un aviso.
-  const declaradaEn = await retencionDeclaradaEn(companyId, '115', facturas);
+  const { filas } = await retencionesAlquilerDelAnio(companyId, periodo.ejercicio, periodo.fechaFin);
   const avisos: string[] = [];
   const porArrendador = new Map<string, { nif: string; nombre: string; base: number; retencion: number; facturas: number; conCargo: boolean }>();
   const abonos: Array<{ numero: string; retencion: number; fechaOriginal: string | null }> = [];
-  for (const f of facturas) {
-    const declarada = declaradaEn(f);
-    for (const _ of aparicionesRetencionEntre(f, periodo.fechaInicio, periodo.fechaFin, declarada !== null)) {
-      // [01] son arrendadores distintos por NIF: el mismo arrendador dado de alta dos veces cuenta una.
-      if (declarada) avisos.push(avisoRetencionAnulada(f.numeroFacturaProveedor ?? f.numeroCompleto, f.supplier.nombreFiscal, '115', declarada, fechaContableGasto(f).slice(0, 4)));
-      const a = porArrendador.get(claveArrendador(f)) ?? { nif: f.supplier.nifCif, nombre: f.supplier.nombreFiscal, base: 0, retencion: 0, facturas: 0, conCargo: false };
-      for (const d of desgloseRetencionGasto(f)) {
-        a.base += c(d.base);
-        a.retencion += c(d.cuota);
-      }
-      a.facturas += 1;
-      // [01]: quien solo tiene abonos en el periodo no cuenta como arrendador.
-      if (aCentimos(Number(f.retencionTotal)) > 0) a.conCargo = true;
-      else abonos.push({ numero: f.numeroFacturaProveedor ?? f.numeroCompleto, retencion: aCentimos(Number(f.retencionTotal)), fechaOriginal: fechaOriginalDe(f) });
-      porArrendador.set(claveArrendador(f), a);
-    }
+  let excesoPerceptor = 0;
+  for (const { f, fecha, declarada, retencion, fechaOriginal, contada } of filas) {
+    if (fecha < periodo.fechaInicio) continue;
+    // [01] son arrendadores distintos por NIF: el mismo arrendador dado de alta dos veces cuenta una.
+    if (declarada) avisos.push(avisoRetencionAnulada(f.numeroFacturaProveedor ?? f.numeroCompleto, f.supplier.nombreFiscal, '115', declarada, fechaContableGasto(f).slice(0, 4)));
+    const a = porArrendador.get(claveArrendador(f)) ?? { nif: f.supplier.nifCif, nombre: f.supplier.nombreFiscal, base: 0, retencion: 0, facturas: 0, conCargo: false };
+    a.base += contada.base;
+    a.retencion += contada.retencion;
+    a.facturas += 1;
+    // [01]: quien solo tiene abonos en el periodo no cuenta como arrendador.
+    if (retencion > 0) a.conCargo = true;
+    else abonos.push({ numero: f.numeroFacturaProveedor ?? f.numeroCompleto, retencion, fechaOriginal });
+    excesoPerceptor += contada.exceso;
+    porArrendador.set(claveArrendador(f), a);
   }
   const lista = [...porArrendador.values()];
-  // Casilla a casilla y como mucho hasta cero (decision P1): el exceso se avisa.
+  // Solo de su mismo arrendador en el año (retencionesAlquilerDelAnio) y la
+  // casilla como mucho hasta cero (decision P1): el exceso se avisa.
   const base = topeCero(lista.reduce((s, a) => s + a.base, 0));
   const ret = topeCero(lista.reduce((s, a) => s + a.retencion, 0));
-  if (ret.exceso > 0) avisos.push(avisoExcesoRetencion({ modelo: '115', abonos, restado: abonos.reduce((s, x) => s - x.retencion, 0) - ret.exceso, exceso: ret.exceso }));
+  const exceso = excesoPerceptor + ret.exceso;
+  if (exceso > 0) avisos.push(avisoExcesoRetencion({ modelo: '115', abonos, restado: abonos.reduce((s, x) => s - x.retencion, 0) - exceso, exceso }));
   const retenciones = ret.valor;
   return {
     periodo,
@@ -988,9 +1049,11 @@ export async function calcularModelo115(companyId: string, periodo: PeriodoFisca
     retenciones: retenciones / 100,
     resultadoAnteriores: 0,
     resultadoIngresar: retenciones / 100,
-    ...(ret.exceso > 0 ? { excesoAbonos: ret.exceso / 100 } : {}),
+    ...(exceso > 0 ? { excesoAbonos: exceso / 100 } : {}),
+    ...(ret.exceso > 0 ? { excesoTopeAbonos: ret.exceso / 100 } : {}),
     ...(base.exceso > 0 ? { excesoBaseAbonos: base.exceso / 100 } : {}),
     perceptores: lista
+      .filter((a) => a.base !== 0 || a.retencion !== 0 || a.conCargo)
       .map((a) => ({ nif: a.nif, nombre: a.nombre, base: a.base / 100, retencion: a.retencion / 100, facturas: a.facturas }))
       .sort((x, y) => x.nombre.localeCompare(y.nombre, 'es')),
     ...(avisos.length ? { avisos } : {}),
