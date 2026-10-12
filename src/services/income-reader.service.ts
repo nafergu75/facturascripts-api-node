@@ -30,7 +30,7 @@
  *      baseImponible, totalIva, totalRetencion, total, lineas[], confianza.
  * ============================================================================
  */
-import { badRequest, notFound } from '../utils/http-errors';
+import { badRequest, conflict, notFound } from '../utils/http-errors';
 import { randomUUID as uuid } from 'crypto';
 import Anthropic from '@anthropic-ai/sdk';
 import { prisma } from '../config/database';
@@ -165,6 +165,20 @@ const HERRAMIENTA_EXTRACCION_INGRESO: Anthropic.Tool = {
     },
   },
 };
+
+/**
+ * Los documentos leidos con el lector de ventas (sourceType EXTRACTOR_IA) se
+ * registran o descartan solo desde su pantalla: alli se exige el cliente dado
+ * de alta (TERCERO_NO_DADO_DE_ALTA). Estas rutas antiguas crearian el cliente
+ * solas, asi que no los tocan.
+ */
+function exigirDocumentoDeEsteLector(documento: { sourceType: string }): void {
+  if (documento.sourceType === 'EXTRACTOR_IA') {
+    throw conflict('Esta factura se leyó con el lector de Ventas. Regístrala o descártala desde Ventas > Lector de facturas.', {
+      codigo: 'DOCUMENTO_DEL_LECTOR_DE_VENTAS',
+    });
+  }
+}
 
 const cadena = (v: unknown): string | undefined => (typeof v === 'string' && v.trim() !== '' ? v.trim() : undefined);
 const numeroOpt = (v: unknown): number | undefined => (typeof v === 'number' && Number.isFinite(v) ? v : undefined);
@@ -656,6 +670,7 @@ export const incomeReaderService = {
     if (!documento) {
       throw notFound('Documento no encontrado.');
     }
+    exigirDocumentoDeEsteLector(documento);
 
     if (documento.status !== 'READY_FOR_VERIFICATION') {
       throw badRequest('Solo se pueden editar documentos en estado READY_FOR_VERIFICATION.');
@@ -700,6 +715,7 @@ export const incomeReaderService = {
     if (!documento) {
       throw notFound('Documento no encontrado.');
     }
+    exigirDocumentoDeEsteLector(documento);
 
     // Validar si documento está expirado
     if (!esVigente(documento)) {
@@ -718,29 +734,8 @@ export const incomeReaderService = {
     // Importar el servicio de facturas de ingreso
     const { incomeInvoicesService } = await import('./income-invoices.service');
 
-    // En una factura de INGRESO el emisor es la empresa: el cliente es el
-    // RECEPTOR. (Antes se usaba el emisor, y la empresa acababa dada de alta
-    // como cliente de si misma.)
-    let customerId: string;
     if (!parsed.nifReceptor) {
       throw badRequest('Falta el NIF del cliente (receptor) en los datos extraídos.');
-    }
-    const existente = await prisma.customer.findFirst({
-      where: { companyId, nifCif: parsed.nifReceptor },
-    });
-    if (existente) {
-      customerId = existente.id;
-    } else {
-      // Con su subcuenta 430 asignada en la misma transaccion que el alta.
-      const nuevoCliente = await crearClienteConSubcuenta({
-        companyId,
-        nombreFiscal: parsed.nombreReceptor || `Cliente ${parsed.nifReceptor}`,
-        nifCif: parsed.nifReceptor,
-        // ES salvo que el NIF lleve el prefijo de otro Estado de la UE (FR..., DE...; EL = Grecia).
-        pais: paisDelCliente({ pais: 'ES', nifCif: parsed.nifReceptor }),
-        activo: true,
-      });
-      customerId = nuevoCliente.id;
     }
 
     // Mapear líneas extraídas
@@ -770,6 +765,29 @@ export const incomeReaderService = {
     // Sin fecha leida, hoy en Espana (no el dia UTC: de 00:00 a 02:00 seria ayer). P6.
     const fechaEmision = parsed.fecha ?? hoyEspana();
     const numeracion = separarNumero(null, String(parsed.numero), fechaEmision);
+
+    // En una factura de INGRESO el emisor es la empresa: el cliente es el
+    // RECEPTOR. (Antes se usaba el emisor, y la empresa acababa dada de alta
+    // como cliente de si misma.)
+    // Despues de validar la factura: con un 400 el cliente no se queda creado.
+    let customerId: string;
+    const existente = await prisma.customer.findFirst({
+      where: { companyId, nifCif: parsed.nifReceptor },
+    });
+    if (existente) {
+      customerId = existente.id;
+    } else {
+      // Con su subcuenta 430 asignada en la misma transaccion que el alta.
+      const nuevoCliente = await crearClienteConSubcuenta({
+        companyId,
+        nombreFiscal: parsed.nombreReceptor || `Cliente ${parsed.nifReceptor}`,
+        nifCif: parsed.nifReceptor,
+        // ES salvo que el NIF lleve el prefijo de otro Estado de la UE (FR..., DE...; EL = Grecia).
+        pais: paisDelCliente({ pais: 'ES', nifCif: parsed.nifReceptor }),
+        activo: true,
+      });
+      customerId = nuevoCliente.id;
+    }
 
     // Crear factura de ingreso
     // Origen lector: la fiscalidad avisa en vez de rechazar (y en una empresa no
@@ -822,6 +840,7 @@ export const incomeReaderService = {
     if (!documento) {
       throw notFound('Documento no encontrado.');
     }
+    exigirDocumentoDeEsteLector(documento);
 
     const actualizado = await prisma.incomeReaderDocument.update({
       where: { id },
