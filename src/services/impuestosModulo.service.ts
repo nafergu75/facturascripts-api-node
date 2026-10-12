@@ -63,6 +63,8 @@ import {
 import { AJUSTES_FISCALES_POR_DEFECTO, ajustesFiscalesDeFila, type AjustesFiscales } from '../domain/ajustes.model';
 import { contextoDeclaracion } from './declaracionesAeat/declaraciones.service';
 import { anioEspana } from '../utils/fechas';
+import { llevanzaExterna } from './periodos.service';
+import { datosFiscalesArrastrados } from './arranque/seguimiento.service';
 
 /**
  * LOS GET NO ESCRIBEN (B6, igual en todos los modelos de la AEAT): el detalle,
@@ -918,7 +920,7 @@ export function periodoAnteriorOtraPeriodicidad303(periodo: Pick<PeriodoFiscal, 
 export async function cuotasACompensar303(
   companyId: string,
   periodo: Pick<PeriodoFiscal, 'ejercicio' | 'periodo'>,
-): Promise<{ importe: number; origen: 'periodo-anterior' | 'sin-dato'; periodo?: string; estado?: string }> {
+): Promise<{ importe: number; origen: 'periodo-anterior' | 'arranque' | 'sin-dato'; periodo?: string; estado?: string }> {
   const candidatos = [periodoAnterior303(periodo), periodoAnteriorOtraPeriodicidad303(periodo)].filter((p): p is { ejercicio: number; periodo: string } => p !== null);
   const filas: Array<{ anterior: { ejercicio: number; periodo: string }; fila: FilaModelo }> = [];
   for (const anterior of candidatos) {
@@ -926,7 +928,16 @@ export async function cuotasACompensar303(
     if (fila && fila.estado !== 'omitido' && (fila.datos || fila.casillas)) filas.push({ anterior, fila });
   }
   const elegida = filas.find((f) => f.fila.estado === 'presentado') ?? filas[0];
-  if (!elegida) return { importe: 0, origen: 'sin-dato' };
+  if (!elegida) {
+    // Primer periodo despues de un año que llevo la gestoria: las cuotas a compensar
+    // que se escribieron al traer su contabilidad (303 del 4T).
+    const primero = periodo.periodo === '1T' || periodo.periodo === '01';
+    if (primero && (await llevanzaExterna(companyId, periodo.ejercicio - 1))) {
+      const fiscales = await datosFiscalesArrastrados(companyId, periodo.ejercicio);
+      if (fiscales?.cuotasIvaACompensar) return { importe: fiscales.cuotasIvaACompensar, origen: 'arranque', periodo: `4T de ${periodo.ejercicio - 1}` };
+    }
+    return { importe: 0, origen: 'sin-dato' };
+  }
   const { anterior, fila } = elegida;
   const datos = (fila.datos ?? {}) as Partial<DatosModelo303> & { tipoDeclaracion?: string };
   const cas = fila.casillas ?? {};
@@ -1010,7 +1021,7 @@ async function contextoEmpresa303(
 
 export interface ResultadoBorrador303 {
   borrador: Borrador303;
-  aCompensar: { importe: number; origen: 'manual' | 'periodo-anterior' | 'sin-dato' | 'presentado'; periodo?: string; estado?: string };
+  aCompensar: { importe: number; origen: 'manual' | 'periodo-anterior' | 'arranque' | 'sin-dato' | 'presentado'; periodo?: string; estado?: string };
   cuentas: CuentaBorrador303[];
   cuentaBancariaId: string | null;
   /** El borrador es el del 303 presentado (casillas guardadas), no un calculo de hoy. */
