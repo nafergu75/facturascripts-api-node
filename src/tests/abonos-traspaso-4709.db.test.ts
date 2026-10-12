@@ -14,7 +14,7 @@ import { prisma } from '../config/database';
 import { errorMiddleware } from '../middleware/error.middleware';
 import borradoresAeatRoutes from '../routes/borradores-aeat.routes';
 import { proveedoresService } from '../services/proveedores.service';
-import { registrarGasto } from '../services/expense-invoices.service';
+import { editarGasto, registrarGasto } from '../services/expense-invoices.service';
 import { asegurarPlanContableEmpresa } from '../services/chart-of-accounts.service';
 import { crearAsientoConApuntes } from '../services/asientos.service';
 import { taxModelsService } from '../services/tax-models.service';
@@ -178,5 +178,32 @@ describe('115: el mismo traspaso con el abono de un alquiler', () => {
     expect(r.status).toBe(201);
     expect(r.body.data).toMatchObject({ codigo: '115', importe: 190, asiento: { fecha: '2027-06-30' } });
     expect(await saldo(E, '4709')).toBe(190);
+  });
+});
+
+describe('el traspaso hecho ya no coincide si después cambia el exceso', () => {
+  it('corregir el abono avisa de que hay que rehacerlo; si ya no hace falta, lo dice y sigue enseñando el asiento', async () => {
+    const E = await empresa('cambia');
+    const sup = (await proveedoresService.create(E, { nombreFiscal: 'Asesoría Patraix SL', nifCif: cif(), cp: '46018' })).id;
+    const o = await registrarGasto(E, prof(sup, 'P-1', '2027-01-10', 1000), { contabilizar: 'POSTED' });
+    await registrarGasto(E, prof(sup, 'P-2', '2027-05-05', 400), { contabilizar: 'POSTED' });
+    const abono = (precio: number) => prof(sup, 'RP-1', '2027-05-10', precio, { rectificativa: { tipo: 'I', causa: 'ANULACION_PRECIO', originales: [{ id: o.factura.id }] } });
+    const a = await registrarGasto(E, abono(-1000), { contabilizar: 'POSTED' });
+    const r = await request(app(E)).post('/tax-models/111/traspaso-4709').send({ ejercicio: 2027, periodo: '2T' });
+    expect(r.status).toBe(201);
+    const numero = (await prisma.journalEntry.findUniqueOrThrow({ where: { id: r.body.data.asiento.asientoId } })).numeroAsiento;
+
+    // El abono pasa a -800 € (120 € de retención): ahora sobran 60 €, no 90 €.
+    await editarGasto(E, a.factura.id, abono(-800));
+    let m = await taxModelsService.generarModelo111(E, 2027, '2T');
+    expect(m).toMatchObject({ excesoAbonos: 60, traspaso4709: { importe: 90 } });
+    expect(m.avisos).toContainEqual(`El traspaso a la 4709 (asiento ${numero}, 90,00 €) ya no coincide con lo que ahora no cabe en este 111 (60,00 €): anúlalo y vuelve a hacerlo.`);
+    expect(m.avisos.filter((x) => x.includes('ya están pasados'))).toEqual([]);
+
+    // El abono pasa a -200 € (30 € de retención): ya cabe y el traspaso sobra, pero se sigue enseñando para anularlo.
+    await editarGasto(E, a.factura.id, abono(-200));
+    m = await taxModelsService.generarModelo111(E, 2027, '2T');
+    expect(m).toMatchObject({ excesoAbonos: 0, traspaso4709: { importe: 90 } });
+    expect(m.avisos).toContainEqual(`El traspaso a la 4709 (asiento ${numero}, 90,00 €) ya no hace falta: ahora los abonos caben en este 111. Anúlalo.`);
   });
 });
