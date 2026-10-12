@@ -1,5 +1,5 @@
 import type { Prisma } from '@prisma/client';
-import { badRequest, notFound } from '../utils/http-errors';
+import { badRequest, conflict, notFound } from '../utils/http-errors';
 import { prisma, type TransaccionBD as Tx } from '../config/database';
 import { buscarSeriePorCodigo, obtenerOCrearSerieHistorica, obtenerSeriePorDefecto, problemaSerieAeat, resolverCodSerieFactura } from './series.service';
 import { listarCobros, registrarCobroFactura, tieneCobrosActivos, type DatosCobro } from './cobrosPagos.service';
@@ -27,7 +27,8 @@ import {
 import { perfilDesdeConfig, perfilEmpresa, type PerfilEmpresa } from './perfilEmpresa.service';
 import { marcarTransaccion, mensajeSinTipo, resolverTipoCambio, type TipoResuelto } from './tiposCambio.service';
 import { resolverFiscalidad } from './fiscalidad-venta.service';
-import { hoyEspana, sumarDiasISO } from '../utils/fechas';
+import { fechaTexto, hoyEspana, sumarDiasISO } from '../utils/fechas';
+import { periodo303FueraDeLaApp } from '../utils/anios';
 import { aCentimos } from '../utils/money';
 import { copiaAlEmitir, leerAjustesFacturacion } from './ajustesFacturacion.service';
 import { FORMAS_PAGO, type FormaPago } from '../domain/ajustes.model';
@@ -149,6 +150,11 @@ export interface CrearFacturaIngresoDTO {
   causaExencion?: string | null;
   /** Precepto de la exencion (EXENTA) o letra del art. 84.Uno.2.º (ISP_NACIONAL). */
   referenciaLegal?: string | null;
+  /**
+   * true: se emite aunque la operacion sea de un periodo cuyo 303 presenta la
+   * gestoria (ver devengoEnPeriodoDeFuera). Sin ella, 409 DEVENGO_FUERA_APP.
+   */
+  confirmaDevengoFuera?: boolean;
 }
 
 export interface CrearLineaIngresoDTO {
@@ -415,6 +421,35 @@ function paisClienteNuevo(pais: string | undefined, nifCif: string): string {
 /**
  * Resuelve o crea el cliente. Devuelve su id y sus datos fiscales.
  */
+const MESES_TEXTO = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
+
+/** «del 4T de 2026» o «de diciembre de 2026». */
+const periodo303Texto = (p: { ejercicio: number; periodo: string }) =>
+  /^\d{2}$/.test(p.periodo) ? `de ${MESES_TEXTO[Number(p.periodo) - 1]} de ${p.ejercicio}` : `del ${p.periodo} de ${p.ejercicio}`;
+
+/**
+ * Venta cuya operacion es de un periodo que lleva la gestoria (su 303 se
+ * presenta fuera de la app) emitida ya en un periodo de la app: por ejemplo,
+ * una entrega de diciembre de 2026 facturada en enero de 2027. Su IVA va en el
+ * 303 del devengo (art. 75 LIVA), que no esta en la app: hay que pasarle la
+ * factura a la gestoria. null si no es el caso.
+ */
+async function devengoEnPeriodoDeFuera(companyId: string, devengo: string, fechaEmision: string): Promise<{ ejercicio: number; periodo: string } | null> {
+  if (devengo >= fechaEmision) return null;
+  const fuera = await periodo303FueraDeLaApp(companyId, devengo);
+  if (!fuera) return null;
+  // Si la emision tambien es de un periodo de fuera, no hay frontera que avisar.
+  return (await periodo303FueraDeLaApp(companyId, fechaEmision)) ? null : fuera;
+}
+
+const textoDevengoFuera = (devengo: string, p: { ejercicio: number; periodo: string }) =>
+  `La operación es del ${fechaTexto(devengo)}: su IVA va en el 303 ${periodo303Texto(p)}, que presenta tu gestoría. ` +
+  'Emítela igualmente y pásale la factura a la gestoría para que la incluya en ese 303 (y en su 390 y su 347).';
+
+/** 409 de una venta con la operacion en un periodo de la gestoria, sin confirmar (ver devengoEnPeriodoDeFuera). */
+const errorDevengoFuera = (devengo: string, p: { ejercicio: number; periodo: string }) =>
+  conflict(textoDevengoFuera(devengo, p), { codigo: 'DEVENGO_FUERA_APP', motivo: 'devengo_fuera_app', modelo: '303', ejercicio: p.ejercicio, periodo: p.periodo, campo: 'fechaOperacion' });
+
 async function resolverCliente(
   companyId: string,
   customerData: CrearFacturaIngresoDTO['customer'] | undefined,
@@ -1056,6 +1091,17 @@ async function crear(dto: CrearFacturaIngresoDTO, opciones: { origen?: OrigenFac
   if (!dto.proforma && !dto.borrador) {
     await comprobarFechaAbierta(dto.companyId, fechaEmision, dto.numero ? 'registrar la factura' : 'emitir la factura');
   }
+  // Operacion de un periodo cuyo 303 presenta la gestoria: se confirma antes de
+  // crear nada (el cliente nuevo incluido; al confirmar se repite la peticion).
+  // Sin el cliente aun no se sabe el tipo de operacion: se toma el indicado (o el
+  // de la original), y si no, el devengo es la fecha de la operacion, que nunca
+  // es posterior al de una intracomunitaria (se mira otra vez con el definitivo).
+  const emitida = !dto.proforma && !dto.borrador;
+  const devengoPrevio = fechaOperacion
+    ? fechaDevengoVenta({ tipoOperacion: original?.tipoOperacion ?? dto.tipoOperacion ?? null, fechaOperacion, fechaEmision })
+    : fechaEmision;
+  const fueraPrevio = emitida ? await devengoEnPeriodoDeFuera(dto.companyId, devengoPrevio, fechaEmision) : null;
+  if (fueraPrevio && dto.confirmaDevengoFuera !== true) throw errorDevengoFuera(devengoPrevio, fueraPrevio);
   // Cliente y serie despues de las fechas: una factura rechazada no deja nada creado.
   const cliente = await resolverCliente(dto.companyId, dto.customer);
   const serie = dto.proforma
@@ -1126,7 +1172,10 @@ async function crear(dto: CrearFacturaIngresoDTO, opciones: { origen?: OrigenFac
     motivoRectificacion: esRectificativa ? dto.motivoRectificacion : null,
     lineas: { create: lineasACrear(importes) },
   };
-  const ctx: ContextoRespuesta = { monedaCuenta: perfil.monedaCuenta, avisosFiscales: fiscal.avisos, avisoTipoCambio: tipo.aviso };
+  // Confirmada la venta con la operacion en un periodo de la gestoria: el aviso queda en la respuesta.
+  const fuera = fueraPrevio ? await devengoEnPeriodoDeFuera(dto.companyId, devengo, fechaEmision) : null;
+  const avisosFiscales = fuera ? [...(fiscal.avisos ?? []), { codigo: 'DEVENGO_FUERA_APP', mensaje: textoDevengoFuera(devengo, fuera) }] : fiscal.avisos;
+  const ctx: ContextoRespuesta = { monedaCuenta: perfil.monedaCuenta, avisosFiscales, avisoTipoCambio: tipo.aviso };
 
   // Proforma: numero de su serie al crearla (sin huecos), sin efectos fiscales.
   if (dto.proforma) {
@@ -1494,7 +1543,7 @@ export const incomeInvoicesService = {
   async finalizar(
     companyId: string,
     id: string,
-    opciones: { fechaEmision?: string; tipoCambio?: unknown } = {},
+    opciones: { fechaEmision?: string; tipoCambio?: unknown; confirmaDevengoFuera?: boolean } = {},
   ): Promise<IncomeInvoiceResp> {
     const actual = await cargar(companyId, id);
     exigirBorrador(actual, 'volver a emitir');
@@ -1545,6 +1594,9 @@ export const incomeInvoicesService = {
     lineas = conFiscalidad(lineas, fiscal);
     const devengo = fechaDevengoVenta({ tipoOperacion: fiscal.tipoOperacion, fechaOperacion, fechaEmision });
     const devengoBorrador = fechaDevengoVenta(actual);
+    // Operacion de un periodo cuyo 303 presenta la gestoria: se emite si se confirma, con el aviso.
+    const fuera = await devengoEnPeriodoDeFuera(companyId, devengo, fechaEmision);
+    if (fuera && opciones.confirmaDevengoFuera !== true) throw errorDevengoFuera(devengo, fuera);
 
     // Tipo de cambio definitivo.
     const misma = actual.moneda === perfil.monedaCuenta;
@@ -1626,7 +1678,8 @@ export const incomeInvoicesService = {
       }
       return tx.incomeInvoice.findUniqueOrThrow({ where: { id }, include: INCLUIR });
     });
-    return aRespuesta(factura, { monedaCuenta: perfil.monedaCuenta, avisosFiscales: fiscal.avisos, avisoTipoCambio: tipo.aviso });
+    const avisosFiscales = fuera ? [...(fiscal.avisos ?? []), { codigo: 'DEVENGO_FUERA_APP', mensaje: textoDevengoFuera(devengo, fuera) }] : fiscal.avisos;
+    return aRespuesta(factura, { monedaCuenta: perfil.monedaCuenta, avisosFiscales, avisoTipoCambio: tipo.aviso });
   },
 
   /**
