@@ -29,6 +29,9 @@ export const CAMPOS_DECIMALES: ReadonlySet<string> = new Set([
   "baseTotalDoc", "ivaTotalDoc", "retencionTotalDoc", "totalFacturaDoc", "precioUnitarioDoc", "baseLineDoc", "descuentoImporteDoc", "ivaImporteDoc", "retencionImporteDoc", "importeDoc", "importeTesoreria", "tipoCambio", "diferenciaCambio", "comisionBancaria", "unidadesPorEur", "totalDivisa",
   // Historial de declaraciones de la AEAT.
   "resultadoAnterior",
+  // Abonos de proveedor: parte de cada original (nombres propios: DocumentoArchivo
+  // tiene base, iva y retencion en Decimal y su codigo los usa como Decimal).
+  "baseRectificada", "cuotaRectificada", "retencionRectificada",
 ]);
 
 /**
@@ -181,6 +184,14 @@ export const importesComoNumero = Prisma.defineExtension({
     },
     empleado: {
       porcentajeIrpfActual: { needs: { porcentajeIrpfActual: true }, compute: (r) => aNumero(r.porcentajeIrpfActual) },
+    },
+    expenseInvoiceRectificada: {
+      baseRectificada: { needs: { baseRectificada: true }, compute: (r) => aNumero(r.baseRectificada) },
+      cuotaRectificada: { needs: { cuotaRectificada: true }, compute: (r) => aNumero(r.cuotaRectificada) },
+      retencionRectificada: { needs: { retencionRectificada: true }, compute: (r) => aNumero(r.retencionRectificada) },
+    },
+    compensacionGasto: {
+      importe: { needs: { importe: true }, compute: (r) => aNumero(r.importe) },
     },
     liquidacionSS: {
       cuotaObrera: { needs: { cuotaObrera: true }, compute: (r) => aNumero(r.cuotaObrera) },
