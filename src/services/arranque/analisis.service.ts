@@ -513,6 +513,8 @@ export interface VistaCarga {
     activosQueSiguen: number;
   } | null;
   datosFiscales: AjustesCarga['datosFiscales'] | null;
+  /** Resultado de 2026 que escribio la persona («Resultado segun la gestoria»). */
+  resultadoDeclarado: number | null;
   comprobaciones: ResultadoComprobaciones;
   /** Frase del dialogo de confirmacion. */
   confirmacion: string;
@@ -611,6 +613,7 @@ export function vistaDe(a: AnalisisCarga): VistaCarga {
         }
       : null,
     datosFiscales: a.ajustes.datosFiscales ?? null,
+    resultadoDeclarado: a.ajustes.resultadoDeclarado ?? null,
     comprobaciones: a.comprobaciones,
     confirmacion: `Se crearán ${lista}. Podrás deshacerlo mientras no haya cobros ni pagos de ${a.ejercicio} sobre estos datos.`,
     puedeConfirmar: a.comprobaciones.nivel !== 'ERRORES',
