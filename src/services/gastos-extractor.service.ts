@@ -61,6 +61,11 @@ export interface GastoExtraido {
   errores: string[];
   /** 'nomina' o 'seguros_sociales': no es una factura; se registra en Nominas. */
   tipoDocumento: TipoDocumentoGasto;
+  /**
+   * Dirección del proveedor leída en la factura (para la ficha de un proveedor
+   * nuevo), con `revisar` si el lector la leyó con poca seguridad. Sin ella, null.
+   */
+  direccionProveedor?: { calle: string | null; cp: string | null; municipio: string | null; provincia: string | null; revisar: boolean } | null;
 }
 
 /** Lo que el controlador anade con los datos de la empresa. */
@@ -515,6 +520,8 @@ function construirGastoExtraido(lectura: LecturaClaude): GastoExtraido {
     confianza,
     errores,
     tipoDocumento,
+    // El extractor clásico no separa la dirección del proveedor.
+    direccionProveedor: null,
   };
 }
 
