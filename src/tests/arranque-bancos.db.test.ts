@@ -9,6 +9,7 @@ import { describe, it, expect, beforeAll } from '@jest/globals';
 import { prisma } from '../config/database';
 import { aplicarBancos, deshacerBancos, saldos572 } from '../services/arranque/bancos.service';
 import { generarExtractoBancario } from '../services/extractos.service';
+import { guardarMovimientos, textoAnterioresAlSaldoInicial } from '../services/bancos.service';
 
 const E = `arr-bancos-${Date.now()}`;
 
@@ -59,5 +60,21 @@ describe('bancos con el saldo del extracto', () => {
     expect(await prisma.bankAccount.count({ where: { companyId: E } })).toBe(1);
     // Sin fecha del saldo inicial, el extracto vuelve a contar todo desde cero.
     expect(await generarExtractoBancario(E, cuentaId)).toMatchObject({ saldoInicial: 0, numMovimientos: 3 });
+  });
+});
+
+describe('extractos con movimientos de antes del saldo inicial', () => {
+  it('se avisan y no se guardan (ya están en el saldo a 31-12)', async () => {
+    const c = await prisma.bankAccount.create({ data: { companyId: E, iban: 'ES0000000000000000000009', subcuentaCodigo: '5720000009', saldoInicial: 100, fechaSaldoInicial: '2026-12-31' } });
+    const movs = [
+      { fecha: '2026-12-30', importe: 10, concepto: 'De 2026' },
+      { fecha: '2026-12-31', importe: 20, concepto: 'Último de 2026' },
+      { fecha: '2027-01-02', importe: -5, concepto: 'De 2027' },
+    ];
+    expect(textoAnterioresAlSaldoInicial(2, '2026-12-31')).toBe('2 movimientos son de antes del 31-12-2026: ya están dentro del saldo inicial de la cuenta, así que no se guardan.');
+    const r = await guardarMovimientos(E, c.id, movs, 'norma43');
+    expect(r).toMatchObject({ repetidos: 0, anteriores: 2 });
+    expect(r.importados.map((m) => m.fecha)).toEqual(['2027-01-02']);
+    expect(await generarExtractoBancario(E, c.id)).toMatchObject({ saldoInicial: 100, saldoFinal: 95, numMovimientos: 1 });
   });
 });
