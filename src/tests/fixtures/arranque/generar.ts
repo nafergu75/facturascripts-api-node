@@ -219,7 +219,7 @@ export const PROVEEDORES_A = [
 ];
 
 /** Filas del sumas y saldos generico (titulos, fecha de corte y debe/haber/saldos). */
-function filasSumasYSaldos(saldos: typeof SALDOS_A, titulo: string): unknown[][] {
+export function filasSumasYSaldos(saldos: typeof SALDOS_A, titulo: string): unknown[][] {
   return [
     [titulo],
     ['Del 01/01/2026 al 31/12/2026'],
@@ -238,7 +238,7 @@ export function filasDiario(diario: AsientoPrueba[], plan: CuentaPrueba[]): unkn
   ];
 }
 
-function filasCartera(cartera: PartidaPrueba[]): unknown[][] {
+export function filasCartera(cartera: PartidaPrueba[]): unknown[][] {
   return [
     ['Cartera de cobros y pagos pendientes a 31/12/2026'],
     ['Subcuenta', 'Nombre', 'NIF', 'Factura', 'Fecha', 'Vencimiento', 'Importe', 'Pendiente'],
@@ -246,7 +246,7 @@ function filasCartera(cartera: PartidaPrueba[]): unknown[][] {
   ];
 }
 
-function filasInmovilizado(lista: typeof INMOVILIZADO_A): unknown[][] {
+export function filasInmovilizado(lista: typeof INMOVILIZADO_A): unknown[][] {
   return [
     ['Fichas de inmovilizado'],
     ['Descripción', 'Cuenta', 'Cuenta amortización', 'Fecha alta', 'Coste', 'Amort. acumulada', 'Coeficiente'],
