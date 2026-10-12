@@ -10,6 +10,7 @@ import { describe, it, expect } from '@jest/globals';
 import { prisma } from '../config/database';
 import { subirYAnalizar } from '../services/arranque/cargas.service';
 import { saldosComparativosImportados } from '../services/puestaEnMarcha/puestaEnMarcha.service';
+import { analizarPlanSinEscribir } from '../services/puestaEnMarcha/planAnterior';
 import { ficherosEmpresaB, filasDiario, libro, PLAN_A, type AsientoPrueba } from './fixtures/arranque/generar';
 import { empresaDePrueba, traerCarga, TODOS, USUARIO_PRUEBA } from './fixtures/arranque/importar';
 
@@ -90,5 +91,29 @@ describe('apertura solo con el diario, con grupos 8 y 9', () => {
     expect(comision?.origen).toBe('HISTORICO');
     const cuenta130 = await prisma.chartOfAccounts.findFirst({ where: { companyId: E, codigo: '1300000000' } });
     expect(cuenta130?.parentCodigo).toBe('130');
+  });
+});
+
+describe('NIF con la letra o el digito de control mal', () => {
+  it('no se da de alta la ficha: queda pendiente con el motivo; los extranjeros se aceptan por la forma', async () => {
+    const E = `arr-rev-nif-${SUFIJO}`;
+    await empresaDePrueba(E);
+    const vista = await analizarPlanSinEscribir(
+      E,
+      [
+        { codigo: '43000001', nombre: 'Cliente NIF malo SL', nif: 'B12345678' },
+        { codigo: '43000002', nombre: 'Cliente NIF bueno SL', nif: 'B12345674' },
+        { codigo: '43000003', nombre: 'Cliente DNI malo', nif: '12345678A' },
+        { codigo: '43000004', nombre: 'Client France SARL', nif: 'FR12345678901' },
+      ],
+      [],
+      TODOS,
+    );
+    const de = new Map(vista.terceros.map((t) => [t.codigo, t]));
+    expect(de.get('43000001')).toMatchObject({ accion: 'pendiente', nif: null });
+    expect(de.get('43000001')!.motivo).toMatch(/B12345678.*no es válido \(letra o dígito de control\): corrígelo o enlázala a mano/);
+    expect(de.get('43000002')).toMatchObject({ accion: 'crear', nif: 'B12345674' });
+    expect(de.get('43000003')).toMatchObject({ accion: 'pendiente' });
+    expect(de.get('43000004')).toMatchObject({ accion: 'crear', nif: 'FR12345678901' });
   });
 });
