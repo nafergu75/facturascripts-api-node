@@ -1,5 +1,5 @@
 import { Prisma, Role } from '@prisma/client';
-import { prisma } from '../config/database';
+import { prisma, type TransaccionBD } from '../config/database';
 import { caducidadContrasenaProvisional, contrasenaProvisionalCaducada, generarContrasenaProvisional, hashPassword } from '../utils/password';
 import {
   AccesoAsignado,
@@ -82,6 +82,30 @@ export function validarContrasena(valor: unknown, email?: string): string {
     throw badRequest('La contraseña no puede ser el propio email.');
   }
   return valor;
+}
+
+/** Nombre y apellidos de un usuario: sin espacios sobrantes, entre 2 y 120 caracteres. */
+export function normalizarNombrePersona(valor: unknown): string {
+  const nombre = typeof valor === 'string' ? valor.trim().replace(/\s+/g, ' ') : '';
+  if (!nombre) throw badRequest('Escribe el nombre y apellidos.', { campo: 'nombre' });
+  if (nombre.length < 2) throw badRequest('El nombre es demasiado corto.', { campo: 'nombre' });
+  if (nombre.length > 120) throw badRequest('El nombre no puede pasar de 120 caracteres.', { campo: 'nombre' });
+  return nombre;
+}
+
+/**
+ * Telefono de un usuario (opcional): vacio = sin telefono (null). Solo cifras,
+ * espacios, guiones, parentesis y el + del prefijo, con 6 cifras como minimo.
+ */
+export function normalizarTelefono(valor: unknown): string | null {
+  if (valor === undefined || valor === null) return null;
+  if (typeof valor !== 'string') throw badRequest('El teléfono no es válido.', { campo: 'telefono' });
+  const telefono = valor.trim().replace(/\s+/g, ' ');
+  if (!telefono) return null;
+  if (telefono.length > 30 || !/^[+\d\s().-]+$/.test(telefono) || (telefono.match(/\d/g) ?? []).length < 6) {
+    throw badRequest('El teléfono solo puede llevar cifras, espacios, guiones, paréntesis y el + del prefijo.', { campo: 'telefono' });
+  }
+  return telefono;
 }
 
 /** Nombre de empresa: sin espacios sobrantes, entre 2 y 120 caracteres. */
@@ -392,6 +416,8 @@ export async function actualizarEmpresa(
 type UsuarioConAccesos = {
   id: string;
   email: string;
+  nombre: string | null;
+  telefono: string | null;
   isActive: boolean;
   isGlobalAdmin: boolean;
   debeCambiarContrasena: boolean;
@@ -408,6 +434,8 @@ type UsuarioConAccesos = {
 const SELECT_USUARIO = {
   id: true,
   email: true,
+  nombre: true,
+  telefono: true,
   isActive: true,
   isGlobalAdmin: true,
   debeCambiarContrasena: true,
@@ -424,6 +452,8 @@ const SELECT_USUARIO = {
 const aUsuarioAdmin = (u: UsuarioConAccesos): UsuarioAdmin => ({
   id: u.id,
   email: u.email,
+  nombre: u.nombre,
+  telefono: u.telefono,
   activo: u.isActive,
   esAdminGlobal: u.isGlobalAdmin,
   debeCambiarContrasena: u.debeCambiarContrasena === true,
@@ -488,6 +518,35 @@ export function leerAreas(valor: unknown): Areas | null {
   return r.data;
 }
 
+/** Mensaje (409) al dejar una empresa sin administrador. */
+export const MENSAJE_ULTIMO_ADMIN_EMPRESA =
+  'Es el único administrador de esta empresa. Nombra antes a otro administrador para que la empresa no se quede sin nadie que la gestione.';
+
+/**
+ * Configuracion > Usuarios: una empresa no se queda sin administrador activo.
+ * Si el acceso de `userId` deja de ser de administrador (o se quita), tiene que
+ * quedar otro administrador con la cuenta activa. Bloquea las filas de los
+ * administradores de la empresa (SELECT ... FOR UPDATE) para que dos que se
+ * quitan el acceso el uno al otro a la vez no la dejen sin ninguno. Un
+ * administrador con la cuenta desactivada no cuenta: no puede entrar.
+ */
+async function comprobarQuedaAdminEmpresa(tx: TransaccionBD, companyId: string, userId: string): Promise<void> {
+  const admins = await tx.$queryRaw<Array<{ userId: string }>>`
+    SELECT m.userId FROM \`Membership\` m JOIN \`User\` u ON u.id = m.userId
+    WHERE m.companyId = ${companyId} AND m.role = 'admin' AND u.isActive = 1
+    FOR UPDATE`;
+  const ids = admins.map((a) => a.userId);
+  if (ids.includes(userId) && !ids.some((id) => id !== userId)) {
+    throw conflict(MENSAJE_ULTIMO_ADMIN_EMPRESA, { codigo: 'ULTIMO_ADMIN_EMPRESA' });
+  }
+}
+
+/** Opciones de asignarRol y quitarAcceso. */
+export interface OpcionesAcceso {
+  /** Configuracion > Usuarios: no dejar la empresa sin administrador activo. */
+  protegerUltimoAdmin?: boolean;
+}
+
 /** Lo que hay en la columna para comparar (null = perfil). */
 const columnaComparable = (valor: unknown): string => JSON.stringify(valor ?? null);
 
@@ -517,16 +576,23 @@ export async function crearUsuario(
     companyId?: unknown;
     rol?: unknown;
     areas?: unknown;
+    nombre?: unknown;
+    telefono?: unknown;
   },
-  opciones: { generarSiFalta?: boolean } = {},
+  opciones: { generarSiFalta?: boolean; exigirNombre?: boolean } = {},
 ): Promise<UsuarioConContrasena> {
-  const email = normalizarEmail(datos.email);
+  const email = conCampo('email', () => normalizarEmail(datos.email));
+  // El nombre es opcional en la administracion global (altas antiguas sin el) y
+  // obligatorio en Configuracion > Usuarios (exigirNombre).
+  const sinNombre = datos.nombre === undefined || datos.nombre === null || datos.nombre === '';
+  const nombre = sinNombre && !opciones.exigirNombre ? null : normalizarNombrePersona(datos.nombre);
+  const telefono = normalizarTelefono(datos.telefono);
   const generar = opciones.generarSiFalta === true && (datos.password === undefined || datos.password === null || datos.password === '');
   const password = generar ? generarContrasenaProvisional() : validarContrasena(datos.password, email);
   const esAdminGlobal = leerBooleano(datos.esAdminGlobal, 'esAdminGlobal') ?? false;
   const companyId = typeof datos.companyId === 'string' && datos.companyId.trim() ? datos.companyId.trim() : null;
   if (datos.rol !== undefined && datos.rol !== '' && !companyId) throw badRequest('Para dar un rol hay que elegir también la empresa.');
-  const rol = companyId ? normalizarRol(datos.rol === undefined || datos.rol === '' ? 'solo_lectura' : datos.rol) : null;
+  const rol = companyId ? conCampo('rol', () => normalizarRol(datos.rol === undefined || datos.rol === '' ? 'solo_lectura' : datos.rol)) : null;
   const areas = leerAreas(datos.areas);
   if (areas && !companyId) throw badRequest('Para ajustar permisos hay que elegir también la empresa.', { campo: 'areas' });
   const personalizados = rol ? canonizarParaGuardar(rol, areas) : null;
@@ -543,6 +609,8 @@ export async function crearUsuario(
       const creado = await tx.user.create({
         data: {
           email,
+          nombre,
+          telefono,
           passwordHash: hashPassword(password),
           isActive: true,
           isGlobalAdmin: esAdminGlobal,
@@ -578,8 +646,14 @@ export async function crearUsuario(
  * cada uno (y su auditoria) es lo que habia justo antes de su escritura. Si no
  * cambia nada no se escribe (cambiado: false).
  */
-export async function asignarRol(userId: string, companyId: string, rolPedido: unknown, areasPedidas?: unknown): Promise<AccesoAsignado> {
-  const rol = normalizarRol(rolPedido);
+export async function asignarRol(
+  userId: string,
+  companyId: string,
+  rolPedido: unknown,
+  areasPedidas?: unknown,
+  opciones: OpcionesAcceso = {},
+): Promise<AccesoAsignado> {
+  const rol = conCampo('rol', () => normalizarRol(rolPedido));
   const areas = leerAreas(areasPedidas);
   const personalizados = canonizarParaGuardar(rol, areas);
   const [usuario, empresa] = await Promise.all([
@@ -598,6 +672,9 @@ export async function asignarRol(userId: string, companyId: string, rolPedido: u
     // Se compara la columna tal cual: un valor manipulado a mano se limpia al guardar.
     const cambiado =
       !anterior || String(anterior.role) !== rol || columnaComparable(anterior.permisosPersonalizados) !== columnaComparable(personalizados);
+    if (opciones.protegerUltimoAdmin && anterior && String(anterior.role) === 'admin' && rol !== 'admin') {
+      await comprobarQuedaAdminEmpresa(tx, companyId, userId);
+    }
     if (cambiado) {
       const columna = personalizados ?? Prisma.DbNull;
       await tx.membership.upsert({
@@ -618,15 +695,25 @@ export async function asignarRol(userId: string, companyId: string, rolPedido: u
   });
 }
 
-/** Quita el acceso de un usuario a una empresa. Sus datos y los de la empresa no se tocan. */
-export async function quitarAcceso(userId: string, companyId: string): Promise<{ rolAnterior: string; personalizadoAntes: boolean }> {
-  const m = await prisma.membership.findUnique({
-    where: { userId_companyId: { userId, companyId } },
-    select: { id: true, role: true, permisosPersonalizados: true },
+/**
+ * Quita el acceso de un usuario a una empresa. Sus datos y los de la empresa no
+ * se tocan. Con `protegerUltimoAdmin`, no deja la empresa sin administrador.
+ */
+export async function quitarAcceso(
+  userId: string,
+  companyId: string,
+  opciones: OpcionesAcceso = {},
+): Promise<{ rolAnterior: string; personalizadoAntes: boolean }> {
+  return prisma.$transaction(async (tx) => {
+    const m = await tx.membership.findUnique({
+      where: { userId_companyId: { userId, companyId } },
+      select: { id: true, role: true, permisosPersonalizados: true },
+    });
+    if (!m) throw notFound('Ese usuario no tiene acceso a esa empresa.');
+    if (opciones.protegerUltimoAdmin && String(m.role) === 'admin') await comprobarQuedaAdminEmpresa(tx, companyId, userId);
+    await tx.membership.delete({ where: { id: m.id } });
+    return { rolAnterior: String(m.role), personalizadoAntes: accesoPersonalizado(m) };
   });
-  if (!m) throw notFound('Ese usuario no tiene acceso a esa empresa.');
-  await prisma.membership.delete({ where: { id: m.id } });
-  return { rolAnterior: String(m.role), personalizadoAntes: accesoPersonalizado(m) };
 }
 
 /** Lo que cambio en un usuario (para la auditoria). NUNCA la contrasena. */
@@ -640,6 +727,9 @@ export interface CambiosUsuario {
   contrasenaGenerada?: boolean;
   /** Se le obliga a cambiar la que ya tiene (exigirCambioContrasena), sin tocarla. */
   exigirCambioContrasena?: boolean;
+  /** Nombre y telefono nuevos (no son secretos: se auditan tal cual). */
+  nombre?: string;
+  telefono?: string | null;
 }
 
 /**
@@ -675,9 +765,21 @@ export interface CambiosUsuario {
 export async function actualizarUsuario(
   actorId: string,
   userId: string,
-  datos: { activo?: unknown; esAdminGlobal?: unknown; nuevaContrasena?: unknown; restablecerContrasena?: unknown; exigirCambioContrasena?: unknown },
+  datos: {
+    activo?: unknown;
+    esAdminGlobal?: unknown;
+    nuevaContrasena?: unknown;
+    restablecerContrasena?: unknown;
+    exigirCambioContrasena?: unknown;
+    nombre?: unknown;
+    telefono?: unknown;
+  },
 ): Promise<{ usuario: UsuarioAdmin; cambios: CambiosUsuario; contrasenaProvisional?: string }> {
   const activo = leerBooleano(datos.activo, 'activo');
+  // Nombre: si viene, tiene que ser valido (no se borra); telefono: vacio lo borra.
+  const nombre = datos.nombre === undefined ? undefined : normalizarNombrePersona(datos.nombre);
+  const telefono = datos.telefono === undefined ? undefined : normalizarTelefono(datos.telefono);
+  const hayDatos = nombre !== undefined || telefono !== undefined;
   const esAdminGlobal = leerBooleano(datos.esAdminGlobal, 'esAdminGlobal');
   const restablecer = leerBooleano(datos.restablecerContrasena, 'restablecerContrasena') === true;
   const hayContrasena = datos.nuevaContrasena !== undefined && datos.nuevaContrasena !== '';
@@ -686,8 +788,8 @@ export async function actualizarUsuario(
   if (exigirCambio === false) {
     throw badRequest('Solo se puede pedir que cambie su contraseña (exigirCambioContrasena: true), no quitarlo.', { campo: 'exigirCambioContrasena' });
   }
-  if (activo === undefined && esAdminGlobal === undefined && !hayContrasena && !restablecer && !exigirCambio) {
-    throw badRequest('No hay nada que cambiar: envía activo, esAdminGlobal, nuevaContrasena, restablecerContrasena o exigirCambioContrasena.');
+  if (activo === undefined && esAdminGlobal === undefined && !hayContrasena && !restablecer && !exigirCambio && !hayDatos) {
+    throw badRequest('No hay nada que cambiar: envía activo, esAdminGlobal, nombre, telefono, nuevaContrasena, restablecerContrasena o exigirCambioContrasena.');
   }
   if (exigirCambio && (hayContrasena || restablecer)) {
     throw badRequest('Con una contraseña nueva ya tendrá que cambiarla al entrar: no hace falta pedirlo aparte.');
@@ -712,7 +814,7 @@ export async function actualizarUsuario(
   return prisma.$transaction(async (tx) => {
     const objetivo = await tx.user.findUnique({
       where: { id: userId },
-      select: { email: true, isActive: true, isGlobalAdmin: true, debeCambiarContrasena: true },
+      select: { email: true, isActive: true, isGlobalAdmin: true, debeCambiarContrasena: true, nombre: true, telefono: true },
     });
     if (!objetivo) throw notFound('Usuario no encontrado.');
 
@@ -732,8 +834,12 @@ export async function actualizarUsuario(
       passwordHash?: string;
       debeCambiarContrasena?: boolean;
       contrasenaProvisionalHasta?: Date | null;
+      nombre?: string;
+      telefono?: string | null;
     } = {};
     const cambios: CambiosUsuario = {};
+    if (nombre !== undefined && nombre !== objetivo.nombre) data.nombre = cambios.nombre = nombre;
+    if (telefono !== undefined && telefono !== objetivo.telefono) data.telefono = cambios.telefono = telefono;
     if (activo !== undefined && activo !== objetivo.isActive) data.isActive = cambios.activo = activo;
     if (esAdminGlobal !== undefined && esAdminGlobal !== objetivo.isGlobalAdmin) data.isGlobalAdmin = cambios.esAdminGlobal = esAdminGlobal;
     if (nuevaContrasena && nuevoHash) {
