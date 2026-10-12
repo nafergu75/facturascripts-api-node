@@ -64,3 +64,9 @@ export function vencimientoPorDefecto(fechaEmision: string): string {
 export function anioEspana(ahora: Date = new Date()): number {
   return Number(hoyEspana(ahora).slice(0, 4));
 }
+
+/** Fecha AAAA-MM-DD como la lee la persona: DD/MM/AAAA. Lo que no tiene ese formato se devuelve tal cual. */
+export function fechaTexto(iso: string | null | undefined): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(iso ?? ''));
+  return m ? `${m[3]}/${m[2]}/${m[1]}` : String(iso ?? '');
+}
