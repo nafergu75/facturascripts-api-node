@@ -178,4 +178,18 @@ describe('202: lo que impide el fichero', () => {
     e.tipoDeclaracion = 'N';
     expect(erroresEntrada202(e)).toEqual([expect.stringMatching(/negativa/)]);
   });
+
+  it('una complementaria que no sale a ingresar no se genera: lo que procede es una rectificación', () => {
+    const e = entrada('1P', 12000, 2160); // 18 % de 12000 = 2160, ya ingresado entero
+    e.complementaria = true;
+    e.justificanteAnterior = '2021234567890';
+    expect(e.casillas['03']).toBe(0);
+    expect(e.tipoDeclaracion).toBe('N');
+    expect(erroresEntrada202(e)).toEqual([expect.stringMatching(/complementaria no sale a ingresar.*rectificación/)]);
+    expect(() => generarFichero202(e)).toThrow(/no sale a ingresar/);
+    const baja = entrada('1P', 10000, 2160); // la base baja: tampoco
+    baja.complementaria = true;
+    baja.justificanteAnterior = '2021234567890';
+    expect(erroresEntrada202(baja).join(' ')).toMatch(/no sale a ingresar/);
+  });
 });

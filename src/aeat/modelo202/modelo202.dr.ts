@@ -106,6 +106,14 @@ export function erroresEntrada202(e: Entrada202): string[] {
   }
   const aIngresar = e.modalidad === 'A' ? e.casillas['03'] ?? 0 : e.casillas['34'] ?? 0;
   if (e.tipoDeclaracion === 'N' && aIngresar > 0) errores.push('Con importe a ingresar la declaración no puede ser negativa (N).');
+  // Una complementaria siempre sale a ingresar: completa lo que faltó en la
+  // anterior. Si no queda nada más que pagar (o se pagó de más), lo que procede
+  // es una rectificación de la autoliquidación en la sede, no una complementaria.
+  if (e.complementaria && aIngresar <= 0) {
+    errores.push(
+      'La complementaria no sale a ingresar: con lo ya ingresado en la anterior ([02]) no queda nada más que pagar. Si en la anterior se pagó de más, pide la rectificación de la autoliquidación en la sede de la AEAT. Cancela esta complementaria.',
+    );
+  }
   return errores;
 }
 
