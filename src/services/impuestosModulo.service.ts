@@ -70,7 +70,7 @@ import {
 import { ajustesFiscalesDeFila, type AjustesFiscales } from '../domain/ajustes.model';
 import { contextoDeclaracion } from './declaracionesAeat/declaraciones.service';
 import { anioEspana, hoyEspana } from '../utils/fechas';
-import { inicioDeducido } from '../utils/anios';
+import { inicioDeducido, inicioLlevanzaApp } from '../utils/anios';
 import { plazoAeat, ultimoDiaFebrero } from '../domain/plazosAeat';
 
 /**
@@ -1248,10 +1248,27 @@ const eurosTexto = (n: number) => `${n.toLocaleString('es-ES', { minimumFraction
  * seccion 11 de la especificacion de abonos): el 303 presentado no los lleva
  * y hay que presentar una autoliquidación rectificativa. Se miran por la
  * fecha de su IVA (fechaIvaGasto: la de la original en una ERROR_IVA).
+ *
+ * Solo si este 303 esta presentado (en la app o fuera, o es de antes de
+ * llevar la contabilidad en la app): sin presentar, su borrador ya lleva el
+ * abono. Y solo los confirmados despues de la ultima declaracion presentada
+ * desde la app: la autoliquidacion rectificativa ya los recoge.
  */
 export async function avisosAbonosTrasPresentar(companyId: string, periodo: PeriodoFiscal): Promise<string[]> {
   // Sin BD (o sin la tabla, en los tests que la simulan): sin avisos.
   if (!dbOk() || typeof (prisma as unknown as { expenseInvoice?: { findMany?: unknown } }).expenseInvoice?.findMany !== 'function') return [];
+  const presentado = await prisma.modeloImpuesto.findFirst({
+    where: { companyId, codigo: '303', ejercicio: periodo.ejercicio, periodo: periodo.periodo, estado: 'presentado' },
+    select: { id: true },
+  });
+  if (!presentado && !antesDelInicio(periodo.ejercicio, periodo.periodo, await inicioLlevanzaApp(companyId))) return [];
+  const ultima = hayHistorialDeclaraciones()
+    ? await prisma.declaracionAeat.findFirst({
+        where: { companyId, codigo: '303', ejercicio: periodo.ejercicio, periodo: periodo.periodo, estado: 'presentada', presentadoEn: { not: null } },
+        orderBy: { presentadoEn: 'desc' },
+        select: { presentadoEn: true },
+      })
+    : null;
   const rango = { gte: periodo.fechaInicio, lte: periodo.fechaFin };
   const abonos = await prisma.expenseInvoice.findMany({
     where: {
@@ -1261,10 +1278,11 @@ export async function avisosAbonosTrasPresentar(companyId: string, periodo: Peri
       estado: { notIn: ['ANULADA', 'DRAFT'] },
       OR: [{ fechaImputacionIva: rango }, { fechaImputacionIva: null, fechaRegistro: rango }, { fechaImputacionIva: null, fechaRegistro: null, fechaEmision: rango }],
     },
-    select: { numeroCompleto: true, numeroFacturaProveedor: true, ivaTotal: true },
+    select: { numeroCompleto: true, numeroFacturaProveedor: true, ivaTotal: true, rectificar303ConfirmadoEn: true },
     orderBy: { numero: 'asc' },
   });
-  return abonos.map(
+  const desde = ultima?.presentadoEn?.getTime() ?? null;
+  return abonos.filter((a) => desde === null || Date.parse(a.rectificar303ConfirmadoEn ?? '') >= desde).map(
     (a) =>
       `La rectificativa ${a.numeroFacturaProveedor ?? a.numeroCompleto} (registro ${a.numeroCompleto}) se registró después de presentar este 303 y reduce el IVA deducido en ${eurosTexto(Math.abs(Number(a.ivaTotal)))}: ` +
       'prepara la autoliquidación rectificativa de este periodo. En la contabilidad, apunta a mano la regularización del IVA (472 y 4750), el recargo (678) y los intereses de demora (669) cuando los pagues.',
