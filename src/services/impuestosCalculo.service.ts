@@ -3,6 +3,7 @@ import { prisma } from '../config/database';
 import { badRequest } from '../utils/http-errors';
 import { avisoRetencionAnulada, codigoProvincia, retencionDeclaradaEn, retencionesActividades, retencionesTrabajo } from './nominas/fiscal';
 import { normalizarNif } from '../utils/nif';
+import { aCentimos } from '../utils/money';
 import { obtenerAsientosEjercicio, calcularSaldosPorSubcuenta } from './contabilidadDatos.service';
 import {
   DatosModelo111,
@@ -48,7 +49,7 @@ function enRango(fecha: string, desde: string, hasta: string): boolean {
 }
 
 /** Agrupa las lineas de un conjunto de facturas por tipo de IVA. */
-function agruparPorTipoIva(facturas: FacturaFiscal[]): DesgloseIva[] {
+export function agruparPorTipoIva(facturas: FacturaFiscal[]): DesgloseIva[] {
   const mapa = new Map<number, DesgloseIva>();
   for (const f of facturas) {
     for (const l of f.lineas) {
@@ -69,6 +70,33 @@ function agruparPorTipoIva(facturas: FacturaFiscal[]): DesgloseIva[] {
  */
 const conIvaSoportado = (facturas: FacturaFiscal[]): FacturaFiscal[] =>
   facturas.map((f) => ({ ...f, lineas: f.lineas.filter((l) => l.cuota !== 0 || l.tipoIva > 0) }));
+
+/**
+ * Tipo al que se autoliquida una linea de compra intracomunitaria: el de la
+ * linea o, si viene sin tipo (el proveedor de la UE no cobra IVA), el 21 %.
+ */
+export function tipoAutoliquidado(l: { tipoIva: number }): number {
+  return l.tipoIva > 0 ? l.tipoIva : 21;
+}
+
+/**
+ * Cuota autoliquidada de una linea de compra intracomunitaria, en centimos: la
+ * de la factura o, si viene sin cuota, la base al tipo de tipoAutoliquidado.
+ * Es la UNICA regla: la usan el 303 ([10]/[11], [36]-[39] y [14]/[15]-[40]/[41]
+ * de las rectificativas) y el 390, para que el resumen anual cuadre con la suma
+ * de los cuatro 303. El redondeo es simetrico (un abono da lo mismo con signo).
+ */
+export function cuotaAutoliquidadaCentimos(l: { tipoIva: number; base: number; cuota: number }): number {
+  const cuota = aCentimos(l.cuota);
+  if (cuota !== 0) return cuota;
+  const base = aCentimos(l.base);
+  return Math.sign(base) * Math.round((Math.abs(base) * tipoAutoliquidado(l)) / 100);
+}
+
+/** Aviso del 303 y del 390 cuando hay compras intracomunitarias sin IVA en la factura (base en centimos). */
+export function avisoIntraSinCuota(baseCentimos: number): string {
+  return `Hay compras a proveedores de otros países de la UE sin IVA en la factura (base ${eur(baseCentimos / 100)}): la app calcula su IVA al tipo de la línea o, si no lo tiene, al 21 %, lo autoliquida en las casillas [10]/[11] y, si es deducible, lo deduce en [36]/[37]. Si el tipo que corresponde es otro, ponlo en la factura.`;
+}
 
 const sumCuota = (d: DesgloseIva[]): number => round2(d.reduce((a, x) => a + x.cuota, 0));
 const sumBase = (d: DesgloseIva[]): number => round2(d.reduce((a, x) => a + x.base, 0));
@@ -92,7 +120,7 @@ const tipoDe = (f: FacturaFiscal): TipoOperacionVenta | null =>
   f.tipo === 'venta' && esTipoOperacion(f.tipoOperacion) ? f.tipoOperacion : null;
 
 /** Venta que devenga IVA en el regimen general: NACIONAL (o, sin tipo, la interior de siempre). */
-function devengaIva(f: FacturaFiscal): boolean {
+export function devengaIva(f: FacturaFiscal): boolean {
   if (f.tipo !== 'venta') return false;
   const tipo = tipoDe(f);
   return tipo ? tipo === 'NACIONAL' : f.operacion === 'interior';
@@ -205,7 +233,8 @@ export interface OpcionesAgregar303 {
  *  - Ventas NACIONAL (sin tipo, las interiores de siempre): una fila fija por
  *    tipo ([01]-[03] 4 %, [04]-[06] 10 %, [07]-[09] 21 %).
  *  - Ventas rectificativas: modificacion de bases y cuotas [14]/[15], con signo.
- *  - Autodevengo de las compras intracomunitarias [10]/[11] y de las compras con
+ *  - Autodevengo de las compras intracomunitarias [10]/[11] (con la cuota de
+ *    cuotaAutoliquidadaCentimos, la misma que usa el 390) y de las compras con
  *    inversion del sujeto pasivo [12]/[13], con la cuota de la factura.
  * IVA deducible (compras deducibles), por naturaleza: interiores corrientes
  * [28]/[29] o bienes de inversion [30]/[31] (lineas de cuentas 2xx),
@@ -279,12 +308,15 @@ export function agregar303(
     const deducible = f.deducible !== false;
     for (const l of f.lineas) {
       const conCuota = l.cuota !== 0 || l.tipoIva > 0;
-      if (f.operacion === 'intracomunitaria' || f.isp) {
+      // Intracomunitaria: la cuota autoliquidada (la de la factura o, sin ella, al tipo de la linea o al 21 %).
+      const intra = f.operacion === 'intracomunitaria';
+      const cuota = intra ? cuotaAutoliquidadaCentimos(l) / 100 : l.cuota;
+      if (intra || f.isp) {
         // Autodevengo: la cuota la declara la empresa (como devengada y, si es deducible, como deducible).
-        const [b, q] = f.rectificativa ? ['14', '15'] : f.operacion === 'intracomunitaria' ? ['10', '11'] : ['12', '13'];
+        const [b, q] = f.rectificativa ? ['14', '15'] : intra ? ['10', '11'] : ['12', '13'];
         suma(b, l.base);
-        suma(q, l.cuota);
-        if (f.operacion === 'intracomunitaria' && l.cuota === 0) intraSinCuota += Math.round(l.base * 100);
+        suma(q, cuota);
+        if (intra && aCentimos(l.cuota) === 0) intraSinCuota += aCentimos(l.base);
       }
       if (!deducible) continue;
       let par: [string, string] | null;
@@ -295,7 +327,7 @@ export function agregar303(
       else par = conCuota ? (l.inversion ? ['30', '31'] : ['28', '29']) : null;
       if (!par) continue;
       suma(par[0], l.base);
-      suma(par[1], l.cuota);
+      suma(par[1], cuota);
     }
   }
 
@@ -346,11 +378,7 @@ export function agregar303(
       `Hay ventas exentas sin derecho a deducción (base ${eur(exentasSinDeduccion)}): no van en ninguna casilla del 303 trimestral (sí en el 390) y pueden obligarte a aplicar la prorrata del IVA soportado. Revísalo con tu asesor.`,
     );
   }
-  if (intraSinCuota !== 0) {
-    advertencias.push(
-      `Hay compras a proveedores de otros países de la UE sin IVA (base ${eur(intraSinCuota / 100)}): su IVA se autoliquida en las casillas [10]/[11] y se deduce en [36]/[37]. Pon en esas facturas el tipo de IVA que corresponde o completa la cuota en el formulario de la sede.`,
-    );
-  }
+  if (intraSinCuota !== 0) advertencias.push(avisoIntraSinCuota(intraSinCuota));
 
   // Mapa de casillas de siempre (pantalla de Impuestos, Carmen), con los
   // importes oficiales. Las casillas nuevas solo si tienen importe.
