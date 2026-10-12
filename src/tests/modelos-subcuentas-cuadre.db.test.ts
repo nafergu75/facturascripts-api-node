@@ -239,6 +239,9 @@ describe('modelos con subcuentas por tercero', () => {
     expect(m['190 0A'].casillas).toMatchObject({ num_perceptores: 1, importe_percepciones: 2000, retenciones_ingresos_cuenta: 300 });
     // 2T: compra leida (sin su parte exenta), profesional y alquiler en [28]/[29].
     expect(m['303 2T'].casillas).toMatchObject({ '28': 3000 + 2000 + 1500, '29': 630 + 420 + 315 });
+    // 3T: la compra a Italia (país ISO-2 de la ficha) se autoliquida y se deduce, como la ve el 349.
+    expect(m['303 3T'].casillas).toMatchObject({ '10': 2500, '36': 2500 });
+    expect(m['349 3T'].registros?.map((r) => [r.nombre, r.importe])).toEqual([['Rossi SpA', 2500]]);
   });
 
   it('con las cuentas genericas sale exactamente lo mismo', async () => {
