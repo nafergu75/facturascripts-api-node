@@ -260,6 +260,34 @@ export async function contextoDeclaracion(companyId: string, codigo: string, eje
   };
 }
 
+/** Lo que quedó presentado de un modelo y periodo (para los modelos que lo leen: 390, 202). */
+export interface FilaPresentada {
+  casillas: Record<string, unknown>;
+  datos: Record<string, unknown> | null;
+  /** Hay una complementaria, sustitutiva o rectificativa en preparación: lo presentado sigue siendo esto. */
+  rectificacionEnCurso: boolean;
+}
+
+/**
+ * Casillas y datos de la última declaración PRESENTADA del periodo (solo lee).
+ * Sale del historial (DeclaracionAeat, la fila de ModeloImpuesto tal como quedó
+ * al presentarla) y, si no hay historial, de ModeloImpuesto cuando está
+ * 'presentado' (lo presentado antes de existir el historial). No se mira solo el
+ * estado de ModeloImpuesto porque, al preparar una complementaria, sustitutiva
+ * o rectificativa, esa fila vuelve a 'vigente' aunque la presentada siga en pie
+ * (diseño B4). null si no hay nada presentado.
+ */
+export async function filaPresentada(companyId: string, codigo: string, ejercicio: number, periodo: string): Promise<FilaPresentada | null> {
+  const ctx = await contextoDeclaracion(companyId, codigo, ejercicio, periodo);
+  if (ctx.ultimaPresentada) {
+    const fila = datosDe(ctx.ultimaPresentada).fila ?? {};
+    return { casillas: fila.casillas ?? {}, datos: fila.datos ?? null, rectificacionEnCurso: !!ctx.enCurso };
+  }
+  const m = await prisma.modeloImpuesto.findUnique({ where: { companyId_codigo_ejercicio_periodo: delPeriodo(companyId, codigo, ejercicio, periodo) } });
+  if (m?.estado !== 'presentado') return null;
+  return { casillas: (m.casillas as Record<string, unknown> | null) ?? {}, datos: (m.datos as Record<string, unknown> | null) ?? null, rectificacionEnCurso: false };
+}
+
 /** Aviso para la pantalla de una declaración congelada. */
 export function avisoCongelada(f: FilaDeclaracion): string {
   const j = f.justificante ? ` (justificante ${f.justificante}${f.fechaPresentacion ? `, ${f.fechaPresentacion}` : ''})` : '';
