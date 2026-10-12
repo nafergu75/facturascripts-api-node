@@ -38,3 +38,8 @@ export const FILTRO_ASIENTOS_APERTURA: Prisma.JournalEntryWhereInput = {
   OR: [{ origen: { in: [...ORIGENES_APERTURA] } }, { descripcion: { startsWith: CONCEPTO_APERTURA }, ...NO_HISTORICO }],
 };
 
+
+/** Estado de un asiento de 2026 hecho en la app y retirado al traer la contabilidad de la gestoria. */
+export const ESTADO_SUSTITUIDO = 'Retirado (2026 lo lleva la gestoría)';
+export const TEXTO_SUSTITUIDO =
+  'Este asiento de 2026 está retirado: al traer la contabilidad de la gestoría, 2026 es de solo lectura y no cuenta. No se puede aprobar ni cambiar.';
