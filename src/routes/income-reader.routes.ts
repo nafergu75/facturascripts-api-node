@@ -2,6 +2,7 @@ import { Router, raw, json } from 'express';
 import multer from 'multer';
 import { incomeReaderController } from '../controllers/income-reader.controller';
 import { authorize } from '../middleware/authorize.middleware';
+import { exigirPlanAnterior } from '../middleware/planAnterior.middleware';
 import { authMiddleware } from '../middleware/auth.middleware';
 import { incomeReaderService } from '../services/income-reader.service';
 import { HttpError } from '../utils/http-errors';
@@ -78,7 +79,7 @@ router.put('/:id', authorize('ventas:write'), incomeReaderController.actualizar)
  * Verificar documento y crear factura de ingreso.
  * POST /api/income-reader/:id/verify
  */
-router.post('/:id/verify', authorize('ventas:write'), incomeReaderController.verificar);
+router.post('/:id/verify', authorize('ventas:write'), exigirPlanAnterior, incomeReaderController.verificar);
 
 /**
  * Rechazar un documento.

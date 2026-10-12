@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { expenseInvoicesController } from '../controllers/expense-invoices.controller';
 import { authorize } from '../middleware/authorize.middleware';
+import { exigirPlanAnterior } from '../middleware/planAnterior.middleware';
 import { pagosController } from '../controllers/cobrosPagos.controller';
 
 const router = Router({ mergeParams: true });
@@ -10,7 +11,7 @@ const router = Router({ mergeParams: true });
 router.get('/', authorize('compras:read', 'contabilidad:read'), expenseInvoicesController.list);
 
 // POST /companies/:companyId/expense-invoices - Alta con su asiento en firme
-router.post('/', authorize('compras:write'), expenseInvoicesController.create);
+router.post('/', authorize('compras:write'), exigirPlanAnterior, expenseInvoicesController.create);
 
 // GET /companies/:companyId/expense-invoices/:id - Ficha de la factura
 router.get('/:id', authorize('compras:read', 'contabilidad:read'), expenseInvoicesController.getById);

@@ -11,6 +11,7 @@ import { RequestHandler, Router } from 'express';
 import multer from 'multer';
 import { gastosExtractorController, MAX_ARCHIVO_LECTOR, MENSAJE_ARCHIVO_GRANDE } from '../controllers/gastos-extractor.controller';
 import { authorize } from '../middleware/authorize.middleware';
+import { exigirPlanAnterior } from '../middleware/planAnterior.middleware';
 import { badRequest } from '../utils/http-errors';
 import { lecturasGastos, subirArchivoLectura } from '../controllers/lecturas.controller';
 
@@ -28,7 +29,7 @@ const subirArchivo: RequestHandler = (req, res, next) =>
   });
 
 router.post('/extraer-ia', authorize('compras:write'), subirArchivo, gastosExtractorController.extraer);
-router.post('/confirmar', authorize('compras:write'), gastosExtractorController.confirmar);
+router.post('/confirmar', authorize('compras:write'), exigirPlanAnterior, gastosExtractorController.confirmar);
 router.post('/lecturas', authorize('compras:write'), subirArchivoLectura, lecturasGastos.crear);
 router.get('/lecturas/:id', authorize('compras:read', 'compras:write'), lecturasGastos.consultar);
 router.post('/lecturas/:id/descartar', authorize('compras:write'), lecturasGastos.descartar);
