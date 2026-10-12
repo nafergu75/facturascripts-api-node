@@ -174,6 +174,56 @@ describe('349 con abonos de compras intracomunitarias', () => {
   });
 });
 
+describe('349 con un rappel que abarca varios trimestres', () => {
+  let E: string;
+  let italiano: string;
+
+  beforeAll(async () => {
+    E = await empresa('349r');
+    italiano = (await proveedoresService.create(E, { nombreFiscal: 'Bianchi Srl', nifCif: 'IT98765432109', pais: 'IT' })).id;
+    await gasto(E, italiano, 'B-1', '2027-01-20', [lin(1000, { tipoIva: 0 })]);
+    await gasto(E, italiano, 'B-2', '2027-04-15', [lin(3000, { tipoIva: 0 })]);
+  });
+
+  it('sin reparto: por meses en proporción a lo comprado; la parte del 1T rectifica y la del 2T resta en el normal', async () => {
+    const r = await gasto(E, italiano, 'RAP-1', '2027-05-10', [lin(-400, { tipoIva: 0, cuenta: '609' })], {
+      rectificativa: { tipo: 'I', causa: 'RAPPEL', originales: [], periodo: { desde: '2027-01-01', hasta: '2027-06-30' } },
+    });
+    const filas = await prisma.expenseInvoiceRectificada.findMany({ where: { rectificativaId: r.factura.id }, orderBy: { periodoDesde: 'asc' } });
+    expect(filas.map((f) => [f.periodoDesde, f.periodoHasta, f.baseRectificada])).toEqual([
+      ['2027-01-01', '2027-01-31', -100],
+      ['2027-04-01', '2027-04-30', -300],
+    ]);
+    const b = await calcularBorrador349(E, 2027, '2T');
+    expect(b.entrada.operadores).toEqual([expect.objectContaining({ clave: 'A', base: 2700 })]);
+    expect(b.entrada.rectificaciones).toEqual([expect.objectContaining({ clave: 'A', ejercicio: 2027, periodo: '1T', baseAnterior: 1000, baseRectificada: 900 })]);
+    expect(b.avisos.filter((a) => /abarca varios periodos/.test(a))).toEqual([]);
+  });
+
+  it('con el reparto que pone la persona: cada tramo en su periodo', async () => {
+    const r = await gasto(E, italiano, 'RAP-2', '2027-05-20', [lin(-200, { tipoIva: 0, cuenta: '609' })], {
+      rectificativa: {
+        tipo: 'I',
+        causa: 'RAPPEL',
+        originales: [],
+        periodo: {
+          desde: '2027-01-01',
+          hasta: '2027-06-30',
+          reparto: [
+            { desde: '2027-01-01', hasta: '2027-03-31', base: -150 },
+            { desde: '2027-04-01', hasta: '2027-06-30', base: -50 },
+          ],
+        },
+      },
+    });
+    const filas = await prisma.expenseInvoiceRectificada.findMany({ where: { rectificativaId: r.factura.id }, orderBy: { periodoDesde: 'asc' } });
+    expect(filas.map((f) => f.baseRectificada)).toEqual([-150, -50]);
+    const b = await calcularBorrador349(E, 2027, '2T');
+    expect(b.entrada.operadores).toEqual([expect.objectContaining({ base: 2650 })]);
+    expect(b.entrada.rectificaciones).toEqual([expect.objectContaining({ periodo: '1T', baseAnterior: 1000, baseRectificada: 750 })]);
+  });
+});
+
 describe('111, 115, 180 y 190 con la retención de un abono (decisión P1)', () => {
   let E: string;
   let asesor: string;
