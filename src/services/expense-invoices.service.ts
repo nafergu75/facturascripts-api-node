@@ -432,6 +432,9 @@ interface FacturaConLineas {
   ivaTotal: number;
   retencionTotal: number;
   totalFactura: number;
+  /** Solo para el libro de IVA de una compra intracomunitaria con el IVA en un periodo de la gestoria. */
+  esRectificativa?: boolean;
+  fechaImputacionIva?: string | null;
   lineas: LineaGuardada[];
 }
 type ProveedorBasico = { id: string; nombreFiscal: string; nifCif: string; pais: string };
@@ -512,7 +515,9 @@ export async function bloqueoPeriodoGasto(
   // Un abono que reduce el IVA de un periodo de antes de llevar la contabilidad
   // en la app (una ERROR_IVA sobre una factura de 2026, o una devolucion
   // registrada antes de la fecha de inicio): su 303 se presento fuera.
-  if (reduceIva || fechaIva !== fecha) {
+  // Una compra intracomunitaria con su IVA en un periodo de la gestoria (ivaIntracomunitarioFuera)
+  // no reduce nada: no tiene que rectificar ese 303.
+  if (reduceIva) {
     const fuera = await periodo303FueraDeLaApp(companyId, fechaIva);
     if (fuera) {
       const b = { modelo: '303' as const, ...fuera, fueraDeLaApp: true };
@@ -709,7 +714,33 @@ async function comprobarPartidaGestoria(companyId: string, supplierId: string, n
   );
 }
 
-const errorDuplicada = (f:{ id: string; numeroCompleto: string; numeroFacturaProveedor: string | null; supplier: { nombreFiscal: string } }) =>
+/**
+ * Compra intracomunitaria con la factura de un periodo cuyo 303 presenta la
+ * gestoria y registrada ya en un periodo de la app (por ejemplo, del 20-12-2026
+ * y recibida en enero de 2027). Su IVA se devenga en la fecha de la factura,
+ * si es anterior al dia 15 del mes siguiente (art. 76 LIVA): va en el 303 y el
+ * 349 de ese periodo, que presenta la gestoria. Sin confirmar, 409; con la
+ * confirmacion, devuelve esa fecha, que se guarda como la de su IVA
+ * (fechaImputacionIva): asi no entra en el 303, el 390 ni el 349 de la app.
+ * null si no es el caso (tambien en abonos y rectificativas, que tienen sus reglas).
+ */
+async function ivaIntracomunitarioFuera(
+  companyId: string,
+  q: { esRectificativa: boolean; fechaEmision: string; fechaContable: string; pais: string | null; nif: string | null; confirma: boolean },
+): Promise<string | null> {
+  if (q.esRectificativa || q.fechaEmision >= q.fechaContable) return null;
+  if (clasificarCompra(q.fechaContable, q.pais, q.nif) !== 'intracomunitaria') return null;
+  const fuera = await periodo303FueraDeLaApp(companyId, q.fechaEmision);
+  if (!fuera || (await periodo303FueraDeLaApp(companyId, q.fechaContable))) return null;
+  if (q.confirma) return q.fechaEmision;
+  throw conflict(
+    `El IVA de esta compra intracomunitaria se devengó el ${ddmmaaaa(q.fechaEmision)}, la fecha de la factura: va en el 303 y el 349 ${periodoTexto(fuera, 'de')}, que presenta tu gestoría. ` +
+      `Regístrala igualmente y pásale la factura a la gestoría. En la app no entrará en los modelos de ${q.fechaContable.slice(0, 4)}.`,
+    { codigo: 'DEVENGO_FUERA_APP', motivo: 'devengo_fuera_app', modelo: '303', ejercicio: fuera.ejercicio, periodo: fuera.periodo, campo: 'fechaEmision' },
+  );
+}
+
+const errorDuplicada = (f: { id: string; numeroCompleto: string; numeroFacturaProveedor: string | null; supplier: { nombreFiscal: string } }) =>
   conflict(`Esta factura ya está registrada: ${f.supplier.nombreFiscal}, nº ${f.numeroFacturaProveedor} (registro ${f.numeroCompleto}).`, {
     campo: 'numeroFacturaProveedor',
     facturaId: f.id,
@@ -919,7 +950,9 @@ export async function datosContablesGastoConSubcuenta(
   // Cuentas de gasto con el nombre del plan (las subcuentas propias llevan el suyo).
   const tipo: TipoGasto = esTipoGasto(f.tipoGasto) ? f.tipoGasto : 'COMPRA';
   const nombresCuentas = await nombresDeCuentas(tx, companyId, f.lineas.map((l) => l.accountCode ?? TIPO_GASTO_INFO[tipo].cuenta));
-  const extra = { ...extraSinNombres, nombresCuentas };
+  // Compra intracomunitaria con el IVA en un periodo de la gestoria (ivaIntracomunitarioFuera): el libro de IVA, con esa fecha.
+  const ivaFuera = !f.esRectificativa && f.fechaImputacionIva ? { fechaLibroIva: f.fechaImputacionIva, observacionesLibroIva: 'IVA en el 303 de la gestoría.' } : {};
+  const extra = { ...ivaFuera, ...extraSinNombres, nombresCuentas };
   if (extra.cuentaAcreedor) {
     if (esSubcuentaGenerica(extra.cuentaAcreedor)) {
       logger.warn('gasto contabilizado contra la cuenta generica de sus pagos anteriores', { companyId, factura: f.numeroCompleto, cuenta: extra.cuentaAcreedor });
@@ -1094,6 +1127,14 @@ export async function registrarGasto(companyId: string, cuerpo: unknown, opcione
 
   const fechaContable = v.fechaRegistro ?? v.fechaEmision;
   await comprobarFechaAbierta(companyId, fechaContable);
+  const ivaFuera = await ivaIntracomunitarioFuera(companyId, {
+    esRectificativa: !!rect,
+    fechaEmision: v.fechaEmision,
+    fechaContable,
+    pais: prov.pais,
+    nif: prov.existente?.nifCif ?? prov.nuevo?.nifCif ?? null,
+    confirma: bruto.confirmaDevengoFuera === true,
+  });
   // Presentar el 303 (o el 111/115) no cierra el mes: sin esto la factura
   // entraria en un trimestre ya declarado y su IVA no se deduciria en ninguno.
   // El 303 se mira en el periodo de su IVA (el de la original en una ERROR_IVA que reduce).
@@ -1143,6 +1184,7 @@ export async function registrarGasto(companyId: string, cuerpo: unknown, opcione
             totalFactura,
             observaciones,
             ...columnasRectificativa(rect),
+            ...(ivaFuera ? { fechaImputacionIva: ivaFuera } : {}),
             ...(confirmado303 ? { rectificar303ConfirmadoEn: new Date().toISOString() } : {}),
             lineas: { create: lineas },
           },
@@ -1389,6 +1431,15 @@ export async function editarGasto(
 
   const fechaNueva = v.fechaRegistro ?? v.fechaEmision;
   await comprobarFechaAbierta(companyId, fechaNueva);
+  // Compra intracomunitaria con el IVA en un periodo de la gestoria: confirmada al registrarla, no se vuelve a pedir.
+  const ivaFuera = await ivaIntracomunitarioFuera(companyId, {
+    esRectificativa: !!rect,
+    fechaEmision: v.fechaEmision,
+    fechaContable: fechaNueva,
+    pais: prov.pais,
+    nif: prov.existente?.nifCif ?? prov.nuevo?.nifCif ?? null,
+    confirma: bruto.confirmaDevengoFuera === true || (!actual.esRectificativa && !!actual.fechaImputacionIva),
+  });
   let confirmado303: BloqueoPeriodo | null = null;
   if (enModelos) {
     const retencionNueva = aCentimos(retencionTotal) !== 0 ? tipoRetencionLibro(v.tipoGasto) : null;
@@ -1450,6 +1501,7 @@ export async function editarGasto(
           totalFactura,
           observaciones: v.observaciones?.trim() || null,
           ...columnasRectificativa(rect),
+          ...(rect ? {} : { fechaImputacionIva: ivaFuera }),
           ...(marca303 !== undefined ? { rectificar303ConfirmadoEn: marca303 } : {}),
           lineas: { create: lineas },
         },
