@@ -16,7 +16,7 @@
  */
 import { aCentimos, importeTexto } from '../../utils/money';
 import type { CuadreSubcuenta, ResultadoCartera } from './cartera';
-import type { TipoHoja } from './clasificador';
+import { NOMBRE_TIPO, type TipoHoja } from './clasificador';
 import type { TotalesOficiales } from './extractores';
 import type { AnalisisDiario } from './historico';
 import type { AnalisisSaldos } from './saldos';
@@ -64,6 +64,8 @@ export interface EntradaComprobaciones {
   sinMadreConSaldo: string[];
   /** Subcuentas de clientes o proveedores con otra longitud que la del plan. */
   longitudesIncoherentes: string[];
+  /** Fichero de cada grupo de subcuentas con otra longitud (para nombrarlo en el error). */
+  ficherosConOtraLongitud?: Array<{ fichero: string; subcuentas: number; longitud: number }>;
   longitud: { delPlan: number | null; motivo: string | null };
   /** Subcuentas 430/400/410 con saldo que no quedaran enlazadas a una ficha con NIF valido. */
   tercerosConSaldoSinFicha: Array<{ codigo: string; nombre: string; motivo?: string }>;
@@ -102,7 +104,12 @@ export function comprobarCarga(e: EntradaComprobaciones): ResultadoComprobacione
   // 1. Hojas que no se han podido leer o no se sabe que son.
   for (const h of e.hojasConError) p({ clave: `hoja:${h.fichero}:${h.hoja}`, nivel: 'ERROR', texto: `${h.fichero}${h.hoja !== h.fichero ? ` › ${h.hoja}` : ''}: ${h.mensaje}` });
   for (const r of e.repetidos) {
-    p({ clave: `repetido:${r.tipo}`, nivel: 'ERROR', texto: `Hay dos ficheros distintos del mismo tipo: quita uno de los dos.`, detalle: r.hojas });
+    p({
+      clave: `repetido:${r.tipo}`,
+      nivel: 'ERROR',
+      texto: `Hay ${r.hojas.length === 2 ? 'dos ficheros' : `${r.hojas.length} ficheros`} de ${NOMBRE_TIPO[r.tipo].toLowerCase()} distintos (${r.hojas.join(' y ')}): quita uno o marca el que no vale con «No usar esta hoja».`,
+      detalle: r.hojas,
+    });
   }
 
   // 2. Ficheros imprescindibles.
@@ -164,8 +171,10 @@ export function comprobarCarga(e: EntradaComprobaciones): ResultadoComprobacione
         });
       }
       // Resultado que escribe la persona.
+      // Si ha subido la PyG de la gestoria, su resultado ya es el declarado (y se compara arriba).
+      const pygConResultado = e.pyg?.resultado !== null && e.pyg?.resultado !== undefined;
       if (e.resultadoDeclarado === null) {
-        p({ clave: 'resultado-declarado', nivel: 'FALTA', texto: `Escribe el resultado de ${anio} que te ha dado la gestoría, para comprobar que coincide.` });
+        if (!pygConResultado) p({ clave: 'resultado-declarado', nivel: 'FALTA', texto: `Escribe el resultado de ${anio} que te ha dado la gestoría, para comprobar que coincide.` });
       } else if (aCentimos(e.resultadoDeclarado) !== aCentimos(s.resultado)) {
         p({
           clave: 'resultado-declarado',
@@ -260,7 +269,11 @@ export function comprobarCarga(e: EntradaComprobaciones): ResultadoComprobacione
     p({
       clave: 'plan:longitud',
       nivel: 'ERROR',
-      texto: `${varios(e.longitudesIncoherentes.length, 'subcuenta de cliente o proveedor tiene', 'subcuentas de clientes o proveedores tienen')} otra longitud que las del plan (${e.longitud.delPlan} dígitos). Pide a la gestoría todos los listados al mismo nivel.`,
+      texto: e.ficherosConOtraLongitud?.length
+        ? `${e.ficherosConOtraLongitud
+            .map((f) => `En ${f.fichero} hay ${varios(f.subcuentas, 'subcuenta de cliente o proveedor', 'subcuentas de clientes o proveedores')} de ${f.longitud} dígitos`)
+            .join('. ')}, y el plan usa ${e.longitud.delPlan}. Pide a la gestoría todos los listados al mismo nivel que el plan.`
+        : `${varios(e.longitudesIncoherentes.length, 'subcuenta de cliente o proveedor tiene', 'subcuentas de clientes o proveedores tienen')} otra longitud que las del plan (${e.longitud.delPlan} dígitos). Pide a la gestoría todos los listados al mismo nivel.`,
       detalle: lista(e.longitudesIncoherentes),
     });
   }
