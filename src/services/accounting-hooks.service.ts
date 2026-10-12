@@ -10,6 +10,7 @@
  */
 
 import { badRequest } from '../utils/http-errors';
+import { exigirFechaContabilizable } from './periodos.service';
 import { registrarAuditoria } from './auditoria.service';
 import { AccountingEngineController } from '../controllers/accounting-engine.controller';
 import { invoiceArchivingService } from './invoice-archiving.service';
@@ -340,6 +341,8 @@ export class AccountingHooksService {
       throw badRequest(`Asiento ${journalEntryId} no encontrado para reversal.`);
     }
 
+    // Un año llevado por la gestoria es de solo lectura (red de seguridad).
+    await exigirFechaContabilizable(asiento.companyId, new Date());
     // Crear asiento de reversión en una transacción
     const resultado = await prisma.$transaction(async (tx) => {
       // Crear asiento con líneas opuestas

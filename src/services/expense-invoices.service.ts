@@ -22,7 +22,7 @@ import { esFechaReal, validarFacturaGasto, type FacturaGastoBody } from '../sche
 import { contabilizarFacturaGasto, desgloseIvaPorTipo } from './accounting-engine.service';
 import { asegurarPlanContableEmpresa } from './chart-of-accounts.service';
 import { tieneCobrosActivos } from './cobrosPagos.service';
-import { comprobarFechaAbierta, periodoNoAbierto } from './periodos.service';
+import { comprobarFechaAbierta, exigirFechaContabilizable, periodoNoAbierto } from './periodos.service';
 import { archivarGastoSinRomper } from './archivoFacturas.service';
 import { perfilEmpresa } from './perfilEmpresa.service';
 import { registrarAuditoria } from './auditoria.service';
@@ -1193,6 +1193,7 @@ export async function anularGasto(
     } else if (asiento && conContraasiento) {
       const original = await tx.journalEntry.findUniqueOrThrow({ where: { id: asiento.id }, include: { lineas: true } });
       const nfp = f.numeroFacturaProveedor ?? f.numeroCompleto;
+      await exigirFechaContabilizable(companyId, fechaAnulacion);
       const c = await tx.journalEntry.create({
         data: {
           companyId,

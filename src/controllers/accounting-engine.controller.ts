@@ -16,7 +16,7 @@ import { prisma, type TransaccionBD } from '../config/database';
 import { basePorCuenta, nombresDeCuentas } from '../services/cuentasLinea.service';
 import { cuadraEnCentimos } from '../utils/money';
 import { asegurarPlanContableEmpresa } from '../services/chart-of-accounts.service';
-import { comprobarFechaAbierta, periodoNoAbierto } from '../services/periodos.service';
+import { comprobarFechaAbierta, exigirFechaContabilizable, periodoNoAbierto } from '../services/periodos.service';
 import { perfilEmpresa } from '../services/perfilEmpresa.service';
 import { motivoSinTipoFijado, notaDivisa } from '../domain/divisas';
 import { esTipoOperacion, fechaDevengoVenta } from '../domain/tipo-operacion.model';
@@ -390,6 +390,8 @@ export class AccountingEngineController {
       // lleva a la factura: su fecha de registro (si se recibio mas tarde) se
       // cambia, la fecha que puso el proveedor no.
       const fechaAsiento = asiento.fecha.toISOString().slice(0, 10);
+      // Un año llevado por la gestoria es de solo lectura, tambien para los borradores.
+      await exigirFechaContabilizable(companyId, fechaAsiento);
       const gasto =
         asiento.origen === 'FACTURA_GASTO' && asiento.invoiceId
           ? await prisma.expenseInvoice.findFirst({

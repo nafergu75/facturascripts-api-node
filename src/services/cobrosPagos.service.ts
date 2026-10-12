@@ -2,7 +2,7 @@ import { prisma, type TransaccionBD as Tx } from '../config/database';
 import { badRequest, notFound } from '../utils/http-errors';
 import { aCentimos } from '../utils/money';
 import { hoyEspana } from '../utils/fechas';
-import { comprobarFechaAbierta } from './periodos.service';
+import { comprobarFechaAbierta, exigirFechaContabilizable } from './periodos.service';
 import {
   calcularCobroDivisa,
   comprobarTipoManual,
@@ -386,6 +386,7 @@ async function crearAsiento(
   const debe = round2(p.apuntes.reduce((s, a) => s + a.debe, 0));
   const haber = round2(p.apuntes.reduce((s, a) => s + a.haber, 0));
   if (aCentimos(debe) !== aCentimos(haber)) throw badRequest(`El asiento no cuadra: Debe ${debe} y Haber ${haber}.`);
+  await exigirFechaContabilizable(companyId, p.fecha);
   return tx.journalEntry.create({
     data: {
       companyId,

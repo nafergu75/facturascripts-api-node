@@ -10,6 +10,7 @@
  */
 
 import { badRequest, notFound, notImplemented } from '../utils/http-errors';
+import { exigirFechaContabilizable } from './periodos.service';
 import { prisma, type ClienteBD, type TransaccionBD } from '../config/database';
 import { aCentimos, cuadraEnCentimos } from '../utils/money';
 import { esTipoOperacion, REGLA_OPERACION, type TipoOperacionVenta } from '../domain/tipo-operacion.model';
@@ -249,6 +250,8 @@ export async function contabilizarFacturaIngreso(
   const nota = invoiceData.notaDescripcion ?? '';
   const descripcion = `Factura de ingreso #${invoiceData.numeroFactura} - ${invoiceData.clienteNombre}`.slice(0, 190 - nota.length) + nota;
 
+  // Un año llevado por la gestoria es de solo lectura (red de seguridad de comprobarFechaAbierta).
+  await exigirFechaContabilizable(companyId, invoiceData.fechaEmision);
   // Crear asiento
   const asiento = await db.journalEntry.create({
     data: {
@@ -489,6 +492,8 @@ export async function contabilizarFacturaGasto(
     ? `Factura de gasto ${numeroProveedor} (registro ${invoiceData.numeroFactura}) - ${invoiceData.proveedorNombre}`.slice(0, 190)
     : `Factura de gasto #${invoiceData.numeroFactura} - ${invoiceData.proveedorNombre}`.slice(0, 190);
 
+  // Un año llevado por la gestoria es de solo lectura (red de seguridad de comprobarFechaAbierta).
+  await exigirFechaContabilizable(companyId, invoiceData.fechaEmision);
   // Crear asiento
   const asiento = await db.journalEntry.create({
     data: {
