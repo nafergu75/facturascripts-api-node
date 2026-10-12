@@ -23,13 +23,12 @@ import {
   asignarNumero,
   cancelarRectificacion,
   configModelo,
-  guardarRegistros,
   historialDeclaraciones,
   justificanteDe,
   periodoDeclaracion,
   type CodigoAeat,
 } from '../services/declaracionesAeat/declaraciones.service';
-import { historialConRegistros, prepararRectificacionModelo, presentarDeclaracion } from '../services/declaracionesAeat/presentar';
+import { guardarRegistrosModelo, historialConRegistros, prepararRectificacionModelo, presentarDeclaracion } from '../services/declaracionesAeat/presentar';
 import { esEmpresaEspanolaFiscal, MENSAJE_SIN_MODELOS } from '../services/impuestosCalculo.service';
 
 const router = Router({ mergeParams: true });
@@ -75,7 +74,7 @@ router.post('/:codigo(190)/declaraciones/rectificacion', authorize('impuestos:wr
 
 const registros = asyncHandler(async (req, res) => {
   const d = await declaracionDe(req, cuerpo(req));
-  await guardarRegistros(d.companyId, d.codigo, d.ejercicio, d.periodo, cuerpo(req).registros);
+  await guardarRegistrosModelo(d.companyId, d.codigo, d.ejercicio, d.periodo, cuerpo(req).registros);
   sendOk(res, await historialConRegistros(d.companyId, d.codigo, d.ejercicio, d.periodo));
 });
 router.put('/:codigo(347|349|180)/declaraciones/rectificacion/registros', authorize('impuestos:write'), registros);

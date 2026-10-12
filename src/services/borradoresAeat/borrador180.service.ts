@@ -223,7 +223,7 @@ export async function calcularBorrador180(companyId: string, ejercicio: number):
       declaracionAnterior: opciones.declaracionAnterior,
     },
     // Complementaria: solo los perceptores elegidos (por defecto, los que no estaban en la presentada).
-    perceptores: registrosElegidos(todos, clavePerceptor180, decl.seleccion),
+    perceptores: registrosElegidos(todos, clavePerceptor180, decl.incluye),
   };
   // Presentada: se enseña (y se descarga) lo que se presento.
   const presentada = presentacionDe<Entrada180>(fila);

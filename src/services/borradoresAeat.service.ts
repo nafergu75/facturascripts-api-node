@@ -78,7 +78,7 @@ export async function borrador347(companyId: string, ejercicio: number, opts: { 
   if (congelado) return { ...congelado, congelada: true, advertencias: [avisoCongelada(decl.ctx.ultimaPresentada!), ...(congelado.advertencias ?? [])] };
   const datos = agregar347(facturas, ejercicio);
   const todos = declarados347Desde(datos);
-  const elegidos = registrosElegidos(todos, claveDeclarado347, decl.seleccion);
+  const elegidos = registrosElegidos(todos, claveDeclarado347, decl.incluye);
   const d = construirModelo347(
     ejercicio,
     {

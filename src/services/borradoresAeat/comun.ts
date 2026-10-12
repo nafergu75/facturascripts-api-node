@@ -12,7 +12,7 @@ import type { Response } from 'express';
 import { prisma } from '../../config/database';
 import { badRequest, conflict, forbidden } from '../../utils/http-errors';
 import { telefonoAeat, textoAeat } from '../../aeat/common/normalizacion';
-import { contextoDeclaracion, type ContextoDeclaracion } from '../declaracionesAeat/declaraciones.service';
+import { contextoDeclaracion, incluyeRegistro, type ContextoDeclaracion } from '../declaracionesAeat/declaraciones.service';
 
 export interface DeclaranteEmpresa {
   nif: string;
@@ -159,6 +159,11 @@ export interface DeclaracionInformativa {
   numeroDeclaracion: string | null;
   /** Complementaria: claves de los registros elegidos; null = todos. */
   seleccion: string[] | null;
+  /**
+   * Complementaria: si un registro va (los elegidos y los nuevos que aparecen
+   * después de prepararla sin haberse presentado); null = todos.
+   */
+  incluye: ((clave: string) => boolean) | null;
   ctx: ContextoDeclaracion;
 }
 
@@ -166,7 +171,7 @@ export interface DeclaracionInformativa {
 export async function declaracionInformativa(companyId: string, codigo: '347' | '349' | '180' | '190', ejercicio: number, periodo: string): Promise<DeclaracionInformativa> {
   const ctx = await contextoDeclaracion(companyId, codigo, ejercicio, periodo);
   const tipo = ctx.tipo === 'C' || ctx.tipo === 'S' ? ctx.tipo : null;
-  return { tipoDeclaracion: tipo, declaracionAnterior: tipo ? ctx.justificanteAnterior : null, numeroDeclaracion: ctx.numero, seleccion: ctx.registros, ctx };
+  return { tipoDeclaracion: tipo, declaracionAnterior: tipo ? ctx.justificanteAnterior : null, numeroDeclaracion: ctx.numero, seleccion: ctx.registros, incluye: incluyeRegistro(ctx), ctx };
 }
 
 /** Aviso de la pantalla mientras la declaracion no tiene numero. */
@@ -180,9 +185,8 @@ export function exigirNumero(numero: string | null | undefined, codigo: string):
   return numero;
 }
 
-/** Registros de una complementaria: los elegidos (todos en la normal o la sustitutiva). */
-export function registrosElegidos<T>(items: T[], clave: (t: T) => string, seleccion: string[] | null): T[] {
-  if (!seleccion) return items;
-  const elegidos = new Set(seleccion);
-  return items.filter((t) => elegidos.has(clave(t)));
+/** Registros de una complementaria: los que incluye (todos en la normal o la sustitutiva). */
+export function registrosElegidos<T>(items: T[], clave: (t: T) => string, incluye: ((clave: string) => boolean) | null): T[] {
+  if (!incluye) return items;
+  return items.filter((t) => incluye(clave(t)));
 }

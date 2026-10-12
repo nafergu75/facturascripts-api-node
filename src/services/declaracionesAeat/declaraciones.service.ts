@@ -141,6 +141,13 @@ export interface DatosEnCurso {
    * las complementarias que se presentaron después.
    */
   bajas?: string[];
+  /**
+   * Complementaria de una informativa: claves de todos los registros que había
+   * al prepararla o al guardar la selección (los que la persona ya vio). Un
+   * registro que aparece después (la factura olvidada que se registra ahora)
+   * no está aquí y, si no se presentó antes, entra solo en la propuesta.
+   */
+  vistos?: string[];
 }
 
 /**
@@ -194,7 +201,21 @@ export interface ContextoDeclaracion {
   registros: string[] | null;
   /** Claves de los registros de todas las presentadas. */
   registrosPresentados: Set<string>;
+  /** Complementaria: registros que ya se vieron al prepararla o al elegir (null si no se apuntaron). */
+  registrosVistos: Set<string> | null;
   devolucionAcordada: number;
+}
+
+/**
+ * Si un registro va en la complementaria en curso: los elegidos y, además, los
+ * nuevos (no vistos al prepararla ni al elegir, y no presentados antes). null
+ * si no hay selección (normal o sustitutiva: van todos).
+ */
+export function incluyeRegistro(ctx: Pick<ContextoDeclaracion, 'registros' | 'registrosVistos' | 'registrosPresentados'>): ((clave: string) => boolean) | null {
+  if (!ctx.registros) return null;
+  const elegidos = new Set(ctx.registros);
+  const vistos = ctx.registrosVistos;
+  return (clave) => elegidos.has(clave) || (!!vistos && !vistos.has(clave) && !ctx.registrosPresentados.has(clave));
 }
 
 /** Cliente de una transacción (con la extensión de importes). */
@@ -234,6 +255,7 @@ export async function contextoDeclaracion(companyId: string, codigo: string, eje
     resultadoAnterior: Number(actual?.resultadoAnterior ?? 0) || 0,
     registros: enCurso && enCurso.tipo === 'C' && Array.isArray(sel) ? (sel as unknown[]).map(String) : null,
     registrosPresentados,
+    registrosVistos: Array.isArray(((enCurso?.datos ?? {}) as DatosEnCurso).vistos) ? new Set(((enCurso!.datos ?? {}) as DatosEnCurso).vistos!.map(String)) : null,
     devolucionAcordada: Number(((enCurso?.datos ?? {}) as DatosEnCurso).devolucionAcordada ?? 0) || 0,
   };
 }
@@ -559,6 +581,7 @@ export async function prepararRectificacion(
           datos: {
             ...(e.devolucionAcordada ? { devolucionAcordada: e.devolucionAcordada } : {}),
             ...(bajas.length ? { bajas } : {}),
+            ...(registros !== null && actuales ? { vistos: actuales } : {}),
           } as Prisma.InputJsonValue,
           creadoPor: userId,
         },
@@ -579,14 +602,30 @@ export async function prepararRectificacion(
   return fila;
 }
 
-/** Guarda los registros elegidos para la complementaria en curso de una informativa. */
-export async function guardarRegistros(companyId: string, codigo: string, ejercicio: number, periodo: string, registros: unknown): Promise<FilaDeclaracion> {
+/**
+ * Guarda los registros elegidos para la complementaria en curso de una
+ * informativa. `vistos`: las claves de los registros que hay ahora (los que la
+ * persona tiene delante al elegir); dejan de proponerse solos.
+ */
+export async function guardarRegistros(
+  companyId: string,
+  codigo: string,
+  ejercicio: number,
+  periodo: string,
+  registros: unknown,
+  vistos: string[] = [],
+): Promise<FilaDeclaracion> {
   const config = configModelo(codigo);
   if (config.clase !== 'informativa') throw badRequest(`El ${codigo} no tiene registros que elegir.`);
   if (!Array.isArray(registros) || registros.some((r) => typeof r !== 'string')) throw badRequest('"registros" es la lista de claves de los registros que van en la complementaria.');
   const enCurso = await prisma.declaracionAeat.findFirst({ where: { ...delPeriodo(companyId, codigo, ejercicio, periodo), estado: 'preparada' } });
   if (!enCurso || enCurso.tipo !== 'C') throw badRequest('Los registros solo se eligen en una complementaria en preparación.');
-  return prisma.declaracionAeat.update({ where: { id: enCurso.id }, data: { registros: [...new Set(registros as string[])] } });
+  const datos = (enCurso.datos ?? {}) as DatosEnCurso;
+  const todosVistos = [...new Set([...(datos.vistos ?? []), ...vistos, ...(registros as string[])])];
+  return prisma.declaracionAeat.update({
+    where: { id: enCurso.id },
+    data: { registros: [...new Set(registros as string[])], datos: { ...datos, vistos: todosVistos } as Prisma.InputJsonValue },
+  });
 }
 
 /**

@@ -297,8 +297,8 @@ export async function calcularBorrador349(companyId: string, ejercicio: number, 
       declaracionAnterior: opciones.declaracionAnterior,
     },
     // Complementaria: solo los registros elegidos (por defecto, los que no estaban en la presentada).
-    operadores: registrosElegidos(operadores, claveOperador, decl.seleccion),
-    rectificaciones: registrosElegidos(rects, claveRectificacion349, decl.seleccion),
+    operadores: registrosElegidos(operadores, claveOperador, decl.incluye),
+    rectificaciones: registrosElegidos(rects, claveRectificacion349, decl.incluye),
   };
   // Presentada: se enseña (y se descarga) lo que se presento.
   const presentada = presentacionDe<Entrada349>(fila);

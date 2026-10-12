@@ -10,7 +10,9 @@ import {
   configModelo,
   contextoDeclaracion,
   entradaRectificacion,
+  guardarRegistros,
   historialDeclaraciones,
+  incluyeRegistro,
   prepararRectificacion,
   registrarPresentacion,
   type CodigoAeat,
@@ -71,9 +73,16 @@ export async function historialConRegistros(companyId: string, codigo: CodigoAea
   const [historial, ctx] = await Promise.all([historialDeclaraciones(companyId, codigo, ejercicio, periodo), contextoDeclaracion(companyId, codigo, ejercicio, periodo)]);
   if (ctx.config.clase !== 'informativa' || !ctx.enCurso || ctx.enCurso.tipo !== 'C') return { ...historial, registros: null };
   const actuales = await registrosActuales(companyId, codigo, ejercicio, periodo);
-  const elegidos = new Set(ctx.registros ?? []);
+  // Los elegidos y los que han aparecido después de preparar la complementaria (sin presentar antes).
+  const incluye = incluyeRegistro(ctx) ?? (() => true);
   return {
     ...historial,
-    registros: actuales.map((r) => ({ ...r, presentado: ctx.registrosPresentados.has(r.clave), incluido: elegidos.has(r.clave) })),
+    registros: actuales.map((r) => ({ ...r, presentado: ctx.registrosPresentados.has(r.clave), incluido: incluye(r.clave) })),
   };
+}
+
+/** Guarda los registros elegidos de la complementaria y apunta como vistos los que hay ahora. */
+export async function guardarRegistrosModelo(companyId: string, codigo: CodigoAeat, ejercicio: number, periodo: string, registros: unknown): Promise<void> {
+  const actuales = configModelo(codigo).clase === 'informativa' ? (await registrosActuales(companyId, codigo, ejercicio, periodo)).map((r) => r.clave) : [];
+  await guardarRegistros(companyId, codigo, ejercicio, periodo, registros, actuales);
 }

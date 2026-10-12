@@ -85,7 +85,7 @@ export async function declaracion190(companyId: string, ejercicio: number) {
     numeroAnterior: decl.declaracionAnterior ?? undefined,
     numeroDeclaracion: decl.numeroDeclaracion,
   };
-  const elegidos = decl.tipoDeclaracion === 'C' && decl.seleccion ? m.perceptores.filter((p) => decl.seleccion!.includes(idRegistro190(p))) : m.perceptores;
+  const elegidos = decl.tipoDeclaracion === 'C' && decl.incluye ? m.perceptores.filter((p) => decl.incluye!(idRegistro190(p))) : m.perceptores;
   const errores = erroresFichero190(declarante, elegidos);
   if (decl.tipoDeclaracion === 'C' && decl.seleccion && !elegidos.length) errores.unshift(MENSAJE_COMPLEMENTARIA_SIN_SELECCION);
   return { modelo: m, declarante, perceptores: elegidos, todos: m.perceptores, errores, decl };

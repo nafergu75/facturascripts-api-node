@@ -325,6 +325,35 @@ describe('B4 y B5: 347 normal, complementaria y sustitutiva', () => {
   });
 });
 
+describe('B4: complementaria de una informativa con un registro que aparece después de prepararla', () => {
+  it('el nuevo entra solo en la propuesta y en el fichero; si se desmarca, se respeta', async () => {
+    const p = await request(app()).post(ruta('/tax-models/347/presentado', OTRA)).send({ ejercicio: 2026, justificante: { numero: '3472026000001', fecha: '2027-02-20' } });
+    expect(p.status).toBe(200);
+    const presentados = p.body.data.declaraciones[0].numeroRegistros as number;
+    const c = await request(app()).post(ruta('/tax-models/347/declaraciones/rectificacion', OTRA)).send({ ejercicio: 2026, tipo: 'C' });
+    expect(c.status).toBe(201);
+    expect(c.body.data.enCurso.registros).toEqual([]); // al prepararla no había nada nuevo
+
+    // Se registra ahora la factura olvidada: el cliente nuevo pasa del umbral.
+    const nuevo = await prisma.customer.create({ data: { companyId: OTRA, nombreFiscal: 'Olvidado Después SL', nifCif: 'B87654323', pais: 'ES', cp: '28001' } });
+    await venta(OTRA, nuevo.id, '2026-10-01', 4000, 840);
+    const h = (await request(app()).get(ruta('/tax-models/347/declaraciones?ejercicio=2026', OTRA))).body.data;
+    const marcas = Object.fromEntries(h.registros.map((r: { clave: string; incluido: boolean }) => [r.clave, r.incluido]));
+    expect(marcas['B87654323|B']).toBe(true);
+    expect(Object.values(marcas).filter(Boolean)).toHaveLength(1);
+    expect(h.registros).toHaveLength(presentados + 1);
+    const lineas = (await fichero347(OTRA, 2026)).contenido.split('\r\n').filter(Boolean);
+    expect(lineas).toHaveLength(2);
+    expect(lineas[1].slice(17, 26)).toBe('B87654323');
+
+    // La persona lo desmarca: ya lo ha visto y no vuelve a proponerse.
+    const d = await request(app()).put(ruta('/tax-models/347/declaraciones/rectificacion/registros', OTRA)).send({ ejercicio: 2026, registros: [] });
+    expect(d.status).toBe(200);
+    expect(d.body.data.registros.find((r: { clave: string }) => r.clave === 'B87654323|B').incluido).toBe(false);
+    expect((await request(app()).get(ruta('/impuestos/borradores/347/fichero?ejercicio=2026', OTRA))).status).toBe(400);
+  });
+});
+
 describe('B4: 390 sustitutiva y 200 rectificativa', () => {
   it('marca y justificante de la anterior en la página 1', async () => {
     const p = await request(app()).post(ruta('/tax-models/390/presentado')).send({ ejercicio: 2026, justificante: { numero: '3902026000001', fecha: '2027-01-28' } });
