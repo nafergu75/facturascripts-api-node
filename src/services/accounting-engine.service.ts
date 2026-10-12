@@ -451,6 +451,13 @@ export async function contabilizarFacturaGasto(
      * Espana (sus facturas de gasto van sin IVA español y no presenta el 303).
      */
     sinLibroIva?: boolean;
+    /**
+     * IVA que autoliquida la empresa, por tipo (adquisicion intracomunitaria:
+     * el mismo que el 303 lleva a [10]/[11] y deduce en [36]/[37]). Va con la
+     * 472 al debe y la 477 al haber por la cuota (PGC): asi el mayor de las dos
+     * cuadra con los modelos. No cambia lo que se debe al proveedor.
+     */
+    autoliquidacion?: DesgloseIva[];
   },
   tx?: TransaccionBD,
 ): Promise<{ asientoId: string; lineas: any[] }> {
@@ -514,6 +521,18 @@ export async function contabilizarFacturaGasto(
     totalDebe += debe;
     totalHaber += haber;
   };
+  /**
+   * Apunte en su lado natural si el importe es positivo y, si es negativo, en
+   * el contrario y en valor absoluto (un abono carga la 400 y abona el gasto y
+   * la 472, como el contraasiento de una anulacion). Cero: no hay apunte.
+   */
+  const apunteConSigno = async (accountCode: string, accountName: string, lado: 'DEBE' | 'HABER', importe: number) => {
+    if (aCentimos(importe) === 0) return;
+    const enDebe = (lado === 'DEBE') === importe > 0;
+    const valor = Math.abs(importe);
+    await apunte(accountCode, accountName, enDebe ? valor : 0, enDebe ? 0 : valor);
+  };
+  const sinLibroIva = invoiceData.sinLibroIva ?? !(await esEmpresaEspanola(companyId, db));
 
   // Gasto (DEBE): una linea por cuenta. Si el reparto no cuadra con la base, todo a la del tipo.
   const porCuenta = invoiceData.gastoPorCuenta?.filter((g) => aCentimos(g.base) !== 0) ?? [];
@@ -534,6 +553,13 @@ export async function contabilizarFacturaGasto(
     for (const a of conCuota) await apunte(regla.ivaSoportado!, `IVA soportado ${a.tipoIva} %`, a.cuota, 0);
   } else if (aCentimos(invoiceData.ivaTotal) !== 0) {
     await apunte(regla.ivaSoportado!, 'IVA soportado', invoiceData.ivaTotal, 0);
+  }
+
+  // IVA autoliquidado (adquisicion intracomunitaria): soportado y repercutido
+  // por la misma cuota. Una empresa sin IVA español no autoliquida nada.
+  for (const a of sinLibroIva ? [] : (invoiceData.autoliquidacion ?? [])) {
+    await apunteConSigno(regla.ivaSoportado!, `IVA soportado autoliquidado ${a.tipoIva} %`, 'DEBE', a.cuota);
+    await apunteConSigno('477', `IVA repercutido autoliquidado ${a.tipoIva} %`, 'HABER', a.cuota);
   }
 
   // IRPF retenido al proveedor (HABER, 4751 — PASIVO con Hacienda): lo
@@ -560,7 +586,6 @@ export async function contabilizarFacturaGasto(
   // VATBook: un apunte por tipo de IVA, vinculado al asiento. Informes filtran por asientos POSTED.
   const expedicion =
     invoiceData.fechaExpedicion && invoiceData.fechaExpedicion !== invoiceData.fechaEmision ? invoiceData.fechaExpedicion : null;
-  const sinLibroIva = invoiceData.sinLibroIva ?? !(await esEmpresaEspanola(companyId, db));
   for (const a of sinLibroIva ? [] : apuntesIva) {
     await db.vATBook.create({
       data: {
