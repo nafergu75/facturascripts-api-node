@@ -146,6 +146,42 @@ describe('B6: los GET no escriben', () => {
   });
 });
 
+describe('190: la lista de perceptores de la complementaria es de Nóminas', () => {
+  it('sin nominas:read el historial no trae los perceptores (ni sus importes), y elegirlos pide nominas:write', async () => {
+    const pres = await request(app()).post(ruta('/tax-models/190/presentado')).send({ ejercicio: 2026, periodo: '0A', justificante: { numero: '1902026111111', fecha: '2027-01-20' } });
+    expect(pres.status).toBe(200);
+    expect((await request(app()).post(ruta('/tax-models/190/declaraciones/rectificacion')).send({ ejercicio: 2026, periodo: '0A', tipo: 'C' })).status).toBe(201);
+    // Con Nóminas (contable): la lista con nombre e importe.
+    const conNominas = await request(app()).get(ruta('/tax-models/190/declaraciones?ejercicio=2026'));
+    expect(conNominas.status).toBe(200);
+    expect(conNominas.body.data.registros).toEqual([expect.objectContaining({ nombre: expect.any(String), importe: 1000 })]);
+    rol = 'solo-lectura';
+    try {
+      const r = await request(app()).get(ruta('/tax-models/190/declaraciones?ejercicio=2026'));
+      expect(r.status).toBe(200);
+      expect(r.body.data.registros).toBeNull();
+      expect(r.body.data.enCurso.registros).toBeNull();
+      expect(r.body.data.avisoRegistros).toMatch(/perceptores del 190 es de Nóminas/);
+      expect(JSON.stringify(r.body.data)).not.toMatch(/Asesora Prueba|profesional:/);
+    } finally {
+      rol = 'contable';
+    }
+    // Con impuestos:write pero sin nóminas no se eligen perceptores.
+    const soloImpuestos = express();
+    soloImpuestos.use(express.json());
+    soloImpuestos.use('/companies/:companyId', (req, _res, next) => {
+      req.user = { userId: 'u-imp', roles: ['solo-lectura'], permisosPorEmpresa: { [req.params.companyId]: ['impuestos:read', 'impuestos:write'] }, companies: [req.params.companyId], rolesPorEmpresa: { [req.params.companyId]: ['solo-lectura'] } } as never;
+      req.companyId = req.params.companyId;
+      next();
+    });
+    soloImpuestos.use('/companies/:companyId/tax-models', declaracionesAeatRoutes);
+    soloImpuestos.use(errorMiddleware);
+    expect((await request(soloImpuestos).put(ruta('/tax-models/190/declaraciones/rectificacion/registros')).send({ ejercicio: 2026, periodo: '0A', registros: [] })).status).toBe(403);
+    // Se cancela para no tocar el resto de pruebas.
+    expect((await request(app()).delete(ruta('/tax-models/190/declaraciones/rectificacion?ejercicio=2026&periodo=0A'))).status).toBe(200);
+  });
+});
+
 describe('B4: 111 complementaria', () => {
   it('presentado y congelado; la complementaria lleva [29] con lo ya ingresado y el justificante', async () => {
     const p = await request(app()).post(ruta('/tax-models/111/presentado')).send({ ejercicio: 2026, periodo: '1T', justificante: { numero: '1112026000001', fecha: '2026-04-15' } });
