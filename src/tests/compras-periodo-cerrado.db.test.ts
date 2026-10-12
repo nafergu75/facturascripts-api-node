@@ -22,6 +22,8 @@ import { AccountingEngineController } from '../controllers/accounting-engine.con
 import { accountingEngineRoutes } from '../routes/accounting-engine.routes';
 import { cambiarEstadoPeriodo } from '../services/periodos.service';
 import { controlCif } from '../utils/nif';
+import { calcularBorrador303 } from '../services/impuestosModulo.service';
+import { periodoFiscal } from '../services/nominas/fiscal';
 
 const SUFIJO = `${Date.now()}`;
 const motor = new AccountingEngineController();
@@ -264,6 +266,14 @@ describe('abonos con el 303 presentado', () => {
     const asiento = await prisma.journalEntry.findFirstOrThrow({ where: { companyId: E, invoiceId: f.id, origen: 'FACTURA_GASTO' } });
     expect(asiento).toMatchObject({ estado: 'POSTED' });
     expect(asiento.fecha.toISOString().slice(0, 10)).toBe('2027-02-15');
+
+    // La pantalla del 303 de ese periodo lo recuerda.
+    const { borrador } = await calcularBorrador303(E, periodoFiscal(2027, '1T'));
+    expect(borrador.advertencias[0]).toBe(
+      'La rectificativa R-1 (registro G-2) se registró después de presentar este 303 y reduce el IVA deducido en 21,00 €: prepara la autoliquidación rectificativa de este periodo. En la contabilidad, apunta a mano la regularización del IVA (472 y 4750), el recargo (678) y los intereses de demora (669) cuando los pagues.',
+    );
+    const { borrador: siguiente } = await calcularBorrador303(E, periodoFiscal(2027, '2T'));
+    expect(siguiente.advertencias.join(' ')).not.toMatch(/R-1/);
   });
 
   it('un cargo (lo aumenta) con el 303 presentado: el texto de siempre, sin rectificar_303', async () => {
