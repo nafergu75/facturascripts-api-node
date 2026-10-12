@@ -1441,6 +1441,9 @@ async function obtenerDetalle(companyId: string, id: string): Promise<GastoDetal
     datosRectificativaDeFicha(companyId, f),
     compensacionesDe(companyId, id),
   ]);
+  // Aplicaciones de abonos que impiden anularla (el mismo texto que el 409 de anularGasto).
+  const bloqueoCompensaciones =
+    f.estado === 'ANULADA' ? null : await comprobarCompensaciones(prisma, companyId, id).then(() => null, (e: unknown) => (e instanceof HttpError ? e.message : null));
   const pendiente = f.estado === 'ANULADA' ? 0 : round2(Number(f.totalFactura) - pagado);
   const esAbono = aCentimos(Number(f.totalFactura)) < 0;
   // En una anulada se ensena el asiento original (aunque este REVERSED); el contraasiento va en `anulacion`.
@@ -1487,7 +1490,9 @@ async function obtenerDetalle(companyId: string, id: string): Promise<GastoDetal
                 motivo: `Tiene ${rect.rectificativas.length === 1 ? 'la rectificativa' : 'las rectificativas'} ${rect.rectificativas.map((x) => x.numero ?? x.numeroCompleto).join(', ')}: ${rect.rectificativas.length === 1 ? 'anúlala' : 'anúlalas'} antes de anular la factura.`,
                 conContraasiento: false,
               }
-            : { permitido: true, conContraasiento: !!bloqueo };
+            : bloqueoCompensaciones
+              ? { permitido: false, motivo: bloqueoCompensaciones, conContraasiento: false }
+              : { permitido: true, conContraasiento: !!bloqueo };
 
   return {
     id: f.id,
