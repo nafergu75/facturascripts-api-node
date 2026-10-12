@@ -1,4 +1,4 @@
-import { agregar303, agregar347, agregar349, agregar390 } from '../services/impuestosCalculo.service';
+import { agregar303, agregar347, agregar349, agregar390, clasificarCompra } from '../services/impuestosCalculo.service';
 import { FacturaFiscal, PeriodoFiscal } from '../domain/impuestos.model';
 
 const segundoTrimestre: PeriodoFiscal = {
@@ -86,5 +86,20 @@ describe('Modelo 349 (operaciones intracomunitarias)', () => {
     expect(m.operaciones).toHaveLength(1);
     expect(m.operaciones[0]).toMatchObject({ cifnif: 'FR33333333', clave: 'E', base: 2000 });
     expect(m.totalBase).toBe(2000);
+  });
+});
+
+describe('clasificación de las compras por el país del proveedor', () => {
+  it('desde 2027, como en el 349: país ISO-2 de la ficha o prefijo del NIF-IVA', () => {
+    expect(clasificarCompra('2027-03-01', 'IT', 'IT12345678901')).toBe('intracomunitaria');
+    expect(clasificarCompra('2027-03-01', 'ITA', '12345678901')).toBe('intracomunitaria');
+    expect(clasificarCompra('2027-03-01', null, 'PT123456789')).toBe('intracomunitaria');
+    expect(clasificarCompra('2027-03-01', 'ES', 'B12345678')).toBe('interior');
+    expect(clasificarCompra('2027-03-01', 'US', '12-3456789')).toBe('exportacion');
+  });
+
+  it('antes de 2027, la de siempre (los periodos ya presentados no cambian)', () => {
+    expect(clasificarCompra('2026-12-31', 'IT', 'IT12345678901')).toBe('exportacion');
+    expect(clasificarCompra('2026-12-31', 'ITA', '12345678901')).toBe('intracomunitaria');
   });
 });
