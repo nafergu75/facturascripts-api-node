@@ -103,7 +103,9 @@ describe('empresa A: todo junto, sin regularizar, con diario', () => {
     expect(r.vista.cartera).toMatchObject({ partidas: CARTERA_A.length, sinDetalle: 0, cobros: 12100, pagos: 5445 });
     expect(r.vista.inmovilizado).toMatchObject({ activos: 2, seImporta: true });
     expect(r.vista.llevanzaExterna).toBe(true);
-    expect(r.vista.confirmacion).toMatch(/^Se crearán \d+ cuentas, 6 clientes y proveedores, 11 asientos de 2026, la apertura del 1-1-2027 y 5 facturas pendientes\. Podrás deshacerlo/);
+    expect(r.vista.confirmacion).toMatch(
+      /^Se crearán \d+ cuentas, 6 clientes y proveedores, 11 asientos de 2026, la apertura del 1-1-2027, 5 facturas pendientes y 2 bienes de inmovilizado\. 2026 quedará como «lo llevó la gestoría»: se podrá consultar, pero no apuntar nada con fecha de 2026\. Podrás deshacerlo/,
+    );
     expect(r.vista.puedeConfirmar).toBe(true);
     // El mismo análisis da la misma huella.
     const otra = await reanalizar(E, 2027, r.carga.id, USUARIO, undefined, TODOS);
@@ -218,11 +220,11 @@ describe('empresa B: 8 dígitos, regularizado, PyG aparte, sin diario', () => {
   const E = `arr-b-${SUFIJO}`;
   beforeAll(() => empresa(E));
 
-  it('faltan datos (diario y resultado), pero se puede traer; la apertura lleva el resultado de la 129', async () => {
+  it('faltan datos (diario), pero se puede traer; el resultado lo da la PyG; la apertura lleva el resultado de la 129', async () => {
     const b = ficherosEmpresaB();
     const r = await subirYAnalizar(E, 2027, USUARIO, ficheros(Object.values(b)), undefined, TODOS);
     expect(r.vista.comprobaciones.nivel).toBe('FALTAN_DATOS');
-    expect(r.vista.comprobaciones.puntos.filter((p) => p.nivel === 'FALTA').map((p) => p.clave)).toEqual(['falta:DIARIO', 'resultado-declarado', 'bancos:extracto', 'bancos:cuenta', 'iva:303-4t']);
+    expect(r.vista.comprobaciones.puntos.filter((p) => p.nivel === 'FALTA').map((p) => p.clave)).toEqual(['falta:DIARIO', 'bancos:extracto', 'bancos:cuenta', 'iva:303-4t']);
     expect(r.vista.apertura).toMatchObject({ tipoSumasSaldos: 'REGULARIZADO', resultado: 3000 });
     expect(r.vista.plan.longitud.delPlan).toBe(8);
     await confirmarCarga(E, 2027, r.carga.id, r.vista.huella, USUARIO);
@@ -237,10 +239,9 @@ describe('empresa B: 8 dígitos, regularizado, PyG aparte, sin diario', () => {
     // El panel avisa de lo que falta.
     expect(await avisoArranque(E)).toMatchObject({
       nivel: 'FALTAN_DATOS',
-      total: 5,
+      total: 4,
       puntos: [
         expect.stringMatching(/^Falta el libro diario/),
-        expect.stringMatching(/^Escribe el resultado de 2026/),
         expect.stringMatching(/^Escribe el saldo del extracto/),
         expect.stringMatching(/cuenta de bancos no está enlazada/),
         expect.stringMatching(/^Escribe el resultado del 303 del 4T/),
