@@ -22,6 +22,14 @@ import { esFechaReal, validarFacturaGasto, type FacturaGastoBody } from '../sche
 import { r2GastoConSigno } from '../domain/rectificativa-gasto.model';
 import { contabilizarFacturaGasto, desgloseIvaPorTipo } from './accounting-engine.service';
 import { autoliquidacionPorTipo, clasificarCompra } from './impuestosCalculo.service';
+import {
+  columnasRectificativa,
+  comprobarSinRectificativas,
+  datosRectificativaDeFicha,
+  guardarEnlaces,
+  prepararRectificativa,
+  type PlanRectificativa,
+} from './rectificativasGasto.service';
 import { asegurarPlanContableEmpresa } from './chart-of-accounts.service';
 import { tieneCobrosActivos } from './cobrosPagos.service';
 import { comprobarFechaAbierta, periodoNoAbierto } from './periodos.service';
@@ -149,6 +157,16 @@ export interface GastoDetalle extends ExpenseInvoiceResp {
     /** Factura anterior sin contabilizar y sin asiento: se contabiliza con el boton. */
     contabilizar: boolean;
   };
+  /** Abono o rectificativa de proveedor (importes con signo). */
+  esRectificativa: boolean;
+  /** En una rectificativa: que rectifica, tipo, causa y donde va su IVA. */
+  rectificativa: Awaited<ReturnType<typeof datosRectificativaDeFicha>>['rectificativa'];
+  /** En una original: sus rectificativas vigentes. */
+  rectificativas: Awaited<ReturnType<typeof datosRectificativaDeFicha>>['rectificativas'];
+  /** La original, si es una sola de la app (como en ventas). */
+  facturaOriginalId: string | null;
+  /** Avisos del alta o la correccion que no la impiden. */
+  avisos?: string[];
 }
 
 export interface FiltrosGastos {
@@ -394,7 +412,7 @@ async function asientoVigente(db: TransaccionBD | typeof prisma, companyId: stri
 
 /** Retencion de la factura para buscar el modelo presentado: 111 (profesionales) o 115 (alquileres). */
 export const retencionDe = (f: { retencionTotal: number; tipoGasto: string }) =>
-  aCentimos(Number(f.retencionTotal) || 0) > 0 ? tipoRetencionLibro(f.tipoGasto) : null;
+  aCentimos(Number(f.retencionTotal) || 0) !== 0 ? tipoRetencionLibro(f.tipoGasto) : null;
 
 /**
  * null si se puede tocar la contabilidad de esa fecha; si no, el motivo: el
@@ -560,6 +578,24 @@ function lineasParaGuardar(v: FacturaGastoBody) {
 
 const NOMBRE_CUENTA = new Map(PGC_BASE.map((n) => [n.code, n.name]));
 
+/** Lo que el asiento lleva de una rectificativa (descripcion y libro de IVA). */
+interface DatosRectificativaAsiento {
+  rectifica?: string;
+  fechaLibroIva?: string | null;
+  observacionesLibroIva?: string;
+}
+
+/** Datos del asiento de una rectificativa a partir de su plan (vacio si no lo es). */
+const extraRectificativa = (p: PlanRectificativa | null): DatosRectificativaAsiento & { cuentaAcreedor?: string | null } =>
+  p ? { cuentaAcreedor: p.cuentaAcreedor, rectifica: p.rectifica, fechaLibroIva: p.fechaImputacionIva, observacionesLibroIva: p.observacionesLibro } : {};
+
+/**
+ * Esta rectificativa reduce el IVA deducido de un periodo cuyo 303 ya esta
+ * presentado (seccion 11 de la especificacion de abonos).
+ */
+const textoRectificar303 = (motivo: string, deLaOriginal: boolean) =>
+  `Esta rectificativa reduce el IVA que dedujiste y se declara en ${deLaOriginal ? 'el periodo de la factura que corrige' : 'el periodo en que la recibiste'}. ${motivo}: hay que presentar una autoliquidación rectificativa de ese 303, que saldrá con más a ingresar y fuera de plazo (con el recargo y, en su caso, los intereses del art. 27 LGT).${deLaOriginal ? '' : ' Si te llegó más tarde, pon la fecha en que te llegó.'}`;
+
 /**
  * Datos del motor contable a partir de la factura guardada y su proveedor: la
  * fecha de registro, la cuenta de cada linea y la base de las lineas con
@@ -575,7 +611,7 @@ export function datosContablesGasto(
     nombreCuentaAcreedor?: string | null;
     /** Nombre de las cuentas de gasto en el plan de la empresa (sus subcuentas: 6280001 «Luz oficina»). */
     nombresCuentas?: Map<string, string>;
-  },
+  } & DatosRectificativaAsiento,
 ): Parameters<typeof contabilizarFacturaGasto>[2] {
   const tipo: TipoGasto = esTipoGasto(f.tipoGasto) ? f.tipoGasto : 'COMPRA';
   const porCuenta = new Map<string, number>();
@@ -614,6 +650,9 @@ export function datosContablesGasto(
       ? { autoliquidacion: autoliquidacionPorTipo(f.lineas.map((l) => ({ tipoIva: l.tipoIva, baseLine: Number(l.baseLine), ivaImporte: Number(l.ivaImporte) }))) }
       : {}),
     estadoAsiento: extra.estadoAsiento,
+    ...(extra.rectifica !== undefined ? { rectifica: extra.rectifica } : {}),
+    ...(extra.fechaLibroIva ? { fechaLibroIva: extra.fechaLibroIva } : {}),
+    ...(extra.observacionesLibroIva ? { observacionesLibroIva: extra.observacionesLibroIva } : {}),
     ...(extra.numeroAsiento ? { numeroAsiento: extra.numeroAsiento } : {}),
     ...(extra.cuentaAcreedor ? { cuentaAcreedor: extra.cuentaAcreedor } : {}),
     ...(extra.nombreCuentaAcreedor ? { nombreCuentaAcreedor: extra.nombreCuentaAcreedor } : {}),
@@ -632,7 +671,7 @@ export async function datosContablesGastoConSubcuenta(
   companyId: string,
   f: FacturaConLineas,
   s: { id: string; nifCif: string; nombreFiscal: string; pais?: string | null },
-  extraSinNombres: { estadoAsiento: 'POSTED' | 'DRAFT'; numeroAsiento?: string; cuentaAcreedor?: string | null },
+  extraSinNombres: { estadoAsiento: 'POSTED' | 'DRAFT'; numeroAsiento?: string; cuentaAcreedor?: string | null } & DatosRectificativaAsiento,
 ): Promise<Parameters<typeof contabilizarFacturaGasto>[2]> {
   // Cuentas de gasto con el nombre del plan (las subcuentas propias llevan el suyo).
   const tipo: TipoGasto = esTipoGasto(f.tipoGasto) ? f.tipoGasto : 'COMPRA';
@@ -804,6 +843,8 @@ export async function registrarGasto(companyId: string, cuerpo: unknown, opcione
   // Empresa no establecida en Espana: sin IVA español ni retenciones (como en ventas).
   const { espanola } = await perfilEmpresa(companyId);
   const v = validarFacturaGasto(bruto, { paisProveedor: prov.pais, permitirSerie: true, empresaEspanola: espanola });
+  // Abono o rectificativa: enlaces con lo que rectifica y herencia de la original (puede cambiar las lineas y el tipo de gasto).
+  const rect = v.rectificativa ? await prepararRectificativa(companyId, v, prov.existente?.id ?? null) : null;
   const { lineas, baseTotal, ivaTotal, retencionTotal, totalFactura, cabecera } = lineasParaGuardar(v);
   await comprobarCuentas(companyId, v, lineas.map((l) => l.accountCode));
   await comprobarCuentasNomina(companyId, v, lineas.map((l) => l.accountCode));
@@ -815,8 +856,17 @@ export async function registrarGasto(companyId: string, cuerpo: unknown, opcione
   await comprobarFechaAbierta(companyId, fechaContable);
   // Presentar el 303 (o el 111/115) no cierra el mes: sin esto la factura
   // entraria en un trimestre ya declarado y su IVA no se deduciria en ninguno.
-  const presentado = await motivoPeriodoBloqueado(companyId, fechaContable, retencionTotal > 0 ? tipoRetencionLibro(v.tipoGasto) : null);
-  if (presentado) throw conflict(textoPeriodoPresentado(presentado), { campo: 'fechaRegistro' });
+  const retencion = aCentimos(retencionTotal) !== 0 ? tipoRetencionLibro(v.tipoGasto) : null;
+  const presentado = await motivoPeriodoBloqueado(companyId, fechaContable, retencion);
+  if (presentado) {
+    if (rect && aCentimos(ivaTotal) < 0) throw conflict(textoRectificar303(presentado, false), { campo: 'fechaRegistro', motivo: 'rectificar_303' });
+    throw conflict(textoPeriodoPresentado(presentado), { campo: 'fechaRegistro' });
+  }
+  // ERROR_IVA que reduce: su IVA va al 303 del periodo de la original.
+  if (rect?.fechaImputacionIva) {
+    const delOriginal = await motivoPeriodoBloqueado(companyId, rect.fechaImputacionIva, null);
+    if (delOriginal) throw conflict(textoRectificar303(delOriginal, true), { campo: 'rectificativa', motivo: 'rectificar_303' });
+  }
   await asegurarPlanContableEmpresa(companyId);
 
   const { fechaEmision, fechaVencimiento } = resolverFechasGasto({ fechaEmision: v.fechaEmision, fechaVencimiento: v.fechaVencimiento });
@@ -853,11 +903,13 @@ export async function registrarGasto(companyId: string, cuerpo: unknown, opcione
             tipoRetencion: cabecera.tipoRetencion,
             totalFactura,
             observaciones,
+            ...columnasRectificativa(rect),
             lineas: { create: lineas },
           },
           include: { lineas: true },
         });
-        const datos = await datosContablesGastoConSubcuenta(tx, companyId, f, supplier, { estadoAsiento: opciones.contabilizar });
+        if (rect) await guardarEnlaces(tx, companyId, f.id, rect.enlaces);
+        const datos = await datosContablesGastoConSubcuenta(tx, companyId, f, supplier, { estadoAsiento: opciones.contabilizar, ...extraRectificativa(rect) });
         const { asientoId } = await contabilizarFacturaGasto(companyId, f.id, datos, tx);
         return { id: f.id, asientoId, supplierId: supplier.id };
       }, OPCIONES_TX);
@@ -883,9 +935,11 @@ export async function registrarGasto(companyId: string, cuerpo: unknown, opcione
     action: opciones.contabilizar === 'POSTED' ? 'ALTA_FACTURA_GASTO' : 'ALTA_FACTURA_GASTO_LECTOR',
     resourceType: 'ExpenseInvoice',
     resourceId: resultado.id,
-    meta: { asientoId: resultado.asientoId, proveedorCreado },
+    meta: { asientoId: resultado.asientoId, proveedorCreado, ...(rect ? { rectificativa: { tipo: rect.tipo, causa: rect.causa, rectifica: rect.rectifica } } : {}) },
   });
-  return { factura: await obtenerDetalle(companyId, resultado.id), asientoId: resultado.asientoId, proveedorCreado };
+  const factura = await obtenerDetalle(companyId, resultado.id);
+  const avisos = [...(rect?.avisos ?? v.avisos ?? [])];
+  return { factura: avisos.length ? { ...factura, avisos } : factura, asientoId: resultado.asientoId, proveedorCreado };
 }
 
 /**
@@ -1055,10 +1109,30 @@ export async function editarGasto(
 
   const bruto = { ...((cuerpo ?? {}) as Record<string, unknown>) };
   if (bruto.proveedor === undefined && bruto.provider !== undefined) bruto.proveedor = bruto.provider;
+  if (bruto.rectificativa === null) delete bruto.rectificativa;
+  if (actual.esRectificativa !== (bruto.rectificativa !== undefined)) {
+    throw badRequest(
+      actual.esRectificativa
+        ? 'Es un abono o una rectificativa: envía también el bloque «rectificativa». Para convertirla en una factura normal, anúlala y regístrala de nuevo.'
+        : 'Una factura no se convierte en abono: registra el abono aparte (Compras › Nueva › Abono o rectificativa).',
+      { campo: 'rectificativa' },
+    );
+  }
   const prov = await prepararProveedor(companyId, bruto.proveedor);
   const { espanola } = await perfilEmpresa(companyId);
   const v = validarFacturaGasto(bruto, { paisProveedor: prov.pais, permitirSerie: false, empresaEspanola: espanola });
+  const rect = v.rectificativa ? await prepararRectificativa(companyId, v, prov.existente?.id ?? null, { excluirId: id }) : null;
   const { lineas, baseTotal, ivaTotal, retencionTotal, totalFactura, cabecera } = lineasParaGuardar(v);
+  // Con rectificativas vigentes, sus importes y su proveedor no cambian (los demas datos, si).
+  const cambiaImportes =
+    prov.existente?.id !== actual.supplierId ||
+    [
+      [baseTotal, actual.baseTotal],
+      [ivaTotal, actual.ivaTotal],
+      [retencionTotal, actual.retencionTotal],
+      [totalFactura, actual.totalFactura],
+    ].some(([a, b]) => aCentimos(Number(a)) !== aCentimos(Number(b)));
+  if (cambiaImportes) await comprobarSinRectificativas(companyId, id, 'corregir');
   await comprobarCuentas(companyId, v, lineas.map((l) => l.accountCode));
   await comprobarCuentasNomina(companyId, v, lineas.map((l) => l.accountCode));
   const numeroActivo = normalizarNumeroProveedor(v.numeroFacturaProveedor);
@@ -1067,8 +1141,12 @@ export async function editarGasto(
   const fechaNueva = v.fechaRegistro ?? v.fechaEmision;
   await comprobarFechaAbierta(companyId, fechaNueva);
   if (enModelos) {
-    const motivo = await motivoPeriodoBloqueado(companyId, fechaNueva, retencionTotal > 0 ? tipoRetencionLibro(v.tipoGasto) : null);
+    const motivo = await motivoPeriodoBloqueado(companyId, fechaNueva, aCentimos(retencionTotal) !== 0 ? tipoRetencionLibro(v.tipoGasto) : null);
     if (motivo) throw await bloqueo(motivo, fechaNueva);
+    if (rect?.fechaImputacionIva) {
+      const delOriginal = await motivoPeriodoBloqueado(companyId, rect.fechaImputacionIva, null);
+      if (delOriginal) throw conflict(textoRectificar303(delOriginal, true), { campo: 'rectificativa', motivo: 'rectificar_303' });
+    }
   }
   if (asiento) await asegurarPlanContableEmpresa(companyId);
 
@@ -1102,10 +1180,12 @@ export async function editarGasto(
           tipoRetencion: cabecera.tipoRetencion,
           totalFactura,
           observaciones: v.observaciones?.trim() || null,
+          ...columnasRectificativa(rect),
           lineas: { create: lineas },
         },
         include: { lineas: true },
       });
+      if (rect) await guardarEnlaces(tx, companyId, id, rect.enlaces);
       if (!asiento) return { asientoNuevo: null, supplierId: supplier.id };
 
       await borrarLibrosDeAsiento(tx, companyId, asiento.id);
@@ -1116,7 +1196,11 @@ export async function editarGasto(
         const nuevo = await contabilizarFacturaGasto(
           companyId,
           id,
-          await datosContablesGastoConSubcuenta(tx, companyId, f, supplier, { estadoAsiento: 'POSTED', numeroAsiento: `FAC-GAST-${f.numeroCompleto}-R${previos}` }),
+          await datosContablesGastoConSubcuenta(tx, companyId, f, supplier, {
+            estadoAsiento: 'POSTED',
+            numeroAsiento: `FAC-GAST-${f.numeroCompleto}-R${previos}`,
+            ...extraRectificativa(rect),
+          }),
           tx,
         );
         return { asientoNuevo: nuevo.asientoId, supplierId: supplier.id };
@@ -1126,7 +1210,7 @@ export async function editarGasto(
       const nuevo = await contabilizarFacturaGasto(
         companyId,
         id,
-        await datosContablesGastoConSubcuenta(tx, companyId, f, supplier, { estadoAsiento: 'DRAFT', numeroAsiento: asiento.numeroAsiento }),
+        await datosContablesGastoConSubcuenta(tx, companyId, f, supplier, { estadoAsiento: 'DRAFT', numeroAsiento: asiento.numeroAsiento, ...extraRectificativa(rect) }),
         tx,
       );
       if (asiento.estado !== 'DRAFT') await tx.journalEntry.update({ where: { id: nuevo.asientoId }, data: { estado: asiento.estado } });
@@ -1147,7 +1231,9 @@ export async function editarGasto(
     resourceId: id,
     meta: { asientoAnterior: asiento?.id ?? null, asientoNuevo: r.asientoNuevo },
   });
-  return obtenerDetalle(companyId, id);
+  const detalle = await obtenerDetalle(companyId, id);
+  const avisos = [...(rect?.avisos ?? v.avisos ?? [])];
+  return avisos.length ? { ...detalle, avisos } : detalle;
 }
 
 /**
@@ -1167,6 +1253,7 @@ export async function anularGasto(
   if (!f) throw notFound('Factura de gasto no encontrada.');
   if (f.estado === 'ANULADA') throw conflict('La factura ya está anulada.');
   if (await tieneCobrosActivos(companyId, 'GASTO', id)) throw conflict('La factura tiene pagos registrados: anúlalos antes de anularla.');
+  await comprobarSinRectificativas(companyId, id, 'anular');
 
   const motivo = typeof datos.motivo === 'string' ? datos.motivo.trim() : '';
   if (motivo.length < 3) throw badRequest('Indica el motivo de la anulación.', { campo: 'motivo' });
@@ -1313,7 +1400,7 @@ async function obtenerDetalle(companyId: string, id: string): Promise<GastoDetal
   });
   if (!f) throw notFound('Factura de gasto no encontrada.');
 
-  const [{ pagado, activos }, perfil] = await Promise.all([pagosDe(companyId, id), perfilEmpresa(companyId)]);
+  const [{ pagado, activos }, perfil, rect] = await Promise.all([pagosDe(companyId, id), perfilEmpresa(companyId), datosRectificativaDeFicha(companyId, f)]);
   // En una anulada se ensena el asiento original (aunque este REVERSED); el contraasiento va en `anulacion`.
   const asiento =
     f.estado === 'ANULADA'
@@ -1352,7 +1439,13 @@ async function obtenerDetalle(companyId: string, id: string): Promise<GastoDetal
         ? { permitido: false, motivo: 'La factura tiene pagos registrados: anúlalos antes de anularla.', conContraasiento: false }
         : bloqueoAnular
           ? { permitido: false, motivo: bloqueoAnular.texto, conContraasiento: false }
-          : { permitido: true, conContraasiento: !!bloqueo };
+          : rect.rectificativas.length
+            ? {
+                permitido: false,
+                motivo: `Tiene ${rect.rectificativas.length === 1 ? 'la rectificativa' : 'las rectificativas'} ${rect.rectificativas.map((x) => x.numero ?? x.numeroCompleto).join(', ')}: ${rect.rectificativas.length === 1 ? 'anúlala' : 'anúlalas'} antes de anular la factura.`,
+                conContraasiento: false,
+              }
+            : { permitido: true, conContraasiento: !!bloqueo };
 
   return {
     id: f.id,
@@ -1392,6 +1485,8 @@ async function obtenerDetalle(companyId: string, id: string): Promise<GastoDetal
       anular,
       contabilizar: ESTADOS_SIN_CONTABILIZAR.includes(f.estado) && !asiento,
     },
+    esRectificativa: f.esRectificativa,
+    ...rect,
     createdAt: f.createdAt,
     updatedAt: f.updatedAt,
   };
