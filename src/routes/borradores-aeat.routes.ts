@@ -61,13 +61,23 @@ router.put(
   asyncHandler(async (req, res) => {
     const ejercicio = ejercicioDe(req.body?.ejercicio);
     const periodo = periodoDe(req.body?.periodo);
-    const opciones: Record<string, string | boolean | null> = {};
+    const opciones: Record<string, string | number | boolean | null> = {};
     if ('tipoDeclaracion' in (req.body ?? {}) || 'declaracionAnterior' in (req.body ?? {})) {
       throw badRequest('La complementaria o sustitutiva del 349 se prepara desde su historial de declaraciones, después de marcar la anterior como presentada.');
     }
     if ('cambioPeriodicidad' in (req.body ?? {})) {
       if (typeof req.body.cambioPeriodicidad !== 'boolean') throw badRequest('"cambioPeriodicidad" tiene que ser sí o no.');
       opciones.cambioPeriodicidad = req.body.cambioPeriodicidad || null;
+    }
+    // Bases declaradas a mano en 349 que no estan en la app (abonos de facturas de 2026 llevadas fuera).
+    if ('basesDeclaradas' in (req.body ?? {})) {
+      const b = req.body.basesDeclaradas as unknown;
+      if (!b || typeof b !== 'object' || Array.isArray(b)) throw badRequest('"basesDeclaradas" tiene que ser una lista de bases por operador y periodo.');
+      for (const [clave, v] of Object.entries(b as Record<string, unknown>)) {
+        if (!/^[A-Z0-9]{3,20}\|[A-Z]\|\d{4}\|(?:[1-4]T|0[1-9]|1[0-2])$/.test(clave)) throw badRequest(`La clave "${clave}" no es de una rectificación del 349.`);
+        if (v !== null && (typeof v !== 'number' || !Number.isFinite(v) || v < 0)) throw badRequest('La base declarada tiene que ser un importe de cero o más.');
+        opciones[`base:${clave}`] = v === null ? null : (v as number);
+      }
     }
     await guardarOpciones(empresa(req), '349', ejercicio, periodo, opciones);
     sendOk(res, await calcularBorrador349(empresa(req), ejercicio, periodo));
