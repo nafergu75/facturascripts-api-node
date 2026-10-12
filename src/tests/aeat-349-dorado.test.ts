@@ -19,7 +19,7 @@ import {
   leerFichero349,
   type Entrada349,
 } from '../aeat/modelo349/modelo349.dr';
-import { separarNifIva } from '../aeat/common/normalizacion';
+import { motivoNifIvaNoValido, separarNifIva } from '../aeat/common/normalizacion';
 
 const NIF = `B4612345${controlCif('4612345').cifra}`;
 
@@ -214,6 +214,25 @@ describe('349: lo que impide el fichero', () => {
     expect(separarNifIva('B12345678', 'ES')).toBeNull();
     expect(separarNifIva('123456789', 'US')).toBeNull();
     expect(separarNifIva('', 'DE')).toBeNull();
+  });
+
+  it('NIF-IVA con la composición de su Estado (tabla del diseño): DE12AB es un error que dice cuál es la forma', () => {
+    const e = entrada();
+    e.operadores.push({ nifIva: 'DE12AB', nombre: 'Corto GmbH', clave: 'E', base: 10 });
+    e.operadores.push({ nifIva: 'FR1234', nombre: 'Court SARL', clave: 'E', base: 10 });
+    e.operadores.push({ nifIva: 'AT U12345678', nombre: 'Wien GmbH', clave: 'E', base: 10 });
+    e.operadores.push({ nifIva: 'NL123456789B01', nombre: 'Rotterdam BV', clave: 'E', base: 10 });
+    e.operadores.push({ nifIva: 'RO12', nombre: 'Bucuresti SRL', clave: 'E', base: 10 });
+    const errores = erroresEntrada349(e);
+    expect(errores).toEqual([
+      expect.stringMatching(/Corto GmbH.*Alemania el NIF-IVA lleva 9 cifras detrás de DE, y DE12AB tiene 4 caracteres con letras.*ficha/),
+      expect.stringMatching(/Court SARL.*Francia el NIF-IVA lleva 11 letras o cifras/),
+    ]);
+    expect(() => generarFichero349(e)).toThrow(/DE12AB/);
+    expect(motivoNifIvaNoValido('CZ', '12345678')).toBeNull();
+    expect(motivoNifIvaNoValido('CZ', '1234567')).toMatch(/8, 9 o 10 cifras/);
+    expect(motivoNifIvaNoValido('RO', '1')).toMatch(/de 2 a 10 cifras/);
+    expect(motivoNifIvaNoValido('XX', '1')).toBeNull();
   });
 
   // El número de la declaración lo pone el historial (declaracionesAeat): ver aeat-declaraciones.db.test.

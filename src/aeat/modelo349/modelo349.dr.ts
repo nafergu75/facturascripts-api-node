@@ -11,7 +11,7 @@
  */
 import { DISENO_349 } from '../../domain/aeat/disenos';
 import { componerRegistroDr, leerRegistroDr, registroDe, type CampoLeidoDr } from '../common/disenoRegistro';
-import { errorNifDeclarante, nifDerecha, separarNifIva, telefonoAeat, textoAeat } from '../common/normalizacion';
+import { errorNifDeclarante, motivoNifIvaNoValido, nifDerecha, separarNifIva, telefonoAeat, textoAeat } from '../common/normalizacion';
 import { PAISES_UE } from '../../domain/tipo-operacion.model';
 
 /** E entregas, M entregas tras importacion exenta, H idem por representante fiscal, A adquisiciones de bienes,
@@ -112,15 +112,25 @@ export function erroresEntrada349(e: Entrada349): string[] {
       errores.push(`${etiqueta(o)}: la clave "${o.clave}" no existe en el 349.`);
       return;
     }
-    if (!separarNifIva(o.nifIva, o.pais)) errores.push(`${etiqueta(o)}: ${que} necesita el NIF-IVA de otro país de la UE, con su código de país.`);
+    const nifIva = separarNifIva(o.nifIva, o.pais);
+    if (!nifIva) errores.push(`${etiqueta(o)}: ${que} necesita el NIF-IVA de otro país de la UE, con su código de país.`);
+    else {
+      // Composición de cada Estado (diseño del 349): un NIF-IVA mal escrito lo rechaza la sede.
+      const motivo = motivoNifIvaNoValido(nifIva.pais, nifIva.numero);
+      if (motivo) errores.push(`${etiqueta(o)}: el NIF-IVA no tiene la forma de su país: ${motivo}. Corrígelo en la ficha del cliente o del proveedor.`);
+    }
     // Un nombre solo con letras que la AEAT no admite (griego, cirílico...) queda vacío en el fichero.
     if (!textoAeat(o.nombre)) {
       errores.push(
         `${etiqueta(o)}: el nombre no tiene ningún carácter que admita la AEAT. Escribe en la ficha del cliente o del proveedor el nombre fiscal en caracteres latinos (por ejemplo, transliterado).`,
       );
     }
-    if (o.clave === 'C' && (!o.sustituto || !separarNifIva(o.sustituto.nifIva, o.sustituto.pais))) {
+    const nifSustituto = o.clave === 'C' && o.sustituto ? separarNifIva(o.sustituto.nifIva, o.sustituto.pais) : null;
+    const motivoSustituto = nifSustituto ? motivoNifIvaNoValido(nifSustituto.pais, nifSustituto.numero) : null;
+    if (o.clave === 'C' && (!o.sustituto || !nifSustituto)) {
       errores.push(`${etiqueta(o)}: con la clave C hay que indicar el NIF-IVA del sustituto.`);
+    } else if (motivoSustituto) {
+      errores.push(`${etiqueta(o)}: el NIF-IVA del sustituto no tiene la forma de su país: ${motivoSustituto}.`);
     } else if (o.clave === 'C' && o.sustituto && !textoAeat(o.sustituto.nombre)) {
       errores.push(`${etiqueta(o)}: el nombre del sustituto no tiene ningún carácter que admita la AEAT. Escríbelo en caracteres latinos.`);
     }

@@ -117,6 +117,65 @@ export function separarNifIva(nif: unknown, paisFicha?: string | null): { pais: 
   return { pais: pais === 'GR' ? 'EL' : pais, numero: limpio };
 }
 
+/**
+ * Composición del NIF-IVA de cada Estado (número sin el código de país), tal
+ * como la da el diseño de registro del modelo 349 (Orden HAC, anexo, registro
+ * de tipo 2, «Composición del NIF comunitario de los distintos Estados»):
+ * longitudes admitidas y si solo lleva cifras. XI (Irlanda del Norte) sigue la
+ * regla de GB.
+ */
+const COMPOSICION_NIF_IVA: Readonly<Record<string, { nombre: string; longitudes: number[]; numerico: boolean }>> = {
+  DE: { nombre: 'Alemania', longitudes: [9], numerico: true },
+  AT: { nombre: 'Austria', longitudes: [9], numerico: false },
+  BE: { nombre: 'Bélgica', longitudes: [10], numerico: true },
+  BG: { nombre: 'Bulgaria', longitudes: [9, 10], numerico: true },
+  CY: { nombre: 'Chipre', longitudes: [9], numerico: false },
+  HR: { nombre: 'Croacia', longitudes: [11], numerico: true },
+  DK: { nombre: 'Dinamarca', longitudes: [8], numerico: true },
+  SI: { nombre: 'Eslovenia', longitudes: [8], numerico: true },
+  EE: { nombre: 'Estonia', longitudes: [9], numerico: true },
+  FI: { nombre: 'Finlandia', longitudes: [8], numerico: true },
+  FR: { nombre: 'Francia', longitudes: [11], numerico: false },
+  EL: { nombre: 'Grecia', longitudes: [9], numerico: true },
+  GB: { nombre: 'Reino Unido', longitudes: [5, 9, 12], numerico: false },
+  XI: { nombre: 'Irlanda del Norte', longitudes: [5, 9, 12], numerico: false },
+  NL: { nombre: 'Países Bajos', longitudes: [12], numerico: false },
+  HU: { nombre: 'Hungría', longitudes: [8], numerico: true },
+  IT: { nombre: 'Italia', longitudes: [11], numerico: true },
+  IE: { nombre: 'Irlanda', longitudes: [8, 9], numerico: false },
+  LV: { nombre: 'Letonia', longitudes: [11], numerico: true },
+  LT: { nombre: 'Lituania', longitudes: [9, 12], numerico: true },
+  LU: { nombre: 'Luxemburgo', longitudes: [8], numerico: true },
+  MT: { nombre: 'Malta', longitudes: [8], numerico: true },
+  PL: { nombre: 'Polonia', longitudes: [10], numerico: true },
+  PT: { nombre: 'Portugal', longitudes: [9], numerico: true },
+  CZ: { nombre: 'República Checa', longitudes: [8, 9, 10], numerico: true },
+  SK: { nombre: 'República Eslovaca', longitudes: [10], numerico: true },
+  RO: { nombre: 'Rumanía', longitudes: [2, 3, 4, 5, 6, 7, 8, 9, 10], numerico: true },
+  SE: { nombre: 'Suecia', longitudes: [12], numerico: true },
+};
+
+/**
+ * Por qué el número de un NIF-IVA no tiene la composición de su Estado (texto
+ * para la persona), o null si la tiene o el Estado no está en la tabla. No
+ * consulta VIES: solo la forma.
+ */
+export function motivoNifIvaNoValido(pais: string, numero: string): string | null {
+  const regla = COMPOSICION_NIF_IVA[pais];
+  if (!regla) return null;
+  const n = String(numero ?? '').toUpperCase();
+  const tipo = regla.numerico ? 'cifras' : 'letras o cifras';
+  const longitudes =
+    regla.longitudes.length > 3
+      ? `de ${regla.longitudes[0]} a ${regla.longitudes[regla.longitudes.length - 1]}`
+      : regla.longitudes.join(regla.longitudes.length === 2 ? ' o ' : ', ').replace(/, (\d+)$/, ' o $1');
+  const forma = `${longitudes} ${tipo} detrás de ${pais}`;
+  if (!(regla.numerico ? /^\d+$/ : /^[A-Z0-9]+$/).test(n) || !regla.longitudes.includes(n.length)) {
+    return `en ${regla.nombre} el NIF-IVA lleva ${forma}, y ${pais}${n} tiene ${n.length} ${n.length === 1 ? 'carácter' : 'caracteres'}${regla.numerico && /\D/.test(n) ? ' con letras' : ''}`;
+  }
+  return null;
+}
+
 /** IBAN sin blancos y en mayúsculas si pasa el mod-97; null si falta o no vale. */
 export function ibanAeat(valor: unknown): string | null {
   const iban = String(valor ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '');
