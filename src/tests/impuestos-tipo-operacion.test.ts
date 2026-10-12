@@ -164,12 +164,19 @@ describe('facturas anteriores al azar: igual que la copia congelada de los agreg
     });
   }
 
+  // Unico cambio querido desde la copia congelada: en el deducible del 303 y
+  // del 390 ya no entran las lineas de compra al 0 % sin cuota (la parte
+  // exenta no es base de cuotas deducibles). La copia se compara con esas
+  // lineas quitadas; el resto de cifras tiene que salir igual.
+  const sinExentasEnCompras = (fs: FacturaFiscal[]): FacturaFiscal[] =>
+    fs.map((f) => (f.tipo === 'compra' ? { ...f, lineas: f.lineas.filter((l) => l.cuota !== 0 || l.tipoIva > 0) } : f));
+
   it('303, 347 y 390 dan lo mismo; el 349, los mismos importes agrupados por operador y clave', () => {
     for (let vuelta = 0; vuelta < 40; vuelta++) {
       const fs = facturasAlAzar(25);
       for (const periodo of [T3, { ...T3, periodo: '1T', fechaInicio: '2026-01-01', fechaFin: '2026-03-31' }]) {
         const compensar = vuelta % 3 === 0 ? 150 : 0;
-        expect(agregar303(fs, periodo, compensar)).toEqual(agregar303Anterior(fs, periodo, compensar));
+        expect(agregar303(fs, periodo, compensar)).toEqual(agregar303Anterior(sinExentasEnCompras(fs), periodo, compensar));
 
         const antes349 = agregar349Anterior(fs, periodo);
         const ahora349 = agregar349(fs, periodo);
@@ -180,7 +187,7 @@ describe('facturas anteriores al azar: igual que la copia congelada de los agreg
       }
       expect(agregar347(fs, 2026)).toEqual(agregar347Anterior(fs, 2026));
       const { volumen: _v, advertencias: _a, ...a390 } = agregar390(fs, 2026);
-      expect(a390).toEqual(agregar390Anterior(fs, 2026));
+      expect(a390).toEqual(agregar390Anterior(sinExentasEnCompras(fs), 2026));
       // Sin ventas con tipo, [108] es [99], como antes.
       expect(_v?.total).toBe(a390.volumenOperaciones);
     }

@@ -1,4 +1,4 @@
-import { agregar303, agregar347, agregar349 } from '../services/impuestosCalculo.service';
+import { agregar303, agregar347, agregar349, agregar390 } from '../services/impuestosCalculo.service';
 import { FacturaFiscal, PeriodoFiscal } from '../domain/impuestos.model';
 
 const segundoTrimestre: PeriodoFiscal = {
@@ -23,6 +23,27 @@ describe('Modelo 303 (IVA trimestral)', () => {
     expect(m.totalCuotaDeducible).toBe(84); // C1
     expect(m.resultado).toBe(126);
     expect(m.casillas['71_resultado']).toBe(126);
+  });
+});
+
+describe('compra con una parte exenta (al 0 %, sin cuota)', () => {
+  // 100 al 21 % y 400 exentos (seguro, tasas...): solo los 100 son base de cuotas deducibles.
+  const mixta: FacturaFiscal[] = [
+    { idFactura: 'C2', tipo: 'compra', cifnif: 'B44444444', nombreTercero: 'Gestoria', fecha: '2026-05-15', operacion: 'interior', lineas: [{ tipoIva: 21, base: 100, cuota: 21 }, { tipoIva: 0, base: 400, cuota: 0 }] },
+  ];
+
+  it('303: [28] es la base de la parte con IVA, no la de la exenta', () => {
+    const m = agregar303(mixta, segundoTrimestre);
+    expect(m.casillas['28_base_deducible']).toBe(100);
+    expect(m.casillas['29_cuota_deducible']).toBe(21);
+    expect(m.ivaDeducible).toEqual([{ tipo: 21, base: 100, cuota: 21 }]);
+    expect(m.totalBaseDeducible).toBe(100);
+  });
+
+  it('390: el deducible no lleva una fila al 0 %', () => {
+    const m = agregar390(mixta, 2026);
+    expect(m.resumenDeducible).toEqual([{ tipo: 21, base: 100, cuota: 21 }]);
+    expect(m.totalCuotaDeducible).toBe(21);
   });
 });
 

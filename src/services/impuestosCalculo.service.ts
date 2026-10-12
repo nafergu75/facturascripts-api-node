@@ -58,6 +58,15 @@ function agruparPorTipoIva(facturas: FacturaFiscal[]): DesgloseIva[] {
   return [...mapa.values()].sort((a, b) => b.tipo - a.tipo);
 }
 
+/**
+ * Compras con solo las lineas que llevan IVA soportado. La parte exenta o no
+ * sujeta de una compra (al 0 % y sin cuota: seguros, intereses, tasas...) no
+ * es base de cuotas deducibles: no va en [28] del 303 ni en el deducible del
+ * 390. (Mismo criterio que la rama de los modelos AEAT.)
+ */
+const conIvaSoportado = (facturas: FacturaFiscal[]): FacturaFiscal[] =>
+  facturas.map((f) => ({ ...f, lineas: f.lineas.filter((l) => l.cuota !== 0 || l.tipoIva > 0) }));
+
 const sumCuota = (d: DesgloseIva[]): number => round2(d.reduce((a, x) => a + x.cuota, 0));
 const sumBase = (d: DesgloseIva[]): number => round2(d.reduce((a, x) => a + x.base, 0));
 const baseDe = (fs: FacturaFiscal[]): number => round2(fs.reduce((a, f) => a + f.lineas.reduce((x, l) => x + l.base, 0), 0));
@@ -153,7 +162,7 @@ export function agregar303(
   const exentasSinDeduccion = baseDe(delPeriodo.filter(exentaSinDeduccion));
 
   const ivaDevengado = agruparPorTipoIva(ventasDevengo);
-  const ivaDeducible = agruparPorTipoIva(comprasDeducibles);
+  const ivaDeducible = agruparPorTipoIva(conIvaSoportado(comprasDeducibles));
 
   const totalCuotaDevengada = sumCuota(ivaDevengado);
   const totalCuotaDeducible = sumCuota(ivaDeducible);
@@ -244,7 +253,7 @@ export function agregar390(facturas: FacturaFiscal[], ejercicio: number): DatosM
   const compras = delAno.filter((f) => f.tipo === 'compra' && f.deducible !== false);
 
   const resumenDevengado = agruparPorTipoIva(ventas);
-  const resumenDeducible = agruparPorTipoIva(compras);
+  const resumenDeducible = agruparPorTipoIva(conIvaSoportado(compras));
   const totalCuotaDevengada = sumCuota(resumenDevengado);
   const totalCuotaDeducible = sumCuota(resumenDeducible);
   const volumenOperaciones = sumBase(resumenDevengado);
