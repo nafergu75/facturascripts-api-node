@@ -305,7 +305,7 @@ async function terminarConAzure(fila: FilaLectura, hecho: LecturaHecha): Promise
   // primera sigue contando como sacado del QR (compararQr no lo da por cotejado).
   l = compararQr(hecho.qr ?? null, l);
   // Sin total a pagar leido: el total de la factura (menos la retencion, si la lleva).
-  completarTotalAPagar(l);
+  completarTotalAPagar(l, lector);
   const val = await validar(fila, l);
   await guardarLista(fila, l, val, { origen, motivoRespaldo: null, confianza: confianzaLectura(l, lector) });
   return respuestaDe(await recargar(fila.id));

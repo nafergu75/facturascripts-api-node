@@ -9,6 +9,8 @@ import {
   contarPaginasPdf,
   leerTipo,
   mapearFacturaAzure,
+  MOTIVO_A_COBRAR_DEL_TOTAL,
+  MOTIVO_A_COBRAR_SIN_TOTAL,
   MOTIVO_A_PAGAR_DEL_TOTAL,
   MOTIVO_A_PAGAR_SIN_TOTAL,
   MOTIVO_BASE_CALCULADA,
@@ -298,6 +300,19 @@ describe('sin total a pagar leido (completarTotalAPagar)', () => {
     const sinQr = conRetencion();
     completarTotalAPagar(sinQr);
     expect(sinQr.totales.totalAPagar).toEqual({ valor: 1060, confianza: null, fuente: 'calculado', motivo: MOTIVO_TOTAL_SUMADO_CON_RETENCION });
+  });
+
+  it('en el lector de ventas el motivo habla del «total a cobrar», como su tarjeta', () => {
+    const l = sinTotales('resultado-irpf');
+    l.retencion = { tipo: { valor: 15, confianza: null, fuente: 'claude' }, importe: { valor: 150, confianza: null, fuente: 'claude' } };
+    l.totales.totalFactura = { valor: 1210, confianza: 0.9, fuente: 'azure' };
+    completarTotalAPagar(l, 'VENTA');
+    expect(l.totales.totalAPagar).toMatchObject({ valor: 1060, motivo: MOTIVO_A_COBRAR_SIN_TOTAL });
+    const sinRet = sinTotales('resultado-qr-ok');
+    sinRet.totales.totalFactura = { valor: 242, confianza: 0.9, fuente: 'azure' };
+    completarTotalAPagar(sinRet, 'VENTA');
+    expect(sinRet.totales.totalAPagar.motivo).toBe(MOTIVO_A_COBRAR_DEL_TOTAL);
+    expect([MOTIVO_A_COBRAR_SIN_TOTAL, MOTIVO_A_COBRAR_DEL_TOTAL].join(' ')).not.toMatch(/a pagar/);
   });
 
   it('conserva el motivo que ya tuviera y no toca un total a pagar leido', () => {

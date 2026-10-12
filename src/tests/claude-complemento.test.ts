@@ -12,7 +12,7 @@ jest.mock('@anthropic-ai/sdk', () => ({
 import Anthropic from '@anthropic-ai/sdk';
 import { mapearFacturaAzure } from '../services/lectura/azure-factura.mapper';
 import type { AnalyzeResult } from '../services/lectura/azure-di.client';
-import { AVISO_SIN_COMPLEMENTO, completarConClaude, decidirComplemento, mensajeParaClaude, MOTIVO_TOTAL_SIN_RETENCION, prepararTexto } from '../services/lectura/claude-complemento';
+import { AVISO_SIN_COMPLEMENTO, completarConClaude, decidirComplemento, mensajeParaClaude, MOTIVO_TOTAL_SIN_RETENCION_VENTA, prepararTexto } from '../services/lectura/claude-complemento';
 import { aGastoExtraido } from '../services/lectura/adaptadores';
 import type { LecturaHecha, LecturaNormalizada } from '../services/lectura/tipos';
 import { validarLectura, type ContextoValidacion } from '../services/lectura/validaciones';
@@ -305,7 +305,9 @@ describe('como se mezcla', () => {
     it('el unico total es el total a pagar (1.060): el total de la factura se calcula y cuadra', async () => {
       const l = await completarCon(irpf((f) => (f.InvoiceTotal.valueCurrency.amount = 1060)));
       expect(l.totales.totalAPagar.valor).toBe(1060);
-      expect(l.totales.totalFactura).toMatchObject({ valor: 1210, fuente: 'calculado', motivo: MOTIVO_TOTAL_SIN_RETENCION });
+      // En ventas, con el nombre de la tarjeta: «total a cobrar».
+      expect(l.totales.totalFactura).toMatchObject({ valor: 1210, fuente: 'calculado', motivo: MOTIVO_TOTAL_SIN_RETENCION_VENTA });
+      expect(MOTIVO_TOTAL_SIN_RETENCION_VENTA).toMatch(/total a cobrar/);
       const val = await validarLectura(l, { ...ctx, lector: 'VENTA', nifEmpresa: 'B12345674' });
       expect(val.validaciones.map((x) => x.codigo)).not.toContain('CUADRE');
     });

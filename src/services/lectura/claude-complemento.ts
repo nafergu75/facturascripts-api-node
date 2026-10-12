@@ -208,12 +208,15 @@ function mezclarCampo<T>(azure: Campo<T>, ia: T | null, iguales: (a: T, b: T) =>
 
 export const MOTIVO_TOTAL_SIN_RETENCION = 'La factura solo trae el total a pagar: el total sin restar la retención se ha calculado. Compruébalo.';
 export const MOTIVO_A_PAGAR_CALCULADO = 'La factura solo trae un total: el total a pagar se ha calculado restando la retención. Compruébalo.';
+/** Los dos de arriba en el lector de ventas, donde el dato se llama «Total a cobrar». */
+export const MOTIVO_TOTAL_SIN_RETENCION_VENTA = 'La factura solo trae el total a cobrar: el total sin restar la retención se ha calculado. Compruébalo.';
+export const MOTIVO_A_COBRAR_CALCULADO = 'La factura solo trae un total: el total a cobrar se ha calculado restando la retención. Compruébalo.';
 
 /**
  * Con retencion y un solo total impreso (total de la factura = total a pagar),
  * decide cual de los dos es y calcula el otro con las bases.
  */
-function reconciliarRetencion(l: LecturaNormalizada): void {
+function reconciliarRetencion(l: LecturaNormalizada, lector: Lector): void {
   const ret = l.retencion?.importe.valor ?? 0;
   const tf = l.totales.totalFactura.valor;
   const tp = l.totales.totalAPagar.valor;
@@ -221,9 +224,9 @@ function reconciliarRetencion(l: LecturaNormalizada): void {
   if (!l.desglose.length || l.desglose.some((t) => t.base.valor === null)) return;
   const bruto = redondear2(l.desglose.reduce((s, t) => s + (t.base.valor ?? 0) + (t.cuota.valor ?? 0) + (t.cuotaRecargo?.valor ?? 0), 0));
   if (aCentimos(bruto - ret) === aCentimos(tf)) {
-    l.totales.totalFactura = { valor: bruto, confianza: null, fuente: 'calculado', motivo: MOTIVO_TOTAL_SIN_RETENCION };
+    l.totales.totalFactura = { valor: bruto, confianza: null, fuente: 'calculado', motivo: lector === 'VENTA' ? MOTIVO_TOTAL_SIN_RETENCION_VENTA : MOTIVO_TOTAL_SIN_RETENCION };
   } else if (aCentimos(bruto) === aCentimos(tf)) {
-    l.totales.totalAPagar = { valor: redondear2(bruto - ret), confianza: null, fuente: 'calculado', motivo: MOTIVO_A_PAGAR_CALCULADO };
+    l.totales.totalAPagar = { valor: redondear2(bruto - ret), confianza: null, fuente: 'calculado', motivo: lector === 'VENTA' ? MOTIVO_A_COBRAR_CALCULADO : MOTIVO_A_PAGAR_CALCULADO };
   }
 }
 
@@ -274,7 +277,7 @@ export function mezclarComplemento(original: LecturaNormalizada, input: Record<s
   const concepto = cad(input.concepto);
   if (!l.concepto.valor && concepto) l.concepto = deClaude(concepto);
 
-  reconciliarRetencion(l);
+  reconciliarRetencion(l, ctx.lector);
 
   // El desglose de la IA sustituye al calculado solo si cuadra (V01 y V02).
   const tramos = Array.isArray(input.desglose) ? (input.desglose as Array<Record<string, unknown>>) : [];
@@ -294,7 +297,7 @@ export function mezclarComplemento(original: LecturaNormalizada, input: Record<s
         };
       });
     const propuesta = conDesglose(l, desglose);
-    reconciliarRetencion(propuesta);
+    reconciliarRetencion(propuesta, ctx.lector);
     const falla = validacionesSincronas(propuesta, ctx).some((v) => v.codigo === 'CUADRE' || v.codigo === 'CUOTA_TIPO');
     if (desglose.length && !falla) l = propuesta;
     else l.desglose.forEach((t) => (t.base.motivo ??= 'La IA no ha podido aclarar el desglose: compruébalo.'));

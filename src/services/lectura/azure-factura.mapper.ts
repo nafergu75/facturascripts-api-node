@@ -37,6 +37,9 @@ export const MOTIVO_TOTAL_SUMADO = 'No se ha leído el total de la factura: se h
 export const MOTIVO_TOTAL_SUMADO_CON_RETENCION =
   'No se ha leído el total de la factura: se ha calculado sumando las bases y el IVA y restando la retención. Compruébalo con el documento.';
 export const MOTIVO_A_PAGAR_DEL_TOTAL = 'No se ha leído el total a pagar: se ha tomado el total de la factura. Compruébalo con el documento.';
+/** Lo mismo en el lector de ventas, donde ese dato se llama «Total a cobrar». */
+export const MOTIVO_A_COBRAR_SIN_TOTAL = 'No se ha leído el total a cobrar: se ha calculado restando la retención al total de la factura. Compruébalo.';
+export const MOTIVO_A_COBRAR_DEL_TOTAL = 'No se ha leído el total a cobrar: se ha tomado el total de la factura. Compruébalo con el documento.';
 
 // ---------------------------------------------------------------------------
 // Lectura de un DocumentField
@@ -339,15 +342,18 @@ export const totalConfirmadoPorQr = (l: LecturaNormalizada): boolean => l.totale
  * cuadra con ellas (V01), asi que no se ha cotejado con nada del documento. Si
  * ya traia un motivo (p. ej. que no se pudo completar con la IA), lo conserva.
  */
-export function completarTotalAPagar(l: LecturaNormalizada): void {
+export function completarTotalAPagar(l: LecturaNormalizada, lector: Lector = 'GASTO'): void {
   const total = l.totales.totalFactura.valor;
   if (l.totales.totalAPagar.valor !== null || total === null) return;
   const retencion = Math.max(l.retencion?.importe.valor ?? l.totales.retencion.valor ?? 0, 0);
   const sumado = l.totales.totalFactura.fuente === 'calculado';
+  // En ventas el dato se llama «Total a cobrar»: el motivo habla de el con ese nombre.
+  const sinTotal = lector === 'VENTA' ? MOTIVO_A_COBRAR_SIN_TOTAL : MOTIVO_A_PAGAR_SIN_TOTAL;
+  const delTotal = lector === 'VENTA' ? MOTIVO_A_COBRAR_DEL_TOTAL : MOTIVO_A_PAGAR_DEL_TOTAL;
   let propio: string | undefined;
-  if (totalConfirmadoPorQr(l)) propio = retencion > 0 ? MOTIVO_A_PAGAR_SIN_TOTAL : undefined;
+  if (totalConfirmadoPorQr(l)) propio = retencion > 0 ? sinTotal : undefined;
   else if (sumado) propio = retencion > 0 ? MOTIVO_TOTAL_SUMADO_CON_RETENCION : MOTIVO_TOTAL_SUMADO;
-  else propio = retencion > 0 ? MOTIVO_A_PAGAR_SIN_TOTAL : MOTIVO_A_PAGAR_DEL_TOTAL;
+  else propio = retencion > 0 ? sinTotal : delTotal;
   const motivo = l.totales.totalAPagar.motivo ?? propio;
   l.totales.totalAPagar = { valor: redondear2(total - retencion), confianza: null, fuente: 'calculado', ...(motivo ? { motivo } : {}) };
 }
