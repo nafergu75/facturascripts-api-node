@@ -12,6 +12,27 @@ import { cuentaResultado } from '../puestaEnMarcha/puestaEnMarcha.service';
 
 const round2 = (n: number): number => Math.round((n + Number.EPSILON) * 100) / 100;
 const esPyg = (c: string) => c.startsWith('6') || c.startsWith('7');
+const esGrupo89 = (c: string) => c.startsWith('8') || c.startsWith('9');
+
+/**
+ * Grupos 8 y 9 (gastos e ingresos imputados al patrimonio neto): al cerrar el
+ * año su saldo pasa a su cuenta del subgrupo 13 (o a la 115), como hace la
+ * regularizacion del PGC. null si no hay una cuenta segura (83x impuesto
+ * sobre beneficios, 89x...): entonces hay que pedir el listado regularizado.
+ */
+export function destinoGrupo89(codigo: string): string | null {
+  const reglas: Array<[RegExp, string]> = [
+    [/^(840|940)/, '130'],
+    [/^(841|941)/, '131'],
+    [/^(842|942)/, '132'],
+    [/^(80|90)/, '133'],
+    [/^(81|91)/, '134'],
+    [/^(82|92)/, '135'],
+    [/^(86|96)/, '136'],
+    [/^(85|95)/, '115'],
+  ];
+  return reglas.find(([re]) => re.test(codigo))?.[1] ?? null;
+}
 const eur = importeTexto;
 
 export type TipoSumasSaldos = 'CON_CIERRE' | 'REGULARIZADO' | 'SIN_REGULARIZAR';
@@ -46,6 +67,13 @@ export interface AnalisisSaldos {
   heredados: AvisoCuenta[];
   /** 472 y 477 con saldo: la liquidacion del IVA del 4T no esta hecha. */
   ivaSinLiquidar: AvisoCuenta[];
+  /**
+   * Grupos 8 y 9 con saldo: van a su cuenta del subgrupo 13 en la apertura
+   * (traspasos) o, si no tienen una segura, quedan sin destino (error).
+   */
+  grupos89: { traspasos: Array<AvisoCuenta & { a: string }>; sinDestino: AvisoCuenta[] };
+  /** Debe y haber de las lineas de la apertura (tienen que ser iguales). */
+  totalesApertura: { debe: number; haber: number; cuadra: boolean };
 }
 
 /** Saldos que se pagan o cobran en los primeros meses de 2027, y como se cancelan en la app. */
@@ -93,14 +121,35 @@ export function analizarSaldos(cuentas: CuentaSaldo[], nombres: Map<string, stri
   const saldo129 = round2(-conSaldo.filter((c) => c.codigo.startsWith('129')).reduce((s, c) => s + c.saldo, 0));
   const c129 = cuentaResultado(cuentas.map((c) => c.codigo));
 
-  // Lineas de la apertura: saldos de balance y el resultado de 6/7 a la 129.
+  // Lineas de la apertura: saldos de balance, el resultado de 6/7 a la 129 y los 8/9 a su cuenta del 13.
+  const codigos = new Set(cuentas.map((c) => c.codigo));
+  const grupos89: AnalisisSaldos['grupos89'] = { traspasos: [], sinDestino: [] };
   const porCuenta = new Map<string, number>();
-  for (const c of conSaldo) if (!esPyg(c.codigo)) porCuenta.set(c.codigo, round2((porCuenta.get(c.codigo) ?? 0) + c.saldo));
+  for (const c of conSaldo) {
+    if (esPyg(c.codigo)) continue;
+    if (esGrupo89(c.codigo)) {
+      const destino = destinoGrupo89(c.codigo);
+      if (!destino) {
+        grupos89.sinDestino.push({ codigo: c.codigo, nombre: nombre(c.codigo), saldo: c.saldo, texto: 'No hay una cuenta del subgrupo 13 segura para su saldo.' });
+        continue;
+      }
+      // La subcuenta del 13 con el mismo final (9400000001 -> 1300000001) o la unica que haya.
+      const espejo = destino + c.codigo.slice(3);
+      const delPlan = [...codigos].filter((x) => x.startsWith(destino) && x.length === c.codigo.length);
+      const a = codigos.has(espejo) || delPlan.length !== 1 ? espejo : delPlan[0];
+      porCuenta.set(a, round2((porCuenta.get(a) ?? 0) + c.saldo));
+      grupos89.traspasos.push({ codigo: c.codigo, nombre: nombre(c.codigo), saldo: c.saldo, a, texto: `Pasa a la ${a}.` });
+      continue;
+    }
+    porCuenta.set(c.codigo, round2((porCuenta.get(c.codigo) ?? 0) + c.saldo));
+  }
   if (aCentimos(resultadoPyg) !== 0) porCuenta.set(c129, round2((porCuenta.get(c129) ?? 0) - resultadoPyg));
   const lineas = [...porCuenta.entries()]
     .filter(([, s]) => aCentimos(s) !== 0)
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([cuenta, s]) => ({ cuenta, debe: s > 0 ? s : 0, haber: s < 0 ? round2(-s) : 0 }));
+  const debeApertura = round2(lineas.reduce((t, l) => t + l.debe, 0));
+  const haberApertura = round2(lineas.reduce((t, l) => t + l.haber, 0));
 
   // Masas: el activo son los grupos 2 y 3 (con sus amortizaciones) y los 4 y 5 deudores;
   // el patrimonio neto, del 10 al 13 (con el resultado en la 129); el pasivo, el resto.
@@ -139,6 +188,8 @@ export function analizarSaldos(cuentas: CuentaSaldo[], nombres: Map<string, stri
     anomalias,
     heredados,
     ivaSinLiquidar,
+    grupos89,
+    totalesApertura: { debe: debeApertura, haber: haberApertura, cuadra: aCentimos(debeApertura) === aCentimos(haberApertura) },
   };
 }
 
