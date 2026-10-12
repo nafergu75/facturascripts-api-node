@@ -12,6 +12,7 @@ import { describe, it, expect, beforeAll } from '@jest/globals';
 import { prisma } from '../config/database';
 import { analizarCarga } from '../services/arranque/analisis.service';
 import { aplicarFase, confirmarCarga, type ResultadoFase } from '../services/arranque/aplicar.service';
+import { avisoArranque } from '../services/arranque/aviso.service';
 import { reanalizar, subirYAnalizar, type RespuestaCarga } from '../services/arranque/cargas.service';
 import { prepararDatos } from '../services/arranque/datos';
 import { obtenerAsientosEjercicio, saldosDelEjercicio } from '../services/contabilidadDatos.service';
@@ -231,6 +232,8 @@ describe('empresa B: 8 dígitos, regularizado, PyG aparte, sin diario', () => {
     expect(await longitudSubcuentasGuardada(E)).toBe(8);
     expect((await prisma.fiscalYear.findFirst({ where: { companyId: E, label: '2026' } }))?.llevanza).toBe('EXTERNA');
     expect(await prisma.customer.findFirst({ where: { companyId: E, nifCif: NIF.gamma }, select: { subcuenta430: true } })).toEqual({ subcuenta430: '43000001' });
+    // El panel avisa de lo que falta.
+    expect(await avisoArranque(E)).toMatchObject({ nivel: 'FALTAN_DATOS', total: 2, puntos: [expect.stringMatching(/^Falta el libro diario/), expect.stringMatching(/^Escribe el resultado de 2026/)] });
   });
 });
 
@@ -306,6 +309,8 @@ describe('D2 y errores', () => {
     const resultados = await Promise.allSettled([confirmarCarga(E, 2027, r.carga.id, r.vista.huella, USUARIO), confirmarCarga(E, 2027, r.carga.id, r.vista.huella, USUARIO)]);
     expect(resultados.filter((x) => x.status === 'fulfilled')).toHaveLength(1);
     expect((resultados.find((x) => x.status === 'rejected') as PromiseRejectedResult).reason.statusCode).toBe(409);
+    // Una carga a medias se ve en el panel.
+    expect(await avisoArranque(E)).toMatchObject({ nivel: 'A_MEDIAS' });
   });
 });
 
