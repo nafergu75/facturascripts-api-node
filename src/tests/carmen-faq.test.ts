@@ -77,6 +77,22 @@ describe('fichas publicadas', () => {
     expect(publicadas.map((f) => f.id).sort()).toEqual(Object.keys(PARAFRASIS).sort());
   });
 
+  it('cada ficha tiene su plazo de revisión; avisa de las que caducan en menos de 60 días', () => {
+    const hoy = hoyEspana();
+    const limite = new Date(`${hoy}T00:00:00Z`);
+    limite.setUTCDate(limite.getUTCDate() + 60);
+    const pronto = publicadas.filter((f) => f.revisarAntes <= limite.toISOString().slice(0, 10)).map((f) => `${f.id} (${f.revisarAntes})`);
+    // Aviso, no fallo: el fallo llega el día que caduca (test de abajo).
+    if (pronto.length) console.warn(`Fichas de Carmen que caducan en menos de 60 días: ${pronto.join(', ')}. Revísalas y vuelve a fecharlas.`);
+    expect(new Set(publicadas.map((f) => f.revisarAntes)).size).toBeGreaterThan(1);
+    expect(FICHAS.find((f) => f.id === 'fact-verifactu')!.revisarAntes).toBe('2027-01-01');
+  });
+
+  it('la de Verifactu deja de servirse el 1-1-2027 (habla en futuro de esa fecha)', () => {
+    expect(fichaPorId('fact-verifactu', '2026-12-31')).not.toBeNull();
+    expect(fichaPorId('fact-verifactu', '2027-01-01')).toBeNull();
+  });
+
   it('ids únicos', () => {
     expect(new Set(FICHAS.map((f) => f.id)).size).toBe(FICHAS.length);
   });
