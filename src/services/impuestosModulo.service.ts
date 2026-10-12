@@ -62,7 +62,8 @@ import {
 } from '../domain/calendarioFiscal';
 import { AJUSTES_FISCALES_POR_DEFECTO, ajustesFiscalesDeFila, type AjustesFiscales } from '../domain/ajustes.model';
 import { contextoDeclaracion } from './declaracionesAeat/declaraciones.service';
-import { anioEspana } from '../utils/fechas';
+import { anioEspana, hoyEspana } from '../utils/fechas';
+import { plazoAeat, ultimoDiaFebrero } from '../domain/plazosAeat';
 
 /**
  * LOS GET NO ESCRIBEN (B6, igual en todos los modelos de la AEAT): el detalle,
@@ -122,8 +123,11 @@ const DESCRIPCIONES: Record<string, string> = {
   '202': 'Pago fraccionado del Impuesto sobre Sociedades',
 };
 
-/** Fecha limite de presentacion del modelo/periodo (plazos generales AEAT). */
-export function fechaVencimientoModelo(codigo: string, ejercicio: number, periodo: string): string {
+/**
+ * Ultimo dia de presentacion que marca la norma para el modelo y periodo, sin
+ * mover por fines de semana ni festivos (plazos generales de la AEAT).
+ */
+function fechaOrdinariaModelo(codigo: string, ejercicio: number, periodo: string): string {
   const TRIM: Record<string, string> = { '1T': `${ejercicio}-04-20`, '2T': `${ejercicio}-07-20`, '3T': `${ejercicio}-10-20` };
   if (periodo in TRIM) return TRIM[periodo];
   // 202: del 1 al 20 de abril, octubre y diciembre.
@@ -137,7 +141,7 @@ export function fechaVencimientoModelo(codigo: string, ejercicio: number, period
       // REDEME o SII voluntario), que tienen los 30 primeros dias naturales del
       // mes siguiente (art. 71.4 RIVA); el de enero, hasta el ultimo dia de
       // febrero, y el de diciembre, hasta el 30 de enero.
-      if (mes === 1) return `${ejercicio}-02-${String(new Date(Date.UTC(ejercicio, 2, 0)).getUTCDate()).padStart(2, '0')}`;
+      if (mes === 1) return ultimoDiaFebrero(ejercicio);
       if (mes === 12) return `${ejercicio + 1}-01-30`;
       return `${ejercicio}-${siguiente}-30`;
     }
@@ -156,10 +160,20 @@ export function fechaVencimientoModelo(codigo: string, ejercicio: number, period
   }
   // anuales
   if (codigo === '390') return `${ejercicio + 1}-01-30`;
-  if (codigo === '347') return `${ejercicio + 1}-02-28`;
+  // 347: todo febrero (el 29 en los bisiestos).
+  if (codigo === '347') return ultimoDiaFebrero(ejercicio + 1);
   if (codigo === '200') return `${ejercicio + 1}-07-25`;
   if (codigo === '190' || codigo === '180') return `${ejercicio + 1}-01-31`;
   return `${ejercicio + 1}-01-30`;
+}
+
+/**
+ * Fecha limite de presentacion del modelo y periodo: la de la norma o, si cae
+ * en sabado, domingo o fiesta nacional, el siguiente dia habil (plazoAeat).
+ * Asi el 390 de 2026 (sabado 30-1-2027) vence el lunes 1-2-2027.
+ */
+export function fechaVencimientoModelo(codigo: string, ejercicio: number, periodo: string): string {
+  return plazoAeat(fechaOrdinariaModelo(codigo, ejercicio, periodo));
 }
 
 /** El 130 no se calcula todavia: se rellena a mano. */
@@ -482,7 +496,7 @@ export async function listarModelosImpuesto(
   companyId: string,
   ejercicio: number,
   tab: 'activos' | 'omitidos' | 'presentados' = 'activos',
-  hoy: string = new Date().toISOString().slice(0, 10),
+  hoy: string = hoyEspana(),
 ): Promise<ModeloImpuestoResumen[]> {
   // Empresa no establecida en Espana: sin modelos de la AEAT ni calendario.
   if (!(await esEmpresaEspanolaFiscal(companyId))) return [];
@@ -508,7 +522,7 @@ async function cambiarEstado(companyId: string, modeloId: string, estado: Estado
   const fila = await cargarFila(companyId, modeloId, { crear: true });
   fila.estado = estado;
   await guardarFila(fila);
-  return aResumen(fila, new Date().toISOString().slice(0, 10));
+  return aResumen(fila, hoyEspana());
 }
 
 export const omitirModelo = (companyId: string, modeloId: string) => cambiarEstado(companyId, modeloId, 'omitido');
@@ -739,7 +753,7 @@ async function calcularCasillas(companyId: string, fila: FilaModelo): Promise<{ 
 export async function obtenerDetalleModelo(companyId: string, modeloId: string): Promise<ModeloImpuestoDetalle> {
   const fila = await cargarFila(companyId, modeloId);
   return {
-    resumen: aResumen(fila, new Date().toISOString().slice(0, 10)),
+    resumen: aResumen(fila, hoyEspana()),
     ficha: fichaModelo(fila.codigo),
     casillas: fila.casillas ?? {},
     origen: (fila.origen as 'autorrelleno' | 'manual-mixto' | null) ?? 'autorrelleno',

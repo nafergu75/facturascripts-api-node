@@ -112,10 +112,13 @@ describe('Modulo Impuestos (estilo Quipu)', () => {
     expect(params['filter[fecha_lte]']).toBe('2026-02-28');
   });
 
-  it('plazos AEAT correctos para anuales', () => {
-    expect(fechaVencimientoModelo('390', 2026, '0A')).toBe('2027-01-30');
-    expect(fechaVencimientoModelo('347', 2026, '0A')).toBe('2027-02-28');
-    expect(fechaVencimientoModelo('200', 2026, '0A')).toBe('2027-07-25');
+  it('plazos AEAT correctos para anuales (en fin de semana, al lunes)', () => {
+    // 30-1-2027 es sábado; 28-2-2027 y 25-7-2027, domingo.
+    expect(fechaVencimientoModelo('390', 2026, '0A')).toBe('2027-02-01');
+    expect(fechaVencimientoModelo('347', 2026, '0A')).toBe('2027-03-01');
+    expect(fechaVencimientoModelo('200', 2026, '0A')).toBe('2027-07-26');
+    // 347 de 2027: 29-2-2028 (bisiesto, martes).
+    expect(fechaVencimientoModelo('347', 2027, '0A')).toBe('2028-02-29');
   });
 });
 
