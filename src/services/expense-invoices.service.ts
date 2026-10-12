@@ -19,6 +19,7 @@ import {
   type TipoGasto,
 } from '../domain/factura-gasto.model';
 import { esFechaReal, validarFacturaGasto, type FacturaGastoBody } from '../schemas/factura-gasto.schemas';
+import { r2GastoConSigno } from '../domain/rectificativa-gasto.model';
 import { contabilizarFacturaGasto, desgloseIvaPorTipo } from './accounting-engine.service';
 import { autoliquidacionPorTipo, clasificarCompra } from './impuestosCalculo.service';
 import { asegurarPlanContableEmpresa } from './chart-of-accounts.service';
@@ -57,6 +58,12 @@ export interface CrearLineaGastoDTO {
   tipoIva?: number; // 0, 4, 10, 21
   descuentoPorcentaje?: number;
   tipoRetencion?: number; // IRPF: 0, 7, 15, 19
+  /**
+   * Cuota fijada (interno, nunca llega del cliente): las lineas de diferencia
+   * de una rectificativa por sustitucion llevan la cuota calculada por tipo con
+   * los totales de las dos facturas, no la que sale de su base.
+   */
+  ivaFijado?: number;
 }
 
 export interface CrearFacturaGastoDTO {
@@ -263,7 +270,9 @@ async function resolverNumeroFactura(companyId: string, serie: string, numeroSug
 }
 
 /**
- * Calcula totales a partir de las líneas de gasto.
+ * Calcula totales a partir de las líneas de gasto. Redondeo por linea con
+ * r2GastoConSigno: el de siempre en positivo y, en las lineas en negativo de
+ * un abono, el espejo exacto (-10,125 da -10,13, como 10,125 da 10,13).
  */
 export function calcularTotales(lineas: CrearLineaGastoDTO[]): {
   baseTotal: number;
@@ -281,12 +290,12 @@ export function calcularTotales(lineas: CrearLineaGastoDTO[]): {
     const tipoRetencion = l.tipoRetencion ?? 0;
     const descuentoPorcentaje = l.descuentoPorcentaje ?? 0;
 
-    const pvpSinDescuento = round2(l.cantidad * l.precioUnitario);
-    const descuentoImporte = round2((pvpSinDescuento * descuentoPorcentaje) / 100);
-    const baseLine = round2(pvpSinDescuento - descuentoImporte);
+    const pvpSinDescuento = r2GastoConSigno(l.cantidad * l.precioUnitario);
+    const descuentoImporte = r2GastoConSigno((pvpSinDescuento * descuentoPorcentaje) / 100);
+    const baseLine = r2GastoConSigno(pvpSinDescuento - descuentoImporte);
 
-    const ivaImporte = round2((baseLine * tipoIva) / 100);
-    const retencionImporte = round2((baseLine * tipoRetencion) / 100);
+    const ivaImporte = l.ivaFijado !== undefined ? r2GastoConSigno(l.ivaFijado) : r2GastoConSigno((baseLine * tipoIva) / 100);
+    const retencionImporte = r2GastoConSigno((baseLine * tipoRetencion) / 100);
 
     baseTotal = round2(baseTotal + baseLine);
     ivaTotal = round2(ivaTotal + ivaImporte);
