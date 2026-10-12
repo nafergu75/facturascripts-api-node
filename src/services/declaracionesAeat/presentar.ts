@@ -37,14 +37,20 @@ export async function presentarDeclaracion(
   opciones: Record<string, unknown> = {},
 ): Promise<HistorialDeclaraciones> {
   const config = configModelo(codigo);
+  const rechazar = (errores: string[]) => badRequest(`Corrige esto antes de marcarlo como presentado: ${errores.join(' ')}`, { errores });
+  let p = await presentable(companyId, codigo, ejercicio, periodo, opciones);
+  // Primero se comprueba sin número: si tiene errores, se rechaza sin gastar
+  // uno (no queda una declaración «en preparación» con número que no hay que
+  // presentar). La falta del número propio no es un error de ningún modelo.
+  if (p.errores.length) throw rechazar(p.errores);
   if (config.numero) {
     const ctx = await contextoDeclaracion(companyId, codigo, ejercicio, periodo);
-    // Sin número aún (y sin estar ya presentada): se le pone antes de calcular el fichero.
-    if (!ctx.congelada && !ctx.numero) await asignarNumero(companyId, userId, codigo, ejercicio, periodo);
-  }
-  const p = await presentable(companyId, codigo, ejercicio, periodo, opciones);
-  if (p.errores.length) {
-    throw badRequest(`Corrige esto antes de marcarlo como presentado: ${p.errores.join(' ')}`, { errores: p.errores });
+    // Sin número aún (y sin estar ya presentada): se le pone y se vuelve a calcular, con él en el fichero.
+    if (!ctx.congelada && !ctx.numero) {
+      await asignarNumero(companyId, userId, codigo, ejercicio, periodo);
+      p = await presentable(companyId, codigo, ejercicio, periodo, opciones);
+      if (p.errores.length) throw rechazar(p.errores);
+    }
   }
   await registrarPresentacion(companyId, userId, codigo, ejercicio, periodo, justificante, p.instantanea);
   return historialDeclaraciones(companyId, codigo, ejercicio, periodo);
