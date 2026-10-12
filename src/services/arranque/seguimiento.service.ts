@@ -210,6 +210,25 @@ export async function crearSeriesDelEjercicio(companyId: string, ejercicioRaw: u
   return { series: hechas, texto: `Series ${hechas.join(' y ')} listas y predeterminadas para ${ejercicio}. Las de antes siguen ahí.` };
 }
 
+/**
+ * Avisos para los informes de un ejercicio: si lo llevo la gestoria (solo
+ * lectura) y si su apertura es la provisional de la carga.
+ */
+export async function avisosDeInforme(companyId: string, ejercicio: number): Promise<{ llevanzaExterna: boolean; aperturaProvisional: boolean; notas: string[] }> {
+  const [fy, vigente] = await Promise.all([
+    prisma.fiscalYear.findFirst({ where: { companyId, label: String(ejercicio) }, select: { llevanza: true } }),
+    prisma.cargaArranque.findFirst({ where: { companyId, ejercicio, estado: 'CONFIRMADA' }, select: { tipo: true } }),
+  ]);
+  const llevanzaExterna = fy?.llevanza === 'EXTERNA';
+  const aperturaProvisional = vigente?.tipo === 'PROVISIONAL';
+  const notas: string[] = [];
+  if (llevanzaExterna) notas.push(`${ejercicio} lo llevó tu gestoría. Estos datos son los que importaste y no se pueden cambiar.`);
+  if (aperturaProvisional) {
+    notas.push(`Apertura provisional: los saldos del 1-1-${ejercicio} son los que dio la gestoría antes de cerrar ${ejercicio - 1}. Cambiarán cuando cargues el cierre definitivo.`);
+  }
+  return { llevanzaExterna, aperturaProvisional, notas };
+}
+
 /** Vuelve 2026 a la app (solo sin ninguna carga importada o importandose). */
 export async function volverLlevanzaApp(companyId: string, ejercicioRaw: unknown, userId: string) {
   const ejercicio = validarEjercicio(ejercicioRaw);
