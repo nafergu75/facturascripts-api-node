@@ -29,7 +29,7 @@ import { marcarTransaccion, mensajeSinTipo, resolverTipoCambio, type TipoResuelt
 import { resolverFiscalidad } from './fiscalidad-venta.service';
 import { fechaTexto, hoyEspana, sumarDiasISO } from '../utils/fechas';
 import { inicioLlevanzaApp, periodo303FueraDeLaApp } from '../utils/anios';
-import { aCentimos } from '../utils/money';
+import { aCentimos, importeTexto } from '../utils/money';
 import { copiaAlEmitir, leerAjustesFacturacion } from './ajustesFacturacion.service';
 import { FORMAS_PAGO, type FormaPago } from '../domain/ajustes.model';
 import { leerPais } from './clientes.service';
@@ -265,6 +265,12 @@ export interface IncomeInvoiceResp {
   proformaId?: string;
   /** Proforma ya pasada a factura: id de la factura creada. */
   facturaGeneradaId?: string;
+  /** Solo en la ficha (obtenerPorId): rectificativas emitidas de esta factura. */
+  rectificadaPor?: Array<{ id: string; numeroCompleto: string | null; totalFactura: number; tipoRectificativa: string | null }>;
+  /** Solo en la ficha: sus rectificativas la dejan a cero (anulada entera). */
+  anuladaPorCompleto?: boolean;
+  /** Solo en la ficha: el asiento de la factura (no el de sus cobros), o null si no tiene. */
+  asiento?: { id: string; numero: string | null; estado: string } | null;
   esRecurrente: boolean;
   createdAt: Date;
   updatedAt: Date;
@@ -948,6 +954,69 @@ async function cargar(companyId: string, id: string): Promise<FacturaConLineas> 
   return factura;
 }
 
+type Db = Tx | typeof prisma;
+
+/**
+ * Rectificativas por diferencias ya emitidas de una factura (sin borradores):
+ * lo que ya le han restado o sumado, en la moneda de cuenta.
+ */
+async function rectificadoDe(db: Db, companyId: string, originalId: string, excluirId?: string) {
+  return db.incomeInvoice.findMany({
+    where: {
+      companyId,
+      facturaOriginalId: originalId,
+      estadoDocumento: ESTADO_FINAL,
+      tipoRectificativa: 'I',
+      ...(excluirId ? { id: { not: excluirId } } : {}),
+    },
+    select: { id: true, numeroCompleto: true, baseTotal: true, totalFactura: true },
+    orderBy: { numero: 'asc' },
+  });
+}
+
+/**
+ * Una rectificativa no puede rectificar otra (para corregir la R, se rectifica
+ * otra vez la original) ni dejar la original por debajo de cero: una venta
+ * anulada entera no se anula otra vez (el 303 restaria el IVA dos veces).
+ * Suma en centimos la base y el total de las rectificativas por diferencias ya
+ * emitidas y la nueva; con `tx` bloquea antes la original (FOR UPDATE) para que
+ * dos rectificativas a la vez no pasen las dos. Las de sustitucion (S) llevan
+ * los importes buenos enteros, no una diferencia: no entran en la cuenta.
+ */
+async function exigirRectificableHasta(
+  db: Db,
+  companyId: string,
+  original: { id: string; numeroCompleto: string | null; esRectificativa: boolean; baseTotal: unknown; totalFactura: unknown },
+  nueva: { tipoRectificativa: string; baseTotal: unknown; totalFactura: unknown; excluirId?: string },
+  bloquear: boolean,
+): Promise<void> {
+  if (original.esRectificativa) {
+    throw badRequest(
+      `La ${original.numeroCompleto ?? 'factura'} ya es una rectificativa: no se rectifica. Si hay que corregirla, haz otra rectificativa de la factura original.`,
+    );
+  }
+  if (nueva.tipoRectificativa !== 'I') return;
+  if (bloquear) await db.$queryRaw`SELECT id FROM IncomeInvoice WHERE id = ${original.id} FOR UPDATE`;
+  const previas = await rectificadoDe(db, companyId, original.id, nueva.excluirId);
+  const signo = Math.sign(aCentimos(Number(original.totalFactura))) || Math.sign(aCentimos(Number(original.baseTotal)));
+  if (!signo) return;
+  const suma = (campo: 'baseTotal' | 'totalFactura') =>
+    aCentimos(Number(original[campo])) + previas.reduce((a, r) => a + aCentimos(Number(r[campo])), 0) + aCentimos(Number(nueva[campo]));
+  const pasa = (c: number) => c * signo < 0;
+  if (!pasa(suma('totalFactura')) && !pasa(suma('baseTotal'))) return;
+  const numero = original.numeroCompleto ?? 'original';
+  const restante = (aCentimos(Number(original.totalFactura)) + previas.reduce((a, r) => a + aCentimos(Number(r.totalFactura)), 0)) / 100;
+  const lista = previas.map((r) => r.numeroCompleto).filter(Boolean).join(', ');
+  throw conflict(
+    !previas.length
+      ? `La rectificativa (${importeTexto(Number(nueva.totalFactura))}) es mayor que la factura ${numero} (${importeTexto(Number(original.totalFactura))}).`
+      : aCentimos(restante) === 0
+        ? `La factura ${numero} ya está anulada por completo con la ${lista}. No se puede rectificar otra vez.`
+        : `La rectificativa deja la factura ${numero} por debajo de cero: después de la ${lista} solo quedan ${importeTexto(restante)} por rectificar.`,
+    { codigo: 'RECTIFICATIVA_EXCEDE_ORIGINAL', facturaOriginalId: original.id, rectificativas: previas.map((r) => r.id) },
+  );
+}
+
 function exigirBorrador(f: FacturaConLineas, accion: string): void {
   if (f.estadoDocumento === ESTADO_PROFORMA) {
     throw badRequest(`La proforma ${f.numeroCompleto ?? ''} no se puede ${accion}: para facturarla usa «Pasar a factura».`);
@@ -1189,6 +1258,19 @@ async function crear(dto: CrearFacturaIngresoDTO, opciones: { origen?: OrigenFac
 
   const importes =
     interno.importes ?? calcularImportesFactura(lineas, { tipoCambio: tipo.tipoCambio, mismaMoneda: moneda === perfil.monedaCuenta });
+  // Rectificativa de una factura de la app: ni de otra rectificativa ni por
+  // encima de lo que queda de la original (se repite dentro de la transaccion).
+  const rectificable = original
+    ? (db: Db, bloquear: boolean) =>
+        exigirRectificableHasta(
+          db,
+          dto.companyId,
+          original,
+          { tipoRectificativa: dto.tipoRectificativa ?? 'I', baseTotal: importes.cuenta.baseTotal, totalFactura: importes.cuenta.totalFactura },
+          bloquear,
+        )
+    : null;
+  if (rectificable) await rectificable(prisma, false);
   if (emiteLaApp) exigirLimiteSimplificada(tipoFactura, perfil, importes.cuenta);
   const comunes = {
     companyId: dto.companyId,
@@ -1262,6 +1344,7 @@ async function crear(dto: CrearFacturaIngresoDTO, opciones: { origen?: OrigenFac
     const numero = dto.numero;
     const numeroCompleto = numeroCompletoLeido(opciones.numeroLeido, serie) ?? `${serie}-${numero}`;
     const factura = await transaccion(async (tx) => {
+      if (rectificable) await rectificable(tx, true);
       const existe = await tx.incomeInvoice.findFirst({
         where: { companyId: dto.companyId, OR: [{ serie, numero }, { numeroCompleto }] },
         select: { numeroCompleto: true },
@@ -1290,6 +1373,7 @@ async function crear(dto: CrearFacturaIngresoDTO, opciones: { origen?: OrigenFac
 
   // Emision directa: numero de la serie en la misma transaccion.
   const factura = await transaccion(async (tx) => {
+    if (rectificable) await rectificable(tx, true);
     const numero = await asignarNumero(tx, dto.companyId, serie, fechaEmision);
     return tx.incomeInvoice.create({
       data: {
@@ -1678,7 +1762,18 @@ export const incomeInvoicesService = {
     // IBAN y pie de ahora, copiados en la factura: su PDF ya no cambia con los ajustes.
     const copia = await copiaAlEmitir(companyId, actual.moneda);
 
+    // Rectificativa: ni de otra rectificativa ni por encima de lo que queda de la original.
+    const nuevaRect = original
+      ? {
+          tipoRectificativa: actual.tipoRectificativa ?? 'I',
+          baseTotal: importes ? importes.cuenta.baseTotal : actual.baseTotal,
+          totalFactura: importes ? importes.cuenta.totalFactura : actual.totalFactura,
+          excluirId: id,
+        }
+      : null;
+    if (original && nuevaRect) await exigirRectificableHasta(prisma, companyId, original, nuevaRect, false);
     const factura = await transaccion(async (tx) => {
+      if (original && nuevaRect) await exigirRectificableHasta(tx, companyId, original, nuevaRect, true);
       const numero = await asignarNumero(tx, companyId, actual.serie, fechaEmision);
       // Solo se finaliza si sigue en borrador y sin cambios desde que se leyo (otra
       // peticion podria haberla emitido o modificado: moneda, lineas, tipo...).
@@ -1860,6 +1955,25 @@ export const incomeInvoicesService = {
     if (f.estadoDocumento === ESTADO_PROFORMA && f.estado === 'ACEPTADA') {
       const generada = await prisma.incomeInvoice.findFirst({ where: { companyId, proformaId: f.id }, select: { id: true } });
       if (generada) resp.facturaGeneradaId = generada.id;
+    }
+    if (f.estadoDocumento === ESTADO_FINAL) {
+      const [rects, asiento] = await Promise.all([
+        prisma.incomeInvoice.findMany({
+          where: { companyId, facturaOriginalId: f.id, estadoDocumento: ESTADO_FINAL },
+          select: { id: true, numeroCompleto: true, totalFactura: true, tipoRectificativa: true },
+          orderBy: { numero: 'asc' },
+        }),
+        // El de la factura, no los de sus cobros (TESORERIA tambien lleva invoiceId).
+        prisma.journalEntry.findFirst({
+          where: { companyId, invoiceId: f.id, origen: { not: 'TESORERIA' }, estado: { in: ['POSTED', 'PENDING_REVIEW', 'DRAFT'] } },
+          select: { id: true, numeroAsiento: true, estado: true },
+        }),
+      ]);
+      resp.rectificadaPor = rects.map((r) => ({ id: r.id, numeroCompleto: r.numeroCompleto, totalFactura: Number(r.totalFactura), tipoRectificativa: r.tipoRectificativa }));
+      const total = aCentimos(Number(f.totalFactura));
+      const neto = total + rects.filter((r) => r.tipoRectificativa !== 'S').reduce((a, r) => a + aCentimos(Number(r.totalFactura)), 0);
+      resp.anuladaPorCompleto = !f.esRectificativa && total !== 0 && neto === 0;
+      resp.asiento = asiento ? { id: asiento.id, numero: asiento.numeroAsiento ?? null, estado: String(asiento.estado) } : null;
     }
     return resp;
   },
