@@ -34,6 +34,7 @@ import { completarConClaude, decidirComplemento } from './claude-complemento';
 import { claudeConfigurado, claudeVisionExtractor } from './claude-vision.adapter';
 import { MENSAJE_LECTURA_NO_ENCONTRADA } from './confirmar';
 import { contextoValidacion, gastoDuplicado, proveedorPorNif } from './contexto';
+import { clientePorNif, type TerceroExistente } from './terceros-lector';
 import type {
   ArchivoLectura,
   CampoId,
@@ -115,7 +116,8 @@ export interface LecturaGastoLista {
 export interface LecturaIngresoLista {
   lecturaId: string;
   estado: 'LISTA';
-  ingreso: IngresoExtraido;
+  /** clienteExistente: el cliente dado de alta con ese NIF, o null (hay que darlo de alta o elegir uno). */
+  ingreso: IngresoExtraido & { clienteExistente: TerceroExistente | null };
   lectura: InfoLectura;
 }
 export type RespuestaLectura =
@@ -383,7 +385,8 @@ async function respuestaDe(fila: FilaLectura): Promise<RespuestaLectura> {
   }
   const extraccion = aInvoiceExtraction(guardado.lectura, validaciones, { confianza: fila.confianza, nombreArchivo: fila.archivoNombre, mime: fila.archivoTipo });
   const ingreso = aIngresoExtraido(fila.incomeReaderDocumentId ?? '', extraccion);
-  return { lecturaId: fila.id, estado: 'LISTA', ingreso: { ...ingreso, errores: sinRepetidos(ingreso.errores) }, lectura };
+  const clienteExistente = await clientePorNif(fila.companyId, ingreso.nifCliente);
+  return { lecturaId: fila.id, estado: 'LISTA', ingreso: { ...ingreso, errores: sinRepetidos(ingreso.errores), clienteExistente }, lectura };
 }
 
 // ---------------------------------------------------------------------------
