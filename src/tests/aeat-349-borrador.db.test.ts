@@ -11,7 +11,7 @@
  *
  * Necesita MySQL (en GitHub Actions lo levanta el workflow de tests).
  */
-import { describe, it, expect, beforeAll } from '@jest/globals';
+import { describe, it, expect, beforeAll, jest } from '@jest/globals';
 import express from 'express';
 import request from 'supertest';
 import { prisma } from '../config/database';
@@ -76,6 +76,21 @@ describe('349 de 2027 desde las facturas', () => {
   let ventaDe1T: string;
 
   beforeAll(async () => {
+    // Las facturas de 2027 no se pueden emitir antes de su fecha (Verifactu, P3):
+    // solo mientras se crean, el dia de hoy es el 15-6-2027. Solo se finge la
+    // fecha; los temporizadores siguen reales para que Prisma funcione.
+    jest.useFakeTimers({
+      now: new Date('2027-06-15T10:00:00Z'),
+      doNotFake: ['hrtime', 'nextTick', 'performance', 'queueMicrotask', 'setImmediate', 'clearImmediate', 'setInterval', 'clearInterval', 'setTimeout', 'clearTimeout'],
+    });
+    try {
+      await crearDatos();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  async function crearDatos() {
     await prisma.company.create({ data: { id: E, name: 'Exportadora Turia SL', fsBaseUrl: 'http://localhost:8080', fsApiKeyEnc: 'k' } });
     await prisma.legalConfig.create({
       data: { companyId: E, denominacion: 'Exportadora Turia, S.L.', nif: NIF, telefono: '+34 963 12 34 56', personaContacto: 'García Muñoz Ana' },
@@ -102,7 +117,7 @@ describe('349 de 2027 desde las facturas', () => {
     await compra(E, es, '2027-05-03', 'ES-1', 500);
     const anulada = await expenseInvoicesService.anularGasto(E, compra1T.id, { motivo: 'Devuelta', fecha: '2027-04-10' });
     expect(anulada.contraasiento).toBe(true);
-  });
+  }
 
   it('1T: las dos entregas y la compra a Italia', async () => {
     const b = await calcularBorrador349(E, 2027, '1T');
