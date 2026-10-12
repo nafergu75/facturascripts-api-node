@@ -709,7 +709,7 @@ async function comprobarPartidaGestoria(companyId: string, supplierId: string, n
   const p = await partidaDeFacturaProveedor(prisma, companyId, { supplierId, numero, fechaEmision, excluirFacturaId: excluirId });
   if (!p) return;
   throw conflict(
-    `Esta factura ya la contabilizó tu gestoría: está entre las facturas de ${fechaEmision.slice(0, 4)} pendientes de pago (${p.numeroDocumento}). Págala desde allí y no la registres otra vez.`,
+    `Esta factura ya la contabilizó tu gestoría: es la ${p.numeroDocumento} de «Facturas de ${fechaEmision.slice(0, 4)} pendientes» (Contabilidad > Traer la contabilidad de ${fechaEmision.slice(0, 4)}). Págala desde allí y no la registres otra vez.`,
     { campo: 'numeroFacturaProveedor', codigo: 'FACTURA_EN_PARTIDA_2026', partidaId: p.id, enlace: `${ENLACE_ARRANQUE}?vista=pendientes` },
   );
 }
