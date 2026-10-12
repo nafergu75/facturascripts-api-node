@@ -10,6 +10,7 @@
 import type { DatosModelo111, DatosModelo115 } from '../../domain/impuestos.model';
 import { badRequest } from '../../utils/http-errors';
 import { normalizarNif } from '../../utils/nif';
+import { importeTexto } from '../../utils/money';
 import {
   componerRegistroDr,
   DR111,
@@ -243,7 +244,7 @@ export function construirDeclaracion(modelo: ModeloRetenciones, e: EntradaDeclar
   if (m.total) {
     const suma = m.total.sumandos.reduce((a, k) => a + cent(casillas[k]), 0);
     if (suma !== cent(casillas[m.total.casilla])) {
-      errores.push(`La casilla [${m.total.casilla}] (${(cent(casillas[m.total.casilla]) / 100).toFixed(2)}) no es la suma de ${m.total.sumandos.map((k) => `[${k}]`).join(' + ')} (${(suma / 100).toFixed(2)}): corrige las casillas editadas a mano.`);
+      errores.push(`La casilla [${m.total.casilla}] (${importeTexto(cent(casillas[m.total.casilla]) / 100)}) no es la suma de ${m.total.sumandos.map((k) => `[${k}]`).join(' + ')} (${importeTexto(suma / 100)}): corrige las casillas editadas a mano.`);
     }
   }
   const complementaria = o.complementaria === true;
@@ -253,7 +254,7 @@ export function construirDeclaracion(modelo: ModeloRetenciones, e: EntradaDeclar
   }
   const resultado = cent(casillas[m.base]) - anteriores;
   if (resultado !== cent(casillas[m.resultado])) {
-    errores.push(`La casilla [${m.resultado}] tiene que ser [${m.base}] - [${m.anteriores}] (${(resultado / 100).toFixed(2)}): corrige las casillas editadas a mano.`);
+    errores.push(`La casilla [${m.resultado}] tiene que ser [${m.base}] - [${m.anteriores}] (${importeTexto(resultado / 100)}): corrige las casillas editadas a mano.`);
   }
   if (complementaria && resultado <= 0) {
     // Instrucciones del modelo 111 en la sede (Modelo 111 > Instrucciones, consultadas
@@ -263,7 +264,7 @@ export function construirDeclaracion(modelo: ModeloRetenciones, e: EntradaDeclar
     // más se corrige con una solicitud de rectificación (art. 120.3 LGT). El 115
     // tiene la misma liquidacion ([05] = [03] - [04]) y los mismos tipos (I, U, G, N).
     errores.push(
-      `Una complementaria del ${modelo} solo se presenta si sale una cantidad a ingresar, y aquí la casilla [${m.resultado}] sale ${(resultado / 100).toFixed(2).replace('.', ',')} €. ` +
+      `Una complementaria del ${modelo} solo se presenta si sale una cantidad a ingresar, y aquí la casilla [${m.resultado}] sale ${importeTexto(resultado / 100)}. ` +
         'La sede no la admite: si en la declaración anterior ingresaste de más, pide en la sede la rectificación de esa autoliquidación; si no cambia nada, no hace falta presentar otra.',
     );
   } else if (resultado < 0) {
