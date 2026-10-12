@@ -196,7 +196,11 @@ export async function anularTraspaso4709(
 
 /** Texto de la pantalla del 111/115 con el exceso: qué hacer y si ya está hecho. */
 export function textoExceso(codigo: CodigoRetenciones, exceso: number, hecho: Traspaso4709 | null): string {
-  return hecho
-    ? `Los ${eur(exceso)} de retención de abonos que no caben en este ${codigo} ya están pasados de la 4751 a la 4709 (asiento ${hecho.numero}).`
-    : `Hay ${eur(exceso)} de retención de abonos que no caben en este ${codigo}. Cuando lo pagues, pásalos de la 4751 a la 4709 con «Pasar a la 4709».`;
+  if (!hecho) return `Hay ${eur(exceso)} de retención de abonos que no caben en este ${codigo}. Cuando lo presentes, pásalos de la 4751 a la 4709 con «Pasar a la 4709».`;
+  if (Math.round(hecho.importe * 100) === Math.round(exceso * 100)) {
+    return `Los ${eur(exceso)} de retención de abonos que no caben en este ${codigo} ya están pasados de la 4751 a la 4709 (asiento ${hecho.numero}).`;
+  }
+  return Math.round(exceso * 100) > 0
+    ? `El traspaso a la 4709 (asiento ${hecho.numero}, ${eur(hecho.importe)}) ya no coincide con lo que ahora no cabe en este ${codigo} (${eur(exceso)}): anúlalo y vuelve a hacerlo.`
+    : `El traspaso a la 4709 (asiento ${hecho.numero}, ${eur(hecho.importe)}) ya no hace falta: ahora los abonos caben en este ${codigo}. Anúlalo.`;
 }
