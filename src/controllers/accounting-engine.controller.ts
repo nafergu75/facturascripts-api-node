@@ -14,14 +14,23 @@ import { registrarAuditoria } from '../services/auditoria.service';
 import { accountingEngineService, desgloseIvaPorTipo } from '../services/accounting-engine.service';
 import { prisma, type TransaccionBD } from '../config/database';
 import { basePorCuenta, nombresDeCuentas } from '../services/cuentasLinea.service';
-import { cuadraEnCentimos } from '../utils/money';
+import { aCentimos, cuadraEnCentimos } from '../utils/money';
 import { asegurarPlanContableEmpresa } from '../services/chart-of-accounts.service';
 import { comprobarFechaAbierta, periodoNoAbierto } from '../services/periodos.service';
 import { perfilEmpresa } from '../services/perfilEmpresa.service';
 import { motivoSinTipoFijado, notaDivisa } from '../domain/divisas';
 import { esTipoOperacion, fechaDevengoVenta } from '../domain/tipo-operacion.model';
 import { fechaContableGasto } from '../domain/factura-gasto.model';
-import { cuentaAcreedorDePagos, datosContablesGastoConSubcuenta, motivoPeriodoBloqueado, retencionDe } from '../services/expense-invoices.service';
+import {
+  bloqueoPeriodoGasto,
+  cuentaAcreedorDePagos,
+  datosContablesGastoConSubcuenta,
+  detallesRectificar303,
+  marcarRectificar303,
+  retencionDe,
+  textoRectificar303,
+  type BloqueoPeriodo,
+} from '../services/expense-invoices.service';
 import { crearCompensacionesAuto } from '../services/compensacionesGasto.service';
 import { conReintentoSubcuenta, fichaDeSubcuenta, subcuentaClienteParaApunte, type FichaDeSubcuenta } from '../services/terceros/subcuentas';
 import { esSubcuentaGenerica } from '../services/terceros/numeracion';
@@ -361,6 +370,8 @@ export class AccountingEngineController {
     journalEntryId: string,
     userId: string,
     observaciones?: string,
+    /** confirmaRectificar303: la pantalla lo manda tras el 409 rectificar_303 (abono que reduce el IVA de un 303 presentado). */
+    opciones: { confirmaRectificar303?: boolean } = {},
   ): Promise<{
     journalEntryId: string;
     estado: 'POSTED';
@@ -395,11 +406,25 @@ export class AccountingEngineController {
         asiento.origen === 'FACTURA_GASTO' && asiento.invoiceId
           ? await prisma.expenseInvoice.findFirst({
               where: { id: asiento.invoiceId, companyId },
-              select: { tipoGasto: true, retencionTotal: true },
+              select: { tipoGasto: true, retencionTotal: true, ivaTotal: true, esRectificativa: true, fechaImputacionIva: true, rectificar303ConfirmadoEn: true },
             })
           : null;
+      // Abono que reduce el IVA de un 303 ya presentado, confirmado ahora (seccion 11): se guarda la marca al aprobar.
+      let confirmado303: BloqueoPeriodo | null = null;
       if (gasto && asiento.invoiceId) {
-        const motivo = await motivoPeriodoBloqueado(companyId, fechaAsiento, retencionDe(gasto));
+        // El 303, con la fecha de su IVA (la de la original en una ERROR_IVA que reduce).
+        const b = await bloqueoPeriodoGasto(companyId, fechaAsiento, retencionDe(gasto), gasto.fechaImputacionIva ?? fechaAsiento);
+        const abonoQueReduce = b?.modelo === '303' && gasto.esRectificativa && aCentimos(Number(gasto.ivaTotal)) < 0;
+        if (b && abonoQueReduce && !gasto.rectificar303ConfirmadoEn) {
+          if (!opciones.confirmaRectificar303) {
+            throw conflict(textoRectificar303(b.motivo, !!gasto.fechaImputacionIva), {
+              ...detallesRectificar303(b, gasto.fechaImputacionIva ? 'rectificativa' : 'fechaRegistro'),
+              facturaId: asiento.invoiceId,
+            });
+          }
+          confirmado303 = b;
+        }
+        const motivo = b && !abonoQueReduce ? b.motivo : null;
         if (motivo) {
           // campo y facturaId: la pantalla abre la factura con «¿La recibiste más tarde?» desplegado.
           // Si el mes solo esta bloqueado (no presentado), la factura puede ser de ese mes: se dice como desbloquearlo.
@@ -461,12 +486,14 @@ export class AccountingEngineController {
         if (asiento.origen === 'FACTURA_GASTO') {
           await tx.expenseInvoice.updateMany({
             where: { id: asiento.invoiceId ?? '', companyId, estado: 'DRAFT' },
-            data: { estado: 'ACCOUNTED' },
+            data: { estado: 'ACCOUNTED', ...(confirmado303 ? { rectificar303ConfirmadoEn: ahora.toISOString() } : {}) },
           });
           // Un abono del lector resta de lo pendiente de su original al aprobarlo.
           if (asiento.invoiceId) await crearCompensacionesAuto(tx, companyId, asiento.invoiceId, { userId });
         }
       });
+
+      if (confirmado303 && gasto && asiento.invoiceId) await marcarRectificar303(companyId, asiento.invoiceId, confirmado303, Number(gasto.ivaTotal), userId);
 
       // Auditoría
       await registrarAuditoria({
