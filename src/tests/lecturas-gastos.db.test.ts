@@ -553,6 +553,20 @@ describe('confirmar con lecturaId', () => {
     expect(await prisma.auditLog.count({ where: { companyId: E, action: 'LECTOR_NO_ES_RECTIFICATIVA', resourceId: r.body.data.factura.id } })).toBe(1);
   });
 
+  it('un abono leído de un proveedor sin dar de alta pide antes el proveedor que la factura que rectifica', async () => {
+    crear.mockResolvedValueOnce(fixtureClaude('complemento-rectificativa'));
+    const { id } = await leerConAzure('resultado-rectificativa');
+    const r = await request(app())
+      .post('/gastos-extractor/confirmar')
+      .send(cuerpo(id, { revisado: true, numeroFacturaProveedor: 'R-3C', proveedor: { nuevo: { nombreFiscal: 'Proveedor Nuevo SL', nifCif: 'B12345674' } } }));
+    expect(r.status).toBe(400);
+    expect(r.body.details).toMatchObject({ codigo: 'TERCERO_NO_DADO_DE_ALTA', campo: 'proveedor' });
+    // Con el proveedor elegido, ya pide la factura que rectifica.
+    const sin = await request(app()).post('/gastos-extractor/confirmar').send(cuerpo(id, { revisado: true, numeroFacturaProveedor: 'R-3C' }));
+    expect(sin.body.details).toMatchObject({ codigo: 'FALTA_RECTIFICATIVA' });
+    expect(await prisma.expenseInvoice.count({ where: { companyId: E, numeroFacturaProveedor: 'R-3C' } })).toBe(0);
+  });
+
   it('una lectura que no existe: 404', async () => {
     expect((await request(app()).post('/gastos-extractor/confirmar').send(cuerpo('no-existe'))).status).toBe(404);
   });
