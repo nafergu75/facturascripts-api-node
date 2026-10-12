@@ -5,6 +5,7 @@
 
 import { prisma } from '../../config/database';
 import { notFound } from '../../utils/http-errors';
+import { formatearHusoMadrid, hoyEspana } from '../../utils/fechas';
 
 export interface ExportOptions {
   formato: 'csv' | 'json'; // Formato de exportación
@@ -100,7 +101,7 @@ function exportToCSV(data: SupplierExportData, supplier: any): string {
 
   // Header con info del proveedor
   lines.push('EXPORTACIÓN DE PROVEEDOR');
-  lines.push(`Fecha de exportación: ${new Date().toISOString()}`);
+  lines.push(`Fecha de exportación: ${formatearHusoMadrid(new Date())}`);
   lines.push('');
 
   // Datos del proveedor
@@ -160,6 +161,6 @@ function exportToCSV(data: SupplierExportData, supplier: any): string {
  */
 export function getSafeFileName(nombreFiscal: string, nifCif: string, formato: 'csv' | 'json'): string {
   const clean = `${nombreFiscal}_${nifCif}`.replace(/[^a-zA-Z0-9_-]/g, '_');
-  const timestamp = new Date().toISOString().split('T')[0];
+  const timestamp = hoyEspana();
   return `proveedor_${clean}_${timestamp}.${formato}`;
 }

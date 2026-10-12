@@ -23,7 +23,8 @@ export const movementsController = {
         description,
         date: new Date(date),
         referenceDocument,
-        fiscalYear: fiscalYear || new Date(date).getFullYear(),
+        // El año de la fecha tal como llega (AAAA-MM-DD...), sin pasar por el huso del servidor.
+        fiscalYear: fiscalYear || (/^\d{4}-/.test(String(date)) ? Number(String(date).slice(0, 4)) : new Date(date).getFullYear()),
         status: status || 'draft',
       },
     });
