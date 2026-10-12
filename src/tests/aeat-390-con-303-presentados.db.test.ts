@@ -101,9 +101,9 @@ describe('390 con los 303 presentados', () => {
     expect(b.liquidaciones.casilla85).toBe(50);
   });
 
-  it('clave de actividad y epígrafe del IAE de Registro Mercantil > Datos en las posiciones 188 y 191', async () => {
+  it('clave de actividad y epígrafe del IAE de Datos de la empresa en las posiciones 188 y 191', async () => {
     const sin = await borrador390(TRIM, 2026);
-    expect(sin.advertencias.join(' ')).toMatch(/clave de actividad o el epígrafe del IAE.*Registro Mercantil/);
+    expect(sin.advertencias.join(' ')).toMatch(/clave de actividad o el epígrafe del IAE.*Datos de la empresa, apartado Identificación/);
     await prisma.legalConfig.update({ where: { companyId: TRIM }, data: limpiarLegalConfig({ claveActividad: 'a03', epigrafeIae: '615.1' }) as never });
     const b = await borrador390(TRIM, 2026);
     const p1 = b.paginas.find((p) => p.codigo === '01000')!.linea;
