@@ -16,6 +16,7 @@ import { reanalizar, subirYAnalizar, type RespuestaCarga } from '../services/arr
 import { prepararDatos } from '../services/arranque/datos';
 import { obtenerAsientosEjercicio, saldosDelEjercicio } from '../services/contabilidadDatos.service';
 import { comprobarFechaAbierta } from '../services/periodos.service';
+import { informeMayorTerceros } from '../services/informesContables.service';
 import { longitudSubcuentasGuardada } from '../services/terceros/subcuentas';
 import type { HttpError } from '../utils/http-errors';
 import {
@@ -161,6 +162,10 @@ describe('empresa A: todo junto, sin regularizar, con diario', () => {
     const s2027 = saldosDelEjercicio(await obtenerAsientosEjercicio(E, 2027), 2027);
     expect(s2027.balance.get('4300000001')).toBe(6050);
     expect(s2027.balance.get('5720000001')).toBe(18630);
+
+    // El mayor de clientes de 2027 parte de la apertura importada.
+    const mayor = await informeMayorTerceros(E, 'clientes', { desde: '2027-01-01', hasta: '2027-12-31', ejercicio: 2027 });
+    expect(mayor.terceros.find((t) => t.nombre === 'Cliente Alfa SL')?.saldoFinal).toBe(6050);
 
     // Cartera: una partida por factura, con su ficha.
     const partidas = await prisma.partidaPendiente.findMany({ where: { companyId: E, cargaId: r.carga.id }, orderBy: { numeroDocumento: 'asc' } });
