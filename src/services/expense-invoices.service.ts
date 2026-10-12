@@ -734,8 +734,8 @@ async function ivaIntracomunitarioFuera(
   if (!fuera || (await periodo303FueraDeLaApp(companyId, q.fechaContable))) return null;
   if (q.confirma) return q.fechaEmision;
   throw conflict(
-    `El IVA de esta compra intracomunitaria se devengó el ${ddmmaaaa(q.fechaEmision)}, la fecha de la factura: va en el 303 y el 349 ${periodoTexto(fuera, 'de')}, que presenta tu gestoría. ` +
-      `Regístrala igualmente y pásale la factura a la gestoría. En la app no entrará en los modelos de ${q.fechaContable.slice(0, 4)}.`,
+    `El IVA de esta compra intracomunitaria se devengó el ${ddmmaaaa(q.fechaEmision)}, la fecha de la factura: va en el 303 y el 349 ${periodoTexto(fuera, 'de')}, que se presentan fuera de la app (por ejemplo, los lleva tu gestoría). ` +
+      `Regístrala igualmente y pasa la factura a quien los presente. En la app no entrará en los modelos de ${q.fechaContable.slice(0, 4)}.`,
     { codigo: 'DEVENGO_FUERA_APP', motivo: 'devengo_fuera_app', modelo: '303', ejercicio: fuera.ejercicio, periodo: fuera.periodo, campo: 'fechaEmision' },
   );
 }
