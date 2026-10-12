@@ -1036,6 +1036,8 @@ type Guardado303 = DatosModelo303 & {
   rectificativa?: { justificanteAnterior: string } | null;
   /** Indicadores de la página 1 con que se presentó (SII voluntario, volumen...). */
   indicadores?: Record<number, string | null> | null;
+  /** NIF y razón social con que se presentó (los config_* de las casillas de la fila). */
+  empresaPresentada?: { nif: string | null; razonSocial: string | null };
 };
 
 /** Datos guardados del 303 presentado de un periodo (con sus casillas oficiales), o null. */
@@ -1045,7 +1047,9 @@ async function presentado303(companyId: string, periodo: PeriodoFiscal): Promise
   const datos = fila.datos as Guardado303 | null;
   // Los guardados antes del diseño 2026 sin desglose no sirven para el fichero.
   if (!datos?.casillasOficiales && !datos?.ivaDevengado) return null;
-  return { ...datos, periodo };
+  const cas = (fila.casillas ?? {}) as Record<string, unknown>;
+  const texto = (v: unknown) => (typeof v === 'string' && v.trim() ? v.trim() : null);
+  return { ...datos, periodo, empresaPresentada: { nif: texto(cas.config_nif), razonSocial: texto(cas.config_razon_social) } };
 }
 
 /**
@@ -1059,8 +1063,16 @@ export async function calcularBorrador303(companyId: string, periodo: PeriodoFis
   const guardado = await presentado303(companyId, periodo);
   if (guardado) {
     const empresa = await contextoEmpresa303(companyId, periodo.ejercicio, opciones.cuentaBancariaId, guardado.indicadores ? undefined : periodo.periodo);
-    // Congelado: también el IBAN de la página DID y la marca de rectificativa con que se presentó.
-    const ctxPresentado = guardado.ibanPresentado !== undefined ? { ...empresa.ctx, iban: guardado.ibanPresentado } : empresa.ctx;
+    // Congelado: también el NIF y la razón social, el IBAN de la página DID y la
+    // marca de rectificativa con que se presentó. Si después cambian los datos
+    // de la empresa, la pantalla y el fichero siguen siendo los presentados.
+    const presentada = guardado.empresaPresentada;
+    const ctxPresentado = {
+      ...empresa.ctx,
+      nif: presentada?.nif ?? empresa.ctx.nif,
+      razonSocial: presentada?.razonSocial ?? empresa.ctx.razonSocial,
+      ...(guardado.ibanPresentado !== undefined ? { iban: guardado.ibanPresentado } : {}),
+    };
     const borrador = montarBorrador303(
       { ...guardado, casillasOficiales: casillasOficiales303De(guardado) },
       ctxPresentado,

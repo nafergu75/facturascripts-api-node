@@ -227,6 +227,48 @@ describe('B4: 303 rectificativa', () => {
   });
 });
 
+describe('B4: 303 presentado congelado con los datos de la empresa y rectificativa con [111]', () => {
+  it('el TXT presentado sigue con el NIF y la razón social de entonces; la rectificativa negativa lleva la DID', async () => {
+    const cli = await prisma.customer.create({ data: { companyId: OTRA, nombreFiscal: 'Viveros Peña, S.L.', nifCif: 'B12345674', pais: 'ES', cp: '46001' } });
+    await venta(OTRA, cli.id, '2026-02-10', 8047.62, 1690);
+    const p = await request(app()).post(ruta('/tax-models/303/presentado', OTRA)).send({ ejercicio: 2026, periodo: '1T', justificante: { numero: '3032026000101', fecha: '2026-04-15' } });
+    expect(p.status).toBe(200);
+    const presentado = (await generarTxt303(OTRA, 2026, '1T')).contenido;
+    const p1 = (txt: string) => txt.slice(txt.indexOf('<T30301000>'));
+    expect(p1(presentado).slice(13, 102).trimEnd()).toBe('B46000006DECLARACIONES TURIA SL');
+
+    // Cambian la denominación y el NIF: lo presentado no cambia (pantalla y fichero).
+    await prisma.legalConfig.update({ where: { companyId: OTRA }, data: { nif: 'A10952364', denominacion: 'Otra Razón Distinta, S.A.' } });
+    try {
+      expect((await generarTxt303(OTRA, 2026, '1T')).contenido).toBe(presentado);
+      const pantalla = (await request(app()).get(ruta('/tax-models/303?ejercicio=2026&periodo=1T', OTRA))).body.data;
+      expect(JSON.stringify(pantalla)).not.toMatch(/OTRA RAZON|A10952364/);
+    } finally {
+      await prisma.legalConfig.update({ where: { companyId: OTRA }, data: { nif: 'B46000006', denominacion: 'Declaraciones Turia, S.L.' } });
+    }
+
+    // Rectificativa con una compra olvidada: [69] 640, [70] 1690, [71] -1050 y [111] 1050, tipo N.
+    expect((await request(app()).post(ruta('/tax-models/303/declaraciones/rectificacion', OTRA)).send({ ejercicio: 2026, periodo: '1T', tipo: 'C' })).status).toBe(201);
+    const prov = await prisma.supplier.create({ data: { companyId: OTRA, nombreFiscal: 'Suministros Olvidados SL', nifCif: 'B87654323', cp: '46001' } });
+    await expenseInvoicesService.crearGasto(
+      { companyId: OTRA, proveedor: { id: prov.id }, numeroFacturaProveedor: 'OLV-1', fechaEmision: '2026-03-01', tipoGasto: 'SERVICIO_PROFESIONAL', lineas: [{ descripcion: 'Compra olvidada', cantidad: 1, precioUnitario: 5000, tipoIva: 21, tipoRetencion: 0 }] } as never,
+      { contabilizar: 'POSTED' },
+    );
+    const sinCuenta = await request(app()).get(ruta('/impuestos/modelos/cal-303-2026-1T/txt', OTRA));
+    expect((await request(app()).get(ruta('/tax-models/303?ejercicio=2026&periodo=1T', OTRA))).body.data.errores.join(' ')).toMatch(/\[111\]/);
+    expect(sinCuenta.status).toBeGreaterThanOrEqual(400);
+    await prisma.bankAccount.create({ data: { companyId: OTRA, iban: 'ES9121000418450200051332', subcuentaCodigo: '572000' } });
+    const txt = (await generarTxt303(OTRA, 2026, '1T')).contenido;
+    const p3 = txt.slice(txt.indexOf('<T30303000>'));
+    const imp = (pos: number) => (p3[pos - 1] === 'N' ? -1 : 1) * Number(p3.slice(pos - 1 + (p3[pos - 1] === 'N' ? 1 : 0), pos - 1 + 17)) / 100;
+    expect([imp(340), imp(357), imp(408), imp(441)]).toEqual([640, 1690, -1050, 1050]); // [69], [70], [71], [111]
+    expect(p1(txt)[12]).toBe('N');
+    const did = txt.slice(txt.indexOf('<T303DID00>'));
+    expect(txt.indexOf('<T303DID00>')).toBeGreaterThan(0);
+    expect(did.slice(22, 46)).toBe('ES9121000418450200051332');
+  });
+});
+
 describe('B4 y B5: 347 normal, complementaria y sustitutiva', () => {
   it('la complementaria propone solo los declarados nuevos; los números no se repiten ni se reutilizan', async () => {
     // El número de la normal ya se pidió (test de los GET): se reutiliza al presentar.
