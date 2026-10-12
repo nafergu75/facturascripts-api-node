@@ -146,6 +146,15 @@ describe('B6: los GET no escriben', () => {
   });
 });
 
+describe('B5: un «Marcar como presentado» rechazado no gasta número', () => {
+  it('349 sin operadores: 400 y ninguna declaración en preparación con número', async () => {
+    const r = await request(app()).post(ruta('/tax-models/349/presentado')).send({ ejercicio: 2026, periodo: '3T', justificante: { numero: '3492026999999', fecha: '2026-10-12' } });
+    expect(r.status).toBe(400);
+    expect(r.body.message ?? r.body.error?.message ?? JSON.stringify(r.body)).toMatch(/Corrige esto antes de marcarlo como presentado/);
+    expect(await prisma.declaracionAeat.count({ where: { companyId: E, codigo: '349', ejercicio: 2026, periodo: '3T' } })).toBe(0);
+  });
+});
+
 describe('190: la lista de perceptores de la complementaria es de Nóminas', () => {
   it('sin nominas:read el historial no trae los perceptores (ni sus importes), y elegirlos pide nominas:write', async () => {
     const pres = await request(app()).post(ruta('/tax-models/190/presentado')).send({ ejercicio: 2026, periodo: '0A', justificante: { numero: '1902026111111', fecha: '2027-01-20' } });
