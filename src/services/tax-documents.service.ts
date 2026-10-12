@@ -135,6 +135,9 @@ export class TaxDocumentsService {
     facturas: any[];
     totalBases: number;
     totalCuotas: number;
+    /** IVA autoliquidado de las compras del trimestre (adquisiciones intracomunitarias): no va en las filas. */
+    autoliquidado: number;
+    nota: string | null;
   }> {
     const match = period.match(/^Q(\d)-(\d{4})$/);
     if (!match) {
@@ -157,7 +160,10 @@ export class TaxDocumentsService {
 
     // Solo los apuntes de asientos en firme (POSTED): un borrador del lector
     // o un asiento anulado no cuentan. Sin ninguno, el libro esta vacio. Asi
-    // el libro cuadra con la 472 y con el 303.
+    // el libro cuadra con la 472 y con el 303, salvo el IVA autoliquidado de
+    // las adquisiciones intracomunitarias: el asiento lo lleva a la 472 y a la
+    // 477 y el 303 a [10]/[11] y [36]/[37], pero las filas del libro van con su
+    // tipo (0 %). Ese total se da aparte (autoliquidado y nota).
     const posted = await prisma.journalEntry.findMany({ where: { companyId, estado: 'POSTED' }, select: { id: true } });
     const facturas = posted.length
       ? await prisma.vATBook.findMany({
@@ -173,9 +179,21 @@ export class TaxDocumentsService {
 
     const totalBases = round2(facturas.reduce((s, f) => s + (f.baseImponible || 0), 0));
     const totalCuotas = round2(facturas.reduce((s, f) => s + (f.cuotaIva || 0), 0));
+    const lineas477 = posted.length
+      ? await prisma.journalEntryLine.findMany({
+          where: { companyId, accountCode: { startsWith: '477' }, entry: { estado: 'POSTED', origen: 'FACTURA_GASTO', fecha: { gte: startDate, lt: finExclusivo } } },
+          select: { debe: true, haber: true },
+        })
+      : [];
+    const autoliquidado = lineas477.reduce((a, l) => a + Math.round(Number(l.haber) * 100) - Math.round(Number(l.debe) * 100), 0) / 100;
+    const eur = (n: number) => `${n.toLocaleString('es-ES', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €`;
 
     return {
       periodo: period,
+      autoliquidado,
+      nota: autoliquidado
+        ? `Las cuotas no incluyen ${eur(autoliquidado)} de IVA autoliquidado de adquisiciones intracomunitarias: está en la 472 (y en la 477) y en el 303.`
+        : null,
       facturas: facturas.map((f) => ({
         fecha: f.fechaFactura,
         // El numero que puso el proveedor; el de registro (G-12) aparte.
