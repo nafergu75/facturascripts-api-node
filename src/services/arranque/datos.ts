@@ -36,6 +36,33 @@ export interface AjustesCarga {
   resultadoDeclarado?: number | null;
   /** Fecha del sumas y saldos si el fichero no la dice (AAAA-MM-DD). */
   fechaCorte?: string | null;
+  /** Por cada 572 de la apertura: saldo del extracto a 31-12 y la cuenta bancaria de Tesoreria. */
+  bancos?: Record<string, AjusteBanco>;
+  /** Datos fiscales que se arrastran de 2026 (303 del 4T, cuotas a compensar, bases negativas...). */
+  datosFiscales?: DatosFiscales;
+}
+
+/** Saldo del extracto a 31-12 de una 572 y con que cuenta bancaria se enlaza. */
+export interface AjusteBanco {
+  saldoExtracto: number | null;
+  /** Cuenta de Tesoreria que ya existe (con esa misma subcuenta). */
+  bankAccountId?: string | null;
+  /** Alta de la cuenta en Tesoreria si no existe. */
+  nueva?: { iban: string; bancoNombre?: string | null } | null;
+  /** La diferencia con la contabilidad son partidas en transito y se acepta. */
+  aceptarDiferencia?: boolean;
+}
+
+/** Datos fiscales de 2026 escritos a mano en el resumen. */
+export interface DatosFiscales {
+  /** Resultado del 303 del 4T: positivo, a ingresar; negativo, a devolver o a compensar. */
+  resultado303T4?: number | null;
+  /** Cuotas de IVA a compensar en 2027 ([110] del 303 del 1T); 0 si se pidio la devolucion. */
+  cuotasIvaACompensar?: number | null;
+  /** Bases imponibles negativas pendientes (Modelo 200). */
+  basesNegativas?: Array<{ ejercicio: number; importe: number }>;
+  /** Deducciones pendientes de aplicar (Modelo 200). */
+  deducciones?: Array<{ concepto: string; importe: number }>;
 }
 
 export interface FicheroLeible {
