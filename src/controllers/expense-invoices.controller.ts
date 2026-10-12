@@ -1,6 +1,9 @@
 import { asyncHandler } from '../utils/async-handler';
 import { sendOk } from '../utils/response';
 import { expenseInvoicesService, type FiltrosGastos } from '../services/expense-invoices.service';
+import { buscarOriginales, datosParaRectificar } from '../services/rectificativasGasto.service';
+
+const texto = (v: unknown): string | null => (typeof v === 'string' && v.trim() ? v.trim() : null);
 
 /**
  * Facturas de gasto: /companies/:companyId/expense-invoices. Las respuestas
@@ -51,6 +54,22 @@ export const expenseInvoicesController = {
   anular: asyncHandler(async (req, res) => {
     const { motivo, fecha } = (req.body ?? {}) as { motivo?: unknown; fecha?: unknown };
     sendOk(res, await expenseInvoicesService.anularGasto(req.companyId!, req.params.id, { motivo, fecha }, { userId: req.user?.userId }));
+  }),
+
+  /**
+   * GET /companies/:companyId/expense-invoices/originales?supplierId=&numero=&nif=
+   * Candidatas a factura original de un abono: la del mismo numero y las parecidas (8 como mucho).
+   */
+  originales: asyncHandler(async (req, res) => {
+    sendOk(res, await buscarOriginales(req.companyId!, { supplierId: texto(req.query.supplierId), numero: texto(req.query.numero), nif: texto(req.query.nif) }));
+  }),
+
+  /**
+   * GET /companies/:companyId/expense-invoices/:id/rectificar
+   * Datos para prellenar un abono o rectificativa de esta factura.
+   */
+  paraRectificar: asyncHandler(async (req, res) => {
+    sendOk(res, await datosParaRectificar(req.companyId!, req.params.id));
   }),
 
   /**
