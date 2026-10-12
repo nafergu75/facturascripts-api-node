@@ -179,8 +179,16 @@ export async function presentable(companyId: string, codigo: CodigoAeat, ejercic
         errores: b.errores,
         instantanea: {
           casillas: b.casillas,
-          // El 202 toma la base de la cuota líquida del 200 presentado.
-          fila: { casillas: b.casillas, datos: { ...b.liquidacion, cuotaLiquida: b.liquidacion.cuotaLiquida } },
+          // El 202 toma la base de la cuota líquida del 200 presentado, y la cifra de
+          // negocios del año (tipo de gravamen y marcas del 202 del año siguiente).
+          fila: {
+            casillas: b.casillas,
+            datos: {
+              ...b.liquidacion,
+              cuotaLiquida: b.liquidacion.cuotaLiquida,
+              ...(typeof b.cifraNegociosEjercicio === 'number' ? { pyg: { importeNetoCifraNegocios: b.cifraNegociosEjercicio } } : {}),
+            },
+          },
           fichero: b.errores.length ? null : b.fichero,
           pantalla: sinFichero(b),
           resultado: Math.max(0, b.liquidacion.resultado ?? 0),
