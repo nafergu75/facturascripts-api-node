@@ -52,7 +52,7 @@ describe('compra intracomunitaria de diciembre de 2026 registrada en enero de 20
     const e = await error(registrarGasto(E, compra('IT-1', '2026-12-20', '2027-01-10'), { contabilizar: 'POSTED' }));
     expect(e.statusCode).toBe(409);
     expect(e.message).toBe(
-      'El IVA de esta compra intracomunitaria se devengó el 20/12/2026, la fecha de la factura: va en el 303 y el 349 del 4T de 2026, que presenta tu gestoría. Regístrala igualmente y pásale la factura a la gestoría. En la app no entrará en los modelos de 2027.',
+      'El IVA de esta compra intracomunitaria se devengó el 20/12/2026, la fecha de la factura: va en el 303 y el 349 del 4T de 2026, que se presentan fuera de la app (por ejemplo, los lleva tu gestoría). Regístrala igualmente y pasa la factura a quien los presente. En la app no entrará en los modelos de 2027.',
     );
     expect(e.details).toMatchObject({ codigo: 'DEVENGO_FUERA_APP', modelo: '303', ejercicio: 2026, periodo: '4T' });
     expect(await prisma.expenseInvoice.count({ where: { companyId: E } })).toBe(0);

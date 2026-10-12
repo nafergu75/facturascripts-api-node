@@ -18,7 +18,7 @@ let clienteId = '';
 
 const linea = { descripcion: 'Entrega de diciembre', cantidad: 1, precioUnitario: 1000, tipoIva: 21 };
 const TEXTO =
-  'La operación es del 20/12/2026: su IVA va en el 303 del 4T de 2026, que presenta tu gestoría. Emítela igualmente y pásale la factura a la gestoría para que la incluya en ese 303 (y en su 390 y su 347).';
+  'La operación es del 20/12/2026: su IVA va en el 303 del 4T de 2026, que se presenta fuera de la app (por ejemplo, lo lleva tu gestoría). Emítela igualmente y pasa la factura a quien presente ese 303 para que la incluya, y también en su 390 y su 347.';
 
 async function error(p: Promise<unknown>): Promise<HttpError> {
   try {
