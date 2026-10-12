@@ -341,3 +341,40 @@ describe('formatos de los programas de las gestorías', () => {
     expect(a1.comprobaciones.nivel).toBe('FALTAN_DATOS');
   });
 });
+
+describe('la puesta en marcha no toca lo que trajo la carga', () => {
+  it('ni la apertura de 2027 ni el diario de 2026', async () => {
+    const E = `arr-pem-${SUFIJO}`;
+    await empresa(E);
+    const a = ficherosEmpresaA();
+    const r = await subirYAnalizar(E, 2027, USUARIO, ficheros([a.plan, a.sumasSaldos, a.clientes, a.proveedores]), { resultadoDeclarado: 7200 }, TODOS);
+    await confirmarCarga(E, 2027, r.carga.id, r.vista.huella, USUARIO);
+    await aplicarTodo(E, r.carga.id);
+    const pem = await import('../services/puestaEnMarcha/puestaEnMarcha.service');
+    const e1 = await error(pem.anularApertura(E, 2027));
+    expect(e1.statusCode).toBe(409);
+    expect(e1.message).toMatch(/Traer la contabilidad de 2026/);
+    const cuentas = [
+      { codigo: '5720000001', nombre: 'Banco', saldo: 10 },
+      { codigo: '1000000000', nombre: 'Capital', saldo: -10 },
+    ];
+    expect((await pem.previsualizarApertura(E, { cuentas }, { ejercicio: 2027 })).errores[0]).toMatch(/Traer la contabilidad de 2026/);
+    await expect(pem.confirmarApertura(E, { cuentas }, { ejercicio: 2027, reemplazar: true })).rejects.toMatchObject({ statusCode: 409 });
+    const lectura = {
+      formato: 'xlsx',
+      filaCabecera: 1,
+      columnas: [],
+      mapeo: {},
+      separadorDecimal: ',' as const,
+      mayorPorCuenta: false,
+      apuntes: [
+        { fila: 2, fecha: '2026-05-01', asiento: '1', cuenta: '5720000001', nombre: '', concepto: 'x', debe: 5, haber: 0 },
+        { fila: 3, fecha: '2026-05-01', asiento: '1', cuenta: '1000000000', nombre: '', concepto: 'x', debe: 0, haber: 5 },
+      ],
+      filasDescartadas: [],
+      avisos: [],
+    };
+    expect((await pem.previsualizarDiario(E, lectura, {})).errores.join(' ')).toMatch(/2026 lo lleva tu gestoría/);
+    await expect(pem.confirmarDiario(E, lectura, {})).rejects.toMatchObject({ statusCode: 409 });
+  });
+});
