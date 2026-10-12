@@ -179,3 +179,38 @@ describe('202 con más de 6 millones de cifra de negocios', () => {
     await expect(ficheroModelo202(E, 2027, '2P')).rejects.toThrow(/modalidad B/);
   });
 });
+
+describe('202: remates (CNAE, cifra de negocios, microempresa y retenciones del 200)', () => {
+  it('microempresa (cifra de negocios < 1 M): marca de reducida dimensión y la de menos de 1 millón (instrucciones del 202)', async () => {
+    const E = await empresa(500_000);
+    const b = await calcularBorrador202(E, 2027, '2P');
+    expect(b.entrada.marcas).toMatchObject({ marcaErd: true, marcaIncnMenos1M: true, marcaIncnMas6M: false });
+    expect(b.entrada.tipoGravamen).toBe('17 20');
+  });
+
+  it('sin CNAE: error, no aviso', async () => {
+    const E = await empresa(500_000);
+    await prisma.legalConfig.update({ where: { companyId: E }, data: { cnae: null } });
+    const b = await calcularBorrador202(E, 2027, '2P');
+    expect(b.errores).toContainEqual(expect.stringMatching(/Falta el CNAE.*Registro Mercantil > Datos/));
+    await expect(ficheroModelo202(E, 2027, '2P')).rejects.toThrow(/Falta el CNAE/);
+  });
+
+  it('sin la cifra de negocios del año anterior: error que dice dónde rellenarla', async () => {
+    const E = await empresa(500_000);
+    await prisma.priorYearData.deleteMany({ where: { companyId: E } });
+    const b = await calcularBorrador202(E, 2027, '2P');
+    expect(b.errores).toContainEqual(expect.stringMatching(/No consta la cifra de negocios de 2026.*Contabilidad > Puesta en marcha/));
+  });
+
+  it('el 200 presentado con retenciones: la base es la cuota líquida menos las retenciones', async () => {
+    const E = await empresa(2_500_000);
+    await prisma.modeloImpuesto.create({
+      data: { companyId: E, codigo: '200', ejercicio: 2026, periodo: '0A', estado: 'presentado', datos: { cuotaLiquida: 12345.67, retenciones: 2345.67 } as never },
+    });
+    const b = await calcularBorrador202(E, 2027, '2P');
+    expect(b.base).toEqual({ origen: 'modelo200', ejercicio200: 2026, importe: 10000 });
+    expect(b.entrada.casillas).toMatchObject({ '01': 10000, '03': 1800 });
+    expect(b.avisos).toContainEqual(expect.stringMatching(/cuota líquida 12345,67 € menos retenciones e ingresos a cuenta 2345,67 €/));
+  });
+});

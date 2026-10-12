@@ -8,8 +8,9 @@
  *    presentacion (ejercicio natural: en el 1P, el 200 de dos años antes; en el
  *    2P y el 3P, el del año anterior), menos deducciones, bonificaciones,
  *    retenciones e ingresos a cuenta. Sale de la base indicada a mano (los 200
- *    presentados fuera de la app) o del 200 presentado en la app (su cuota
- *    liquida: la app todavia no separa las retenciones del 200).
+ *    presentados fuera de la app) o del 200 presentado en la app: su cuota
+ *    liquida [00592] menos las retenciones [01766] que guardo (un 200
+ *    presentado antes de que se guardaran, solo la cuota liquida, con aviso).
  *  - [03] = 18 % de [01] menos [02] (complementaria); nunca negativo.
  * La modalidad B (art. 40.3, obligatoria si la cifra de negocios pasa de 6
  * millones) todavia no se calcula: la pantalla lo dice y no da fichero.
@@ -18,6 +19,15 @@
  * general 25 %; reducida dimension, INCN < 10 M: 22 % en 2027, 21 % en 2028 y
  * 20 % desde 2029; microempresa, INCN < 1 M: 17 % los primeros 50.000 € y 20 %
  * el resto desde 2027), segun la cifra de negocios del año anterior.
+ * Marcas (sede de la AEAT, instrucciones del modelo 202, apartado 3 «Datos
+ * adicionales», consultadas el 12-10-2026): la de reducida dimension (pos. 126)
+ * la marcan las entidades que cumplen el art. 101 LIS; si ademas su cifra de
+ * negocios del periodo anterior es inferior a 1 millon, marcan tambien la de
+ * pos. 130. El formato del tipo de gravamen en el fichero (pos. 132-146) no lo
+ * concretan ni el diseño ni las instrucciones (en el formulario es un
+ * desplegable): queda «por confirmar» en la pantalla.
+ * Sin CNAE o sin la cifra de negocios del año anterior no hay fichero: son
+ * errores, porque de ellos dependen el tipo y las marcas.
  */
 import { prisma } from '../../config/database';
 import { badRequest } from '../../utils/http-errors';
@@ -75,6 +85,8 @@ export function perfilSociedad(ejercicio: number, incn: number | null): { marcas
   const tramoIncn = incn >= 60_000_000 ? '3' : incn >= 20_000_000 ? '2' : incn >= 10_000_000 ? '1' : '0';
   const marcas: Partial<Record<Marca202, boolean>> = { marcaIncnMas6M: incn > 6_000_000 };
   if (incn < 1_000_000) {
+    // Cumple el art. 101 LIS y, además, INCN < 1 M: las dos marcas (instrucciones del 202).
+    marcas.marcaErd = true;
     marcas.marcaIncnMenos1M = true;
     const micro: Record<number, string> = { 2025: '21 22', 2026: '19 21' };
     return { marcas, tipoGravamen: micro[ejercicio] ?? '17 20', tramoIncn };
@@ -135,10 +147,21 @@ export async function calcularBorrador202(companyId: string, ejercicio: number, 
     base = { origen: 'manual', ejercicio200: ej200, importe: opciones.baseManual };
   } else {
     const m200 = await filaModelo(companyId, '200', ej200, '0A');
-    const d = m200?.datos as { cuotaLiquida?: number } | null;
+    const d = m200?.datos as { cuotaLiquida?: number; retenciones?: number } | null;
     if (m200?.estado === 'presentado' && typeof d?.cuotaLiquida === 'number') {
-      base = { origen: 'modelo200', ejercicio200: ej200, importe: d.cuotaLiquida };
-      avisos.push(`La base sale de la cuota líquida del 200 de ${ej200}. Réstale las retenciones e ingresos a cuenta de ese 200 si las tuvo: la app todavía no las separa.`);
+      if (typeof d.retenciones === 'number') {
+        // Art. 40.2 LIS: cuota menos deducciones, bonificaciones, retenciones e ingresos a cuenta.
+        const importe = Math.max(0, Math.round(d.cuotaLiquida * 100) - Math.round(d.retenciones * 100)) / 100;
+        base = { origen: 'modelo200', ejercicio200: ej200, importe };
+        if (d.retenciones > 0) {
+          avisos.push(
+            `La base sale del 200 de ${ej200}: cuota líquida ${d.cuotaLiquida.toFixed(2).replace('.', ',')} € menos retenciones e ingresos a cuenta ${d.retenciones.toFixed(2).replace('.', ',')} €.`,
+          );
+        }
+      } else {
+        base = { origen: 'modelo200', ejercicio200: ej200, importe: d.cuotaLiquida };
+        avisos.push(`La base sale de la cuota líquida del 200 de ${ej200}, que se presentó sin separar las retenciones. Si las tuvo, réstalas indicando la base a mano.`);
+      }
     } else {
       avisos.push(
         `No hay un 200 de ${ej200} presentado en la app. Indica a mano la base: la cuota íntegra de ese 200 menos deducciones, bonificaciones, retenciones e ingresos a cuenta. Si no hubo cuota, el 202 sale a cero y no hace falta presentarlo.`,
@@ -148,7 +171,11 @@ export async function calcularBorrador202(companyId: string, ejercicio: number, 
 
   const incn = await cifraNegocios(companyId, ejercicio - 1);
   const perfil = perfilSociedad(ejercicio, incn);
-  if (incn === null) avisos.push(`No consta la cifra de negocios de ${ejercicio - 1}: revisa el tipo de gravamen y las marcas de datos adicionales.`);
+  if (incn === null) {
+    errores.push(
+      `No consta la cifra de negocios de ${ejercicio - 1}, y de ella dependen el tipo de gravamen y las marcas de datos adicionales del 202. Rellénala en Contabilidad > Puesta en marcha (datos del año anterior) o presenta en la app el 200 de ${ejercicio - 1}.`,
+    );
+  }
   if (opciones.modalidad === 'B' || perfil.marcas.marcaIncnMas6M) {
     errores.push(
       perfil.marcas.marcaIncnMas6M
@@ -176,7 +203,7 @@ export async function calcularBorrador202(companyId: string, ejercicio: number, 
     justificanteAnterior: opciones.justificanteAnterior,
     iban,
   };
-  if (!String(legal?.cnae ?? '').replace(/\D/g, '')) avisos.push('Falta el CNAE de la actividad principal (CNAE-2025) en Registro Mercantil > Datos.');
+  if (!String(legal?.cnae ?? '').replace(/\D/g, '')) errores.push('Falta el CNAE de la actividad principal (CNAE-2025, 4 cifras). Rellénalo en Registro Mercantil > Datos.');
   // Presentada: se enseña (y se descarga) lo que se presento.
   const presentada = presentacionDe<Entrada202>(fila);
   const entrada = presentada?.entrada ?? calculada;
