@@ -5,11 +5,13 @@
  * los escritos con «mil» o «millones» («2 millones de euros») y con palabras
  * («tres mil euros», «el veintiuno por ciento»). Solo valen los que aparecen en
  * la pregunta o en las fichas que se enviaron, más los códigos de modelo y los
- * años 2024-2028. La fecha de hoy solo vale como fecha («hoy, 7 de octubre»):
+ * años del actual − 3 al actual + 2 (hora de España; en 2027, de 2024 a 2029).
+ * La fecha de hoy solo vale como fecha («hoy, 7 de octubre»):
  * su día y su mes no respaldan un porcentaje ni un importe. Si alguna cifra no
  * tiene respaldo, la respuesta se descarta entera (sin regenerar).
  */
 import { sinTildes } from '../../utils/texto';
+import { anioEspana } from '../../utils/fechas';
 import { MODELOS } from './huecos/otros';
 
 const MESES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
@@ -136,11 +138,17 @@ function permitidos(referencias: string[]): Set<string> {
   return set;
 }
 
-function siempreValida(c: CifraEncontrada): boolean {
+/** Años que valen sin respaldo: del actual − 3 al actual + 2. Antes era 2024-2028 fijo y caducaba. */
+export function rangoAniosValidos(anioActual: number): { desde: number; hasta: number } {
+  return { desde: anioActual - 3, hasta: anioActual + 2 };
+}
+
+function siempreValida(c: CifraEncontrada, anioActual: number): boolean {
   if (c.tipo === 'fecha') return false;
   if ((MODELOS as readonly string[]).includes(c.valor)) return true;
   const n = Number(c.valor);
-  if (c.tipo === 'numero' && Number.isInteger(n) && n >= 2024 && n <= 2028) return true;
+  const { desde, hasta } = rangoAniosValidos(anioActual);
+  if (c.tipo === 'numero' && Number.isInteger(n) && n >= desde && n <= hasta) return true;
   return false;
 }
 
@@ -152,13 +160,16 @@ export interface ResultadoValidacion {
 export interface OpcionesValidacion {
   /** Fechas AAAA-MM-DD que valen solo como fecha (la de hoy). */
   fechas?: string[];
+  /** Año actual (por defecto, el de hoy en España): fija el rango de años que valen sin respaldo. */
+  anioActual?: number;
 }
 
 export function validarCifras(respuesta: string, referencias: string[], opciones: OpcionesValidacion = {}): ResultadoValidacion {
+  const anioActual = opciones.anioActual ?? anioEspana();
   const ok = permitidos(referencias);
   for (const f of opciones.fechas ?? []) ok.add(`f:${Number(f.slice(8, 10))}-${Number(f.slice(5, 7))}`);
   const sinRespaldo = extraerCifras(respuesta)
-    .filter((c) => !siempreValida(c) && !ok.has(`${c.tipo === 'fecha' ? 'f' : 'n'}:${c.valor}`))
+    .filter((c) => !siempreValida(c, anioActual) && !ok.has(`${c.tipo === 'fecha' ? 'f' : 'n'}:${c.valor}`))
     .map((c) => c.texto);
   return { ok: sinRespaldo.length === 0, sinRespaldo };
 }

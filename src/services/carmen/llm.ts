@@ -235,7 +235,7 @@ export async function preguntarIA(p: PeticionIA): Promise<ResultadoIA> {
     texto = completa;
     recortada = true;
   }
-  const validacion = validarCifras(texto, [p.pregunta, ...fichasUsadas.map((f) => `${f.pregunta}\n${f.respuesta}`)], { fechas: [p.hoy] });
+  const validacion = validarCifras(texto, [p.pregunta, ...fichasUsadas.map((f) => `${f.pregunta}\n${f.respuesta}`)], { fechas: [p.hoy], anioActual: Number(p.hoy.slice(0, 4)) });
   if (!validacion.ok) {
     return { tipo: 'descartada', auditoria: { ...auditoria, estado: 'descartada', motivo: `cifras_sin_respaldo:${validacion.sinRespaldo.length}` } };
   }
