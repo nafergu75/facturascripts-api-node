@@ -10,7 +10,7 @@ import { describe, it, expect, beforeAll, afterEach, jest } from '@jest/globals'
 import { prisma } from '../config/database';
 import { proveedoresService } from '../services/proveedores.service';
 import { anularGasto, editarGasto, expenseInvoicesService, registrarGasto } from '../services/expense-invoices.service';
-import { aplicarAbono } from '../services/compensacionesGasto.service';
+import * as compensaciones from '../services/compensacionesGasto.service';
 import { cuentaHabitualDeProveedor } from '../services/cuentasLinea.service';
 import { asegurarPlanContableEmpresa } from '../services/chart-of-accounts.service';
 import * as periodos from '../services/periodos.service';
@@ -92,5 +92,88 @@ describe('listado: lo que queda a tu favor', () => {
     expect(l.totales.aFavor).toBe(121);
     const soloAFavor = await expenseInvoicesService.listarGastos(E, { pago: 'a_favor' });
     expect(soloAFavor.items.map((f) => f.numeroFacturaProveedor)).toEqual(['R-1']);
+  });
+});
+
+describe('aplicar un abono con otra operación a la vez', () => {
+  let E: string;
+  let prov: string;
+
+  beforeAll(async () => {
+    E = await empresa('carrera');
+    prov = (await proveedoresService.create(E, { nombreFiscal: 'Papelera del Grau SL', nifCif: cif() })).id;
+  });
+
+  /** Un abono de -50 (60,50 €) a favor (de una factura de fuera) y una factura de 100 (121 €) pendiente. */
+  async function abonoYFactura(sufijo: string, precioFactura = 100) {
+    const a = await registrarGasto(E, abonoDe(prov, `R-${sufijo}`, '2027-02-01', -50, [{ numero: `F-2026/${sufijo}`, fecha: '2026-11-10' }]), { contabilizar: 'POSTED' });
+    const f = await registrarGasto(E, factura(prov, `F-${sufijo}`, '2027-02-02', precioFactura), { contabilizar: 'POSTED' });
+    return { abono: a.factura.id, factura: f.factura.id };
+  }
+
+  it('si la factura se anula a la vez, no queda una aplicación activa sobre una factura anulada', async () => {
+    const { abono, factura: fid } = await abonoYFactura('A2');
+    enElHueco(() => anularGasto(E, fid, { motivo: 'Duplicada' }));
+    expect((await error(compensaciones.aplicarAbono(E, abono, { facturaId: fid, fecha: '2027-02-10' }))).status).toBe(409);
+    expect(await prisma.compensacionGasto.count({ where: { companyId: E, abonoId: abono, estado: 'ACTIVO' } })).toBe(0);
+    expect((await expenseInvoicesService.obtenerPorId(E, abono)).aFavor).toBe(60.5);
+  });
+
+  it('si el abono se anula a la vez, no resta de lo pendiente de la factura', async () => {
+    const { abono, factura: fid } = await abonoYFactura('B2');
+    enElHueco(() => anularGasto(E, abono, { motivo: 'Error' }));
+    expect((await error(compensaciones.aplicarAbono(E, abono, { facturaId: fid, fecha: '2027-02-10' }))).status).toBe(409);
+    expect((await expenseInvoicesService.obtenerPorId(E, fid)).importePendiente).toBe(121);
+  });
+
+  it('si la factura se corrige a la baja a la vez, no se paga de más', async () => {
+    const { abono, factura: fid } = await abonoYFactura('C2');
+    enElHueco(() => editarGasto(E, fid, factura(prov, 'F-C2', '2027-02-02', 10)));
+    await compensaciones.aplicarAbono(E, abono, { facturaId: fid, fecha: '2027-02-10' });
+    const f = await expenseInvoicesService.obtenerPorId(E, fid);
+    expect(f).toMatchObject({ totalFactura: 12.1, importePendiente: 0, estadoPago: 'PAGADA' });
+    expect((await expenseInvoicesService.obtenerPorId(E, abono)).aFavor).toBe(48.4);
+  });
+});
+
+describe('abonos de la misma original a la vez', () => {
+  it('dos abonos a la vez no dejan la original por debajo de cero', async () => {
+    const E = await empresa('doble');
+    const prov = (await proveedoresService.create(E, { nombreFiscal: 'Distribuciones Ruzafa SL', nifCif: cif() })).id;
+    const o = await registrarGasto(E, factura(prov, 'D-1', '2027-03-01', 100), { contabilizar: 'POSTED' });
+    const r = await Promise.allSettled([
+      registrarGasto(E, abonoDe(prov, 'DR-1', '2027-03-05', -80, [{ id: o.factura.id }]), { contabilizar: 'POSTED' }),
+      registrarGasto(E, abonoDe(prov, 'DR-2', '2027-03-05', -80, [{ id: o.factura.id }]), { contabilizar: 'POSTED' }),
+    ]);
+    expect(r.filter((x) => x.status === 'fulfilled')).toHaveLength(1);
+    const fallo = r.find((x) => x.status === 'rejected') as PromiseRejectedResult;
+    expect(fallo.reason).toMatchObject({ statusCode: 400, message: expect.stringMatching(/quedaría en -72,60/) });
+    expect(await prisma.expenseInvoiceRectificada.count({ where: { companyId: E, originalId: o.factura.id } })).toBe(1);
+  });
+
+  it('si la original se anula mientras se registra su abono del lector, el abono no se crea', async () => {
+    const E = await empresa('anulada');
+    const prov = (await proveedoresService.create(E, { nombreFiscal: 'Suministros Patraix SL', nifCif: cif() })).id;
+    const o = await registrarGasto(E, factura(prov, 'E-1', '2027-03-01', 100), { contabilizar: 'POSTED' });
+    enElHueco(() => anularGasto(E, o.factura.id, { motivo: 'Duplicada' }));
+    const e = await error(registrarGasto(E, abonoDe(prov, 'ER-1', '2027-03-05', -20, [{ id: o.factura.id }]), { contabilizar: 'DRAFT' }));
+    expect(e).toMatchObject({ status: 409, message: expect.stringMatching(/E-1 se ha anulado mientras registrabas el abono/) });
+    expect(await prisma.expenseInvoiceRectificada.count({ where: { companyId: E, originalId: o.factura.id } })).toBe(0);
+    expect(await prisma.expenseInvoice.count({ where: { companyId: E, numeroFacturaProveedor: 'ER-1' } })).toBe(0);
+  });
+
+  it('si se registra un abono mientras se anula la original, la anulación se para', async () => {
+    const E = await empresa('anulando');
+    const prov = (await proveedoresService.create(E, { nombreFiscal: 'Cartonajes Benimaclet SL', nifCif: cif() })).id;
+    const o = await registrarGasto(E, factura(prov, 'G-1', '2027-03-01', 100), { contabilizar: 'POSTED' });
+    // El abono (borrador del lector) entra justo antes de la transaccion de la anulacion, despues de sus comprobaciones.
+    const real = compensaciones.comprobarCompensaciones;
+    jest.spyOn(compensaciones, 'comprobarCompensaciones').mockImplementationOnce(async (...args: Parameters<typeof real>) => {
+      await registrarGasto(E, abonoDe(prov, 'GR-1', '2027-03-05', -20, [{ id: o.factura.id }]), { contabilizar: 'DRAFT' });
+      return real(...args);
+    });
+    const e = await error(anularGasto(E, o.factura.id, { motivo: 'Duplicada' }));
+    expect(e).toMatchObject({ status: 409, message: expect.stringMatching(/Tiene la rectificativa GR-1/) });
+    expect((await prisma.expenseInvoice.findUniqueOrThrow({ where: { id: o.factura.id } })).estado).toBe('ACCOUNTED');
   });
 });
