@@ -20,6 +20,7 @@
  * con permiso de escritura; las de lectura (contextoDeclaracion, historial)
  * no escriben nunca.
  */
+import { fechaTexto } from '../../utils/fechas';
 import { Prisma, type DeclaracionAeat } from '@prisma/client';
 import { prisma } from '../../config/database';
 import { badRequest, conflict } from '../../utils/http-errors';
@@ -290,7 +291,7 @@ export async function filaPresentada(companyId: string, codigo: string, ejercici
 
 /** Aviso para la pantalla de una declaración congelada. */
 export function avisoCongelada(f: FilaDeclaracion): string {
-  const j = f.justificante ? ` (justificante ${f.justificante}${f.fechaPresentacion ? `, ${f.fechaPresentacion}` : ''})` : '';
+  const j = f.justificante ? ` (justificante ${f.justificante}${f.fechaPresentacion ? `, ${fechaTexto(f.fechaPresentacion)}` : ''})` : '';
   return `Presentada${j}: se enseña lo que se presentó. Las facturas que cambien después no lo modifican. Si hay que corregirla, prepara una complementaria o sustitutiva.`;
 }
 
@@ -727,6 +728,8 @@ export interface HistorialDeclaraciones {
     resultado: number | null;
     numeroRegistros: number | null;
     presentadoPor: string | null;
+    /** Email de quien la marcó como presentada (para enseñarlo). */
+    presentadoPorNombre: string | null;
     presentadoEn: string | null;
   }>;
   enCurso: {
@@ -751,6 +754,9 @@ export async function historialDeclaraciones(companyId: string, codigo: string, 
     : null;
   const presentadoSinHistorial = legado?.estado === 'presentado';
   const todas = await prisma.declaracionAeat.findMany({ where: delPeriodo(companyId, codigo, ejercicio, periodo), orderBy: { secuencia: 'asc' } });
+  // Quién la marcó como presentada: el email del usuario (el id interno no le dice nada a la persona).
+  const ids = [...new Set(todas.map((d) => d.presentadoPor).filter((x): x is string => !!x))];
+  const emails = new Map((ids.length ? await prisma.user.findMany({ where: { id: { in: ids } }, select: { id: true, email: true } }) : []).map((u) => [u.id, u.email]));
   const bajasEnCurso = (((ctx.enCurso?.datos ?? {}) as DatosEnCurso).bajas ?? []).map(String);
   return {
     codigo,
@@ -775,6 +781,7 @@ export async function historialDeclaraciones(companyId: string, codigo: string, 
       resultado: datosDe(d).resultado ?? null,
       numeroRegistros: datosDe(d).registros?.length ?? null,
       presentadoPor: d.presentadoPor,
+      presentadoPorNombre: d.presentadoPor ? (emails.get(d.presentadoPor) ?? null) : null,
       presentadoEn: d.presentadoEn ? d.presentadoEn.toISOString() : null,
     })),
     enCurso: ctx.enCurso
