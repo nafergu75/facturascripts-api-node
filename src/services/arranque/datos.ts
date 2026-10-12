@@ -14,7 +14,7 @@ import { longitudDelPlan, nombreComparable } from '../puestaEnMarcha/planAnterio
 import type { CuentaSaldo, LecturaDiario } from '../puestaEnMarcha/lectorContable';
 import type { Campo } from './campos';
 import { clasificarHoja, NOMBRE_TIPO, TIPOS_HOJA, type Programa, type TipoHoja } from './clasificador';
-import { extraerHoja, type ActivoLeido, type CuentaLeida, type ErrorExtraccion, type PartidaLeida, type TerceroLeido, type TotalesOficiales } from './extractores';
+import { extraerHoja, type ActivoLeido, type ColumnaHoja, type CuentaLeida, type ErrorExtraccion, type PartidaLeida, type TerceroLeido, type TotalesOficiales } from './extractores';
 import { leerLibro } from './lectorLibros';
 
 export type TipoCarga = 'PROVISIONAL' | 'DEFINITIVA';
@@ -98,6 +98,9 @@ export interface HojaAnalizada {
   /** «1.234 cuentas, 312 con NIF». */
   resumen: string;
   avisos: string[];
+  /** Columnas leidas y su fila de titulos (1-based; 0 = sin titulos), para revisarlas a mano. */
+  columnas?: ColumnaHoja[];
+  filaTitulos?: number;
   /** Si no se ha podido leer: por que y, si hace falta, las columnas para elegir. */
   error: (Partial<ErrorExtraccion> & { mensaje: string }) | null;
 }
@@ -213,7 +216,8 @@ export function prepararDatos(ficheros: FicheroLeible[], ajustes: AjustesCarga =
         excluida: !!ajustes.hojas?.[idHoja(f.sha256, f.nombre)]?.excluida,
         mapeo: {},
         resumen: '',
-        avisos: libro.avisos,
+        // Un fichero que no se puede leer no lleva avisos de lectura (tildes...): solo el error.
+        avisos: [],
         error: { mensaje: libro.error.mensaje },
       };
       datos.hojas.push(h);
@@ -258,6 +262,7 @@ export function prepararDatos(ficheros: FicheroLeible[], ajustes: AjustesCarga =
   const orden = (t: TipoHoja) => (t === 'PLAN' ? 0 : 1);
   pendientes.sort((a, b) => orden(a.h.tipo) - orden(b.h.tipo));
   const porTipo = new Map<TipoHoja, string[]>();
+  const hojasPorTipo = new Map<TipoHoja, HojaAnalizada[]>();
   const planes: CuentaLeida[][] = [];
   const carteras: PartidaLeida[][] = [];
   const activos: ActivoLeido[][] = [];
@@ -286,9 +291,12 @@ export function prepararDatos(ficheros: FicheroLeible[], ajustes: AjustesCarga =
       continue;
     }
     h.resumen = resumenHoja(h.tipo, r.extraccion);
+    if (r.columnas) h.columnas = r.columnas;
+    if (r.filaTitulos !== undefined) h.filaTitulos = r.filaTitulos;
     const e = r.extraccion;
     datos.presentes.add(e.tipo);
     porTipo.set(e.tipo, [...(porTipo.get(e.tipo) ?? []), `${h.fichero}${h.hoja !== h.fichero ? ` › ${h.hoja}` : ''}`]);
+    hojasPorTipo.set(e.tipo, [...(hojasPorTipo.get(e.tipo) ?? []), h]);
     const choca = !SE_JUNTAN.has(e.tipo) && (porTipo.get(e.tipo)?.length ?? 0) > 1;
     if (choca) continue;
     switch (e.tipo) {
@@ -323,7 +331,16 @@ export function prepararDatos(ficheros: FicheroLeible[], ajustes: AjustesCarga =
     const codigos = planes.flat().map((c) => c.codigo);
     datos.longitud = codigos.length ? longitudDelPlan(codigos.filter((c) => c.length > 3), esSubcuentaDeTercero) : null;
   }
-  for (const [tipo, hojas] of porTipo) if (!SE_JUNTAN.has(tipo) && hojas.length > 1) datos.choques.push({ tipo, hojas });
+  for (const [tipo, hojas] of porTipo) {
+    if (SE_JUNTAN.has(tipo) || hojas.length < 2) continue;
+    datos.choques.push({ tipo, hojas });
+    // Cada tarjeta lo dice, para que se vea cuales son sin abrir el detalle.
+    const nombre = NOMBRE_TIPO[tipo].toLowerCase();
+    for (const h of hojasPorTipo.get(tipo) ?? []) {
+      const otras = hojas.filter((x) => x !== `${h.fichero}${h.hoja !== h.fichero ? ` › ${h.hoja}` : ''}`);
+      h.avisos.push(`Hay otro fichero de ${nombre} (${otras.join(', ')}): usa solo uno. Marca el que no vale con «No usar esta hoja».`);
+    }
+  }
 
   // 3. Juntar lo que viene en varias hojas.
   if (planes.length) {
