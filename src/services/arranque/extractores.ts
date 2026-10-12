@@ -12,6 +12,7 @@
  * Funciones puras: nunca lanzan; si falta algo, `error` dice que y, si se puede
  * arreglar eligiendo columnas, `necesitaMapeo`.
  */
+import { badRequest } from '../../utils/http-errors';
 import { normalizarNif } from '../../utils/nif';
 import {
   cuentaYNombre,
@@ -493,12 +494,16 @@ function extraerInmovilizado(filas: unknown[][], m: Partial<Record<Campo, number
   const decimal = detectarSeparadorDecimal(datos.flatMap((f) => cols.map((c) => f?.[c])));
   const num = (f: unknown[], c?: number) => (c === undefined ? 0 : parsearImporte(f[c], decimal));
   const activos: ActivoLeido[] = [];
+  let sinCuentaDelGrupo2 = 0;
   datos.forEach((f, k) => {
     if (esFilaVacia(f) || esTotal(f)) return;
     const descripcion = textoCelda(f, m.nombre).slice(0, 191);
     const coste = num(f, m.coste);
     if (!descripcion || Number.isNaN(coste) || round2(coste) === 0) return;
     const cuenta = (c?: number) => (c === undefined ? undefined : (codigoDe(f[c])?.codigo ?? undefined));
+    // La cuenta del bien es del grupo 2 (20 a 23): un «1», «2»... es el numero del bien, no su cuenta.
+    const cuentaBien = cuenta(m.cuenta);
+    if (m.cuenta !== undefined && !(cuentaBien && /^2[0-3]\d/.test(cuentaBien))) sinCuentaDelGrupo2++;
     let coeficiente: number | undefined;
     if (m.coeficiente !== undefined) {
       const raw = textoCelda(f, m.coeficiente).replace('%', '').trim();
@@ -514,7 +519,7 @@ function extraerInmovilizado(filas: unknown[][], m: Partial<Record<Campo, number
     activos.push({
       fila: desde + 2 + k,
       descripcion,
-      ...(cuenta(m.cuenta) ? { cuentaBien: cuenta(m.cuenta) } : {}),
+      ...(cuentaBien && /^2[0-3]\d/.test(cuentaBien) ? { cuentaBien } : {}),
       ...(cuenta(m.cuentaAmortAcum) ? { cuentaAmortAcum: cuenta(m.cuentaAmortAcum) } : {}),
       ...(cuenta(m.cuentaDotacion) ? { cuentaDotacion: cuenta(m.cuentaDotacion) } : {}),
       ...(m.fechaAlta !== undefined && parsearFecha(f[m.fechaAlta]) ? { fechaAlta: parsearFecha(f[m.fechaAlta])! } : {}),
@@ -526,6 +531,13 @@ function extraerInmovilizado(filas: unknown[][], m: Partial<Record<Campo, number
     });
   });
   if (activos.some((a) => a.coeficiente === undefined)) avisos.push('Algún bien no trae el coeficiente ni la vida útil: hará falta para calcular la amortización.');
+  // Si en mas de la mitad de los bienes la columna de la cuenta no trae una 2xx, la columna esta mal elegida.
+  if (activos.length && m.cuenta !== undefined && sinCuentaDelGrupo2 * 2 > activos.length) {
+    throw badRequest(
+      'La columna que he tomado como cuenta del bien no trae cuentas del grupo 2 (211, 213, 216...) en la mayoría de los bienes. Indica qué columna es la cuenta.',
+      { necesitaMapeo: true },
+    );
+  }
   return { activos, avisos };
 }
 
