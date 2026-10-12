@@ -9,7 +9,6 @@ import { asyncHandler } from '../utils/async-handler';
 import { sendOk } from '../utils/response';
 import { badRequest } from '../utils/http-errors';
 import { registrarAuditoria } from '../services/auditoria.service';
-import { configuracionEmpresa } from '../services/impuestosModulo.service';
 import { calcularModelo111, esEmpresaEspanolaFiscal, MENSAJE_SIN_MODELOS } from '../services/impuestosCalculo.service';
 import {
   anularPago111Schema,
@@ -31,8 +30,10 @@ import {
   obtenerSegurosSociales,
   pagarSegurosSociales,
 } from '../services/nominas/segurosSociales';
-import { calcularModelo190, periodoFiscal, retencionesTrabajo } from '../services/nominas/fiscal';
-import { DISENOS_190_VERIFICADOS, comprobarDiseno190, generarFicheroModelo190, informe190Excel } from '../services/nominas/modelo190';
+import { calcularModelo190, periodoFiscal, presenta111Mensual, retencionesTrabajo } from '../services/nominas/fiscal';
+import { comprobarDiseno190, errorNifPerceptor190, idRegistro190, informe190Excel, resumen190 } from '../services/nominas/modelo190';
+import { ficheroModelo190 } from '../services/nominas/fichero190';
+import { contextoDeclaracion, datosDe, incluyeRegistro } from '../services/declaracionesAeat/declaraciones.service';
 import {
   anularDocumentoNominas,
   descargarDocumentoNominas,
@@ -135,14 +136,17 @@ export const nominasConexionesController = {
     const periodo = periodo111De(req);
     // Una empresa no establecida en Espana no presenta el 111 (como en Impuestos).
     if (!(await esEmpresaEspanolaFiscal(req.companyId!))) throw badRequest(MENSAJE_SIN_MODELOS);
-    const [d, trabajo, pago, aPagar] = await Promise.all([
+    const [d, trabajo, pago, aPagar, mensual] = await Promise.all([
       calcularModelo111(req.companyId!, periodo),
       retencionesTrabajo(req.companyId!, periodo),
       pagoModelo111(req.companyId!, periodo.ejercicio, periodo.periodo),
       importePago111(req.companyId!, periodo),
+      presenta111Mensual(req.companyId!),
     ]);
     sendOk(res, {
       periodo,
+      // Gran empresa: el 111 se presenta cada mes (la pantalla de Nóminas abre el mes).
+      mensual,
       casillas: {
         '01': d.nPerceptoresTrabajo,
         '02': d.percepcionesTrabajo,
@@ -194,34 +198,73 @@ export const nominasConexionesController = {
       await auditar(req, 'EXPORTAR_PERCEPTORES_190', String(ejercicio), { ejercicio, registros: m.totales.registros, perceptores: m.totales.perceptores });
       return descargar(res, `modelo190_${ejercicio}.xlsx`, XLSX_MIME, informe190Excel(m));
     }
-    sendOk(res, { ...m, ficheroDisponible: !!DISENOS_190_VERIFICADOS[ejercicio] });
+    // Sin diseño publicado del ejercicio se genera con el ultimo, como borrador (avisoDiseno).
+    const diseno = (() => {
+      try {
+        return comprobarDiseno190(ejercicio);
+      } catch {
+        return null;
+      }
+    })();
+    // Declaracion en curso del historial (B4): numero, tipo y perceptores elegidos para una complementaria.
+    const decl = await contextoDeclaracion(req.companyId!, '190', ejercicio, '0A');
+    // Complementaria: los elegidos y los que han aparecido después de prepararla (sin presentar antes).
+    const incluye = incluyeRegistro(decl);
+    const elegidos = incluye ? m.perceptores.filter((p) => incluye(idRegistro190(p))) : m.perceptores;
+    // Presentada (congelada): la lista y el resumen son los de lo presentado. Los
+    // perceptores que han aparecido después no se mezclan: se cuentan aparte.
+    const presentados = decl.congelada ? m.perceptores.filter((p) => decl.registrosPresentados.has(idRegistro190(p))) : null;
+    const nuevos = decl.congelada ? m.perceptores.length - (presentados?.length ?? 0) : 0;
+    const totalesPresentados = decl.congelada ? (datosDe(decl.ultimaPresentada).fila?.datos as { totales?: { registros: number; percepciones: number; retenciones: number } } | undefined)?.totales : undefined;
+    const resumen = presentados
+      ? resumen190(presentados).map((r) => {
+          if (!totalesPresentados) return r;
+          const v = r.tipo === 'numero' ? totalesPresentados.registros : /retenc/i.test(r.rotulo) ? totalesPresentados.retenciones : totalesPresentados.percepciones;
+          return { ...r, valor: v, signo: r.tipo === 'importe' && v < 0 ? ('N' as const) : (' ' as const) };
+        })
+      : resumen190(elegidos);
+    sendOk(res, {
+      ...m,
+      // Cada registro con su id: con el se eligen los que van en una complementaria.
+      perceptores: (presentados ?? m.perceptores).map((p) => ({
+        ...p,
+        id: idRegistro190(p),
+        presentado: decl.registrosPresentados.has(idRegistro190(p)),
+        incluido: incluye ? incluye(idRegistro190(p)) : true,
+        // NIF con la letra o el control mal: se ve aquí antes de descargar (el fichero da 400).
+        errorNif: errorNifPerceptor190(p),
+      })),
+      ficheroDisponible: diseno !== null,
+      avisoDiseno: diseno?.aviso ?? null,
+      // En una complementaria, el resumen 01-03 es el de los perceptores elegidos; presentada, el de lo presentado.
+      resumen,
+      avisoCongelada:
+        decl.congelada && nuevos > 0
+          ? `Se enseñan los perceptores de la declaración presentada. Desde entonces hay ${nuevos} ${nuevos === 1 ? 'registro nuevo' : 'registros nuevos'}: si hay que declararlos, prepara una complementaria.`
+          : null,
+      declaracion: { tipo: decl.tipo, numero: decl.numero, justificanteAnterior: decl.justificanteAnterior, congelada: decl.congelada },
+    });
   }),
 
   /**
-   * GET /190/:ejercicio/fichero — TXT de la AEAT (ISO-8859-1). 409 si el diseno de
-   * registro de ese ejercicio no esta verificado; 400 si faltan datos.
+   * GET /190/:ejercicio/fichero — TXT de la AEAT (ISO-8859-1). 409 si el ejercicio
+   * es anterior al primer diseño verificado o si la declaracion aun no tiene
+   * numero identificativo (lo pone POST /tax-models/190/declaraciones/numero,
+   * con permiso de escritura: este GET no escribe). Para un ejercicio posterior
+   * al ultimo diseño publicado sale como borrador con ese diseño (cabecera
+   * X-Avisos-Aeat). 400 si faltan datos (tambien la persona de contacto y el
+   * telefono de Registro Mercantil > Datos).
    */
   fichero190: asyncHandler(async (req, res) => {
     const ejercicio = ejercicioDe(req);
     // Una empresa no establecida en Espana no presenta modelos de la AEAT (divisas-iva).
     if (!(await esEmpresaEspanolaFiscal(req.companyId!))) throw badRequest(MENSAJE_SIN_MODELOS);
-    comprobarDiseno190(ejercicio);
-    const [m, cfg] = await Promise.all([calcularModelo190(req.companyId!, ejercicio), configuracionEmpresa(req.companyId!)]);
-    const q = req.query as Record<string, unknown>;
-    const contenido = generarFicheroModelo190(
-      ejercicio,
-      {
-        nif: String(cfg.config_nif ?? ''),
-        nombre: String(cfg.config_razon_social ?? ''),
-        telefono: texto(q.telefono),
-        contacto: texto(q.contacto),
-        email: texto(q.email),
-        numeroDeclaracion: texto(q.numeroDeclaracion),
-      },
-      m.perceptores,
-    );
-    await auditar(req, 'EXPORTAR_MODELO_190', String(ejercicio), { registros: m.totales.registros });
-    descargar(res, `190_${ejercicio}.txt`, 'text/plain; charset=ISO-8859-1', Buffer.from(contenido, 'latin1'));
+    const f = await ficheroModelo190(req.companyId!, ejercicio);
+    // Cabecera ASCII (sin tildes): los avisos con texto completo estan en /190/:ejercicio/perceptores.
+    if (f.avisos.length) res.setHeader('X-Avisos-Aeat', encodeURIComponent(f.avisos.join(' | ')));
+    res.setHeader('X-Numero-Declaracion', f.numeroDeclaracion);
+    await auditar(req, 'EXPORTAR_MODELO_190', String(ejercicio), { registros: f.registros, numeroDeclaracion: f.numeroDeclaracion });
+    descargar(res, `190_${ejercicio}.txt`, 'text/plain; charset=ISO-8859-1', Buffer.from(f.contenido, 'latin1'));
   }),
 
   // --- PDF de la gestoria ---

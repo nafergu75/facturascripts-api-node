@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { impuestosModuloController as c } from '../controllers/impuestosModulo.controller';
+import { borradoresAeatController as b } from '../controllers/borradoresAeat.controller';
 import { authorize } from '../middleware/authorize.middleware';
 
 /**
@@ -37,5 +38,10 @@ router.get('/ingresos-gastos/excel', authorize('impuestos:read'), c.excelIngreso
 router.get('/calculate', authorize('impuestos:read'), c.calculate);
 // PDF a partir de un JSON de casillas (p.ej. editadas en el front).
 router.post('/generate-pdf', authorize('impuestos:read'), c.generatePdf);
+
+// Borradores del 347, 390 y 200 con el diseño oficial de la AEAT: casillas en
+// pantalla y fichero importable en la sede, del mismo cálculo. ?ejercicio=2027
+router.get('/borradores/:modelo', authorize('impuestos:read'), b.borrador);
+router.get('/borradores/:modelo/fichero', authorize('impuestos:read'), b.fichero);
 
 export default router;

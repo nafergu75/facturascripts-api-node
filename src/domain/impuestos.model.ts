@@ -44,11 +44,32 @@ export interface FacturaFiscal {
   deducible?: boolean;
   /** Categoria del ingreso/gasto (informativa, para deducibilidad futura). */
   categoria?: string;
+  /** Codigo postal y provincia del tercero (provincia del 347). */
+  cpTercero?: string | null;
+  provinciaTercero?: string | null;
+  /** Tipo de gasto (solo compras): COMPRA | SERVICIO_PROFESIONAL | ALQUILER | SUMINISTROS. */
+  tipoGasto?: string;
+  /** Forma de pago de la venta (TRANSFERENCIA | GIRO | CONTADO): cobros en metalico del 347. */
+  formaPago?: string;
+  /**
+   * Rectificacion: venta rectificativa o aparicion en negativo de una compra
+   * anulada con contraasiento. En el 303 va en las casillas de modificaciones
+   * ([14]/[15] y [40]/[41]), que admiten signo.
+   */
+  rectificativa?: boolean;
+  /**
+   * Compra con inversion del sujeto pasivo (la cuota la declara la empresa):
+   * autodevengo en [12]/[13] y deduccion en [28]/[29] o [30]/[31]. Hoy las
+   * compras no llevan esta marca: queda listo para cuando la tengan.
+   */
+  isp?: boolean;
   /**
    * Desglose por tipo de IVA. `conRetencion`: linea de una compra con
    * retencion de IRPF; cuenta en el 303 pero no en el 347 (va en el 190/180).
+   * `inversion`: linea de una compra de bien de inversion (cuenta 2xx del PGC),
+   * que en el 303 va en las casillas de bienes de inversion.
    */
-  lineas: Array<{ tipoIva: number; base: number; cuota: number; conRetencion?: boolean }>;
+  lineas: Array<{ tipoIva: number; base: number; cuota: number; conRetencion?: boolean; inversion?: boolean }>;
 }
 
 /** Desglose de base y cuota para un tipo de IVA. */
@@ -88,6 +109,14 @@ export interface DatosModelo303 {
   exentasSinDeduccion?: number;
   /** Importes pre-calculados por casilla (para UI tipo formulario AEAT). */
   casillas: Record<string, number>;
+  /**
+   * Casillas OFICIALES del diseño 2026 por su numero ('01', '27', '71'...), en
+   * euros: lo que va al fichero y lo que enseña la pantalla. Falta en los
+   * datos guardados antes del diseño 2026 (ver casillasOficiales303De).
+   */
+  casillasOficiales?: Record<string, number>;
+  /** Periodo sin operaciones: casilla "Declaracion sin actividad" de la pagina 3. */
+  sinActividad?: boolean;
   /** Avisos que hay que revisar antes de presentar (tipos de IVA sin casilla...). */
   advertencias?: string[];
 }
@@ -113,6 +142,56 @@ export function filasRegimenGeneral303(ivaDevengado: DesgloseIva[]): {
     else if (d.tipo !== 0 && (d.base !== 0 || d.cuota !== 0)) sinFila.push(d);
   }
   return { filas, sinFila };
+}
+
+/**
+ * Cuotas a compensar y resultado de la pagina 3 del 303, en centimos, a partir
+ * de [66], [77], [68], [108], [70], [109], [112] y [110] (las que faltan, 0).
+ * Instrucciones 2026 de la AEAT (G414):
+ *  - Si se compensa o se ingresa, [78] es lo que se aplica de [110], como
+ *    mucho [66] + [77]: el resultado no baja de cero por lo de antes y lo que
+ *    sobra pasa a [87].
+ *  - Si se pide la devolucion (ultimo periodo, o cualquier mes con REDEME),
+ *    "se consignara la totalidad del saldo a su favor, que debera incluir el
+ *    importe total de la casilla (110)": [78] = [110] y [87] = 0.
+ * [87] = [110] - [78]; [69] = [66] + [77] - [78] + [68] + [108];
+ * [71] = [69] - [70] + [109] - [112].
+ */
+export function resultadoPagina3_303(
+  centimos: Readonly<Record<string, number>>,
+  devolucion: boolean,
+): { '78': number; '87': number; '69': number; '71': number } {
+  const v = (k: string) => centimos[k] ?? 0;
+  const pendientes = Math.max(v('110'), 0);
+  const c78 = devolucion ? pendientes : Math.min(pendientes, Math.max(v('66') + v('77'), 0));
+  const c69 = v('66') + v('77') - c78 + v('68') + v('108');
+  return { '78': c78, '87': pendientes - c78, '69': c69, '71': c69 - v('70') + v('109') - v('112') };
+}
+
+/**
+ * Los mismos datos del 303 con [78], [87], [69] y [71] recalculados para
+ * compensar/ingresar (`devolucion` false) o para pedir la devolucion (true),
+ * tambien en el mapa de casillas con nombre y en los totales. `oficiales` son
+ * las casillas oficiales de los datos, en euros.
+ */
+export function conResultadoPagina3_303(d: DatosModelo303, oficiales: Readonly<Record<string, number>>, devolucion: boolean): DatosModelo303 {
+  const centimos: Record<string, number> = {};
+  for (const [k, eur] of Object.entries(oficiales)) centimos[k] = Math.round(eur * 100);
+  const r = resultadoPagina3_303(centimos, devolucion);
+  const casillasOficiales = { ...oficiales, '78': r['78'] / 100, '87': r['87'] / 100, '69': r['69'] / 100, '71': r['71'] / 100 };
+  return {
+    ...d,
+    cuotasAplicadas: casillasOficiales['78'],
+    cuotasPendientesPosteriores: casillasOficiales['87'],
+    resultadoFinal: casillasOficiales['71'],
+    casillas: {
+      ...d.casillas,
+      '78_cuotas_a_compensar': casillasOficiales['78'],
+      '87_pendientes_periodos_posteriores': casillasOficiales['87'],
+      '71_resultado': casillasOficiales['71'],
+    },
+    casillasOficiales,
+  };
 }
 
 /** Modelo 390 — resumen anual de IVA. */
@@ -152,13 +231,23 @@ export interface VolumenOperaciones390 {
   total: number;
 }
 
-/** Operacion con un tercero para el Modelo 347. */
+/** Operacion con un tercero para el Modelo 347 (un registro de declarado). */
 export interface OperacionTercero {
   cifnif: string;
   nombre: string;
   tipo: 'cliente' | 'proveedor';
   /** Importe anual de las operaciones CON IVA incluido (el nombre es historico). */
   baseAnual: number;
+  /** Importes de 1T a 4T con IVA (suman baseAnual al centimo). */
+  trimestres?: [number, number, number, number];
+  /** Provincia del domicilio fiscal (dos digitos) o null si falta. */
+  provincia?: string | null;
+  /** Arrendamiento de local de negocio: va en un registro aparte con 'X' (art. 34.1 RD 1065/2007). */
+  arrendamiento?: boolean;
+  /** Compras con inversion del sujeto pasivo: registro aparte con 'X' en la posicion 282 del 347. */
+  inversionSujetoPasivo?: boolean;
+  /** Cobros en metalico del ano si pasan de 6.000 € (solo clientes). */
+  metalico?: number;
 }
 
 /** Modelo 347 — operaciones con terceros > umbral anual. */
@@ -166,6 +255,8 @@ export interface DatosModelo347 {
   ejercicio: number;
   umbral: number;
   operaciones: OperacionTercero[];
+  /** Avisos del calculo (cobros en metalico estimados, terceros sin provincia...). */
+  advertencias?: string[];
 }
 
 /** Operacion intracomunitaria para el Modelo 349. */
@@ -201,8 +292,16 @@ export interface DatosModelo111 {
   resumenAntiguo?: { bruto: number; irpf: number };
   /** Nominas en borrador con pago en el periodo (cuentan, pero aun no tienen asiento). */
   borradores?: number;
+  /**
+   * Casillas [10] a [27] (actividades en especie, premios, aprovechamientos
+   * forestales y derechos de imagen), por numero de casilla. La app aun no las
+   * calcula: si faltan, van a 0.
+   */
+  otrasCasillas?: Partial<Record<string, number>>;
   totalRetenciones: number; // suma retenciones e ingresos a cuenta [casilla 28]
-  resultadoIngresar: number; // [casilla 30]
+  /** [29] Resultado de anteriores declaraciones (solo en una complementaria). */
+  resultadoAnteriores?: number;
+  resultadoIngresar: number; // [casilla 30] = [28] - [29]
   /** Avisos del calculo (nominas en borrador, meses solo con el resumen antiguo...). */
   avisos?: string[];
 }

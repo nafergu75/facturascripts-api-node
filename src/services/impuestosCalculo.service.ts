@@ -1,7 +1,8 @@
 import type { Prisma } from '@prisma/client';
 import { prisma } from '../config/database';
 import { badRequest } from '../utils/http-errors';
-import { avisoRetencionAnulada, retencionDeclaradaEn, retencionesActividades, retencionesTrabajo } from './nominas/fiscal';
+import { avisoRetencionAnulada, codigoProvincia, retencionDeclaradaEn, retencionesActividades, retencionesTrabajo } from './nominas/fiscal';
+import { normalizarNif } from '../utils/nif';
 import { obtenerAsientosEjercicio, calcularSaldosPorSubcuenta } from './contabilidadDatos.service';
 import {
   DatosModelo111,
@@ -12,8 +13,9 @@ import {
   DatosModelo390,
   DesgloseIva,
   FacturaFiscal,
-  filasRegimenGeneral303,
+  FILA_303_POR_TIPO,
   OperacionIntracomunitaria,
+  resultadoPagina3_303,
   OperacionTercero,
   PeriodoFiscal,
 } from '../domain/impuestos.model';
@@ -115,7 +117,7 @@ function exentaSinDeduccion(f: FacturaFiscal): boolean {
 }
 
 /** Clave del 349 de una factura: E/S en ventas (segun su tipo), A en compras intracomunitarias. */
-function clave349De(f: FacturaFiscal): OperacionIntracomunitaria['clave'] | null {
+export function clave349De(f: FacturaFiscal): OperacionIntracomunitaria['clave'] | null {
   if (f.tipo === 'compra') return f.operacion === 'intracomunitaria' ? 'A' : null;
   const tipo = tipoDe(f);
   if (!tipo) return f.operacion === 'intracomunitaria' ? 'E' : null;
@@ -137,16 +139,91 @@ function entraEn347(f: FacturaFiscal): boolean {
 // Agregadores por modelo (reciben el array de facturas fiscales)
 // ---------------------------------------------------------------------------
 
+/** Filas fijas del regimen general del 303 (base, tipo, cuota): 4 %, 10 % y 21 %. */
+const FILAS_DEVENGADO_303: ReadonlyArray<readonly [string, string, string]> = [
+  ['01', '02', '03'],
+  ['04', '05', '06'],
+  ['07', '08', '09'],
+];
+
 /**
- * Modelo 303: IVA devengado (ventas NACIONAL; sin tipo, las interiores de
- * siempre) vs deducible (compras), mas la informacion adicional de la pagina 3.
- * `cuotasACompensar` = cuotas negativas de periodos anteriores [78] (patron
- * Quipu "303 a compensar"): se restan del resultado para obtener el final [71].
+ * Pares base/cuota sin signo (Num) del 303 y la casilla con signo (N) donde va
+ * su importe si sale negativo: el devengado a modificaciones [14]/[15] y el
+ * deducible a rectificacion de deducciones [40]/[41].
+ */
+const PARES_SIN_SIGNO_303: ReadonlyArray<readonly [string, string, string, string]> = [
+  ['01', '03', '14', '15'],
+  ['04', '06', '14', '15'],
+  ['07', '09', '14', '15'],
+  ['10', '11', '14', '15'],
+  ['12', '13', '14', '15'],
+  ['28', '29', '40', '41'],
+  ['30', '31', '40', '41'],
+  ['32', '33', '40', '41'],
+  ['34', '35', '40', '41'],
+  ['36', '37', '40', '41'],
+  ['38', '39', '40', '41'],
+];
+
+/** Casillas que suman en [27] y en [45] (formulas del diseno de la pagina 1). */
+const SUMANDOS_27 = ['152', '167', '03', '155', '06', '09', '11', '13', '15', '158', '170', '18', '21', '24', '26'];
+const SUMANDOS_45 = ['29', '31', '33', '35', '37', '39', '41', '42', '43', '44'];
+
+/** Nombres de las casillas nuevas en el mapa de casillas de siempre (solo si tienen importe). */
+const NOMBRES_CASILLAS_303: Readonly<Record<string, string>> = {
+  '10': '10_base_adquisiciones_intracomunitarias',
+  '11': '11_cuota_adquisiciones_intracomunitarias',
+  '12': '12_base_inversion_sujeto_pasivo',
+  '13': '13_cuota_inversion_sujeto_pasivo',
+  '14': '14_base_modificaciones',
+  '15': '15_cuota_modificaciones',
+  '30': '30_base_bienes_inversion',
+  '31': '31_cuota_bienes_inversion',
+  '32': '32_base_importaciones',
+  '33': '33_cuota_importaciones',
+  '34': '34_base_importaciones_inversion',
+  '35': '35_cuota_importaciones_inversion',
+  '36': '36_base_adquisiciones_intracomunitarias',
+  '37': '37_cuota_adquisiciones_intracomunitarias',
+  '38': '38_base_adquisiciones_intracomunitarias_inversion',
+  '39': '39_cuota_adquisiciones_intracomunitarias_inversion',
+  '40': '40_base_rectificacion_deducciones',
+  '41': '41_cuota_rectificacion_deducciones',
+};
+
+/** Opciones del calculo del 303. */
+export interface OpcionesAgregar303 {
+  /** La autoliquidacion pide la devolucion (tipo D): se aplica todo [110] en [78]. */
+  devolucion?: boolean;
+}
+
+/**
+ * Modelo 303 con las casillas OFICIALES del diseno 2026 (paginas 1 y 3).
+ *
+ * IVA devengado:
+ *  - Ventas NACIONAL (sin tipo, las interiores de siempre): una fila fija por
+ *    tipo ([01]-[03] 4 %, [04]-[06] 10 %, [07]-[09] 21 %).
+ *  - Ventas rectificativas: modificacion de bases y cuotas [14]/[15], con signo.
+ *  - Autodevengo de las compras intracomunitarias [10]/[11] y de las compras con
+ *    inversion del sujeto pasivo [12]/[13], con la cuota de la factura.
+ * IVA deducible (compras deducibles), por naturaleza: interiores corrientes
+ * [28]/[29] o bienes de inversion [30]/[31] (lineas de cuentas 2xx),
+ * importaciones [32]-[35] (proveedor de fuera de la UE con cuota),
+ * intracomunitarias [36]-[39] y rectificacion de deducciones [40]/[41] (las
+ * compras anuladas con contraasiento restan aqui, con signo).
+ * Resultado: [46] = [27] - [45]; pagina 3: [64] = [46], [66] = [64] (100 %
+ * Estado) y [78], [87], [69] y [71] segun resultadoPagina3_303.
+ *
+ * `cuotasACompensar` = cuotas pendientes de compensar de periodos anteriores
+ * [110] (patron Quipu "303 a compensar"). `opciones.devolucion`: la
+ * autoliquidacion pide la devolucion (tipo D), y entonces el saldo a devolver
+ * incluye todo [110].
  */
 export function agregar303(
   facturas: FacturaFiscal[],
   periodo: PeriodoFiscal,
   cuotasACompensar = 0,
+  opciones: OpcionesAgregar303 = {},
 ): DatosModelo303 {
   const delPeriodo = facturas.filter((f) => enRango(f.fecha, periodo.fechaInicio, periodo.fechaFin));
 
@@ -164,46 +241,131 @@ export function agregar303(
   const ivaDevengado = agruparPorTipoIva(ventasDevengo);
   const ivaDeducible = agruparPorTipoIva(conIvaSoportado(comprasDeducibles));
 
-  const totalCuotaDevengada = sumCuota(ivaDevengado);
-  const totalCuotaDeducible = sumCuota(ivaDeducible);
-  const resultado = round2(totalCuotaDevengada - totalCuotaDeducible);
-  // Las cuotas a compensar [110] solo se aplican [78] hasta dejar el resultado en
-  // cero: con resultado negativo no se aplica nada y todo pasa a [87].
-  const pendientesAnteriores = round2(Math.abs(cuotasACompensar));
-  const cuotasAplicadas = round2(Math.min(pendientesAnteriores, Math.max(resultado, 0)));
-  const cuotasPendientesPosteriores = round2(pendientesAnteriores - cuotasAplicadas);
-  const resultadoFinal = round2(resultado - cuotasAplicadas);
+  // --- Casillas oficiales, en centimos ---
+  const c: Record<string, number> = {};
+  const suma = (casilla: string, euros: number) => {
+    c[casilla] = (c[casilla] ?? 0) + Math.round(euros * 100);
+  };
+  const v = (casilla: string) => c[casilla] ?? 0;
+  const advertencias: string[] = [];
+  const sinFila = new Map<number, { base: number; cuota: number }>();
+  let intraSinCuota = 0;
 
-  // Casillas OFICIALES del 303. Bloque devengado del regimen general, una fila
-  // FIJA por tipo (ver FILA_303_POR_TIPO): [01]-[03] 4 %, [04]-[06] 10 %,
-  // [07]-[09] 21 %.
-  const casillas: Record<string, number> = {};
-  const filas: Array<[string, string, string]> = [
-    ['01', '02', '03'],
-    ['04', '05', '06'],
-    ['07', '08', '09'],
-  ];
-  const { filas: porFila, sinFila } = filasRegimenGeneral303(ivaDevengado);
-  porFila.forEach((d, i) => {
-    if (!d) return;
-    const [cBase, cTipo, cCuota] = filas[i];
-    casillas[`${cBase}_base_devengada_${d.tipo}`] = d.base;
-    casillas[`${cTipo}_tipo`] = d.tipo;
-    casillas[`${cCuota}_cuota_devengada_${d.tipo}`] = d.cuota;
-  });
-  const advertencias = sinFila.map(
-    (d) =>
-      `Hay ventas al ${d.tipo} % (base ${d.base.toFixed(2)} €, cuota ${d.cuota.toFixed(2)} €): ese tipo no tiene fila en el régimen general del 303. Revísalas antes de presentar.`,
-  );
+  for (const f of ventasDevengo) {
+    const lineas = f.lineas;
+    if (f.rectificativa) {
+      for (const l of lineas) {
+        suma('14', l.base);
+        suma('15', l.cuota);
+      }
+      continue;
+    }
+    for (const l of lineas) {
+      const fila = FILA_303_POR_TIPO[l.tipoIva];
+      if (fila !== undefined) {
+        suma(FILAS_DEVENGADO_303[fila][0], l.base);
+        suma(FILAS_DEVENGADO_303[fila][2], l.cuota);
+      } else if (l.tipoIva !== 0 && (l.base !== 0 || l.cuota !== 0)) {
+        // Al 0 % (exentas o no sujetas) no hay cuota: no van en estas filas.
+        const prev = sinFila.get(l.tipoIva) ?? { base: 0, cuota: 0 };
+        sinFila.set(l.tipoIva, { base: round2(prev.base + l.base), cuota: round2(prev.cuota + l.cuota) });
+      }
+    }
+  }
+
+  for (const f of delPeriodo) {
+    if (f.tipo !== 'compra') continue;
+    const deducible = f.deducible !== false;
+    for (const l of f.lineas) {
+      const conCuota = l.cuota !== 0 || l.tipoIva > 0;
+      if (f.operacion === 'intracomunitaria' || f.isp) {
+        // Autodevengo: la cuota la declara la empresa (como devengada y, si es deducible, como deducible).
+        const [b, q] = f.rectificativa ? ['14', '15'] : f.operacion === 'intracomunitaria' ? ['10', '11'] : ['12', '13'];
+        suma(b, l.base);
+        suma(q, l.cuota);
+        if (f.operacion === 'intracomunitaria' && l.cuota === 0) intraSinCuota += Math.round(l.base * 100);
+      }
+      if (!deducible) continue;
+      let par: [string, string] | null;
+      if (f.rectificativa) par = ['40', '41'];
+      else if (f.operacion === 'intracomunitaria') par = l.inversion ? ['38', '39'] : ['36', '37'];
+      else if (f.isp) par = l.inversion ? ['30', '31'] : ['28', '29'];
+      else if (f.operacion === 'exportacion') par = l.cuota !== 0 ? (l.inversion ? ['34', '35'] : ['32', '33']) : null;
+      else par = conCuota ? (l.inversion ? ['30', '31'] : ['28', '29']) : null;
+      if (!par) continue;
+      suma(par[0], l.base);
+      suma(par[1], l.cuota);
+    }
+  }
+
+  // Ninguna casilla sin signo puede salir negativa: lo que queda en negativo
+  // (descuentos o devoluciones que superan lo del periodo) es una modificacion.
+  for (const [b, q, bN, qN] of PARES_SIN_SIGNO_303) {
+    if (v(b) < 0 || v(q) < 0) {
+      c[bN] = v(bN) + v(b);
+      c[qN] = v(qN) + v(q);
+      c[b] = 0;
+      c[q] = 0;
+    }
+  }
+
+  c['27'] = SUMANDOS_27.reduce((a, k) => a + v(k), 0);
+  c['45'] = SUMANDOS_45.reduce((a, k) => a + v(k), 0);
+  c['46'] = v('27') - v('45');
+  // Pagina 3
+  suma('59', entregasIntracomunitarias);
+  suma('60', exportaciones);
+  suma('120', noSujetasLocalizacion);
+  suma('122', inversionSujetoPasivo);
+  c['64'] = v('46'); // [46] + [58] (simplificado, 0) + [76] (0)
+  c['65'] = 10000; // 100,00 % atribuible a la Administracion del Estado
+  c['66'] = v('64');
+  c['110'] = Math.round(Math.abs(cuotasACompensar) * 100);
+  Object.assign(c, resultadoPagina3_303(c, opciones.devolucion === true));
+
+  const casillasOficiales: Record<string, number> = {};
+  for (const [k, centimos] of Object.entries(c)) casillasOficiales[k] = centimos / 100;
+  const e = (k: string) => casillasOficiales[k] ?? 0;
+
+  const totalCuotaDevengada = e('27');
+  const totalCuotaDeducible = e('45');
+  const resultado = e('46');
+  const pendientesAnteriores = e('110');
+  const cuotasAplicadas = e('78');
+  const cuotasPendientesPosteriores = e('87');
+  const resultadoFinal = e('71');
+
+  for (const [tipo, d] of sinFila) {
+    advertencias.push(
+      `Hay ventas al ${tipo} % (base ${d.base.toFixed(2)} €, cuota ${d.cuota.toFixed(2)} €): ese tipo no tiene fila en el régimen general del 303. Revísalas antes de presentar.`,
+    );
+  }
   if (exentasSinDeduccion !== 0) {
     advertencias.push(
       `Hay ventas exentas sin derecho a deducción (base ${eur(exentasSinDeduccion)}): no van en ninguna casilla del 303 trimestral (sí en el 390) y pueden obligarte a aplicar la prorrata del IVA soportado. Revísalo con tu asesor.`,
     );
   }
+  if (intraSinCuota !== 0) {
+    advertencias.push(
+      `Hay compras a proveedores de otros países de la UE sin IVA (base ${eur(intraSinCuota / 100)}): su IVA se autoliquida en las casillas [10]/[11] y se deduce en [36]/[37]. Pon en esas facturas el tipo de IVA que corresponde o completa la cuota en el formulario de la sede.`,
+    );
+  }
+
+  // Mapa de casillas de siempre (pantalla de Impuestos, Carmen), con los
+  // importes oficiales. Las casillas nuevas solo si tienen importe.
+  const casillas: Record<string, number> = {};
+  FILAS_DEVENGADO_303.forEach(([cBase, cTipo, cCuota], i) => {
+    if (!v(cBase) && !v(cCuota)) return;
+    const tipo = [4, 10, 21][i];
+    casillas[`${cBase}_base_devengada_${tipo}`] = e(cBase);
+    casillas[`${cTipo}_tipo`] = tipo;
+    casillas[`${cCuota}_cuota_devengada_${tipo}`] = e(cCuota);
+  });
+  for (const [k, nombre] of Object.entries(NOMBRES_CASILLAS_303)) if (v(k) !== 0) casillas[nombre] = e(k);
   Object.assign(casillas, {
     '27_total_devengado': totalCuotaDevengada,
-    '28_base_deducible': sumBase(ivaDeducible),
-    '29_cuota_deducible': totalCuotaDeducible,
+    '28_base_deducible': e('28'),
+    '29_cuota_deducible': e('29'),
     '45_total_deducir': totalCuotaDeducible,
     '46_resultado_regimen_general': resultado,
     '110_cuotas_pendientes_anteriores': pendientesAnteriores,
@@ -214,6 +376,9 @@ export function agregar303(
   // Casillas nuevas de la pagina 3 solo si hay importe (las facturas anteriores no las tienen).
   if (noSujetasLocalizacion !== 0) casillas['120_no_sujetas_localizacion'] = noSujetasLocalizacion;
   if (inversionSujetoPasivo !== 0) casillas['122_inversion_sujeto_pasivo'] = inversionSujetoPasivo;
+
+  // Sin actividad: ninguna factura en el periodo (lo pendiente de compensar no cuenta).
+  const sinActividad = delPeriodo.length === 0;
 
   return {
     periodo,
@@ -234,6 +399,8 @@ export function agregar303(
     ...(inversionSujetoPasivo !== 0 && { inversionSujetoPasivo }),
     ...(exentasSinDeduccion !== 0 && { exentasSinDeduccion }),
     casillas,
+    casillasOficiales,
+    sinActividad,
     ...(advertencias.length && { advertencias }),
   };
 }
@@ -320,28 +487,73 @@ export function agregar347(
   umbral: number = UMBRAL_347,
 ): DatosModelo347 {
   const delAno = facturas.filter((f) => f.fecha.startsWith(String(ejercicio)) && entraEn347(f));
-  const acumulado = new Map<string, OperacionTercero>();
+  // Todo en centimos: los cuatro trimestres tienen que sumar el anual exacto.
+  interface Acum {
+    op: OperacionTercero;
+    trim: [number, number, number, number];
+    contado: number;
+  }
+  const acumulado = new Map<string, Acum>();
+  const totalTercero = new Map<string, number>();
+  const cent = (n: number) => Math.round(n * 100);
 
   for (const f of delAno) {
     // Las compras con retencion de IRPF no van al 347: ya estan en el 190 o en
     // el 180 (art. 33.2 del RD 1065/2007). Solo cuentan sus lineas sin retencion.
     const lineas = f.lineas.filter((l) => !l.conRetencion);
     if (!lineas.length) continue;
+    // Compras con inversion del sujeto pasivo: registro aparte ('X' en la
+    // posicion 282 del 347). El proveedor no repercute IVA (la cuota la
+    // autoliquida la empresa), asi que va la base.
+    const isp = f.tipo === 'compra' && f.isp === true;
     // El 347 se declara con IVA incluido (antes se sumaba solo la base).
-    const base = round2(lineas.reduce((a, l) => a + l.base + l.cuota, 0));
-    const key = `${f.tipo}:${f.cifnif}`;
-    const prev =
+    const importe = lineas.reduce((a, l) => a + cent(l.base) + (isp ? 0 : cent(l.cuota)), 0);
+    const nif = limpiarNif(f.cifnif);
+    const tipo: OperacionTercero['tipo'] = f.tipo === 'venta' ? 'cliente' : 'proveedor';
+    // El arrendamiento de local de negocio va en un registro aparte con 'X' (art. 34.1 RD 1065/2007).
+    const arrendamiento = f.tipo === 'compra' && f.tipoGasto === 'ALQUILER';
+    const key = `${tipo}:${nif}:${arrendamiento ? 'X' : ''}:${isp ? 'I' : ''}`;
+    const a =
       acumulado.get(key) ??
-      ({ cifnif: f.cifnif, nombre: f.nombreTercero, tipo: f.tipo === 'venta' ? 'cliente' : 'proveedor', baseAnual: 0 } as OperacionTercero);
-    prev.baseAnual = round2(prev.baseAnual + base);
-    acumulado.set(key, prev);
+      ({
+        op: {
+          cifnif: nif,
+          nombre: f.nombreTercero,
+          tipo,
+          baseAnual: 0,
+          provincia: codigoProvincia(f.cpTercero, f.provinciaTercero),
+          ...(arrendamiento && { arrendamiento: true }),
+          ...(isp && { inversionSujetoPasivo: true }),
+        },
+        trim: [0, 0, 0, 0],
+        contado: 0,
+      } as Acum);
+    const t = Math.min(3, Math.floor((Number(f.fecha.slice(5, 7)) - 1) / 3));
+    a.trim[t] += importe;
+    if (f.tipo === 'venta' && f.formaPago === 'CONTADO') a.contado += importe;
+    acumulado.set(key, a);
+    totalTercero.set(`${tipo}:${nif}`, (totalTercero.get(`${tipo}:${nif}`) ?? 0) + importe);
   }
 
-  const operaciones = [...acumulado.values()]
-    .filter((o) => o.baseAnual > umbral)
-    .sort((a, b) => b.baseAnual - a.baseAnual);
+  const advertencias: string[] = [];
+  const operaciones: OperacionTercero[] = [];
+  for (const a of acumulado.values()) {
+    // El umbral se mira con todo lo del tercero en el ano; si lo supera, se declaran todos sus registros.
+    if ((totalTercero.get(`${a.op.tipo}:${a.op.cifnif}`) ?? 0) <= cent(umbral)) continue;
+    const anual = a.trim.reduce((x, y) => x + y, 0);
+    const op: OperacionTercero = { ...a.op, baseAnual: anual / 100, trimestres: a.trim.map((c) => c / 100) as OperacionTercero['trimestres'] };
+    if (a.contado > cent(6000)) {
+      op.metalico = a.contado / 100;
+      advertencias.push(
+        `${op.nombre} (${op.cifnif}): ${eur(op.metalico)} en facturas con forma de pago al contado. Si se cobraron en efectivo, van en "importe percibido en metálico"; si no, quítalo antes de presentar.`,
+      );
+    }
+    if (!op.provincia) advertencias.push(`${op.nombre} (${op.cifnif}): falta la provincia de su domicilio fiscal (código postal en su ficha).`);
+    operaciones.push(op);
+  }
+  operaciones.sort((x, y) => y.baseAnual - x.baseAnual);
 
-  return { ejercicio, umbral, operaciones };
+  return { ejercicio, umbral, operaciones, ...(advertencias.length && { advertencias }) };
 }
 
 /**
@@ -498,6 +710,10 @@ export async function obtenerFacturasFiscales(companyId: string, desde: string, 
       nombreTercero: f.customer?.nombreFiscal ?? '',
       fecha: devengo,
       operacion: tipo ? operacionDeTipo(tipo, ctx) : OPERACION_DE_TIPO[tipoOperacionLegacy(pais, nif) as keyof typeof OPERACION_DE_TIPO],
+      // Datos del 347 (provincia y cobros al contado): solo si los hay.
+      ...(f.customer?.cp && { cpTercero: f.customer.cp }),
+      ...(f.customer?.provincia && { provinciaTercero: f.customer.provincia }),
+      ...(f.formaPago === 'CONTADO' && { formaPago: 'CONTADO' }),
       // Solo las ventas con tipo llevan los campos nuevos: las anteriores salen igual que siempre.
       ...(tipo && {
         tipoOperacion: tipo,
@@ -506,6 +722,8 @@ export async function obtenerFacturasFiscales(companyId: string, desde: string, 
         residente: paisDelCliente(cliente) === 'ES',
         paisTercero: paisDelCliente(cliente),
       }),
+      // Una rectificativa va en las casillas de modificaciones del 303 ([14]/[15]).
+      ...(f.esRectificativa && { rectificativa: true }),
       lineas: f.lineas.length
         ? f.lineas.map((l) => ({ tipoIva: l.tipoIva, base: euros(l.baseLine), cuota: euros(l.ivaImporte) }))
         : [{ tipoIva: 0, base: euros(f.baseTotal), cuota: 0 }],
@@ -523,12 +741,19 @@ export async function obtenerFacturasFiscales(companyId: string, desde: string, 
         nombreTercero: f.supplier?.nombreFiscal ?? '',
         fecha,
         operacion: clasificarOperacion(f.supplier?.pais, f.supplier?.nifCif),
+        // La anulacion (en negativo) es una rectificacion de deducciones ([40]/[41]).
+        ...(signo < 0 && { rectificativa: true }),
+        ...(f.supplier?.cp && { cpTercero: f.supplier.cp }),
+        ...(f.supplier?.provincia && { provinciaTercero: f.supplier.provincia }),
+        ...(f.tipoGasto && f.tipoGasto !== 'COMPRA' && { tipoGasto: f.tipoGasto }),
         lineas: f.lineas.length
           ? f.lineas.map((l) => ({
               tipoIva: l.tipoIva,
               base: signo * round2(l.baseLine),
               cuota: signo * round2(l.ivaImporte),
               ...(Number(l.tipoRetencion) > 0 ? { conRetencion: true } : {}),
+              // Bien de inversion: cuenta 2xx del PGC (casillas de bienes de inversion del 303).
+              ...(String(l.accountCode ?? '').startsWith('2') ? { inversion: true } : {}),
             }))
           : [{ tipoIva: 0, base: signo * round2(f.baseTotal), cuota: 0, ...(Number(f.retencionTotal) > 0 ? { conRetencion: true } : {}) }],
       });
@@ -595,10 +820,11 @@ export async function calcularModelo303(
   companyId: string,
   periodo: PeriodoFiscal,
   cuotasACompensar = 0,
+  opciones: OpcionesAgregar303 = {},
 ): Promise<DatosModelo303> {
   await exigirModelosAeat(companyId, periodo.fechaInicio, periodo.fechaFin);
   const facturas = await obtenerFacturasFiscales(companyId, periodo.fechaInicio, periodo.fechaFin);
-  return agregar303(facturas, periodo, cuotasACompensar);
+  return agregar303(facturas, periodo, cuotasACompensar, opciones);
 }
 
 export async function calcularModelo390(companyId: string, ejercicio: number): Promise<DatosModelo390> {
@@ -618,6 +844,9 @@ export async function calcularModelo349(companyId: string, periodo: PeriodoFisca
   const facturas = await obtenerFacturasFiscales(companyId, periodo.fechaInicio, periodo.fechaFin);
   return agregar349(facturas, periodo);
 }
+
+/** Arrendador del 115: su NIF normalizado o, si no lo tiene, el proveedor. */
+const claveArrendador = (f: { supplierId: string; supplier: { nifCif: string | null } }) => normalizarNif(f.supplier.nifCif) || `proveedor:${f.supplierId}`;
 
 /**
  * Modelo 115 (retenciones por arrendamiento de inmuebles urbanos): las
@@ -643,14 +872,15 @@ export async function calcularModelo115(companyId: string, periodo: PeriodoFisca
   for (const f of facturas) {
     const declarada = declaradaEn(f);
     for (const _ of aparicionesRetencionEntre(f, periodo.fechaInicio, periodo.fechaFin, declarada !== null)) {
+      // [01] son arrendadores distintos por NIF: el mismo arrendador dado de alta dos veces cuenta una.
       if (declarada) avisos.push(avisoRetencionAnulada(f.numeroFacturaProveedor ?? f.numeroCompleto, f.supplier.nombreFiscal, '115', declarada, fechaContableGasto(f).slice(0, 4)));
-      const a = porArrendador.get(f.supplierId) ?? { nif: f.supplier.nifCif, nombre: f.supplier.nombreFiscal, base: 0, retencion: 0, facturas: 0 };
+      const a = porArrendador.get(claveArrendador(f)) ?? { nif: f.supplier.nifCif, nombre: f.supplier.nombreFiscal, base: 0, retencion: 0, facturas: 0 };
       for (const d of desgloseRetencionGasto(f)) {
         a.base += c(d.base);
         a.retencion += c(d.cuota);
       }
       a.facturas += 1;
-      porArrendador.set(f.supplierId, a);
+      porArrendador.set(claveArrendador(f), a);
     }
   }
   const lista = [...porArrendador.values()];

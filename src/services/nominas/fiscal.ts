@@ -21,6 +21,8 @@ import { prisma } from '../../config/database';
 import type { PeriodoFiscal } from '../../domain/impuestos.model';
 import { badRequest } from '../../utils/http-errors';
 import { aCentimos } from '../../utils/money';
+import { normalizarNif } from '../../utils/nif';
+import { totales190 } from './modelo190';
 import {
   aparicionesRetencionEntre,
   desgloseRetencionGasto,
@@ -77,6 +79,17 @@ export function periodoFiscal(ejercicio: number, periodo: string): PeriodoFiscal
     return { ejercicio, periodo: mm(n), tipo: 'mensual', fechaInicio: `${ejercicio}-${mm(n)}-01`, fechaFin: ultimo(n) };
   }
   throw badRequest(`Periodo "${periodo}" no válido: usa 1T, 2T, 3T, 4T, un mes (01-12) o 0A.`);
+}
+
+/**
+ * La empresa presenta el 111 (y el 115) cada mes: gran empresa en los ajustes
+ * fiscales, como el calendario (calendarioEjercicio). Solo lee.
+ */
+export async function presenta111Mensual(companyId: string): Promise<boolean> {
+  const tabla = (prisma as unknown as Record<string, { findUnique?: unknown } | undefined>).ajustesFiscales;
+  if (typeof tabla?.findUnique !== 'function') return false;
+  const fila = await prisma.ajustesFiscales.findUnique({ where: { companyId } }).catch(() => null);
+  return fila?.granEmpresa === true;
 }
 
 /** Meses (1-12) del ejercicio que cubre un periodo. */
@@ -486,12 +499,17 @@ export interface Modelo190 {
     retenciones: number;
   };
   /**
-   * Suma de los cuatro 111 del ano (retenciones e ingresos a cuenta), para
-   * cuadrar con el 190: el 111 presentado (sus casillas guardadas) o, si no se
-   * ha presentado, el calculado sin el resumen antiguo (que no entra en el 190).
+   * Suma de los 111 del ano (retenciones e ingresos a cuenta), para cuadrar
+   * con el 190: el 111 presentado (sus casillas guardadas), trimestral o
+   * mensual, o, si no se ha presentado, el calculado sin el resumen antiguo
+   * (que no entra en el 190).
    */
   cuadre111: {
-    trimestres: Array<{ periodo: string; retenciones: number; fuente: 'presentado' | 'calculado' }>;
+    /**
+     * Un trimestre por fila. Con el 111 mensual, `meses` son los meses
+     * presentados que se suman en ese trimestre (los que falten, calculados).
+     */
+    trimestres: Array<{ periodo: string; retenciones: number; fuente: 'presentado' | 'calculado'; meses?: string[] }>;
     total: number;
     coincide: boolean;
   };
@@ -531,6 +549,8 @@ const sinTildes = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '');
 /** Provincia (dos digitos) de un tercero: por su codigo postal o por el nombre de la provincia. */
 export function codigoProvincia(cp: string | null | undefined, provincia: string | null | undefined): string | null {
   const c = String(cp ?? '').replace(/\D/g, '');
+  // La isla de La Palma (codigos postales 387xx) tiene su propio codigo en el 190: 53.
+  if (c.length === 5 && c.startsWith('387')) return '53';
   if (c.length === 5 && Number(c.slice(0, 2)) >= 1 && Number(c.slice(0, 2)) <= 52) return c.slice(0, 2);
   const p = String(provincia ?? '').trim();
   if (/^(0[1-9]|[1-4]\d|5[0-3])$/.test(p)) return p;
@@ -574,7 +594,10 @@ export function perceptoresDeNominas(ejercicio: number, nominas: Array<NominaFis
     if (!e) continue;
     const devengoAnual = n.ejercicioDevengo ?? n.ejercicio;
     const devengo = devengoAnual < ejercicio ? devengoAnual : null;
-    const k = `${e.id}|${devengo ?? ''}`;
+    // Un reintegro de lo cobrado de mas en un ejercicio anterior va en su propio
+    // registro, con signo N (no se compensa con lo cobrado ese año).
+    const reintegro = devengo !== null && c(n.brutoDinerario) + c(n.indemnizacionSujeta) < 0;
+    const k = `${e.id}|${devengo ?? ''}|${reintegro ? 'R' : ''}`;
     const g = grupos.get(k) ?? { e, devengo, din: 0, irpf: 0, esp: 0, iac: 0, iacRep: 0, ss: 0, dietas: 0, indExenta: 0, docs: 0 };
     g.din += c(n.brutoDinerario) + c(n.indemnizacionSujeta);
     g.irpf += c(n.irpf);
@@ -653,14 +676,81 @@ export function perceptoresDeNominas(ejercicio: number, nominas: Array<NominaFis
   return out;
 }
 
+/**
+ * Subclave G de una factura segun su tipo de retencion (DISENOS_LOGICOS_190_2025,
+ * subclaves de la clave G): 01 el tipo general del art. 95.1 RIRPF (15 %); 02 el
+ * especifico de recaudadores municipales, mediadores de seguros con auxiliares
+ * externos y delegados de Loterias (7 %); 03 el reducido de quien inicia la
+ * actividad (7 %). La factura no dice si un 7 % es el de la 02 o el de la 03:
+ * se toma la 03 (la habitual en una pyme) y se avisa (avisosPerceptoresG).
+ * Cualquier otro tipo va a la 01, tambien con aviso.
+ */
+export function subclaveG(tipoRetencion: unknown): string {
+  return Number(tipoRetencion) === 7 ? '03' : '01';
+}
+
+/**
+ * Quien puede ser perceptor de la clave G: el diseño de 2025 (NIF del perceptor,
+ * posiciones 18-26) solo prevé personas fisicas y «entidad en régimen de
+ * atribución de rentas (comunidad de bienes, sociedad civil, herencia yacente,
+ * etc.)»; y el 190 recoge a contribuyentes del IRPF (pagina 9: «En ningún caso
+ * se incluirán [...] personas o entidades [...] que no sean contribuyentes del
+ * IRPF»). Por la letra del NIF: DNI (cifra), NIE (X, Y, Z) y K, L, M son
+ * personas fisicas; E (comunidades de bienes y herencias yacentes) y J
+ * (sociedades civiles), entidades en atribucion de rentas; el resto (A, B, C,
+ * D, F, G, N, P, Q, R, S, U, V, W) son personas juridicas u otras entidades.
+ */
+export function tipoPerceptorG(nif: string): 'fisica' | 'atribucion' | 'juridica' | 'desconocido' {
+  const n = normalizarNif(nif);
+  if (/^[0-9KLMXYZ]/.test(n)) return 'fisica';
+  if (/^[EJ]/.test(n)) return 'atribucion';
+  if (/^[A-DFGHNP-SUVW]/.test(n)) return 'juridica';
+  return 'desconocido';
+}
+
+/**
+ * Registros G que van al 190 (sin personas juridicas) y los avisos: que
+ * proveedores se han quitado y que subclaves son una suposicion.
+ */
+export function revisarPerceptoresG(
+  perceptores: Perceptor190[],
+  facturas: Array<{ supplierId: string; tipoRetencion: number }>,
+): { perceptores: Perceptor190[]; avisos: string[] } {
+  const avisos: string[] = [];
+  const fuera = perceptores.filter((p) => p.clave === 'G' && tipoPerceptorG(p.nif) === 'juridica');
+  const dentro = perceptores.filter((p) => !fuera.includes(p));
+  if (fuera.length) {
+    const nombres = [...new Map(fuera.map((p) => [p.nif, `${p.nombre} (${p.nif})`])).values()];
+    avisos.push(
+      `Se han quitado del 190 ${nombres.length === 1 ? 'este proveedor' : `estos ${nombres.length} proveedores`} con NIF de sociedad: ${nombres.join(', ')}. ` +
+        'En la clave G solo van personas físicas y entidades en atribución de rentas (comunidades de bienes, sociedades civiles, herencias yacentes). ' +
+        'Si les retuviste IRPF por error, corrige esas facturas (sus retenciones siguen en el 111 y el cuadre no coincidirá); si el NIF está mal, corrígelo en la ficha del proveedor.',
+    );
+  }
+  const proveedoresG = new Set(dentro.filter((p) => p.clave === 'G').map((p) => p.proveedorId));
+  const tipos = new Set(facturas.filter((f) => proveedoresG.has(f.supplierId)).map((f) => Number(f.tipoRetencion)));
+  if (tipos.has(7)) {
+    avisos.push(
+      'Las facturas de profesionales al 7 % van con la subclave G.03 (inicio de actividad). Si el 7 % es por ser recaudador municipal, mediador de seguros o delegado de Loterías, la subclave es la G.02: cámbiala en el formulario de la sede antes de presentar.',
+    );
+  }
+  const otros = [...tipos].filter((t) => t !== 15 && t !== 7).sort((a, b) => a - b);
+  if (otros.length) {
+    avisos.push(
+      `Hay facturas de profesionales con retención del ${otros.map((t) => `${t.toLocaleString('es-ES')} %`).join(', ')}, que no es el 15 % general: van con la subclave G.01. ` +
+        'Revisa el tipo de esas facturas o la subclave (G.04 a G.08 para propiedad intelectual, derechos de autor o de imagen) en la sede.',
+    );
+  }
+  return { perceptores: dentro, avisos };
+}
+
 /** Registros G (profesionales) a partir de sus facturas con retencion (puro). */
 export function perceptoresProfesionales(
   facturas: Array<{ supplierId: string; baseTotal: number; retencionTotal: number; tipoRetencion: number; supplier: { nifCif: string; nombreFiscal: string; cp: string | null; provincia: string | null } }>,
 ): Perceptor190[] {
   const grupos = new Map<string, Perceptor190 & { _base: number; _ret: number }>();
   for (const f of facturas) {
-    // G.03: tipo reducido del 7 % por inicio de actividad; G.01: tipo general.
-    const subclave = Number(f.tipoRetencion) === 7 ? '03' : '01';
+    const subclave = subclaveG(f.tipoRetencion);
     const k = `${f.supplierId}|${subclave}`;
     let g = grupos.get(k);
     if (!g) {
@@ -668,7 +758,7 @@ export function perceptoresProfesionales(
       g = {
         clave: 'G',
         subclave,
-        nif: String(f.supplier.nifCif ?? '').toUpperCase().replace(/[\s.-]/g, ''),
+        nif: normalizarNif(f.supplier.nifCif),
         nombre: f.supplier.nombreFiscal,
         provincia,
         percepcionIntegra: 0,
@@ -729,9 +819,12 @@ export async function calcularModelo190(companyId: string, ejercicio: number): P
   const { filas: facturas, avisos: avisosAnuladas } = await retencionesProfesionalesEntre(companyId, anio.fechaInicio, anio.fechaFin);
   avisos.push(...avisosAnuladas);
 
+  // Clave G: solo personas fisicas y entidades en atribucion de rentas (las sociedades, fuera, con aviso).
+  const g = revisarPerceptoresG(perceptoresProfesionales(facturas as never), facturas);
+  avisos.push(...g.avisos);
   const perceptores = [
     ...perceptoresDeNominas(ejercicio, nominas, empleados),
-    ...perceptoresProfesionales(facturas as never),
+    ...g.perceptores,
   ].sort((a, b) => a.clave.localeCompare(b.clave) || a.nombre.localeCompare(b.nombre, 'es') || (a.subclave ?? '').localeCompare(b.subclave ?? ''));
 
   if (tablaLista('nominaResumen')) {
@@ -749,12 +842,27 @@ export async function calcularModelo190(companyId: string, ejercicio: number): P
     avisos.push(`A ${sinDatos.length} registro(s) les faltan datos para el fichero (${[...new Set(sinDatos.flatMap((p) => p.faltan))].join(', ')}): complétalos en ${donde}.`);
   }
 
+  // Lo que el fichero aun no recoge (van a cero): se avisa para revisarlo en la sede.
+  if (perceptores.some((p) => p.clave === 'A')) {
+    avisos.push(
+      'La ficha del trabajador aún no guarda los descendientes y ascendientes del modelo 145 ni la prestación de incapacidad temporal por pago delegado: el fichero los declara a cero. Revísalos en el formulario de la sede antes de presentar.',
+    );
+  }
+  if (nominas.some((n) => aCentimos(Number(n.indemnizacionSujeta) || 0) > 0)) {
+    avisos.push('Hay indemnizaciones sujetas: si llevan la reducción del 30 % por renta irregular, indica su importe en "Reducciones aplicables" del formulario de la sede (el fichero lo deja a cero).');
+  }
+  if (perceptores.some((p) => p.clave === 'E')) {
+    avisos.push('Hay perceptores con clave E (consejeros): el fichero no admite la tributación en proporción al volumen de operaciones con las diputaciones forales (todo se declara al Estado).');
+  }
+
   const c = (v: number) => aCentimos(v);
+  // Los mismos totales que el registro de tipo 1 del fichero.
+  const t = totales190(perceptores);
   const totales = {
-    registros: perceptores.length,
+    registros: t.registros,
     perceptores: new Set(perceptores.map((p) => p.nif)).size,
-    percepciones: euros(perceptores.reduce((a, p) => a + c(p.percepcionIntegra) + c(p.valoracionEspecie), 0)),
-    retenciones: euros(perceptores.reduce((a, p) => a + c(p.retenciones) + c(p.ingresosACuentaEfectuados), 0)),
+    percepciones: t.percepciones,
+    retenciones: t.retenciones,
   };
 
   // El 190 por trimestres de pago (misma fuente que los totales: sin el resumen antiguo).
@@ -766,22 +874,48 @@ export async function calcularModelo190(companyId: string, ejercicio: number): P
   }
 
   // Cuadre con los 111: lo PRESENTADO manda (si se recalculara, siempre coincidiria
-  // y no avisaria nunca); de los trimestres sin presentar, el calculo.
+  // y no avisaria nunca); de lo que no esta presentado, el calculo. Quien presenta
+  // el 111 cada mes (gran empresa) tiene presentados los meses, no el trimestre:
+  // en ese trimestre cuenta la suma de sus meses (los presentados, con lo
+  // presentado; los que falten, calculados).
+  const MESES_111 = ['01', '02', '03', '04', '05', '06', '07', '08', '09', '10', '11', '12'];
   const guardados = tablaLista('modeloImpuesto')
-    ? await prisma.modeloImpuesto.findMany({ where: { companyId, codigo: '111', ejercicio, periodo: { in: ['1T', '2T', '3T', '4T'] }, estado: 'presentado' } })
+    ? await prisma.modeloImpuesto.findMany({ where: { companyId, codigo: '111', ejercicio, periodo: { in: ['1T', '2T', '3T', '4T', ...MESES_111] }, estado: 'presentado' } })
     : [];
-  const trimestres: Modelo190['cuadre111']['trimestres'] = desglose.map((d) => {
-    const presentado = retenciones111Guardadas(guardados.find((g) => g.periodo === d.periodo)?.casillas);
-    if (presentado !== null) return { periodo: d.periodo, retenciones: presentado, fuente: 'presentado' as const };
-    const calculado = c(d.trabajo.retencionesDinerarias) + c(d.trabajo.ingresosACuenta) + c(d.actividades.retenciones);
-    return { periodo: d.periodo, retenciones: euros(calculado), fuente: 'calculado' as const };
-  });
+  const presentadoDe = (periodo: string) => retenciones111Guardadas(guardados.find((g) => g.periodo === periodo)?.casillas);
+  const calculadoEn = async (periodo: string, trabajo?: Casillas111Trabajo, actividades?: RetencionesActividades): Promise<number> => {
+    const p = periodoFiscal(ejercicio, periodo);
+    const tr = trabajo ?? agregarTrabajo111(nominas.filter((n) => n.fechaPago >= p.fechaInicio && n.fechaPago <= p.fechaFin)).casillas;
+    const ac = actividades ?? (await retencionesActividades(companyId, p));
+    return c(tr.retencionesDinerarias) + c(tr.ingresosACuenta) + c(ac.retenciones);
+  };
+  const trimestres: Modelo190['cuadre111']['trimestres'] = [];
+  for (const d of desglose) {
+    const presentado = presentadoDe(d.periodo);
+    if (presentado !== null) {
+      trimestres.push({ periodo: d.periodo, retenciones: presentado, fuente: 'presentado' });
+      continue;
+    }
+    const n = Number(d.periodo[0]);
+    const meses = MESES_111.slice((n - 1) * 3, n * 3);
+    const mesesPresentados = meses.filter((m) => presentadoDe(m) !== null);
+    if (!mesesPresentados.length) {
+      trimestres.push({ periodo: d.periodo, retenciones: euros(await calculadoEn(d.periodo, d.trabajo, d.actividades)), fuente: 'calculado' });
+      continue;
+    }
+    let centimos = 0;
+    for (const m of meses) {
+      const delMes = presentadoDe(m);
+      centimos += delMes !== null ? c(delMes) : await calculadoEn(m);
+    }
+    trimestres.push({ periodo: d.periodo, retenciones: euros(centimos), fuente: 'presentado', meses: mesesPresentados });
+  }
   const total = euros(trimestres.reduce((a, t) => a + c(t.retenciones), 0));
   const coincide = c(total) === c(totales.retenciones);
   if (!coincide) {
-    const presentados = trimestres.filter((t) => t.fuente === 'presentado').map((t) => t.periodo);
+    const presentados = trimestres.filter((t) => t.fuente === 'presentado').map((t) => (t.meses ? `${t.periodo} (meses ${t.meses.join(', ')})` : t.periodo));
     avisos.push(
-      `Las retenciones del 190 (${fmt(totales.retenciones)}) no coinciden con la suma de los cuatro 111 (${fmt(total)}` +
+      `Las retenciones del 190 (${fmt(totales.retenciones)}) no coinciden con la suma de los 111 del año (${fmt(total)}` +
         `${presentados.length ? `; ${presentados.join(', ')} con lo presentado` : ''}). Revisa las nóminas o los 111 presentados antes de presentar el 190.`,
     );
   }

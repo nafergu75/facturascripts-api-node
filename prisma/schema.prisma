@@ -136,6 +136,49 @@ model ModeloImpuesto {
   @@unique([companyId, codigo, ejercicio, periodo])
 }
 
+/// Historial de declaraciones de un modelo y periodo (B4 y B5 de la
+/// integracion AEAT): la normal y sus complementarias o sustitutivas, con el
+/// numero identificativo que pone la app (informativas), el justificante de la
+/// sede y la instantanea de lo presentado. Nunca se borra una fila: lo que se
+/// abandona queda 'anulada' (asi un numero no se vuelve a usar).
+model DeclaracionAeat {
+  id                   String    @id @default(cuid())
+  companyId            String
+  codigo               String    @db.VarChar(3)
+  ejercicio            Int
+  periodo              String    @db.VarChar(2)
+  /// 1, 2, 3... dentro del modelo y periodo.
+  secuencia            Int
+  /// N normal, C complementaria (rectificativa en el 303 y el 200), S sustitutiva.
+  tipo                 String    @db.VarChar(1)
+  /// preparada | presentada | anulada
+  estado               String    @default("preparada") @db.VarChar(10)
+  /// Numero identificativo (modelo + ejercicio + contador): 347, 349, 180 y 190.
+  numero               String?   @db.VarChar(13)
+  anteriorId           String?
+  /// Numero de la anterior que va en el fichero (justificante o numero identificativo).
+  justificanteAnterior String?   @db.VarChar(20)
+  /// Autoliquidaciones: lo ya ingresado de las presentadas ([29] del 111, [04] del 115...).
+  resultadoAnterior    Decimal?  @db.Decimal(14, 2)
+  /// Informativas: claves de los registros elegidos para la complementaria.
+  registros            Json?
+  /// Justificante que da la sede al presentar.
+  justificante         String?   @db.VarChar(20)
+  fechaPresentacion    String?   @db.VarChar(10)
+  /// Instantanea al presentar: casillas.
+  casillas             Json?
+  /// Instantanea al presentar: fila de ModeloImpuesto, fichero, IBAN, tipo, resultado, registros...
+  datos                Json?
+  creadoPor            String?
+  presentadoPor        String?
+  creadoEn             DateTime  @default(now())
+  presentadoEn         DateTime?
+
+  @@unique([companyId, numero])
+  @@unique([companyId, codigo, ejercicio, periodo, secuencia])
+  @@index([companyId, codigo, ejercicio, periodo])
+}
+
 /// Relacion usuario <-> empresa con rol por empresa.
 model Membership {
   id        String  @id @default(cuid())
@@ -711,6 +754,8 @@ model Supplier {
   invoices     ExpenseInvoice[]
   contacts     SupplierContact[]
   bankAccounts SupplierBankAccount[]
+  /// Inmuebles que nos alquila (modelo 180).
+  inmuebles    InmuebleArrendado[]
 
   @@unique([companyId, nifCif])
   @@unique([companyId, subcuenta400])
@@ -762,10 +807,17 @@ model ExpenseInvoice {
   anuladaEn              String?
   motivoAnulacion        String?  @db.Text
   anulacionAsientoId     String?
+  /// 349 de las compras a otro pais de la UE desde 2027: A (bienes) o I
+  /// (servicios). null = segun el tipo de gasto (COMPRA = A; el resto = I).
+  clave349               String?  @db.VarChar(1)
+  /// 180: inmueble de una factura de ALQUILER. null = el unico inmueble activo
+  /// del arrendador (si tiene varios, hay que elegirlo).
+  inmuebleArrendadoId    String?
   createdAt        DateTime             @default(now())
   updatedAt        DateTime             @updatedAt
   lineas           ExpenseInvoiceLine[]
   supplier         Supplier             @relation(fields: [supplierId], references: [id], onDelete: Restrict)
+  inmuebleArrendado InmuebleArrendado?  @relation(fields: [inmuebleArrendadoId], references: [id], onDelete: SetNull)
 
   @@unique([companyId, serie, numero])
   // El mismo numero del mismo proveedor no se registra dos veces (las anuladas no cuentan: null).
@@ -775,6 +827,47 @@ model ExpenseInvoice {
   @@unique([companyId, numeroCompleto])
   @@index([companyId, estado])
   @@index([supplierId])
+  @@index([inmuebleArrendadoId])
+}
+
+/// Inmueble urbano que nos alquila un proveedor (modelo 180: un registro por
+/// arrendador e inmueble). La direccion va por partes, como pide el diseno de
+/// registro de la AEAT.
+model InmuebleArrendado {
+  id                  String           @id @default(cuid())
+  companyId           String
+  supplierId          String
+  /// 1 territorio comun, 2 Pais Vasco, 3 Navarra (con referencia catastral); 4 sin referencia catastral.
+  situacion           Int              @default(1)
+  referenciaCatastral String?          @db.VarChar(20)
+  /// Codigo de tipo de via del INE (CL, AV, PZ...).
+  tipoVia             String           @db.VarChar(5)
+  nombreVia           String           @db.VarChar(50)
+  /// NUM, KM. o S/N.
+  tipoNumeracion      String           @default("NUM") @db.VarChar(3)
+  numeroCasa          String?          @db.VarChar(5)
+  calificadorNumero   String?          @db.VarChar(3)
+  bloque              String?          @db.VarChar(3)
+  portal              String?          @db.VarChar(3)
+  escalera            String?          @db.VarChar(3)
+  planta              String?          @db.VarChar(3)
+  puerta              String?          @db.VarChar(3)
+  complemento         String?          @db.VarChar(40)
+  /// Solo si es distinta del municipio.
+  localidad           String?          @db.VarChar(30)
+  municipio           String           @db.VarChar(30)
+  /// Codigo INE del municipio (5 cifras).
+  codigoMunicipio     String           @db.VarChar(5)
+  /// Provincia del inmueble (01-53).
+  codigoProvincia     String           @db.VarChar(2)
+  codigoPostal        String           @db.VarChar(5)
+  activo              Boolean          @default(true)
+  createdAt           DateTime         @default(now())
+  updatedAt           DateTime         @updatedAt
+  supplier            Supplier         @relation(fields: [supplierId], references: [id], onDelete: Restrict)
+  facturas            ExpenseInvoice[]
+
+  @@index([companyId, supplierId])
 }
 
 /// Cobro de una factura de venta (INGRESO) o pago de una factura de gasto
@@ -1255,6 +1348,14 @@ model LegalConfig {
   telefono                   String?
   email                      String?
   web                        String?
+  // Persona de contacto de los modelos informativos de la AEAT (349, 180...):
+  // apellidos y nombre, en ese orden.
+  personaContacto            String?  @db.VarChar(80)
+  // Datos estadísticos de la página 1 del 390 (apartado 3) de la actividad
+  // principal: clave (A01 arrendadores de inmuebles, A03 resto de actividades
+  // empresariales...) y epígrafe del IAE sin puntos (6151, 841...).
+  claveActividad             String?  @db.VarChar(3)
+  epigrafeIae                String?  @db.VarChar(4)
   fechaConstitucion          String? // YYYY-MM-DD
   // Logo para las facturas (PNG o JPG, maximo 1 MB). En la BD y no en el
   // almacenamiento de ficheros: es pequeno y asi no depende de Vercel Blob.

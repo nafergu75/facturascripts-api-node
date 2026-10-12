@@ -23,7 +23,6 @@ import { prisma } from '../config/database';
 import { incomeInvoicesService, type CrearLineaIngresoDTO } from '../services/income-invoices.service';
 import * as tiposCambio from '../services/tiposCambio.service';
 import { calcularModelo303, calcularModelo347, calcularModelo349, obtenerFacturasFiscales } from '../services/impuestosCalculo.service';
-import { taxModelsService } from '../services/tax-models.service';
 import { clientesService } from '../services/clientes.service';
 import { AccountingEngineController } from '../controllers/accounting-engine.controller';
 import { accountingHooksService } from '../services/accounting-hooks.service';
@@ -134,8 +133,6 @@ describe('facturas anteriores: editar la ficha del cliente no mueve los modelos 
     expect(despues303.exportaciones).toBe(antes303.exportaciones);
     expect(despues303.casillas).toEqual(antes303.casillas);
     expect((await calcularModelo347(companyId, 2026)).operaciones.map((o) => o.cifnif)).toEqual(['FR40303265045']);
-    const m347 = await taxModelsService.generarModelo347(companyId, 2026);
-    expect(m347.terceros.map((t: { nif: string }) => t.nif)).toEqual(['FR40303265045']);
 
     // La ficha de la factura: clasificada como siempre y sin mencion propia (como su PDF).
     const ficha = await incomeInvoicesService.obtenerPorId(companyId, a.id);

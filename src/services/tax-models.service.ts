@@ -17,20 +17,46 @@ import { reportsService } from './reports.service';
 import { registrarAuditoria } from './auditoria.service';
 import { esEmpresaEspanolaFiscal, MENSAJE_SIN_MODELOS, ventasQuePuedenDevengarseEntre } from './impuestosCalculo.service';
 import { esTipoOperacion, fechaDevengoVenta, paisLegacy } from '../domain/tipo-operacion.model';
-import {
-  generarCasillas303,
-  generarCasillas200,
-  generarCasillas347,
-  generarCasillas115,
-  generarCasillas390,
-  ModeloFiscalAuditoria,
-} from '../utils/aeat-models';
-import type { DatosModelo111, DatosModelo115 } from '../domain/impuestos.model';
+/** Quien y cuando genero o presento un modelo (se guarda en `datos.auditoria`). */
+type ModeloFiscalAuditoria = Record<string, unknown> & {
+  generadoPor: string;
+  generadoEn: string;
+  marcadoPresentadoPor?: string;
+  marcadoPresentadoEn?: string;
+  justificante?: { numero: string; fecha: string };
+  origen: 'autorrelleno' | 'manual-mixto' | 'importado';
+  version: string;
+};
+import type { DatosModelo111, DatosModelo115, DatosModelo303 } from '../domain/impuestos.model';
 import { calcularModelo115 } from './impuestosCalculo.service';
 import { periodoFiscal } from './nominas/fiscal';
 import { aparicionesEntre, importe347Gasto, whereGastosFiscales } from '../domain/factura-gasto.model';
-import { calcularCasillasModelo } from './impuestosModulo.service';
+import {
+  calcularBorrador303,
+  calcularCasillasModelo,
+  casillasGuardadas303,
+  datosGuardados303,
+  declaracionRetenciones,
+  periodo303De,
+  periodoFiscalDe,
+  type DeclaracionRetencionesPeriodo,
+  type OpcionesBorrador303,
+  type ResultadoBorrador303,
+} from './impuestosModulo.service';
+import { casillasPantalla303, NOMBRE_TIPO_DECLARACION_303, type CasillaPantalla303 } from './modelo303.service';
+import { casillasAGuardadas, ficheroDeclaracion, formularioDeclaracion, type FormularioRetenciones } from './aeatRetenciones/declaracion';
 import type { Modelo190 } from './nominas/fiscal';
+import { DR190 } from './aeatRetenciones/diseno';
+import { comprobarDiseno190 } from './nominas/modelo190';
+
+/** Aviso del diseño del 190 para la pantalla (null si esta publicado; sin error para ejercicios antiguos). */
+function avisoDiseno190(ejercicio: number): string | null {
+  try {
+    return comprobarDiseno190(ejercicio).aviso;
+  } catch (e) {
+    return e instanceof Error ? e.message : null;
+  }
+}
 
 type CasillasGuardadas = Record<string, unknown>;
 
@@ -84,169 +110,157 @@ function casillasPantalla111(oficiales: CasillasGuardadas, porTipo?: PorTipoActi
   };
 }
 
+/**
+ * Periodo del 111 y del 115: '1T'..'4T' o '01'..'12' (mensual). Un numero es un
+ * trimestre (la pantalla antigua mandaba trimestre=1..4). 400 si no vale.
+ */
+export function periodoRetenciones(entrada: number | string): string {
+  if (typeof entrada === 'number') {
+    if (Number.isInteger(entrada) && entrada >= 1 && entrada <= 4) return `${entrada}T`;
+    throw badRequest('El trimestre va del 1 al 4.');
+  }
+  const p = String(entrada ?? '').toUpperCase().trim();
+  if (/^[1-4]T$/.test(p)) return p;
+  if (/^(0?[1-9]|1[0-2])$/.test(p)) return p.padStart(2, '0');
+  throw badRequest(`Periodo "${entrada}" no válido: usa un trimestre (1T a 4T) o un mes (01 a 12).`);
+}
+
+const trimestreDe = (periodo: string): number | null => (/^[1-4]T$/.test(periodo) ? Number(periodo[0]) : null);
+
+/** Avisos de donde salen las cifras del 111 o del 115 (presentado, editado a mano...). */
+function avisosFuente(r: DeclaracionRetencionesPeriodo, origen: string): string[] {
+  if (r.fuente === 'calculado-sin-guardar') {
+    return [`Modelo presentado antes de que la app guardara sus casillas: se muestran las calculadas hoy con ${origen}. Compruébalas con el justificante de la sede.`];
+  }
+  if (r.fila.estado === 'presentado') return [`Modelo presentado: se muestran las casillas tal como se presentaron, aunque después hayan cambiado ${origen}.`];
+  if (r.fila.estado === 'omitido') return ['Modelo marcado como omitido: se muestran las casillas guardadas.'];
+  if (r.fuente === 'guardado') return ['Casillas editadas a mano en Impuestos: se muestran tal como se guardaron.'];
+  return [];
+}
+
 /** 400 si la empresa no esta establecida en Espana (no presenta modelos de la AEAT). */
 async function exigirEmpresaEspanola(companyId: string): Promise<void> {
   if (!(await esEmpresaEspanolaFiscal(companyId))) throw badRequest(MENSAJE_SIN_MODELOS);
 }
 
+/**
+ * Fichero del 111 o del 115 de un periodo para importar en la sede: la misma
+ * declaracion que la pantalla (presentado: lo guardado). Solo lee (B6).
+ */
+export async function ficheroRetenciones(companyId: string, codigo: '111' | '115', ejercicio: number, periodoEntrada: number | string): Promise<{ nombre: string; contenido: string }> {
+  const periodo = periodoRetenciones(periodoEntrada);
+  const r = await declaracionRetenciones(companyId, codigo, ejercicio, periodo);
+  return { nombre: `${codigo}_${ejercicio}_${periodo}.txt`, contenido: ficheroDeclaracion(r.declaracion) };
+}
+
 export class TaxModelsService {
   /**
-   * MODELO 303: IVA TRIMESTRAL
+   * MODELO 303: IVA TRIMESTRAL O MENSUAL
    *
-   * Genera modelo 303 a partir de:
-   * - IVA repercutido (facturas emitidas)
-   * - IVA soportado (facturas recibidas)
-   * - Casillas completas AEAT 303
+   * Borrador del 303 con el diseño de registro oficial 2026: las casillas que
+   * enseña la pantalla salen del mismo cálculo que el fichero que se importa en
+   * la sede (calcularBorrador303), con su número y la descripción de la AEAT.
+   * Guarda en ModeloImpuesto lo mismo que "Recalcular importes" de Impuestos
+   * (casillas con nombre y datos del fichero), para que las dos pantallas no se
+   * pisen. Un modelo presentado, omitido o editado a mano no se recalcula: si
+   * está presentado se enseñan las casillas guardadas (las mismas que el fichero).
+   * `periodo303`: trimestre (1 a 4, o 1T a 4T) o mes (01 a 12) para quien lo
+   * presenta cada mes (REDEME o SII).
+   * Las listas de facturas de abajo salen de los libros de IVA (informativas).
    */
   async generarModelo303(
     companyId: string,
     ejercicio: number,
-    trimestre: number,
-    userId?: string
+    periodo303: number | string,
+    userId?: string,
+    opciones: OpcionesBorrador303 = {},
   ): Promise<{
     ejercicio: number;
-    trimestre: number;
+    /** Trimestre (1-4); null si el periodo es un mes. */
+    trimestre: number | null;
+    /** Periodo del 303: 1T-4T o 01-12. */
+    periodo: string;
+    /** La empresa presenta el 303 cada mes (REDEME, SII, gran empresa o periodicidad mensual). */
+    mensual: boolean;
     ivaRepercutido: { total: number; desglose: any[] };
     ivaSoportado: { total: number; desglose: any[] };
     resultado: number;
     estado: string;
-    casillas: any;
-    id: string;
+    origen: string | null;
+    casillas: CasillasGuardadas;
+    casillas303: CasillaPantalla303[];
+    tipoDeclaracion: string;
+    tiposDeclaracion: Array<{ codigo: string; nombre: string }>;
+    aCompensar: ResultadoBorrador303['aCompensar'];
+    cuentas: ResultadoBorrador303['cuentas'];
+    cuentaBancariaId: string | null;
+    sinActividad: boolean;
+    errores: string[];
+    advertencias: string[];
+    /** Autoliquidación rectificativa en preparación o presentada (B4). */
+    rectificativa: { justificanteAnterior: string } | null;
+    /** Id de la fila del calendario; null si aún no existe (leer no la crea). */
+    id: string | null;
   }> {
     // Una empresa no establecida en Espana no presenta modelos de la AEAT.
     await exigirEmpresaEspanola(companyId);
-    // Validar trimestre
-    if (trimestre < 1 || trimestre > 4) {
-      throw badRequest('Trimestre debe estar entre 1 y 4');
-    }
+    const periodo = periodo303De(periodo303);
+    const trimestre = periodo.endsWith('T') ? Number(periodo[0]) : null;
+    const periodoFiscal = periodoFiscalDe({ ejercicio, periodo });
+    const { borrador, aCompensar, cuentas, cuentaBancariaId, presentado, mensual } = await calcularBorrador303(companyId, periodoFiscal, opciones);
 
-    const period = `Q${trimestre}-${ejercicio}`;
-
-    // Obtener datos de libros de IVA
-    const emitidas = await taxDocumentsService.obtenerLibroIVAEmitidas(
-      companyId,
-      period
-    );
-    const recibidas = await taxDocumentsService.obtenerLibroIVARecibidas(
-      companyId,
-      period
-    );
-
-    // Calcular totales. La base repercutida es la de las ventas que devengan IVA:
-    // las del libro sin tipo de operacion (anteriores) como siempre y las
-    // NACIONAL; las exentas, intracomunitarias, exportaciones, no sujetas e ISP
-    // van a la informacion adicional ([59], [60], [120], [122]).
-    const ivaRepercutido = emitidas.totalCuotas;
-    const ivaSoportado = recibidas.totalCuotas;
-    const resultado = ivaRepercutido - ivaSoportado;
-    const baseRepercutido = emitidas.baseDevengada;
-
-    // Generar casillas AEAT completas
-    const casillas: Record<string, any> = generarCasillas303({
-      baseRepercutido,
-      cuotaRepercutido: ivaRepercutido,
-      baseSoportado: recibidas.totalBases,
-      cuotaSoportado: ivaSoportado,
-      resultado,
-    });
-    const DESCRIPCION_INFORMATIVA: Record<keyof typeof emitidas.informativas, string> = {
-      '59': 'Entregas intracomunitarias de bienes y servicios',
-      '60': 'Exportaciones y operaciones asimiladas',
-      '120': 'Operaciones no sujetas por reglas de localización',
-      '122': 'Operaciones sujetas con inversión del sujeto pasivo',
+    // Listas de facturas del periodo (libros de IVA, por trimestre; en un mes,
+    // las de ese mes), solo para consultar.
+    const period = `Q${trimestre ?? Math.ceil(Number(periodo) / 3)}-${ejercicio}`;
+    const delPeriodo = (f: { fecha?: unknown }) => {
+      if (trimestre) return true;
+      const fecha = f.fecha instanceof Date ? f.fecha.toISOString() : String(f.fecha ?? '');
+      return fecha.slice(0, 7) === `${ejercicio}-${periodo}`;
     };
-    for (const [numero, valor] of Object.entries(emitidas.informativas) as Array<[keyof typeof emitidas.informativas, number]>) {
-      // Solo si hay importe: los libros anteriores (sin tipo) no cambian.
-      if (valor !== 0) casillas[numero] = { numero, descripcion: DESCRIPCION_INFORMATIVA[numero], valor, tipo: 'informativa' };
+    const [emitidas, recibidas] = await Promise.all([
+      taxDocumentsService.obtenerLibroIVAEmitidas(companyId, period),
+      taxDocumentsService.obtenerLibroIVARecibidas(companyId, period),
+    ]);
+
+    const casillas = casillasGuardadas303(borrador.datos) as CasillasGuardadas;
+
+    // Solo lee (B6): la fila se guarda al recalcular en Impuestos o al presentar.
+    const modelo = await prisma.modeloImpuesto.findUnique({ where: { companyId_codigo_ejercicio_periodo: { companyId, codigo: '303', ejercicio, periodo } } });
+    const estado = modelo?.estado ?? 'vigente';
+
+    // Presentado: el borrador ya sale de las casillas guardadas (las mismas
+    // que el fichero), con su aviso.
+    const avisos = [...borrador.advertencias];
+    const oficiales = borrador.casillas;
+    const tipoDeclaracion: string = borrador.tipoDeclaracion;
+    if (estado === 'presentado' && !presentado) {
+      avisos.push('Modelo presentado antes de guardar sus casillas oficiales: se muestran las de las facturas de hoy.');
+    } else if (modelo?.origen === 'manual-mixto' && estado !== 'presentado') {
+      avisos.push('Casillas editadas a mano en Impuestos: aquí se ven las calculadas de las facturas; el fichero de Impuestos lleva las del último cálculo.');
     }
-
-    // Auditoría
-    const auditoria: ModeloFiscalAuditoria = {
-      generadoPor: userId || 'SYSTEM',
-      generadoEn: new Date().toISOString(),
-      origen: 'autorrelleno',
-      version: `${ejercicio}.Q${trimestre}`,
-    };
-
-    // Buscar modelo existente
-    let modelo = await prisma.modeloImpuesto.findUnique({
-      where: {
-        companyId_codigo_ejercicio_periodo: {
-          companyId,
-          codigo: '303',
-          ejercicio,
-          periodo: `${trimestre}T`,
-        },
-      },
-    });
-
-    // Crear o actualizar modelo
-    if (!modelo) {
-      modelo = await prisma.modeloImpuesto.create({
-        data: {
-          companyId,
-          codigo: '303',
-          ejercicio,
-          periodo: `${trimestre}T`,
-          estado: 'vigente',
-          casillas,
-          datos: {
-            ivaRepercutido,
-            ivaSoportado,
-            resultado,
-            periodoDescription: `Q${trimestre}-${ejercicio}`,
-            baseRepercutido,
-            baseSoportado: recibidas.totalBases,
-            auditoria,
-          },
-          origen: 'autorrelleno',
-        },
-      });
-    } else if (modelo.estado !== 'presentado' && modelo.estado !== 'omitido') {
-      // Un modelo presentado u omitido no se recalcula: lo guardado tiene que
-      // seguir siendo lo que se presento, aunque luego cambie una factura.
-      modelo = await prisma.modeloImpuesto.update({
-        where: { id: modelo.id },
-        data: {
-          casillas,
-          datos: {
-            ivaRepercutido,
-            ivaSoportado,
-            resultado,
-            periodoDescription: `Q${trimestre}-${ejercicio}`,
-            baseRepercutido,
-            baseSoportado: recibidas.totalBases,
-            auditoria,
-          },
-          origen: 'autorrelleno',
-        },
-      });
-    }
-
-    // Registrar auditoría
-    await registrarAuditoria({
-      userId: userId || 'SYSTEM',
-      companyId,
-      action: 'GENERAR_MODELO_303',
-      resourceType: 'modelo_fiscal',
-      resourceId: `303-${ejercicio}-${trimestre}T`,
-    });
 
     return {
-      id: modelo.id,
+      id: modelo?.id ?? null,
       ejercicio,
       trimestre,
-      ivaRepercutido: {
-        total: ivaRepercutido,
-        desglose: emitidas.facturas,
-      },
-      ivaSoportado: {
-        total: ivaSoportado,
-        desglose: recibidas.facturas,
-      },
-      resultado,
-      estado: modelo.estado,
-      casillas,
+      periodo,
+      mensual,
+      ivaRepercutido: { total: oficiales['27'] ?? 0, desglose: emitidas.facturas.filter(delPeriodo) },
+      ivaSoportado: { total: oficiales['45'] ?? 0, desglose: recibidas.facturas.filter(delPeriodo) },
+      resultado: oficiales['71'] ?? 0,
+      estado,
+      origen: modelo?.origen ?? null,
+      casillas: estado === 'presentado' && modelo?.casillas ? (modelo.casillas as CasillasGuardadas) : casillas,
+      rectificativa: borrador.rectificativa,
+      casillas303: casillasPantalla303({ casillas: oficiales }),
+      tipoDeclaracion,
+      tiposDeclaracion: borrador.tiposDeclaracion.map((codigo) => ({ codigo, nombre: NOMBRE_TIPO_DECLARACION_303[codigo] })),
+      aCompensar,
+      cuentas,
+      cuentaBancariaId,
+      sinActividad: borrador.sinActividad,
+      errores: borrador.errores,
+      advertencias: avisos,
     };
   }
 
@@ -263,11 +277,14 @@ export class TaxModelsService {
   async generarModelo111(
     companyId: string,
     ejercicio: number,
-    trimestre: number,
+    periodoEntrada: number | string,
     userId?: string
   ): Promise<{
     ejercicio: number;
-    trimestre: number;
+    /** 1-4 en los trimestrales; null en un periodo mensual. */
+    trimestre: number | null;
+    /** '1T'..'4T' o '01'..'12'. */
+    periodo: string;
     casillas: any;
     casillasOficiales: CasillasGuardadas;
     totalBase: number;
@@ -275,439 +292,32 @@ export class TaxModelsService {
     estado: string;
     origen: string | null;
     avisos: string[];
+    /** Formulario oficial (identificacion, casillas 01-30, liquidacion): misma declaracion que el fichero. */
+    formulario: FormularioRetenciones;
     id: string;
   }> {
-    // Una empresa no establecida en Espana no presenta modelos de la AEAT.
-    await exigirEmpresaEspanola(companyId);
-    if (trimestre < 1 || trimestre > 4) {
-      throw badRequest('Trimestre debe estar entre 1 y 4');
-    }
-    const periodo = `${trimestre}T`;
-    const calculo = await calcularCasillasModelo(companyId, '111', ejercicio, periodo);
-    const oficiales = calculo.casillas as CasillasGuardadas;
-    const datos = calculo.datos as DatosModelo111;
-    const auditoria: ModeloFiscalAuditoria = {
-      generadoPor: userId || 'SYSTEM',
-      generadoEn: new Date().toISOString(),
-      origen: 'autorrelleno',
-      version: `${ejercicio}.Q${trimestre}`,
-    };
-
-    const clave = { companyId_codigo_ejercicio_periodo: { companyId, codigo: '111', ejercicio, periodo } };
-    let modelo = await prisma.modeloImpuesto.findUnique({ where: clave });
-    if (!modelo) {
-      modelo = await prisma.modeloImpuesto.create({
-        data: { companyId, codigo: '111', ejercicio, periodo, estado: 'vigente', casillas: oficiales as never, datos: { ...datos, auditoria } as never, origen: 'autorrelleno' },
-      });
-    } else if (modelo.estado !== 'presentado' && modelo.estado !== 'omitido' && modelo.origen !== 'manual-mixto') {
-      // Se conservan los datos de la empresa (config_*) que guarda el modulo Impuestos.
-      const previas = (modelo.casillas as CasillasGuardadas | null) ?? {};
-      const config = Object.fromEntries(Object.entries(previas).filter(([k]) => k.startsWith('config_')));
-      modelo = await prisma.modeloImpuesto.update({
-        where: { id: modelo.id },
-        data: { casillas: { ...oficiales, ...config } as never, datos: { ...datos, auditoria } as never, origen: 'autorrelleno' },
-      });
-    }
-
-    // Lo guardado manda (presentado o editado a mano); si es de antes (otro formato), el calculo.
-    const guardadas = (modelo.casillas as CasillasGuardadas | null) ?? {};
-    const base = '28_total_retenciones' in guardadas ? guardadas : oficiales;
-    const pantalla = casillasPantalla111(base, datos.actividadesPorTipo);
-    const avisos = [...(datos.avisos ?? [])];
-    if (modelo.estado === 'presentado') avisos.push('Modelo presentado: se muestran las casillas tal como se presentaron, aunque después hayan cambiado las nóminas o las facturas.');
-    else if (modelo.origen === 'manual-mixto') avisos.push('Casillas editadas a mano en Impuestos: se muestran tal como se guardaron.');
-
-    await registrarAuditoria({
-      userId: userId || 'SYSTEM',
-      companyId,
-      action: 'GENERAR_MODELO_111',
-      resourceType: 'modelo_fiscal',
-      resourceId: `111-${ejercicio}-${trimestre}T`,
-    });
+    const periodo = periodoRetenciones(periodoEntrada);
+    // La misma funcion que el fichero: presentado = lo guardado; sin presentar, calculado (no se guarda).
+    const r = await declaracionRetenciones(companyId, '111', ejercicio, periodo);
+    const datos = r.datos as DatosModelo111;
+    const oficiales = casillasAGuardadas('111', r.declaracion.casillas);
+    const pantalla = casillasPantalla111(oficiales, datos.actividadesPorTipo);
+    const formulario = formularioDeclaracion(r.declaracion);
+    const avisos = [...(datos.avisos ?? []), ...avisosFuente(r, 'las nóminas o las facturas')];
 
     return {
-      id: modelo.id,
+      id: r.fila.id,
       ejercicio,
-      trimestre,
+      trimestre: trimestreDe(periodo),
+      periodo,
       casillas: pantalla.casillas,
-      casillasOficiales: base,
+      casillasOficiales: oficiales,
       totalBase: pantalla.totalBase,
       totalRetenido: pantalla.totalRetenido,
-      estado: modelo.estado,
-      origen: modelo.origen,
+      estado: r.fila.estado,
+      origen: r.fila.origen,
       avisos,
-    };
-  }
-
-  /**
-   * MODELO 200: IMPUESTO DE SOCIEDADES (MVP)
-   *
-   * Genera modelo 200 a partir del:
-   * - Resultado contable del P&L (anual)
-   * - Aplicación de tipo impositivo
-   * - Casillas completas AEAT 200
-   *
-   * MVP: Base imponible = resultado contable (sin ajustes complejos)
-   */
-  async generarModelo200(
-    companyId: string,
-    ejercicio: number,
-    userId?: string
-  ): Promise<{
-    ejercicio: number;
-    resultadoContable: number;
-    baseImponible: number;
-    tipoImpositivo: number;
-    cuotaIntegra: number;
-    deducciones: number;
-    cuotaLiquida: number;
-    estado: string;
-    casillas: any;
-    id: string;
-  }> {
-    // Una empresa no establecida en Espana no presenta modelos de la AEAT.
-    await exigirEmpresaEspanola(companyId);
-    // Obtener resultado contable del P&L anual
-    const from = `${ejercicio}-01-01`;
-    const to = `${ejercicio}-12-31`;
-    const pyl = await reportsService.obtenerPyG(companyId, from, to);
-
-    const resultadoContable = pyl.resultadoExplotacion || 0;
-    const baseImponible = Math.max(0, resultadoContable); // No hay base negativa en MVP
-    const tipoImpositivo = 25; // 25% por defecto (tipo general en España)
-    const cuotaIntegra = baseImponible * (tipoImpositivo / 100);
-    const deducciones = 0; // MVP: sin deducciones
-    const cuotaLiquida = Math.max(0, cuotaIntegra - deducciones);
-
-    // Generar casillas AEAT completas
-    const casillas = generarCasillas200({
-      resultadoContable,
-      baseImponible,
-      tipoImpositivo,
-      cuotaIntegra,
-      deducciones,
-      cuotaLiquida,
-      retencionesPracticadas: 0, // MVP
-      anticiposPagados: 0, // MVP
-    });
-
-    // Auditoría
-    const auditoria: ModeloFiscalAuditoria = {
-      generadoPor: userId || 'SYSTEM',
-      generadoEn: new Date().toISOString(),
-      origen: 'autorrelleno',
-      version: `${ejercicio}.0A`,
-    };
-
-    // Buscar modelo existente
-    let modelo = await prisma.modeloImpuesto.findUnique({
-      where: {
-        companyId_codigo_ejercicio_periodo: {
-          companyId,
-          codigo: '200',
-          ejercicio,
-          periodo: '0A', // Anual
-        },
-      },
-    });
-
-    // Crear o actualizar modelo
-    if (!modelo) {
-      modelo = await prisma.modeloImpuesto.create({
-        data: {
-          companyId,
-          codigo: '200',
-          ejercicio,
-          periodo: '0A',
-          estado: 'vigente',
-          casillas,
-          datos: {
-            resultadoContable,
-            baseImponible,
-            tipoImpositivo,
-            cuotaIntegra,
-            deducciones,
-            cuotaLiquida,
-            periodoDescription: `${ejercicio}`,
-            auditoria,
-          },
-          origen: 'autorrelleno',
-        },
-      });
-    } else if (modelo.estado !== 'presentado' && modelo.estado !== 'omitido') {
-      // Un modelo presentado u omitido no se recalcula: lo guardado tiene que
-      // seguir siendo lo que se presento, aunque luego cambie una factura.
-      modelo = await prisma.modeloImpuesto.update({
-        where: { id: modelo.id },
-        data: {
-          casillas,
-          datos: {
-            resultadoContable,
-            baseImponible,
-            tipoImpositivo,
-            cuotaIntegra,
-            deducciones,
-            cuotaLiquida,
-            periodoDescription: `${ejercicio}`,
-            auditoria,
-          },
-          origen: 'autorrelleno',
-        },
-      });
-    }
-
-    // Registrar auditoría
-    await registrarAuditoria({
-      userId: userId || 'SYSTEM',
-      companyId,
-      action: 'GENERAR_MODELO_200',
-      resourceType: 'modelo_fiscal',
-      resourceId: `200-${ejercicio}-0A`,
-    });
-
-    return {
-      id: modelo.id,
-      ejercicio,
-      resultadoContable,
-      baseImponible,
-      tipoImpositivo,
-      cuotaIntegra,
-      deducciones,
-      cuotaLiquida,
-      estado: modelo.estado,
-      casillas,
-    };
-  }
-
-  /**
-   * MODELO 347: OPERACIONES CON TERCEROS (ANUAL)
-   *
-   * Genera modelo 347 a partir de:
-   * - Facturas de ingreso emitidas (clientes)
-   * - Facturas de gasto recibidas (proveedores)
-   * - Operaciones superiores a 3.000,06€ en el ejercicio
-   */
-  async generarModelo347(
-    companyId: string,
-    ejercicio: number,
-    userId?: string
-  ): Promise<{
-    ejercicio: number;
-    terceros: any[];
-    totalTerceros: number;
-    totalOperaciones: number;
-    estado: string;
-    casillas: any;
-    id: string;
-  }> {
-    // Una empresa no establecida en Espana no presenta modelos de la AEAT.
-    await exigirEmpresaEspanola(companyId);
-    // Obtener clientes (facturas de ingreso)
-    // Ventas por fecha de devengo (art. 75 LIVA; las anteriores, por la de emision como siempre).
-    const clientesFacturas = (
-      await prisma.incomeInvoice.findMany({
-        where: {
-          companyId,
-          estadoDocumento: 'FINAL',
-          ...ventasQuePuedenDevengarseEntre(`${ejercicio}-01-01`, `${ejercicio}-12-31`),
-        },
-        include: {
-          customer: true,
-        },
-      })
-    ).filter((f) => fechaDevengoVenta(f).startsWith(`${ejercicio}-`));
-
-    // Obtener proveedores (facturas de gasto), con el criterio fiscal de las
-    // facturas de gasto: sin borradores del lector ni anuladas; una anulada con
-    // contraasiento en el ano siguiente resta en ese ano.
-    const proveedoresFacturas = await prisma.expenseInvoice.findMany({
-      where: whereGastosFiscales(companyId, `${ejercicio}-01-01`, `${ejercicio}-12-31`),
-      include: {
-        supplier: true,
-        lineas: true,
-      },
-    });
-
-    // Agrupar terceros y filtrar por importe mínimo (3.000,06€)
-    const tercerosMapa = new Map<string, {
-      nif: string;
-      nombre: string;
-      tipoTercero: 'cliente' | 'proveedor';
-      totalOperaciones: number;
-      operaciones: any[];
-    }>();
-
-    // Se declara el tercero cuyo total ANUAL con IVA supera 3.005,06 €. Antes el
-    // umbral era 3.000,06 y se aplicaba factura a factura: tres facturas de
-    // 2.000 € al mismo cliente no salian.
-    const MINIMO_347 = 3005.06;
-    const importe = (f: { baseTotal: number; ivaTotal: number }) => Math.round((Number(f.baseTotal) + Number(f.ivaTotal)) * 100) / 100;
-    // Las operaciones con el extranjero no van en el 347 (las intracomunitarias, en el 349).
-    const espanol = (pais: string | null | undefined) => !pais || pais.toUpperCase() === 'ES';
-
-    // Solo las ventas interiores: las facturas con tipo de operacion fuera del 347
-    // (intracomunitarias, exportaciones, servicios a extranjeros, empresa
-    // extranjera) no entran; las anteriores (sin tipo), como siempre.
-    const TIPOS_347 = ['NACIONAL', 'EXENTA', 'ISP_NACIONAL'];
-    const declarable = (tipo: string | null) => !esTipoOperacion(tipo) || TIPOS_347.includes(tipo);
-
-    // Procesar clientes. Las facturas sin tipo, con el pais del cliente congelado en ellas (si se cambio la ficha).
-    for (const factura of clientesFacturas) {
-      const pais = esTipoOperacion(factura.tipoOperacion) ? factura.customer.pais : paisLegacy(factura, factura.customer);
-      if (!factura.customer.nifCif || !espanol(pais) || !declarable(factura.tipoOperacion)) continue;
-
-      const key = `cliente-${factura.customer.nifCif}`;
-      if (!tercerosMapa.has(key)) {
-        tercerosMapa.set(key, {
-          nif: factura.customer.nifCif,
-          nombre: factura.customer.nombreFiscal || 'Sin nombre',
-          tipoTercero: 'cliente',
-          totalOperaciones: 0,
-          operaciones: [],
-        });
-      }
-
-      const tercero = tercerosMapa.get(key)!;
-      tercero.totalOperaciones += importe(factura);
-      tercero.operaciones.push({
-        tipoOperacion: 'venta',
-        importe: importe(factura),
-        id: factura.id,
-      });
-    }
-
-    // Procesar proveedores (una operacion por aparicion fiscal en el ano, con su signo)
-    for (const factura of proveedoresFacturas) {
-      if (!factura.supplier.nifCif || !espanol(factura.supplier.pais)) continue;
-      // Sin las lineas con retencion de IRPF: ya van en el 190 o en el 180 (art. 33.2 RD 1065/2007).
-      const importeCompra = importe347Gasto(factura);
-      if (importeCompra === 0) continue;
-      for (const { signo } of aparicionesEntre(factura, `${ejercicio}-01-01`, `${ejercicio}-12-31`)) {
-        const key = `proveedor-${factura.supplier.nifCif}`;
-        if (!tercerosMapa.has(key)) {
-          tercerosMapa.set(key, {
-            nif: factura.supplier.nifCif,
-            nombre: factura.supplier.nombreFiscal || 'Sin nombre',
-            tipoTercero: 'proveedor',
-            totalOperaciones: 0,
-            operaciones: [],
-          });
-        }
-
-        const tercero = tercerosMapa.get(key)!;
-        tercero.totalOperaciones += signo * importeCompra;
-        tercero.operaciones.push({
-          tipoOperacion: 'compra',
-          importe: signo * importeCompra,
-          id: factura.id,
-          numero: factura.numeroFacturaProveedor ?? factura.numeroCompleto,
-        });
-      }
-    }
-
-    const terceros = Array.from(tercerosMapa.values())
-      .map((t) => ({ ...t, totalOperaciones: Math.round(t.totalOperaciones * 100) / 100 }))
-      .filter((t) => t.totalOperaciones > MINIMO_347);
-    const totalOperaciones = terceros.reduce((sum, t) => sum + t.totalOperaciones, 0);
-
-    // Generar casillas AEAT
-    const casillas = generarCasillas347({
-      terceros: terceros.map((t) => ({
-        ...t,
-        operaciones: t.operaciones.map((o) => ({
-          tipoOperacion: o.tipoOperacion,
-          importe: o.importe,
-        })),
-      })),
-      totalTerceros: totalOperaciones,
-    });
-
-    // Auditoría
-    const auditoria: ModeloFiscalAuditoria = {
-      generadoPor: userId || 'SYSTEM',
-      generadoEn: new Date().toISOString(),
-      origen: 'autorrelleno',
-      version: `${ejercicio}.0A`,
-    };
-
-    // Buscar modelo existente
-    let modelo = await prisma.modeloImpuesto.findUnique({
-      where: {
-        companyId_codigo_ejercicio_periodo: {
-          companyId,
-          codigo: '347',
-          ejercicio,
-          periodo: '0A',
-        },
-      },
-    });
-
-    // Crear o actualizar modelo
-    if (!modelo) {
-      modelo = await prisma.modeloImpuesto.create({
-        data: {
-          companyId,
-          codigo: '347',
-          ejercicio,
-          periodo: '0A',
-          estado: 'vigente',
-          casillas,
-          datos: {
-            terceros: terceros.map((t) => ({
-              nif: t.nif,
-              nombre: t.nombre,
-              tipoTercero: t.tipoTercero,
-              totalOperaciones: t.totalOperaciones,
-            })),
-            totalTerceros: terceros.length,
-            totalImportes: totalOperaciones,
-            periodoDescription: `${ejercicio}`,
-            auditoria,
-          },
-          origen: 'autorrelleno',
-        },
-      });
-    } else if (modelo.estado !== 'presentado' && modelo.estado !== 'omitido') {
-      // Un modelo presentado u omitido no se recalcula: lo guardado tiene que
-      // seguir siendo lo que se presento, aunque luego cambie una factura.
-      modelo = await prisma.modeloImpuesto.update({
-        where: { id: modelo.id },
-        data: {
-          casillas,
-          datos: {
-            terceros: terceros.map((t) => ({
-              nif: t.nif,
-              nombre: t.nombre,
-              tipoTercero: t.tipoTercero,
-              totalOperaciones: t.totalOperaciones,
-            })),
-            totalTerceros: terceros.length,
-            totalImportes: totalOperaciones,
-            periodoDescription: `${ejercicio}`,
-            auditoria,
-          },
-          origen: 'autorrelleno',
-        },
-      });
-    }
-
-    // Registrar auditoría
-    await registrarAuditoria({
-      userId: userId || 'SYSTEM',
-      companyId,
-      action: 'GENERAR_MODELO_347',
-      resourceType: 'modelo_fiscal',
-      resourceId: `347-${ejercicio}-0A`,
-    });
-
-    return {
-      id: modelo.id,
-      ejercicio,
-      terceros,
-      totalTerceros: terceros.length,
-      totalOperaciones,
-      estado: modelo.estado,
-      casillas,
+      formulario,
     };
   }
 
@@ -722,12 +332,15 @@ export class TaxModelsService {
   async generarModelo115(
     companyId: string,
     ejercicio: number,
-    trimestre: number,
+    periodoEntrada: number | string,
     userId?: string
   ): Promise<{
     id: string;
     ejercicio: number;
-    trimestre: number;
+    /** 1-4 en los trimestrales; null en un periodo mensual. */
+    trimestre: number | null;
+    /** '1T'..'4T' o '01'..'12'. */
+    periodo: string;
     baseImponible: number;
     porcentajeRetencion: number;
     retencion: number;
@@ -737,70 +350,33 @@ export class TaxModelsService {
     casillasOficiales: CasillasGuardadas;
     perceptores: NonNullable<DatosModelo115['perceptores']>;
     avisos: string[];
+    /** Formulario oficial (identificacion, casillas 01-05, liquidacion): misma declaracion que el fichero. */
+    formulario: FormularioRetenciones;
   }> {
-    // Una empresa no establecida en Espana no presenta modelos de la AEAT.
-    await exigirEmpresaEspanola(companyId);
-    if (!Number.isInteger(trimestre) || trimestre < 1 || trimestre > 4) {
-      throw badRequest('Trimestre debe estar entre 1 y 4');
-    }
-    const periodo = `${trimestre}T`;
-    const calculo = await calcularCasillasModelo(companyId, '115', ejercicio, periodo);
-    const oficiales = calculo.casillas as CasillasGuardadas;
-    const datos = calculo.datos as DatosModelo115;
-    const auditoria: ModeloFiscalAuditoria = {
-      generadoPor: userId || 'SYSTEM',
-      generadoEn: new Date().toISOString(),
-      origen: 'autorrelleno',
-      version: `${ejercicio}.Q${trimestre}`,
-    };
+    const periodo = periodoRetenciones(periodoEntrada);
+    // La misma funcion que el fichero: presentado = lo guardado; sin presentar, calculado (no se guarda).
+    const r = await declaracionRetenciones(companyId, '115', ejercicio, periodo);
+    const datos = r.datos as DatosModelo115;
+    const c = r.declaracion.casillas;
+    const avisos: string[] = [...(datos.avisos ?? []), ...avisosFuente(r, 'las facturas')];
 
-    const clave = { companyId_codigo_ejercicio_periodo: { companyId, codigo: '115', ejercicio, periodo } };
-    let modelo = await prisma.modeloImpuesto.findUnique({ where: clave });
-    if (!modelo) {
-      modelo = await prisma.modeloImpuesto.create({
-        data: { companyId, codigo: '115', ejercicio, periodo, estado: 'vigente', casillas: oficiales as never, datos: { ...datos, auditoria } as never, origen: 'autorrelleno' },
-      });
-    } else if (modelo.estado !== 'presentado' && modelo.estado !== 'omitido' && modelo.origen !== 'manual-mixto') {
-      // Se conservan los datos de la empresa (config_*) que guarda el modulo Impuestos.
-      const previas = (modelo.casillas as CasillasGuardadas | null) ?? {};
-      const config = Object.fromEntries(Object.entries(previas).filter(([k]) => k.startsWith('config_')));
-      modelo = await prisma.modeloImpuesto.update({
-        where: { id: modelo.id },
-        data: { casillas: { ...oficiales, ...config } as never, datos: { ...datos, auditoria } as never, origen: 'autorrelleno' },
-      });
-    }
-
-    // Lo guardado manda (presentado o editado a mano); si es de antes (otro formato), el calculo.
-    const guardadas = (modelo.casillas as CasillasGuardadas | null) ?? {};
-    const base = '03_retenciones' in guardadas ? guardadas : oficiales;
-    const v = (k: string) => Number(base[k] ?? 0) || 0;
-    const avisos: string[] = [...(datos.avisos ?? [])];
-    if (modelo.estado === 'presentado') avisos.push('Modelo presentado: se muestran las casillas tal como se presentaron, aunque después hayan cambiado las facturas.');
-    else if (modelo.origen === 'manual-mixto') avisos.push('Casillas editadas a mano en Impuestos: se muestran tal como se guardaron.');
-
-    await registrarAuditoria({
-      userId: userId || 'SYSTEM',
-      companyId,
-      action: 'GENERAR_MODELO_115',
-      resourceType: 'modelo_fiscal',
-      resourceId: `115-${ejercicio}-${trimestre}T`,
-    });
-
-    const baseImponible = v('02_base');
-    const retencion = v('03_retenciones');
+    const baseImponible = c['02'];
+    const retencion = c['03'];
     return {
-      id: modelo.id,
+      id: r.fila.id,
       ejercicio,
-      trimestre,
+      trimestre: trimestreDe(periodo),
+      periodo,
       baseImponible,
       porcentajeRetencion: baseImponible ? Math.round((retencion / baseImponible) * 10000) / 100 : 0,
       retencion,
       operaciones: (datos.perceptores ?? []).reduce((a, p) => a + p.facturas, 0),
-      estado: modelo.estado,
-      casillas: { '01': v('01_perceptores'), '02': baseImponible, '03': retencion, '04': v('04_anteriores'), '05': v('05_resultado') },
-      casillasOficiales: base,
+      estado: r.fila.estado,
+      casillas: { '01': c['01'], '02': baseImponible, '03': retencion, '04': c['04'], '05': c['05'] },
+      casillasOficiales: casillasAGuardadas('115', c),
       perceptores: datos.perceptores ?? [],
       avisos,
+      formulario: formularioDeclaracion(r.declaracion),
     };
   }
 
@@ -853,171 +429,6 @@ export class TaxModelsService {
   }
 
   /**
-   * MODELO 390: RESUMEN ANUAL DE IVA
-   *
-   * Genera modelo 390 a partir de:
-   * - Agregación de 4 trimestres de modelo 303
-   * - Totales anuales de IVA repercutido/soportado
-   * - Resultado anual
-   */
-  async generarModelo390(
-    companyId: string,
-    ejercicio: number,
-    userId?: string
-  ): Promise<{
-    ejercicio: number;
-    totalRepercutido: number;
-    totalSoportado: number;
-    resultadoAnual: number;
-    estado: string;
-    casillas: any;
-    desgloseTrimestral: any[];
-    id: string;
-  }> {
-    // Una empresa no establecida en Espana no presenta modelos de la AEAT.
-    await exigirEmpresaEspanola(companyId);
-    // Obtener los 4 trimestres de modelo 303
-    const modelos303 = await prisma.modeloImpuesto.findMany({
-      where: {
-        companyId,
-        codigo: '303',
-        ejercicio,
-      },
-      orderBy: { periodo: 'asc' },
-    });
-
-    if (modelos303.length === 0) {
-      throw badRequest('No se encontraron modelos 303 para este ejercicio. Genera primero los trimestres.');
-    }
-
-    // Agregar datos de los 4 trimestres
-    let totalBaseRepercutido = 0;
-    let totalCuotaRepercutido = 0;
-    let totalBaseSoportado = 0;
-    let totalCuotaSoportado = 0;
-    let resultadoAnual = 0;
-
-    const trimestres = modelos303
-      .filter((m) => m.periodo.match(/^\d+T$/))
-      .slice(0, 4)
-      .map((modelo) => {
-        const datos = (modelo.datos as any) || {};
-        const baseRep = datos.baseRepercutido || 0;
-        const cuotaRep = datos.ivaRepercutido || 0;
-        const baseSop = datos.baseSoportado || 0;
-        const cuotaSop = datos.ivaSoportado || 0;
-        const resultado = (datos.resultado || 0);
-
-        totalBaseRepercutido += baseRep;
-        totalCuotaRepercutido += cuotaRep;
-        totalBaseSoportado += baseSop;
-        totalCuotaSoportado += cuotaSop;
-        resultadoAnual += resultado;
-
-        const trimestre = parseInt(modelo.periodo.charAt(0));
-        return {
-          numero: trimestre,
-          baseRepercutido: baseRep,
-          cuotaRepercutido: cuotaRep,
-          baseSoportado: baseSop,
-          cuotaSoportado: cuotaSop,
-          resultado,
-        };
-      });
-
-    // Generar casillas AEAT 390
-    const casillas = generarCasillas390({
-      trimestres,
-      totalBaseRepercutido,
-      totalCuotaRepercutido,
-      totalBaseSoportado,
-      totalCuotaSoportado,
-      resultadoAnual,
-    });
-
-    // Auditoría
-    const auditoria: ModeloFiscalAuditoria = {
-      generadoPor: userId || 'SYSTEM',
-      generadoEn: new Date().toISOString(),
-      origen: 'autorrelleno',
-      version: `${ejercicio}.0A`,
-    };
-
-    // Buscar modelo existente
-    let modelo = await prisma.modeloImpuesto.findUnique({
-      where: {
-        companyId_codigo_ejercicio_periodo: {
-          companyId,
-          codigo: '390',
-          ejercicio,
-          periodo: '0A',
-        },
-      },
-    });
-
-    // Crear o actualizar modelo
-    if (!modelo) {
-      modelo = await prisma.modeloImpuesto.create({
-        data: {
-          companyId,
-          codigo: '390',
-          ejercicio,
-          periodo: '0A',
-          estado: 'vigente',
-          casillas,
-          datos: {
-            totalRepercutido: totalCuotaRepercutido,
-            totalSoportado: totalCuotaSoportado,
-            resultadoAnual,
-            periodoDescription: `${ejercicio}`,
-            desgloseTrimestral: trimestres,
-            auditoria,
-          },
-          origen: 'autorrelleno',
-        },
-      });
-    } else if (modelo.estado !== 'presentado' && modelo.estado !== 'omitido') {
-      // Un modelo presentado u omitido no se recalcula: lo guardado tiene que
-      // seguir siendo lo que se presento, aunque luego cambie una factura.
-      modelo = await prisma.modeloImpuesto.update({
-        where: { id: modelo.id },
-        data: {
-          casillas,
-          datos: {
-            totalRepercutido: totalCuotaRepercutido,
-            totalSoportado: totalCuotaSoportado,
-            resultadoAnual,
-            periodoDescription: `${ejercicio}`,
-            desgloseTrimestral: trimestres,
-            auditoria,
-          },
-          origen: 'autorrelleno',
-        },
-      });
-    }
-
-    // Registrar auditoría
-    await registrarAuditoria({
-      userId: userId || 'SYSTEM',
-      companyId,
-      action: 'GENERAR_MODELO_390',
-      resourceType: 'modelo_fiscal',
-      resourceId: `390-${ejercicio}-0A`,
-    });
-
-    return {
-      id: modelo.id,
-      ejercicio,
-      totalRepercutido: totalCuotaRepercutido,
-      totalSoportado: totalCuotaSoportado,
-      resultadoAnual,
-      estado: modelo.estado,
-      casillas,
-      desgloseTrimestral: trimestres,
-    };
-  }
-
-  /**
    * MODELO 190: RESUMEN ANUAL DE RETENCIONES
    *
    * Totales del 190 con la misma fuente que el 111 (services/nominas/fiscal.ts):
@@ -1040,7 +451,11 @@ export class TaxModelsService {
     desgloseTrimestral: any[];
     avisos: string[];
     cuadre111: { total: number; coincide: boolean };
-    id: string;
+    /** Casillas del resumen del formulario oficial (las del registro de declarante del fichero). */
+    formulario: { titulo: string; fuente: string; resumen: Array<{ casilla: string; rotulo: string; valor: number; signo: 'N' | ' '; tipo: 'numero' | 'importe' }> };
+    /** Aviso fijo si el ejercicio no tiene aun diseño de registro publicado (se usa el ultimo). */
+    avisoDiseno: string | null;
+    id: string | null;
   }> {
     // Una empresa no establecida en Espana no presenta modelos de la AEAT.
     await exigirEmpresaEspanola(companyId);
@@ -1072,29 +487,12 @@ export class TaxModelsService {
       return { numero: Number(d.periodo[0]), retenciones: p.casillas.retenciones, base: p.totalBase, cuota: p.totalRetenido };
     });
 
-    const auditoria: ModeloFiscalAuditoria = {
-      generadoPor: userId || 'SYSTEM',
-      generadoEn: new Date().toISOString(),
-      origen: 'autorrelleno',
-      version: `${ejercicio}.0A`,
-    };
-    const clave = { companyId_codigo_ejercicio_periodo: { companyId, codigo: '190', ejercicio, periodo: '0A' } };
-    let modelo = await prisma.modeloImpuesto.findUnique({ where: clave });
-    if (!modelo) {
-      modelo = await prisma.modeloImpuesto.create({
-        data: { companyId, codigo: '190', ejercicio, periodo: '0A', estado: 'vigente', casillas: oficiales as never, datos: { ...datos, auditoria } as never, origen: 'autorrelleno' },
-      });
-    } else if (modelo.estado !== 'presentado' && modelo.estado !== 'omitido' && modelo.origen !== 'manual-mixto') {
-      const previas = (modelo.casillas as CasillasGuardadas | null) ?? {};
-      const config = Object.fromEntries(Object.entries(previas).filter(([k]) => k.startsWith('config_')));
-      modelo = await prisma.modeloImpuesto.update({
-        where: { id: modelo.id },
-        data: { casillas: { ...oficiales, ...config } as never, datos: { ...datos, auditoria } as never, origen: 'autorrelleno' },
-      });
-    }
+    // Solo lee (B6): la fila se guarda al recalcular en Impuestos o al presentar.
+    const modelo = await prisma.modeloImpuesto.findUnique({ where: { companyId_codigo_ejercicio_periodo: { companyId, codigo: '190', ejercicio, periodo: '0A' } } });
+    const manda = modelo && (modelo.estado === 'presentado' || modelo.estado === 'omitido' || modelo.origen === 'manual-mixto');
 
     // Lo guardado manda (presentado o editado a mano); si es de antes (otro formato), el calculo.
-    const guardadas = (modelo.casillas as CasillasGuardadas | null) ?? {};
+    const guardadas = (manda ? (modelo?.casillas as CasillasGuardadas | null) : null) ?? {};
     const base = 'retenciones_ingresos_cuenta' in guardadas ? guardadas : oficiales;
     const v = (k: string) => Number(base[k] ?? 0) || 0;
     const casillas = {
@@ -1109,95 +507,27 @@ export class TaxModelsService {
       },
     };
 
-    await registrarAuditoria({
-      userId: userId || 'SYSTEM',
-      companyId,
-      action: 'GENERAR_MODELO_190',
-      resourceType: 'modelo_fiscal',
-      resourceId: `190-${ejercicio}-0A`,
-    });
-
     return {
-      id: modelo.id,
+      id: modelo?.id ?? null,
       ejercicio,
       totalBase: v('importe_percepciones'),
       totalRetenido: v('retenciones_ingresos_cuenta'),
-      estado: modelo.estado,
+      estado: modelo?.estado ?? 'vigente',
       casillas,
       desgloseTrimestral,
       avisos: datos.avisos ?? [],
       cuadre111: { total: datos.cuadre111.total, coincide: datos.cuadre111.coincide },
-    };
-  }
-
-  /**
-   * Marcar modelo como PRESENTADO
-   *
-   * Registra el número de justificante y fecha de presentación
-   * con información de auditoría completa
-   */
-  async marcarPresentado(
-    companyId: string,
-    codigo: string,
-    ejercicio: number,
-    periodo: string,
-    justificante: { numero: string; fecha: string },
-    userId?: string
-  ): Promise<any> {
-    const modelo = await prisma.modeloImpuesto.findUnique({
-      where: {
-        companyId_codigo_ejercicio_periodo: {
-          companyId,
-          codigo,
-          ejercicio,
-          periodo,
-        },
+      formulario: {
+        titulo: DR190.formulario.titulo,
+        fuente: DR190.fuente,
+        // Mismos rotulos y casillas que el registro de tipo 1 del fichero.
+        resumen: (DR190.formulario.resumen ?? []).map((r) => {
+          const valor = r.campo === 'numeroPercepciones' ? v('num_percepciones') : r.campo === 'importePercepciones' ? v('importe_percepciones') : v('retenciones_ingresos_cuenta');
+          return { casilla: r.casilla, rotulo: r.rotulo, valor, signo: r.campo === 'importePercepciones' && valor < 0 ? ('N' as const) : (' ' as const), tipo: r.campo === 'numeroPercepciones' ? ('numero' as const) : ('importe' as const) };
+        }),
       },
-    });
-
-    if (!modelo) {
-      throw notFound(
-        `Modelo ${codigo} para período ${periodo}/${ejercicio} no encontrado`
-      );
-    }
-
-    // Obtener auditoría preexistente
-    const datosActuales = (modelo.datos as any) || {};
-    const auditoria: ModeloFiscalAuditoria = datosActuales.auditoria || {
-      generadoPor: 'SYSTEM',
-      generadoEn: new Date().toISOString(),
-      origen: 'autorrelleno',
-      version: `${ejercicio}.${periodo}`,
+      avisoDiseno: avisoDiseno190(ejercicio),
     };
-
-    // Actualizar auditoría con presentación
-    auditoria.marcadoPresentadoPor = userId || 'SYSTEM';
-    auditoria.marcadoPresentadoEn = new Date().toISOString();
-    auditoria.justificante = justificante;
-
-    const resultado = await prisma.modeloImpuesto.update({
-      where: { id: modelo.id },
-      data: {
-        estado: 'presentado',
-        datos: {
-          ...datosActuales,
-          justificante,
-          fechaPresentacion: new Date().toISOString(),
-          auditoria,
-        },
-      },
-    });
-
-    // Registrar auditoría
-    await registrarAuditoria({
-      userId: userId || 'SYSTEM',
-      companyId,
-      action: `MARCAR_${codigo}_PRESENTADO`,
-      resourceType: 'modelo_fiscal',
-      resourceId: `${codigo}-${ejercicio}-${periodo}`,
-    });
-
-    return resultado;
   }
 
   /**

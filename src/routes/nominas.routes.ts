@@ -101,6 +101,7 @@ router.get('/retenciones/:ejercicio/:periodo', authorize('nominas:read'), x.rete
 router.post('/retenciones/:ejercicio/:periodo/pago', authorize('nominas:write'), x.pagar111);
 router.post('/retenciones/:ejercicio/:periodo/pago/anular', authorize('nominas:write'), x.anularPago111);
 router.get('/190/:ejercicio/perceptores', authorize('nominas:read'), x.perceptores190);
+// Solo lee (B6): el numero identificativo lo pone POST /tax-models/190/declaraciones/numero.
 router.get('/190/:ejercicio/fichero', authorize('nominas:read'), x.fichero190);
 
 // Informes y tesoreria.

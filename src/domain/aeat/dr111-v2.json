@@ -1,0 +1,132 @@
+{
+  "modelo": "111",
+  "fuente": "dr111e16v18.xls (AEAT, diseño de registro del modelo 111: hoja M11100 'Modelo 111 vers 2' y hoja M11101)",
+  "version": "v1.8, ejercicios 2019 y siguientes, actualizado mayo 2021",
+  "comprobadoEnSede": "2026-10-11",
+  "nombreFichero": "111.txt",
+  "notas": [
+    "Tipo de declaración: I (ingreso), U (domiciliación), G (ingreso a anotar en CCT) y N (negativa).",
+    "Los campos An solo admiten letras, números y blancos, alineados a la izquierda y rellenos de blancos.",
+    "Los campos Num solo admiten números, alineados a la derecha y rellenos de ceros.",
+    "Los campos N admiten números y el carácter N: los negativos llevan una N en la primera posición.",
+    "Versión del programa y NIF de la empresa de desarrollo: a cumplimentar por las entidades desarrolladoras."
+  ],
+  "registros": [
+    {
+      "id": "cabecera",
+      "hoja": "M11100",
+      "longitud": 328,
+      "campos": [
+        { "n": 1, "pos": 1, "lon": 2, "tipo": "An", "desc": "Constante", "constante": "<T" },
+        { "n": 2, "pos": 3, "lon": 3, "tipo": "An", "desc": "Modelo", "constante": "111" },
+        { "n": 3, "pos": 6, "lon": 1, "tipo": "An", "desc": "Constante", "constante": "0" },
+        { "n": 4, "pos": 7, "lon": 4, "tipo": "An", "desc": "Ejercicio devengo (AAAA)", "clave": "ejercicio" },
+        { "n": 5, "pos": 11, "lon": 2, "tipo": "An", "desc": "Período (PP)", "clave": "periodo", "valores": ["01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12", "1T", "2T", "3T", "4T"] },
+        { "n": 6, "pos": 13, "lon": 5, "tipo": "An", "desc": "Constante", "constante": "0000>" },
+        { "n": 7, "pos": 18, "lon": 5, "tipo": "An", "desc": "Constante", "constante": "<AUX>" },
+        { "n": 8, "pos": 23, "lon": 70, "tipo": "An", "desc": "Reservado para la Administración. Rellenar con blancos", "blancos": true },
+        { "n": 9, "pos": 93, "lon": 4, "tipo": "An", "desc": "Versión del programa (nota 1)", "clave": "versionPrograma" },
+        { "n": 10, "pos": 97, "lon": 4, "tipo": "An", "desc": "Reservado para la Administración. Rellenar con blancos", "blancos": true },
+        { "n": 11, "pos": 101, "lon": 9, "tipo": "An", "desc": "NIF empresa desarrollo (nota 1)", "clave": "nifEmpresaDesarrollo" },
+        { "n": 12, "pos": 110, "lon": 213, "tipo": "An", "desc": "Reservado para la Administración. Rellenar con blancos", "blancos": true },
+        { "n": 13, "pos": 323, "lon": 6, "tipo": "An", "desc": "Constante", "constante": "</AUX>" }
+      ]
+    },
+    {
+      "id": "M11101",
+      "hoja": "M11101",
+      "longitud": 1000,
+      "campos": [
+        { "n": 1, "pos": 1, "lon": 2, "tipo": "An", "desc": "Inicio del identificador de modelo y página", "constante": "<T" },
+        { "n": 2, "pos": 3, "lon": 3, "tipo": "Num", "desc": "Modelo", "constante": "111" },
+        { "n": 3, "pos": 6, "lon": 2, "tipo": "Num", "desc": "Página", "constante": "01" },
+        { "n": 4, "pos": 8, "lon": 4, "tipo": "An", "desc": "Fin de identificador de modelo", "constante": "000>" },
+        { "n": 5, "pos": 12, "lon": 1, "tipo": "A", "desc": "Indicador de página complementaria", "blancos": true },
+        { "n": 6, "pos": 13, "lon": 1, "tipo": "A", "desc": "Tipo de declaración", "clave": "tipoDeclaracion", "valores": ["I", "U", "G", "N"] },
+        { "n": 7, "pos": 14, "lon": 9, "tipo": "An", "desc": "Identificación. Sujeto pasivo. NIF", "clave": "nif" },
+        { "n": 8, "pos": 23, "lon": 60, "tipo": "An", "desc": "Identificación. Sujeto pasivo. Denominación o Apellidos", "clave": "apellidosODenominacion" },
+        { "n": 9, "pos": 83, "lon": 20, "tipo": "An", "desc": "Identificación. Sujeto pasivo. Nombre", "clave": "nombre" },
+        { "n": 10, "pos": 103, "lon": 4, "tipo": "Num", "desc": "Devengo. Ejercicio", "clave": "ejercicio" },
+        { "n": 11, "pos": 107, "lon": 2, "tipo": "An", "desc": "Devengo. Periodo", "clave": "periodo", "valores": ["01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12", "1T", "2T", "3T", "4T"] },
+        { "n": 12, "pos": 109, "lon": 8, "tipo": "Num", "desc": "Rendimientos del trabajo. Rendimientos dinerarios. Nº de perceptores", "casilla": "01" },
+        { "n": 13, "pos": 117, "lon": 17, "tipo": "Num", "decimales": 2, "desc": "Rendimientos del trabajo. Rendimientos dinerarios. Importe de las percepciones", "casilla": "02" },
+        { "n": 14, "pos": 134, "lon": 17, "tipo": "Num", "decimales": 2, "desc": "Rendimientos del trabajo. Rendimientos dinerarios. Importe de las retenciones", "casilla": "03" },
+        { "n": 15, "pos": 151, "lon": 8, "tipo": "Num", "desc": "Rendimientos del trabajo. Rendimientos en especie. Nº de perceptores", "casilla": "04" },
+        { "n": 16, "pos": 159, "lon": 17, "tipo": "Num", "decimales": 2, "desc": "Rendimientos del trabajo. Rendimientos en especie. Valor percepciones en especie", "casilla": "05" },
+        { "n": 17, "pos": 176, "lon": 17, "tipo": "Num", "decimales": 2, "desc": "Rendimientos del trabajo. Rendimientos en especie. Importe de los ingresos a cuenta", "casilla": "06" },
+        { "n": 18, "pos": 193, "lon": 8, "tipo": "Num", "desc": "Rendimientos de actividades económicas. Rendimientos dinerarios. Nº de perceptores", "casilla": "07" },
+        { "n": 19, "pos": 201, "lon": 17, "tipo": "Num", "decimales": 2, "desc": "Rendimientos de actividades económicas. Rendimientos dinerarios. Importe de las percepciones", "casilla": "08" },
+        { "n": 20, "pos": 218, "lon": 17, "tipo": "Num", "decimales": 2, "desc": "Rendimientos de actividades económicas. Rendimientos dinerarios. Importe de las retenciones", "casilla": "09" },
+        { "n": 21, "pos": 235, "lon": 8, "tipo": "Num", "desc": "Rendimientos de actividades económicas. Rendimientos en especie. Nº de perceptores", "casilla": "10" },
+        { "n": 22, "pos": 243, "lon": 17, "tipo": "Num", "decimales": 2, "desc": "Rendimientos de actividades económicas. Rendimientos en especie. Valor percepciones en especie", "casilla": "11" },
+        { "n": 23, "pos": 260, "lon": 17, "tipo": "Num", "decimales": 2, "desc": "Rendimientos de actividades económicas. Rendimientos en especie. Importe de los ingresos a cuenta", "casilla": "12" },
+        { "n": 24, "pos": 277, "lon": 8, "tipo": "Num", "desc": "Premios. Premios dinerarios. Nº de perceptores", "casilla": "13" },
+        { "n": 25, "pos": 285, "lon": 17, "tipo": "Num", "decimales": 2, "desc": "Premios. Premios dinerarios. Importe de las percepciones", "casilla": "14" },
+        { "n": 26, "pos": 302, "lon": 17, "tipo": "Num", "decimales": 2, "desc": "Premios. Premios dinerarios. Importe de las retenciones", "casilla": "15" },
+        { "n": 27, "pos": 319, "lon": 8, "tipo": "Num", "desc": "Premios. Premios en especie. Nº de perceptores", "casilla": "16" },
+        { "n": 28, "pos": 327, "lon": 17, "tipo": "Num", "decimales": 2, "desc": "Premios. Premios en especie. Valor percepciones en especie", "casilla": "17" },
+        { "n": 29, "pos": 344, "lon": 17, "tipo": "Num", "decimales": 2, "desc": "Premios. Premios en especie. Importe de los ingresos a cuenta", "casilla": "18" },
+        { "n": 30, "pos": 361, "lon": 8, "tipo": "Num", "desc": "Ganancias patrimoniales de aprovechamientos forestales. Percepciones dinerarias. Nº de perceptores", "casilla": "19" },
+        { "n": 31, "pos": 369, "lon": 17, "tipo": "Num", "decimales": 2, "desc": "Ganancias patrimoniales de aprovechamientos forestales. Percepciones dinerarias. Importe de las percepciones", "casilla": "20" },
+        { "n": 32, "pos": 386, "lon": 17, "tipo": "Num", "decimales": 2, "desc": "Ganancias patrimoniales de aprovechamientos forestales. Percepciones dinerarias. Importe de las retenciones", "casilla": "21" },
+        { "n": 33, "pos": 403, "lon": 8, "tipo": "Num", "desc": "Ganancias patrimoniales de aprovechamientos forestales. Percepciones en especie. Nº de perceptores", "casilla": "22" },
+        { "n": 34, "pos": 411, "lon": 17, "tipo": "Num", "decimales": 2, "desc": "Ganancias patrimoniales de aprovechamientos forestales. Percepciones en especie. Importe de las percepciones", "casilla": "23" },
+        { "n": 35, "pos": 428, "lon": 17, "tipo": "Num", "decimales": 2, "desc": "Ganancias patrimoniales de aprovechamientos forestales. Percepciones en especie. Importe de los ingresos a cuenta", "casilla": "24" },
+        { "n": 36, "pos": 445, "lon": 8, "tipo": "Num", "desc": "Contraprestaciones por la cesión de derechos de imagen. Nº de perceptores", "casilla": "25" },
+        { "n": 37, "pos": 453, "lon": 17, "tipo": "Num", "decimales": 2, "desc": "Contraprestaciones por la cesión de derechos de imagen. Contraprestaciones satisfechas", "casilla": "26" },
+        { "n": 38, "pos": 470, "lon": 17, "tipo": "Num", "decimales": 2, "desc": "Contraprestaciones por la cesión de derechos de imagen. Importe de los ingresos a cuenta", "casilla": "27" },
+        { "n": 39, "pos": 487, "lon": 17, "tipo": "Num", "decimales": 2, "desc": "Total liquidación. Suma de retenciones e ingresos a cuenta", "casilla": "28" },
+        { "n": 40, "pos": 504, "lon": 17, "tipo": "N", "decimales": 2, "desc": "Total liquidación. Resultado de anteriores declaraciones", "casilla": "29" },
+        { "n": 41, "pos": 521, "lon": 17, "tipo": "Num", "decimales": 2, "desc": "Total liquidación. Resultado a ingresar", "casilla": "30" },
+        { "n": 42, "pos": 538, "lon": 1, "tipo": "An", "desc": "Declaración complementaria", "clave": "complementaria", "valores": ["X", " "] },
+        { "n": 43, "pos": 539, "lon": 13, "tipo": "An", "desc": "Número de justificante de la declaración anterior", "clave": "justificanteAnterior" },
+        { "n": 44, "pos": 552, "lon": 1, "tipo": "An", "desc": "Reservado. Administración presentando declaración de Colegio Concertado (CC)", "blancos": true },
+        { "n": 45, "pos": 553, "lon": 34, "tipo": "An", "desc": "Domiciliación. IBAN", "clave": "iban" },
+        { "n": 46, "pos": 587, "lon": 389, "tipo": "An", "desc": "Reservado para la Administración", "blancos": true },
+        { "n": 47, "pos": 976, "lon": 13, "tipo": "An", "desc": "Reservado para el sello electrónico de la AEAT", "blancos": true },
+        { "n": 48, "pos": 989, "lon": 12, "tipo": "An", "desc": "Indicador de fin de registro", "constante": "</T11101000>" }
+      ]
+    },
+    {
+      "id": "cierre",
+      "hoja": "M11100",
+      "longitud": 18,
+      "campos": [
+        { "n": 15, "pos": 1, "lon": 7, "tipo": "An", "desc": "Constante </T1110", "constante": "</T1110" },
+        { "n": 15, "pos": 8, "lon": 4, "tipo": "An", "desc": "Ejercicio", "clave": "ejercicio" },
+        { "n": 15, "pos": 12, "lon": 2, "tipo": "An", "desc": "Periodo", "clave": "periodo" },
+        { "n": 15, "pos": 14, "lon": 5, "tipo": "An", "desc": "Constante 0000>", "constante": "0000>" }
+      ]
+    }
+  ],
+  "formulario": {
+    "titulo": "Modelo 111. Retenciones e ingresos a cuenta. Rendimientos del trabajo y de actividades económicas, premios y determinadas ganancias patrimoniales e imputaciones de renta. Autoliquidación",
+    "bloques": [
+      { "titulo": "Rendimientos del trabajo", "filas": [
+        { "rotulo": "Rendimientos dinerarios", "casillas": ["01", "02", "03"] },
+        { "rotulo": "Rendimientos en especie", "casillas": ["04", "05", "06"] }
+      ] },
+      { "titulo": "Rendimientos de actividades económicas", "filas": [
+        { "rotulo": "Rendimientos dinerarios", "casillas": ["07", "08", "09"] },
+        { "rotulo": "Rendimientos en especie", "casillas": ["10", "11", "12"] }
+      ] },
+      { "titulo": "Premios por la participación en juegos, concursos, rifas o combinaciones aleatorias", "filas": [
+        { "rotulo": "Premios dinerarios", "casillas": ["13", "14", "15"] },
+        { "rotulo": "Premios en especie", "casillas": ["16", "17", "18"] }
+      ] },
+      { "titulo": "Ganancias patrimoniales derivadas de los aprovechamientos forestales de los vecinos en montes públicos", "filas": [
+        { "rotulo": "Percepciones dinerarias", "casillas": ["19", "20", "21"] },
+        { "rotulo": "Percepciones en especie", "casillas": ["22", "23", "24"] }
+      ] },
+      { "titulo": "Contraprestaciones por la cesión de derechos de imagen: ingresos a cuenta previstos en el artículo 92.8 de la Ley del Impuesto", "filas": [
+        { "rotulo": "Contraprestaciones dinerarias o en especie", "casillas": ["25", "26", "27"] }
+      ] }
+    ],
+    "columnas": ["Nº de perceptores", "Importe de las percepciones", "Importe de las retenciones / ingresos a cuenta"],
+    "total": [
+      { "casilla": "28", "rotulo": "Suma de retenciones e ingresos a cuenta ([03] + [06] + [09] + [12] + [15] + [18] + [21] + [24] + [27])" },
+      { "casilla": "29", "rotulo": "A deducir (exclusivamente en caso de autoliquidación complementaria): resultados a ingresar de anteriores autoliquidaciones o liquidaciones administrativas correspondientes al mismo concepto, ejercicio y período" },
+      { "casilla": "30", "rotulo": "Resultado a ingresar ([28] - [29])" }
+    ]
+  }
+}

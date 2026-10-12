@@ -27,6 +27,8 @@ export const CAMPOS_DECIMALES: ReadonlySet<string> = new Set([
   "baseImponible", "baseLine", "baseTotal", "beneficio", "cuotaIva", "cuotaRetencion", "debe", "descuentoImporte", "gasto", "haber", "importe", "ingresos", "irpfRetenido", "ivaDevengado", "ivaPorcentaje", "ivaImporte", "ivaRepercutido", "ivaTotal", "precio", "precioCompra", "precioUnitario", "retencionImporte", "retencionTotal", "saldoInicial", "totalBruto", "totalFactura", "totalIRPF", "totalLiquido", "totalSeguridadSocialEmpresa", "totalSeguridadSocialTrabajador",
   // Divisas: importes en la moneda del documento, tipos de cambio y cobros en divisa.
   "baseTotalDoc", "ivaTotalDoc", "retencionTotalDoc", "totalFacturaDoc", "precioUnitarioDoc", "baseLineDoc", "descuentoImporteDoc", "ivaImporteDoc", "retencionImporteDoc", "importeDoc", "importeTesoreria", "tipoCambio", "diferenciaCambio", "comisionBancaria", "unidadesPorEur", "totalDivisa",
+  // Historial de declaraciones de la AEAT.
+  "resultadoAnterior",
 ]);
 
 /**
@@ -91,6 +93,9 @@ export const importesComoNumero = Prisma.defineExtension({
       descuentoImporteDoc: { needs: { descuentoImporteDoc: true }, compute: (r) => aNumero(r.descuentoImporteDoc) },
       ivaImporteDoc: { needs: { ivaImporteDoc: true }, compute: (r) => aNumero(r.ivaImporteDoc) },
       retencionImporteDoc: { needs: { retencionImporteDoc: true }, compute: (r) => aNumero(r.retencionImporteDoc) },
+    },
+    declaracionAeat: {
+      resultadoAnterior: { needs: { resultadoAnterior: true }, compute: (r) => aNumero(r.resultadoAnterior) },
     },
     tipoCambioBce: {
       unidadesPorEur: { needs: { unidadesPorEur: true }, compute: (r) => aNumero(r.unidadesPorEur) },

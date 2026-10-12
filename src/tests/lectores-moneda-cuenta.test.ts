@@ -20,7 +20,6 @@ const LECTORES_DE_CUENTA = [
   'controllers/accounting-engine.controller.ts',
   'services/accounting-hooks.service.ts',
   'services/impuestosCalculo.service.ts',
-  'services/impuestosExport.service.ts',
   'services/impuestosModulo.service.ts',
   'services/tax-models.service.ts',
   'services/tax-documents.service.ts',

@@ -15,7 +15,11 @@ import {
   generarPdfModelo,
   exportarIngresosGastosExcel,
   calcularCasillasModelo,
+  filaPorId,
+  hayHistorialDeclaraciones,
 } from '../services/impuestosModulo.service';
+import { anularUltimaPresentacion, justificanteDe, MODELOS_AEAT, type CodigoAeat } from '../services/declaracionesAeat/declaraciones.service';
+import { presentarDeclaracion } from '../services/declaracionesAeat/presentar';
 import { fichaModelo } from '../services/impuestosTextos';
 import { generarPdfSimple } from '../utils/pdf-simple';
 import { registrarAuditoria } from '../services/auditoria.service';
@@ -65,7 +69,19 @@ export const impuestosModuloController = {
   recuperar: asyncHandler(async (req, res) => {
     sendOk(res, await recuperarModeloOmitido(req.companyId!, req.params.modeloId));
   }),
+  /**
+   * Marcar como presentado: los modelos con historial (303, 111, 115, 202, 390,
+   * 200, 347, 349, 180 y 190) pasan por el mismo camino que su pantalla y
+   * congelan lo presentado (B4); el justificante es opcional aquí.
+   */
   listoParaPresentar: asyncHandler(async (req, res) => {
+    const f = await filaPorId(req.companyId!, req.params.modeloId);
+    if (hayHistorialDeclaraciones() && f.codigo in MODELOS_AEAT) {
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const justificante = body.justificante ? justificanteDe(body) : null;
+      sendOk(res, await presentarDeclaracion(req.companyId!, req.user!.userId, f.codigo as CodigoAeat, f.ejercicio, f.periodo, justificante));
+      return;
+    }
     const r = await marcarModeloListoParaPresentar(req.companyId!, req.params.modeloId);
     await registrarAuditoria({
       userId: req.user!.userId,
@@ -77,7 +93,14 @@ export const impuestosModuloController = {
     });
     sendOk(res, r);
   }),
+  /** «No presentado»: con historial, la última presentada queda anulada (se marcó por error). */
   noPresentado: asyncHandler(async (req, res) => {
+    const f = await filaPorId(req.companyId!, req.params.modeloId);
+    if (hayHistorialDeclaraciones() && f.codigo in MODELOS_AEAT && f.estado === 'presentado') {
+      await anularUltimaPresentacion(req.companyId!, req.user!.userId, f.codigo, f.ejercicio, f.periodo);
+      sendOk(res, await obtenerDetalleModelo(req.companyId!, f.id));
+      return;
+    }
     sendOk(res, await marcarModeloNoPresentado(req.companyId!, req.params.modeloId));
   }),
 

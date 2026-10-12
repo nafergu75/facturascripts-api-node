@@ -71,18 +71,25 @@ import request from 'supertest';
 import { app } from '../app';
 import { authService } from '../services/auth.service';
 import { generarCuentasAnuales, generarEstadoFlujosEfectivo } from '../services/cuentasAnuales.service';
+import { calcularModelo200 } from '../services/impuestoSociedadesCalculo.service';
 
 const token = authService.generateToken({ userId: 'u1', email: 'u1@test.com', roles: ['admin'], companies: ['1'] });
 const auth = { Authorization: `Bearer ${token}` };
 
 describe('Modelo 200', () => {
-  it('preview: resultado 300, base 300, cuota integra 75 (25%)', async () => {
+  // La ruta /modelo-200/preview se retiro (B7): el borrador del 200 esta en
+  // /impuestos/borradores/200. El calculo sigue siendo el mismo.
+  it('calculo: resultado 300, base 300, cuota integra 75 (25%)', async () => {
+    const d = await calcularModelo200('1', 2026);
+    expect(d.pyg.importeNetoCifraNegocios).toBe(300);
+    expect(d.resultadoContableAntesImpuestos).toBe(300);
+    expect(d.baseImponibleFinal).toBe(300);
+    expect(d.cuotaIntegra).toBe(75);
+  });
+
+  it('la ruta antigua /modelo-200/preview ya no existe', async () => {
     const res = await request(app).get('/companies/1/modelo-200/preview?ejercicio=2026').set(auth);
-    expect(res.status).toBe(200);
-    expect(res.body.data.pyg.importeNetoCifraNegocios).toBe(300);
-    expect(res.body.data.resultadoContableAntesImpuestos).toBe(300);
-    expect(res.body.data.baseImponibleFinal).toBe(300);
-    expect(res.body.data.cuotaIntegra).toBe(75);
+    expect(res.status).toBe(404);
   });
 });
 

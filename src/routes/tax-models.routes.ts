@@ -2,13 +2,8 @@
  * RUTAS DE MODELOS FISCALES - /api/companies/:companyId/tax-models
  *
  * Endpoints para:
- * - Generar modelo 303 (IVA trimestral)
- * - Generar modelo 111 (retenciones trimestral)
- * - Generar modelo 200 (impuesto de sociedades anual)
- * - Generar modelo 347 (operaciones con terceros anual)
- * - Generar modelo 115 (arrendamientos locales trimestral)
- * - Generar modelo 390 (resumen anual de IVA)
- * - Generar modelo 190 (resumen anual de retenciones)
+ * - Borrador del 303, 111, 115 y 190 (los del 347, 390 y 200 estan en
+ *   /impuestos/borradores; los del 349, 180 y 202, en borradores-aeat.routes)
  * - Marcar modelos como presentados
  */
 
@@ -20,11 +15,18 @@ const router = Router({ mergeParams: true });
 
 /**
  * GET /tax-models/303
- * Generar modelo 303 (IVA trimestral)
+ * Generar modelo 303 (IVA trimestral o mensual)
  *
  * Query params:
  *   - ejercicio: number (REQUERIDO)
- *   - trimestre: 1-4 (REQUERIDO)
+ *   - trimestre: 1-4, o periodo: 1T-4T o 01-12 (mensual: REDEME o SII) (REQUERIDO uno de los dos)
+ *   - tipoDeclaracion: I, U, C, D o N (opcional; por defecto el que toca por el resultado)
+ *   - aCompensar: cuotas a compensar de periodos anteriores [110] (opcional; por defecto las del 303 anterior)
+ *   - cuentaBancariaId: cuenta para domiciliar o para la devolucion (opcional; por defecto la primera activa)
+ *
+ * Devuelve el borrador con el diseno oficial 2026: casillas303 (numero,
+ * descripcion de la AEAT e importe, las mismas que el fichero), tipo de
+ * declaracion y los posibles, cuotas a compensar, cuentas, errores y avisos.
  */
 router.get(
   '/303',
@@ -33,29 +35,12 @@ router.get(
 );
 
 /**
- * POST /tax-models/303/presentado
- * Marcar modelo 303 como presentado
- *
- * Body:
- *   {
- *     ejercicio: number,
- *     trimestre: number,
- *     justificante: { numero: string, fecha: string }
- *   }
- */
-router.post(
-  '/303/presentado',
-  authorize('impuestos:write'),
-  taxModelsController.marcar303Presentado
-);
-
-/**
  * GET /tax-models/111
  * Generar modelo 111 (retenciones)
  *
  * Query params:
  *   - ejercicio: number (REQUERIDO)
- *   - trimestre: 1-4 (REQUERIDO)
+ *   - periodo: 1T-4T o 01-12 (mensual: grandes empresas), o trimestre: 1-4
  */
 router.get(
   '/111',
@@ -64,138 +49,17 @@ router.get(
 );
 
 /**
- * POST /tax-models/111/presentado
- * Marcar modelo 111 como presentado
- *
- * Body:
- *   {
- *     ejercicio: number,
- *     trimestre: number,
- *     justificante: { numero: string, fecha: string }
- *   }
- */
-router.post(
-  '/111/presentado',
-  authorize('impuestos:write'),
-  taxModelsController.marcar111Presentado
-);
-
-/**
- * GET /tax-models/200
- * Generar modelo 200 (impuesto de sociedades)
- *
- * Query params:
- *   - ejercicio: number (REQUERIDO)
- */
-router.get(
-  '/200',
-  authorize('impuestos:read'),
-  taxModelsController.obtenerModelo200
-);
-
-/**
- * POST /tax-models/200/presentado
- * Marcar modelo 200 como presentado
- *
- * Body:
- *   {
- *     ejercicio: number,
- *     justificante: { numero: string, fecha: string }
- *   }
- */
-router.post(
-  '/200/presentado',
-  authorize('impuestos:write'),
-  taxModelsController.marcar200Presentado
-);
-
-/**
- * GET /tax-models/347
- * Generar modelo 347 (operaciones con terceros)
- *
- * Query params:
- *   - ejercicio: number (REQUERIDO)
- */
-router.get(
-  '/347',
-  authorize('impuestos:read'),
-  taxModelsController.obtenerModelo347
-);
-
-/**
- * POST /tax-models/347/presentado
- * Marcar modelo 347 como presentado
- *
- * Body:
- *   {
- *     ejercicio: number,
- *     justificante: { numero: string, fecha: string }
- *   }
- */
-router.post(
-  '/347/presentado',
-  authorize('impuestos:write'),
-  taxModelsController.marcar347Presentado
-);
-
-/**
  * GET /tax-models/115
  * Modelo 115 (retenciones de alquileres)
  *
  * Query params:
  *   - ejercicio: number (REQUERIDO)
- *   - trimestre: 1-4. Sin el, el resumen anual por arrendador (los datos del 180), sin guardar nada.
+ *   - periodo: 1T-4T o 01-12 (mensual), o trimestre: 1-4. Sin ninguno, el resumen anual por arrendador (los datos del 180), sin guardar nada.
  */
 router.get(
   '/115',
   authorize('impuestos:read'),
   taxModelsController.obtenerModelo115
-);
-
-/**
- * POST /tax-models/115/presentado
- * Marcar modelo 115 como presentado
- *
- * Body:
- *   {
- *     ejercicio: number,
- *     trimestre: number,
- *     justificante: { numero: string, fecha: string }
- *   }
- */
-router.post(
-  '/115/presentado',
-  authorize('impuestos:write'),
-  taxModelsController.marcar115Presentado
-);
-
-/**
- * GET /tax-models/390
- * Generar modelo 390 (resumen anual de IVA)
- *
- * Query params:
- *   - ejercicio: number (REQUERIDO)
- */
-router.get(
-  '/390',
-  authorize('impuestos:read'),
-  taxModelsController.obtenerModelo390
-);
-
-/**
- * POST /tax-models/390/presentado
- * Marcar modelo 390 como presentado
- *
- * Body:
- *   {
- *     ejercicio: number,
- *     justificante: { numero: string, fecha: string }
- *   }
- */
-router.post(
-  '/390/presentado',
-  authorize('impuestos:write'),
-  taxModelsController.marcar390Presentado
 );
 
 /**
@@ -209,22 +73,6 @@ router.get(
   '/190',
   authorize('impuestos:read'),
   taxModelsController.obtenerModelo190
-);
-
-/**
- * POST /tax-models/190/presentado
- * Marcar modelo 190 como presentado
- *
- * Body:
- *   {
- *     ejercicio: number,
- *     justificante: { numero: string, fecha: string }
- *   }
- */
-router.post(
-  '/190/presentado',
-  authorize('impuestos:write'),
-  taxModelsController.marcar190Presentado
 );
 
 /**

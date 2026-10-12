@@ -6,7 +6,9 @@
  *  - 111 y 115: mensuales si es gran empresa; si no, trimestrales.
  *  - 349: trimestral.
  *  - 130: trimestral, solo autónomos (en lugar del 200).
- *  - Anuales ('0A'): 390 y 347 (no con SII), 200 (no autónomos) y 190.
+ *  - Anuales ('0A'): 390 y 347 (no con SII), 200 (no autónomos), 190 y 180.
+ *  - 202 (pagos fraccionados del Impuesto sobre Sociedades, no autónomos):
+ *    '1P', '2P' y '3P', desde 2027 (los anteriores se presentaron fuera de la app).
  *
  * Funciones puras: las usan el módulo de impuestos (al crear las filas) y los
  * ajustes fiscales (vista previa y cambio de ajustes).
@@ -27,6 +29,10 @@ export interface OpcionesCalendario {
 export const OPCIONES_CALENDARIO_POR_DEFECTO: OpcionesCalendario = { ajustes: AJUSTES_FISCALES_POR_DEFECTO, autonomo: false };
 
 const TRIMESTRES = ['1T', '2T', '3T', '4T'];
+/** Pagos fraccionados del 202: abril (1P), octubre (2P) y diciembre (3P). */
+const PERIODOS_202 = ['1P', '2P', '3P'];
+/** Primer ejercicio con los 202 en la app. */
+export const PRIMER_EJERCICIO_202 = 2027;
 const MESES = Array.from({ length: 12 }, (_, i) => String(i + 1).padStart(2, '0'));
 
 /** Modelos cuyo calendario depende de los ajustes fiscales o de la forma jurídica. */
@@ -34,7 +40,7 @@ export const CODIGOS_SEGUN_AJUSTES: readonly string[] = ['303', '111', '115', '1
 
 /** Modelos que componen el calendario de un ejercicio. */
 export function calendarioEjercicio(ejercicio: number, opciones: OpcionesCalendario = OPCIONES_CALENDARIO_POR_DEFECTO): EntradaCalendario[] {
-  void ejercicio; // Todos los ejercicios son de año natural (v1).
+  // Todos los ejercicios son de año natural (v1).
   const { ajustes, autonomo } = opciones;
   const out: EntradaCalendario[] = [];
   const periodos = (mensual: boolean) => (mensual ? MESES : TRIMESTRES);
@@ -42,12 +48,19 @@ export function calendarioEjercicio(ejercicio: number, opciones: OpcionesCalenda
   for (const codigo of ['111', '115']) for (const periodo of periodos(ajustes.granEmpresa)) out.push({ codigo, periodo });
   for (const periodo of TRIMESTRES) out.push({ codigo: '349', periodo });
   if (autonomo) for (const periodo of TRIMESTRES) out.push({ codigo: '130', periodo });
-  const anuales = [...(ajustes.sii ? [] : ['390', '347']), ...(autonomo ? [] : ['200']), '190'];
+  const anuales = [...(ajustes.sii ? [] : ['390', '347']), ...(autonomo ? [] : ['200']), '190', '180'];
   for (const codigo of anuales) out.push({ codigo, periodo: '0A' });
+  if (!autonomo && ejercicio >= PRIMER_EJERCICIO_202) for (const periodo of PERIODOS_202) out.push({ codigo: '202', periodo });
   return out;
 }
 
-/** Fechas (AAAA-MM-DD) que cubre un periodo: '0A', '1T'..'4T' o '01'..'12'. null si no se reconoce. */
+/**
+ * Fechas (AAAA-MM-DD) que cubre un periodo: '0A', '1T'..'4T', '01'..'12' o los
+ * pagos fraccionados '1P'..'3P'. Cada pago se calcula con lo acumulado desde
+ * enero, pero aqui cuenta solo lo que añade (enero-marzo, abril-septiembre y
+ * octubre-noviembre): asi los tres no se solapan entre si al crear las filas
+ * del calendario. null si no se reconoce.
+ */
 export function rangoPeriodo(ejercicio: number, periodo: string): { inicio: string; fin: string } | null {
   const p = String(periodo ?? '').toUpperCase();
   if (p === '0A') return { inicio: `${ejercicio}-01-01`, fin: `${ejercicio}-12-31` };
@@ -60,6 +73,8 @@ export function rangoPeriodo(ejercicio: number, periodo: string): { inicio: stri
     return { inicio: `${ejercicio}-${String(mesIni).padStart(2, '0')}-01`, fin: `${ejercicio}-${String(mesFin).padStart(2, '0')}-${ultimoDia(mesFin)}` };
   }
   if (/^(0[1-9]|1[0-2])$/.test(p)) return { inicio: `${ejercicio}-${p}-01`, fin: `${ejercicio}-${p}-${ultimoDia(Number(p))}` };
+  const pago: Record<string, [string, string]> = { '1P': ['01-01', '03-31'], '2P': ['04-01', '09-30'], '3P': ['10-01', '11-30'] };
+  if (pago[p]) return { inicio: `${ejercicio}-${pago[p][0]}`, fin: `${ejercicio}-${pago[p][1]}` };
   return null;
 }
 

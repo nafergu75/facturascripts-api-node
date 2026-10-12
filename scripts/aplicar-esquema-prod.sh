@@ -54,6 +54,13 @@ MARCAS=(
   'model VerifactuConfig'
   'model AjustePlataforma'
   'pantalla | api | copia | lector'
+  'model InmuebleArrendado'
+  'inmuebleArrendadoId'
+  'clave349 '
+  'personaContacto'
+  'model DeclaracionAeat'
+  'claveActividad'
+  'epigrafeIae'
 )
 for marca in "${MARCAS[@]}"; do
   grep -q "$marca" prisma/schema.prisma || {

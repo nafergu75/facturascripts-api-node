@@ -50,7 +50,7 @@ jest.mock('../services/facturascripts-client', () => ({
 }));
 
 import { agregar303, calcularModelo111 } from '../services/impuestosCalculo.service';
-import { generarFicheroModelo303 } from '../services/impuestosExport.service';
+import { pagina1Modelo303 as generarFicheroModelo303 } from './aeat-ayudas';
 import { FacturaFiscal, PeriodoFiscal } from '../domain/impuestos.model';
 
 const periodo2T: PeriodoFiscal = {
