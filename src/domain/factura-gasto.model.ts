@@ -74,6 +74,8 @@ export interface DatosFiscalesGasto {
   fechaRegistro?: string | null;
   anuladaEn?: string | null;
   anulacionAsientoId?: string | null;
+  /** Rectificativa ERROR_IVA que reduce: su IVA va al periodo de la original (solo 303, 390 y libro de IVA). */
+  fechaImputacionIva?: string | null;
 }
 
 /**
@@ -99,6 +101,21 @@ export function aparicionesFiscales(f: DatosFiscalesGasto): Array<{ fecha: strin
 /** Las apariciones de una factura con fecha entre `desde` y `hasta` (ambas incluidas). */
 export const aparicionesEntre = (f: DatosFiscalesGasto, desde: string, hasta: string) =>
   aparicionesFiscales(f).filter((a) => a.fecha >= desde && a.fecha <= hasta);
+
+/**
+ * Las apariciones de aparicionesFiscales con la fecha del IVA de cada una
+ * (`fechaIva`): la de imputacion en la positiva de una rectificativa ERROR_IVA
+ * que reduce (el periodo de su original); en el resto, la misma fecha. Solo la
+ * leen el 303, el 390 y el libro de IVA: el 347, el 349 y las retenciones
+ * siguen con la fecha contable (`fecha`).
+ */
+export function aparicionesConIva(f: DatosFiscalesGasto): Array<{ fecha: string; fechaIva: string; signo: 1 | -1 }> {
+  return aparicionesFiscales(f).map((a) => ({ ...a, fechaIva: a.signo > 0 && f.fechaImputacionIva ? f.fechaImputacionIva : a.fecha }));
+}
+
+/** Las apariciones cuyo IVA cae entre `desde` y `hasta`. */
+export const aparicionesIvaEntre = (f: DatosFiscalesGasto, desde: string, hasta: string) =>
+  aparicionesConIva(f).filter((a) => a.fechaIva >= desde && a.fechaIva <= hasta);
 
 /**
  * Donde cuenta una factura de gasto en los modelos de RETENCIONES (111, 115 y
@@ -139,6 +156,16 @@ export function whereGastosFiscales(companyId: string, desde: string, hasta: str
   };
 }
 
+/**
+ * whereGastosFiscales mas las rectificativas cuyo IVA se imputa a un periodo
+ * entre `desde` y `hasta` (ERROR_IVA que reduce: el de su original).
+ */
+export function whereGastosIva(companyId: string, desde: string, hasta: string): Prisma.ExpenseInvoiceWhereInput {
+  return {
+    OR: [whereGastosFiscales(companyId, desde, hasta), { companyId, estado: { notIn: ['DRAFT', 'ANULADA'] }, fechaImputacionIva: { gte: desde, lte: hasta } }],
+  };
+}
+
 const euros = (centimos: number) => Math.round(centimos) / 100;
 
 /**
@@ -153,7 +180,7 @@ export function importe347Gasto(f: {
   lineas?: Array<{ tipoRetencion: number; baseLine: number; ivaImporte: number }>;
 }): number {
   const lineas = f.lineas ?? [];
-  if (!lineas.length) return aCentimos(Number(f.retencionTotal) || 0) > 0 ? 0 : euros(aCentimos(Number(f.baseTotal) || 0) + aCentimos(Number(f.ivaTotal) || 0));
+  if (!lineas.length) return aCentimos(Number(f.retencionTotal) || 0) !== 0 ? 0 : euros(aCentimos(Number(f.baseTotal) || 0) + aCentimos(Number(f.ivaTotal) || 0));
   return euros(
     lineas.filter((l) => !(Number(l.tipoRetencion) > 0)).reduce((a, l) => a + aCentimos(Number(l.baseLine) || 0) + aCentimos(Number(l.ivaImporte) || 0), 0),
   );
