@@ -184,6 +184,9 @@ export function errorNifPerceptor190(p: Pick<Perceptor190, 'nif' | 'origen'>): s
     : `el NIF del proveedor (${p.nif || 'vacío'}) no es válido: ${motivo}. Corrígelo en la ficha del proveedor (Proveedores).`;
 }
 
+/** Error del 190 sin ningún perceptor (en una complementaria vacía lo sustituye el de la selección). */
+export const SIN_PERCEPTORES_190 = 'No hay ningún perceptor en el ejercicio.';
+
 /** Datos que faltan o que la sede rechazaria (vacio si se puede generar). */
 export function erroresFichero190(declarante: Declarante190, perceptores: Perceptor190[]): string[] {
   const errores: string[] = [];
@@ -205,7 +208,7 @@ export function erroresFichero190(declarante: Declarante190, perceptores: Percep
       errores.push(`El número de la declaración anterior (${anterior}) no puede ser el mismo que el de esta declaración ${tipo}.`);
     }
   }
-  if (!perceptores.length) errores.push('No hay ningún perceptor en el ejercicio.');
+  if (!perceptores.length) errores.push(SIN_PERCEPTORES_190);
   for (const p of perceptores) {
     const errorNif = errorNifPerceptor190(p);
     if (errorNif) errores.push(`${p.nombre}: ${errorNif}`);
