@@ -23,10 +23,13 @@ import { fechaIvaGasto, r2GastoConSigno } from '../domain/rectificativa-gasto.mo
 import { contabilizarFacturaGasto, desgloseIvaPorTipo } from './accounting-engine.service';
 import { autoliquidacionPorTipo, clasificarCompra } from './impuestosCalculo.service';
 import {
+  bloquearFacturasGasto,
   columnasRectificativa,
+  comprobarOriginalesEnTx,
   comprobarSinRectificativas,
   datosRectificativaDeFicha,
   guardarEnlaces,
+  originalesDelPlan,
   prepararRectificativa,
   type PlanRectificativa,
 } from './rectificativasGasto.service';
@@ -996,6 +999,11 @@ export async function registrarGasto(companyId: string, cuerpo: unknown, opcione
   for (let intento = 1; !resultado; intento++) {
     try {
       resultado = await prisma.$transaction(async (tx) => {
+        // Un abono bloquea sus originales antes de leer nada y vuelve a mirarlas (anulada, limite) con ellas bloqueadas.
+        if (rect && prov.existente) {
+          await bloquearFacturasGasto(tx, originalesDelPlan(rect));
+          await comprobarOriginalesEnTx(tx, companyId, rect, prov.existente.id);
+        }
         const supplier: ProveedorBasico = prov.existente ?? (await crearProveedorEnTx(tx, companyId, prov.nuevo!));
         const ultima = await tx.expenseInvoice.findFirst({ where: { companyId, serie }, orderBy: { numero: 'desc' }, select: { numero: true } });
         const numero = (ultima?.numero ?? 0) + 1;
@@ -1296,8 +1304,12 @@ export async function editarGasto(
   let r: { asientoNuevo: string | null; supplierId: string };
   try {
     r = await conReintentoSubcuenta(() => prisma.$transaction(async (tx) => {
-      // Lo comprobado arriba se vuelve a mirar con la factura bloqueada.
+      // Lo comprobado arriba se vuelve a mirar con la factura (y, en un abono, sus originales) bloqueada.
+      if (rect) await bloquearFacturasGasto(tx, [id, ...originalesDelPlan(rect)]);
       await bloquearSinCambios(tx, companyId, id, actual, asiento, mensajeConPagos);
+      if (rect && prov.existente) await comprobarOriginalesEnTx(tx, companyId, rect, prov.existente.id, id);
+      if (cambiaImportes) await comprobarSinRectificativas(companyId, id, 'corregir', tx);
+      await comprobarCompensaciones(tx, companyId, id, { totalNuevo: totalFactura });
       const supplier: ProveedorBasico = prov.existente ?? (await crearProveedorEnTx(tx, companyId, prov.nuevo!));
       await tx.expenseInvoiceLine.deleteMany({ where: { invoiceId: id } });
       const f = await tx.expenseInvoice.update({
@@ -1435,8 +1447,10 @@ export async function anularGasto(
   }
 
   const contraId = await prisma.$transaction(async (tx) => {
-    // Lo comprobado arriba se vuelve a mirar con la factura bloqueada.
+    // Lo comprobado arriba se vuelve a mirar con la factura bloqueada (tambien un abono o una aplicacion registrados entretanto).
     await bloquearSinCambios(tx, companyId, id, f, asiento, 'La factura tiene pagos registrados: anúlalos antes de anularla.');
+    await comprobarSinRectificativas(companyId, id, 'anular', tx);
+    await comprobarCompensaciones(tx, companyId, id);
 
     let contra: string | null = null;
     // Las compensaciones AUTO del abono se anulan con el (lo que restaba de su original vuelve a estar pendiente).
