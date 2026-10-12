@@ -70,6 +70,13 @@ describe('V02-V06 importes por tipo', () => {
     expect(r[0]).toMatchObject({ nivel: 'revisar', campos: ['desglose.0.cuota'], mensaje: 'El IVA del 21 % no corresponde a su base (sale 42,00 € y pone 45,00 €).' });
   });
 
+  it('cada campo marcado lleva el codigo de su validacion (la pantalla no reconoce el caso por el texto)', async () => {
+    const r = await validarLectura(con((l) => (l.desglose[0].cuota.valor = 45)), ctx());
+    expect(r.campos['desglose.0.cuota']).toMatchObject({ estado: 'revisar', codigos: expect.arrayContaining(['CUOTA_TIPO']), tipoIva: 21 });
+    // Sin validacion que lo marque, el campo no lleva codigos.
+    expect(r.campos['emisor.nif']?.codigos).toBeUndefined();
+  });
+
   it('V03 tipos de IVA: 7 % no existe; 5 % a revisar; empresa extranjera sin mirar', async () => {
     expect((await codigos(con((l) => (l.desglose[0].tipoIva = 7)))).find((x) => x.codigo === 'TIPO_IVA')).toMatchObject({ nivel: 'error', mensaje: 'El tipo de IVA 7 % no existe en España.' });
     expect(de(await codigos(con((l) => (l.desglose[0].tipoIva = 5))), 'TIPO_IVA')[0].nivel).toBe('revisar');

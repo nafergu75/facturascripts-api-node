@@ -206,6 +206,12 @@ export interface EstadoCampo {
   fuente: FuenteCampo;
   valorLeido: string | number | null;
   motivos: string[];
+  /**
+   * Codigos de las validaciones que marcan este campo (CUOTA_TIPO, CUADRE...),
+   * en el mismo orden que sus motivos: la pantalla reconoce cada caso por su
+   * codigo, no por el texto. Los motivos por confianza no llevan codigo.
+   */
+  codigos?: string[];
   sugerencia?: string;
   /** Solo en desglose.N.*: el tipo de IVA del tramo, para decir "Base del 21 %". */
   tipoIva?: number;

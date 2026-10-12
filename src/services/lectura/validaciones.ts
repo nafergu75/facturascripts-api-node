@@ -427,6 +427,7 @@ export function combinar(l: LecturaNormalizada, validaciones: ResultadoValidacio
       const e = (campos[id] ??= { estado: 'ok', confianza: c?.confianza ?? null, fuente: c?.fuente ?? 'calculado', valorLeido: c ? valorLeido(c) : null, motivos: [] });
       e.estado = peor(e.estado, val.nivel);
       if (!e.motivos.includes(val.mensaje)) e.motivos.push(val.mensaje);
+      if (val.nivel !== 'ok' && !(e.codigos ??= []).includes(val.codigo)) e.codigos.push(val.codigo);
     }
   }
   // El tipo de IVA de cada tramo, para que la pantalla diga "Base del 21 %".
