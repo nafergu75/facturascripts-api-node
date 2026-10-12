@@ -77,8 +77,15 @@ export interface Entrada390 {
   /** Base de las compras con IVA no deducible ([232], página 7). */
   baseNoDeducible?: number;
   volumen: VolumenOperaciones390;
-  /** Resultados del régimen general de cada 303 del año ([46] o equivalente). */
-  resultadosTrimestrales: [number, number, number, number];
+  /**
+   * Resultado de cada 303 del año antes de compensar cuotas de periodos
+   * anteriores ([69] + [78]), en orden: los cuatro trimestres o, si la empresa
+   * lo presenta cada mes, los meses (puede haber trimestres y meses si cambió
+   * de periodicidad).
+   */
+  resultadosTrimestrales: number[];
+  /** Periodo de cada resultado ('1T', '05'...), para la pantalla; por defecto 1T a 4T. */
+  periodosResultados?: string[];
   /** Declaración sustitutiva de la presentada (B4): justificante de la anterior. */
   sustitutiva?: { justificanteAnterior: string } | null;
   /** Cuotas a compensar que vienen del ejercicio anterior. */
@@ -112,7 +119,7 @@ export interface Declaracion390 {
   paginas: PaginaGenerada[];
   /** Todas las casillas numeradas que van al fichero: { '65': 1234.56 }. */
   casillas: Record<string, number | string>;
-  liquidaciones: { casilla85: number; casilla95: number; casilla97: number; casilla98: number; casilla662: number; finales: number[] };
+  liquidaciones: { casilla85: number; casilla95: number; casilla97: number; casilla98: number; casilla662: number; finales: number[]; periodos: string[] };
   paginasNoGeneradas: Array<{ codigo: string; motivo: string }>;
   /** Marcas de la página 1 (no son casillas numeradas): las enseña la pantalla. */
   marcasPagina1: MarcaPagina1_390[];
@@ -372,7 +379,7 @@ export function construirModelo390(e: Entrada390): Declaracion390 {
     revisar: DISENO_390.revisar,
     paginas: generadas,
     casillas,
-    liquidaciones: liq,
+    liquidaciones: { ...liq, periodos: e.periodosResultados ?? e.resultadosTrimestrales.map((_, i) => `${i + 1}T`) },
     paginasNoGeneradas: [
       { codigo: '05000', motivo: 'Régimen simplificado y de la agricultura: una S.L. o S.A. no tributa en módulos.' },
       { codigo: '08000', motivo: 'Regímenes de deducción diferenciados (art. 101 LIVA): no se aplican.' },

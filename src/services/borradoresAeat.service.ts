@@ -20,6 +20,8 @@ import { periodoFiscal } from './nominas/fiscal';
 import { claveDeclarado347 } from '../aeat/oficial/modelo347';
 import { AVISO_SIN_NUMERO, contactoEmpresa, declaracionInformativa, erroresContacto, exigirNumero, registrosElegidos } from './borradoresAeat/comun';
 import { avisoCongelada, contextoDeclaracion, datosDe } from './declaracionesAeat/declaraciones.service';
+import { casillasOficiales303De } from './modelo303.service';
+import type { DatosModelo303 } from '../domain/impuestos.model';
 
 const round2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100;
 
@@ -161,8 +163,12 @@ export function entrada390Desde(
   facturas: FacturaFiscal[],
   ejercicio: number,
   identificacion: Entrada390['identificacion'],
-  extra: Pick<Entrada390, 'compensarEjercicioAnterior' | 'ultimoPeriodo' | 'programa'> = {},
+  extra: Pick<Entrada390, 'compensarEjercicioAnterior' | 'ultimoPeriodo' | 'programa'> & {
+    /** Resultados de los 303 del año (los presentados, si los hay); sin ellos, los cuatro trimestres calculados con las facturas. */
+    resultados303?: Resultados303;
+  } = {},
 ): { entrada: Entrada390; advertencias: string[] } {
+  const { resultados303, ...resto } = extra;
   const datos = agregar390(facturas, ejercicio);
   const delAno = facturas.filter((f) => f.fecha.startsWith(String(ejercicio)));
   const compras = delAno.filter((f) => f.tipo === 'compra');
@@ -173,8 +179,9 @@ export function entrada390Desde(
   const intra = deducibles.filter((f) => f.operacion === 'intracomunitaria');
   const esServicio = (f: FacturaFiscal) => !!f.tipoGasto && f.tipoGasto !== 'COMPRA';
   const noDeducible = compras.filter((f) => f.deducible === false).reduce((a, f) => a + f.lineas.reduce((x, l) => x + aCentimos(l.base), 0), 0);
-  const resultados = [1, 2, 3, 4].map((t) => agregar303(facturas, periodoFiscal(ejercicio, `${t}T`)).resultado) as Entrada390['resultadosTrimestrales'];
-  const advertencias = [...(datos.advertencias ?? [])];
+  const periodos = resultados303?.periodos ?? ['1T', '2T', '3T', '4T'];
+  const resultados = resultados303?.resultados ?? periodos.map((p) => agregar303(facturas, periodoFiscal(ejercicio, p)).resultado);
+  const advertencias = [...(datos.advertencias ?? []), ...(resultados303?.avisos ?? [])];
   if (intraTodas.length) {
     advertencias.push(
       'Las adquisiciones intracomunitarias se autoliquidan en el 390 (devengado y deducible por el mismo importe, al tipo de la línea o al 21 %). Comprueba que coincide con lo que declaraste en los 303.',
@@ -208,16 +215,71 @@ export function entrada390Desde(
         total: datos.volumenOperaciones,
       },
       resultadosTrimestrales: resultados,
-      ...extra,
+      periodosResultados: periodos,
+      ...resto,
     },
     advertencias,
   };
 }
 
-/** Cuotas a compensar que vienen del año anterior: la casilla [110] del 303 del 1T guardado (si lo hay). */
-async function compensarDelAnoAnterior(companyId: string, ejercicio: number): Promise<number> {
+/** Resultados de los 303 del año para el 390, con su periodo y los avisos de lo que no está presentado. */
+export interface Resultados303 {
+  periodos: string[];
+  resultados: number[];
+  avisos: string[];
+}
+
+/**
+ * Resultados de los 303 del año para las casillas [95], [97], [98] y [662] del
+ * 390: de cada periodo, lo PRESENTADO (la última declaración, rectificativa
+ * incluida: [69] + [78], el resultado antes de compensar cuotas anteriores);
+ * si no está presentado, el cálculo de hoy con las facturas, con un aviso.
+ * Así el cuadre compara con lo que se ingresó de verdad aunque después se
+ * haya registrado o cambiado una factura.
+ *
+ * Periodicidad: en cada trimestre se usan los meses si hay alguna fila mensual
+ * del 303 en ese trimestre o la empresa lo presenta cada mes (REDEME, SII, gran
+ * empresa o periodicidad mensual en los ajustes) y no hay fila del trimestre.
+ */
+export async function resultados303DelAno(companyId: string, ejercicio: number, facturas: FacturaFiscal[], mensualPorDefecto: boolean): Promise<Resultados303> {
+  const filas = await Promise.resolve()
+    .then(() => prisma.modeloImpuesto.findMany({ where: { companyId, codigo: '303', ejercicio } }))
+    .catch(() => []);
+  const fila = new Map(filas.map((f) => [f.periodo, f]));
+  const periodos: string[] = [];
+  for (let t = 1; t <= 4; t++) {
+    const meses = [t * 3 - 2, t * 3 - 1, t * 3].map((m) => String(m).padStart(2, '0'));
+    const hayMes = meses.some((m) => fila.has(m));
+    const usarMeses = hayMes || (mensualPorDefecto && !fila.has(`${t}T`));
+    periodos.push(...(usarMeses ? meses : [`${t}T`]));
+  }
+  const sinPresentar: string[] = [];
+  const resultados = periodos.map((p) => {
+    const f = fila.get(p);
+    const datos = f?.datos as (DatosModelo303 & { casillasOficiales?: Record<string, number> }) | null | undefined;
+    if (f?.estado === 'presentado' && datos && (datos.casillasOficiales || typeof datos.resultado === 'number')) {
+      const c = casillasOficiales303De(datos);
+      if (typeof c['69'] === 'number') return Math.round((c['69'] + (c['78'] ?? 0)) * 100) / 100;
+      return Number(datos.resultado ?? c['46'] ?? 0) || 0;
+    }
+    sinPresentar.push(p);
+    return agregar303(facturas, periodoFiscal(ejercicio, p)).resultado;
+  });
+  const avisos = sinPresentar.length
+    ? [
+        `${sinPresentar.length === 1 ? 'El 303 de' : 'Los 303 de'} ${sinPresentar.join(', ')} no ${sinPresentar.length === 1 ? 'está marcado' : 'están marcados'} como presentado${sinPresentar.length === 1 ? '' : 's'}: el resultado de ${sinPresentar.length === 1 ? 'ese periodo' : 'esos periodos'} sale de las facturas de hoy. Márcalos como presentados para que el 390 use lo que se presentó.`,
+      ]
+    : [];
+  return { periodos, resultados, avisos };
+}
+
+/**
+ * Cuotas a compensar que vienen del año anterior: la casilla [110] del primer
+ * 303 del año guardado (1T, o 01 si se presenta cada mes).
+ */
+async function compensarDelAnoAnterior(companyId: string, ejercicio: number, primerPeriodo = '1T'): Promise<number> {
   const fila = await Promise.resolve()
-    .then(() => prisma.modeloImpuesto.findUnique({ where: { companyId_codigo_ejercicio_periodo: { companyId, codigo: '303', ejercicio, periodo: '1T' } } }))
+    .then(() => prisma.modeloImpuesto.findUnique({ where: { companyId_codigo_ejercicio_periodo: { companyId, codigo: '303', ejercicio, periodo: primerPeriodo } } }))
     .catch(() => null);
   const cas = (fila?.casillas ?? {}) as Record<string, unknown>;
   const clave = Object.keys(cas).find((k) => /^110(_|$)/.test(k));
@@ -271,7 +333,9 @@ export async function borrador390(companyId: string, ejercicio: number, opciones
       .then(() => prisma.ajustesFiscales.findUnique({ where: { companyId } }))
       .catch(() => null),
   ]);
-  const compensar = opciones.compensarEjercicioAnterior ?? (await compensarDelAnoAnterior(companyId, ejercicio));
+  const mensual = !!(ajustes && (ajustes.periodicidadIva === 'MENSUAL' || ajustes.redeme || ajustes.sii || ajustes.granEmpresa));
+  const resultados303 = await resultados303DelAno(companyId, ejercicio, facturas, mensual);
+  const compensar = opciones.compensarEjercicioAnterior ?? (await compensarDelAnoAnterior(companyId, ejercicio, resultados303.periodos[0]));
   const { entrada, advertencias } = entrada390Desde(
     facturas,
     ejercicio,
@@ -284,7 +348,7 @@ export async function borrador390(companyId: string, ejercicio: number, opciones
       criterioCaja: !!ajustes?.criterioCaja,
       redeme: !!ajustes?.redeme,
     },
-    { compensarEjercicioAnterior: compensar, ultimoPeriodo: opciones.ultimoPeriodo ?? 'compensar' },
+    { compensarEjercicioAnterior: compensar, ultimoPeriodo: opciones.ultimoPeriodo ?? 'compensar', resultados303 },
   );
   // Sustitutiva en preparación: marca y justificante de la anterior.
   if (ctx.enCurso?.tipo === 'S') entrada.sustitutiva = { justificanteAnterior: ctx.justificanteAnterior ?? '' };
