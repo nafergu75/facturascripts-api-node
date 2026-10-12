@@ -2,6 +2,7 @@ import { asyncHandler } from '../utils/async-handler';
 import { sendOk } from '../utils/response';
 import { badRequest } from '../utils/http-errors';
 import { financialReportsService, reportsService } from '../services/reports.service';
+import { validarEjercicio } from '../utils/anios';
 
 /**
  * Parsea los query params de periodo en { fromDate, toDate }.
@@ -28,10 +29,7 @@ function parsePeriod(query: Record<string, unknown>): { fromDate: Date; toDate: 
   }
 
   if (year) {
-    const y = parseInt(year, 10);
-    if (!Number.isInteger(y) || y < 2000 || y > 2100) {
-      throw badRequest('year inválido. Usa un año entre 2000 y 2100.');
-    }
+    const y = validarEjercicio(year, { campo: 'year' });
 
     if (month) {
       const m = parseInt(month, 10);

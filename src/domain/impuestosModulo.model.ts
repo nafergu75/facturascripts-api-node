@@ -26,7 +26,8 @@ export interface ModeloImpuestoResumen {
   diasDesdeVencimiento?: number;
   /** Si hay casillas guardadas (borrador autorrelleno o manual). */
   tieneBorrador: boolean;
-  origen?: 'autorrelleno' | 'manual-mixto';
+  /** fuera-app: marcado como presentado fuera de la app (gestoría, sede...), sin historial. */
+  origen?: 'autorrelleno' | 'manual-mixto' | 'fuera-app';
   /** true: la app no lo calcula (hoy, el 130): se rellena a mano. */
   rellenoManual?: boolean;
 }

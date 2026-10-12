@@ -16,7 +16,7 @@ const ESTADOS_CUENTAS = ['DRAFT', 'READY', 'FILED', 'APROBADO', 'DEFECTOS', 'REC
 export const fiscalYearsController = {
   // --- Scoped: /companies/:companyId/fiscal-years ---
   listar: asyncHandler(async (req, res) => {
-    sendOk(res, await fiscalYearsService.listar(req.companyId!));
+    sendOk(res, await fiscalYearsService.listar(req.companyId!, req.user?.userId));
   }),
 
   /** POST /companies/:id/fiscal-years/:fyId/reabrir (admin:empresa): solo los CERRADO_SIN_ASIENTOS. */

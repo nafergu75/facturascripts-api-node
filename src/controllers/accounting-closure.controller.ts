@@ -4,6 +4,7 @@ import { badRequest, conflict } from '../utils/http-errors';
 import { enlaceCierre } from '../services/fiscalYears.service';
 import { accountingClosureService } from '../services/accounting-closure.service';
 import { registrarAuditoria } from '../services/auditoria.service';
+import { validarEjercicio } from '../utils/anios';
 
 export const MENSAJE_ASIENTO_CIERRE_EN_OTRA_PANTALLA =
   'El asiento de cierre ya no se genera desde aquí. Cierra el ejercicio en Contabilidad > Cierre y traspaso de saldos: allí se hacen la regularización, el cierre y la apertura del año siguiente, y se puede deshacer.';
@@ -43,12 +44,11 @@ export const accountingClosureController = {
    * Crear cierre de período.
    */
   crearCierre: asyncHandler(async (req, res) => {
-    const { ejercicio } = req.body ?? {};
-    if (!ejercicio) throw badRequest('ejercicio requerido.');
+    const ejercicio = validarEjercicio(req.body?.ejercicio);
 
     const cierre = await accountingClosureService.crearCierrePeriodo(
       req.companyId!,
-      Number(ejercicio),
+      ejercicio,
     );
 
     await registrarAuditoria({
@@ -87,7 +87,7 @@ export const accountingClosureController = {
   obtenerCierre: asyncHandler(async (req, res) => {
     const cierre = await accountingClosureService.obtenerCierre(
       req.companyId!,
-      Number(req.params.ejercicio),
+      validarEjercicio(req.params.ejercicio),
     );
 
     sendOk(res, { cierre });
@@ -103,7 +103,7 @@ export const accountingClosureController = {
 
     const cierre = await accountingClosureService.cambiarEstadoCierre(
       req.companyId!,
-      Number(req.params.ejercicio),
+      validarEjercicio(req.params.ejercicio),
       estado,
       { cierreContable, balanceGeneral, cuentaResultados, observaciones },
     );
@@ -130,7 +130,7 @@ export const accountingClosureController = {
 
     const archivoRegistro = await accountingClosureService.subirArchivoCierre(
       req.companyId!,
-      Number(req.params.ejercicio),
+      validarEjercicio(req.params.ejercicio),
       archivo,
       tipoContenido,
     );
@@ -154,7 +154,7 @@ export const accountingClosureController = {
   listarArchivos: asyncHandler(async (req, res) => {
     const archivos = await accountingClosureService.listarArchivosCierre(
       req.companyId!,
-      Number(req.params.ejercicio),
+      validarEjercicio(req.params.ejercicio),
     );
 
     sendOk(res, { archivos, cantidad: archivos.length });
@@ -165,12 +165,12 @@ export const accountingClosureController = {
    * Guardar datos de ejercicio anterior.
    */
   guardarDatosAnterior: asyncHandler(async (req, res) => {
-    const { ejercicio, ...datos } = req.body ?? {};
-    if (!ejercicio) throw badRequest('ejercicio requerido.');
+    const { ejercicio: ejercicioPedido, ...datos } = req.body ?? {};
+    const ejercicio = validarEjercicio(ejercicioPedido);
 
     const registro = await accountingClosureService.guardarDatosEjercicioAnterior(
       req.companyId!,
-      Number(ejercicio),
+      ejercicio,
       datos,
     );
 
@@ -193,7 +193,7 @@ export const accountingClosureController = {
   obtenerDatosAnterior: asyncHandler(async (req, res) => {
     const datos = await accountingClosureService.obtenerDatosEjercicioAnterior(
       req.companyId!,
-      Number(req.params.ejercicio),
+      validarEjercicio(req.params.ejercicio),
     );
 
     sendOk(res, { datos });

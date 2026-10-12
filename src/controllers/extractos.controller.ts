@@ -6,6 +6,7 @@ import {
   exportarExtractoCSV,
   revisarExtractoContraContabilidad,
 } from '../services/extractos.service';
+import { validarEjercicio } from '../utils/anios';
 
 function rango(req: { query: Record<string, unknown> }) {
   const desde = req.query.desde ? String(req.query.desde) : undefined;
@@ -15,11 +16,8 @@ function rango(req: { query: Record<string, unknown> }) {
   return { desde, hasta, saldoInicial };
 }
 
-function parseEjercicio(raw: unknown): number {
-  const e = Number(raw);
-  if (!Number.isInteger(e)) throw badRequest('Parametro "ejercicio" invalido.');
-  return e;
-}
+/** Ejercicio de la consulta: de 1990 al año que viene (hora de España). */
+const parseEjercicio = (raw: unknown): number => validarEjercicio(raw);
 
 export const extractosController = {
   extracto: asyncHandler(async (req, res) => {

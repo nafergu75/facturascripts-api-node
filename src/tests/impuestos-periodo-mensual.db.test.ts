@@ -66,8 +66,9 @@ describe('plazos de los periodos mensuales', () => {
     expect(fechaVencimientoModelo('303', 2026, '05')).toBe('2026-06-30');
     expect(fechaVencimientoModelo('303', 2026, '02')).toBe('2026-03-30');
     expect(fechaVencimientoModelo('303', 2026, '11')).toBe('2026-12-30');
-    expect(fechaVencimientoModelo('303', 2026, '12')).toBe('2027-01-30');
-    expect(fechaVencimientoModelo('303', 2026, '01')).toBe('2026-02-28');
+    // 30-1-2027 y 28-2-2026 son sábado: pasan al lunes.
+    expect(fechaVencimientoModelo('303', 2026, '12')).toBe('2027-02-01');
+    expect(fechaVencimientoModelo('303', 2026, '01')).toBe('2026-03-02');
     expect(fechaVencimientoModelo('303', 2028, '01')).toBe('2028-02-29'); // bisiesto
   });
 

@@ -52,17 +52,26 @@ import {
   ficheroBorrador303,
   montarBorrador303,
 } from './modelo303.service';
-import { badRequest, forbidden, notFound } from '../utils/http-errors';
+import { badRequest, conflict, forbidden, notFound } from '../utils/http-errors';
 import {
+  antesDelInicio,
+  calendarioConVigencias,
   calendarioEjercicio,
   filasQueFaltan,
   planCambioCalendario,
+  rangoPeriodo,
+  regimenDe,
+  regimenEn,
   type EntradaCalendario,
   type OpcionesCalendario,
+  type RegimenFiscal,
+  type VigenciaRegimen,
 } from '../domain/calendarioFiscal';
-import { AJUSTES_FISCALES_POR_DEFECTO, ajustesFiscalesDeFila, type AjustesFiscales } from '../domain/ajustes.model';
+import { ajustesFiscalesDeFila, type AjustesFiscales } from '../domain/ajustes.model';
 import { contextoDeclaracion } from './declaracionesAeat/declaraciones.service';
-import { anioEspana } from '../utils/fechas';
+import { anioEspana, hoyEspana } from '../utils/fechas';
+import { primerDiaConDatos } from '../utils/anios';
+import { plazoAeat, ultimoDiaFebrero } from '../domain/plazosAeat';
 
 /**
  * LOS GET NO ESCRIBEN (B6, igual en todos los modelos de la AEAT): el detalle,
@@ -122,8 +131,11 @@ const DESCRIPCIONES: Record<string, string> = {
   '202': 'Pago fraccionado del Impuesto sobre Sociedades',
 };
 
-/** Fecha limite de presentacion del modelo/periodo (plazos generales AEAT). */
-export function fechaVencimientoModelo(codigo: string, ejercicio: number, periodo: string): string {
+/**
+ * Ultimo dia de presentacion que marca la norma para el modelo y periodo, sin
+ * mover por fines de semana ni festivos (plazos generales de la AEAT).
+ */
+function fechaOrdinariaModelo(codigo: string, ejercicio: number, periodo: string): string {
   const TRIM: Record<string, string> = { '1T': `${ejercicio}-04-20`, '2T': `${ejercicio}-07-20`, '3T': `${ejercicio}-10-20` };
   if (periodo in TRIM) return TRIM[periodo];
   // 202: del 1 al 20 de abril, octubre y diciembre.
@@ -137,7 +149,7 @@ export function fechaVencimientoModelo(codigo: string, ejercicio: number, period
       // REDEME o SII voluntario), que tienen los 30 primeros dias naturales del
       // mes siguiente (art. 71.4 RIVA); el de enero, hasta el ultimo dia de
       // febrero, y el de diciembre, hasta el 30 de enero.
-      if (mes === 1) return `${ejercicio}-02-${String(new Date(Date.UTC(ejercicio, 2, 0)).getUTCDate()).padStart(2, '0')}`;
+      if (mes === 1) return ultimoDiaFebrero(ejercicio);
       if (mes === 12) return `${ejercicio + 1}-01-30`;
       return `${ejercicio}-${siguiente}-30`;
     }
@@ -156,48 +168,135 @@ export function fechaVencimientoModelo(codigo: string, ejercicio: number, period
   }
   // anuales
   if (codigo === '390') return `${ejercicio + 1}-01-30`;
-  if (codigo === '347') return `${ejercicio + 1}-02-28`;
+  // 347: todo febrero (el 29 en los bisiestos).
+  if (codigo === '347') return ultimoDiaFebrero(ejercicio + 1);
   if (codigo === '200') return `${ejercicio + 1}-07-25`;
   if (codigo === '190' || codigo === '180') return `${ejercicio + 1}-01-31`;
   return `${ejercicio + 1}-01-30`;
+}
+
+/**
+ * Fecha limite de presentacion del modelo y periodo: la de la norma o, si cae
+ * en sabado, domingo o fiesta nacional, el siguiente dia habil (plazoAeat).
+ * Asi el 390 de 2026 (sabado 30-1-2027) vence el lunes 1-2-2027.
+ */
+export function fechaVencimientoModelo(codigo: string, ejercicio: number, periodo: string): string {
+  return plazoAeat(fechaOrdinariaModelo(codigo, ejercicio, periodo));
 }
 
 /** El 130 no se calcula todavia: se rellena a mano. */
 export const MENSAJE_130_MANUAL = 'La app todavía no calcula el modelo 130: rellena sus casillas a mano y guárdalo.';
 const RELLENO_MANUAL = new Set(['130']);
 
+/** Lo que decide el calendario de la empresa, leido de una vez. */
+export interface DatosCalendarioEmpresa {
+  /** Ajustes guardados ahora (Configuracion > Impuestos; sin fila, los de por defecto). */
+  ajustes: AjustesFiscales;
+  /** Regimen por fecha de efecto, de la mas antigua a la mas reciente. */
+  vigencias: VigenciaRegimen[];
+  /** Forma juridica AUTONOMO: 130 en lugar del 200. */
+  autonomo: boolean;
+  /**
+   * Primer dia que la empresa lleva sus impuestos con la app (null = sin
+   * limite): el indicado en Configuracion > Impuestos o, si no hay, el que se
+   * deduce (inicioImplicito).
+   */
+  inicioEnApp: string | null;
+  /** true si inicioEnApp lo indico la empresa; false si se ha deducido. */
+  inicioIndicado: boolean;
+}
+
+const tablaLista = (nombre: string) =>
+  typeof (prisma as unknown as Record<string, { findUnique?: unknown } | undefined>)[nombre]?.findUnique === 'function';
+
 /**
- * Lo que decide el calendario de la empresa: sus ajustes fiscales
- * (Configuracion > Impuestos; sin fila, los de por defecto) y si es autonomo.
+ * Ajustes, regimen por fecha de efecto, forma juridica e inicio en la app.
  *
- * Con `ejercicio`: a un año anterior al de la ultima vez que se guardaron los
- * ajustes no se le aplican (se crean con los de por defecto, como antes de
- * existir esta pantalla): un cambio de regimen no reescribe años pasados.
+ * El regimen de cada fecha sale de AjustesFiscalesVigencia (spec
+ * arranque-2027, B.7). Una empresa que guardo sus ajustes antes de existir esa
+ * tabla tiene una sola vigencia implicita: desde el 1 de enero del año en que
+ * los guardo (la regla de antes, que no cambia nada de lo ya creado); la
+ * primera vez que vuelva a guardarlos se apunta como vigencia de verdad.
+ */
+/**
+ * Inicio en la app cuando la empresa no lo ha indicado: el primer dia con
+ * algo suyo en la app (ejercicio, factura, asiento, banco o nomina) y, si no
+ * tiene nada, el dia en que se dio de alta (hora de España). Asi una empresa
+ * que empieza hoy, o que empieza en 2027, no ve como vencidos los modelos de
+ * periodos en los que todavia no estaba en la app.
+ */
+export async function inicioImplicito(companyId: string): Promise<string | null> {
+  try {
+    const primero = await primerDiaConDatos(companyId);
+    if (primero) return primero;
+    const empresa = await prisma.company.findUnique({ where: { id: companyId }, select: { createdAt: true } });
+    return empresa ? hoyEspana(empresa.createdAt) : null;
+  } catch {
+    // Sin BD (tests en memoria): sin limite, como antes.
+    return null;
+  }
+}
+
+export async function datosCalendarioEmpresa(companyId: string, opciones: { sinInicio?: boolean } = {}): Promise<DatosCalendarioEmpresa> {
+  const [fila, cfg, guardadas] = await Promise.all([
+    tablaLista('ajustesFiscales') ? prisma.ajustesFiscales.findUnique({ where: { companyId } }).catch(() => null) : null,
+    tablaLista('legalConfig') ? prisma.legalConfig.findUnique({ where: { companyId }, select: { tipoSociedad: true } }).catch(() => null) : null,
+    tablaLista('ajustesFiscalesVigencia')
+      ? prisma.ajustesFiscalesVigencia.findMany({ where: { companyId }, orderBy: { desde: 'asc' } }).catch(() => [])
+      : [],
+  ]);
+  const ajustes = ajustesFiscalesDeFila(fila);
+  const vigencias: VigenciaRegimen[] = guardadas.length
+    ? guardadas.map((v) => ({ desde: v.desde, ...regimenDe(v as unknown as RegimenFiscal) }))
+    : fila
+      ? [{ desde: `${anioEspana(fila.updatedAt)}-01-01`, ...regimenDe(ajustes) }]
+      : [];
+  const indicado = fila?.inicioEnApp || null;
+  // El inicio deducido solo hace falta para el calendario (sinInicio: solo el regimen).
+  const inicioEnApp = indicado ?? (dbOk() && !opciones.sinInicio ? await inicioImplicito(companyId) : null);
+  return { ajustes, vigencias, autonomo: cfg?.tipoSociedad === 'AUTONOMO', inicioEnApp, inicioIndicado: !!indicado };
+}
+
+/**
+ * Lo que decide el calendario de la empresa: sus ajustes fiscales y si es
+ * autonomo. Sin `ejercicio`, los ajustes guardados ahora; con `ejercicio`, el
+ * regimen vigente el 1 de enero de ese año (un cambio de regimen no reescribe
+ * años pasados).
  */
 export async function opcionesCalendarioEmpresa(companyId: string, ejercicio?: number): Promise<OpcionesCalendario> {
-  const tabla = (prisma as { ajustesFiscales?: { findUnique?: unknown } }).ajustesFiscales;
-  const legal = (prisma as { legalConfig?: { findUnique?: unknown } }).legalConfig;
-  const [fila, cfg] = await Promise.all([
-    typeof tabla?.findUnique === 'function' ? prisma.ajustesFiscales.findUnique({ where: { companyId } }).catch(() => null) : null,
-    typeof legal?.findUnique === 'function'
-      ? prisma.legalConfig.findUnique({ where: { companyId }, select: { tipoSociedad: true } }).catch(() => null)
-      : null,
-  ]);
-  const anterior = ejercicio !== undefined && !!fila?.updatedAt && ejercicio < anioEspana(fila.updatedAt);
-  return { ajustes: anterior ? AJUSTES_FISCALES_POR_DEFECTO : ajustesFiscalesDeFila(fila), autonomo: cfg?.tipoSociedad === 'AUTONOMO' };
+  const d = await datosCalendarioEmpresa(companyId, { sinInicio: true });
+  if (ejercicio === undefined) return { ajustes: d.ajustes, autonomo: d.autonomo };
+  return { ajustes: { ...d.ajustes, ...regimenEn(d.vigencias, `${ejercicio}-01-01`) }, autonomo: d.autonomo };
+}
+
+/**
+ * Modelos que tocan a la empresa en un ejercicio: cada periodo con el regimen
+ * vigente cuando empieza (calendarioConVigencias). Por defecto, sin los
+ * periodos que acaban antes del inicio en la app (los presento otro).
+ */
+export async function calendarioDeEmpresa(
+  companyId: string,
+  ejercicio: number,
+  opciones: { respetarInicio?: boolean; datos?: DatosCalendarioEmpresa } = {},
+): Promise<EntradaCalendario[]> {
+  const d = opciones.datos ?? (await datosCalendarioEmpresa(companyId));
+  const todas = calendarioConVigencias(ejercicio, d.vigencias, d.autonomo);
+  return opciones.respetarInicio === false ? todas : todas.filter((e) => !antesDelInicio(ejercicio, e.periodo, d.inicioEnApp));
 }
 
 const clave = (companyId: string, codigo: string, ejercicio: number, periodo: string): string =>
   `${companyId}:${codigo}:${ejercicio}:${periodo}`;
 
 /**
- * Crea (si faltan) las filas vacias del calendario del ejercicio, sin importes.
+ * Crea (si faltan) las filas vacias del calendario del ejercicio, sin importes,
+ * con el regimen de cada periodo y sin los anteriores al inicio en la app.
  * Una empresa no establecida en Espana no presenta modelos de la AEAT: no se
  * le crea nada.
  */
 async function asegurarCalendario(companyId: string, ejercicio: number): Promise<void> {
   if (!(await esEmpresaEspanolaFiscal(companyId))) return;
-  const deseado = calendarioEjercicio(ejercicio, await opcionesCalendarioEmpresa(companyId, ejercicio));
+  // Sin los periodos anteriores al inicio en la app: esos los presento otro.
+  const deseado = await calendarioDeEmpresa(companyId, ejercicio);
   // Solo se anaden las que faltan y no se solapan con otra fila del mismo modelo
   // (p. ej. el 1T trimestral que ya existia cuando se paso a IVA mensual).
   if (dbOk()) {
@@ -302,16 +401,22 @@ export async function calendarioResultante(
         select: { id: true, codigo: true, ejercicio: true, periodo: true, estado: true, origen: true },
       })
     : [...memoria.values()].filter((f) => f.companyId === companyId && f.ejercicio === ejercicio);
+  // Lo pendiente de periodos que acaban antes del inicio en la app (indicado o
+  // deducido) no sale: no se creara ni cuenta como pendiente.
+  const { inicioEnApp } = await datosCalendarioEmpresa(companyId);
+  const sinAnteriores = (m: ModeloPrevisto) => !pendienteAntesDelInicio({ ejercicio, periodo: m.periodo, estado: m.estado }, inicioEnApp);
   if (!filas.length) {
     const aplicadoDesde = ejercicio >= anio ? `${ejercicio}-01-01` : null;
-    return { aplicadoDesde, modelos: vistaCalendario(ejercicio, opciones, hoy), borradas: 0, creadas: 0, borradasVencidas: 0 };
+    return { aplicadoDesde, modelos: vistaCalendario(ejercicio, opciones, hoy).filter(sinAnteriores), borradas: 0, creadas: 0, borradasVencidas: 0 };
   }
   const plan = ejercicio >= anio ? planDelEjercicio(ejercicio, filas, opciones, hoy, aplicarDesde) : { aplicadoDesde: null, borrar: [], crear: [] };
   const borrar = new Set(plan.borrar);
   const modelos = [
     ...filas.filter((f) => !borrar.has(f.id)).map((f) => aPrevisto(f, hoy)),
     ...plan.crear.map(({ codigo, periodo }) => aPrevisto({ codigo, ejercicio, periodo, estado: 'vigente' }, hoy)),
-  ].sort(porVencimiento);
+  ]
+    .filter(sinAnteriores)
+    .sort(porVencimiento);
   return {
     aplicadoDesde: plan.aplicadoDesde,
     modelos,
@@ -390,7 +495,8 @@ async function deIdVirtual(companyId: string, modeloId: string): Promise<{ codig
   const [, codigo, ej, periodo] = m;
   const ejercicio = Number(ej);
   if (!(await esEmpresaEspanolaFiscal(companyId))) return null;
-  const deseado = calendarioEjercicio(ejercicio, await opcionesCalendarioEmpresa(companyId, ejercicio));
+  // Tambien los anteriores al inicio en la app: se pueden abrir, solo que no se crean ni cuentan como pendientes.
+  const deseado = await calendarioDeEmpresa(companyId, ejercicio, { respetarInicio: false });
   return deseado.some((d) => d.codigo === codigo && d.periodo === periodo) ? { codigo, ejercicio, periodo } : null;
 }
 
@@ -448,6 +554,11 @@ async function guardarFila(fila: FilaModelo): Promise<void> {
   memoria.set(clave(fila.companyId, fila.codigo, fila.ejercicio, fila.periodo), fila);
 }
 
+/** Fila sin presentar ni omitir de un periodo que acaba antes del inicio en la app. */
+function pendienteAntesDelInicio(f: Pick<FilaModelo, 'ejercicio' | 'periodo' | 'estado'>, inicioEnApp: string | null): boolean {
+  return (f.estado === 'vigente' || f.estado === 'expirado') && antesDelInicio(f.ejercicio, f.periodo, inicioEnApp);
+}
+
 function aResumen(f: FilaModelo, hoy: string): ModeloImpuestoResumen {
   const fechaVencimiento = fechaVencimientoModelo(f.codigo, f.ejercicio, f.periodo);
   const dias = Math.round((new Date(fechaVencimiento).getTime() - new Date(hoy).getTime()) / 86400000);
@@ -471,7 +582,7 @@ function aResumen(f: FilaModelo, hoy: string): ModeloImpuestoResumen {
     diasHastaVencimiento: dias >= 0 ? dias : undefined,
     diasDesdeVencimiento: dias < 0 ? -dias : undefined,
     tieneBorrador: !!f.casillas,
-    origen: (f.origen as 'autorrelleno' | 'manual-mixto' | null) ?? undefined,
+    origen: (f.origen as 'autorrelleno' | 'manual-mixto' | 'fuera-app' | null) ?? undefined,
     ...(RELLENO_MANUAL.has(f.codigo) ? { rellenoManual: true } : {}),
   };
 }
@@ -482,7 +593,7 @@ export async function listarModelosImpuesto(
   companyId: string,
   ejercicio: number,
   tab: 'activos' | 'omitidos' | 'presentados' = 'activos',
-  hoy: string = new Date().toISOString().slice(0, 10),
+  hoy: string = hoyEspana(),
 ): Promise<ModeloImpuestoResumen[]> {
   // Empresa no establecida en Espana: sin modelos de la AEAT ni calendario.
   if (!(await esEmpresaEspanolaFiscal(companyId))) return [];
@@ -495,7 +606,10 @@ export async function listarModelosImpuesto(
   } else {
     filas = [...memoria.values()].filter((f) => f.companyId === companyId && f.ejercicio === ejercicio);
   }
-  const resumenes = filas.map((f) => aResumen(f, hoy));
+  // Lo que acaba antes del inicio en la app y sigue sin presentar no cuenta
+  // como pendiente: lo presento otro (la gestoria) antes de usar la app.
+  const { inicioEnApp } = await datosCalendarioEmpresa(companyId);
+  const resumenes = filas.filter((f) => !pendienteAntesDelInicio(f, inicioEnApp)).map((f) => aResumen(f, hoy));
   const filtro: Record<typeof tab, (r: ModeloImpuestoResumen) => boolean> = {
     activos: (r) => r.estado === 'vigente' || r.estado === 'expirado',
     omitidos: (r) => r.estado === 'omitido',
@@ -507,8 +621,10 @@ export async function listarModelosImpuesto(
 async function cambiarEstado(companyId: string, modeloId: string, estado: EstadoModeloImpuesto): Promise<ModeloImpuestoResumen> {
   const fila = await cargarFila(companyId, modeloId, { crear: true });
   fila.estado = estado;
+  // Deshacer «presentado fuera de la app» lo deja como estaba: sin origen.
+  if (estado === 'vigente' && fila.origen === ORIGEN_FUERA_APP) fila.origen = null;
   await guardarFila(fila);
-  return aResumen(fila, new Date().toISOString().slice(0, 10));
+  return aResumen(fila, hoyEspana());
 }
 
 export const omitirModelo = (companyId: string, modeloId: string) => cambiarEstado(companyId, modeloId, 'omitido');
@@ -521,10 +637,72 @@ export const recuperarModeloOmitido = (companyId: string, modeloId: string) => c
  */
 export const marcarModeloListoParaPresentar = (companyId: string, modeloId: string) => cambiarEstado(companyId, modeloId, 'presentado');
 
-/** Modelo, ejercicio, periodo y estado de una fila por su id (tambien virtual). Solo lee. */
-export async function filaPorId(companyId: string, modeloId: string): Promise<Pick<FilaModelo, 'id' | 'codigo' | 'ejercicio' | 'periodo' | 'estado'>> {
+/** Modelo, ejercicio, periodo, estado y origen de una fila por su id (tambien virtual). Solo lee. */
+export async function filaPorId(
+  companyId: string,
+  modeloId: string,
+): Promise<Pick<FilaModelo, 'id' | 'codigo' | 'ejercicio' | 'periodo' | 'estado' | 'origen'>> {
   const f = await cargarFila(companyId, modeloId);
-  return { id: f.id, codigo: f.codigo, ejercicio: f.ejercicio, periodo: f.periodo, estado: f.estado };
+  return { id: f.id, codigo: f.codigo, ejercicio: f.ejercicio, periodo: f.periodo, estado: f.estado, origen: f.origen };
+}
+
+// --- Presentado fuera de la app (spec arranque-2027, B.8) ---
+
+/** Origen de las filas que se marcaron como presentadas fuera de la app. */
+export const ORIGEN_FUERA_APP = 'fuera-app';
+
+/**
+ * Marca un modelo como presentado fuera de la app (por la gestoría o en la
+ * sede, sin pasar por la app): deja de contar como pendiente. No guarda
+ * historial, justificante ni instantánea, y no toca sus casillas: el 390, el
+ * 190 y el 303 siguiente, al no tener lo presentado, lo calculan como siempre.
+ * «No presentado» lo deshace. 409 si ya está presentado.
+ */
+export async function marcarPresentadoFueraApp(companyId: string, modeloId: string): Promise<ModeloImpuestoResumen> {
+  const fila = await cargarFila(companyId, modeloId, { crear: true });
+  const r = aResumen(fila, hoyEspana());
+  if (fila.estado === 'presentado') throw conflict(`El ${fila.codigo} de ${r.periodoEtiqueta} ya está marcado como presentado.`);
+  fila.estado = 'presentado';
+  fila.origen = ORIGEN_FUERA_APP;
+  await guardarFila(fila);
+  return aResumen(fila, hoyEspana());
+}
+
+/**
+ * Marca como presentados fuera de la app todos los modelos del ejercicio cuyo
+ * periodo ya ha terminado y siguen sin presentar ni omitir (también los
+ * anteriores al inicio en la app). Los que aún no tienen fila se crean ya
+ * presentados. Los periodos sin terminar no se tocan: todavía no se pueden
+ * presentar. Devuelve los que ha marcado.
+ */
+export async function marcarEjercicioPresentadoFueraApp(
+  companyId: string,
+  ejercicio: number,
+  hoy: string = hoyEspana(),
+): Promise<{ ejercicio: number; marcados: ModeloImpuestoResumen[] }> {
+  if (!(await esEmpresaEspanolaFiscal(companyId))) throw conflict(MENSAJE_SIN_MODELOS);
+  if (!dbOk()) throw conflict('No se puede marcar el ejercicio sin la base de datos.');
+  const terminado = (periodo: string) => (rangoPeriodo(ejercicio, periodo)?.fin ?? '9999-12-31') < hoy;
+  const deseado = (await calendarioDeEmpresa(companyId, ejercicio, { respetarInicio: false })).filter((e) => terminado(e.periodo));
+  const ids = await prisma.$transaction(async (tx) => {
+    const existentes = await tx.modeloImpuesto.findMany({ where: { companyId, ejercicio }, select: { id: true, codigo: true, periodo: true, estado: true } });
+    const pendientes = existentes.filter((f) => f.estado === 'vigente' && terminado(f.periodo)).map((f) => f.id);
+    if (pendientes.length) {
+      await tx.modeloImpuesto.updateMany({ where: { companyId, id: { in: pendientes }, estado: 'vigente' }, data: { estado: 'presentado', origen: ORIGEN_FUERA_APP } });
+    }
+    const nuevos = filasQueFaltan(ejercicio, deseado, existentes);
+    const creados: string[] = [];
+    for (const { codigo, periodo } of nuevos) {
+      const f = await tx.modeloImpuesto.create({ data: { companyId, codigo, ejercicio, periodo, estado: 'presentado', origen: ORIGEN_FUERA_APP } });
+      creados.push(f.id);
+    }
+    return [...pendientes, ...creados];
+  });
+  const filas = ids.length ? await prisma.modeloImpuesto.findMany({ where: { companyId, id: { in: ids } } }) : [];
+  const marcados = filas
+    .map((f) => aResumen({ ...f, casillas: (f.casillas as Casillas | null) ?? null, datos: f.datos ?? null }, hoy))
+    .sort((a, b) => a.fechaVencimiento.localeCompare(b.fechaVencimiento) || a.codigo.localeCompare(b.codigo));
+  return { ejercicio, marcados };
 }
 
 /** true si la BD tiene la tabla del historial de declaraciones (no en los tests en memoria). */
@@ -739,7 +917,7 @@ async function calcularCasillas(companyId: string, fila: FilaModelo): Promise<{ 
 export async function obtenerDetalleModelo(companyId: string, modeloId: string): Promise<ModeloImpuestoDetalle> {
   const fila = await cargarFila(companyId, modeloId);
   return {
-    resumen: aResumen(fila, new Date().toISOString().slice(0, 10)),
+    resumen: aResumen(fila, hoyEspana()),
     ficha: fichaModelo(fila.codigo),
     casillas: fila.casillas ?? {},
     origen: (fila.origen as 'autorrelleno' | 'manual-mixto' | null) ?? 'autorrelleno',
@@ -957,15 +1135,14 @@ const ibanTapado = (iban: string): string => {
 };
 
 /**
- * Ajustes fiscales que usa el 303 (REDEME, SII, criterio de caja), con la regla
- * del calendario: a un año anterior al de la ultima vez que se guardaron, los
- * de por defecto (un cambio de regimen no reescribe años pasados).
+ * Ajustes fiscales que usa el 303 (REDEME, SII, criterio de caja): el regimen
+ * vigente el primer dia del periodo (B.7, por fecha de efecto), no el de hoy.
+ * Sin periodo, el del 1 de enero del ejercicio.
  */
-async function ajustesFiscales303(companyId: string, ejercicio: number): Promise<AjustesFiscales> {
-  const tabla = (prisma as { ajustesFiscales?: { findUnique?: unknown } }).ajustesFiscales;
-  const fila = typeof tabla?.findUnique === 'function' ? await prisma.ajustesFiscales.findUnique({ where: { companyId } }).catch(() => null) : null;
-  if (fila?.updatedAt && ejercicio < anioEspana(fila.updatedAt)) return { ...AJUSTES_FISCALES_POR_DEFECTO };
-  return ajustesFiscalesDeFila(fila);
+async function ajustesFiscales303(companyId: string, ejercicio: number, periodo?: string): Promise<AjustesFiscales> {
+  const d = await datosCalendarioEmpresa(companyId, { sinInicio: true });
+  const fecha = (periodo && rangoPeriodo(ejercicio, periodo)?.inicio) || `${ejercicio}-01-01`;
+  return { ...d.ajustes, ...regimenEn(d.vigencias, fecha) };
 }
 
 /** NIF, razon social, ajustes fiscales (REDEME, SII, criterio de caja) e IBAN de la empresa. */
@@ -977,7 +1154,7 @@ async function contextoEmpresa303(
 ): Promise<{ ctx: ContextoEmpresa303; cuentas: CuentaBorrador303[]; cuentaBancariaId: string | null; mensual: boolean }> {
   const [cfg, ajustes, todas] = await Promise.all([
     configuracionEmpresa(companyId),
-    ajustesFiscales303(companyId, ejercicio),
+    ajustesFiscales303(companyId, ejercicio, periodo),
     listarCuentasBancarias(companyId).catch(() => []),
   ]);
   // Campo 24 de la página 1: en el último periodo, quien está exonerado del 390
@@ -1408,12 +1585,16 @@ export async function calendarioFiscalSoloLectura(companyId: string, hoy: string
     filas = [...memoria.values()].filter((f) => f.companyId === companyId && ejercicios.includes(f.ejercicio));
   }
   const out: ModeloCalendarioLectura[] = [];
+  const datos = await datosCalendarioEmpresa(companyId);
   for (const ejercicio of ejercicios) {
-    const opciones = await opcionesCalendarioEmpresa(companyId, ejercicio);
-    // Las filas que ya hay y las que se crearian al abrir el ejercicio en la pantalla.
+    // Las filas que ya hay y las que se crearian al abrir el ejercicio en la
+    // pantalla; las pendientes de antes del inicio en la app no cuentan.
     const delAnio = filas.filter((f) => f.ejercicio === ejercicio);
-    for (const fila of delAnio) out.push({ ...aResumen(fila, hoy), guardado: true });
-    for (const { codigo, periodo } of filasQueFaltan(ejercicio, calendarioEjercicio(ejercicio, opciones), delAnio)) {
+    for (const fila of delAnio) {
+      if (pendienteAntesDelInicio(fila, datos.inicioEnApp)) continue;
+      out.push({ ...aResumen(fila, hoy), guardado: true });
+    }
+    for (const { codigo, periodo } of filasQueFaltan(ejercicio, await calendarioDeEmpresa(companyId, ejercicio, { datos }), delAnio)) {
       const base: FilaModelo = { id: '', companyId, codigo, ejercicio, periodo, estado: 'vigente', casillas: null, datos: null, origen: null };
       out.push({ ...aResumen(base, hoy), guardado: false });
     }

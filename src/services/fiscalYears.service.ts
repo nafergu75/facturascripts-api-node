@@ -3,6 +3,7 @@ import { prisma } from '../config/database';
 import { badRequest, conflict, notFound } from '../utils/http-errors';
 import { anioEspana } from '../utils/fechas';
 import { FILTRO_ASIENTOS_CIERRE } from '../domain/asientosCierre';
+import { registrarAuditoria } from './auditoria.service';
 
 /** Primer año que se puede crear (el mismo limite que la puesta en marcha). */
 export const ANIO_MINIMO_EJERCICIO = 1990;
@@ -171,30 +172,86 @@ export async function reaperturaDelAnio(companyId: string, ejercicio: number): P
 
 const MENSAJE_DESHAZ_EN_CIERRE = 'Este ejercicio tiene asientos de cierre: deshaz el cierre desde Contabilidad > Cierre y traspaso de saldos.';
 
+/** Un ejercicio con su estado para la pantalla (lo que devuelve la lista). */
+async function ejerciciosConEstado(companyId: string) {
+  const [ejercicios, datos] = await Promise.all([
+    prisma.fiscalYear.findMany({ where: { companyId }, orderBy: { label: 'desc' } }),
+    datosCierres(companyId),
+  ]);
+  return ejercicios.map((fy) => {
+    const tieneAsientosCierre = datos.cierres.some((f) => dentroDe(f, fy));
+    const estadoEfectivo = estadoEfectivoEjercicio(fy.estado, tieneAsientosCierre);
+    const no = estadoEfectivo === 'CERRADO_SIN_ASIENTOS' ? motivoNoReabrir(fy, datos) : null;
+    return {
+      ...fy,
+      tieneAsientosCierre,
+      estadoEfectivo,
+      puedeReabrir: estadoEfectivo === 'CERRADO_SIN_ASIENTOS' && !no,
+      motivoNoReabrir: no?.mensaje ?? null,
+    };
+  });
+}
+
+/**
+ * Crea el ejercicio del año en curso (hora de España) si falta y la empresa ya
+ * llevaba contabilidad en la app antes de este año o durante él: tiene un
+ * ejercicio que empieza antes o un asiento con fecha de este año o anterior.
+ * Así, el 1 de enero el año nuevo aparece solo en informes, cierres y Registro
+ * Mercantil sin que nadie tenga que darlo de alta. Una empresa recién creada,
+ * sin nada, no recibe ejercicios que no ha pedido; tampoco la que empieza más
+ * adelante (p. ej. solo tiene el ejercicio 2027 y hoy es noviembre de 2026).
+ * Si otro ejercicio con otras fechas ocupa ese año, o dos peticiones llegan a
+ * la vez, no hace nada. Devuelve el ejercicio creado o null.
+ */
+export async function asegurarEjercicioEnCurso(companyId: string, ahora: Date = new Date()) {
+  const anio = anioEspana(ahora);
+  const label = String(anio);
+  const existentes = await prisma.fiscalYear.findMany({ where: { companyId }, select: { label: true, fechaInicio: true, fechaFin: true } });
+  if (existentes.some((e) => e.label === label)) return null;
+  const fechaInicio = `${anio}-01-01`;
+  const fechaFin = `${anio}-12-31`;
+  if (!existentes.some((e) => !!e.fechaInicio && e.fechaInicio < fechaInicio)) {
+    // Sin un ejercicio anterior, solo cuenta un asiento de este año o de antes.
+    const asiento = await prisma.journalEntry.findFirst({
+      where: { companyId, fecha: { lt: new Date(`${anio + 1}-01-01T00:00:00Z`) } },
+      select: { id: true },
+    });
+    if (!asiento) return null;
+  }
+  if (existentes.some((e) => e.fechaInicio && e.fechaFin && e.fechaInicio <= fechaFin && e.fechaFin >= fechaInicio)) return null;
+  try {
+    return await prisma.fiscalYear.create({ data: { companyId, label, fechaInicio, fechaFin, estado: 'OPEN' } });
+  } catch (e) {
+    if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') return null;
+    throw e;
+  }
+}
+
 export const fiscalYearsService = {
   /**
    * Ejercicios de la empresa, con tieneAsientosCierre, el estado unico
    * (estadoEfectivo) y, en los cerrados sin asientos, si se pueden reabrir
-   * (puedeReabrir, motivoNoReabrir).
+   * (puedeReabrir, motivoNoReabrir). Antes crea el del año en curso si falta
+   * (asegurarEjercicioEnCurso): es la unica escritura de esta lectura, y queda
+   * en el AuditLog con `userId` (quien abrio la lista).
    */
-  async listar(companyId: string) {
-    const [ejercicios, datos] = await Promise.all([
-      prisma.fiscalYear.findMany({ where: { companyId }, orderBy: { label: 'desc' } }),
-      datosCierres(companyId),
-    ]);
-    return ejercicios.map((fy) => {
-      const tieneAsientosCierre = datos.cierres.some((f) => dentroDe(f, fy));
-      const estadoEfectivo = estadoEfectivoEjercicio(fy.estado, tieneAsientosCierre);
-      const no = estadoEfectivo === 'CERRADO_SIN_ASIENTOS' ? motivoNoReabrir(fy, datos) : null;
-      return {
-        ...fy,
-        tieneAsientosCierre,
-        estadoEfectivo,
-        puedeReabrir: estadoEfectivo === 'CERRADO_SIN_ASIENTOS' && !no,
-        motivoNoReabrir: no?.mensaje ?? null,
-      };
-    });
+  async listar(companyId: string, userId?: string) {
+    const creado = await asegurarEjercicioEnCurso(companyId);
+    if (creado && userId) {
+      await registrarAuditoria({
+        userId,
+        companyId,
+        action: 'CREATE_FISCAL_YEAR_AUTO',
+        resourceType: 'FISCAL_YEAR',
+        resourceId: creado.id,
+        meta: { ejercicio: creado.label, motivo: 'Ejercicio del año en curso creado al abrir la lista de ejercicios.' },
+      });
+    }
+    return ejerciciosConEstado(companyId);
   },
+
+  /** Lo mismo que listar, sin crear nada (para GET /anios). */
+  estados: ejerciciosConEstado,
 
   /**
    * Reabre un ejercicio CERRADO_SIN_ASIENTOS (lo cerro el boton de Registro

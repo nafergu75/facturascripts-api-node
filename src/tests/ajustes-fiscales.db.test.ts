@@ -8,7 +8,8 @@
  *    abril). La lista de la pantalla sale de los modelos reales del año.
  *  - GET/PUT sobre BD real: reglas, permisos y empresa extranjera (409).
  */
-import { describe, it, expect, beforeAll } from '@jest/globals';
+import { describe, it, expect, beforeAll, afterAll } from '@jest/globals';
+import { relojEn, relojReal } from './reloj-falso';
 import express from 'express';
 import request from 'supertest';
 import { prisma } from '../config/database';
@@ -122,9 +123,15 @@ describe('planCambioCalendario (puro)', () => {
 });
 
 describe('GET/PUT /ajustes-fiscales', () => {
+  // Reloj falso (solo Date) en el 10-4-2026, el «hoy» de los casos: así el año
+  // de los ajustes guardados no depende del día en que se pasan los tests.
+  afterAll(relojReal);
   beforeAll(async () => {
+    relojEn('2026-04-10T10:00:00Z');
+    // Dadas de alta hace años: sin datos, el inicio en la app que se deduce es
+    // el día del alta, y aquí se quiere el calendario entero.
     for (const [id, name] of [[ES, 'Fiscal SL'], [US, 'Fiscal Inc'], [AUT, 'Autonoma'], [TARDE, 'Configura Tarde SL']]) {
-      await prisma.company.create({ data: { id, name, fsBaseUrl: 'http://localhost:8080', fsApiKeyEnc: 'k' } });
+      await prisma.company.create({ data: { id, name, fsBaseUrl: 'http://localhost:8080', fsApiKeyEnc: 'k', createdAt: new Date('2020-01-01T00:00:00Z') } });
     }
     await prisma.legalConfig.create({ data: { companyId: US, pais: 'US', monedaCuenta: 'USD' } });
     await prisma.legalConfig.create({ data: { companyId: AUT, tipoSociedad: 'AUTONOMO' } });

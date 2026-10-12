@@ -120,6 +120,13 @@ describe('informes contables con BD', () => {
     expect(await ejerciciosDisponibles(COMPANY_ID)).toEqual(expect.arrayContaining([2026, 2025]));
   });
 
+  it('a las 00:30 del 1-1-2027 (Madrid) ya ofrece 2027 y 2028 sin ningún asiento de 2027', async () => {
+    const anios = await ejerciciosDisponibles(COMPANY_ID, new Date('2026-12-31T23:30:00Z'));
+    expect(anios.slice(0, 2)).toEqual([2028, 2027]);
+    expect(anios).toEqual(expect.arrayContaining([2026, 2025]));
+    expect([...anios].sort((a, b) => b - a)).toEqual(anios);
+  });
+
   it('sumas y saldos de un ejercicio cerrado: cuadra y no sale a cero', async () => {
     const r = await informeSumasYSaldos(COMPANY_ID, { desde: '2025-01-01', hasta: '2025-12-31', ejercicio: 2025 }, 'subcuenta');
     expect(r.cuadra).toBe(true);

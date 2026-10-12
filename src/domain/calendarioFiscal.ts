@@ -174,3 +174,78 @@ export function planCambioCalendario(
   );
   return { aplicadoDesde: desde, borrar: borrar.map((e) => e.id), crear };
 }
+
+// ---------------------------------------------------------------------------
+// Régimen fiscal por fecha de efecto (spec arranque-2027, B.7) y fecha de
+// inicio en la app (B.8)
+// ---------------------------------------------------------------------------
+
+/** Lo que decide el calendario: periodicidad del IVA, REDEME, SII y gran empresa. */
+export type RegimenFiscal = Pick<AjustesFiscales, 'periodicidadIva' | 'redeme' | 'sii' | 'granEmpresa'>;
+
+/** Un régimen desde su fecha de efecto (AAAA-MM-DD). */
+export interface VigenciaRegimen extends RegimenFiscal {
+  desde: string;
+}
+
+const REGIMEN_POR_DEFECTO: RegimenFiscal = {
+  periodicidadIva: AJUSTES_FISCALES_POR_DEFECTO.periodicidadIva,
+  redeme: AJUSTES_FISCALES_POR_DEFECTO.redeme,
+  sii: AJUSTES_FISCALES_POR_DEFECTO.sii,
+  granEmpresa: AJUSTES_FISCALES_POR_DEFECTO.granEmpresa,
+};
+
+export const regimenDe = (a: RegimenFiscal): RegimenFiscal => ({
+  periodicidadIva: a.periodicidadIva === 'MENSUAL' ? 'MENSUAL' : 'TRIMESTRAL',
+  redeme: !!a.redeme,
+  sii: !!a.sii,
+  granEmpresa: !!a.granEmpresa,
+});
+
+/** Régimen vigente un día: el de la última fecha de efecto que no es posterior; sin ninguna, el de por defecto. */
+export function regimenEn(vigencias: readonly VigenciaRegimen[], fecha: string): RegimenFiscal {
+  let elegido: VigenciaRegimen | null = null;
+  for (const v of vigencias) if (v.desde <= fecha && (!elegido || v.desde >= elegido.desde)) elegido = v;
+  return elegido ? regimenDe(elegido) : { ...REGIMEN_POR_DEFECTO };
+}
+
+/**
+ * Calendario de un ejercicio cuando el régimen cambia a lo largo del año: cada
+ * periodo trimestral o mensual sale con el régimen vigente el día que empieza,
+ * y los anuales y los pagos del 202, con el del 1 de enero (igual que
+ * planCambioCalendario, que solo cambia los anuales si el año entero queda
+ * libre). Con un solo régimen en el año es calendarioEjercicio tal cual.
+ */
+export function calendarioConVigencias(ejercicio: number, vigencias: readonly VigenciaRegimen[], autonomo: boolean): EntradaCalendario[] {
+  const enero = `${ejercicio}-01-01`;
+  const delAnio = vigencias.filter((v) => v.desde > enero && v.desde <= `${ejercicio}-12-31`);
+  const alEmpezar = calendarioEjercicio(ejercicio, { ajustes: regimenEn(vigencias, enero), autonomo });
+  if (!delAnio.length) return alEmpezar;
+  const cache = new Map<string, Set<string>>();
+  const clavesCon = (r: RegimenFiscal) => {
+    const k = JSON.stringify(r);
+    if (!cache.has(k)) cache.set(k, new Set(calendarioEjercicio(ejercicio, { ajustes: r, autonomo }).map(claveEntrada)));
+    return cache.get(k)!;
+  };
+  const candidatas = new Map<string, EntradaCalendario>();
+  for (const r of [regimenEn(vigencias, enero), ...delAnio.map(regimenDe)]) {
+    for (const e of calendarioEjercicio(ejercicio, { ajustes: r, autonomo })) candidatas.set(claveEntrada(e), e);
+  }
+  const anual = (p: string) => p === '0A' || /^[1-3]P$/.test(p);
+  return [...candidatas.values()].filter((e) => {
+    if (anual(e.periodo)) return alEmpezar.some((a) => a.codigo === e.codigo && a.periodo === e.periodo);
+    const inicio = rangoPeriodo(ejercicio, e.periodo)?.inicio ?? enero;
+    return clavesCon(regimenEn(vigencias, inicio)).has(claveEntrada(e));
+  });
+}
+
+/**
+ * ¿El periodo es anterior al inicio en la app? Lo es si acaba antes de esa
+ * fecha: sus modelos los presentó otro (la gestoría) y no se crean ni cuentan
+ * como pendientes. Sin fecha de inicio, nunca.
+ */
+export function antesDelInicio(ejercicio: number, periodo: string, inicioEnApp: string | null | undefined): boolean {
+  if (!inicioEnApp) return false;
+  const fin = rangoPeriodo(ejercicio, periodo)?.fin;
+  return !!fin && fin < inicioEnApp;
+}

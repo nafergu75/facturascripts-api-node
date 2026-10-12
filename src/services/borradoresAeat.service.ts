@@ -30,6 +30,7 @@ import {
 import { calcularEstadosFinancieros } from './impuestoSociedadesCalculo.service';
 import { listarCuentasBancarias } from './bancos.service';
 import { periodoFiscal } from './nominas/fiscal';
+import { hoyEspana } from '../utils/fechas';
 import { claveDeclarado347 } from '../aeat/oficial/modelo347';
 import { AVISO_SIN_NUMERO, contactoEmpresa, declaracionInformativa, erroresContacto, exigirNumero, registrosElegidos } from './borradoresAeat/comun';
 import { avisoCongelada, contextoDeclaracion, datosDe, filaPresentada } from './declaracionesAeat/declaraciones.service';
@@ -281,6 +282,8 @@ export interface Resultados303 {
  * 390: de cada periodo, lo PRESENTADO (la última declaración, rectificativa
  * incluida: [69] + [78], el resultado antes de compensar cuotas anteriores);
  * si no está presentado, el cálculo de hoy con las facturas, con un aviso.
+ * Si el periodo aún no ha terminado (ejercicio en curso), el aviso es otro: no
+ * se pide marcarlo como presentado, se dice que es una vista previa.
  * Así el cuadre compara con lo que se ingresó de verdad aunque después se
  * haya registrado o cambiado una factura.
  *
@@ -304,6 +307,10 @@ export async function resultados303DelAno(companyId: string, ejercicio: number, 
   // en preparación, cuando ModeloImpuesto ha vuelto a 'vigente').
   const presentadas = await Promise.all(periodos.map((p) => filaPresentada(companyId, '303', ejercicio, p).catch(() => null)));
   const sinPresentar: string[] = [];
+  // Periodos que aún no han terminado (ejercicio en curso): no se pueden
+  // presentar todavía, así que no se piden marcar; se avisa aparte.
+  const hoy = hoyEspana();
+  const enCurso: string[] = [];
   const enRectificacion: string[] = [];
   const resultados = periodos.map((p, i) => {
     const pres = presentadas[i];
@@ -315,14 +322,21 @@ export async function resultados303DelAno(companyId: string, ejercicio: number, 
       if (typeof c['69'] === 'number') return Math.round((c['69'] + (c['78'] ?? 0)) * 100) / 100;
       return Number(datos.resultado ?? c['46'] ?? 0) || 0;
     }
-    sinPresentar.push(p);
-    return agregar303(facturas, periodoFiscal(ejercicio, p)).resultado;
+    const periodo = periodoFiscal(ejercicio, p);
+    (periodo.fechaFin < hoy ? sinPresentar : enCurso).push(p);
+    return agregar303(facturas, periodo).resultado;
   });
   const avisos = sinPresentar.length
     ? [
         `${sinPresentar.length === 1 ? 'El 303 de' : 'Los 303 de'} ${sinPresentar.join(', ')} no ${sinPresentar.length === 1 ? 'está marcado' : 'están marcados'} como presentado${sinPresentar.length === 1 ? '' : 's'}: el resultado de ${sinPresentar.length === 1 ? 'ese periodo' : 'esos periodos'} sale de las facturas de hoy. Márcalos como presentados para que el 390 use lo que se presentó.`,
       ]
     : [];
+  if (enCurso.length) {
+    const uno = enCurso.length === 1;
+    avisos.push(
+      `El ejercicio ${ejercicio} aún no ha terminado: ${uno ? 'el 303 de' : 'los 303 de'} ${enCurso.join(', ')} todavía no se ${uno ? 'puede' : 'pueden'} presentar y ${uno ? 'sale' : 'salen'} de las facturas de hoy.`,
+    );
+  }
   if (enRectificacion.length) {
     avisos.push(
       `${enRectificacion.length === 1 ? 'El 303 de' : 'Los 303 de'} ${enRectificacion.join(', ')} ${enRectificacion.length === 1 ? 'tiene' : 'tienen'} una rectificativa en preparación: el 390 usa lo presentado. Cuando la presentes, revisa el 390.`,

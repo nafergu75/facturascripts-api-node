@@ -3,12 +3,10 @@ import { sendOk } from '../utils/response';
 import { badRequest } from '../utils/http-errors';
 import { calcularCuadreBancos } from '../services/cuadreBancos.service';
 import { obtenerCierreConfig, actualizarCierreConfig } from '../services/cierreConfig.service';
+import { validarEjercicio } from '../utils/anios';
 
-function parseEjercicio(raw: unknown): number {
-  const e = Number(raw);
-  if (!Number.isInteger(e)) throw badRequest('Parametro "ejercicio" invalido.');
-  return e;
-}
+/** Ejercicio de la consulta: de 1990 al año que viene (hora de España). */
+const parseEjercicio = (raw: unknown): number => validarEjercicio(raw);
 
 export const cuadreBancosController = {
   cuadre: asyncHandler(async (req, res) => {

@@ -37,6 +37,7 @@ const LECTURAS_ABIERTAS: Record<string, string> = {
   'bancos.routes.ts GET /cuentas': 'cuentas del banco (sin saldos) del formulario de cobros de una factura',
   'reglasContables.routes.ts GET /': 'reglas de contabilizacion que aplican los formularios',
   'ocr.routes.ts GET /ocr/status': 'si el lector esta disponible',
+  'anios.routes.ts GET /': 'solo los años de la empresa para los desplegables, sin importes (spec arranque-2027, A.2.1)',
   'chatAssistant.routes.ts GET /estado': 'Carmen comprueba el permiso en cada intencion',
   'chatAssistant.routes.ts GET /catalogo': 'Carmen comprueba el permiso en cada intencion',
   'chatAssistant.routes.ts GET /sesiones': 'conversaciones propias; Carmen oculta lo que ya no puede ver',

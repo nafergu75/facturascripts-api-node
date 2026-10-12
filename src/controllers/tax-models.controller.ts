@@ -8,6 +8,7 @@ import { asyncHandler } from '../utils/async-handler';
 import { sendOk } from '../utils/response';
 import { badRequest } from '../utils/http-errors';
 import { opcionesBorrador303DeQuery, periodo303De } from '../services/impuestosModulo.service';
+import { validarEjercicio } from '../utils/anios';
 
 /**
  * Periodo del 111 o del 115 en la consulta: `periodo` ('1T'..'4T' o '01'..'12')
@@ -42,7 +43,7 @@ export class TaxModelsController {
     // Opciones del borrador: tipo de declaracion, cuotas a compensar y cuenta bancaria.
     const resultado = await taxModelsService.generarModelo303(
       companyId,
-      parseInt(ejercicio as string),
+      validarEjercicio(ejercicio),
       periodo303De(periodo ?? trimestre),
       userId,
       opcionesBorrador303DeQuery(req.query as Record<string, unknown>)
@@ -66,7 +67,7 @@ export class TaxModelsController {
 
     const resultado = await taxModelsService.generarModelo111(
       companyId,
-      parseInt(ejercicio as string),
+      validarEjercicio(ejercicio),
       periodoDeConsulta(req.query.periodo, req.query.trimestre),
       userId
     );
@@ -89,13 +90,13 @@ export class TaxModelsController {
 
     // Sin trimestre: el resumen anual por arrendador (los datos del 180). No guarda nada.
     if (!trimestre && !req.query.periodo) {
-      sendOk(res, await taxModelsService.resumenAnual115(companyId, parseInt(ejercicio as string)));
+      sendOk(res, await taxModelsService.resumenAnual115(companyId, validarEjercicio(ejercicio)));
       return;
     }
 
     const resultado = await taxModelsService.generarModelo115(
       companyId,
-      parseInt(ejercicio as string),
+      validarEjercicio(ejercicio),
       periodoDeConsulta(req.query.periodo, trimestre),
       userId
     );
@@ -120,7 +121,7 @@ export class TaxModelsController {
 
     const resultado = await taxModelsService.generarModelo190(
       companyId,
-      parseInt(ejercicio as string),
+      validarEjercicio(ejercicio),
       userId
     );
 
@@ -138,7 +139,7 @@ export class TaxModelsController {
     const modelos = await taxModelsService.listarModelos(
       companyId,
       codigo as string | undefined,
-      ejercicio ? parseInt(ejercicio as string) : undefined
+      ejercicio ? validarEjercicio(ejercicio) : undefined
     );
 
     sendOk(res, modelos);
@@ -154,7 +155,7 @@ export class TaxModelsController {
     const modelo = await taxModelsService.obtenerModelo(
       companyId,
       codigo,
-      parseInt(ejercicio),
+      validarEjercicio(ejercicio),
       periodo
     );
 

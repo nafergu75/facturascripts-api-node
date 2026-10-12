@@ -24,6 +24,8 @@ import { crearZip, ZipEntry } from '../utils/zip';
 import { generarPdfFactura } from './facturaPdf.service';
 import { perfilEmpresa } from './perfilEmpresa.service';
 import { GASTO_VIGENTE } from '../domain/factura-gasto.model';
+import { validarEjercicio } from '../utils/anios';
+import { anioEspana } from '../utils/fechas';
 
 export type CarpetaArchivo = 'ventas' | 'gastos';
 
@@ -144,8 +146,7 @@ export function rangoTrimestre(anio: number, trimestre: number): { desde: string
 }
 
 export function validarPeriodo(anio: unknown, trimestre?: unknown): { anio: number; trimestre: number } {
-  const a = parseInt(String(anio ?? ''), 10);
-  if (!Number.isInteger(a) || a < 2000 || a > 2099) throw badRequest('Año inválido.');
+  const a = validarEjercicio(anio, { campo: 'anio' });
   const t = parseInt(String(trimestre ?? ''), 10);
   if (trimestre !== undefined && (!Number.isInteger(t) || t < 1 || t > 4)) throw badRequest('El trimestre debe ser 1, 2, 3 o 4.');
   return { anio: a, trimestre: t };
@@ -498,8 +499,8 @@ export async function arbolArchivo(companyId: string): Promise<AnioArbol[]> {
   }
   for (const d of sueltos) sumar(d.anio, d.trimestre, d.tipo === 'ingreso' ? 'ventas' : 'gastos', d.total);
 
-  // El año en curso aparece siempre, aunque esté vacío.
-  nodo(new Date().getFullYear());
+  // El año en curso (hora de España) aparece siempre, aunque esté vacío.
+  nodo(anioEspana());
   return [...anios.values()].sort((a, b) => b.anio - a.anio);
 }
 

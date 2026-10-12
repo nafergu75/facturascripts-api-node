@@ -3,6 +3,7 @@ import { AlertaCompliance, NivelAlerta } from '../domain/compliance.model';
 import { calcularModelo303, calcularModelo347 } from './impuestosCalculo.service';
 import { badRequest } from '../utils/http-errors';
 import { PeriodoFiscal } from '../domain/impuestos.model';
+import { validarEjercicio } from '../utils/anios';
 
 const UMBRAL_347 = 3005.06;
 
@@ -15,10 +16,7 @@ const TRIMESTRES: Record<string, [string, string]> = {
 
 /** Construye un PeriodoFiscal a partir de ejercicio + periodo (1T..4T, 01..12, 0A). Movido desde aeat.controller (archivado en el cleanup del spine FS). */
 function construirPeriodo(ejercicioRaw: unknown, periodoRaw: unknown): PeriodoFiscal {
-  const ejercicio = Number(ejercicioRaw);
-  if (!Number.isInteger(ejercicio) || ejercicio < 2000) {
-    throw badRequest('Parametro "ejercicio" invalido.');
-  }
+  const ejercicio = validarEjercicio(ejercicioRaw);
   const periodo = String(periodoRaw ?? '0A').toUpperCase();
 
   if (periodo === '0A') {

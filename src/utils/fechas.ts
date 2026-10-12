@@ -65,6 +65,19 @@ export function anioEspana(ahora: Date = new Date()): number {
   return Number(hoyEspana(ahora).slice(0, 4));
 }
 
+/**
+ * Día `dia` del mes que queda `meses` meses antes del de `hoy` (AAAA-MM-DD,
+ * hora de Madrid por defecto). Si ese mes no tiene ese día, el último del mes.
+ * Sirve para los datos de prueba: así no se quedan fijos en un año.
+ */
+export function fechaHaceMeses(meses: number, dia: number, hoy: string = hoyEspana()): string {
+  const total = Number(hoy.slice(0, 4)) * 12 + Number(hoy.slice(5, 7)) - 1 - meses;
+  const anio = Math.floor(total / 12);
+  const mes = (total % 12) + 1;
+  const ultimo = new Date(Date.UTC(anio, mes, 0)).getUTCDate();
+  return `${anio}-${String(mes).padStart(2, '0')}-${String(Math.min(dia, ultimo)).padStart(2, '0')}`;
+}
+
 /** Fecha AAAA-MM-DD como la lee la persona: DD/MM/AAAA. Lo que no tiene ese formato se devuelve tal cual. */
 export function fechaTexto(iso: string | null | undefined): string {
   const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(iso ?? ''));

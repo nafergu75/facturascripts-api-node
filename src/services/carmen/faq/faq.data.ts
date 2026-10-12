@@ -5,7 +5,11 @@
  *  - Solo se sirven las fichas con verificada:true, vigentes hoy y con
  *    revisarAntes posterior a hoy (un test falla si alguna caduca).
  *  - Cada ficha nueva o cambiada entra por commit y la aprueban Ignacio o su
- *    asesor. Se revisan cada año (revisarAntes).
+ *    asesor. Se revisan cada año (revisarAntes) y antes si su contenido
+ *    depende de una fecha: cada ficha lleva su propio plazo (las que hablan de
+ *    Verifactu, de la factura electrónica o de los tipos del IS caducan antes,
+ *    cuando su texto deja de valer). Un test avisa de las que caducan en menos
+ *    de 60 días.
  *  - Respuestas de 120 palabras como máximo, en llano y sin emojis.
  *
  * Bloques: uso de la app (rutas sacadas de nav.ts), conceptos contables (PGC
@@ -434,6 +438,8 @@ export const FICHAS: FichaFAQ[] = [
       'Verifactu es el nombre que se da a los requisitos que deben cumplir los programas de facturación (Real Decreto 1007/2023): cada factura genera un registro encadenado que no se puede alterar y lleva un código QR. Tras el último aplazamiento (Real Decreto-ley 15/2025), las sociedades tienen que tener el programa adaptado antes del 1 de enero de 2027, y el resto de obligados, como los autónomos, antes del 1 de julio de 2027. No se aplica a quien lleva los libros del IVA por el SII.',
     fuente: BOE('BOE-A-2023-24840', 'df-4', 'Real Decreto 1007/2023, disposición final cuarta (redacción del RDL 15/2025)'),
     ...VERIFICADA,
+    // Habla en futuro del 1-1-2027 y puede haber aplazamiento: hay que reescribirla antes de esa fecha.
+    revisarAntes: '2027-01-01',
     etiquetas: ['verifactu', 'antifraude', 'software', 'qr', 'registro', 'facturacion', 'sif'],
   },
   {
@@ -445,6 +451,8 @@ export const FICHAS: FichaFAQ[] = [
       'El Real Decreto 238/2026 obliga a emitir y recibir factura electrónica en las operaciones entre empresarios y profesionales. Los plazos cuentan desde el 6 de octubre de 2026, cuando entró en vigor la Orden HAC/1028/2026, que regula la solución pública de la AEAT: doce meses después para quien tuvo más de 8 millones de euros de volumen de operaciones el año anterior y veinticuatro meses después para el resto. Las facturas se intercambian por plataformas privadas o por esa solución pública, de uso voluntario. Es una obligación distinta de Verifactu.',
     fuente: BOE('BOE-A-2026-7295', '', 'Real Decreto 238/2026, disposición final cuarta, y Orden HAC/1028/2026'),
     ...VERIFICADA,
+    // El primer plazo vence el 6-10-2027: a partir de ahí el texto ya no vale tal cual.
+    revisarAntes: '2027-10-06',
     etiquetas: ['electronica', 'b2b', 'crea', 'crece', 'factura', 'obligatoria', 'plataforma'],
   },
 
@@ -516,6 +524,8 @@ export const FICHAS: FichaFAQ[] = [
       'El tipo general es el 25 %. Si la cifra de negocios del año anterior fue de menos de 1 millón de euros, en los ejercicios que empiezan en 2026 se paga el 19 % por los primeros 50.000 € de base imponible y el 21 % por el resto (en 2027, el 17 % y el 20 %). Las demás empresas de reducida dimensión, con menos de 10 millones de cifra de negocios, pagan el 23 % en 2026 y el 22 % en 2027. Una sociedad de nueva creación paga el 15 % el primer año con base positiva y el siguiente. Las entidades patrimoniales no aplican estos tipos reducidos.',
     fuente: BOE('BOE-A-2014-12328', 'a29', 'Ley 27/2014 del Impuesto sobre Sociedades, artículo 29 y disposición transitoria cuadragésima cuarta'),
     ...VERIFICADA,
+    // Da los tipos de 2026 y 2027; en 2028 cambian otra vez.
+    revisarAntes: '2028-01-01',
     vigenteDesde: '2026-01-01',
     intencionRelacionada: 'INT-18',
     etiquetas: ['sociedades', 'tipo', 'gravamen', 'microempresa', 'nueva', 'creacion', '25', 'is'],

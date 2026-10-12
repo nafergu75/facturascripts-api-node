@@ -5,6 +5,7 @@ import { prisma } from '../config/database';
 import { Decimal } from '@prisma/client/runtime/library';
 import { perfilEmpresa } from '../services/perfilEmpresa.service';
 import { resumenFiscalPeriodo } from '../services/resumenFiscal.service';
+import { ejercicioOActual } from '../utils/anios';
 
 export const movementsController = {
   // POST /companies/:companyId/movements
@@ -22,7 +23,8 @@ export const movementsController = {
         description,
         date: new Date(date),
         referenceDocument,
-        fiscalYear: fiscalYear || new Date(date).getFullYear(),
+        // El año de la fecha tal como llega (AAAA-MM-DD...), sin pasar por el huso del servidor.
+        fiscalYear: fiscalYear || (/^\d{4}-/.test(String(date)) ? Number(String(date).slice(0, 4)) : new Date(date).getFullYear()),
         status: status || 'draft',
       },
     });
@@ -86,9 +88,8 @@ export const movementsController = {
    */
   getResumenFiscal: asyncHandler(async (req, res) => {
     const companyId = req.companyId ?? req.params.companyId;
-    const anio = Number(req.query.anio ?? new Date().getFullYear());
+    const anio = ejercicioOActual(req.query.anio, { campo: 'anio' });
     const trimestre = req.query.trimestre ? Number(req.query.trimestre) : null;
-    if (!Number.isInteger(anio) || anio < 2000 || anio > 2100) throw badRequest('Año no válido.');
     if (trimestre !== null && ![1, 2, 3, 4].includes(trimestre)) throw badRequest('Trimestre no válido (1 a 4).');
     const mesDesde = trimestre ? (trimestre - 1) * 3 + 1 : 1;
     const mesHasta = trimestre ? trimestre * 3 : 12;

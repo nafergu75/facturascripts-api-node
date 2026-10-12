@@ -414,12 +414,20 @@ describe('validador de cifras', () => {
     expect(c.map((x) => x.tipo).sort()).toEqual(['fecha', 'fecha', 'importe', 'numero', 'numero', 'porcentaje'].sort());
   });
 
-  it('valen las cifras de la pregunta o de las fichas, los modelos, los años 2024-2028 y los trimestres', () => {
-    expect(validarCifras('El modelo 303 del 3T de 2026.', []).ok).toBe(true);
+  it('valen las cifras de la pregunta o de las fichas, los modelos, los años cercanos y los trimestres', () => {
+    expect(validarCifras('El modelo 303 del 3T de 2026.', [], { anioActual: 2026 }).ok).toBe(true);
     expect(validarCifras('Son 1.210 € con el IVA.', ['Una venta de 1.000 € más 210 € de IVA: 1.210 €.']).ok).toBe(true);
     expect(validarCifras('Se presenta hasta el 20 de octubre.', ['Hoy es 07/10/2026.']).ok).toBe(false);
     expect(validarCifras('Un 15 % de retención.', ['¿Qué retención llevo?']).ok).toBe(false);
     expect(validarCifras('En 2031 cambiará.', []).ok).toBe(false);
+  });
+
+  it('los años que valen sin respaldo van del actual − 3 al actual + 2 (ya no caducan en 2028)', () => {
+    expect(validarCifras('Desde 2029 cambia.', [], { anioActual: 2027 }).ok).toBe(true);
+    expect(validarCifras('Desde 2030 cambia.', [], { anioActual: 2027 }).ok).toBe(false);
+    expect(validarCifras('Lo de 2024 sigue igual.', [], { anioActual: 2027 }).ok).toBe(true);
+    expect(validarCifras('Lo de 2023 sigue igual.', [], { anioActual: 2027 }).ok).toBe(false);
+    expect(validarCifras('El ejercicio 2030 empieza en enero.', [], { anioActual: 2029 }).ok).toBe(true);
   });
 
   it('la fecha de hoy solo vale como fecha: su día y su mes no respaldan un porcentaje ni un importe', () => {

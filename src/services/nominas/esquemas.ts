@@ -6,6 +6,8 @@ import { z, type ZodTypeAny } from 'zod';
 import { badRequest } from '../../utils/http-errors';
 import { errorNaf, errorNifPersona, normalizarNaf, normalizarNif } from '../../utils/nif';
 import { TIPOS_CONTRATO, TIPOS_NOMINA } from '../../domain/nominas.model';
+import { ANIO_MINIMO } from '../../utils/anios';
+import { anioEspana } from '../../utils/fechas';
 
 const dosDecimales = (v: number) => Math.abs(v * 100 - Math.round(v * 100)) < 1e-6;
 
@@ -24,7 +26,12 @@ export const fecha = z
   .regex(/^\d{4}-\d{2}-\d{2}$/, 'tiene que ser una fecha AAAA-MM-DD')
   .refine(fechaValida, 'no es una fecha válida');
 
-export const ejercicio = z.number({ invalid_type_error: 'tiene que ser un número' }).int('tiene que ser un año').min(2000, 'año no válido').max(2100, 'año no válido');
+/** De 1990 al año que viene (hora de España), como en el resto de la app (utils/anios). */
+export const ejercicio = z
+  .number({ invalid_type_error: 'tiene que ser un número' })
+  .int('tiene que ser un año')
+  .min(ANIO_MINIMO, 'año no válido')
+  .refine((a) => a <= anioEspana() + 1, 'año no válido');
 export const mes = z.number({ invalid_type_error: 'tiene que ser un número' }).int('tiene que ser un mes de 1 a 12').min(1, 'tiene que ser un mes de 1 a 12').max(12, 'tiene que ser un mes de 1 a 12');
 
 const nif = z

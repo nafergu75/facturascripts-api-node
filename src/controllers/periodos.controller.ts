@@ -4,8 +4,7 @@ import { badRequest } from '../utils/http-errors';
 import { cambiarBloqueoMes, listarPeriodos, modelosPresentadosDelMes, type EstadoMesManual } from '../services/periodos.service';
 import { deshacerCierreEjercicio, ejecutarCierreEjercicio, previsualizarCierre } from '../services/cierreEjercicio.service';
 import { registrarAuditoria } from '../services/auditoria.service';
-import { ANIO_MINIMO_EJERCICIO } from '../services/fiscalYears.service';
-import { anioEspana } from '../utils/fechas';
+import { validarEjercicio } from '../utils/anios';
 
 // A mano solo se bloquea o se desbloquea un mes: 'cerrado' lo pone el cierre del ejercicio.
 const ESTADOS_MANUALES: EstadoMesManual[] = ['abierto', 'bloqueado'];
@@ -15,14 +14,7 @@ const ESTADOS_MANUALES: EstadoMesManual[] = ['abierto', 'bloqueado'];
  * ejercicio. Leer los meses los crea si faltan: sin este limite, cualquiera con
  * permiso de lectura creaba 12 filas por cada año que pidiera (y uno enorme daba 500).
  */
-function parseEjercicio(raw: unknown): number {
-  const e = Number(raw);
-  const maximo = anioEspana() + 1;
-  if (raw === undefined || raw === '' || !Number.isInteger(e) || e < ANIO_MINIMO_EJERCICIO || e > maximo) {
-    throw badRequest(`Indica el ejercicio con su año, entre ${ANIO_MINIMO_EJERCICIO} y ${maximo}.`, { campo: 'ejercicio' });
-  }
-  return e;
-}
+const parseEjercicio = (raw: unknown): number => validarEjercicio(raw);
 
 export const periodosController = {
   /** Los 12 meses, cada uno con los 303/111 ya presentados que lo cubren (para avisar antes de desbloquear). */

@@ -16,6 +16,7 @@ import fiscalYearsRoutes from '../routes/fiscalYears.routes';
 import periodosRoutes from '../routes/periodos.routes';
 import { errorMiddleware } from '../middleware/error.middleware';
 import { estadoEfectivoEjercicio } from '../services/fiscalYears.service';
+import { anioEspana } from '../utils/fechas';
 
 const SUFIJO = Date.now();
 const EMPRESA = `ejer-conf-${SUFIJO}`;
@@ -90,6 +91,8 @@ describe('GET /fiscal-years: estado único', () => {
       '2019': ['CERRADO', true], // abierto pero con asientos de cierre: cuenta como cerrado
       '2018': ['CERRADO', true], // cierre antiguo (AJUSTE_MANUAL «Regularizacion ejercicio 2018»)
       '2017': ['CERRADO', true], // CIERRE_AUTOMATICO
+      // El del año en curso se crea solo al abrir la lista (la empresa ya tiene ejercicios).
+      [String(anioEspana())]: ['ABIERTO', false],
     });
     const fila = (label: string) => res.body.data.find((f: { label: string }) => f.label === label);
     expect(fila('2023')).toMatchObject({ puedeReabrir: true, motivoNoReabrir: null });

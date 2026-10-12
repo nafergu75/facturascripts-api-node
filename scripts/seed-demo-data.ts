@@ -12,6 +12,7 @@
 
 import { PrismaClient } from '@prisma/client';
 import { randomUUID } from 'crypto';
+import { fechaHaceMeses } from '../src/utils/fechas';
 
 const prisma = new PrismaClient();
 
@@ -132,6 +133,9 @@ async function seedDemoData(): Promise<DemoData> {
   // 4. Crear facturas de ingreso
   console.log('💰 4. Creando facturas de ingreso...');
   const invoices = [];
+  // Facturas del mes pasado y vencimientos de este mes o el siguiente: fechas
+  // relativas a hoy (hora de Madrid), para que el script valga cualquier año.
+  const anioDemo = fechaHaceMeses(1, 1).slice(0, 4);
 
   if (!customer1 || !customer2 || !supplier1 || !supplier2) {
     throw new Error('No se pudieron crear clientes/proveedores');
@@ -143,10 +147,10 @@ async function seedDemoData(): Promise<DemoData> {
       companyId: company.id,
       customerId: customer1.id,
       numero: 1,
-      numeroCompleto: 'FAC-2026-DEMO-001',
+      numeroCompleto: `FAC-${anioDemo}-DEMO-001`,
       serie: 'FAC',
-      fechaEmision: new Date('2026-07-15').toISOString().split('T')[0],
-      fechaVencimiento: new Date('2026-08-15').toISOString().split('T')[0],
+      fechaEmision: fechaHaceMeses(1, 15),
+      fechaVencimiento: fechaHaceMeses(0, 15),
       estado: 'DRAFT',
       baseTotal: 1000,
       ivaTotal: 210,
@@ -161,10 +165,10 @@ async function seedDemoData(): Promise<DemoData> {
       companyId: company.id,
       customerId: customer2.id,
       numero: 2,
-      numeroCompleto: 'FAC-2026-DEMO-002',
+      numeroCompleto: `FAC-${anioDemo}-DEMO-002`,
       serie: 'FAC',
-      fechaEmision: new Date('2026-07-18').toISOString().split('T')[0],
-      fechaVencimiento: new Date('2026-08-18').toISOString().split('T')[0],
+      fechaEmision: fechaHaceMeses(1, 18),
+      fechaVencimiento: fechaHaceMeses(0, 18),
       estado: 'DRAFT',
       baseTotal: 2500,
       ivaTotal: 525,
@@ -179,10 +183,10 @@ async function seedDemoData(): Promise<DemoData> {
       companyId: company.id,
       customerId: customer1.id,
       numero: 3,
-      numeroCompleto: 'FAC-2026-DEMO-003',
+      numeroCompleto: `FAC-${anioDemo}-DEMO-003`,
       serie: 'FAC',
-      fechaEmision: new Date('2026-07-20').toISOString().split('T')[0],
-      fechaVencimiento: new Date('2026-09-20').toISOString().split('T')[0],
+      fechaEmision: fechaHaceMeses(1, 20),
+      fechaVencimiento: fechaHaceMeses(-1, 20),
       estado: 'DRAFT',
       baseTotal: 500,
       ivaTotal: 50,
@@ -210,10 +214,10 @@ async function seedDemoData(): Promise<DemoData> {
       companyId: company.id,
       supplierId: supplier1.id,
       numero: 1,
-      numeroCompleto: 'PROV-2026-DEMO-001',
+      numeroCompleto: `PROV-${anioDemo}-DEMO-001`,
       serie: 'PROV',
-      fechaEmision: new Date('2026-07-10').toISOString().split('T')[0],
-      fechaVencimiento: new Date('2026-08-10').toISOString().split('T')[0],
+      fechaEmision: fechaHaceMeses(1, 10),
+      fechaVencimiento: fechaHaceMeses(0, 10),
       estado: 'DRAFT',
       baseTotal: 500,
       ivaTotal: 105,
@@ -228,10 +232,10 @@ async function seedDemoData(): Promise<DemoData> {
       companyId: company.id,
       supplierId: supplier2.id,
       numero: 2,
-      numeroCompleto: 'PROV-2026-DEMO-002',
+      numeroCompleto: `PROV-${anioDemo}-DEMO-002`,
       serie: 'PROV',
-      fechaEmision: new Date('2026-07-12').toISOString().split('T')[0],
-      fechaVencimiento: new Date('2026-08-12').toISOString().split('T')[0],
+      fechaEmision: fechaHaceMeses(1, 12),
+      fechaVencimiento: fechaHaceMeses(0, 12),
       estado: 'DRAFT',
       baseTotal: 1200,
       ivaTotal: 252,
@@ -241,8 +245,8 @@ async function seedDemoData(): Promise<DemoData> {
   });
 
   console.log(`   ✅ Facturas de compra creadas:`);
-  console.log(`      • PROV-2026-001 - €${expense1.totalFactura.toFixed(2)} (Materiales)`);
-  console.log(`      • PROV-2026-002 - €${expense2.totalFactura.toFixed(2)} (Servicios con IRPF)`);
+  console.log(`      • ${expense1.numeroCompleto} - €${expense1.totalFactura.toFixed(2)} (Materiales)`);
+  console.log(`      • ${expense2.numeroCompleto} - €${expense2.totalFactura.toFixed(2)} (Servicios con IRPF)`);
   console.log();
 
   return {
@@ -275,7 +279,7 @@ async function main() {
   4. Ve a http://localhost:3020/dashboard/motor-contable
   5. Verás los asientos contables generados automáticamente
 
-📝 ASIENTO ESPERADO (Factura FAC-2026-001):
+📝 ASIENTO ESPERADO (Factura ${data.invoices[0].number}):
   DEBE:  430000 (Clientes Acme S.L.)     1.210€
   HABER: 700000 (Ventas)                1.000€
   HABER: 477000 (IVA Repercutido 21%)     210€

@@ -25,6 +25,7 @@ import {
 import { analizarCuentas, crearCuentasNuevas, prepararPlanEmpresa, type CuentaNueva } from './planCuentas';
 // Cerrado: con asientos de regularizacion o cierre (los de ahora y los de cierres anteriores) o marcado CLOSED.
 import { ejercicioCerrado, listarPeriodos } from '../periodos.service';
+import { anioEspana, hoyEspana } from '../../utils/fechas';
 
 /**
  * Meses (MM/AAAA) bloqueados o cerrados del ejercicio que tocan esas fechas.
@@ -173,7 +174,7 @@ export async function previsualizarApertura(
     ejercicio = opciones.ejercicio !== undefined && opciones.ejercicio !== '' ? validarEjercicio(opciones.ejercicio) : Number(fecha.slice(0, 4));
     if (Number(fecha.slice(0, 4)) !== ejercicio) throw badRequest(`La fecha de apertura (${fechaEs(fecha)}) no es del ejercicio ${ejercicio}.`);
   } else {
-    ejercicio = validarEjercicio(opciones.ejercicio ?? new Date().getFullYear());
+    ejercicio = validarEjercicio(opciones.ejercicio ?? anioEspana());
     const fy = await prisma.fiscalYear.findFirst({ where: { companyId, label: String(ejercicio) } });
     fecha = fy?.fechaInicio && fy.fechaInicio.startsWith(String(ejercicio)) ? fy.fechaInicio : `${ejercicio}-01-01`;
   }
@@ -597,7 +598,7 @@ async function guardarSaldosComparativo(companyId: string, ejercicio: number, cu
     gasto: r.gastos,
     beneficio: r.resultado,
     datosJSON: JSON.stringify({ formato: 'saldos-v1', cuentas: combinadas } satisfies DatosComparativo),
-    observaciones: `${origen} el ${new Date().toISOString().slice(0, 10)}`,
+    observaciones: `${origen} el ${hoyEspana()}`,
   };
   if (previo) return prisma.priorYearData.update({ where: { id: previo.id }, data: datos });
   return prisma.priorYearData.create({ data: { companyId, ejercicio, ...datos } });
