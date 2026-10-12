@@ -16,7 +16,7 @@ import { actualizarSerie, crearSerie, listarSeries } from '../series.service';
 import { EJERCICIO_ARRANQUE, type VistaCarga } from './analisis.service';
 import { aplicarBancos, saldos572 } from './bancos.service';
 import { ajustesDe, limpiarBancos, limpiarDatosFiscales, validarEjercicio, type CargaFila } from './cargas.service';
-import { esPuntoVivo, juntarComprobaciones, type AvisoAceptado, type NivelCarga, type PuntoComprobacion, type ResultadoComprobaciones } from './comprobaciones';
+import { esPuntoVivo, juntarComprobaciones, type AvisoAceptado, type BancoComprobar, type NivelCarga, type PuntoComprobacion, type ResultadoComprobaciones } from './comprobaciones';
 import type { AjusteBanco, DatosFiscales } from './datos';
 import { puntosVivos } from './vivas.service';
 
@@ -57,6 +57,8 @@ export interface ComprobacionesArranque extends ResultadoComprobaciones {
   completado: boolean;
   /** Las comprobaciones son las del resumen de un borrador (aun sin importar). */
   deBorrador: boolean;
+  /** Bancos (572) de la apertura con su extracto y su cuenta de Tesoreria, para completarlos en pantalla. */
+  bancos: BancoComprobar[] | null;
 }
 
 /** A4 en vivo de la carga vigente; sin carga vigente, las del borrador; sin nada, null. */
@@ -73,6 +75,7 @@ export async function comprobacionesArranque(companyId: string, ejercicio = EJER
       aceptados: [],
       completado: false,
       deBorrador: true,
+      bancos: vista.bancos ?? null,
     };
   }
   const resumen = resumenDe(vigente);
@@ -103,6 +106,7 @@ export async function comprobacionesArranque(companyId: string, ejercicio = EJER
     carga: { id: vigente.id, version: vigente.version, tipo: vigente.tipo, estado: vigente.estado },
     completado: r.nivel === 'CORRECTO',
     deBorrador: false,
+    bancos: vivos.bancos,
   };
 }
 
