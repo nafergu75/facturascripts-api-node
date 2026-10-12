@@ -122,7 +122,7 @@ describe('empresa nueva: todo el plan, longitud 7 y fichas por NIF', () => {
 
   it('confirmar: crea todo, fija la longitud y enlaza; las fichas nuevas siguen la numeracion', async () => {
     const r = await confirmarPlan(E, { cuentas: plan(), terceros: listado() });
-    expect(r).toMatchObject({ cuentasCreadas: 8, fichasCreadas: 3, fichasEnlazadas: 0, pendientes: 1, longitudFijada: 7 });
+    expect(r).toMatchObject({ cuentasCreadas: 8, fichasCreadas: 3, fichasEnlazadas: 0, pendientes: 1, noSeEnlazan: 0, longitudFijada: 7 });
     expect(await longitudSubcuentasGuardada(E)).toBe(7);
     expect(await prisma.chartOfAccounts.findFirst({ where: { companyId: E, codigo: '6280001' } })).toMatchObject({ nombre: 'Luz oficina', parentCodigo: '628', activo: true });
     const a = await prisma.customer.findFirstOrThrow({ where: { companyId: E, nifCif: nifA } });
@@ -199,7 +199,7 @@ describe('empresa con fichas ya dadas de alta en la app', () => {
 
     const r = await confirmarPlan(E, { cuentas });
     // La 8 ya quedo guardada al asignar la primera subcuenta: el plan de 7 no la cambia.
-    expect(r).toMatchObject({ fichasEnlazadas: 1, longitudFijada: null });
+    expect(r).toMatchObject({ fichasEnlazadas: 1, pendientes: 0, noSeEnlazan: 1, longitudFijada: null });
     expect(await longitudSubcuentasGuardada(E)).toBe(8);
     expect(await prisma.customer.findUniqueOrThrow({ where: { id: sinMovimientos.id } })).toMatchObject({ subcuenta430: '4300005' });
     expect(await prisma.chartOfAccounts.findFirst({ where: { companyId: E, codigo: '4300005' } })).toMatchObject({ nombre: 'Ya Estaba SL', activo: true });

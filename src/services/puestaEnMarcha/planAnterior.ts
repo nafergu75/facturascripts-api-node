@@ -610,6 +610,8 @@ export interface ResultadoPlan {
   fichasEnlazadas: number;
   fichasCreadas: number;
   pendientes: number;
+  /** Subcuentas que no se han podido enlazar solas (su ficha ya va con otra): tambien salen en «Subcuentas sin enlazar». */
+  noSeEnlazan: number;
   longitudFijada: number | null;
 }
 
@@ -754,7 +756,7 @@ export async function confirmarPlan(companyId: string, entrada: EntradaPlan): Pr
         const p = await tx.supplier.findUniqueOrThrow({ where: { id }, select: { id: true, subcuenta400: true, subcuenta410: true } });
         await asignarSubcuentasProveedor(tx, companyId, p);
       }
-      return { vista, cuentasCreadas, fichasEnlazadas, fichasCreadas, pendientes: vista.resumen.pendientes, longitudFijada };
+      return { vista, cuentasCreadas, fichasEnlazadas, fichasCreadas, pendientes: vista.resumen.pendientes, noSeEnlazan: vista.resumen.noSeEnlazan, longitudFijada };
     }, OPCIONES_TX),
   );
 }
