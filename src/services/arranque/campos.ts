@@ -63,7 +63,8 @@ export const PATRONES_CAMPOS: Array<[Campo, RegExp]> = [
   ['amortAcumulada', /^(amortizacion|amort|a) (acumulada|acum)( a 31 12( 2026)?)?$|^amort acum$|^amortizado$|^acumulada$/],
   ['valorResidual', /^valor residual$|^residual$/],
   ['coste', /^(coste|costo|valor|precio|importe) (de )?(adquisicion|compra|inicial)$|^coste$|^valor bruto$|^valor de adquisicion$/],
-  ['coeficiente', /^(coeficiente|coef|porcentaje)( de)?( amortizacion| amort)?$|^tipo (de )?amortizacion$|^amortizacion$|^tasa$/],
+  // «% Amort.» queda en «amort» al normalizar; «Porc. amort.», en «porc amort».
+  ['coeficiente', /^(coeficiente|coef|porcentaje|porc|pct)( de)?( amortizacion| amort| amortiz)?$|^tipo (de )?amortizacion$|^amortizacion$|^amort$|^amortiz$|^tasa$/],
   ['vidaUtil', /^vida util( anos)?$|^anos( de vida)?$|^vida$/],
   ['cuentaAmortAcum', /^(cuenta|cta|subcuenta) (de )?(amortizacion acumulada|amort acum|amortizacion)$/],
   ['cuentaDotacion', /^(cuenta|cta|subcuenta) (de )?(dotacion|gasto)$/],
@@ -108,6 +109,16 @@ export interface CabeceraDetectada {
 }
 
 /**
+ * Titulos que encajan con un dato pero de forma dudosa: si en la misma fila hay
+ * otra columna con un titulo claro para ese dato, manda la clara. En un
+ * listado de inmovilizado o de cartera, «Código» suele ser el numero del bien
+ * o del cliente, y la cuenta va en «Cuenta».
+ */
+const TITULOS_DUDOSOS: Partial<Record<Campo, RegExp>> = {
+  cuenta: /^(cod|codigo|code)$/,
+};
+
+/**
  * Fila de titulos: la de las 40 primeras con mas datos reconocidos (al menos
  * dos distintos). null si no hay ninguna (fichero sin titulos).
  */
@@ -116,9 +127,16 @@ export function detectarCabecera(filas: unknown[][]): CabeceraDetectada | null {
   for (let i = 0; i < Math.min(filas.length, 40); i++) {
     const fila = filas[i] ?? [];
     const campos: Partial<Record<Campo, number>> = {};
+    const dudosos = new Set<Campo>();
     fila.forEach((celda, j) => {
       const c = campoDeTitulo(celda);
-      if (c && campos[c] === undefined) campos[c] = j;
+      if (!c) return;
+      const dudoso = !!TITULOS_DUDOSOS[c]?.test(normalizarTitulo(celda));
+      if (campos[c] === undefined || (dudosos.has(c) && !dudoso)) {
+        campos[c] = j;
+        if (dudoso) dudosos.add(c);
+        else dudosos.delete(c);
+      }
     });
     const n = Object.keys(campos).length;
     if (n >= 2 && (!mejor || n > mejor.n)) mejor = { fila: i, titulos: fila.map(normalizarTitulo), campos, n };
