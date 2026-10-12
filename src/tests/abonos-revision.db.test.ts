@@ -18,6 +18,7 @@ import { calcularBorrador180 } from '../services/borradoresAeat/borrador180.serv
 import { crearInmueble } from '../services/borradoresAeat/inmuebles.service';
 import { calcularModelo115 } from '../services/impuestosCalculo.service';
 import { calcularModelo190, periodoFiscal } from '../services/nominas/fiscal';
+import { avisosAbonosTrasPresentar } from '../services/impuestosModulo.service';
 import { controlCif, letraDni } from '../utils/nif';
 
 const SUFIJO = Date.now();
@@ -248,6 +249,8 @@ describe('180 y 190 cuando la retención de un abono no cabe en su 115 o 111 (de
 describe('error de IVA que reduce sobre una factura de 2026 (llevada fuera de la app)', () => {
   it('pide confirmar que se rectificará el 303 de 2026, deja la marca y avisa', async () => {
     const E = await empresa('iva2026');
+    // La empresa lleva la contabilidad en la app desde 2027 (lo indica en Configuración > Impuestos).
+    await prisma.ajustesFiscales.create({ data: { companyId: E, inicioEnApp: '2027-01-01' } });
     const prov = (await proveedoresService.create(E, { nombreFiscal: 'Electricidad Russafa SL', nifCif: cif() })).id;
     const cuerpo = (confirma: boolean) =>
       factura(prov, 'RX-1', '2027-02-15', -1000, {
@@ -310,6 +313,82 @@ describe('error de IVA que reduce sobre una factura de 2026 (llevada fuera de la
     expect((r.factura.avisos ?? []).filter((a) => a.includes('303'))).toEqual([]);
   });
 
+  it('sin inicio indicado y con datos de 2026, el 303 del 3T de 2026 lo lleva la app: sin presentar, no pide rectificarlo ni avisa', async () => {
+    const E = await empresa('iva3t2026');
+    const prov = (await proveedoresService.create(E, { nombreFiscal: 'Mayorista Benimaclet SL', nifCif: cif() })).id;
+    // Como en la revisión: datos desde el 02/09/2026 y ninguna fecha de inicio indicada.
+    const o = await registrarGasto(E, factura(prov, 'K-51', '2026-09-02', 1000), { contabilizar: 'POSTED' });
+    const cuerpo = (confirma: boolean) =>
+      factura(prov, 'RK-51', '2026-10-05', -1000, {
+        lineas: [lin(-1000), lin(1000, { tipoIva: 10 })],
+        rectificativa: { tipo: 'I', causa: 'ERROR_IVA', originales: [{ id: o.factura.id }], ...(confirma ? { confirmaRectificar303: true } : {}) },
+      });
+    const r = await registrarGasto(E, cuerpo(false), { contabilizar: 'POSTED' });
+    expect((r.factura.avisos ?? []).filter((a) => a.includes('303'))).toEqual([]);
+    expect((await expenseInvoicesService.obtenerPorId(E, r.factura.id)).rectificar303).toBeNull();
+    expect(await avisosAbonosTrasPresentar(E, periodoFiscal(2026, '3T'))).toEqual([]);
+  });
+
+  it('con el 303 del 3T de 2026 marcado como presentado fuera de la app, sí lo pide (como presentado)', async () => {
+    const E = await empresa('iva3tfuera');
+    const prov = (await proveedoresService.create(E, { nombreFiscal: 'Mayorista Orriols SL', nifCif: cif() })).id;
+    const o = await registrarGasto(E, factura(prov, 'K-52', '2026-09-02', 1000), { contabilizar: 'POSTED' });
+    await prisma.modeloImpuesto.create({ data: { companyId: E, codigo: '303', ejercicio: 2026, periodo: '3T', estado: 'presentado', origen: 'fuera-app' } });
+    const e = await error(
+      registrarGasto(
+        E,
+        factura(prov, 'RK-52', '2026-10-05', -1000, { lineas: [lin(-1000), lin(1000, { tipoIva: 10 })], rectificativa: { tipo: 'I', causa: 'ERROR_IVA', originales: [{ id: o.factura.id }] } }),
+        { contabilizar: 'POSTED' },
+      ),
+    );
+    expect(e.status).toBe(409);
+    expect(e.message).toMatch(/El 303 del 3T de 2026 ya está presentado\. Regístrala igualmente/);
+  });
+
+  it('una devolución registrada antes del inicio indicado también pide rectificar ese 303 (presentado fuera), sin enlace; una factura normal, no', async () => {
+    const E = await empresa('devinicio');
+    await prisma.ajustesFiscales.create({ data: { companyId: E, inicioEnApp: '2027-04-01' } });
+    const prov = (await proveedoresService.create(E, { nombreFiscal: 'Papelería Nazaret SL', nifCif: cif() })).id;
+    const o = await registrarGasto(E, factura(prov, 'F-9', '2027-01-20', 1000), { contabilizar: 'POSTED' });
+    const cuerpo = (confirma: boolean) => abonoDe(prov, 'R-9', '2027-02-15', -100, [{ id: o.factura.id }], confirma ? { rectificativa: { tipo: 'I', causa: 'DEVOLUCION', originales: [{ id: o.factura.id }], confirmaRectificar303: true } } : {});
+    let detalles: Record<string, unknown> = {};
+    try {
+      await registrarGasto(E, cuerpo(false), { contabilizar: 'POSTED' });
+      throw new Error('No dio error');
+    } catch (err) {
+      expect((err as { statusCode: number }).statusCode).toBe(409);
+      expect((err as Error).message).toMatch(/^Esta rectificativa reduce el IVA que dedujiste .*El 303 del 1T de 2027 se presentó fuera de la app\./);
+      detalles = (err as { details: Record<string, unknown> }).details;
+    }
+    expect(detalles).toMatchObject({ motivo: 'rectificar_303', ejercicio: 2027, periodo: '1T', enlace: null, fueraDeLaApp: true });
+    const r = await registrarGasto(E, cuerpo(true), { contabilizar: 'POSTED' });
+    expect((await expenseInvoicesService.obtenerPorId(E, r.factura.id)).rectificar303).toMatchObject({ ejercicio: 2027, periodo: '1T', enlace: null });
+    // Una factura normal de esa fecha no se frena (no reduce el IVA de nadie).
+    const normal = await registrarGasto(E, factura(prov, 'F-10', '2027-02-16', 50), { contabilizar: 'POSTED' });
+    expect(normal.factura.id).toBeTruthy();
+  });
+
+  it('si ese año la empresa declaraba el IVA cada mes, el aviso pone el mes, no el trimestre', async () => {
+    const E = await empresa('ivamensual');
+    await prisma.ajustesFiscales.create({ data: { companyId: E, inicioEnApp: '2027-01-01', periodicidadIva: 'MENSUAL', redeme: true } });
+    await prisma.ajustesFiscalesVigencia.create({ data: { companyId: E, desde: '2026-01-01', periodicidadIva: 'MENSUAL', redeme: true, sii: false, granEmpresa: false } });
+    const prov = (await proveedoresService.create(E, { nombreFiscal: 'Electricidad Marxalenes SL', nifCif: cif() })).id;
+    try {
+      await registrarGasto(
+        E,
+        factura(prov, 'RX-11', '2027-02-15', -1000, {
+          lineas: [lin(-1000), lin(1000, { tipoIva: 10 })],
+          rectificativa: { tipo: 'I', causa: 'ERROR_IVA', originales: [{ numero: 'F-2026/91', fecha: '2026-11-20' }] },
+        }),
+        { contabilizar: 'POSTED' },
+      );
+      throw new Error('No dio error');
+    } catch (err) {
+      expect((err as Error).message).toMatch(/El 303 de noviembre de 2026 se presentó fuera de la app\./);
+      expect((err as { details: Record<string, unknown> }).details).toMatchObject({ ejercicio: 2026, periodo: '11' });
+    }
+  });
+
   it('una ERROR_IVA de una factura de 2027 sin presentar sigue sin pedir nada', async () => {
     const E = await empresa('iva2027');
     const prov = (await proveedoresService.create(E, { nombreFiscal: 'Electricidad Benicalap SL', nifCif: cif() })).id;
@@ -320,5 +399,36 @@ describe('error de IVA que reduce sobre una factura de 2026 (llevada fuera de la
       { contabilizar: 'POSTED' },
     );
     expect((r.factura.avisos ?? []).filter((a) => a.includes('303'))).toEqual([]);
+  });
+});
+
+describe('la confirmación de rectificar el 303 deja de valer al presentar su rectificativa', () => {
+  it('sin aviso ni recordatorio después, y corregir los importes vuelve a dar 409', async () => {
+    const E = await empresa('rect303');
+    const prov = (await proveedoresService.create(E, { nombreFiscal: 'Mayorista Malilla SL', nifCif: cif() })).id;
+    const o = await registrarGasto(E, factura(prov, 'F-30', '2027-01-20', 1000), { contabilizar: 'POSTED' });
+    // El 303 del 1T ya se presentó desde la app (antes de registrar el abono).
+    await prisma.modeloImpuesto.create({ data: { companyId: E, codigo: '303', ejercicio: 2027, periodo: '1T', estado: 'presentado' } });
+    await prisma.declaracionAeat.create({
+      data: { companyId: E, codigo: '303', ejercicio: 2027, periodo: '1T', secuencia: 1, tipo: 'N', estado: 'presentada', presentadoEn: new Date(Date.now() - 3_600_000) },
+    });
+    const cuerpo = (precio: number) =>
+      abonoDe(prov, 'R-30', '2027-02-20', precio, [{ id: o.factura.id }], { rectificativa: { tipo: 'I', causa: 'DEVOLUCION', originales: [{ id: o.factura.id }], confirmaRectificar303: true } });
+    const r = await registrarGasto(E, cuerpo(-100), { contabilizar: 'POSTED' });
+    expect((await expenseInvoicesService.obtenerPorId(E, r.factura.id)).rectificar303).not.toBeNull();
+    expect(await avisosAbonosTrasPresentar(E, periodoFiscal(2027, '1T'))).toHaveLength(1);
+    // Con la confirmación en pie se puede corregir sin volver a frenar.
+    await editarGasto(E, r.factura.id, cuerpo(-90));
+
+    // Se presenta la autoliquidación rectificativa (complementaria) del 1T, que ya lleva el abono.
+    await prisma.declaracionAeat.create({
+      data: { companyId: E, codigo: '303', ejercicio: 2027, periodo: '1T', secuencia: 2, tipo: 'C', estado: 'presentada', presentadoEn: new Date(Date.now() + 60_000) },
+    });
+    const ficha = await expenseInvoicesService.obtenerPorId(E, r.factura.id);
+    expect(ficha.rectificar303).toBeNull();
+    expect(ficha.acciones.editar.permitido).toBe(false);
+    expect(await avisosAbonosTrasPresentar(E, periodoFiscal(2027, '1T'))).toEqual([]);
+    const e = await error(editarGasto(E, r.factura.id, cuerpo(-80)));
+    expect(e.status).toBe(409);
   });
 });
