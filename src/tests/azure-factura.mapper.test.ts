@@ -11,7 +11,9 @@ import {
   mapearFacturaAzure,
   MOTIVO_A_PAGAR_DEL_TOTAL,
   MOTIVO_A_PAGAR_SIN_TOTAL,
+  MOTIVO_BASE_CALCULADA,
   MOTIVO_BASE_DUDOSA,
+  MOTIVO_BASE_EXENTA_RESTO,
   MOTIVO_TOTAL_SUMADO,
   MOTIVO_TOTAL_SUMADO_CON_RETENCION,
 } from '../services/lectura/azure-factura.mapper';
@@ -125,6 +127,41 @@ describe('desglose', () => {
     expect(lectura.totales.cuotaIva.valor).toBe(42);
     expect(lectura.totales.cuotaRecargo.valor).toBe(10.4);
     expect(lectura.totales.totalFactura.valor).toBe(252.4);
+  });
+
+  it('una sola base exenta: es el SubTotal leido, sin motivo de base calculada', () => {
+    const datos = ar('resultado-simple');
+    const f = datos.documents![0].fields!;
+    delete f.Items;
+    const detalle = f.TaxDetails.valueArray![0].valueObject!;
+    detalle.Rate.valueString = '0%';
+    detalle.Amount.valueCurrency!.amount = 0;
+    delete detalle.NetAmount;
+    f.TotalTax.valueCurrency!.amount = 0;
+    f.InvoiceTotal.valueCurrency!.amount = 200;
+    f.AmountDue.valueCurrency!.amount = 200;
+    const r = mapearFacturaAzure(datos);
+    if (r.tipo !== 'hecho') throw new Error('x');
+    expect(r.lectura.desglose).toHaveLength(1);
+    expect(r.lectura.desglose[0]).toMatchObject({ tipoIva: 0, base: { valor: 200, fuente: 'azure', confianza: 0.94 } });
+    expect(r.lectura.desglose[0].base.motivo).toBeUndefined();
+  });
+
+  it('una base exenta junto a otra con IVA: lo que falta del SubTotal, con su propio motivo', () => {
+    const datos = ar('resultado-iva-multiple');
+    const f = datos.documents![0].fields!;
+    const detalles = f.TaxDetails.valueArray!;
+    const exento = JSON.parse(JSON.stringify(detalles[1]));
+    exento.valueObject.Rate.valueString = '0%';
+    exento.valueObject.Amount.valueCurrency.amount = 0;
+    delete exento.valueObject.NetAmount;
+    detalles[1] = exento;
+    delete f.Items;
+    const r = mapearFacturaAzure(datos);
+    if (r.tipo !== 'hecho') throw new Error('x');
+    const cero = r.lectura.desglose.find((t) => t.tipoIva === 0)!;
+    expect(cero.base.motivo).toBe(MOTIVO_BASE_EXENTA_RESTO);
+    expect(cero.base.motivo).not.toBe(MOTIVO_BASE_CALCULADA);
   });
 
   it('sin TaxDetails: un tramo con el tipo mas cercano, para revisar', () => {

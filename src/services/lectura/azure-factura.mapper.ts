@@ -27,6 +27,8 @@ export const TIPOS_RETENCION = [1, 2, 7, 15, 19];
 
 export const MOTIVO_BASE_DUDOSA = 'No se ha podido saber la base de este tipo con seguridad: compruébala.';
 export const MOTIVO_BASE_CALCULADA = 'Base calculada a partir de la cuota: compruébala.';
+/** Base exenta de una factura con otros tipos: lo que queda del subtotal tras las demas bases. */
+export const MOTIVO_BASE_EXENTA_RESTO = 'Base exenta calculada restando las demás bases al subtotal: compruébala.';
 export const MOTIVO_RETENCION_CALCULADA = 'Retención calculada a partir del total a pagar: compruébala.';
 export const AVISO_VARIAS_FACTURAS = 'El archivo parece tener varias facturas; solo se ha leído la primera.';
 export const MOTIVO_A_PAGAR_SIN_TOTAL = 'No se ha leído el total a pagar: se ha calculado restando la retención al total de la factura. Compruébalo.';
@@ -178,11 +180,18 @@ function construirDesglose(f: Record<string, DocumentField>, lineas: LineaLeida[
     }
   }
 
-  // 4) Tipo 0 %: la base es lo que falta hasta el SubTotal.
+  // 4) Tipo 0 %: la base es lo que falta hasta el SubTotal. Si es el unico tramo,
+  //    es el propio SubTotal leido (con su confianza, sin motivo); con otros tramos,
+  //    sale de restarlos y lo dice (no se calcula «a partir de la cuota»: no lleva).
   for (const t of tramos.filter((x) => x.tipoIva === 0 && x.base.valor === null)) {
-    const otras = tramos.filter((x) => x !== t).reduce((s, x) => s + (x.base.valor ?? 0), 0);
+    const demas = tramos.filter((x) => x !== t);
+    if (!demas.length && subTotal !== null && subTotal > 0) {
+      t.base = campo(f.SubTotal, subTotal);
+      continue;
+    }
+    const otras = demas.reduce((s, x) => s + (x.base.valor ?? 0), 0);
     const resto = subTotal !== null ? redondear2(subTotal - otras) : null;
-    t.base = resto !== null && resto > 0 ? { valor: resto, confianza: null, fuente: 'calculado', motivo: MOTIVO_BASE_CALCULADA } : { valor: null, confianza: null, fuente: 'calculado', motivo: MOTIVO_BASE_DUDOSA };
+    t.base = resto !== null && resto > 0 ? { valor: resto, confianza: null, fuente: 'calculado', motivo: MOTIVO_BASE_EXENTA_RESTO } : { valor: null, confianza: null, fuente: 'calculado', motivo: MOTIVO_BASE_DUDOSA };
   }
 
   // 5) Recargo de equivalencia: con su IVA.
