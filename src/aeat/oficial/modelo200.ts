@@ -253,7 +253,15 @@ export function construirModelo200(e: Entrada200): Declaracion200 {
   const c302 = Math.max(0, imp18);
   const c501 = c500 + c301 - c302;
   const c550 = c501; // sin detalle de correcciones (página 13)
-  const tg = tipoGravamen200(e.ejercicio, e.incnAnterior, e.nuevaCreacion);
+  // Sin la cifra de negocios del año anterior no se sabe el tipo de gravamen ni
+  // los caracteres de la página 1: no se supone el 25 %, se pide (y no hay fichero).
+  // Mientras falta, la pantalla enseña la cuota al tipo general, marcada como provisional.
+  const sinIncn = e.incnAnterior === null || e.incnAnterior === undefined;
+  const tgCalculado = tipoGravamen200(e.ejercicio, e.incnAnterior, e.nuevaCreacion);
+  const tg: TipoGravamen200 =
+    sinIncn && tgCalculado.clave !== 'nueva'
+      ? { ...tgCalculado, descripcion: `Provisional: falta la cifra de negocios de ${e.ejercicio - 1}. Hasta que la indiques, la cuota se calcula al 25 %.` }
+      : tgCalculado;
   const bins = c(Math.max(0, e.binsPendientes ?? 0));
   // Límite del art. 26 LIS: el 70 % de la base previa, y siempre hasta 1 millón (sin límite en entidades de nueva creación).
   const limite = e.nuevaCreacion ? Math.max(0, c550) : Math.max(0, Math.min(c550, Math.max(c(1_000_000), Math.round(c550 * 0.7))));
@@ -283,8 +291,13 @@ export function construirModelo200(e: Entrada200): Declaracion200 {
 
   if (bins === 0) advertencias.push('No se han indicado bases imponibles negativas de ejercicios anteriores: si las hay, indícalas para compensarlas ([00547]) y completa la página 15 en Sociedades WEB.');
   if (ret === 0 && pf.every((x) => x === 0)) advertencias.push('No se han indicado retenciones ni pagos fraccionados (modelo 202): si los hubo, indícalos ([01766], [00601], [00603] y [00605]).');
-  if (e.incnAnterior === null || e.incnAnterior === undefined) advertencias.push('No hay cifra de negocios del año anterior: se aplica el tipo general del 25 %. Revisa el tipo de gravamen.');
-  advertencias.push(`Tipo de gravamen: ${tg.descripcion} Revísalo cada año (Ley 7/2024).`);
+  if (sinIncn) {
+    errores.push(
+      `No consta la cifra de negocios de ${e.ejercicio - 1}, y de ella dependen el tipo de gravamen y los datos de la página 1. Escríbela en «Cifra de negocios de ${e.ejercicio - 1}», en esta misma pantalla, o importa la cuenta de resultados de ${e.ejercicio - 1} en Contabilidad > Puesta en marcha > Años anteriores.`,
+    );
+  } else {
+    advertencias.push(`Tipo de gravamen: ${tg.descripcion} Revísalo cada año (Ley 7/2024).`);
+  }
   if (c550 < 0) advertencias.push(`La base imponible sale negativa (${eur(c550).toFixed(2)} €): queda pendiente de compensar en los próximos ejercicios.`);
   if (id.fechaConstitucion && Number(id.fechaConstitucion.slice(0, 4)) >= e.ejercicio - 2 && !e.nuevaCreacion) {
     advertencias.push('La sociedad es de constitución reciente: comprueba si le toca el tipo del 15 % de las entidades de nueva creación.');
