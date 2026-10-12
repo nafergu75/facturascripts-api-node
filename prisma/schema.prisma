@@ -1334,6 +1334,11 @@ model LegalConfig {
   // Persona de contacto de los modelos informativos de la AEAT (349, 180...):
   // apellidos y nombre, en ese orden.
   personaContacto            String?  @db.VarChar(80)
+  // Datos estadísticos de la página 1 del 390 (apartado 3) de la actividad
+  // principal: clave (A01 arrendadores de inmuebles, A03 resto de actividades
+  // empresariales...) y epígrafe del IAE sin puntos (6151, 841...).
+  claveActividad             String?  @db.VarChar(3)
+  epigrafeIae                String?  @db.VarChar(4)
   fechaConstitucion          String? // YYYY-MM-DD
   // Logo para las facturas (PNG o JPG, maximo 1 MB). En la BD y no en el
   // almacenamiento de ficheros: es pequeno y asi no depende de Vercel Blob.

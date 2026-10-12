@@ -36,6 +36,10 @@ export interface LegalConfigInput {
   web?: string | null;
   /** Persona de contacto de los modelos informativos (apellidos y nombre). */
   personaContacto?: string | null;
+  /** 390: clave de la actividad principal (A01, A03...). */
+  claveActividad?: string | null;
+  /** 390: epígrafe del IAE de la actividad principal, sin puntos. */
+  epigrafeIae?: string | null;
   pais?: string;
   /** Moneda de la contabilidad (EUR o USD). Ver actualizar(). */
   monedaCuenta?: string;
@@ -61,6 +65,8 @@ const TEXTOS = [
   'email',
   'web',
   'personaContacto',
+  'claveActividad',
+  'epigrafeIae',
 ] as const;
 // AUTONOMO: empresario individual (no se inscribe en el Registro Mercantil).
 const TIPOS_SOCIEDAD = ['SA', 'SL', 'SLU', 'SCP', 'AUTONOMO', 'OTRA'];
@@ -154,6 +160,22 @@ export function limpiarLegalConfig(datos: Record<string, unknown>, paisActual = 
       throw badRequest('El CNAE tiene que ser un código CNAE-2025 de 2 a 4 cifras (por ejemplo 4711).', { campo: 'cnae' });
     }
     limpio.cnae = cnae;
+  }
+  // Datos estadísticos del 390: clave de actividad (A01, A03, B01...) y
+  // epígrafe del IAE de hasta 4 caracteres (615.1 se guarda como 6151).
+  if (typeof limpio.claveActividad === 'string') {
+    const clave = (limpio.claveActividad as string).toUpperCase().replace(/\s/g, '');
+    if (!/^[AB]\d{2}$/.test(clave)) {
+      throw badRequest('La clave de actividad del 390 es una letra y dos cifras: A01 si arrienda inmuebles, A03 para el resto de actividades empresariales...', { campo: 'claveActividad' });
+    }
+    limpio.claveActividad = clave;
+  }
+  if (typeof limpio.epigrafeIae === 'string') {
+    const epigrafe = (limpio.epigrafeIae as string).toUpperCase().replace(/[\s.]/g, '');
+    if (!/^[0-9A-Z]{1,4}$/.test(epigrafe)) {
+      throw badRequest('El epígrafe del IAE tiene como mucho 4 cifras (por ejemplo 615.1 o 6151).', { campo: 'epigrafeIae' });
+    }
+    limpio.epigrafeIae = epigrafe;
   }
   if (typeof limpio.email === 'string' && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(limpio.email as string)) {
     throw badRequest('El email de la empresa no es válido.', { campo: 'email' });
