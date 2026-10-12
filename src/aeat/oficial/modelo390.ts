@@ -271,7 +271,7 @@ export function construirModelo390(e: Entrada390): Declaracion390 {
   if (!id.actividad) advertencias.push('Falta la actividad principal (página 1, apartado 3): complétala en la sede.');
   if (!id.claveActividad || !id.epigrafeIae) {
     advertencias.push(
-      'Falta la clave de actividad o el epígrafe del IAE de la actividad principal (página 1 del 390). Rellénalos en Registro Mercantil > Datos de la sociedad, o complétalos en la sede después de importar el fichero.',
+      'Falta la clave de actividad o el epígrafe del IAE de la actividad principal (página 1 del 390). Rellénalos en Más > Datos de la empresa, apartado Identificación, o complétalos en la sede después de importar el fichero.',
     );
   }
 
