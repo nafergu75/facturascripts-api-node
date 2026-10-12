@@ -261,6 +261,24 @@ describe('error de IVA que reduce sobre una factura de 2026 (llevada fuera de la
     expect(r.factura.avisos).toContainEqual(expect.stringMatching(/^Registrada en el 4T de 2026, que ya está presentado/));
     const marca = await prisma.auditLog.findFirst({ where: { companyId: E, action: 'RECTIFICAR_303_PENDIENTE', resourceId: r.factura.id } });
     expect(marca?.meta).toMatchObject({ ejercicio: 2026, periodo: '4T' });
+    // La ficha lo sigue recordando al volver a abrirla (no solo al guardarla).
+    const ficha = await expenseInvoicesService.obtenerPorId(E, r.factura.id);
+    expect(ficha.rectificar303).toMatchObject({ ejercicio: 2026, periodo: '4T', enlace: null });
+    expect(ficha.rectificar303?.aviso).toMatch(/^Registrado después de presentar el 303 del 4T de 2026 \(presentado fuera de la app\): prepara su autoliquidación rectificativa\./);
+  });
+
+  it('con el 303 presentado en la app, la ficha enlaza a ese 303; sin confirmar no hay recordatorio', async () => {
+    const E = await empresa('iva303');
+    const prov = (await proveedoresService.create(E, { nombreFiscal: 'Mayorista Campanar SL', nifCif: cif() })).id;
+    const o = await registrarGasto(E, factura(prov, 'F-1', '2027-01-20', 1000), { contabilizar: 'POSTED' });
+    expect((await expenseInvoicesService.obtenerPorId(E, o.factura.id)).rectificar303).toBeNull();
+    await prisma.modeloImpuesto.create({ data: { companyId: E, codigo: '303', ejercicio: 2027, periodo: '1T', estado: 'presentado' } });
+    const r = await registrarGasto(E, abonoDe(prov, 'R-1', '2027-02-20', -100, [{ id: o.factura.id }], { rectificativa: { tipo: 'I', causa: 'DEVOLUCION', originales: [{ id: o.factura.id }], confirmaRectificar303: true } }), {
+      contabilizar: 'POSTED',
+    });
+    const ficha = await expenseInvoicesService.obtenerPorId(E, r.factura.id);
+    expect(ficha.rectificar303).toMatchObject({ ejercicio: 2027, periodo: '1T', enlace: '/dashboard/fiscal/modelo-303' });
+    expect(ficha.rectificar303?.aviso).toMatch(/^Registrado después de presentar el 303 del 1T de 2027: prepara/);
   });
 
   it('una ERROR_IVA de una factura de 2027 sin presentar sigue sin pedir nada', async () => {
