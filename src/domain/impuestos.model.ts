@@ -327,6 +327,8 @@ export interface DatosModelo115 {
   avisos?: string[];
   /** Retencion de abonos que no cabe en este periodo ([03] como mucho hasta cero): pasa de la 4751 a la 4709. */
   excesoAbonos?: number;
+  /** Base de esos abonos que no cabe ([02] como mucho hasta cero). El 180 la descuenta al cuadrar con los 115. */
+  excesoBaseAbonos?: number;
 }
 
 /** Modelo 349 — operaciones intracomunitarias. */

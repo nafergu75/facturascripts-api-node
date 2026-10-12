@@ -989,6 +989,7 @@ export async function calcularModelo115(companyId: string, periodo: PeriodoFisca
     resultadoAnteriores: 0,
     resultadoIngresar: retenciones / 100,
     ...(ret.exceso > 0 ? { excesoAbonos: ret.exceso / 100 } : {}),
+    ...(base.exceso > 0 ? { excesoBaseAbonos: base.exceso / 100 } : {}),
     perceptores: lista
       .map((a) => ({ nif: a.nif, nombre: a.nombre, base: a.base / 100, retencion: a.retencion / 100, facturas: a.facturas }))
       .sort((x, y) => x.nombre.localeCompare(y.nombre, 'es')),
