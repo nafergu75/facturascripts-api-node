@@ -69,6 +69,8 @@ export interface PlanRectificativa {
   observacionesLibro: string;
   /** Una original de fuera que no estaba pagada: el alta crea la compensacion «de fuera». */
   compensarFuera: boolean;
+  /** Total de la rectificativa (con IVA y menos la retencion), en centimos y con signo. */
+  totalCentimos: number;
   avisos: string[];
 }
 
@@ -318,8 +320,53 @@ export async function prepararRectificativa(
       periodo: r.periodo ?? null,
     }),
     compensarFuera: r.yaPagada === false && !originalesApp.length && !r.periodo && totalCent < 0,
+    totalCentimos: totalCent,
     avisos,
   };
+}
+
+/** Las originales de la app de una rectificativa (sin repetir). */
+export const originalesDelPlan = (plan: PlanRectificativa | null): string[] =>
+  plan ? [...new Set(plan.enlaces.map((e) => e.originalId).filter((x): x is string => !!x))] : [];
+
+/** Bloquea facturas de gasto (SELECT ... FOR UPDATE) en orden de id, para que dos operaciones a la vez no se crucen. */
+export async function bloquearFacturasGasto(tx: TransaccionBD, ids: string[]): Promise<void> {
+  for (const id of [...new Set(ids)].sort()) await tx.$queryRaw`SELECT id FROM ExpenseInvoice WHERE id = ${id} FOR UPDATE`;
+}
+
+/**
+ * Dentro de la transaccion del alta o de la correccion de una rectificativa,
+ * con sus originales ya bloqueadas (bloquearFacturasGasto, antes de cualquier
+ * otra lectura): vuelve a mirar que sigan vigentes y del mismo proveedor, y el
+ * limite de la original (ella mas sus rectificativas no pueden quedar por
+ * debajo de cero). Sin esto, dos abonos registrados a la vez se saltaban el
+ * limite, y un abono quedaba enlazado a una original anulada a la vez.
+ */
+export async function comprobarOriginalesEnTx(tx: TransaccionBD, companyId: string, plan: PlanRectificativa | null, supplierId: string, excluirId?: string): Promise<void> {
+  const ids = originalesDelPlan(plan);
+  if (!plan || !ids.length) return;
+  const fs = await tx.expenseInvoice.findMany({ where: { companyId, id: { in: ids } } });
+  for (const id of ids) {
+    const f = fs.find((x) => x.id === id);
+    const num = f ? numeroDe(f) : '';
+    if (!f) throw conflict('La factura que rectifica ya no existe: vuelve a elegirla.', { campo: 'rectificativa', motivo: 'original_cambiada' });
+    if (f.estado === 'ANULADA') {
+      throw conflict(`La factura ${num} se ha anulado mientras registrabas el abono: ya no se puede rectificar.`, { campo: 'rectificativa', motivo: 'original_cambiada' });
+    }
+    if (f.estado === 'DRAFT') throw conflict(`Aprueba antes la factura ${num}: está pendiente de revisar en el Motor contable.`, { campo: 'rectificativa', motivo: 'original_cambiada' });
+    if (f.supplierId !== supplierId) throw conflict(`La factura ${num} es de otro proveedor.`, { campo: 'rectificativa', motivo: 'original_cambiada' });
+  }
+  if (plan.enlaces.length === 1 && plan.enlaces[0].originalId) {
+    const o = fs[0];
+    const otras = await rectificativasVigentesDe(tx, companyId, [o.id], excluirId);
+    const queda = aCentimos(Number(o.totalFactura)) + otras.reduce((a, e) => a + totalEnlace(e), 0) + plan.totalCentimos;
+    if (queda < 0) {
+      throw badRequest(
+        `Con este abono la factura ${numeroDe(o)} quedaría en ${importeTexto(euros(queda))}: el abono no puede pasar de lo que se facturó. Revisa el importe.`,
+        { campo: 'lineas' },
+      );
+    }
+  }
 }
 
 /** Tramos de un mes (recortados a desde y hasta) entre dos fechas AAAA-MM-DD. */
@@ -427,8 +474,8 @@ export async function guardarEnlaces(tx: TransaccionBD, companyId: string, recti
  * 409 si la factura tiene rectificativas vigentes: no se puede anular ni
  * cambiar sus importes (sí sus datos sin importes: vencimiento, observaciones).
  */
-export async function comprobarSinRectificativas(companyId: string, id: string, accion: 'anular' | 'corregir'): Promise<void> {
-  const vigentes = await rectificativasVigentesDe(prisma, companyId, [id]);
+export async function comprobarSinRectificativas(companyId: string, id: string, accion: 'anular' | 'corregir', db: Db = prisma): Promise<void> {
+  const vigentes = await rectificativasVigentesDe(db, companyId, [id]);
   if (!vigentes.length) return;
   const lista = [...new Set(vigentes.map((e) => numeroDe(e.rectificativa)))].join(', ');
   const una = vigentes.length === 1;
