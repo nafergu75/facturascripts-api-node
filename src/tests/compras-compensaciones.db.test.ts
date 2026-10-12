@@ -269,10 +269,13 @@ describe('abono del lector y cruce con el mayor', () => {
   let E: string;
   let banco: string;
   let prov: string;
+  let otro: string;
 
   beforeAll(async () => {
     ({ E, banco } = await empresa('lector'));
     prov = (await proveedoresService.create(E, { nombreFiscal: 'Papelería Lectora SL', nifCif: cif() })).id;
+    // Otro proveedor para los abonos de facturas de fuera: el cruce con el mayor de `prov` no los lleva.
+    otro = (await proveedoresService.create(E, { nombreFiscal: 'Imprenta Ruzafa SL', nifCif: cif() })).id;
   });
 
   it('el borrador del lector no compensa hasta aprobar el asiento', async () => {
@@ -282,6 +285,76 @@ describe('abono del lector y cruce con el mayor', () => {
     await new AccountingEngineController().aprobarAsiento(E, a.asientoId, 'u-test');
     expect(await ficha(E, o.factura.id)).toMatchObject({ importePendiente: 0, estadoPago: 'PAGADA' });
     expect(await ficha(E, a.factura.id)).toMatchObject({ estado: 'ACCOUNTED', aFavor: 0 });
+  });
+
+  it('borrador del lector con la original de fuera y «No, se descuenta de lo que le debo»: al aprobarlo se aplica a ella', async () => {
+    const a = await registrarGasto(
+      E,
+      factura(otro, 'R-22', '2027-01-20', -100, {
+        lineas: [lin(-100, { cuenta: '608' })],
+        rectificativa: { tipo: 'I', causa: 'DEVOLUCION', originales: [{ numero: 'F-2026/118', fecha: '2026-11-30' }], yaPagada: false },
+      }),
+      { contabilizar: 'DRAFT' },
+    );
+    // En borrador no compensa todavía, pero la respuesta queda guardada (la pantalla la vuelve a enseñar al corregirlo).
+    const borrador = await ficha(E, a.factura.id);
+    expect(borrador.compensaciones).toEqual([]);
+    expect(borrador.rectificativa).toMatchObject({ compensarFuera: true });
+    await new AccountingEngineController().aprobarAsiento(E, a.asientoId, 'u-test');
+    const f = await ficha(E, a.factura.id);
+    expect(f).toMatchObject({ estado: 'ACCOUNTED', aFavor: 0, estadoPago: 'PAGADA' });
+    expect(f.compensaciones).toEqual([expect.objectContaining({ origen: 'AUTO', importe: 121, otra: expect.objectContaining({ fuera: true, numero: 'F-2026/118' }) })]);
+  });
+
+  it('con «Sí, ya la pagué» el borrador aprobado queda a favor', async () => {
+    const a = await registrarGasto(
+      E,
+      factura(otro, 'R-23', '2027-01-20', -100, {
+        lineas: [lin(-100, { cuenta: '608' })],
+        rectificativa: { tipo: 'I', causa: 'DEVOLUCION', originales: [{ numero: 'F-2026/119', fecha: '2026-11-30' }], yaPagada: true },
+      }),
+      { contabilizar: 'DRAFT' },
+    );
+    expect((await ficha(E, a.factura.id)).rectificativa).toMatchObject({ compensarFuera: false });
+    await new AccountingEngineController().aprobarAsiento(E, a.asientoId, 'u-test');
+    expect(await ficha(E, a.factura.id)).toMatchObject({ estado: 'ACCOUNTED', aFavor: 121, estadoPago: 'PENDIENTE', compensaciones: [] });
+  });
+
+  it('aprobar el borrador de un abono mientras se paga la original no la deja pagada dos veces; dos aprobaciones a la vez, solo una', async () => {
+    const o = await registrarGasto(E, factura(otro, 'F-24', '2027-01-10', 100), { contabilizar: 'POSTED' });
+    const a = await registrarGasto(E, abonoDe(otro, 'R-24', '2027-01-20', -100, [{ id: o.factura.id }]), { contabilizar: 'DRAFT' });
+    // Otra operación retiene la original; mientras, se paga (espera a la original) y se aprueba el abono.
+    let soltar: () => void = () => undefined;
+    const retenida = new Promise<void>((r) => (soltar = r));
+    let bloqueada: () => void = () => undefined;
+    const yaBloqueada = new Promise<void>((r) => (bloqueada = r));
+    const retener = prisma.$transaction(
+      async (tx) => {
+        await tx.$queryRaw`SELECT id FROM ExpenseInvoice WHERE id = ${o.factura.id} FOR UPDATE`;
+        bloqueada();
+        await retenida;
+      },
+      { timeout: 30_000 },
+    );
+    await yaBloqueada;
+    const pago = registrarCobroFactura(E, 'GASTO', o.factura.id, { importe: 121, cuentaBancariaId: banco, fecha: '2027-01-25' });
+    await new Promise((r) => setTimeout(r, 300));
+    const aprobar = new AccountingEngineController().aprobarAsiento(E, a.asientoId, 'u-test');
+    const otraAprobacion = new AccountingEngineController().aprobarAsiento(E, a.asientoId, 'u-test');
+    await new Promise((r) => setTimeout(r, 500));
+    soltar();
+    await retener;
+    const r = await Promise.allSettled([pago, aprobar, otraAprobacion]);
+    expect(r.filter((x) => x.status === 'fulfilled').length).toBeGreaterThanOrEqual(2);
+    // Una sola aprobación pasa.
+    expect(r.slice(1).filter((x) => x.status === 'fulfilled')).toHaveLength(1);
+    const fo = await ficha(E, o.factura.id);
+    expect(fo.importePendiente).toBeGreaterThanOrEqual(0);
+    // Lo pagado más lo compensado no pasa del total de la original.
+    const compensado = await prisma.compensacionGasto.findMany({ where: { companyId: E, facturaId: o.factura.id, estado: 'ACTIVO' } });
+    const pagos = r[0].status === 'fulfilled' ? 12100 : 0;
+    expect(pagos + compensado.reduce((s, c) => s + aCentimos(Number(c.importe)), 0)).toBeLessThanOrEqual(12100);
+    expect(await ficha(E, a.factura.id)).toMatchObject({ estado: 'ACCOUNTED' });
   });
 
   it('la cartera y el mayor por proveedor cuadran tras devoluciones y compensaciones', async () => {
