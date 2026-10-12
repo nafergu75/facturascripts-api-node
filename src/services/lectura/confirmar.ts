@@ -48,6 +48,11 @@ const necesitaRevision = (fila: { estadoValidacion: string | null }) => fila.est
 /** Las validaciones que se guardaron al terminar la lectura. */
 const validacionesGuardadas = (fila: { validaciones: unknown }): ResultadoValidacion[] => (Array.isArray(fila.validaciones) ? (fila.validaciones as ResultadoValidacion[]) : []);
 
+export const MENSAJE_FALTA_RECTIFICATIVA = 'Indica qué factura rectifica, o marca que no es una rectificativa.';
+
+/** La lectura es una rectificativa o un abono (V19, en cualquier nivel: las de antes quedaron en error). */
+export const esLecturaRectificativa = (fila: { validaciones: unknown }) => validacionesGuardadas(fila).some((v) => v.codigo === 'RECTIFICATIVA');
+
 /** Validaciones que se repiten sobre lo que llega al confirmar un gasto (V14 la sigue haciendo registrarGasto, con su 409). */
 const REVALIDAR_GASTO = new Set(['TIPO_IVA', 'NIF_EMISOR', 'EMPRESA', 'FECHA']);
 
@@ -79,9 +84,11 @@ export async function comprobarLecturaParaConfirmar(companyId: string, lecturaId
   if (fila.estado === 'CONFIRMADA') throw conflict('Esta factura ya se registró.', { codigo: 'LECTURA_YA_CONFIRMADA' });
   if (fila.estado !== 'LISTA') throw badRequest('Esta lectura ya no se puede registrar: está descartada o no ha terminado. Vuelve a leer la factura.', { codigo: 'LECTURA_NO_LISTA' });
   if (necesitaRevision(fila) && cuerpo.revisado !== true) throw badRequest(MENSAJE_FALTA_REVISION, { codigo: 'FALTA_REVISION' });
-  // Una rectificativa (o un abono) no se arregla en el formulario: el gasto subiria en vez de bajar.
-  const rectificativa = validacionesGuardadas(fila).find((v) => v.codigo === 'RECTIFICATIVA' && v.nivel === 'error');
-  if (rectificativa) throw badRequest(rectificativa.mensaje, { codigo: 'RECTIFICATIVA_NO_ADMITIDA' });
+  // Una rectificativa o un abono (V19) se registra como abono: hace falta decir que rectifica
+  // (bloque `rectificativa`) o marcar que no lo es (noEsRectificativa, que queda en AuditLog).
+  if (lector === 'GASTO' && esLecturaRectificativa(fila) && (cuerpo.rectificativa === undefined || cuerpo.rectificativa === null) && cuerpo.noEsRectificativa !== true) {
+    throw badRequest(MENSAJE_FALTA_RECTIFICATIVA, { codigo: 'FALTA_RECTIFICATIVA', campo: 'rectificativa' });
+  }
 
   const guardada = ((fila.resultado as { lectura?: LecturaNormalizada } | null)?.lectura ?? null) as LecturaNormalizada | null;
   const l = await lecturaDelCuerpo(companyId, cuerpo, guardada);
