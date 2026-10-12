@@ -10,7 +10,15 @@ import { autorizado } from '../services/rbac.service';
 import { reensamblarSubida, borrarSubida } from '../services/puestaEnMarcha/subidasTrozos';
 import { aplicarFase, confirmarCarga, NOMBRE_FASE } from '../services/arranque/aplicar.service';
 import { avisoArranque } from '../services/arranque/aviso.service';
-import { estadoArranque, quitarFichero, reanalizar, subirYAnalizar } from '../services/arranque/cargas.service';
+import { estadoArranque, quitarFichero, reanalizar, subirYAnalizar, validarEjercicio } from '../services/arranque/cargas.service';
+import {
+  aceptarAviso,
+  comprobacionesArranque,
+  crearSeriesDelEjercicio,
+  guardarBancos,
+  guardarDatosFiscales,
+  volverLlevanzaApp,
+} from '../services/arranque/seguimiento.service';
 
 type ConFicheros = Request & { files?: Array<{ buffer: Buffer; originalname: string }> };
 
@@ -87,5 +95,36 @@ export const arranqueController = {
   /** POST /:ejercicio/cargas/:cargaId/aplicar — la siguiente fase (la pantalla la llama hasta «terminada»). */
   aplicar: asyncHandler(async (req, res) => {
     sendOk(res, await aplicarFase(req.companyId!, req.params.ejercicio, req.params.cargaId, req.user!.userId));
+  }),
+
+  /** GET /:ejercicio/comprobaciones — A4 en vivo (o las del borrador; null si no hay nada). */
+  comprobaciones: asyncHandler(async (req, res) => {
+    sendOk(res, await comprobacionesArranque(req.companyId!, validarEjercicio(req.params.ejercicio)));
+  }),
+
+  /** POST /:ejercicio/avisos/:clave/aceptar — { motivo }. */
+  aceptarAviso: asyncHandler(async (req, res) => {
+    sendOk(res, await aceptarAviso(req.companyId!, req.params.ejercicio, req.params.clave, (req.body ?? {}).motivo, req.user!.userId));
+  }),
+
+  /** PUT /:ejercicio/bancos — { bancos: { '5720000001': { saldoExtracto, bankAccountId?, nueva?, aceptarDiferencia? } } }. */
+  bancos: asyncHandler(async (req, res) => {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    sendOk(res, await guardarBancos(req.companyId!, req.params.ejercicio, body.bancos ?? body, req.user!.userId));
+  }),
+
+  /** PUT /:ejercicio/datos-fiscales — { resultado303T4, cuotasIvaACompensar, basesNegativas, deducciones, resultadoDeclarado }. */
+  datosFiscales: asyncHandler(async (req, res) => {
+    sendOk(res, await guardarDatosFiscales(req.companyId!, req.params.ejercicio, req.body ?? {}, req.user!.userId));
+  }),
+
+  /** POST /:ejercicio/series — crea F2027 y R2027 predeterminadas. */
+  series: asyncHandler(async (req, res) => {
+    sendOk(res, await crearSeriesDelEjercicio(req.companyId!, req.params.ejercicio, req.user!.userId), undefined, 201);
+  }),
+
+  /** POST /:ejercicio/ejercicios/llevanza — vuelve 2026 a la app (sin carga importada). */
+  llevanza: asyncHandler(async (req, res) => {
+    sendOk(res, await volverLlevanzaApp(req.companyId!, req.params.ejercicio, req.user!.userId));
   }),
 };

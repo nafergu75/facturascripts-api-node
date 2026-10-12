@@ -32,5 +32,11 @@ router.post('/:ejercicio/cargas/:cargaId/analizar', authorize('contabilidad:writ
 router.delete('/:ejercicio/cargas/:cargaId/ficheros/:sha', authorize('contabilidad:write'), c.quitarFichero);
 router.post('/:ejercicio/cargas/:cargaId/confirmar', authorize('admin:empresa'), c.confirmar);
 router.post('/:ejercicio/cargas/:cargaId/aplicar', authorize('admin:empresa'), c.aplicar);
+router.get('/:ejercicio/comprobaciones', authorize('contabilidad:read'), c.comprobaciones);
+router.post('/:ejercicio/avisos/:clave/aceptar', authorize('admin:empresa'), c.aceptarAviso);
+router.put('/:ejercicio/bancos', authorize('tesoreria:write', 'contabilidad:write'), c.bancos);
+router.put('/:ejercicio/datos-fiscales', authorize('impuestos:write', 'contabilidad:write'), c.datosFiscales);
+router.post('/:ejercicio/series', authorize('ventas:write'), c.series);
+router.post('/:ejercicio/ejercicios/llevanza', authorize('admin:empresa'), c.llevanza);
 
 export default router;
