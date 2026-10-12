@@ -65,7 +65,7 @@ describe('una factura que la gestoría trajo pendiente no se registra otra vez',
       const e = await error(registrarGasto(E, compra(dos.id, numero, '2026-03-15', '2027-01-10'), { contabilizar: 'POSTED' }));
       expect(e.statusCode).toBe(409);
       expect(e.message).toBe(
-        'Esta factura ya la contabilizó tu gestoría: está entre las facturas de 2026 pendientes de pago (FD-12). Págala desde allí y no la registres otra vez.',
+        'Esta factura ya la contabilizó tu gestoría: es la FD-12 de «Facturas de 2026 pendientes» (Contabilidad > Traer la contabilidad de 2026). Págala desde allí y no la registres otra vez.',
       );
       expect(e.details).toMatchObject({ codigo: 'FACTURA_EN_PARTIDA_2026', partidaId: partida.id, enlace: '/dashboard/contabilidad/arranque?vista=pendientes' });
     }
