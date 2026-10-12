@@ -499,8 +499,26 @@ const TITULO_TERCEROS: Record<TipoTercero, string> = { clientes: 'Mayor de clien
 
 const sinTildes = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
 
+/**
+ * Desde donde se suma el mayor de terceros: si un año anterior lo llevo la
+ * gestoria y el siguiente tiene la apertura importada, desde esa apertura.
+ */
+async function inicioTercerosTrasGestoria(companyId: string, hasta: string, todos: Array<{ fecha: string; tipo?: string }>): Promise<string | null> {
+  const anio = Number(hasta.slice(0, 4));
+  const externo = await prisma.fiscalYear.findFirst({
+    where: { companyId, llevanza: 'EXTERNA' },
+    orderBy: { label: 'desc' },
+    select: { label: true },
+  });
+  const siguiente = externo ? Number(externo.label) + 1 : NaN;
+  if (!Number.isInteger(siguiente) || siguiente > anio) return null;
+  const inicio = `${siguiente}-01-01`;
+  return todos.some((a) => a.tipo === 'APERTURA' && a.fecha.startsWith(`${siguiente}-`)) ? inicio : null;
+}
+
 async function calcularTerceros(companyId: string, tipo: TipoTercero, periodo: Periodo) {
   const todos = await cargarAsientos(companyId, periodo.hasta);
+  const inicio = await inicioTercerosTrasGestoria(companyId, periodo.hasta, todos);
   const nombre = await nombrador(companyId, todos);
   const [facturas, fichas] =
     tipo === 'clientes'
@@ -530,6 +548,7 @@ async function calcularTerceros(companyId: string, tipo: TipoTercero, periodo: P
     periodo,
     { tipo, facturas, fichas: fichas.map((f) => ({ id: f.id, nombre: f.nombreFiscal, nif: f.nifCif, subcuentas: f.subcuentas })) },
     nombre,
+    inicio,
   );
   // Subcuentas propias de cada ficha (para la columna Subcuenta y las fichas sin movimientos).
   const subcuentas = new Map(fichas.map((f) => [f.id, f.subcuentas]));
