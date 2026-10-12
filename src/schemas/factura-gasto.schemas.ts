@@ -379,6 +379,15 @@ export function comprobarImportesRectificativa(d: FacturaGastoBody): void {
       'lineas',
     );
   }
+  // Un error en el IVA (el tipo o la cuota) deja la base como estaba. Si la base cambia, es
+  // que se ha copiado la factura entera o que la causa es otra (devolucion, precio...).
+  // Por sustitucion se mira la factura corregida, no la diferencia: no se comprueba aqui.
+  if (r.causa === 'ERROR_IVA' && r.tipo === 'I' && aCentimos(base) !== 0) {
+    throw error(
+      'Una rectificativa por un error en el IVA no cambia la base. Pon la línea con el IVA equivocado en negativo y otra igual con el IVA correcto, o elige «Por sustitución» y cambia solo el tipo de IVA. Si también cambia el importe, elige otra causa.',
+      'lineas',
+    );
+  }
   if (CAUSA_INFO[r.causa].soloBaja && r.tipo === 'I' && sentido(base, iva) !== 'ABONO') {
     throw error('Un descuento o una devolución resta: revisa el signo.', 'lineas');
   }

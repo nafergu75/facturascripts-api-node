@@ -222,6 +222,14 @@ describe('abonos y rectificativas de proveedor (bloque rectificativa)', () => {
     expect(() => validarFacturaGasto(mixta)).not.toThrow();
   });
 
+  it('un error en el IVA no cambia la base: la factura entera en negativo no vale', () => {
+    const entera = abono(
+      { causa: 'ERROR_IVA' },
+      { lineas: [{ descripcion: 'Género', cantidad: 1, precioUnitario: -100, tipoIva: 21 }], totalDocumento: undefined },
+    );
+    expect(error(entera)).toMatchObject({ message: expect.stringMatching(/^Una rectificativa por un error en el IVA no cambia la base\./), campo: 'lineas' });
+  });
+
   it('el total de la factura se cruza con signo', () => {
     expect(error(abono({}, { totalDocumento: 145.2 })).campo).toBe('totalDocumento');
   });
