@@ -428,8 +428,10 @@ export class AccountingEngineController {
       // Abono que reduce el IVA de un 303 ya presentado, confirmado ahora (seccion 11): se guarda la marca al aprobar.
       let confirmado303: BloqueoPeriodo | null = null;
       if (gasto && asiento.invoiceId) {
-        // El 303, con la fecha de su IVA (la de la original en una ERROR_IVA que reduce).
-        const b = await bloqueoPeriodoGasto(companyId, fechaAsiento, retencionDe(gasto), gasto.fechaImputacionIva ?? fechaAsiento, abonoReduceIva(gasto));
+        // El 303, con la fecha de su IVA (la de la original en una ERROR_IVA que reduce). Una compra
+        // intracomunitaria con el IVA en un periodo de la gestoria ya se confirmo al leerla: cuenta su fecha.
+        const fechaIva = gasto.esRectificativa ? (gasto.fechaImputacionIva ?? fechaAsiento) : fechaAsiento;
+        const b = await bloqueoPeriodoGasto(companyId, fechaAsiento, retencionDe(gasto), fechaIva, abonoReduceIva(gasto));
         const abonoQueReduce = b?.modelo === '303' && abonoReduceIva(gasto);
         if (b && abonoQueReduce && !(await confirmacion303Vigente(companyId, gasto))) {
           if (!opciones.confirmaRectificar303) {
