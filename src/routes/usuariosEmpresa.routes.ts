@@ -1,6 +1,7 @@
 import { Router, type RequestHandler } from 'express';
 import { z } from 'zod';
 import { authorize } from '../middleware/authorize.middleware';
+import { rateLimit } from '../middleware/rate-limit.middleware';
 import { usuariosEmpresaController as c } from '../controllers/usuariosEmpresa.controller';
 import { badRequest } from '../utils/http-errors';
 
@@ -51,9 +52,22 @@ const esquemaAlta = z
 const esquemaEdicion = z.object({ rol, areas: areas.optional(), nombre: nombre.optional(), telefono: telefono.optional() }).strict();
 const esquemaVacio = z.object({}).strict();
 
+/**
+ * «comprobar-correo» dice si un correo tiene usuario en la plataforma, y no deja
+ * rastro en AuditLog (el alta si). Con un limite por usuario no sirve para
+ * repasar listas de correos. Al escribir el correo la pantalla pregunta una vez
+ * por pausa, asi que el uso normal queda muy por debajo.
+ */
+const comprobacionesPorUsuario = rateLimit({
+  ventanaMs: 10 * 60_000,
+  max: 60,
+  keyGenerator: (req) => `usuario:${req.user?.userId ?? req.ip}`,
+  mensaje: 'Has comprobado demasiados correos seguidos. Espera unos minutos y vuelve a probar.',
+});
+
 router.get('/', authorize('admin:empresa'), c.listar);
 router.get('/catalogo', authorize('admin:empresa'), c.catalogo);
-router.post('/comprobar-correo', authorize('admin:empresa'), validarCuerpo(esquemaComprobar), c.comprobarCorreo);
+router.post('/comprobar-correo', authorize('admin:empresa'), comprobacionesPorUsuario, validarCuerpo(esquemaComprobar), c.comprobarCorreo);
 router.post('/', authorize('admin:empresa'), validarCuerpo(esquemaAlta), c.alta);
 router.put('/:userId', authorize('admin:empresa'), validarCuerpo(esquemaEdicion), c.editar);
 router.post('/:userId/contrasena-provisional', authorize('admin:empresa'), validarCuerpo(esquemaVacio), c.nuevaContrasena);
