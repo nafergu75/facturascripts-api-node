@@ -175,7 +175,10 @@ export class AccountingEngineController {
         },
       });
       if (entryExistente) {
-        throw badRequest(`Esta factura ya ha sido contabilizada (asiento: ${entryExistente.id}).`);
+        throw badRequest(`Esta factura ya ha sido contabilizada con el asiento ${entryExistente.numeroAsiento}.`, {
+          codigo: 'YA_CONTABILIZADA',
+          journalEntryId: entryExistente.id,
+        });
       }
       // Ni en un mes bloqueado ni en un ejercicio cerrado (tambien desde el hook AUTO).
       await comprobarFechaAbierta(companyId, factura.fechaEmision, 'contabilizar la factura');
@@ -311,7 +314,10 @@ export class AccountingEngineController {
         },
       });
       if (entryExistente) {
-        throw badRequest(`Esta factura de gasto ya ha sido contabilizada (asiento: ${entryExistente.id}).`);
+        throw badRequest(`Esta factura de gasto ya ha sido contabilizada con el asiento ${entryExistente.numeroAsiento}.`, {
+          codigo: 'YA_CONTABILIZADA',
+          journalEntryId: entryExistente.id,
+        });
       }
       // Ni en un mes bloqueado ni en un ejercicio cerrado. Cuenta la fecha del
       // asiento (la de registro si se recibio mas tarde), no la de expedicion.

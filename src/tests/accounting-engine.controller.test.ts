@@ -271,7 +271,7 @@ describe('contabilizarFacturaIngreso', () => {
 
       await expect(
         controller.contabilizarFacturaIngreso(COMPANY_ID, existente.id, 'AUTO'),
-      ).rejects.toMatchObject({ message: expect.stringContaining('ya ha sido contabilizada') });
+      ).rejects.toMatchObject({ message: expect.stringMatching(/ya ha sido contabilizada con el asiento [A-Z]/) });
     });
   });
 });
