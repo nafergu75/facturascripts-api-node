@@ -10,8 +10,10 @@
  *  - 349: registro de rectificacion del periodo de la original, resta en el
  *    normal si es del mismo periodo, y base declarada a mano si la original es
  *    de fuera de la app;
- *  - 111 y 115: la retencion de un abono resta como mucho hasta cero y el
- *    exceso se avisa (decision P1); 180 y 190 con saldo negativo.
+ *  - 111 y 115: la retencion de un abono resta solo de la de su perceptor
+ *    en el año y la casilla como mucho hasta cero; el exceso se avisa
+ *    (decision P1); el abono de una factura de un año anterior no cuenta en el
+ *    111/115 ni en el 190/180.
  *
  * Necesita MySQL (en GitHub Actions lo levanta el workflow de tests).
  */
@@ -294,7 +296,7 @@ describe('111, 115, 180 y 190 con la retención de un abono (decisión P1)', () 
     expect(() => ficheroDeclaracion(d)).not.toThrow();
   });
 
-  it('190: el profesional se netea en el año; el que solo tiene abonos sale en negativo con su aviso, y el fichero no se genera', async () => {
+  it('190: el profesional se netea en el año; el abono de una factura de 2026 no cuenta en 2027 (ni en el 111 ni en el 190) y el fichero sale', async () => {
     const ruiz = (await proveedoresService.create(E, { nombreFiscal: 'Ruiz Mora Pedro', nifCif: dni(), cp: '46010' })).id;
     await gasto(E, ruiz, 'RZ-1R', '2027-10-10', [lin(-500, { tipoRetencion: 15 })], {
       tipoGasto: 'SERVICIO_PROFESIONAL',
@@ -305,17 +307,40 @@ describe('111, 115, 180 y 190 con la retención de un abono (decisión P1)', () 
     // Factura y abono del mismo año: se netean a cero (si sale, sale a cero).
     const a = m.perceptores.find((p) => p.nif === asesorNif);
     expect(a ? [a.percepcionIntegra, a.retenciones] : [0, 0]).toEqual([0, 0]);
-    expect(m.perceptores.find((p) => p.nombre === 'Ruiz Mora Pedro')).toMatchObject({ percepcionIntegra: -500, retenciones: -75 });
-    expect(m.avisos).toContainEqual(
-      'Ruiz Mora Pedro sale con importes negativos en 2027 (sus abonos superan lo facturado): no se puede declarar así en el 190. Revisa sus facturas y abonos del año o consúltalo con tu asesor.',
-    );
-    // El resumen de datos que faltan no lo mezcla con el código postal.
-    expect(m.avisos.filter((a) => a.includes('les faltan datos') && a.includes('negativo'))).toEqual([]);
+    // Ruiz solo tiene el abono de una factura de 2026: no sale en el 190 de 2027 ni en negativo.
+    expect(m.perceptores.find((p) => p.nombre === 'Ruiz Mora Pedro')).toBeUndefined();
+    expect(m.avisos.filter((x) => x.includes('negativos'))).toEqual([]);
     const errores = erroresFichero190({ nif: 'B00000000', nombre: 'Abonos ret SL', numeroDeclaracion: '1900000000001' }, m.perceptores);
-    expect(errores).toContainEqual(expect.stringMatching(/^Ruiz Mora Pedro: las retenciones, los ingresos a cuenta y los gastos no pueden ser negativos/i));
+    expect(errores.filter((x) => x.startsWith('Ruiz'))).toEqual([]);
+    // En el 111 del 4T no resta: toda su retención pasa a la 4709 y se recupera rectificando el 111 del 4T de 2026.
+    const t4 = await calcularModelo111(E, periodoFiscal(2027, '4T'));
+    expect(t4).toMatchObject({ retencionesActividades: 0, percepcionesActividades: 0, excesoAbonos: 75 });
+    expect(t4.avisos).toContainEqual(expect.stringMatching(/^La rectificativa RZ-1R resta 75,00 € de retención .* rectificación del 111 del 4T de 2026, en el que se declararon/));
+    // Los 111 del año y el 190 cuadran (lo de Ruiz no está en ninguno).
+    expect(m.cuadre111.coincide).toBe(true);
   });
 
-  it('180: un arrendador con más abonos que facturas en el año es error', async () => {
+  it('111 y 190: el abono de un profesional nunca resta de la retención de otro', async () => {
+    const E2 = await empresa('perceptor');
+    const x = (await proveedoresService.create(E2, { nombreFiscal: 'Navarro Ruiz Luis', nifCif: dni(), cp: '46007' })).id;
+    const y = (await proveedoresService.create(E2, { nombreFiscal: 'Ortega Pla Sara', nifCif: dni(), cp: '46008' })).id;
+    const prof = (s: string, num: string, fecha: string, precio: number, extra: Record<string, unknown> = {}) =>
+      gasto(E2, s, num, fecha, [lin(precio, { tipoRetencion: 15 })], { tipoGasto: 'SERVICIO_PROFESIONAL', ...extra });
+    // Y factura 2.000 € (300 € de retención); X abona 1.000 € (-150 €) de una factura suya de 2026.
+    await prof(y, 'Y-1', '2027-02-10', 2000);
+    await prof(x, 'X-1R', '2027-02-20', -1000, rect('ANULACION_PRECIO', [{ numero: 'X-2026/9', fecha: '2026-11-15' }]));
+    // X abona además 200 € (-30 €) de una factura de fuera de este mismo año: no tiene retenciones en la app de las que restarla.
+    await prof(x, 'X-2R', '2027-03-05', -200, rect('DESCUENTO', [{ numero: 'X-2027/1', fecha: '2027-01-20' }]));
+    const t1 = await calcularModelo111(E2, periodoFiscal(2027, '1T'));
+    expect(t1).toMatchObject({ nPerceptoresActividades: 1, percepcionesActividades: 2000, retencionesActividades: 300, excesoAbonos: 180 });
+    const m = await calcularModelo190(E2, 2027);
+    expect(m.perceptores.map((p) => [p.nombre, p.percepcionIntegra, p.retenciones])).toEqual([['Ortega Pla Sara', 2000, 300]]);
+    expect(m.avisos.filter((a) => a.includes('negativos'))).toEqual([]);
+    expect(m.cuadre111).toMatchObject({ coincide: true });
+    expect(m.cuadre111.excesoAbonos).toBeUndefined();
+  });
+
+  it('180: el abono de un alquiler de 2026 no cuenta en el 180 de 2027 (no sale en negativo); el 115 lo pasa a la 4709', async () => {
     const casero2 = (await proveedoresService.create(E, { nombreFiscal: 'López Sanz Rosa', nifCif: dni(), cp: '46003' })).id;
     await crearInmueble(E, {
       supplierId: casero2,
@@ -332,9 +357,12 @@ describe('111, 115, 180 y 190 con la retención de un abono (decisión P1)', () 
       ...rect('DESCUENTO', [{ numero: 'L-2026/12', fecha: '2026-12-01' }]),
     });
     const b = await calcularBorrador180(E, 2027);
-    expect(b.errores).toContainEqual(
-      'López Sanz Rosa sale con importes negativos en 2027 (sus abonos superan lo facturado): no se puede declarar así en el 180. Revisa sus facturas y abonos del año o consúltalo con tu asesor.',
-    );
+    expect(b.errores.filter((e) => /negativos/.test(e))).toEqual([]);
+    const nif = (await prisma.supplier.findUniqueOrThrow({ where: { id: casero2 } })).nifCif;
+    expect(b.entrada.perceptores.filter((p) => p.nif === nif)).toEqual([]);
+    const t4 = await calcularModelo115(E, periodoFiscal(2027, '4T'));
+    expect(t4).toMatchObject({ retenciones: 0, excesoAbonos: 57 });
+    expect(t4.excesoTopeAbonos).toBeUndefined();
   });
 
   it('180: el arrendador se netea en el año (aquí a cero: no se declara)', async () => {
