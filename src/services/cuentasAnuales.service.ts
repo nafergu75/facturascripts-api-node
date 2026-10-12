@@ -16,6 +16,8 @@ import {
 } from './contabilidadDatos.service';
 import { getFsClientForCompany } from './facturascripts-client';
 import { prisma } from '../config/database';
+import { FILTRO_ASIENTOS_APERTURA } from '../domain/asientosCierre';
+import { llevanzaExterna } from './periodos.service';
 import type { DatosSociedad } from './memoria.service';
 import type { SaldosEjercicio } from './contabilidadDatos.service';
 
@@ -151,6 +153,21 @@ export async function generarLibroInventarios(companyId: string, ejercicio: numb
   // cierre actual. Si el ejercicio anterior no tiene asientos (primer ano de
   // actividad, o aun no se ha cerrado), devuelve un array vacio correctamente.
   let balanceApertura: typeof balanceCierre = [];
+  // Si el año anterior lo llevo la gestoria, el balance inicial es la apertura importada
+  // de este ejercicio (los saldos que dio la gestoria), no lo que hubiera en la app.
+  if (await llevanzaExterna(companyId, ejercicio - 1)) {
+    const lineas = await prisma.journalEntryLine.findMany({
+      where: { companyId, entry: { estado: 'POSTED', ...FILTRO_ASIENTOS_APERTURA, fecha: { gte: new Date(Date.UTC(ejercicio, 0, 1)), lt: new Date(Date.UTC(ejercicio + 1, 0, 1)) } } },
+      select: { accountCode: true, debe: true, haber: true },
+    });
+    const m = new Map<string, number>();
+    for (const l of lineas) m.set(l.accountCode, Math.round(((m.get(l.accountCode) ?? 0) + Number(l.debe) - Number(l.haber)) * 100) / 100);
+    balanceApertura = [...m.entries()]
+      .filter(([, v]) => Math.round(v * 100) !== 0)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([codigo, importe]) => ({ codigo, descripcion: `Subcuenta ${codigo}`, importe }));
+    return { ejercicio, balanceApertura, balanceCierre };
+  }
   try {
     const asientosAnterior = await obtenerAsientosEjercicio(companyId, ejercicio - 1);
     const saldosAnterior = calcularSaldosPorSubcuenta(asientosAnterior);
