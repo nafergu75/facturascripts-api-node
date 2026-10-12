@@ -50,6 +50,11 @@ export interface EntradaComprobaciones {
   saldosDesdeDiario: boolean;
   /** Los saldos de los que sale la apertura del 1-1 (del sumas y saldos o del diario). */
   apertura?: AnalisisSaldos | null;
+  /**
+   * Regularizado, sin diario que importar y sin una PyG con sus partidas: el
+   * comparativo de 2026 se quedaria sin gastos ni ingresos.
+   */
+  comparativoSinPyg?: boolean;
   pyg: TotalesOficiales | null;
   resultadoDeclarado: number | null;
   diario: AnalisisDiario | null;
@@ -150,6 +155,13 @@ export function comprobarCarga(e: EntradaComprobaciones): ResultadoComprobacione
         }
       } else if (s.tipo === 'REGULARIZADO') {
         p({ clave: 'falta:PYG', nivel: 'FALTA', texto: 'El sumas y saldos viene regularizado (gastos e ingresos a cero): falta la cuenta de pérdidas y ganancias de 2026 para el comparativo de 2027.' });
+      }
+      if (e.comparativoSinPyg && e.pyg) {
+        p({
+          clave: 'falta:PYG-detalle',
+          nivel: 'FALTA',
+          texto: `La cuenta de pérdidas y ganancias sirve para comprobar el resultado, pero no se pueden leer sus partidas (o no suman el resultado). Para la columna de ${anio} de los informes de ${anio + 1}, pide a la gestoría el sumas y saldos antes de regularizar o el libro diario.`,
+        });
       }
       // Resultado que escribe la persona.
       if (e.resultadoDeclarado === null) {
