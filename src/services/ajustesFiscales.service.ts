@@ -9,6 +9,16 @@
  * y la prorrata todavía no se aplican en los asientos ni en el 303: el PUT los
  * rechaza si no tienen su valor por defecto.
  *
+ * Régimen por fecha de efecto (spec arranque-2027, B.7): cada cambio de
+ * periodicidad, REDEME, SII o gran empresa queda apuntado en
+ * AjustesFiscalesVigencia desde el primer día al que se aplica (el que dice
+ * la respuesta). El calendario de cada periodo usa el régimen vigente cuando
+ * empieza, así que guardar en 2027 no cambia los modelos de 2026.
+ *
+ * Inicio en la app (B.8): `inicioEnApp` (AAAA-MM-DD o null) es el primer día
+ * que la empresa lleva sus impuestos con la app. Los periodos que acaban antes
+ * no se crean ni cuentan como pendientes: los presentó la gestoría.
+ *
  * Sin fila, los valores por defecto (sin crearla). El PUT hace un upsert y
  * adapta el calendario del año en curso y siguientes (aplicarCambioCalendario):
  * lo presentado u omitido no se toca, ni los periodos que ya han empezado (un
@@ -28,7 +38,7 @@ import {
 } from '../domain/ajustes.model';
 import { badRequest, conflict } from '../utils/http-errors';
 import { errorDeValidacion } from '../utils/zod-errores';
-import { hoyEspana } from '../utils/fechas';
+import { anioEspana, hoyEspana } from '../utils/fechas';
 import { perfilEmpresa } from './perfilEmpresa.service';
 import {
   aplicarCambioCalendario,
@@ -38,7 +48,7 @@ import {
   type ModeloPrevisto,
 } from './impuestosModulo.service';
 import { iniciosTrimestre } from '../domain/calendarioFiscal';
-import { validarEjercicio } from '../utils/anios';
+import { ANIO_MINIMO, validarEjercicio } from '../utils/anios';
 
 export const MENSAJE_EMPRESA_NO_ESPANOLA =
   'La empresa no está establecida en España: no presenta modelos de la AEAT y no tiene ajustes fiscales.';
@@ -54,6 +64,8 @@ export interface AjustesFiscalesResp extends AjustesFiscales {
   noDisponibles: readonly string[];
   actualizadoEn: string | null;
   actualizadoPor: string | null;
+  /** Primer día que la empresa lleva sus impuestos con la app (AAAA-MM-DD); null = sin límite. */
+  inicioEnApp: string | null;
   /** Modelos del ejercicio en curso: los que hay (presentados incluidos) y los que se crearán. */
   calendario: { ejercicio: number; modelos: ModeloPrevisto[] };
 }
@@ -70,7 +82,8 @@ async function leerFila(companyId: string) {
 export async function obtenerAjustesFiscales(companyId: string, hoy: string = hoyEspana()): Promise<AjustesFiscalesResp> {
   await exigirEmpresaEspanola(companyId);
   const ejercicio = Number(hoy.slice(0, 4));
-  const [fila, opciones] = await Promise.all([leerFila(companyId), opcionesCalendarioEmpresa(companyId, ejercicio)]);
+  // Los ajustes guardados ahora: el calendario del año se enseña tal como queda con ellos.
+  const [fila, opciones] = await Promise.all([leerFila(companyId), opcionesCalendarioEmpresa(companyId)]);
   const { modelos } = await calendarioResultante(companyId, ejercicio, opciones, hoy);
   return {
     ...ajustesFiscalesDeFila(fila),
@@ -79,6 +92,7 @@ export async function obtenerAjustesFiscales(companyId: string, hoy: string = ho
     noDisponibles: AJUSTES_NO_DISPONIBLES,
     actualizadoEn: fila?.updatedAt.toISOString() ?? null,
     actualizadoPor: fila?.updatedBy ?? null,
+    inicioEnApp: fila?.inicioEnApp ?? null,
     calendario: { ejercicio, modelos },
   };
 }
@@ -190,6 +204,60 @@ export function avisoCambioCalendario(
   return partes.length ? partes.join(' ') : null;
 }
 
+const FECHA_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
+
+/**
+ * `inicioEnApp` del cuerpo: undefined si no viene (no se toca), null para
+ * quitarlo o una fecha real AAAA-MM-DD de 1990 al 31-12 del año que viene.
+ */
+export function leerInicioEnApp(valor: unknown, hoy: string): string | null | undefined {
+  if (valor === undefined) return undefined;
+  if (valor === null || valor === '') return null;
+  const maximo = `${Number(hoy.slice(0, 4)) + 1}-12-31`;
+  const m = typeof valor === 'string' ? FECHA_RE.exec(valor) : null;
+  const real = m && new Date(`${valor}T00:00:00Z`).toISOString().slice(0, 10) === valor;
+  if (!m || !real || (valor as string) < `${ANIO_MINIMO}-01-01` || (valor as string) > maximo) {
+    throw badRequest(`Indica desde qué día llevas los impuestos con la app, con una fecha entre el 01/01/${ANIO_MINIMO} y el ${ddmmaaaa(maximo)}.`, {
+      campo: 'inicioEnApp',
+    });
+  }
+  return valor as string;
+}
+
+const regimenDeAjustes = (a: AjustesFiscales) => ({ periodicidadIva: a.periodicidadIva, redeme: a.redeme, sii: a.sii, granEmpresa: a.granEmpresa });
+
+/**
+ * Apunta el régimen nuevo desde `desde` (fecha de efecto). Las vigencias de
+ * fecha posterior quedan sin efecto: manda la decisión más reciente.
+ */
+async function apuntarVigencia(companyId: string, userId: string, desde: string, nuevo: AjustesFiscales): Promise<void> {
+  await prisma.$transaction(async (tx) => {
+    await tx.ajustesFiscalesVigencia.deleteMany({ where: { companyId, desde: { gt: desde } } });
+    await tx.ajustesFiscalesVigencia.upsert({
+      where: { companyId_desde: { companyId, desde } },
+      create: { companyId, desde, ...regimenDeAjustes(nuevo), creadoPor: userId },
+      update: { ...regimenDeAjustes(nuevo), creadoPor: userId },
+    });
+  });
+}
+
+/**
+ * Si la empresa tiene ajustes guardados de antes de existir las vigencias,
+ * los apunta como vigencia desde el 1 de enero del año en que se guardaron
+ * (la regla de antes). Se llama antes de tocar la fila: después, su fecha de
+ * guardado ya sería la de hoy.
+ */
+async function conservarRegimenAnterior(companyId: string): Promise<void> {
+  const [fila, hay] = await Promise.all([leerFila(companyId), prisma.ajustesFiscalesVigencia.count({ where: { companyId } })]);
+  if (!fila || hay) return;
+  const desde = `${anioEspana(fila.updatedAt)}-01-01`;
+  await prisma.ajustesFiscalesVigencia.upsert({
+    where: { companyId_desde: { companyId, desde } },
+    create: { companyId, desde, ...regimenDeAjustes(ajustesFiscalesDeFila(fila)), creadoPor: fila.updatedBy },
+    update: {},
+  });
+}
+
 /** PUT: guarda los ajustes (upsert) y adapta el calendario del año en curso y siguientes. */
 export async function guardarAjustesFiscales(
   companyId: string,
@@ -198,19 +266,28 @@ export async function guardarAjustesFiscales(
   hoy: string = hoyEspana(),
 ): Promise<AjustesFiscalesResp & { cambiosCalendario: CambioCalendario[]; aviso: string | null }> {
   await exigirEmpresaEspanola(companyId);
-  const { aplicarDesde: pedido, ...resto } = (entrada ?? {}) as Record<string, unknown>;
+  const { aplicarDesde: pedido, inicioEnApp: inicioPedido, ...resto } = (entrada ?? {}) as Record<string, unknown>;
   const aplicarDesde = leerAplicarDesde(pedido, hoy);
+  const inicioEnApp = leerInicioEnApp(inicioPedido, hoy);
   const antes = ajustesFiscalesDeFila(await leerFila(companyId));
   const nuevo = await combinar(companyId, resto);
-  const datos = { ...nuevo, updatedBy: userId };
+  const cambiaRegimen = !mismosAjustes(antes, nuevo);
+  await conservarRegimenAnterior(companyId);
+  const datos = { ...nuevo, updatedBy: userId, ...(inicioEnApp !== undefined ? { inicioEnApp } : {}) };
   await prisma.ajustesFiscales.upsert({ where: { companyId }, create: { companyId, ...datos }, update: datos });
   const opciones = await opcionesCalendarioEmpresa(companyId);
   const cambiosCalendario = await aplicarCambioCalendario(companyId, opciones, hoy, aplicarDesde);
-  const delAnio = cambiosCalendario.find((c) => c.ejercicio === Number(hoy.slice(0, 4)));
+  const anio = Number(hoy.slice(0, 4));
+  const delAnio = cambiosCalendario.find((c) => c.ejercicio === anio);
+  if (cambiaRegimen) {
+    // Fecha de efecto: el primer día al que se aplica en el año en curso o, si
+    // ya no cabe en él, el 1 de enero del siguiente.
+    await apuntarVigencia(companyId, userId, delAnio?.aplicadoDesde ?? `${anio + 1}-01-01`, nuevo);
+  }
   return {
     ...(await obtenerAjustesFiscales(companyId, hoy)),
     cambiosCalendario,
-    aviso: delAnio ? avisoCambioCalendario(delAnio, !mismosAjustes(antes, nuevo)) : null,
+    aviso: delAnio ? avisoCambioCalendario(delAnio, cambiaRegimen) : null,
   };
 }
 
@@ -225,7 +302,8 @@ export async function previsualizarAjustesFiscales(
   hoy: string = hoyEspana(),
 ): Promise<{ ajustes: AjustesFiscales; ejercicio: number; modelos: ModeloPrevisto[]; aplicadoDesde: string | null; aviso: string | null }> {
   await exigirEmpresaEspanola(companyId);
-  const { ejercicio: ejercicioPedido, aplicarDesde: pedido, ...resto } = (entrada ?? {}) as Record<string, unknown>;
+  const { ejercicio: ejercicioPedido, aplicarDesde: pedido, inicioEnApp: inicioPedido, ...resto } = (entrada ?? {}) as Record<string, unknown>;
+  leerInicioEnApp(inicioPedido, hoy);
   const ejercicio = ejercicioPedido === undefined ? Number(hoy.slice(0, 4)) : validarEjercicio(ejercicioPedido);
   const aplicarDesde = leerAplicarDesde(pedido, hoy);
   const antes = ajustesFiscalesDeFila(await leerFila(companyId));
