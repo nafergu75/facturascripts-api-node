@@ -40,7 +40,8 @@ import {
   type TipoTercero,
 } from './informesContables.calculo';
 import { fechaES, num, textoPeriodo, type FilaInforme, type TablaInforme } from './informesContables.documentos';
-import { GASTO_VIGENTE } from '../domain/factura-gasto.model';
+import { GASTO_VIGENTE, fechaContableGasto } from '../domain/factura-gasto.model';
+import { partidasPendientesA } from './arranque/partidas.service';
 
 const round2 = (n: number): number => Math.round((n + Number.EPSILON) * 100) / 100;
 
@@ -595,14 +596,25 @@ export interface FacturaPendiente {
   estado: string;
 }
 
-export async function pendientesSegunFacturas(companyId: string, tipo: TipoTercero, hasta: string): Promise<FacturaPendiente[]> {
+export interface OpcionesPendientes {
+  /**
+   * Para cruzar con el mayor por tercero: si un año anterior lo llevo la
+   * gestoria (llevanza EXTERNA), sus facturas no cuentan (su saldo entro con
+   * la apertura) y en su lugar cuentan las partidas pendientes que trajo la
+   * carga, con lo cobrado, pagado o descontado con abonos hasta `hasta`.
+   */
+  conPartidas?: boolean;
+}
+
+export async function pendientesSegunFacturas(companyId: string, tipo: TipoTercero, hasta: string, opciones: OpcionesPendientes = {}): Promise<FacturaPendiente[]> {
   const tipoDoc = tipo === 'clientes' ? 'INGRESO' : 'GASTO';
   const cobrado = await cobradoPorFactura(companyId, tipoDoc, hasta);
+  const finExterna = opciones.conPartidas ? await finLlevanzaExternaAntesDe(companyId, hasta) : null;
   const facturas =
     tipo === 'clientes'
       ? (
           await prisma.incomeInvoice.findMany({
-            where: { companyId, estadoDocumento: 'FINAL', fechaEmision: { lte: hasta } },
+            where: { companyId, estadoDocumento: 'FINAL', fechaEmision: { lte: hasta, ...(finExterna ? { gt: finExterna } : {}) } },
             select: { id: true, customerId: true, numeroCompleto: true, fechaEmision: true, fechaVencimiento: true, totalFactura: true, estado: true },
             orderBy: { fechaEmision: 'asc' },
           })
@@ -610,16 +622,70 @@ export async function pendientesSegunFacturas(companyId: string, tipo: TipoTerce
       : (
           await prisma.expenseInvoice.findMany({
             where: { companyId, ...GASTO_VIGENTE, fechaEmision: { lte: hasta } },
-            select: { id: true, supplierId: true, numeroCompleto: true, fechaEmision: true, fechaVencimiento: true, totalFactura: true, estadoPago: true },
+            select: { id: true, supplierId: true, numeroCompleto: true, fechaEmision: true, fechaRegistro: true, fechaVencimiento: true, totalFactura: true, estadoPago: true },
             orderBy: { fechaEmision: 'asc' },
           })
-        ).map(({ supplierId, estadoPago, ...f }) => ({ ...f, terceroId: supplierId, estado: estadoPago }));
-  return facturas
+        )
+          // Con la gestoria: fuera las que se contabilizaron en un año que llevo ella.
+          .filter((f) => !finExterna || fechaContableGasto(f) > finExterna)
+          .map(({ supplierId, estadoPago, fechaRegistro: _r, ...f }) => ({ ...f, terceroId: supplierId, estado: estadoPago }));
+  const deFacturas = facturas
     .map((f) => {
       const total = Number(f.totalFactura);
       return { ...f, totalFactura: total, importePendiente: calcularPendiente(tipoDoc, total, f.estado, cobrado.get(f.id) ?? 0) };
     })
     .filter((f) => f.importePendiente !== 0);
+  if (!finExterna) return deFacturas;
+  return [...deFacturas, ...(await partidasComoFacturas(companyId, tipo, hasta))];
+}
+
+/** Fin del ultimo ejercicio que llevo la gestoria y acabo antes de `hasta` (null si no hay). */
+async function finLlevanzaExternaAntesDe(companyId: string, hasta: string): Promise<string | null> {
+  const fy = await prisma.fiscalYear.findFirst({
+    where: { companyId, llevanza: 'EXTERNA', fechaFin: { lt: hasta } },
+    orderBy: { fechaFin: 'desc' },
+    select: { fechaFin: true },
+  });
+  return fy?.fechaFin.slice(0, 10) ?? null;
+}
+
+/**
+ * Partidas pendientes de la carga (facturas de la gestoria que quedaron por
+ * cobrar o pagar) con la forma de una factura pendiente. El tercero es el de la
+ * partida o, si no lo tiene, la ficha con esa subcuenta; sin ninguno no sale.
+ */
+async function partidasComoFacturas(companyId: string, tipo: TipoTercero, hasta: string): Promise<FacturaPendiente[]> {
+  const partidasA = await partidasPendientesA(companyId, tipo === 'clientes' ? 'COBRO' : 'PAGO', hasta);
+  if (!partidasA.length) return [];
+  const porSubcuenta = new Map<string, string>();
+  if (partidasA.some((p) => !p.terceroId)) {
+    if (tipo === 'clientes') {
+      for (const c of await prisma.customer.findMany({ where: { companyId, subcuenta430: { not: null } }, select: { id: true, subcuenta430: true } })) {
+        porSubcuenta.set(c.subcuenta430!, c.id);
+      }
+    } else {
+      for (const p of await prisma.supplier.findMany({ where: { companyId }, select: { id: true, subcuenta400: true, subcuenta410: true } })) {
+        if (p.subcuenta400) porSubcuenta.set(p.subcuenta400, p.id);
+        if (p.subcuenta410) porSubcuenta.set(p.subcuenta410, p.id);
+      }
+    }
+  }
+  return partidasA.flatMap((p) => {
+    const terceroId = p.terceroId ?? porSubcuenta.get(p.subcuenta);
+    if (!terceroId) return [];
+    return [
+      {
+        id: p.id,
+        terceroId,
+        numeroCompleto: p.numeroDocumento,
+        fechaEmision: p.fechaDocumento ?? '',
+        fechaVencimiento: p.fechaVencimiento ?? '',
+        totalFactura: p.importeInicial,
+        importePendiente: p.pendiente,
+        estado: p.estado,
+      },
+    ];
+  });
 }
 
 export interface FiltroTerceros {
@@ -636,7 +702,7 @@ export async function informeMayorTerceros(companyId: string, tipo: TipoTercero,
   }
 
   const pendiente = new Map<string, number>();
-  for (const f of await pendientesSegunFacturas(companyId, tipo, periodo.hasta)) {
+  for (const f of await pendientesSegunFacturas(companyId, tipo, periodo.hasta, { conPartidas: true })) {
     pendiente.set(f.terceroId, round2((pendiente.get(f.terceroId) ?? 0) + f.importePendiente));
   }
   const filasDatos = terceros.map(({ movimientos: _m, ...t }) => ({
@@ -682,8 +748,8 @@ export async function informeMayorTerceros(companyId: string, tipo: TipoTercero,
         : 'Cuentas 40 y 41. Saldo positivo: lo que debemos; negativo: anticipos o pagos de más.',
       'El tercero sale de su subcuenta propia; los apuntes en la cuenta genérica (anteriores a las subcuentas), de la factura enlazada al asiento o de la referencia del apunte. Sin asientos de apertura, regularización ni cierre.',
       tipo === 'clientes'
-        ? 'Pendiente s/ facturas: importe de las facturas emitidas menos sus cobros registrados, para cruzarlo con el saldo contable.'
-        : 'Pendiente s/ facturas: importe de las facturas recibidas menos sus pagos registrados, para cruzarlo con el saldo contable.',
+        ? 'Pendiente s/ facturas: importe de las facturas emitidas menos sus cobros registrados, para cruzarlo con el saldo contable. De un año que llevó la gestoría cuentan las facturas que dejó pendientes de cobro.'
+        : 'Pendiente s/ facturas: importe de las facturas recibidas menos sus pagos y abonos aplicados, para cruzarlo con el saldo contable. De un año que llevó la gestoría cuentan las facturas que dejó pendientes de pago.',
     ],
     fichero: `${TITULO_TERCEROS[tipo].toLowerCase()}_${periodo.desde}_${periodo.hasta}`,
   };
@@ -698,7 +764,7 @@ export async function informeDetalleTercero(companyId: string, tipo: TipoTercero
     const ficha = await terceroParaMayor(companyId, tipo === 'clientes' ? 'cliente' : 'proveedor', terceroId);
     t = { id: ficha.id, nombre: ficha.nombre, nif: ficha.nif, cuentas: [], subcuentas: ficha.subcuentas, saldoInicial: 0, debe: 0, haber: 0, saldoFinal: 0, movimientos: [] };
   }
-  const facturasPendientes = (await pendientesSegunFacturas(companyId, tipo, periodo.hasta)).filter((f) => f.terceroId === t!.id);
+  const facturasPendientes = (await pendientesSegunFacturas(companyId, tipo, periodo.hasta, { conPartidas: true })).filter((f) => f.terceroId === t!.id);
   const totalPendiente = round2(facturasPendientes.reduce((s, f) => s + f.importePendiente, 0));
 
   const filas: FilaInforme[] = [
