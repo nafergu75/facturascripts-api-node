@@ -8,6 +8,7 @@
  * modelo y periodo, en casillas que empiezan por "opc_" (un solo prefijo para
  * todos los modelos): el autorrelleno del modulo de Impuestos las conserva.
  */
+import { fechaTexto } from '../../utils/fechas';
 import type { Response } from 'express';
 import { prisma } from '../../config/database';
 import { badRequest, conflict, forbidden } from '../../utils/http-errors';
@@ -135,7 +136,7 @@ export function presentacionDe<E>(fila: FilaCalendario | null): Presentacion<E> 
 
 /** Aviso de que se enseña lo presentado, no un calculo nuevo. */
 export const avisoPresentado = (p: Presentacion<unknown>) =>
-  `Presentado${p.justificante?.numero ? ` (justificante ${p.justificante.numero}${p.justificante.fecha ? `, ${p.justificante.fecha}` : ''})` : ''}: se enseña lo que se presentó. Las facturas que cambien después no lo modifican.`;
+  `Presentado${p.justificante?.numero ? ` (justificante ${p.justificante.numero}${p.justificante.fecha ? `, ${fechaTexto(p.justificante.fecha)}` : ''})` : ''}: se enseña lo que se presentó. Las facturas que cambien después no lo modifican.`;
 
 // ---------------------------------------------------------------------------
 // Declaracion en curso de los modelos informativos (347, 349, 180 y 190)
