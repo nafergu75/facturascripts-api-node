@@ -8,6 +8,7 @@
  *       uso contable), para la cuenta que ya lleva una linea
  *  GET  /siguiente?tipo=&madre=628                 codigo que recibiria una subcuenta nueva
  *  POST /  { tipo, madre, nombre, codigo? }        crea la subcuenta (201)
+ *  (bajo una cuenta de uso contable, /siguiente y POST piden ademas contabilidad:write)
  *
  * Permisos segun el tipo: gastos con compras o contabilidad; ventas y servicios
  * con ventas o contabilidad (lectura para ver, escritura para crear). El
@@ -22,6 +23,7 @@ import { autorizado } from '../services/rbac.service';
 import { registrarAuditoria } from '../services/auditoria.service';
 import {
   crearSubcuentaLinea,
+  esCuentaDeUsoContable,
   listarCuentasLinea,
   nombresCuentasLinea,
   PERMISOS_CUENTA_LINEA,
@@ -47,6 +49,23 @@ function exigir(req: Request, tipo: TipoCuentaLinea, accion: 'leer' | 'crear'): 
 }
 
 const texto = (v: unknown) => (typeof v === 'string' ? v : undefined);
+
+const digitos = (v: unknown) => (typeof v === 'string' || typeof v === 'number' ? String(v).replace(/\D/g, '') : '');
+
+/**
+ * Las cuentas de uso contable (630, 640-645, 68, 69, 606/608/609, 706/708/709...)
+ * solo las ve quien tiene Contabilidad «Modificar» (GET / las deja fuera); lo
+ * mismo para crear una subcuenta bajo ellas o pedir su siguiente codigo.
+ */
+function exigirSiUsoContable(req: Request, tipo: TipoCuentaLinea, madre: unknown, codigo?: unknown): void {
+  const cuentas = [digitos(madre), digitos(codigo)].filter(Boolean);
+  if (!cuentas.some((c) => esCuentaDeUsoContable(c, tipo))) return;
+  if (autorizado(req.user!, req.companyId, ['contabilidad:write'])) return;
+  throw forbidden('Esa cuenta es de uso contable: solo la puede usar quien lleva la contabilidad. Pídeselo al administrador.', {
+    permisos: ['contabilidad:write'],
+    campo: 'madre',
+  });
+}
 
 router.get(
   '/',
@@ -75,6 +94,7 @@ router.get(
   asyncHandler(async (req, res) => {
     const tipo = tipoCuentaLinea(req.query.tipo);
     exigir(req, tipo, 'leer');
+    exigirSiUsoContable(req, tipo, req.query.madre);
     sendOk(res, await proponerSubcuenta(req.companyId!, tipo, req.query.madre));
   }),
 );
@@ -86,6 +106,7 @@ router.post(
     const b = (req.body ?? {}) as Record<string, unknown>;
     const tipo = tipoCuentaLinea(b.tipo);
     exigir(req, tipo, 'crear');
+    exigirSiUsoContable(req, tipo, b.madre, b.codigo);
     const sub = await crearSubcuentaLinea(req.companyId!, { tipo, madre: b.madre, nombre: b.nombre, codigo: b.codigo });
     await registrarAuditoria({
       userId: req.user!.userId,

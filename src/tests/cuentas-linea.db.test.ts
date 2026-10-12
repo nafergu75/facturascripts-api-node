@@ -183,6 +183,21 @@ describe('permisos de la ruta', () => {
     expect((await request(app('ventas-nombres', ['ventas:write'])).get('/cuentas-linea/nombres?tipo=gasto&codigos=640')).status).toBe(403);
   });
 
+  it('bajo una cuenta de uso contable solo crea (o pide el siguiente codigo) quien tiene Contabilidad «Modificar»', async () => {
+    const c = app('compras-uso-crear', ['compras:write']);
+    for (const madre of ['630', '680', '640', '609']) {
+      const r = await request(c).post('/cuentas-linea').send({ tipo: 'gasto', madre, nombre: 'X' });
+      expect(r.status).toBe(403);
+      expect(r.body.details).toMatchObject({ permisos: ['contabilidad:write'], campo: 'madre' });
+    }
+    expect((await request(c).post('/cuentas-linea').send({ tipo: 'gasto', madre: '628', codigo: '6300099', nombre: 'X' })).status).toBe(403);
+    expect((await request(c).get('/cuentas-linea/siguiente?tipo=gasto&madre=630')).status).toBe(403);
+    expect((await request(app('ventas-uso', ['ventas:write'])).post('/cuentas-linea').send({ tipo: 'venta', madre: '708', nombre: 'X' })).status).toBe(403);
+    // Una cuenta normal, si; y con Contabilidad «Modificar», tambien la de uso contable.
+    expect((await request(c).post('/cuentas-linea').send({ tipo: 'gasto', madre: '628', nombre: 'Agua' })).status).toBe(201);
+    expect((await request(app('contable-uso-crear', ['contabilidad:write'])).post('/cuentas-linea').send({ tipo: 'gasto', madre: '630', nombre: 'Impuesto' })).status).toBe(201);
+  });
+
   it('contabilidad:write crea de cualquier tipo; el administrador siempre', async () => {
     expect((await request(app('contable', ['contabilidad:write'])).post('/cuentas-linea').send({ tipo: 'gasto', madre: '621', nombre: 'Local' })).status).toBe(201);
     expect((await request(app('admin', ['*'])).post('/cuentas-linea').send({ tipo: 'gasto', madre: '621', nombre: 'Nave' })).status).toBe(201);
