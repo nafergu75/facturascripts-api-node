@@ -265,6 +265,39 @@ describe('ventas con cuenta por linea', () => {
     expect(copia.lineas.map((l) => l.cuenta)).toEqual([null, '70500010']);
   });
 
+  it('rectificativa de una venta cuya cuenta se desactivo despues: va a la misma cuenta (total, borrador y por sustitucion)', async () => {
+    const madre = await prisma.chartOfAccounts.findFirstOrThrow({ where: { companyId: E, codigo: '705' } });
+    await prisma.chartOfAccounts.create({
+      data: { id: `c-${SUFIJO}-7050077`, companyId: E, codigo: '7050077', nombre: 'Cursos', grupo: 7, nivel: madre.nivel + 1, naturaleza: madre.naturaleza, tipoUso: madre.tipoUso, esBasePGC: false, esPersonalizadaEmpresa: true, parentId: madre.id, parentCodigo: '705' },
+    });
+    const f = await incomeInvoicesService.crearIngreso({ companyId: E, customer: { id: clienteId }, fechaEmision: '2026-05-08', fechaVencimiento: '2099-12-31', lineas: [linea(500, '7050077')] });
+    await motor.contabilizarFacturaIngreso(E, f.id);
+    await prisma.chartOfAccounts.updateMany({ where: { companyId: E, codigo: '7050077' }, data: { activo: false } });
+    try {
+      // Una factura nueva no puede usarla...
+      await expect(
+        incomeInvoicesService.crearIngreso({ companyId: E, customer: { id: clienteId }, fechaEmision: '2026-05-08', fechaVencimiento: '2099-12-31', lineas: [linea(1, '7050077')] }),
+      ).rejects.toMatchObject({ statusCode: 400, message: expect.stringContaining('desactivada') });
+      // ...pero la rectificativa de la que la lleva, si (emitida, en borrador y editando el borrador).
+      const rect = await incomeInvoicesService.crearRectificativa(E, f.id, { motivo: 'Anulación' });
+      expect(rect.lineas.map((l) => l.cuenta)).toEqual(['7050077']);
+      const a = await asiento((await motor.contabilizarFacturaIngreso(E, rect.id)).journalEntryId);
+      expect(porCuenta(a.lineas)['7050077']).toEqual([0, -500]);
+      const borrador = await incomeInvoicesService.crearRectificativa(E, f.id, { motivo: 'Descuento', borrador: true, tipoRectificativa: 'S', lineas: [linea(400, '7050077')] });
+      expect(borrador.lineas.map((l) => l.cuenta)).toEqual(['7050077']);
+      const editado = await incomeInvoicesService.actualizarBorrador(E, borrador.id, { lineas: [linea(300, '7050077')] });
+      expect(editado.lineas.map((l) => l.cuenta)).toEqual(['7050077']);
+      // Otra cuenta desactivada que no es de la original sigue sin valer.
+      await prisma.chartOfAccounts.updateMany({ where: { companyId: E, codigo: '70000001' }, data: { activo: false } });
+      await expect(incomeInvoicesService.actualizarBorrador(E, borrador.id, { lineas: [linea(300, '70000001')] })).rejects.toMatchObject({
+        statusCode: 400,
+        details: { campo: 'lineas.0.cuenta' },
+      });
+    } finally {
+      await prisma.chartOfAccounts.updateMany({ where: { companyId: E, codigo: { in: ['7050077', '70000001'] } }, data: { activo: true } });
+    }
+  });
+
   it('editar un borrador cambia la cuenta de la linea', async () => {
     const b = await incomeInvoicesService.crearIngreso({ companyId: E, customer: { id: clienteId }, borrador: true, fechaEmision: '2026-05-07', fechaVencimiento: '2099-12-31', lineas: [linea(10)] });
     const editado = await incomeInvoicesService.actualizarBorrador(E, b.id, { lineas: [linea(10, '705')] });

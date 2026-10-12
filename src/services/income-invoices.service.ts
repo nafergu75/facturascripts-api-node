@@ -501,12 +501,15 @@ function cuentaDeLinea(v: unknown): string | undefined {
 
 /**
  * Cuenta de ingresos de cada linea: la indicada (tiene que estar activa en el
- * plan; si no, 400 con la linea) o la del producto (la suya, la de su familia
+ * plan, salvo si es de la factura que se rectifica; si no, 400 con la linea) o la del producto (la suya, la de su familia
  * o la 705 si es un servicio), siempre que exista en el plan. Sin ninguna, la
  * linea queda sin cuenta y va a la 700 al contabilizar.
  */
-async function conCuentasDeVenta(companyId: string, lineas: LineaEntrada[]): Promise<LineaEntrada[]> {
-  const indicada = await problemaCuentasLinea(companyId, 'venta', lineas.map((l) => l.cuentaContable));
+async function conCuentasDeVenta(companyId: string, lineas: LineaEntrada[], original?: FacturaConLineas | null): Promise<LineaEntrada[]> {
+  // En una rectificativa, las cuentas de la factura original valen aunque se
+  // hayan desactivado despues: rectificar es obligatorio y va a la misma cuenta.
+  const deLaOriginal = (original?.lineas ?? []).map((l) => l.accountCode).filter((c): c is string => !!c);
+  const indicada = await problemaCuentasLinea(companyId, 'venta', lineas.map((l) => l.cuentaContable), prisma, { permitirInactivas: deLaOriginal });
   if (indicada) throw badRequest(`Línea ${indicada.indice + 1}: ${indicada.mensaje}`, { campo: `lineas.${indicada.indice}.cuenta` });
   const ids = [...new Set(lineas.filter((l) => !l.cuentaContable && l.productoServicioId).map((l) => l.productoServicioId!))];
   if (!ids.length) return lineas;
@@ -983,7 +986,9 @@ async function crear(dto: CrearFacturaIngresoDTO, opciones: { origen?: OrigenFac
     }
     if (dto.borrador || dto.proforma) throw badRequest('Una factura leída se registra ya emitida: no es un borrador ni una proforma.');
   }
-  let lineas = await conCuentasDeVenta(dto.companyId, validarLineas(dto.lineas));
+  // La factura que se rectifica (si lo es): sus cuentas valen aunque se hayan desactivado.
+  const originalLeida = interno.original ?? (dto.facturaOriginalId ? await buscarConLineas(dto.companyId, String(dto.facturaOriginalId)) : null);
+  let lineas = await conCuentasDeVenta(dto.companyId, validarLineas(dto.lineas), originalLeida);
   if (dto.proforma && dto.facturaOriginalId) throw badRequest('Una proforma no puede ser una rectificativa.');
   const esRectificativa = !!dto.facturaOriginalId;
   const tipoFactura = validarTipoFactura(dto.tipoFactura, esRectificativa ? 'R1' : 'F1');
@@ -1010,11 +1015,8 @@ async function crear(dto: CrearFacturaIngresoDTO, opciones: { origen?: OrigenFac
   }
 
   const perfil = await perfilEmpresa(dto.companyId);
-  let original: FacturaConLineas | null = interno.original ?? null;
-  if (esRectificativa && !original) {
-    original = await buscarConLineas(dto.companyId, String(dto.facturaOriginalId));
-    if (!original) throw badRequest('La factura que se rectifica no existe.');
-  }
+  const original: FacturaConLineas | null = esRectificativa ? originalLeida : null;
+  if (esRectificativa && !original) throw badRequest('La factura que se rectifica no existe.');
   // Solo se rectifica una factura emitida (ni un borrador ni una proforma: su tipo de cambio no es definitivo).
   if (original && original.estadoDocumento !== ESTADO_FINAL) {
     throw badRequest(
@@ -1277,7 +1279,7 @@ export const incomeInvoicesService = {
     const misma = moneda === perfil.monedaCuenta;
 
     // Fiscalidad con el estado combinado (lo nuevo y lo que ya habia).
-    let lineas = dto.lineas ? await conCuentasDeVenta(companyId, validarLineas(dto.lineas)) : lineasDocGuardadas(actual);
+    let lineas = dto.lineas ? await conCuentasDeVenta(companyId, validarLineas(dto.lineas), original) : lineasDocGuardadas(actual);
     const fiscal = await resolverFiscalidad(
       {
         companyId,

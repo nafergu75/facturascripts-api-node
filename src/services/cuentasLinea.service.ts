@@ -296,14 +296,19 @@ export async function crearSubcuentaLinea(
  * Cada cuenta de linea tiene que ser del tipo (6 en gastos, 70 en ventas) y
  * estar activa en el plan de la empresa (o en el plan base, que se copia a la
  * empresa al contabilizar). Devuelve el indice de la primera que falla y el
- * texto, o null si todas valen.
+ * texto, o null si todas valen. `permitirInactivas`: las que valen aunque se
+ * hayan desactivado despues (las de la factura que se rectifica).
  */
 export async function problemaCuentasLinea(
   companyId: string,
   tipo: 'gasto' | 'venta',
   cuentas: Array<string | null | undefined>,
   db: Db = prisma,
+  opciones: { permitirInactivas?: Iterable<string> } = {},
 ): Promise<{ indice: number; mensaje: string } | null> {
+  // Cuentas que valen aunque esten desactivadas: las de la factura que se
+  // rectifica (la rectificativa va a la misma cuenta que la original).
+  const inactivasPermitidas = new Set(opciones.permitirInactivas ?? []);
   const lista = cuentas.map((c) => (c ?? '').trim());
   for (let i = 0; i < lista.length; i++) {
     const c = lista[i];
@@ -319,7 +324,7 @@ export async function problemaCuentasLinea(
     const c = lista[i];
     if (!c) continue;
     const activo = estado.get(c);
-    if (activo === false) return { indice: i, mensaje: `La cuenta ${c} está desactivada en tu plan contable.` };
+    if (activo === false && !inactivasPermitidas.has(c)) return { indice: i, mensaje: `La cuenta ${c} está desactivada en tu plan contable.` };
     if (activo === undefined && !NOMBRE_BASE.has(c)) return { indice: i, mensaje: `La cuenta ${c} no existe en tu plan contable.` };
   }
   return null;
