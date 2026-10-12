@@ -169,6 +169,7 @@ export async function planDeshacer(c: CargaFila, db: TransaccionBD | typeof pris
   const asientos2026 = ((anterior.sustituidos as string[]) ?? []).length;
   if (asientos2026) acciones.push(`${varios(asientos2026, 'asiento', 'asientos')} de ${anio} hechos en la app que se retiraron pueden volver, si lo marcas.`);
   if (creado.llevanzaExterna && anterior.llevanza && anterior.llevanza !== 'EXTERNA') acciones.push(`${anio} vuelve a llevarse en la app.`);
+  if (typeof creado.inicioEnApp === 'string') acciones.push('La fecha desde la que llevas los impuestos con la app vuelve a quedar sin indicar.');
   const previa = creado.sustituyeA ? await db.cargaArranque.findFirst({ where: { id: String(creado.sustituyeA) }, select: { version: true } }) : null;
   if (previa) acciones.push(`La versión ${previa.version} vuelve a ser la vigente.`);
   return {
@@ -342,6 +343,11 @@ export async function deshacerCarga(companyId: string, ejercicioRaw: unknown, ca
     }
     if (creado.llevanzaExterna && typeof anterior.llevanza === 'string') {
       await tx.fiscalYear.updateMany({ where: { companyId, label: String(anio) }, data: { llevanza: anterior.llevanza } });
+    }
+    // Inicio en la app: vuelve el de antes, salvo que alguien lo haya cambiado despues en Configuracion.
+    if (typeof creado.inicioEnApp === 'string') {
+      const previo = (anterior.inicioEnApp ?? null) as { valor?: string | null } | null;
+      await tx.ajustesFiscales.updateMany({ where: { companyId, inicioEnApp: creado.inicioEnApp }, data: { inicioEnApp: previo?.valor ?? null } });
     }
     // La carga queda deshecha y la que sustituyo vuelve.
     await tx.cargaArranque.update({ where: { id: c.id }, data: { estado: 'DESHECHA' } });
