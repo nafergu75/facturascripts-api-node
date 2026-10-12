@@ -11,7 +11,7 @@ import { prisma } from '../config/database';
 import { subirYAnalizar } from '../services/arranque/cargas.service';
 import { saldosComparativosImportados } from '../services/puestaEnMarcha/puestaEnMarcha.service';
 import { analizarPlanSinEscribir } from '../services/puestaEnMarcha/planAnterior';
-import { ficherosEmpresaB, filasDiario, filasSumasYSaldos, libro, PLAN_A, type AsientoPrueba } from './fixtures/arranque/generar';
+import { ficherosEmpresaA, ficherosEmpresaB, filasCartera, filasDiario, filasSumasYSaldos, libro, NIF, PLAN_A, type AsientoPrueba } from './fixtures/arranque/generar';
 import { empresaDePrueba, traerCarga, TODOS, USUARIO_PRUEBA } from './fixtures/arranque/importar';
 
 const SUFIJO = Date.now();
@@ -155,5 +155,73 @@ describe('bienes que no se amortizan y la 28x de la gestoria', () => {
       ['Torno', '2811000000', '6810000000', 10],
     ]);
     expect(await prisma.chartOfAccounts.count({ where: { companyId: E, codigo: { in: ['2810000000', '2813000000', '6800000000'] } } })).toBe(0);
+  });
+});
+
+describe('la longitud de las subcuentas la fija el plan', () => {
+  it('con un plan de 8 digitos y una cartera de 10, manda el plan y el error nombra la cartera', async () => {
+    const E = `arr-rev-long-${SUFIJO}`;
+    await empresaDePrueba(E);
+    const b = ficherosEmpresaB();
+    const cartera10 = {
+      nombre: 'cartera_10.xlsx',
+      contenido: libro([
+        [
+          'Cartera',
+          filasCartera([
+            { subcuenta: '4300000001', nombre: 'Cliente Gamma SL', nif: NIF.gamma, documento: 'B-77', fecha: '2026-11-30', vencimiento: '2027-01-30', importe: 5000, pendiente: 5000 },
+            { subcuenta: '4000000001', nombre: 'Proveedor Delta SL', nif: NIF.delta, documento: 'D-1', fecha: '2026-12-10', vencimiento: '2027-02-10', importe: 1500, pendiente: 1500 },
+            { subcuenta: '4000000002', nombre: 'Proveedor Épsilon SL', nif: NIF.delta, documento: 'E-1', fecha: '2026-12-10', vencimiento: '2027-02-10', importe: 100, pendiente: 100 },
+          ]),
+        ],
+      ]),
+    };
+    const r = await subirYAnalizar(E, 2027, USUARIO_PRUEBA, [b.plan, b.sumasSaldos, b.pyg, cartera10], undefined, TODOS);
+    expect(r.vista.plan.longitud.delPlan).toBe(8);
+    const punto = r.vista.comprobaciones.puntos.find((p) => p.clave === 'plan:longitud');
+    expect(punto?.nivel).toBe('ERROR');
+    expect(punto?.texto).toBe('En cartera_10.xlsx hay 3 subcuentas de clientes o proveedores de 10 dígitos, y el plan usa 8. Pide a la gestoría todos los listados al mismo nivel que el plan.');
+    // Las del plan no salen como incoherentes.
+    expect(punto?.detalle).not.toContain('43000001');
+  });
+});
+
+describe('dos ficheros del mismo tipo', () => {
+  it('el error dice de qué tipo y cuáles son, y cada tarjeta lo avisa', async () => {
+    const E = `arr-rev-rep-${SUFIJO}`;
+    await empresaDePrueba(E);
+    const b = ficherosEmpresaB();
+    const otro = { nombre: 'otro_sys.xlsx', contenido: libro([['SyS', filasSumasYSaldos([{ codigo: '57200001', nombre: 'Banco', debe: 10, haber: 0, saldo: 10 }, { codigo: '10000000', nombre: 'Capital', debe: 0, haber: 10, saldo: -10 }], 'Sumas y saldos')]]) };
+    const r = await subirYAnalizar(E, 2027, USUARIO_PRUEBA, [b.plan, b.sumasSaldos, otro], undefined, TODOS);
+    const punto = r.vista.comprobaciones.puntos.find((p) => p.clave === 'repetido:SUMAS_Y_SALDOS');
+    expect(punto?.texto).toBe(
+      'Hay dos ficheros de sumas y saldos distintos (b_balance_sumas_saldos.xlsx › SyS y otro_sys.xlsx › SyS): quita uno o marca el que no vale con «No usar esta hoja».',
+    );
+    const tarjetas = r.vista.hojas.filter((h) => h.tipo === 'SUMAS_Y_SALDOS');
+    expect(tarjetas).toHaveLength(2);
+    for (const t of tarjetas) expect(t.avisos.some((a) => a.startsWith('Hay otro fichero de sumas y saldos'))).toBe(true);
+  });
+});
+
+describe('el diálogo de confirmación dice lo que cambia en 2026', () => {
+  it('nombra los bienes, que 2026 queda de solo lectura y los asientos de la app que se retiran', async () => {
+    const E = `arr-rev-conf-${SUFIJO}`;
+    await empresaDePrueba(E);
+    // Un asiento de 2026 hecho en la app: la carga lo retira.
+    await prisma.journalEntry.create({
+      data: {
+        companyId: E,
+        fecha: new Date('2026-05-05T00:00:00Z'),
+        numeroAsiento: 'AJUSTE-00001',
+        descripcion: 'Asiento hecho en la app',
+        origen: 'AJUSTE_MANUAL',
+        estado: 'POSTED',
+        lineas: { create: [{ companyId: E, accountCode: '5720000001', accountName: 'Banco', debe: 10 }, { companyId: E, accountCode: '7000000000', accountName: 'Ventas', haber: 10 }] },
+      },
+    });
+    const r = await subirYAnalizar(E, 2027, USUARIO_PRUEBA, Object.values(ficherosEmpresaA()), undefined, TODOS);
+    expect(r.vista.confirmacion).toContain('y 2 bienes de inmovilizado.');
+    expect(r.vista.confirmacion).toContain('2026 quedará como «lo llevó la gestoría»: se podrá consultar, pero no apuntar nada con fecha de 2026.');
+    expect(r.vista.confirmacion).toContain('1 asiento de 2026 apuntado en la app se retira (no se borra).');
   });
 });
