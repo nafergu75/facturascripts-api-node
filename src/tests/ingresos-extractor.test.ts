@@ -133,18 +133,33 @@ describe('lineas y totales', () => {
 });
 
 describe('confirmar', () => {
-  it('crea la factura con los datos guardados y enlaza el documento', async () => {
+  const buscarCliente = (jest.requireMock('../config/database') as { prisma: { customer: { findFirst: jest.Mock } } }).prisma.customer.findFirst;
+
+  it('cliente sin dar de alta: 400 TERCERO_NO_DADO_DE_ALTA y no se crea nada (ya no se da de alta solo)', async () => {
     docs.set('d1', { id: 'd1', companyId: 'c1', status: 'READY_FOR_VERIFICATION', originalFileName: 'f.pdf', parsedData: extraccion() });
+    await expect(ingresosExtractorService.confirmar('c1', 'd1')).rejects.toMatchObject({
+      statusCode: 400,
+      message: 'Este cliente no está dado de alta: Cliente SL (B22222222). Dalo de alta o elige uno que ya tengas para poder registrar la factura.',
+      details: { codigo: 'TERCERO_NO_DADO_DE_ALTA', tipo: 'cliente' },
+    });
+    expect(crearIngreso).not.toHaveBeenCalled();
+  });
+
+  it('crea la factura con los datos guardados, con el cliente dado de alta con ese NIF, y enlaza el documento', async () => {
+    docs.set('d1', { id: 'd1', companyId: 'c1', status: 'READY_FOR_VERIFICATION', originalFileName: 'f.pdf', parsedData: extraccion() });
+    buscarCliente.mockResolvedValueOnce({ id: 'cli-1', nombreFiscal: 'Cliente SL', nifCif: 'B22222222' });
 
     const r = await ingresosExtractorService.confirmar('c1', 'd1');
 
+    // Se busca por el NIF escrito de cualquier forma (con ES, puntos o guiones).
+    expect(buscarCliente.mock.calls.at(-1)?.[0]).toMatchObject({ where: { companyId: 'c1', nifCif: { in: expect.arrayContaining(['B22222222', 'ESB22222222']) } } });
     expect(crearIngreso).toHaveBeenCalledWith(
       expect.objectContaining({
         companyId: 'c1',
         serie: 'A-2025',
         numero: 42,
         fechaEmision: '2025-11-03',
-        customer: { nuevo: expect.objectContaining({ nifCif: 'B22222222', nombreFiscal: 'Cliente SL' }) },
+        customer: { id: 'cli-1' },
       }),
     );
     expect(archivar).toHaveBeenCalled();
