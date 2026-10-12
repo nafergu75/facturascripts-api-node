@@ -20,7 +20,7 @@ import { letraNif } from '../utils/nif';
 import { contabilizarNominas, crearNomina } from '../services/nominas.service';
 import { crearEmpleado } from '../services/empleados.service';
 import { autorrellenarModelo, idVirtual } from '../services/impuestosModulo.service';
-import { ficheroModelo190 } from '../services/nominas/fichero190';
+import { declaracion190, ficheroModelo190, MENSAJE_COMPLEMENTARIA_SIN_SELECCION } from '../services/nominas/fichero190';
 import { calcularModelo190 } from '../services/nominas/fiscal';
 import { idRegistro190 } from '../services/nominas/modelo190';
 import { asignarNumero, cancelarRectificacion, contextoDeclaracion, guardarRegistros } from '../services/declaracionesAeat/declaraciones.service';
@@ -133,6 +133,9 @@ describe('presentado, sustitutiva y complementaria (B4)', () => {
     // Sin ninguno elegido: 400 que explica la complementaria y propone la sustitutiva.
     await guardarRegistros(COMPANY, '190', 2025, '0A', []);
     await expect(ficheroModelo190(COMPANY, 2025)).rejects.toMatchObject({ statusCode: 400, message: expect.stringMatching(/solo van los perceptores que se quedaron fuera.*sustitutiva \(S\)/) });
+    // Un solo mensaje: el año sí tiene perceptores (no sale «No hay ningún perceptor en el ejercicio»).
+    const vacia = await declaracion190(COMPANY, 2025);
+    expect(vacia.errores.filter((e) => /perceptor/.test(e))).toEqual([MENSAJE_COMPLEMENTARIA_SIN_SELECCION]);
     await guardarRegistros(COMPANY, '190', 2025, '0A', [idRegistro190(carla)]);
     // Se presenta la complementaria: secuencia 2, con su numero.
     const p = await presentarDeclaracion(COMPANY, 'u1', '190', 2025, '0A', { numero: '1902025000003', fecha: '2026-02-10' });
