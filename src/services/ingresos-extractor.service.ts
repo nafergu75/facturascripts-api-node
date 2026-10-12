@@ -6,8 +6,8 @@ import { incomeInvoicesService, type CrearLineaIngresoDTO } from './income-invoi
 import { invoiceExtractorService, type InvoiceExtraction } from './invoice-extractor.service';
 import { archivarVentaSinRomper } from './archivoFacturas.service';
 import { accountingHooksService } from './accounting-hooks.service';
-import { paisDelCliente } from '../domain/tipo-operacion.model';
 import { comprobarRevisionVenta, vincularLectura } from './lectura/confirmar';
+import { clientePorNif, errorTerceroNoDadoDeAlta } from './lectura/terceros-lector';
 
 /**
  * Lector de facturas de INGRESO (pantalla "Lector de ingresos").
@@ -49,6 +49,9 @@ export interface IngresoExtraido {
 /** Cuenta de ventas por defecto del PGC (700 Ventas de mercaderias / prestacion de servicios). */
 const CUENTA_VENTAS = '700';
 
+/** Error de la lectura sin NIF del cliente (tambien lo da la validacion NIF_RECEPTOR). */
+export const MENSAJE_FALTA_NIF_CLIENTE = 'Falta el NIF del cliente: es obligatorio en una factura de ingreso.';
+
 const limpiarNif = (v: string | null | undefined): string | null => {
   if (!v) return null;
   const limpio = v.toUpperCase().replace(/^ES/, '').replace(/[.\s-]/g, '');
@@ -57,7 +60,7 @@ const limpiarNif = (v: string | null | undefined): string | null => {
 
 export function aIngresoExtraido(documentId: string, e: InvoiceExtraction): IngresoExtraido {
   const errores = [...e.validation.errors];
-  if (!limpiarNif(e.customer.tax_id)) errores.push('Falta el NIF del cliente: es obligatorio en una factura de ingreso.');
+  if (!limpiarNif(e.customer.tax_id)) errores.push(MENSAJE_FALTA_NIF_CLIENTE);
   if (!e.invoice.number) errores.push('No se ha podido leer el numero de la factura.');
   if (e.amounts.bases.length === 0) errores.push('No se ha podido leer ninguna base imponible.');
   if (e.amounts.withholdings.length > 1) errores.push('La factura tiene varias retenciones; registrala a mano.');
@@ -226,23 +229,39 @@ export const ingresosExtractorService = {
     return aIngresoExtraido(documentId, extraccion);
   },
 
-  /** Crea la factura de ingreso a partir de la extraccion guardada. */
+  /**
+   * Crea la factura de ingreso a partir de la extraccion guardada. El cliente
+   * tiene que estar dado de alta: el elegido en la pantalla (clienteId) o el
+   * de la empresa con el NIF leido. Si no hay ninguno, 400
+   * TERCERO_NO_DADO_DE_ALTA: ya no se crea solo.
+   */
   async confirmar(
     companyId: string,
     documentId: string,
-    opciones: { revisado?: boolean; userId?: string; lineas?: unknown } = {},
+    opciones: { revisado?: boolean; userId?: string; lineas?: unknown; clienteId?: string } = {},
   ): Promise<{ facturaId: string; numeroCompleto: string; total: number } & ContabilidadVentaLeida> {
     const doc = await prisma.incomeReaderDocument.findFirst({
       where: { id: documentId, companyId, sourceType: 'EXTRACTOR_IA' },
     });
     if (!doc) throw notFound('Documento no encontrado.');
     if (doc.status !== 'READY_FOR_VERIFICATION') throw badRequest(`El documento esta en estado ${doc.status}; ya no se puede confirmar.`);
-    // Leido con /lecturas: si algo estaba marcado, hace falta "He revisado".
-    await comprobarRevisionVenta(companyId, documentId, opciones.revisado === true);
+    // El cliente elegido en la pantalla («Es uno que ya tengo» o el recien dado de alta), de esta empresa.
+    const elegido = opciones.clienteId
+      ? await prisma.customer.findFirst({ where: { id: opciones.clienteId, companyId }, select: { id: true } })
+      : null;
+    if (opciones.clienteId && !elegido) throw notFound('Cliente no encontrado.');
+    // Leido con /lecturas: si algo estaba marcado, hace falta "He revisado". Con un
+    // cliente elegido, el NIF leido del cliente (que falte o este mal) ya no bloquea.
+    const ignorados = await comprobarRevisionVenta(companyId, documentId, opciones.revisado === true, elegido ? ['NIF_RECEPTOR'] : []);
 
     const e = doc.parsedData as unknown as InvoiceExtraction;
     const resumen = aIngresoExtraido(documentId, e);
-    if (resumen.errores.length > 0) throw badRequest(`No se puede registrar: ${resumen.errores.join(' ')}`);
+    const sinNifLeido = new Set(elegido ? [MENSAJE_FALTA_NIF_CLIENTE, ...ignorados] : []);
+    const errores = resumen.errores.filter((m) => !sinNifLeido.has(m));
+    if (errores.length > 0) throw badRequest(`No se puede registrar: ${errores.join(' ')}`);
+
+    const existente = elegido ?? (await clientePorNif(companyId, resumen.nifCliente));
+    if (!existente) throw errorTerceroNoDadoDeAlta('cliente', { nombre: e.customer.name, nif: resumen.nifCliente });
 
     const { serie, numero } = separarNumero(e.invoice.series, e.invoice.number, e.invoice.issue_date);
     // La cuenta de cada linea, si se cambio en la pantalla (no cambia importes).
@@ -250,19 +269,7 @@ export const ingresosExtractorService = {
     const lineas = lineasDesdeExtraccion(e, resumen.concepto).map((l, i) => (cuentas[i] ? { ...l, cuenta: cuentas[i] } : l));
     comprobarTotales(lineas, e);
 
-    const nif = resumen.nifCliente as string;
-    const existente = await prisma.customer.findFirst({ where: { companyId, nifCif: nif } });
-    const customer = existente
-      ? { id: existente.id }
-      : {
-          nuevo: {
-            nombreFiscal: e.customer.name || `Cliente ${nif}`,
-            nifCif: nif,
-            direccion: e.customer.address ?? undefined,
-            // ES salvo que el NIF lleve el prefijo de otro Estado de la UE (FR..., DE...; EL = Grecia).
-            pais: paisDelCliente({ pais: 'ES', nifCif: nif }),
-          },
-        };
+    const customer = { id: existente.id };
 
     // Origen lector: la fiscalidad avisa en vez de rechazar (y en una empresa no
     // espanola quita el IVA que el OCR pone por defecto).
