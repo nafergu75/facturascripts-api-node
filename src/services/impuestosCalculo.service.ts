@@ -27,6 +27,7 @@ import {
   importeEnEuros,
   limpiarNif,
   paisDelCliente,
+  PAISES_UE,
   paisLegacy,
   REGLA_OPERACION,
   tipoOperacionLegacy,
@@ -620,6 +621,22 @@ export function clasificarOperacion(codpais?: string, cifnif?: string): 'interio
   return 'interior';
 }
 
+/**
+ * Desde este dia las compras se clasifican como en el 349: por el pais ISO-2 de
+ * la ficha del proveedor (las fichas nuevas lo guardan asi) o, sin pais, por el
+ * prefijo de su NIF-IVA. Antes, la clasificacion de siempre (clasificarOperacion),
+ * para no cambiar periodos ya presentados.
+ */
+export const INICIO_COMPRAS_ISO2 = '2027-01-01';
+
+/** Operacion de una compra en su fecha contable: la misma para el 303, el 390, el 347 y el 349. */
+export function clasificarCompra(fecha: string, codpais?: string | null, cifnif?: string | null): 'interior' | 'intracomunitaria' | 'exportacion' {
+  if (fecha < INICIO_COMPRAS_ISO2) return clasificarOperacion(codpais ?? undefined, cifnif ?? undefined);
+  const pais = paisDelCliente({ pais: codpais, nifCif: cifnif ?? '' });
+  if (pais === 'ES') return 'interior';
+  return PAISES_UE.has(pais) ? 'intracomunitaria' : 'exportacion';
+}
+
 // Las tablas de siempre de clasificarOperacion (copiadas tal cual): paises UE en
 // ISO-3 sin ESP y prefijos de NIF-IVA ('EL' = Grecia, 'XI' = Irlanda del Norte).
 const COMPRAS_UE_ISO3 = new Set([
@@ -740,7 +757,7 @@ export async function obtenerFacturasFiscales(companyId: string, desde: string, 
         cifnif: f.supplier?.nifCif ?? '',
         nombreTercero: f.supplier?.nombreFiscal ?? '',
         fecha,
-        operacion: clasificarOperacion(f.supplier?.pais, f.supplier?.nifCif),
+        operacion: clasificarCompra(fecha, f.supplier?.pais, f.supplier?.nifCif),
         // La anulacion (en negativo) es una rectificacion de deducciones ([40]/[41]).
         ...(signo < 0 && { rectificativa: true }),
         ...(f.supplier?.cp && { cpTercero: f.supplier.cp }),
