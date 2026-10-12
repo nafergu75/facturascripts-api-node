@@ -96,6 +96,18 @@ describe('aGastoExtraido', () => {
     expect(sin).toMatchObject({ cuentaContableBase: '629', tipoGastoSugerido: 'SUMINISTROS' });
   });
 
+  it('la dirección del proveedor llega separada (calle, CP, municipio y provincia) para la ficha nueva', async () => {
+    const l = leer('resultado-confianza-baja');
+    const g = aGastoExtraido(l, (await validarLectura(l, ctx())).validaciones, 0.9);
+    expect(g.direccionProveedor).toEqual({ calle: 'Calle Mayor 12', cp: '46001', municipio: 'Valencia', provincia: 'Valencia', revisar: false });
+    // Leída con poca seguridad: hay que revisarla.
+    l.emisor.direccion.confianza = 0.6;
+    expect(aGastoExtraido(l, [], 0.9).direccionProveedor?.revisar).toBe(true);
+    // Sin dirección: null.
+    l.emisor.direccion = { valor: null, confianza: null, fuente: 'azure' };
+    expect(aGastoExtraido(l, [], 0.9).direccionProveedor).toBeNull();
+  });
+
   it('una nomina: sin cuenta y con el aviso de hoy el primero', async () => {
     const l = leer('resultado-simple');
     l.tipoDocumento = { valor: 'nomina', confianza: null, fuente: 'claude' };
