@@ -440,7 +440,7 @@ async function analizar(
   const subcuentas = validas.filter((c) => esTercero(c.codigo));
 
   // 3. Longitud: la del plan, si no la impiden las subcuentas que ya tienen las fichas.
-  const delPlan = longitudDelPlan(validas.map((c) => c.codigo).filter((c) => c.length > 3), esTercero);
+  const delPlan = opciones.longitudFija ?? longitudDelPlan(validas.map((c) => c.codigo).filter((c) => c.length > 3), esTercero);
 
   // 4. Enlaces por NIF.
   const nifDeListado = new Map<string, TerceroDelListado>();
@@ -658,6 +658,12 @@ export interface OpcionesPlan {
    * para que ninguna peticion sea larga). Sin limite, todas.
    */
   limiteTerceros?: number;
+  /**
+   * Longitud de las subcuentas que fija el plan de la gestoria. Traer la
+   * contabilidad de 2026 junta las cuentas de todos los ficheros, pero la
+   * longitud la manda la hoja del plan, no la mayoria de todas.
+   */
+  longitudFija?: number | null;
 }
 
 /**
