@@ -37,7 +37,8 @@ import {
 import { asegurarPlanContableEmpresa } from './chart-of-accounts.service';
 import { aplicadoPorFactura, tieneCobrosActivos } from './cobrosPagos.service';
 import { anularCompensacionesAuto, comprobarCompensaciones, compensacionesDe, crearCompensacionesAuto, type CompensacionResp } from './compensacionesGasto.service';
-import { comprobarFechaAbierta, exigirFechaContabilizable, periodoNoAbierto } from './periodos.service';
+import { comprobarFechaAbierta, ENLACE_ARRANQUE, exigirFechaContabilizable, periodoNoAbierto } from './periodos.service';
+import { partidaDeFacturaProveedor } from './arranque/partidas.service';
 
 import { archivarGastoSinRomper } from './archivoFacturas.service';
 import { perfilEmpresa } from './perfilEmpresa.service';
@@ -693,7 +694,22 @@ async function comprobarDuplicado(companyId: string, supplierId: string, numeroA
   if (otra) throw errorDuplicada(otra);
 }
 
-const errorDuplicada = (f: { id: string; numeroCompleto: string; numeroFacturaProveedor: string | null; supplier: { nombreFiscal: string } }) =>
+/**
+ * 409 si la factura ya la contabilizo la gestoria: es una de las facturas de
+ * 2026 que trajo pendientes de pago (Traer la contabilidad de 2026), del mismo
+ * proveedor y con el mismo numero. Registrarla otra vez deduciria su IVA dos
+ * veces y doblaria la deuda con el proveedor; se paga desde la partida.
+ */
+async function comprobarPartidaGestoria(companyId: string, supplierId: string, numero: string, fechaEmision: string, excluirId?: string): Promise<void> {
+  const p = await partidaDeFacturaProveedor(prisma, companyId, { supplierId, numero, fechaEmision, excluirFacturaId: excluirId });
+  if (!p) return;
+  throw conflict(
+    `Esta factura ya la contabilizó tu gestoría: está entre las facturas de ${fechaEmision.slice(0, 4)} pendientes de pago (${p.numeroDocumento}). Págala desde allí y no la registres otra vez.`,
+    { campo: 'numeroFacturaProveedor', codigo: 'FACTURA_EN_PARTIDA_2026', partidaId: p.id, enlace: `${ENLACE_ARRANQUE}?vista=pendientes` },
+  );
+}
+
+const errorDuplicada = (f:{ id: string; numeroCompleto: string; numeroFacturaProveedor: string | null; supplier: { nombreFiscal: string } }) =>
   conflict(`Esta factura ya está registrada: ${f.supplier.nombreFiscal}, nº ${f.numeroFacturaProveedor} (registro ${f.numeroCompleto}).`, {
     campo: 'numeroFacturaProveedor',
     facturaId: f.id,
@@ -1071,7 +1087,10 @@ export async function registrarGasto(companyId: string, cuerpo: unknown, opcione
   await comprobarCuentasNomina(companyId, v, lineas.map((l) => l.accountCode));
 
   const numeroActivo = normalizarNumeroProveedor(v.numeroFacturaProveedor);
-  if (prov.existente) await comprobarDuplicado(companyId, prov.existente.id, numeroActivo);
+  if (prov.existente) {
+    await comprobarDuplicado(companyId, prov.existente.id, numeroActivo);
+    await comprobarPartidaGestoria(companyId, prov.existente.id, v.numeroFacturaProveedor, v.fechaEmision);
+  }
 
   const fechaContable = v.fechaRegistro ?? v.fechaEmision;
   await comprobarFechaAbierta(companyId, fechaContable);
@@ -1363,7 +1382,10 @@ export async function editarGasto(
   await comprobarCuentas(companyId, v, lineas.map((l) => l.accountCode));
   await comprobarCuentasNomina(companyId, v, lineas.map((l) => l.accountCode));
   const numeroActivo = normalizarNumeroProveedor(v.numeroFacturaProveedor);
-  if (prov.existente) await comprobarDuplicado(companyId, prov.existente.id, numeroActivo, id);
+  if (prov.existente) {
+    await comprobarDuplicado(companyId, prov.existente.id, numeroActivo, id);
+    await comprobarPartidaGestoria(companyId, prov.existente.id, v.numeroFacturaProveedor, v.fechaEmision, id);
+  }
 
   const fechaNueva = v.fechaRegistro ?? v.fechaEmision;
   await comprobarFechaAbierta(companyId, fechaNueva);
