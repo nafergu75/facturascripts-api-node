@@ -233,7 +233,7 @@ const abonoDe = (sup: string, originalId: string, numero: string, fecha: string,
   rectificativa: { tipo: 'I', causa, originales: [{ id: originalId }], ...extra } as Record<string, unknown>,
 });
 const ENLACE_303 = '/dashboard/fiscal/modelo-303';
-const RECARGO = 'saldrá más a ingresar y fuera de plazo, con el recargo y, en su caso, los intereses del art. 27 LGT.';
+const RECARGO = 'saldrá más a ingresar y fuera de plazo, con el recargo y, en su caso, los intereses de demora (arts. 26 y 27 LGT).';
 
 describe('abonos con el 303 presentado', () => {
   it('art. 80 que reduce, con el 303 de su trimestre presentado: 409 rectificar_303; confirmado, se registra con la marca y el aviso', async () => {
