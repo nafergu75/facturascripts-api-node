@@ -11,6 +11,7 @@
 import { prisma } from '../../../config/database';
 import { hoyEspana } from '../../../utils/fechas';
 import { ENLACE_ARRANQUE } from '../../periodos.service';
+import { pendientePorPartida } from '../../arranque/partidas.service';
 import { eur, plural, sumar } from '../plantillas';
 import type { CarmenCtx, HuecosResueltos, RespuestaDatos } from '../tipos';
 
@@ -39,13 +40,9 @@ export async function pendiente2026(
     select: { id: true, importePendiente: true },
   });
   if (!filas.length) return { numero: 0, importe: 0 };
-  const pagos = await prisma.invoicePayment.groupBy({
-    by: ['invoiceId'],
-    where: { companyId, invoiceType: 'PARTIDA', estado: 'ACTIVO', invoiceId: { in: filas.map((f) => f.id) } },
-    _sum: { importe: true },
-  });
-  const liquidado = new Map(pagos.map((p) => [p.invoiceId, Number(p._sum.importe ?? 0)]));
-  return { numero: filas.length, importe: r2(sumar(filas.map((f) => Number(f.importePendiente) - (liquidado.get(f.id) ?? 0)))) };
+  // Lo que queda de cada una: sin lo pagado ni lo descontado con abonos del proveedor.
+  const pendiente = await pendientePorPartida(prisma, companyId, filas.map((f) => f.id));
+  return { numero: filas.length, importe: r2(sumar(filas.map((f) => pendiente.get(f.id) ?? Number(f.importePendiente)))) };
 }
 
 /** Frase para el texto de la respuesta. */
