@@ -34,7 +34,7 @@ export const usuariosEmpresaController = {
   }),
 
   comprobarCorreo: asyncHandler(async (req, res) => {
-    sendOk(res, await comprobarCorreo(req.companyId!, req.body.email));
+    sendOk(res, await comprobarCorreo(actorDe(req), req.companyId!, req.body.email));
   }),
 
   /** 201 con la contrasena provisional (una vez) si el usuario es nuevo; 200 si ya existia. */

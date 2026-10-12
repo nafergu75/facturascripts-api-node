@@ -7,10 +7,12 @@ import { describe, it, expect } from '@jest/globals';
 import {
   accionesPermitidas,
   estadoDe,
+  motivoNoDarAccesoACuenta,
   motivoNoDatosPersonales,
   motivoNoEditarAcceso,
   motivoNoNuevaContrasena,
   MENSAJE_CONTRASENA_OTRAS_EMPRESAS,
+  MENSAJE_CUENTA_SIN_EMPRESAS,
   MENSAJE_ES_ADMIN_GLOBAL,
   type Objetivo,
 } from '../services/usuariosEmpresa.service';
@@ -36,11 +38,31 @@ describe('quién puede hacer qué desde una empresa', () => {
     expect(motivoNoNuevaContrasena(global, objetivo({ empresas: ['A', 'B'] }), 'todas')).toBeNull();
   });
 
+  it('los datos personales propios sí, aunque entre en empresas que no administra', () => {
+    expect(motivoNoDatosPersonales(adminA, objetivo({ userId: 'admin-a', rol: 'admin', empresas: ['A', 'B'] }), soloA)).toBeNull();
+    // La contraseña propia sigue yendo por «Cambiar contraseña».
+    expect(accionesPermitidas(adminA, objetivo({ userId: 'admin-a', rol: 'admin', empresas: ['A', 'B'] }), soloA, ['admin-a', 'x'])).toMatchObject({
+      nuevaContrasena: false,
+      datosPersonales: true,
+    });
+    expect(accionesPermitidas(adminA, objetivo({ empresas: ['A', 'B'] }), soloA, ['admin-a']).datosPersonales).toBe(false);
+  });
+
+  it('una cuenta que ya existe se recibe desde la empresa salvo si es el global o no entra en ninguna', () => {
+    const cuenta = (isGlobalAdmin: boolean, memberships: number) => ({ isGlobalAdmin, _count: { memberships } });
+    expect(motivoNoDarAccesoACuenta(adminA, cuenta(false, 1))).toBeNull();
+    expect(motivoNoDarAccesoACuenta(adminA, cuenta(true, 1))).toBe(MENSAJE_ES_ADMIN_GLOBAL);
+    expect(motivoNoDarAccesoACuenta(adminA, cuenta(false, 0))).toBe(MENSAJE_CUENTA_SIN_EMPRESAS);
+    expect(motivoNoDarAccesoACuenta(global, cuenta(false, 0))).toBeNull();
+    expect(motivoNoDarAccesoACuenta(global, cuenta(true, 0))).toBeNull();
+  });
+
   it('la propia contraseña nunca, y el último administrador activo no se quita', () => {
     expect(accionesPermitidas(adminA, objetivo({ userId: 'admin-a', rol: 'admin' }), soloA, ['admin-a'])).toEqual({
       editarAcceso: true,
       nuevaContrasena: false,
       quitarAcceso: false,
+      datosPersonales: true,
     });
     expect(accionesPermitidas(adminA, objetivo({ userId: 'admin-a', rol: 'admin' }), soloA, ['admin-a', 'otro']).quitarAcceso).toBe(true);
     // Un administrador desactivado no está en la lista de activos: se le puede quitar.

@@ -13,6 +13,10 @@
  *   no del acceso a una empresa: el administrador de empresa solo los cambia si
  *   el usuario no entra en ninguna empresa que el no administre. Si no, con la
  *   contrasena provisional podria entrar como ese usuario en las otras.
+ * - Una cuenta que ya existe y hoy no entra en ninguna empresa solo la puede
+ *   recibir el administrador global. Si no, al darle acceso pasaria a estar
+ *   "solo en sus empresas" y el administrador de empresa podria cambiarle la
+ *   contrasena y quedarse con ella.
  * - La empresa no se queda sin administrador activo (protegerUltimoAdmin).
  */
 import { prisma } from '../config/database';
@@ -53,6 +57,8 @@ export interface AccionesPermitidas {
   editarAcceso: boolean;
   nuevaContrasena: boolean;
   quitarAcceso: boolean;
+  /** Cambiar el nombre y el telefono de la cuenta (los propios, siempre). */
+  datosPersonales: boolean;
 }
 
 /** Un usuario con acceso a la empresa, tal como sale en Configuracion > Usuarios. Nunca el hash. */
@@ -85,6 +91,8 @@ export const MENSAJE_CONTRASENA_OTRAS_EMPRESAS =
 export const MENSAJE_DATOS_OTRAS_EMPRESAS =
   'Este usuario también entra en empresas que tú no administras. Su nombre y su teléfono solo los puede cambiar el administrador global.';
 export const MENSAJE_SIN_ACCESO = 'Ese usuario no tiene acceso a esta empresa.';
+export const MENSAJE_CUENTA_SIN_EMPRESAS =
+  'Este correo ya tiene usuario, pero ahora no entra en ninguna empresa. Para darle acceso, pídeselo al administrador global de la plataforma.';
 
 // --- REGLAS (funciones puras: la lista y las acciones deciden igual) ---
 
@@ -120,8 +128,9 @@ export function motivoNoNuevaContrasena(actor: Actor, objetivo: Objetivo, admini
   return null;
 }
 
-/** ¿Puede cambiarle el nombre y el telefono? */
+/** ¿Puede cambiarle el nombre y el telefono? Los suyos propios, siempre: son de su cuenta. */
 export function motivoNoDatosPersonales(actor: Actor, objetivo: Objetivo, administradas: Administradas): string | null {
+  if (objetivo.userId === actor.userId) return null;
   const acceso = motivoNoEditarAcceso(actor, objetivo);
   if (acceso) return acceso;
   if (!cuentaEnSusEmpresas(objetivo, administradas)) return MENSAJE_DATOS_OTRAS_EMPRESAS;
@@ -136,6 +145,7 @@ export function accionesPermitidas(actor: Actor, objetivo: Objetivo, administrad
     editarAcceso,
     nuevaContrasena: objetivo.userId !== actor.userId && motivoNoNuevaContrasena(actor, objetivo, administradas) === null,
     quitarAcceso: editarAcceso && !ultimoAdmin,
+    datosPersonales: motivoNoDatosPersonales(actor, objetivo, administradas) === null,
   };
 }
 
@@ -232,11 +242,43 @@ export function catalogoUsuariosEmpresa(): CatalogoPermisos {
   return catalogoPermisos();
 }
 
-/** Para el aviso del formulario: «Este correo ya tiene usuario: se le dará acceso a esta empresa». */
-export async function comprobarCorreo(companyId: string, email: unknown): Promise<{ existe: boolean; yaTieneAcceso: boolean }> {
+/** Lo justo de una cuenta que ya existe para decidir si se le puede dar acceso desde la empresa. */
+interface CuentaExistente {
+  isGlobalAdmin: boolean;
+  /** Accesos a cualquier empresa. */
+  _count: { memberships: number };
+}
+
+/**
+ * ¿Solo el administrador global puede darle acceso? null = no; si no, el motivo.
+ * - El administrador global de la plataforma: solo lo toca otro global.
+ * - Una cuenta sin ninguna empresa: si la recibiera, quedaria "solo en sus
+ *   empresas" y podria cambiarle la contrasena (ver la cabecera).
+ */
+export function motivoNoDarAccesoACuenta(actor: Actor, cuenta: CuentaExistente): string | null {
+  if (actor.esAdminGlobal) return null;
+  if (cuenta.isGlobalAdmin) return MENSAJE_ES_ADMIN_GLOBAL;
+  if (cuenta._count.memberships === 0) return MENSAJE_CUENTA_SIN_EMPRESAS;
+  return null;
+}
+
+/**
+ * Para el aviso del formulario: «Este correo ya tiene usuario: se le dará acceso
+ * a esta empresa». `soloAdminGlobal` avisa antes de grabar de que desde aqui
+ * no se le puede dar acceso (el alta daria un 403).
+ */
+export async function comprobarCorreo(
+  actor: Actor,
+  companyId: string,
+  email: unknown,
+): Promise<{ existe: boolean; yaTieneAcceso: boolean; soloAdminGlobal: boolean }> {
   const correo = conCampo('email', () => normalizarEmail(email));
-  const u = await prisma.user.findUnique({ where: { email: correo }, select: { memberships: { where: { companyId }, select: { id: true } } } });
-  return { existe: !!u, yaTieneAcceso: !!u?.memberships.length };
+  const u = await prisma.user.findUnique({
+    where: { email: correo },
+    select: { isGlobalAdmin: true, _count: { select: { memberships: true } }, memberships: { where: { companyId }, select: { id: true } } },
+  });
+  const yaTieneAcceso = !!u?.memberships.length;
+  return { existe: !!u, yaTieneAcceso, soloAdminGlobal: !!u && !yaTieneAcceso && motivoNoDarAccesoACuenta(actor, u) !== null };
 }
 
 // --- ACCIONES ---
@@ -278,13 +320,14 @@ export type ResultadoAlta =
  * Alta desde la empresa. Si el correo ya tiene usuario no se crea otro: se le
  * da acceso a esta empresa con el rol y los permisos elegidos (sin tocar su
  * contrasena ni su nombre, que son de su cuenta). Si ya entraba, 409. Si es
- * nuevo, la contrasena la genera siempre el servidor y es provisional.
+ * el administrador global o una cuenta sin ninguna empresa, solo el global (403).
+ * Si es nuevo, la contrasena la genera siempre el servidor y es provisional.
  */
 export async function altaEnEmpresa(actor: Actor, companyId: string, datos: DatosAlta): Promise<ResultadoAlta> {
   const email = conCampo('email', () => normalizarEmail(datos.email));
   const existente = await prisma.user.findUnique({
     where: { email },
-    select: { id: true, isGlobalAdmin: true, memberships: { where: { companyId }, select: { id: true } } },
+    select: { id: true, isGlobalAdmin: true, _count: { select: { memberships: true } }, memberships: { where: { companyId }, select: { id: true } } },
   });
   if (existente) {
     if (existente.memberships.length) {
@@ -293,7 +336,7 @@ export async function altaEnEmpresa(actor: Actor, companyId: string, datos: Dato
         userId: existente.id,
       });
     }
-    if (existente.isGlobalAdmin && !actor.esAdminGlobal) throw forbidden(MENSAJE_ES_ADMIN_GLOBAL);
+    exigir(motivoNoDarAccesoACuenta(actor, existente));
     const acceso = await asignarRol(existente.id, companyId, datos.rol, datos.areas);
     return { usuarioNuevo: false, userId: existente.id, acceso };
   }
