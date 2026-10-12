@@ -4,7 +4,7 @@ import { badRequest, conflict, HttpError, notFound } from '../utils/http-errors'
 import { aCentimos } from '../utils/money';
 import { hoyEspana, vencimientoPorDefecto } from '../utils/fechas';
 import { PGC_BASE } from '../domain/pgc-model';
-import { inicioLlevanzaApp } from '../utils/anios';
+import { periodo303FueraDeLaApp } from '../utils/anios';
 import {
   ESTADOS_SIN_CONTABILIZAR,
   TIPO_GASTO_INFO,
@@ -463,6 +463,8 @@ export interface BloqueoPeriodo {
   ejercicio: number;
   /** Periodo del modelo presentado ('1T' o '04'); null si es un periodo cerrado. */
   periodo: string | null;
+  /** El 303 es de antes de llevar la contabilidad en la app: se presento fuera y no hay pantalla que enlazar. */
+  fueraDeLaApp?: boolean;
 }
 
 /**
@@ -473,12 +475,18 @@ export interface BloqueoPeriodo {
  * cuenta en el IVA (fechaIvaGasto): la contable salvo en una ERROR_IVA que
  * reduce, que va al periodo de la original. Que ese periodo este cerrado no
  * frena nada: solo se mira si su 303 esta presentado.
+ *
+ * Un abono que reduce el IVA (`reduceIva`; una ERROR_IVA que reduce lo es
+ * siempre) en un periodo de antes de llevar la contabilidad en la app tambien
+ * cuenta como presentado: ese 303 se presento fuera (periodo303FueraDeLaApp,
+ * con la misma fecha de inicio que el calendario).
  */
 export async function bloqueoPeriodoGasto(
   companyId: string,
   fecha: string,
   retencion: 'PROFESIONAL' | 'ARRENDAMIENTO' | null,
   fechaIva: string = fecha,
+  reduceIva: boolean = fechaIva !== fecha,
 ): Promise<BloqueoPeriodo | null> {
   try {
     await comprobarFechaAbierta(companyId, fecha);
@@ -499,12 +507,15 @@ export async function bloqueoPeriodoGasto(
   if (retenciones) return retenciones;
   const iva = await presentadoEn('303', fechaIva);
   if (iva) return iva;
-  // El IVA va a un periodo de antes de llevar la contabilidad en la app (una
-  // ERROR_IVA que reduce sobre una factura de 2026): su 303 se presento fuera.
-  if (fechaIva !== fecha && fechaIva < (await inicioLlevanzaApp(companyId))) {
-    const ejercicio = Number(fechaIva.slice(0, 4));
-    const periodo = `${Math.ceil(Number(fechaIva.slice(5, 7)) / 3)}T`;
-    return { motivo: `El 303 del ${periodo} de ${ejercicio} se presentó fuera de la app`, modelo: '303', ejercicio, periodo };
+  // Un abono que reduce el IVA de un periodo de antes de llevar la contabilidad
+  // en la app (una ERROR_IVA sobre una factura de 2026, o una devolucion
+  // registrada antes de la fecha de inicio): su 303 se presento fuera.
+  if (reduceIva || fechaIva !== fecha) {
+    const fuera = await periodo303FueraDeLaApp(companyId, fechaIva);
+    if (fuera) {
+      const b = { modelo: '303' as const, ...fuera, fueraDeLaApp: true };
+      return { ...b, motivo: `El 303 ${periodoTexto(b, 'de')} se presentó fuera de la app` };
+    }
   }
   return null;
 }
@@ -515,52 +526,90 @@ export async function motivoPeriodoBloqueado(
   fecha: string,
   retencion: 'PROFESIONAL' | 'ARRENDAMIENTO' | null,
   fechaIva: string = fecha,
+  reduceIva: boolean = fechaIva !== fecha,
 ): Promise<string | null> {
-  return (await bloqueoPeriodoGasto(companyId, fecha, retencion, fechaIva))?.motivo ?? null;
+  return (await bloqueoPeriodoGasto(companyId, fecha, retencion, fechaIva, reduceIva))?.motivo ?? null;
 }
+
+/** Abono que reduce el IVA deducido (su cuota en negativo): bloqueoPeriodoGasto mira si su 303 se presento fuera de la app. */
+export const abonoReduceIva = (f: { esRectificativa: boolean; ivaTotal: number }) => f.esRectificativa && aCentimos(Number(f.ivaTotal)) < 0;
 
 /** Pantalla del 303, para el enlace del 409 rectificar_303. */
 const ENLACE_303 = '/dashboard/fiscal/modelo-303';
 
-/** details del 409 de un abono que reduce el IVA de un 303 ya presentado. */
+/** details del 409 de un abono que reduce el IVA de un 303 ya presentado (sin enlace si se presento fuera de la app). */
 export const detallesRectificar303 = (b: BloqueoPeriodo, campo: string) => ({
   campo,
   motivo: 'rectificar_303',
   modelo: '303',
   ejercicio: b.ejercicio,
   periodo: b.periodo,
-  enlace: ENLACE_303,
+  enlace: b.fueraDeLaApp ? null : ENLACE_303,
+  ...(b.fueraDeLaApp ? { fueraDeLaApp: true } : {}),
 });
 
 const MESES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
-/** «el 1T de 2027» o «abril de 2027». */
-const periodoTexto = (b: BloqueoPeriodo) => (/^\d{2}$/.test(b.periodo ?? '') ? `${MESES[Number(b.periodo) - 1]} de ${b.ejercicio}` : `el ${b.periodo} de ${b.ejercicio}`);
+/**
+ * «el 1T de 2027» o «abril de 2027»; con `de`, para «El 303 …»: «del 1T de
+ * 2027» o «de abril de 2027».
+ */
+const periodoTexto = (b: Pick<BloqueoPeriodo, 'periodo' | 'ejercicio'>, prep: 'el' | 'de' = 'el') =>
+  /^\d{2}$/.test(b.periodo ?? '')
+    ? `${prep === 'de' ? 'de ' : ''}${MESES[Number(b.periodo) - 1]} de ${b.ejercicio}`
+    : `${prep === 'de' ? 'del' : 'el'} ${b.periodo} de ${b.ejercicio}`;
+
+/** Datos de un abono para saber si sigue en pie su confirmacion de rectificar el 303. */
+type ConfirmacionAbono303 = { rectificar303ConfirmadoEn: string | null; fechaImputacionIva: string | null; fechaEmision: string; fechaRegistro: string | null };
+
+/**
+ * ¿Sigue en pie la confirmacion «Registrar y avisarme de rectificar el 303»
+ * de un abono? Si, salvo que despues se haya presentado desde la app otra
+ * declaracion del 303 de su periodo (la autoliquidacion rectificativa, que ya
+ * lo lleva): entonces no queda nada que recordar y el abono vuelve a frenarse
+ * como cualquier factura de un periodo presentado («anula y vuelve a
+ * registrar»). De un 303 presentado fuera de la app no se sabe cuando se
+ * rectifico: la confirmacion sigue.
+ */
+export async function confirmacion303Vigente(companyId: string, f: ConfirmacionAbono303): Promise<boolean> {
+  if (!f.rectificar303ConfirmadoEn) return false;
+  const fecha = fechaIvaGasto(f);
+  const mes = fecha.slice(5, 7);
+  try {
+    const ultima = await prisma.declaracionAeat.findFirst({
+      where: { companyId, codigo: '303', ejercicio: Number(fecha.slice(0, 4)), periodo: { in: [`${Math.ceil(Number(mes) / 3)}T`, mes] }, estado: 'presentada', presentadoEn: { not: null } },
+      orderBy: { presentadoEn: 'desc' },
+      select: { presentadoEn: true },
+    });
+    return !ultima?.presentadoEn || ultima.presentadoEn.getTime() <= Date.parse(f.rectificar303ConfirmadoEn);
+  } catch {
+    // Sin la tabla del historial (tests en memoria): sigue en pie.
+    return true;
+  }
+}
 
 /**
  * Recordatorio fijo de la ficha de un abono confirmado contra un 303 ya
- * presentado (rectificar303ConfirmadoEn): el 303 del periodo de su IVA.
+ * presentado (rectificar303ConfirmadoEn): el 303 del periodo de su IVA. Deja
+ * de salir cuando se presenta desde la app la rectificativa de ese 303.
  */
-async function recordatorioRectificar303(
-  companyId: string,
-  f: { estado: string; rectificar303ConfirmadoEn: string | null; fechaImputacionIva: string | null; fechaEmision: string; fechaRegistro: string | null },
-): Promise<GastoDetalle['rectificar303']> {
-  if (!f.rectificar303ConfirmadoEn || f.estado === 'ANULADA') return null;
+async function recordatorioRectificar303(companyId: string, f: ConfirmacionAbono303 & { estado: string }): Promise<GastoDetalle['rectificar303']> {
+  if (!f.rectificar303ConfirmadoEn || f.estado === 'ANULADA' || !(await confirmacion303Vigente(companyId, f))) return null;
   const fecha = fechaIvaGasto(f);
   const ejercicio = Number(fecha.slice(0, 4));
   const mes = fecha.slice(5, 7);
   const trimestre = `${Math.ceil(Number(mes) / 3)}T`;
   const fila = await prisma.modeloImpuesto.findFirst({ where: { companyId, codigo: '303', ejercicio, periodo: { in: [trimestre, mes] }, estado: 'presentado' }, select: { periodo: true } });
-  const fuera = !fila && fecha < (await inicioLlevanzaApp(companyId));
-  const periodo = fila?.periodo ?? trimestre;
-  const cual = /^\d{2}$/.test(periodo) ? `el 303 de ${MESES[Number(periodo) - 1]} de ${ejercicio}` : `el 303 del ${periodo} de ${ejercicio}`;
+  const deFuera = fila ? null : await periodo303FueraDeLaApp(companyId, fecha);
+  const periodo = fila?.periodo ?? deFuera?.periodo ?? trimestre;
+  const cual = `el 303 ${periodoTexto({ ejercicio, periodo }, 'de')}`;
   return {
     ejercicio,
     periodo,
     confirmadoEn: f.rectificar303ConfirmadoEn,
     aviso:
-      `Registrado después de presentar ${cual}${fuera ? ' (presentado fuera de la app)' : ''}: prepara su autoliquidación rectificativa. ` +
+      `Registrado después de presentar ${cual}${deFuera ? ' (presentado fuera de la app)' : ''}: prepara su autoliquidación rectificativa. ` +
       'En la contabilidad, apunta a mano la regularización del IVA (472 y 4750), el recargo (678) y los intereses de demora (669) cuando los pagues.',
-    enlace: fuera ? null : ENLACE_303,
+    enlace: deFuera ? null : ENLACE_303,
   };
 }
 
@@ -1029,7 +1078,7 @@ export async function registrarGasto(companyId: string, cuerpo: unknown, opcione
   // entraria en un trimestre ya declarado y su IVA no se deduciria en ninguno.
   // El 303 se mira en el periodo de su IVA (el de la original en una ERROR_IVA que reduce).
   const retencion = aCentimos(retencionTotal) !== 0 ? tipoRetencionLibro(v.tipoGasto) : null;
-  const presentado = await bloqueoPeriodoGasto(companyId, fechaContable, retencion, rect?.fechaImputacionIva ?? fechaContable);
+  const presentado = await bloqueoPeriodoGasto(companyId, fechaContable, retencion, rect?.fechaImputacionIva ?? fechaContable, !!rect && aCentimos(ivaTotal) < 0);
   // Un abono que reduce el IVA de un 303 presentado se registra si se confirma (seccion 11).
   const confirmado303 = presentado ? await comprobarRectificar303(presentado, { rect, ivaTotal, confirma: v.rectificativa?.confirmaRectificar303 === true }) : null;
   await asegurarPlanContableEmpresa(companyId);
@@ -1277,8 +1326,9 @@ export async function editarGasto(
     return conflict(b.texto, b.details);
   };
   // Un abono confirmado en un 303 ya presentado (seccion 11) se puede corregir sin volver a frenar.
-  const bloqueoActual = enModelos ? await bloqueoPeriodoGasto(companyId, fechaContableGasto(actual), retencionDe(actual), fechaIvaGasto(actual)) : null;
-  const confirmadoAntes = bloqueoActual?.modelo === '303' && !!actual.rectificar303ConfirmadoEn ? bloqueoActual : null;
+  // La confirmacion deja de valer si despues se presento la rectificativa de ese 303 (ya lleva el abono).
+  const bloqueoActual = enModelos ? await bloqueoPeriodoGasto(companyId, fechaContableGasto(actual), retencionDe(actual), fechaIvaGasto(actual), abonoReduceIva(actual)) : null;
+  const confirmadoAntes = bloqueoActual?.modelo === '303' && (await confirmacion303Vigente(companyId, actual)) ? bloqueoActual : null;
   if (bloqueoActual && !confirmadoAntes) throw await bloqueo(bloqueoActual.motivo, fechaContableGasto(actual));
 
   const bruto = { ...((cuerpo ?? {}) as Record<string, unknown>) };
@@ -1319,7 +1369,7 @@ export async function editarGasto(
   let confirmado303: BloqueoPeriodo | null = null;
   if (enModelos) {
     const retencionNueva = aCentimos(retencionTotal) !== 0 ? tipoRetencionLibro(v.tipoGasto) : null;
-    const b = await bloqueoPeriodoGasto(companyId, fechaNueva, retencionNueva, rect?.fechaImputacionIva ?? fechaNueva);
+    const b = await bloqueoPeriodoGasto(companyId, fechaNueva, retencionNueva, rect?.fechaImputacionIva ?? fechaNueva, !!rect && aCentimos(ivaTotal) < 0);
     if (b) {
       // Ya confirmado para ese mismo 303: no se vuelve a pedir.
       const mismo303 = !!confirmadoAntes && confirmadoAntes.ejercicio === b.ejercicio && confirmadoAntes.periodo === b.periodo;
@@ -1472,7 +1522,7 @@ export async function anularGasto(
   const asiento = await asientoVigente(prisma, companyId, id);
   // El 303 con la fecha de su IVA: una ERROR_IVA imputada a un 303 presentado se anula con
   // contraasiento. Aunque se confirmara al registrarla (rectificar303ConfirmadoEn), manda lo presentado.
-  const declarada = cuentaEnModelos(f.estado, asiento) ? await motivoPeriodoBloqueado(companyId, fechaContableGasto(f), retencionDe(f), fechaIvaGasto(f)) : null;
+  const declarada = cuentaEnModelos(f.estado, asiento) ? await motivoPeriodoBloqueado(companyId, fechaContableGasto(f), retencionDe(f), fechaIvaGasto(f), abonoReduceIva(f)) : null;
   // Una factura anterior sin asiento ya cuenta en los modelos: si su periodo
   // esta declarado, anularla sin contraasiento cambiaria lo presentado.
   if (declarada && !asiento) {
@@ -1637,10 +1687,11 @@ async function obtenerDetalle(companyId: string, id: string): Promise<GastoDetal
   const tipo = esTipoGasto(f.tipoGasto) ? f.tipoGasto : null;
 
   // Lo que se puede hacer (las mismas reglas que editarGasto y anularGasto, sin lanzar errores).
-  const bloqueoModelos = cuentaEnModelos(f.estado, asiento) ? await bloqueoPeriodoGasto(companyId, fechaContableGasto(f), retencionDe(f), fechaIvaGasto(f)) : null;
+  const bloqueoModelos = cuentaEnModelos(f.estado, asiento) ? await bloqueoPeriodoGasto(companyId, fechaContableGasto(f), retencionDe(f), fechaIvaGasto(f), abonoReduceIva(f)) : null;
   const bloqueo = bloqueoModelos?.motivo ?? null;
-  // Un abono confirmado en un 303 ya presentado se puede corregir (anularlo sigue con contraasiento).
-  const bloqueoEdicion = bloqueoModelos?.modelo === '303' && f.rectificar303ConfirmadoEn ? null : bloqueo;
+  // Un abono confirmado en un 303 ya presentado se puede corregir (anularlo sigue con contraasiento),
+  // hasta que se presenta la rectificativa de ese 303.
+  const bloqueoEdicion = bloqueoModelos?.modelo === '303' && (await confirmacion303Vigente(companyId, f)) ? null : bloqueo;
   const [bloqueoEditar, bloqueoAnular] =
     bloqueo && !asiento
       ? await Promise.all([
