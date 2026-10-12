@@ -20,10 +20,19 @@ const round2 = (n: number): number => Math.round((n + Number.EPSILON) * 100) / 1
 // Utilidades de celdas
 // ---------------------------------------------------------------------------
 
+/**
+ * Dia (AAAA-MM-DD) de una fecha de celda. SheetJS crea las fechas (las de las
+ * tablas dBase de ContaPlus, por ejemplo) a las 00:00 de la hora local: se
+ * toma el dia local, no el de UTC, que en Espana seria el dia anterior.
+ */
+export function diaDeFecha(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
 /** Texto de una celda, sin espacios sobrantes. */
 export function texto(v: unknown): string {
   if (v === null || v === undefined) return '';
-  if (v instanceof Date) return v.toISOString().slice(0, 10);
+  if (v instanceof Date) return Number.isNaN(v.getTime()) ? '' : diaDeFecha(v);
   return String(v).replace(/ /g, ' ').trim();
 }
 
@@ -157,7 +166,7 @@ export function parsearFecha(v: unknown): string | null {
     if (f.getUTCFullYear() !== y || f.getUTCMonth() !== m - 1 || f.getUTCDate() !== d) return null;
     return f.toISOString().slice(0, 10);
   };
-  if (v instanceof Date) return Number.isNaN(v.getTime()) ? null : v.toISOString().slice(0, 10);
+  if (v instanceof Date) return Number.isNaN(v.getTime()) ? null : diaDeFecha(v);
   if (typeof v === 'number') {
     if (v < 20000 || v > 80000) return null; // 1954..2119
     const f = new Date(Math.round((v - 25569) * 86400000));
