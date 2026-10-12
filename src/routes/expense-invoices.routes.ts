@@ -38,4 +38,11 @@ router.get('/:id/pagos', authorize('compras:read', 'contabilidad:read'), pagosCo
 router.post('/:id/pagos', authorize('compras:write', 'contabilidad:write'), pagosController.registrar);
 router.post('/:id/pagos/:cobroId/anular', authorize('compras:write', 'contabilidad:write'), pagosController.anular);
 
+// Abonos de proveedor: aplicar el abono :id a otra factura (o a una de fuera de
+// la app) y anular una aplicacion. Sobre un abono, POST /:id/pagos registra la
+// devolucion recibida.
+router.get('/:id/compensaciones', authorize('compras:read', 'contabilidad:read'), expenseInvoicesController.compensaciones);
+router.post('/:id/compensaciones', authorize('compras:write', 'contabilidad:write'), expenseInvoicesController.aplicar);
+router.post('/:id/compensaciones/:cid/anular', authorize('compras:write', 'contabilidad:write'), expenseInvoicesController.anularAplicacion);
+
 export default router;
