@@ -916,8 +916,59 @@ export async function calcularModelo390(companyId: string, ejercicio: number): P
 
 export async function calcularModelo347(companyId: string, ejercicio: number, umbral?: number): Promise<DatosModelo347> {
   await exigirModelosAeat(companyId, `${ejercicio}-01-01`, `${ejercicio}-12-31`);
-  const facturas = await obtenerFacturasFiscales(companyId, `${ejercicio}-01-01`, `${ejercicio}-12-31`);
-  return agregar347(facturas, ejercicio, umbral);
+  const [facturas, metalico] = await Promise.all([obtenerFacturasFiscales(companyId, `${ejercicio}-01-01`, `${ejercicio}-12-31`), avisosMetalicoPartidas(companyId, ejercicio)]);
+  const d = agregar347(facturas, ejercicio, umbral);
+  const advertencias = [...(d.advertencias ?? []), ...metalico];
+  return { ...d, ...(advertencias.length && { advertencias }) };
+}
+
+/**
+ * Cobros en efectivo (caja, 570) de facturas de años anteriores que trajo la
+ * gestoria pendientes (partidas de «Traer la contabilidad de 2026»): si a un
+ * cliente se le cobran en el año mas de 6.000 € asi, van en el 347 de ese año
+ * como «importe percibido en metalico», con el ejercicio de la operacion. El
+ * 347 de la app solo mira sus facturas: se avisa para escribirlo a mano.
+ */
+export async function avisosMetalicoPartidas(companyId: string, ejercicio: number): Promise<string[]> {
+  if (!dbFacturasListo()) return [];
+  const cobros = await prisma.invoicePayment.findMany({
+    where: { companyId, invoiceType: 'PARTIDA', estado: 'ACTIVO', fecha: { gte: `${ejercicio}-01-01`, lte: `${ejercicio}-12-31` }, cuentaTesoreria: { startsWith: '570' } },
+    select: { invoiceId: true, importe: true },
+  });
+  if (!cobros.length) return [];
+  const partidas = await prisma.partidaPendiente.findMany({
+    where: { companyId, tipo: 'COBRO', id: { in: [...new Set(cobros.map((c) => c.invoiceId))] } },
+    select: { id: true, customerId: true, subcuenta: true, fechaDocumento: true },
+  });
+  const dePartida = new Map(partidas.map((p) => [p.id, p]));
+  // Por cliente (o por subcuenta si la partida no tiene ficha) y año de la operacion.
+  const suma = new Map<string, { customerId: string | null; subcuenta: string; anio: string; centimos: number }>();
+  for (const c of cobros) {
+    const p = dePartida.get(c.invoiceId);
+    if (!p) continue;
+    const anio = (p.fechaDocumento ?? '').slice(0, 4) || String(ejercicio - 1);
+    const clave = `${p.customerId ?? p.subcuenta}|${anio}`;
+    const a = suma.get(clave) ?? { customerId: p.customerId, subcuenta: p.subcuenta, anio, centimos: 0 };
+    a.centimos += aCentimos(Number(c.importe));
+    suma.set(clave, a);
+  }
+  const porCliente = new Map<string, number>();
+  for (const a of suma.values()) porCliente.set(a.customerId ?? a.subcuenta, (porCliente.get(a.customerId ?? a.subcuenta) ?? 0) + a.centimos);
+  const pasan = [...suma.values()].filter((a) => (porCliente.get(a.customerId ?? a.subcuenta) ?? 0) > aCentimos(6000));
+  if (!pasan.length) return [];
+  const clientes = await prisma.customer.findMany({
+    where: { companyId, id: { in: pasan.map((a) => a.customerId).filter((x): x is string => !!x) } },
+    select: { id: true, nombreFiscal: true, nifCif: true },
+  });
+  const ficha = new Map(clientes.map((c) => [c.id, c]));
+  return pasan.map((a) => {
+    const c = a.customerId ? ficha.get(a.customerId) : undefined;
+    const quien = c ? `${c.nombreFiscal} (${c.nifCif})` : `La subcuenta ${a.subcuenta}`;
+    return (
+      `${quien}: ${eur(a.centimos / 100)} cobrados en efectivo en ${ejercicio} de facturas de ${a.anio} que trajo la gestoría pendientes. ` +
+      `Van en este 347 como «importe percibido en metálico», con el ejercicio ${a.anio}: la app no los añade sola, escríbelos antes de presentar.`
+    );
+  });
 }
 
 export async function calcularModelo349(companyId: string, periodo: PeriodoFiscal): Promise<DatosModelo349> {
