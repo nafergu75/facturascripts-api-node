@@ -11,6 +11,7 @@ import { prisma } from '../config/database';
 import { FILTRO_ASIENTOS_APERTURA, FILTRO_ASIENTOS_CIERRE } from '../domain/asientosCierre';
 import { asegurarPlanContableEmpresa } from '../services/chart-of-accounts.service';
 import { crearAsientoConApuntes } from '../services/asientos.service';
+import { accountingEngineController } from '../controllers/accounting-engine.controller';
 import { previsualizarCierre } from '../services/cierreEjercicio.service';
 import { tipoAsiento } from '../services/contabilidadDatos.service';
 import { comprobarFechaAbierta, estadoCierreAnio, exigirFechaContabilizable, periodoNoAbierto } from '../services/periodos.service';
@@ -109,5 +110,29 @@ describe('diario histórico', () => {
     // La apertura histórica de 2026 no es la apertura que buscan el cierre y la puesta en marcha.
     await prisma.$transaction((tx) => grabarAsientos(tx, H, [{ fecha: '2026-01-01', concepto: 'Apertura ejercicio 2026', origen: 'HISTORICO_APERTURA', lineas }]));
     expect(await prisma.journalEntry.count({ where: { companyId: H, ...FILTRO_ASIENTOS_APERTURA } })).toBe(0);
+  });
+});
+
+describe('asientos de 2026 retirados (SUSTITUIDO) en el motor contable', () => {
+  it('se enseñan como retirados y no se aprueban ni se cambian', async () => {
+    const a = await prisma.journalEntry.create({
+      data: {
+        companyId: E,
+        fecha: new Date('2026-06-01T00:00:00Z'),
+        numeroAsiento: `AJUSTE-RET-${SUFIJO}`,
+        descripcion: 'Asiento de la app retirado',
+        origen: 'AJUSTE_MANUAL',
+        estado: 'SUSTITUIDO',
+        lineas: { create: [{ companyId: E, accountCode: '5720000001', accountName: 'Banco', debe: 10 }, { companyId: E, accountCode: '7000000000', accountName: 'Ventas', haber: 10 }] },
+      },
+      include: { lineas: true },
+    });
+    const d = await accountingEngineController.obtenerAsientoDetallado(E, a.id);
+    expect(d).toMatchObject({ permitidoAprobar: false, permitidoAjustar: false, estadoTexto: 'Retirado (2026 lo lleva la gestoría)' });
+    const e1 = await error(accountingEngineController.aprobarAsiento(E, a.id, 'u'));
+    expect(e1.statusCode).toBe(409);
+    expect(e1.message).toMatch(/^Este asiento de 2026 está retirado/);
+    const e2 = await error(accountingEngineController.ajustarLineaAsiento(E, a.id, a.lineas[0].id, { debe: 11 }, 'u'));
+    expect(e2.statusCode).toBe(409);
   });
 });
