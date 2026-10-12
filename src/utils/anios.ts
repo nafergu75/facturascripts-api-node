@@ -17,7 +17,8 @@ import { prisma } from '../config/database';
 import { badRequest } from './http-errors';
 import { anioEspana, hoyEspana } from './fechas';
 import { fiscalYearsService } from '../services/fiscalYears.service';
-import { INICIO_LLEVANZA_APP } from '../domain/calendarioFiscal';
+import { INICIO_LLEVANZA_APP, antesDelInicio, rangoPeriodo, regimenDe, regimenEn, type RegimenFiscal } from '../domain/calendarioFiscal';
+import { ajustesFiscalesDeFila } from '../domain/ajustes.model';
 import type { EstadoEfectivoEjercicio } from '../services/fiscalYears.service';
 
 /** Primer año que se acepta en cualquier pantalla o petición. */
@@ -158,22 +159,55 @@ export async function inicioDeducido(companyId: string): Promise<string | null> 
  * Desde cuando lleva la empresa su contabilidad en la app: lo de antes se
  * llevaba fuera y sus 303 se presentaron fuera (un abono que reduce su IVA
  * obliga a rectificarlos). Es la fecha que indico en Configuracion > Impuestos
- * (AjustesFiscales.inicioEnApp). Si no la indico, la que se deduce de sus
- * datos (inicioDeducido), pero nunca antes del 1-1-2027 (INICIO_LLEVANZA_APP):
- * 2026 se lleva fuera de la app, aunque haya datos de prueba de ese año, y en
- * la duda es mejor pedir que se confirme la rectificacion del 303 que no
- * avisar. Sin datos, el 1-1-2027.
+ * (AjustesFiscales.inicioEnApp) o, si no la indico, la que se deduce de sus
+ * datos (inicioDeducido): la misma que usa el calendario de impuestos, para
+ * que la pantalla del 303 y el aviso de un abono digan lo mismo de un periodo.
+ * Una empresa que llevo 2026 fuera y tiene datos de ese año en la app lo
+ * indica con su fecha de inicio (o marca esos 303 como presentados fuera de
+ * la app). Sin la empresa o sin BD, el 1-1-2027 (INICIO_LLEVANZA_APP).
  */
 export async function inicioLlevanzaApp(companyId: string): Promise<string> {
   try {
     const ajustes = await prisma.ajustesFiscales.findUnique({ where: { companyId }, select: { inicioEnApp: true } });
     if (ajustes?.inicioEnApp) return ajustes.inicioEnApp;
-    const deducido = await inicioDeducido(companyId);
-    return deducido && deducido > INICIO_LLEVANZA_APP ? deducido : INICIO_LLEVANZA_APP;
+    return (await inicioDeducido(companyId)) ?? INICIO_LLEVANZA_APP;
   } catch {
     // Sin BD (tests en memoria): la fecha de siempre.
     return INICIO_LLEVANZA_APP;
   }
+}
+
+/**
+ * Regimen fiscal de la empresa un dia (mensual o trimestral en el IVA...),
+ * como el calendario: por fecha de efecto (AjustesFiscalesVigencia) o, si la
+ * empresa guardo sus ajustes antes de existir esa tabla, los guardados desde el
+ * 1 de enero del año en que los guardo. Sin nada, el de por defecto.
+ */
+export async function regimenFiscalEn(companyId: string, fecha: string): Promise<RegimenFiscal> {
+  try {
+    const vigencias = await prisma.ajustesFiscalesVigencia.findMany({ where: { companyId }, orderBy: { desde: 'asc' } });
+    if (vigencias.length) return regimenEn(vigencias.map((v) => ({ desde: v.desde, ...regimenDe(v as unknown as RegimenFiscal) })), fecha);
+    const fila = await prisma.ajustesFiscales.findUnique({ where: { companyId } });
+    if (!fila) return regimenEn([], fecha);
+    return regimenEn([{ desde: `${anioEspana(fila.updatedAt)}-01-01`, ...regimenDe(ajustesFiscalesDeFila(fila)) }], fecha);
+  } catch {
+    return regimenEn([], fecha);
+  }
+}
+
+/**
+ * Periodo del 303 de una fecha si la app no lo lleva: acaba antes del inicio
+ * en la app (inicioLlevanzaApp), asi que su 303 se presento fuera. El mes si
+ * en ese periodo la empresa declaraba cada mes; si no, el trimestre. null si
+ * el periodo lo lleva la app (su 303 esta en el calendario).
+ */
+export async function periodo303FueraDeLaApp(companyId: string, fecha: string): Promise<{ ejercicio: number; periodo: string } | null> {
+  const ejercicio = Number(fecha.slice(0, 4));
+  const trimestre = `${Math.ceil(Number(fecha.slice(5, 7)) / 3)}T`;
+  const inicioTrimestre = rangoPeriodo(ejercicio, trimestre)?.inicio ?? fecha;
+  const mensual = (await regimenFiscalEn(companyId, inicioTrimestre)).periodicidadIva === 'MENSUAL';
+  const periodo = mensual ? fecha.slice(5, 7) : trimestre;
+  return antesDelInicio(ejercicio, periodo, await inicioLlevanzaApp(companyId)) ? { ejercicio, periodo } : null;
 }
 
 /** Años de la empresa para los desplegables (GET /companies/:companyId/anios). */
