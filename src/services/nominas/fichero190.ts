@@ -10,7 +10,7 @@ import { badRequest } from '../../utils/http-errors';
 import { normalizarNif } from '../../utils/nif';
 import { configuracionEmpresa } from '../impuestosModulo.service';
 import { calcularModelo190, type Perceptor190 } from './fiscal';
-import { avisosFichero190, comprobarDiseno190, erroresFichero190, generarFicheroModelo190, idRegistro190, type Declarante190 } from './modelo190';
+import { avisosFichero190, comprobarDiseno190, erroresFichero190, generarFicheroModelo190, SIN_PERCEPTORES_190, idRegistro190, type Declarante190 } from './modelo190';
 import { contactoEmpresa, declaracionInformativa, exigirNumero } from '../borradoresAeat/comun';
 import { contextoDeclaracion, datosDe } from '../declaracionesAeat/declaraciones.service';
 
@@ -86,7 +86,11 @@ export async function declaracion190(companyId: string, ejercicio: number) {
     numeroDeclaracion: decl.numeroDeclaracion,
   };
   const elegidos = decl.tipoDeclaracion === 'C' && decl.incluye ? m.perceptores.filter((p) => decl.incluye!(idRegistro190(p))) : m.perceptores;
-  const errores = erroresFichero190(declarante, elegidos);
-  if (decl.tipoDeclaracion === 'C' && decl.seleccion && !elegidos.length) errores.unshift(MENSAJE_COMPLEMENTARIA_SIN_SELECCION);
+  let errores = erroresFichero190(declarante, elegidos);
+  if (decl.tipoDeclaracion === 'C' && decl.seleccion && !elegidos.length) {
+    // Complementaria sin perceptores elegidos: el año sí los tiene, solo vale el mensaje de la complementaria.
+    if (m.perceptores.length) errores = errores.filter((e) => e !== SIN_PERCEPTORES_190);
+    errores.unshift(MENSAJE_COMPLEMENTARIA_SIN_SELECCION);
+  }
   return { modelo: m, declarante, perceptores: elegidos, todos: m.perceptores, errores, decl };
 }
