@@ -13,6 +13,7 @@
  */
 import { prisma } from '../config/database';
 import { notFound } from '../utils/http-errors';
+import { anioEspana } from '../utils/fechas';
 import { calcularPendiente, cobradoPorFactura } from './cobrosPagos.service';
 import { saldosDelEjercicio, type AsientoSimple } from './contabilidadDatos.service';
 import { calcularEstadosDesdeSaldos } from './impuestoSociedadesCalculo.service';
@@ -90,15 +91,22 @@ async function nombrador(companyId: string, asientos: AsientoInforme[]) {
   return crearNombrador(plan, apuntes);
 }
 
-/** Ejercicios con asientos contabilizados, del mas reciente al mas antiguo. */
-export async function ejerciciosDisponibles(companyId: string): Promise<number[]> {
-  const r = await prisma.journalEntry.aggregate({ where: { companyId, estado: 'POSTED' }, _min: { fecha: true }, _max: { fecha: true } });
-  const actual = new Date().getUTCFullYear();
-  const desde = r._min.fecha?.getUTCFullYear() ?? actual;
-  const hasta = Math.max(r._max.fecha?.getUTCFullYear() ?? actual, desde);
-  const anios: number[] = [];
-  for (let a = hasta; a >= desde; a--) anios.push(a);
-  return anios;
+/**
+ * Años que ofrecen los informes y el mayor, del mas reciente al mas antiguo:
+ * los que tienen asientos contabilizados, los ejercicios dados de alta, el año
+ * en curso y el siguiente (hora de España). Antes solo salia el rango de los
+ * asientos y, en enero, el año nuevo no aparecia hasta contabilizar el primero.
+ */
+export async function ejerciciosDisponibles(companyId: string, ahora: Date = new Date()): Promise<number[]> {
+  const actual = anioEspana(ahora);
+  const [conAsientos, ejercicios] = await Promise.all([
+    prisma.$queryRaw<Array<{ anio: number | bigint }>>`SELECT DISTINCT YEAR(fecha) AS anio FROM JournalEntry WHERE companyId = ${companyId} AND estado = 'POSTED'`,
+    prisma.fiscalYear.findMany({ where: { companyId }, select: { label: true } }),
+  ]);
+  const anios = new Set<number>([actual, actual + 1]);
+  for (const f of conAsientos) anios.add(Number(f.anio));
+  for (const e of ejercicios) if (/^\d{4}$/.test(e.label)) anios.add(Number(e.label));
+  return [...anios].filter((a) => Number.isInteger(a) && a >= 1990).sort((a, b) => b - a);
 }
 
 const aSimple = (a: AsientoInforme): AsientoSimple => ({
