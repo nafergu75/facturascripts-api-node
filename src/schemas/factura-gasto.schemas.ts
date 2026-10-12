@@ -10,6 +10,7 @@ import { z } from 'zod';
 import { TIPOS_GASTO, TIPO_GASTO_INFO, TIPOS_IVA_GASTO, type TipoGasto } from '../domain/factura-gasto.model';
 import { badRequest } from '../utils/http-errors';
 import { aCentimos } from '../utils/money';
+import { r2GastoConSigno } from '../domain/rectificativa-gasto.model';
 
 /** true si AAAA-MM-DD es una fecha que existe (no 2026-02-30). */
 export function esFechaReal(s: string): boolean {
@@ -83,9 +84,13 @@ export const FacturaGastoSchema = z.object({
 export type FacturaGastoBody = z.infer<typeof FacturaGastoSchema>;
 export type LineaGastoBody = z.infer<typeof LineaSchema>;
 
-/** Totales de una factura de gasto (el mismo redondeo que el alta: por linea y despues la suma). */
+/**
+ * Totales de una factura de gasto (el mismo redondeo que el alta: por linea y
+ * despues la suma). Con signo en los abonos: sobre el valor absoluto y con el
+ * signo despues, para que el abono espejo deje la original a cero.
+ */
 export function totalesLineas(lineas: Array<{ cantidad: number; precioUnitario: number; descuentoPorcentaje?: number; tipoIva: number; tipoRetencion?: number }>) {
-  const r2 = (v: number) => Math.round(v * 100) / 100;
+  const r2 = r2GastoConSigno;
   let base = 0;
   let iva = 0;
   let ret = 0;
