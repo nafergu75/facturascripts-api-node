@@ -547,6 +547,12 @@ export interface Modelo190 {
     trimestres: Array<{ periodo: string; retenciones: number; fuente: 'presentado' | 'calculado'; meses?: string[] }>;
     total: number;
     coincide: boolean;
+    /**
+     * Retencion de abonos de profesionales que no cupo en su 111 (como mucho
+     * hasta cero, decision P1): los 111 la llevan de mas frente al 190, que
+     * netea el año. Ya descontada al decidir `coincide`.
+     */
+    excesoAbonos?: number;
   };
   /**
    * El 190 repartido por trimestres de pago, con la misma fuente que sus
@@ -960,13 +966,22 @@ export async function calcularModelo190(companyId: string, ejercicio: number): P
     trimestres.push({ periodo: d.periodo, retenciones: euros(centimos), fuente: 'presentado', meses: mesesPresentados });
   }
   const total = euros(trimestres.reduce((a, t) => a + c(t.retenciones), 0));
-  const coincide = c(total) === c(totales.retenciones);
+  // Lo que no cupo de los abonos en cada 111: el 190 lo netea en el año y los 111 lo llevan de mas.
+  const conExceso = desglose.filter((d) => c(d.actividades.excesoAbonos ?? 0) > 0);
+  const exceso = conExceso.reduce((a, d) => a + c(d.actividades.excesoAbonos ?? 0), 0);
+  const coincide = c(total) === c(totales.retenciones) + exceso;
+  if (exceso > 0) {
+    avisos.push(
+      `Los 111 llevan ${fmt(euros(exceso))} de retención más que el 190: son abonos de profesionales que no cupieron en el 111 del ${conExceso.map((d) => d.periodo).join(', ')}. ` +
+        'El 190 ya los descuenta. Para recuperar esa retención, pide la rectificación del 111 en que se declaró la factura que rectifican (art. 120.3 LGT).',
+    );
+  }
   if (!coincide) {
     const presentados = trimestres.filter((t) => t.fuente === 'presentado').map((t) => (t.meses ? `${t.periodo} (meses ${t.meses.join(', ')})` : t.periodo));
     avisos.push(
       `Las retenciones del 190 (${fmt(totales.retenciones)}) no coinciden con la suma de los 111 del año (${fmt(total)}` +
-        `${presentados.length ? `; ${presentados.join(', ')} con lo presentado` : ''}). Revisa las nóminas o los 111 presentados antes de presentar el 190.`,
+        `${presentados.length ? `; ${presentados.join(', ')} con lo presentado` : ''}${exceso > 0 ? `; ya descontados ${fmt(euros(exceso))} de abonos que no cupieron` : ''}). Revisa las nóminas o los 111 presentados antes de presentar el 190.`,
     );
   }
-  return { ejercicio, perceptores, totales, cuadre111: { trimestres, total, coincide }, desglose, avisos };
+  return { ejercicio, perceptores, totales, cuadre111: { trimestres, total, coincide, ...(exceso > 0 ? { excesoAbonos: euros(exceso) } : {}) }, desglose, avisos };
 }
