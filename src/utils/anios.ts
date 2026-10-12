@@ -44,7 +44,7 @@ export function validarEjercicio(valor: unknown, opciones: OpcionesEjercicio = {
   const texto = valor === undefined || valor === null ? '' : String(valor).trim();
   const anio = Number(texto);
   if (!texto || !/^\d{4}$/.test(texto) || anio < ANIO_MINIMO || anio > maximo) {
-    throw badRequest(`Indica el ejercicio con su año en cuatro cifras, entre ${ANIO_MINIMO} y ${maximo}.`, { campo, minimo: ANIO_MINIMO, maximo });
+    throw badRequest(`Indica el ejercicio con su año en cuatro cifras, entre ${ANIO_MINIMO} y ${maximo}.`, { campo });
   }
   return anio;
 }
