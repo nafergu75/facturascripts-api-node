@@ -2,8 +2,8 @@
  * Aviso fijo del panel de «Traer la contabilidad de 2026» (A4):
  *
  *  - A_MEDIAS (rojo): una carga se quedo importandose a medias.
- *  - FALTAN_DATOS (ambar): la carga vigente se trajo con datos por completar;
- *    hasta 5 puntos y el total.
+ *  - FALTAN_DATOS (ambar): a la carga vigente le faltan datos (comprobaciones
+ *    en vivo, sin los avisos aceptados con motivo); hasta 5 puntos y el total.
  *  - INVITACION: empresa española sin carga ni plan anterior traido, a la que
  *    conviene traer la contabilidad de la gestoria antes de dar de alta
  *    clientes o proveedores.
@@ -13,7 +13,7 @@ import { prisma } from '../../config/database';
 import { ENLACE_ARRANQUE } from '../periodos.service';
 import { esEmpresaEspanola } from '../perfilEmpresa.service';
 import { EJERCICIO_ARRANQUE } from './analisis.service';
-import type { PuntoComprobacion } from './comprobaciones';
+import { comprobacionesArranque } from './seguimiento.service';
 
 export interface AvisoArranque {
   nivel: 'A_MEDIAS' | 'FALTAN_DATOS' | 'INVITACION';
@@ -30,7 +30,7 @@ export async function avisoArranque(companyId: string): Promise<AvisoArranque | 
   const anio = EJERCICIO_ARRANQUE - 1;
   const [aplicando, vigente] = await Promise.all([
     prisma.cargaArranque.findFirst({ where: { companyId, ejercicio: EJERCICIO_ARRANQUE, estado: 'APLICANDO' }, select: { version: true } }),
-    prisma.cargaArranque.findFirst({ where: { companyId, ejercicio: EJERCICIO_ARRANQUE, estado: 'CONFIRMADA' }, select: { resumen: true } }),
+    prisma.cargaArranque.findFirst({ where: { companyId, ejercicio: EJERCICIO_ARRANQUE, estado: 'CONFIRMADA' }, select: { id: true } }),
   ]);
   if (aplicando) {
     return {
@@ -42,9 +42,9 @@ export async function avisoArranque(companyId: string): Promise<AvisoArranque | 
     };
   }
   if (vigente) {
-    const resumen = (vigente.resumen ?? {}) as { confirmacion?: { comprobaciones?: { puntos?: PuntoComprobacion[] } }; avisosAceptados?: Array<{ clave: string }> };
-    const aceptados = new Set((resumen.avisosAceptados ?? []).map((a) => a.clave));
-    const faltan = (resumen.confirmacion?.comprobaciones?.puntos ?? []).filter((p) => p.nivel === 'FALTA' && !aceptados.has(p.clave));
+    // Las comprobaciones en vivo: lo que se completa despues (bancos, fichas, series...) deja de salir.
+    const a4 = await comprobacionesArranque(companyId, EJERCICIO_ARRANQUE);
+    const faltan = (a4?.puntos ?? []).filter((p) => p.nivel === 'FALTA');
     if (!faltan.length) return null;
     return {
       nivel: 'FALTAN_DATOS',
