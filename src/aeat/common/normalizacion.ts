@@ -85,6 +85,22 @@ export function motivoNifNoValido(valor: unknown, opts: { persona?: boolean } = 
 /** NIF válido (con su control) o false. */
 export const nifAeatValido = (valor: unknown): boolean => motivoNifNoValido(valor) === null;
 
+/**
+ * Errores por la persona de contacto y el teléfono que faltan (B3), con dónde
+ * se rellenan; vacío si están. La única comprobación: la usan los borradores
+ * y los generadores de los ficheros que los llevan (347, 349, 180, 190, 200).
+ */
+export function erroresContactoAeat(d: { personaContacto?: string | null; telefono?: string | null }): string[] {
+  const errores: string[] = [];
+  if (!textoAeat(d.personaContacto)) {
+    errores.push('Falta la persona de contacto con Hacienda (apellidos y nombre). Rellénala en Registro Mercantil > Datos.');
+  }
+  if (!telefonoAeat(d.telefono)) {
+    errores.push('Falta el teléfono de contacto con Hacienda (9 cifras). Rellénalo en Registro Mercantil > Datos.');
+  }
+  return errores;
+}
+
 /** Error del NIF de la empresa que declara, con el NIF y dónde se corrige; null si vale. */
 export function errorNifDeclarante(valor: unknown): string | null {
   const nif = normalizarNif(valor);

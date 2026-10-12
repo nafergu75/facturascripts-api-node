@@ -11,7 +11,7 @@
 import type { Response } from 'express';
 import { prisma } from '../../config/database';
 import { badRequest, conflict, forbidden } from '../../utils/http-errors';
-import { telefonoAeat, textoAeat } from '../../aeat/common/normalizacion';
+import { erroresContactoAeat } from '../../aeat/common/normalizacion';
 import { contextoDeclaracion, incluyeRegistro, type ContextoDeclaracion } from '../declaracionesAeat/declaraciones.service';
 
 export interface DeclaranteEmpresa {
@@ -45,17 +45,8 @@ export async function contactoEmpresa(companyId: string): Promise<{ personaConta
   return { personaContacto: legal?.personaContacto ?? '', telefono: legal?.telefono ?? '' };
 }
 
-/** Errores por los datos de contacto que faltan (vacío si están). */
-export function erroresContacto(d: { personaContacto?: string | null; telefono?: string | null }): string[] {
-  const errores: string[] = [];
-  if (!textoAeat(d.personaContacto)) {
-    errores.push('Falta la persona de contacto con Hacienda (apellidos y nombre). Rellénala en Registro Mercantil > Datos.');
-  }
-  if (!telefonoAeat(d.telefono)) {
-    errores.push('Falta el teléfono de contacto con Hacienda (9 cifras). Rellénalo en Registro Mercantil > Datos.');
-  }
-  return errores;
-}
+/** Errores por los datos de contacto que faltan (vacío si están): ver erroresContactoAeat. */
+export const erroresContacto = erroresContactoAeat;
 
 export type OpcionesModelo = Record<string, string | number | boolean | null>;
 

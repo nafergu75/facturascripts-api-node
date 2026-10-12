@@ -12,7 +12,7 @@
  */
 import { DISENO_180 } from '../../domain/aeat/disenos';
 import { componerRegistroDr, leerRegistroDr, registroDe, type CampoLeidoDr } from '../common/disenoRegistro';
-import { errorNifDeclarante, motivoNifNoValido, nifDerecha, telefonoAeat, textoAeat } from '../common/normalizacion';
+import { errorNifDeclarante, erroresContactoAeat, motivoNifNoValido, nifDerecha, telefonoAeat, textoAeat } from '../common/normalizacion';
 import { esNifEspanolValido } from '../../utils/nif';
 import type { ColumnaDr } from '../modelo349/modelo349.dr';
 
@@ -147,7 +147,8 @@ export function totales180(perceptores: Perceptor180[]): { bases: number; retenc
  * se comprueba.
  */
 export function generarFichero180(e: Entrada180, { comprobar = true }: { comprobar?: boolean } = {}): string {
-  const errores = comprobar ? erroresEntrada180(e) : [];
+  // El fichero lleva la persona de contacto y el teléfono (registro de tipo 1): sin ellos no se genera.
+  const errores = comprobar ? [...erroresContactoAeat(e.declarante), ...erroresEntrada180(e)] : [];
   if (errores.length) throw new ErrorEntrada180(errores);
   const d = e.declarante;
   const nif = nifDerecha(d.nif);

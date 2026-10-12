@@ -201,6 +201,15 @@ describe('349: lo que impide el fichero', () => {
     expect(() => generarFichero349(e)).toThrow(/declaración anterior/);
   });
 
+  it('el generador no deja salir el fichero sin persona de contacto ni teléfono', () => {
+    const e = entrada();
+    e.declarante.personaContacto = '';
+    e.declarante.telefono = '12';
+    expect(() => generarFichero349(e)).toThrow(/persona de contacto/);
+    expect(() => generarFichero349(e)).toThrow(/teléfono/);
+    expect(() => generarFichero349(e, { comprobar: false })).not.toThrow();
+  });
+
   it('sin NIF del declarante', () => {
     const e = entrada();
     e.declarante.nif = '';

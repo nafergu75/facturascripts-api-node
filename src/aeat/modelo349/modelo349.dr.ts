@@ -11,7 +11,7 @@
  */
 import { DISENO_349 } from '../../domain/aeat/disenos';
 import { componerRegistroDr, leerRegistroDr, registroDe, type CampoLeidoDr } from '../common/disenoRegistro';
-import { errorNifDeclarante, motivoNifIvaNoValido, nifDerecha, separarNifIva, telefonoAeat, textoAeat } from '../common/normalizacion';
+import { errorNifDeclarante, erroresContactoAeat, motivoNifIvaNoValido, nifDerecha, separarNifIva, telefonoAeat, textoAeat } from '../common/normalizacion';
 import { PAISES_UE } from '../../domain/tipo-operacion.model';
 
 /** E entregas, M entregas tras importacion exenta, H idem por representante fiscal, A adquisiciones de bienes,
@@ -158,7 +158,8 @@ const centimos = (n: number) => Math.round(n * 100);
  * se comprueba.
  */
 export function generarFichero349(e: Entrada349, { comprobar = true }: { comprobar?: boolean } = {}): string {
-  const errores = comprobar ? erroresEntrada349(e) : [];
+  // El fichero lleva la persona de contacto y el teléfono (registro de tipo 1): sin ellos no se genera.
+  const errores = comprobar ? [...erroresContactoAeat(e.declarante), ...erroresEntrada349(e)] : [];
   if (errores.length) throw new ErrorEntrada349(errores);
   const d = e.declarante;
   const nif = nifDerecha(d.nif);

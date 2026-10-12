@@ -231,6 +231,15 @@ describe('180: reintegros, complementaria y lo que impide el fichero', () => {
     expect(errores.join(' ')).not.toMatch(/216|no residente/);
   });
 
+  it('el generador no deja salir el fichero sin persona de contacto ni teléfono', () => {
+    const e = entrada();
+    e.declarante.personaContacto = '';
+    e.declarante.telefono = '12';
+    expect(() => generarFichero180(e)).toThrow(/persona de contacto/);
+    expect(() => generarFichero180(e)).toThrow(/teléfono/);
+    expect(() => generarFichero180(e, { comprobar: false })).not.toThrow();
+  });
+
   it('situación 4 (sin referencia catastral) no la pide', () => {
     const e = entrada();
     e.perceptores = [{ ...e.perceptores[0], inmueble: { ...valencia, situacion: 4, referenciaCatastral: '' } }];
