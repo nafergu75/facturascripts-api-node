@@ -367,6 +367,12 @@ async function analizar(
       omitidas.push({ codigo: c.codigo, motivo: `No encaja en el PGC (no existe la cuenta ${c.codigo.slice(0, 3)}).` });
       continue;
     }
+    // Una cuenta de 3 digitos que la app no trae de serie (213 Maquinaria, 112 Reserva legal...)
+    // vale si su subgrupo existe; si no, no encaja y sus subcuentas tampoco (antes quedaban sin madre).
+    if (c.codigo.length <= 3 && !ctx.plan.has(c.codigo) && !(c.codigo.length === 3 && ctx.plan.has(c.codigo.slice(0, 2)))) {
+      omitidas.push({ codigo: c.codigo, motivo: 'Cuenta de 3 dígitos que no está en el PGC de PYMES.' });
+      continue;
+    }
     conocidas.add(c.codigo);
     validas.push(c);
   }
@@ -382,11 +388,7 @@ async function analizar(
       if (c.nombre && ya.nombre !== c.nombre && c.codigo.length > 3) existentesConOtroNombre.push(c.codigo);
       continue;
     }
-    if (c.codigo.length <= 3) {
-      omitidas.push({ codigo: c.codigo, motivo: 'Cuenta de 3 dígitos que no está en el PGC de PYMES.' });
-      continue;
-    }
-    const madre = madreDe(c.codigo, conocidasPlan)!;
+    const madre = c.codigo.length === 3 ? c.codigo.slice(0, 2) : madreDe(c.codigo, conocidasPlan)!;
     conocidasPlan.add(c.codigo);
     nuevas.push({ codigo: c.codigo, nombre: c.nombre || `${ctx.plan.get(madre)?.nombre ?? nuevas.find((n) => n.codigo === madre)?.nombre ?? 'Cuenta'} (${c.codigo})`, madre });
   }
