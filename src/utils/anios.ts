@@ -145,14 +145,39 @@ export async function primerDiaConDatos(companyId: string): Promise<string | nul
 /**
  * Inicio en la app cuando la empresa no lo ha indicado: el primer dia con
  * algo suyo en la app (ejercicio, factura, asiento, banco o nomina) y, si no
- * tiene nada, el dia en que se dio de alta (hora de España). null si la
- * empresa no existe.
+ * tiene nada, el dia en que se dio de alta (hora de España). Si la empresa
+ * tiene años llevados por la gestoria (llevanza EXTERNA), nunca antes del dia
+ * siguiente al ultimo de ellos: asi la llevanza y el inicio dicen lo mismo.
+ * null si la empresa no existe.
  */
 export async function inicioDeducido(companyId: string): Promise<string | null> {
-  const primero = await primerDiaConDatos(companyId);
-  if (primero) return primero;
-  const empresa = await prisma.company.findUnique({ where: { id: companyId }, select: { createdAt: true } });
-  return empresa ? hoyEspana(empresa.createdAt) : null;
+  const [primero, trasExterna] = await Promise.all([primerDiaConDatos(companyId), diaTrasLlevanzaExterna(companyId)]);
+  let base = primero;
+  if (!base) {
+    const empresa = await prisma.company.findUnique({ where: { id: companyId }, select: { createdAt: true } });
+    base = empresa ? hoyEspana(empresa.createdAt) : null;
+  }
+  // Un año que llevó la gestoría (llevanza EXTERNA) nunca cuenta como llevado
+  // en la app, aunque su diario esté aquí como histórico: el inicio es, como
+  // pronto, el día siguiente a su cierre.
+  if (trasExterna && (!base || base < trasExterna)) return trasExterna;
+  return base;
+}
+
+/**
+ * Día siguiente al fin del último ejercicio que llevó la gestoría
+ * (FiscalYear.llevanza = EXTERNA), o null si no hay ninguno.
+ */
+async function diaTrasLlevanzaExterna(companyId: string): Promise<string | null> {
+  const ultimo = await prisma.fiscalYear.findFirst({
+    where: { companyId, llevanza: 'EXTERNA' },
+    orderBy: { fechaFin: 'desc' },
+    select: { fechaFin: true },
+  });
+  if (!ultimo || !FECHA_RAZONABLE(ultimo.fechaFin)) return null;
+  const d = new Date(`${ultimo.fechaFin.slice(0, 10)}T12:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + 1);
+  return d.toISOString().slice(0, 10);
 }
 
 /**
