@@ -31,7 +31,14 @@ export interface AsientoSimple {
 export function tipoAsiento(origen: string | null | undefined, concepto: string | null | undefined): TipoAsiento {
   const o = (origen ?? '').toUpperCase();
   const c = (concepto ?? '').trim().toLowerCase();
-  if (o === 'APERTURA' || c.startsWith('apertura ejercicio')) return 'APERTURA';
+  // Diario de un año llevado por la gestoria: el tipo sale solo del origen.
+  if (o.startsWith('HISTORICO')) {
+    if (o === 'HISTORICO_APERTURA') return 'APERTURA';
+    if (o === 'HISTORICO_REGULARIZACION') return 'REGULARIZACION';
+    if (o === 'HISTORICO_CIERRE') return 'CIERRE';
+    return 'NORMAL';
+  }
+  if (o === 'APERTURA' || o === 'APERTURA_AJUSTE' || c.startsWith('apertura ejercicio')) return 'APERTURA';
   if (o === 'REGULARIZACION' || c.startsWith('regularizacion ejercicio') || c.startsWith('regularización ejercicio')) return 'REGULARIZACION';
   if (o === 'CIERRE' || o === 'CIERRE_AUTOMATICO' || c.startsWith('cierre ejercicio') || c.startsWith('cierre contable')) return 'CIERRE';
   return 'NORMAL';
