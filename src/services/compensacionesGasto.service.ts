@@ -263,7 +263,30 @@ export async function aplicarAbono(
   const id = await conReintento(() =>
     prisma.$transaction(async (tx) => {
       await bloquear(tx, [abono.id, ...(factura ? [factura.id] : [])]);
-      const pend = await pendientes(tx, companyId, [abono, ...(factura ? [factura] : [])]);
+      // Con las dos bloqueadas se vuelven a leer: otra peticion pudo anularlas o corregirlas despues de la primera lectura.
+      const [abonoAhora, facturaAhora] = await Promise.all([
+        tx.expenseInvoice.findFirst({ where: { id: abono.id, companyId } }),
+        factura ? tx.expenseInvoice.findFirst({ where: { id: factura.id, companyId } }) : Promise.resolve(null),
+      ]);
+      const cambiado =
+        !abonoAhora ||
+        abonoAhora.estado !== 'ACCOUNTED' ||
+        aCentimos(Number(abonoAhora.totalFactura)) >= 0 ||
+        (factura &&
+          (!facturaAhora ||
+            facturaAhora.supplierId !== abono.supplierId ||
+            facturaAhora.estado === 'ANULADA' ||
+            facturaAhora.estado === 'DRAFT' ||
+            aCentimos(Number(facturaAhora.totalFactura)) <= 0));
+      if (cambiado) {
+        throw conflict(
+          factura && abonoAhora?.estado === 'ACCOUNTED'
+            ? `La factura ${numeroDe(factura)} ha cambiado mientras aplicabas el abono: vuelve a abrirla.`
+            : `El abono ${numeroDe(abono)} ha cambiado mientras lo aplicabas: vuelve a abrirlo.`,
+          { motivo: 'factura_cambiada' },
+        );
+      }
+      const pend = await pendientes(tx, companyId, [abonoAhora, ...(facturaAhora ? [facturaAhora] : [])]);
       const aFavor = -(pend.get(abono.id) ?? 0);
       if (aFavor <= 0) throw conflict(`No queda nada a tu favor en el abono ${numeroDe(abono)}: ya está devuelto o aplicado.`);
       const tope = factura ? Math.min(aFavor, pend.get(factura.id) ?? 0) : aFavor;
