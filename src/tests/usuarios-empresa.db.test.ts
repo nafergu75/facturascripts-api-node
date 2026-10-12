@@ -364,7 +364,7 @@ describeBd('Configuración > Usuarios, por empresa (BD real)', () => {
       // Si la recibiera, pasaría a estar «solo en sus empresas» y podría cambiarle la contraseña.
       const res = await como(tokenAdminA).post(`/companies/${A}/usuarios`, { email: huerfano.email, rol: 'solo_lectura' });
       expect(res.status).toBe(403);
-      expect(res.body.message).toContain('no entra en ninguna empresa');
+      expect(res.body.message).toBe('A este correo solo le puede dar acceso el administrador global de la plataforma.');
       expect(await acceso(huerfano.id, A)).toBeNull();
       expect(await auditoria('ASIGNAR_USUARIO_EMPRESA', huerfano.id)).toHaveLength(0);
       expect((await como(tokenAdminA).post(`/companies/${A}/usuarios/${huerfano.id}/contrasena-provisional`)).status).toBe(404);
@@ -570,6 +570,70 @@ describeBd('Configuración > Usuarios, por empresa (BD real)', () => {
       expect(res.body.message).toContain('demasiados correos');
       // Es por usuario: el de otra empresa sigue pudiendo.
       expect((await como(tokenAdminA).post(`/companies/${A}/usuarios/comprobar-correo`, { email: correo('otro') })).status).toBe(200);
+    });
+  });
+
+  describe('El alta no sirve para saber qué correos tienen usuario', () => {
+    it('un rol malo da el mismo 400 con un correo nuevo, uno de otra empresa, el global o una cuenta sin empresas', async () => {
+      const t = como(tokenAdminA);
+      const respuestas = [];
+      const sinEmpresas = await usuario('huerfano-3', []);
+      for (const email of [correo('no-existe'), soloB.email, G.email, sinEmpresas.email]) {
+        const res = await t.post(`/companies/${A}/usuarios`, { email, rol: 'zz' });
+        respuestas.push({ status: res.status, message: res.body.message, campo: res.body.details?.campo });
+      }
+      expect(new Set(respuestas.map((r) => JSON.stringify(r))).size).toBe(1);
+      expect(respuestas[0]).toMatchObject({ status: 400, campo: 'rol' });
+      expect(await acceso(soloB.id, A)).toBeNull();
+    });
+
+    it('el global y la cuenta sin empresas dan el mismo 403, sin rastro', async () => {
+      const t = como(tokenAdminA);
+      // Otra cuenta sin empresas (a la de antes ya le dio acceso el global).
+      const otroHuerfano = await usuario('huerfano-2', []);
+      const global = await t.post(`/companies/${A}/usuarios`, { email: G.email, rol: 'solo_lectura' });
+      const sinEmpresas = await t.post(`/companies/${A}/usuarios`, { email: otroHuerfano.email, rol: 'solo_lectura' });
+      expect(global.status).toBe(403);
+      expect(sinEmpresas.status).toBe(403);
+      expect(global.body.message).toBe(sinEmpresas.body.message);
+      expect(await auditoria('ASIGNAR_USUARIO_EMPRESA', G.id)).toHaveLength(0);
+    });
+
+    it('comparte el límite por usuario con comprobar-correo: después de 60 intentos, 429', async () => {
+      const adminD = await usuario('admin-d', [[C, 'admin']]);
+      const t = como(await tokenDe(adminD.id));
+      for (let i = 0; i < 30; i++) {
+        expect((await t.post(`/companies/${C}/usuarios/comprobar-correo`, { email: correo(`alta-lista-${i}`) })).status).toBe(200);
+      }
+      for (let i = 30; i < 60; i++) {
+        expect((await t.post(`/companies/${C}/usuarios`, { email: correo(`alta-lista-${i}`), rol: 'zz' })).status).toBe(400);
+      }
+      const res = await t.post(`/companies/${C}/usuarios`, { nombre: 'Lista Sesenta', email: correo('alta-lista-60'), rol: 'ventas' });
+      expect(res.status).toBe(429);
+      expect(res.body.message).toContain('demasiados correos');
+      expect(await prisma.user.count({ where: { email: correo('alta-lista-60') } })).toBe(0);
+    });
+  });
+
+  describe('Cuenta desactivada', () => {
+    it('el administrador de la empresa no le pone contraseña provisional; el global sí', async () => {
+      const desactivado = await usuario('desactivado', [[A, 'ventas']]);
+      await prisma.user.update({ where: { id: desactivado.id }, data: { isActive: false } });
+      const antes = await prisma.user.findUniqueOrThrow({ where: { id: desactivado.id }, select: { passwordHash: true } });
+
+      const lista = await como(tokenAdminA).get(`/companies/${A}/usuarios`);
+      const fila = lista.body.data.find((u: { userId: string }) => u.userId === desactivado.id);
+      expect(fila).toMatchObject({ estado: 'desactivado', puedes: { nuevaContrasena: false } });
+
+      const res = await como(tokenAdminA).post(`/companies/${A}/usuarios/${desactivado.id}/contrasena-provisional`);
+      expect(res.status).toBe(403);
+      expect(res.body.message).toContain('desactivado');
+      expect(res.body.data?.contrasenaProvisional).toBeUndefined();
+      expect(await prisma.user.findUniqueOrThrow({ where: { id: desactivado.id }, select: { passwordHash: true } })).toEqual(antes);
+
+      const global = await como(tokenG).post(`/companies/${A}/usuarios/${desactivado.id}/contrasena-provisional`);
+      expect(global.status).toBe(200);
+      expect(typeof global.body.data.contrasenaProvisional).toBe('string');
     });
   });
 });

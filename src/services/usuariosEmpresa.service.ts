@@ -29,8 +29,10 @@ import {
   catalogoPermisos,
   conCampo,
   crearUsuario,
+  leerAreas,
   normalizarEmail,
   normalizarNombrePersona,
+  normalizarRol,
   normalizarTelefono,
   quitarAcceso,
   type CambiosUsuario,
@@ -91,8 +93,14 @@ export const MENSAJE_CONTRASENA_OTRAS_EMPRESAS =
 export const MENSAJE_DATOS_OTRAS_EMPRESAS =
   'Este usuario también entra en empresas que tú no administras. Su nombre y su teléfono solo los puede cambiar el administrador global.';
 export const MENSAJE_SIN_ACCESO = 'Ese usuario no tiene acceso a esta empresa.';
-export const MENSAJE_CUENTA_SIN_EMPRESAS =
-  'Este correo ya tiene usuario, pero ahora no entra en ninguna empresa. Para darle acceso, pídeselo al administrador global de la plataforma.';
+/**
+ * Alta con un correo que solo puede recibir el administrador global (el propio
+ * global o una cuenta sin ninguna empresa). Un solo texto para los dos casos:
+ * asi el alta no deja saber que correos son de administradores globales.
+ */
+export const MENSAJE_SOLO_ADMIN_GLOBAL_ALTA = 'A este correo solo le puede dar acceso el administrador global de la plataforma.';
+export const MENSAJE_DESACTIVADO =
+  'Este usuario está desactivado. Solo el administrador global puede reactivarlo y darle una contraseña nueva.';
 
 // --- REGLAS (funciones puras: la lista y las acciones deciden igual) ---
 
@@ -120,10 +128,16 @@ function cuentaEnSusEmpresas(objetivo: Objetivo, administradas: Administradas): 
   return administradas === 'todas' || objetivo.empresas.every((c) => administradas.has(c));
 }
 
-/** ¿Puede generarle una contrasena provisional nueva? (La propia nunca: va por «Cambiar contraseña».) */
+/**
+ * ¿Puede generarle una contrasena provisional nueva? (La propia nunca: va por
+ * «Cambiar contraseña».) A una cuenta desactivada, solo el global: desactivar
+ * y reactivar es suyo, y una provisional puesta antes de reactivarla pisaria
+ * la contraseña del usuario y la conoceria quien la genero.
+ */
 export function motivoNoNuevaContrasena(actor: Actor, objetivo: Objetivo, administradas: Administradas): string | null {
   const acceso = motivoNoEditarAcceso(actor, objetivo);
   if (acceso) return acceso;
+  if (!objetivo.activo && !actor.esAdminGlobal) return MENSAJE_DESACTIVADO;
   if (!cuentaEnSusEmpresas(objetivo, administradas)) return MENSAJE_CONTRASENA_OTRAS_EMPRESAS;
   return null;
 }
@@ -254,11 +268,11 @@ interface CuentaExistente {
  * - El administrador global de la plataforma: solo lo toca otro global.
  * - Una cuenta sin ninguna empresa: si la recibiera, quedaria "solo en sus
  *   empresas" y podria cambiarle la contrasena (ver la cabecera).
+ * El mismo texto en los dos casos (MENSAJE_SOLO_ADMIN_GLOBAL_ALTA).
  */
 export function motivoNoDarAccesoACuenta(actor: Actor, cuenta: CuentaExistente): string | null {
   if (actor.esAdminGlobal) return null;
-  if (cuenta.isGlobalAdmin) return MENSAJE_ES_ADMIN_GLOBAL;
-  if (cuenta._count.memberships === 0) return MENSAJE_CUENTA_SIN_EMPRESAS;
+  if (cuenta.isGlobalAdmin || cuenta._count.memberships === 0) return MENSAJE_SOLO_ADMIN_GLOBAL_ALTA;
   return null;
 }
 
@@ -325,6 +339,13 @@ export type ResultadoAlta =
  */
 export async function altaEnEmpresa(actor: Actor, companyId: string, datos: DatosAlta): Promise<ResultadoAlta> {
   const email = conCampo('email', () => normalizarEmail(datos.email));
+  // Lo que no depende de si el correo existe se valida antes de buscarlo: un
+  // rol, unas areas o un telefono mal puestos dan el mismo 400 con cualquier
+  // correo, y el alta no sirve para saber cuales tienen usuario.
+  conCampo('rol', () => normalizarRol(datos.rol));
+  leerAreas(datos.areas);
+  normalizarTelefono(datos.telefono);
+  if (datos.nombre !== undefined && datos.nombre !== null && datos.nombre !== '') normalizarNombrePersona(datos.nombre);
   const existente = await prisma.user.findUnique({
     where: { email },
     select: { id: true, isGlobalAdmin: true, _count: { select: { memberships: true } }, memberships: { where: { companyId }, select: { id: true } } },

@@ -12,8 +12,9 @@ import {
   motivoNoEditarAcceso,
   motivoNoNuevaContrasena,
   MENSAJE_CONTRASENA_OTRAS_EMPRESAS,
-  MENSAJE_CUENTA_SIN_EMPRESAS,
+  MENSAJE_DESACTIVADO,
   MENSAJE_ES_ADMIN_GLOBAL,
+  MENSAJE_SOLO_ADMIN_GLOBAL_ALTA,
   type Objetivo,
 } from '../services/usuariosEmpresa.service';
 import { normalizarNombrePersona, normalizarTelefono } from '../services/admin.service';
@@ -51,10 +52,18 @@ describe('quién puede hacer qué desde una empresa', () => {
   it('una cuenta que ya existe se recibe desde la empresa salvo si es el global o no entra en ninguna', () => {
     const cuenta = (isGlobalAdmin: boolean, memberships: number) => ({ isGlobalAdmin, _count: { memberships } });
     expect(motivoNoDarAccesoACuenta(adminA, cuenta(false, 1))).toBeNull();
-    expect(motivoNoDarAccesoACuenta(adminA, cuenta(true, 1))).toBe(MENSAJE_ES_ADMIN_GLOBAL);
-    expect(motivoNoDarAccesoACuenta(adminA, cuenta(false, 0))).toBe(MENSAJE_CUENTA_SIN_EMPRESAS);
+    // El mismo texto en los dos casos: el alta no deja saber qué correos son de administradores globales.
+    expect(motivoNoDarAccesoACuenta(adminA, cuenta(true, 1))).toBe(MENSAJE_SOLO_ADMIN_GLOBAL_ALTA);
+    expect(motivoNoDarAccesoACuenta(adminA, cuenta(false, 0))).toBe(MENSAJE_SOLO_ADMIN_GLOBAL_ALTA);
     expect(motivoNoDarAccesoACuenta(global, cuenta(false, 0))).toBeNull();
     expect(motivoNoDarAccesoACuenta(global, cuenta(true, 0))).toBeNull();
+  });
+
+  it('a una cuenta desactivada solo le da contraseña el administrador global', () => {
+    expect(motivoNoNuevaContrasena(adminA, objetivo({ activo: false }), soloA)).toBe(MENSAJE_DESACTIVADO);
+    expect(accionesPermitidas(adminA, objetivo({ activo: false }), soloA, ['admin-a']).nuevaContrasena).toBe(false);
+    expect(motivoNoNuevaContrasena(global, objetivo({ activo: false }), 'todas')).toBeNull();
+    expect(accionesPermitidas(global, objetivo({ activo: false }), 'todas', ['admin-a']).nuevaContrasena).toBe(true);
   });
 
   it('la propia contraseña nunca, y el último administrador activo no se quita', () => {

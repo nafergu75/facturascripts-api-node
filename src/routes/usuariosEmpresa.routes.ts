@@ -54,21 +54,24 @@ const esquemaVacio = z.object({}).strict();
 
 /**
  * «comprobar-correo» dice si un correo tiene usuario en la plataforma, y no deja
- * rastro en AuditLog (el alta si). Con un limite por usuario no sirve para
- * repasar listas de correos. Al escribir el correo la pantalla pregunta una vez
- * por pausa, asi que el uso normal queda muy por debajo.
+ * rastro en AuditLog. El alta tambien lo deja ver (un 400 por el nombre que
+ * falta si el correo es nuevo, un 403 si solo lo puede recibir el global), y
+ * un alta rechazada tampoco deja rastro. Por eso las dos comparten un limite
+ * por usuario: asi ninguna sirve para repasar listas de correos. Al escribir el
+ * correo la pantalla pregunta una vez por pausa y despues graba una vez, asi
+ * que el uso normal queda muy por debajo.
  */
-const comprobacionesPorUsuario = rateLimit({
+const correosPorUsuario = rateLimit({
   ventanaMs: 10 * 60_000,
   max: 60,
   keyGenerator: (req) => `usuario:${req.user?.userId ?? req.ip}`,
-  mensaje: 'Has comprobado demasiados correos seguidos. Espera unos minutos y vuelve a probar.',
+  mensaje: 'Has probado demasiados correos seguidos. Espera unos minutos y vuelve a probar.',
 });
 
 router.get('/', authorize('admin:empresa'), c.listar);
 router.get('/catalogo', authorize('admin:empresa'), c.catalogo);
-router.post('/comprobar-correo', authorize('admin:empresa'), comprobacionesPorUsuario, validarCuerpo(esquemaComprobar), c.comprobarCorreo);
-router.post('/', authorize('admin:empresa'), validarCuerpo(esquemaAlta), c.alta);
+router.post('/comprobar-correo', authorize('admin:empresa'), correosPorUsuario, validarCuerpo(esquemaComprobar), c.comprobarCorreo);
+router.post('/', authorize('admin:empresa'), correosPorUsuario, validarCuerpo(esquemaAlta), c.alta);
 router.put('/:userId', authorize('admin:empresa'), validarCuerpo(esquemaEdicion), c.editar);
 router.post('/:userId/contrasena-provisional', authorize('admin:empresa'), validarCuerpo(esquemaVacio), c.nuevaContrasena);
 router.delete('/:userId', authorize('admin:empresa'), c.quitar);
