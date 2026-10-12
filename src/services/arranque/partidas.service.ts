@@ -64,8 +64,10 @@ export interface PartidaVista {
   importeOriginal: number | null;
   /** Pendiente a 31-12 (lo que vino de la gestoria). */
   importeInicial: number;
-  /** Cobrado o pagado en el ejercicio (liquidaciones activas). */
+  /** Cobrado o pagado en el ejercicio (liquidaciones activas y abonos del proveedor aplicados). */
   liquidado: number;
+  /** De lo liquidado, lo que se ha descontado con abonos del proveedor (sin movimiento de dinero). */
+  compensado: number;
   /** Lo que queda. */
   pendiente: number;
   moneda: string;
@@ -112,14 +114,139 @@ export function apuntesLiquidacion(
     .map((b) => ({ cuenta: b.cuenta, nombre: b.nombre, debe: b.saldo > 0 ? r2(b.saldo) : 0, haber: b.saldo < 0 ? r2(-b.saldo) : 0 }));
 }
 
+/** Numero de factura para casar el de una partida con el que se escribio en un abono: sin espacios y en mayusculas. */
+export const numeroComparable = (n: string | null | undefined): string => (n ?? '').replace(/\s+/g, '').toUpperCase();
+
+type FilaEnlace = { id: string; tipo: string; supplierId: string | null; expenseInvoiceId: string | null; numeroDocumento: string; cargaId: string };
+
+/** Primer dia del ejercicio de destino de cada carga (lo de antes ya esta en lo pendiente a 31-12). */
+async function aperturaPorCarga(db: Db, companyId: string, cargaIds: string[]): Promise<Map<string, string>> {
+  const ids = [...new Set(cargaIds)];
+  const cargas = ids.length ? await db.cargaArranque.findMany({ where: { companyId, id: { in: ids } }, select: { id: true, ejercicio: true } }) : [];
+  return new Map(cargas.map((c) => [c.id, `${c.ejercicio}-01-01`]));
+}
+
+/**
+ * Lo aplicado con abonos de proveedor a cada partida de pago: compensaciones
+ * activas con fecha desde la apertura (las de antes ya estan en lo pendiente
+ * que dio la gestoria).
+ *  - Las que recibe la factura de la app enlazada a la partida, en positivo.
+ *  - Las de un abono aplicado a una factura «de fuera de la app» del mismo
+ *    proveedor con el numero de la partida, en positivo.
+ *  - Si la factura enlazada es un abono, las suyas aplicadas a otras, en negativo.
+ * Asi un abono de 2027 sobre una factura de 2026 rebaja una sola vez lo que
+ * queda por pagar de esa factura.
+ */
+async function compensadoPorPartida(db: Db, companyId: string, filas: FilaEnlace[]): Promise<Map<string, number>> {
+  const pagos = filas.filter((f) => f.tipo === 'PAGO');
+  const out = new Map<string, number>();
+  if (!pagos.length) return out;
+  const apertura = await aperturaPorCarga(db, companyId, pagos.map((f) => f.cargaId));
+  const desde = [...apertura.values()].sort()[0] ?? '0000-01-01';
+  const enlazadas = pagos.map((f) => f.expenseInvoiceId).filter((x): x is string => !!x);
+  const proveedores = [...new Set(pagos.filter((f) => !f.expenseInvoiceId).map((f) => f.supplierId).filter((x): x is string => !!x))];
+  const abonosProveedor = proveedores.length
+    ? await db.expenseInvoice.findMany({ where: { companyId, supplierId: { in: proveedores }, totalFactura: { lt: 0 } }, select: { id: true, supplierId: true } })
+    : [];
+  const proveedorDeAbono = new Map(abonosProveedor.map((a) => [a.id, a.supplierId]));
+  const condiciones = [
+    ...(enlazadas.length ? [{ facturaId: { in: enlazadas } }, { abonoId: { in: enlazadas } }] : []),
+    ...(abonosProveedor.length ? [{ facturaId: null, abonoId: { in: abonosProveedor.map((a) => a.id) } }] : []),
+  ];
+  if (!condiciones.length) return out;
+  const cs = await db.compensacionGasto.findMany({
+    where: { companyId, estado: 'ACTIVO', fecha: { gte: desde }, OR: condiciones },
+    select: { abonoId: true, facturaId: true, numeroFuera: true, fecha: true, importe: true },
+  });
+  for (const f of pagos) {
+    const inicio = apertura.get(f.cargaId) ?? desde;
+    let cent = 0;
+    for (const c of cs) {
+      if (c.fecha < inicio) continue;
+      const importe = aCentimos(Number(c.importe));
+      if (f.expenseInvoiceId) {
+        if (c.facturaId === f.expenseInvoiceId) cent += importe;
+        else if (c.abonoId === f.expenseInvoiceId) cent -= importe;
+      } else if (!c.facturaId && f.supplierId && proveedorDeAbono.get(c.abonoId) === f.supplierId && numeroComparable(c.numeroFuera) === numeroComparable(f.numeroDocumento)) {
+        cent += importe;
+      }
+    }
+    if (cent) out.set(f.id, cent / 100);
+  }
+  return out;
+}
+
+/** Lo aplicado con abonos de proveedor a cada partida (parte de lo liquidado). */
+async function soloCompensado(db: Db, companyId: string, ids: string[]): Promise<Map<string, number>> {
+  if (!ids.length) return new Map();
+  const enlace = await db.partidaPendiente.findMany({ where: { companyId, id: { in: ids } }, select: { id: true, tipo: true, supplierId: true, expenseInvoiceId: true, numeroDocumento: true, cargaId: true } });
+  return compensadoPorPartida(db, companyId, enlace);
+}
+
+/** Cobrado o pagado de cada partida: sus liquidaciones activas mas lo aplicado con abonos de proveedor. */
 async function liquidadoPorPartida(db: Db, companyId: string, ids: string[]): Promise<Map<string, number>> {
   if (!ids.length) return new Map();
-  const filas = await db.invoicePayment.groupBy({
-    by: ['invoiceId'],
-    where: { companyId, invoiceType: 'PARTIDA', estado: 'ACTIVO', invoiceId: { in: ids } },
-    _sum: { importe: true },
+  const [filas, compensado] = await Promise.all([
+    db.invoicePayment.groupBy({
+      by: ['invoiceId'],
+      where: { companyId, invoiceType: 'PARTIDA', estado: 'ACTIVO', invoiceId: { in: ids } },
+      _sum: { importe: true },
+    }),
+    soloCompensado(db, companyId, ids),
+  ]);
+  const out = new Map(filas.map((f) => [f.invoiceId, r2(Number(f._sum.importe ?? 0))]));
+  for (const [id, euros] of compensado) out.set(id, r2((out.get(id) ?? 0) + euros));
+  return out;
+}
+
+/** Lo que queda de cada partida: lo pendiente a 31-12 menos lo liquidado (pagos y abonos aplicados). */
+export async function pendientePorPartida(db: Db, companyId: string, ids: string[]): Promise<Map<string, number>> {
+  if (!ids.length) return new Map();
+  const [filas, liquidado] = await Promise.all([
+    db.partidaPendiente.findMany({ where: { companyId, id: { in: ids } }, select: { id: true, importePendiente: true } }),
+    liquidadoPorPartida(db, companyId, ids),
+  ]);
+  return new Map(filas.map((f) => [f.id, r2(Number(f.importePendiente) - (liquidado.get(f.id) ?? 0))]));
+}
+
+/**
+ * Partidas de pago vivas que recibe una compensacion de abono: la enlazada a
+ * cada factura de la app (por su id) y, para una factura de fuera de la app,
+ * la del mismo proveedor con ese numero. Se bloquean (FOR UPDATE, en orden de
+ * id) para que un pago de la partida a la vez no se cruce con la compensacion.
+ */
+export async function partidasDeCompensacion(
+  tx: TransaccionBD,
+  companyId: string,
+  q: { facturaIds?: string[]; fuera?: { supplierId: string; numero: string } },
+): Promise<Array<{ id: string; expenseInvoiceId: string | null; numeroDocumento: string }>> {
+  const ids = (q.facturaIds ?? []).filter(Boolean);
+  if (!ids.length && !q.fuera) return [];
+  const candidatas = await tx.partidaPendiente.findMany({
+    where: {
+      companyId,
+      tipo: 'PAGO',
+      estado: { not: 'ANULADA' },
+      OR: [...(ids.length ? [{ expenseInvoiceId: { in: ids } }] : []), ...(q.fuera ? [{ supplierId: q.fuera.supplierId, expenseInvoiceId: null }] : [])],
+    },
+    select: { id: true, expenseInvoiceId: true, numeroDocumento: true },
   });
-  return new Map(filas.map((f) => [f.invoiceId, r2(Number(f._sum.importe ?? 0))]));
+  const elegidas = candidatas.filter((p) =>
+    p.expenseInvoiceId ? ids.includes(p.expenseInvoiceId) : !!q.fuera && numeroComparable(p.numeroDocumento) === numeroComparable(q.fuera.numero),
+  );
+  for (const p of [...elegidas].sort((a, b) => (a.id < b.id ? -1 : 1))) await tx.$queryRaw`SELECT id FROM PartidaPendiente WHERE id = ${p.id} FOR UPDATE`;
+  return elegidas;
+}
+
+/** Vuelve a calcular el estado guardado de unas partidas (tras aplicar o anular un abono). */
+export async function recalcularEstadoPartidas(tx: TransaccionBD, companyId: string, ids: string[]): Promise<void> {
+  if (!ids.length) return;
+  const filas = await tx.partidaPendiente.findMany({ where: { companyId, id: { in: ids }, estado: { not: 'ANULADA' } }, select: { id: true, importePendiente: true, estado: true } });
+  const liquidado = await liquidadoPorPartida(tx, companyId, filas.map((f) => f.id));
+  for (const f of filas) {
+    const estado = estadoPartida(Number(f.importePendiente), liquidado.get(f.id) ?? 0);
+    if (estado !== f.estado) await tx.partidaPendiente.update({ where: { id: f.id }, data: { estado } });
+  }
 }
 
 async function nombresTerceros(companyId: string, filas: FilaPartida[]): Promise<Map<string, string>> {
@@ -138,7 +265,7 @@ async function nombresTerceros(companyId: string, filas: FilaPartida[]): Promise
   return m;
 }
 
-function aVista(f: FilaPartida, liquidado: number, nombres: Map<string, string>, hoy: string): PartidaVista {
+function aVista(f: FilaPartida, liquidado: number, nombres: Map<string, string>, hoy: string, compensado = 0): PartidaVista {
   const inicial = Number(f.importePendiente);
   const pendiente = f.estado === 'ANULADA' ? 0 : r2(inicial - liquidado);
   const tercero = (f.customerId && nombres.get(`c:${f.customerId}`)) || (f.supplierId && nombres.get(`p:${f.supplierId}`)) || nombres.get(`s:${f.subcuenta}`) || f.subcuenta;
@@ -157,6 +284,7 @@ function aVista(f: FilaPartida, liquidado: number, nombres: Map<string, string>,
     importeOriginal: f.importeOriginal === null ? null : Number(f.importeOriginal),
     importeInicial: inicial,
     liquidado,
+    compensado,
     pendiente,
     moneda: f.moneda,
     sinDetalle: f.sinDetalle,
@@ -193,9 +321,13 @@ export async function listarPartidas(companyId: string, f: FiltrosPartidas) {
     orderBy: [{ fechaVencimiento: 'asc' }, { numeroDocumento: 'asc' }],
     take: 2000,
   });
-  const [liquidado, nombres] = await Promise.all([liquidadoPorPartida(prisma, companyId, filas.map((x) => x.id)), nombresTerceros(companyId, filas)]);
+  const [liquidado, compensado, nombres] = await Promise.all([
+    liquidadoPorPartida(prisma, companyId, filas.map((x) => x.id)),
+    compensadoPorPartida(prisma, companyId, filas),
+    nombresTerceros(companyId, filas),
+  ]);
   const hoy = hoyEspana();
-  const partidas = filas.map((x) => aVista(x, liquidado.get(x.id) ?? 0, nombres, hoy));
+  const partidas = filas.map((x) => aVista(x, liquidado.get(x.id) ?? 0, nombres, hoy, compensado.get(x.id) ?? 0));
   const total = (tipo: TipoPartida) => {
     const abiertas = partidas.filter((p) => p.tipo === tipo && (p.estado === 'PENDIENTE' || p.estado === 'PARCIAL'));
     return { abiertas: abiertas.length, pendiente: r2(abiertas.reduce((s, p) => s + p.pendiente, 0)) };
@@ -223,15 +355,16 @@ export async function resumenPendiente(companyId: string): Promise<{ cobros: { a
 export async function detallePartida(companyId: string, id: string, tipos: TipoPartida[]): Promise<PartidaVista & { liquidaciones: LiquidacionVista[] }> {
   const f = await prisma.partidaPendiente.findFirst({ where: { id, companyId } });
   if (!f || !tipos.includes(f.tipo as TipoPartida)) throw notFound('Factura pendiente no encontrada.');
-  const [liquidado, nombres, pagos] = await Promise.all([
+  const [liquidado, compensado, nombres, pagos] = await Promise.all([
     liquidadoPorPartida(prisma, companyId, [f.id]),
+    compensadoPorPartida(prisma, companyId, [f]),
     nombresTerceros(companyId, [f]),
     prisma.invoicePayment.findMany({ where: { companyId, invoiceType: 'PARTIDA', invoiceId: f.id }, orderBy: [{ fecha: 'asc' }, { createdAt: 'asc' }] }),
   ]);
   const asientos = await prisma.journalEntry.findMany({ where: { companyId, id: { in: pagos.map((p) => p.journalEntryId).filter((x): x is string => !!x) } }, select: { id: true, numeroAsiento: true } });
   const numero = new Map(asientos.map((a) => [a.id, a.numeroAsiento]));
   return {
-    ...aVista(f, liquidado.get(f.id) ?? 0, nombres, hoyEspana()),
+    ...aVista(f, liquidado.get(f.id) ?? 0, nombres, hoyEspana(), compensado.get(f.id) ?? 0),
     liquidaciones: pagos.map((p) => ({
       id: p.id,
       fecha: p.fecha,
