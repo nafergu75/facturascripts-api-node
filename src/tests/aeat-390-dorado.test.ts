@@ -321,7 +321,7 @@ describe('390 frente a los cuatro 303 del año: misma regla para las intracomuni
   it('las compras intracomunitarias al 0 % llevan la misma cuota en el 303 ([11]/[37]) y en el 390 ([26]/[630])', () => {
     expect([suma303('10'), suma303('11'), suma303('36'), suma303('37')]).toEqual([3700, 777, 3700, 777]);
     expect([d.casillas['25'], d.casillas['26'], d.casillas['629'], d.casillas['630']]).toEqual([3700, 777, 3700, 777]);
-    expect(advertencias.some((a) => /sin IVA en la factura \(base 3700\.00 €\)/.test(a))).toBe(true);
+    expect(advertencias.some((a) => /sin IVA en la factura \(base 3\.700,00 €\)/.test(a))).toBe(true);
     expect(advertencias.some((a) => /Comprueba que coincide/.test(a))).toBe(false);
   });
 
