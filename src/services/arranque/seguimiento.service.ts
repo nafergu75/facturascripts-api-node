@@ -8,7 +8,7 @@
 import { Prisma } from '@prisma/client';
 import { prisma } from '../../config/database';
 import { FILTRO_ASIENTOS_APERTURA } from '../../domain/asientosCierre';
-import { badRequest, conflict, notFound } from '../../utils/http-errors';
+import { badRequest, conflict, forbidden, notFound } from '../../utils/http-errors';
 import { aCentimos, importeTexto } from '../../utils/money';
 import { registrarAuditoria } from '../auditoria.service';
 import { rangoEjercicio, OPCIONES_TX } from '../puestaEnMarcha/asientosEnBloque';
@@ -123,6 +123,20 @@ async function exigirVigente(companyId: string, ejercicio: number): Promise<Carg
   return c;
 }
 
+/**
+ * Cambia el resumen de la carga vigente con la fila bloqueada (SELECT ... FOR UPDATE):
+ * `cambiar` recibe el resumen recien leido y devuelve el nuevo, asi dos guardados a la
+ * vez (bancos, datos fiscales, avisos aceptados) no se pisan.
+ */
+async function conCargaBloqueada(id: string, cambiar: (resumen: ReturnType<typeof resumenDe>, fila: CargaFila) => ReturnType<typeof resumenDe>): Promise<void> {
+  await prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT id FROM CargaArranque WHERE id = ${id} FOR UPDATE`;
+    const fila = await tx.cargaArranque.findUniqueOrThrow({ where: { id } });
+    if (fila.estado !== 'CONFIRMADA') throw conflict('La carga ha cambiado: vuelve a cargar la página.');
+    await tx.cargaArranque.update({ where: { id }, data: { resumen: json(cambiar(resumenDe(fila), fila)) } });
+  }, OPCIONES_TX);
+}
+
 /** Acepta un punto de «Faltan datos» con un motivo (deja de salir en el aviso del panel). */
 export async function aceptarAviso(companyId: string, ejercicioRaw: unknown, clave: string, motivoRaw: unknown, userId: string) {
   const ejercicio = validarEjercicio(ejercicioRaw);
@@ -133,18 +147,34 @@ export async function aceptarAviso(companyId: string, ejercicioRaw: unknown, cla
   const punto = actual?.puntos.find((p) => p.clave === clave);
   if (!punto) throw notFound('Ese aviso ya no está en las comprobaciones.');
   if (punto.nivel !== 'FALTA') throw conflict(punto.nivel === 'ERROR' ? 'Un error no se puede aceptar: hay que corregirlo.' : 'Ese punto no hace falta aceptarlo.');
-  const resumen = resumenDe(c);
-  const aceptados = [...(resumen.avisosAceptados ?? []).filter((a) => a.clave !== clave), { clave, motivo: motivo.slice(0, 300), userId, en: new Date().toISOString() }];
-  await prisma.cargaArranque.update({ where: { id: c.id }, data: { resumen: json({ ...resumen, avisosAceptados: aceptados }) } });
+  // Se relee la carga bloqueada y solo se toca su lista de avisos aceptados: si a la vez
+  // alguien guarda los bancos o los datos fiscales, no se pisa lo suyo.
+  await conCargaBloqueada(c.id, (resumen) => ({
+    ...resumen,
+    avisosAceptados: [...(resumen.avisosAceptados ?? []).filter((a) => a.clave !== clave), { clave, motivo: motivo.slice(0, 300), userId, en: new Date().toISOString() }],
+  }));
   await registrarAuditoria({ userId, companyId, action: 'ARRANQUE_AVISO_ACEPTADO', resourceType: 'CargaArranque', resourceId: c.id, meta: { clave, motivo, texto: punto.texto } });
   return comprobacionesArranque(companyId, ejercicio);
 }
 
 /** Saldos de los extractos a 31-12 despues de traer la carga. */
-export async function guardarBancos(companyId: string, ejercicioRaw: unknown, raw: unknown, userId: string) {
+export async function guardarBancos(companyId: string, ejercicioRaw: unknown, raw: unknown, userId: string, puedeTesoreria = true) {
   const ejercicio = validarEjercicio(ejercicioRaw);
   const bancos = limpiarBancos(raw);
   const c0 = await exigirVigente(companyId, ejercicio);
+  if (!puedeTesoreria) {
+    // Con Contabilidad se escribe el saldo del extracto; dar de alta una cuenta bancaria o
+    // cambiar a cual va un banco es de Tesoreria (como en Bancos).
+    const enlazadas = await prisma.bankAccount.findMany({ where: { companyId, activa: true }, select: { id: true, subcuentaCodigo: true } });
+    const guardados = resumenDe(c0).bancos ?? {};
+    for (const [codigo, b] of Object.entries(bancos)) {
+      const habitual = enlazadas.find((x) => x.subcuentaCodigo === codigo)?.id;
+      const cambiaCuenta = !!b.bankAccountId && b.bankAccountId !== habitual && b.bankAccountId !== guardados[codigo]?.bankAccountId;
+      if (b.nueva || cambiaCuenta) {
+        throw forbidden('Para dar de alta una cuenta bancaria o cambiar a qué cuenta va un banco hace falta el permiso de Tesorería. Escribe solo el saldo del extracto o pide a quien lo tenga que lo haga.');
+      }
+    }
+  }
   const apertura = saldos572(await lineasApertura(companyId, ejercicio));
   for (const codigo of Object.keys(bancos)) {
     if (!apertura.has(codigo)) throw badRequest(`La ${codigo} no está en la apertura del 1-1-${ejercicio}.`, { campo: 'bancos' });
@@ -159,6 +189,7 @@ export async function guardarBancos(companyId: string, ejercicioRaw: unknown, ra
     }
   }
   const r = await prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT id FROM CargaArranque WHERE id = ${c0.id} FOR UPDATE`;
     const c = await tx.cargaArranque.findUniqueOrThrow({ where: { id: c0.id } });
     if (c.estado !== 'CONFIRMADA') throw conflict('La carga ha cambiado: vuelve a cargar la página.');
     const anterior = objeto(c.anterior);
@@ -179,16 +210,22 @@ export async function guardarBancos(companyId: string, ejercicioRaw: unknown, ra
 export async function guardarDatosFiscales(companyId: string, ejercicioRaw: unknown, raw: unknown, userId: string) {
   const ejercicio = validarEjercicio(ejercicioRaw);
   const c = await exigirVigente(companyId, ejercicio);
-  const resumen = resumenDe(c);
-  const datosFiscales = limpiarDatosFiscales(raw, resumen.datosFiscales ?? {});
   const r = (raw ?? {}) as Record<string, unknown>;
-  let resultadoDeclarado = resumen.resultadoDeclarado ?? ajustesDe(c).resultadoDeclarado ?? null;
+  let declarado: number | null | undefined;
   if (r.resultadoDeclarado !== undefined) {
     const n = r.resultadoDeclarado === null || r.resultadoDeclarado === '' ? null : Number(String(r.resultadoDeclarado).replace(',', '.'));
     if (n !== null && !Number.isFinite(n)) throw badRequest('Escribe el resultado de 2026 como un importe.', { campo: 'resultadoDeclarado' });
-    resultadoDeclarado = n === null ? null : Math.round(n * 100) / 100;
+    declarado = n === null ? null : Math.round(n * 100) / 100;
   }
-  await prisma.cargaArranque.update({ where: { id: c.id }, data: { resumen: json({ ...resumen, datosFiscales, resultadoDeclarado }) } });
+  limpiarDatosFiscales(raw, resumenDe(c).datosFiscales ?? {}); // valida antes de bloquear
+  let datosFiscales: DatosFiscales = {};
+  let resultadoDeclarado: number | null = null;
+  // Solo se tocan los datos fiscales y el resultado, sobre el resumen releido con la carga bloqueada.
+  await conCargaBloqueada(c.id, (resumen, fila) => {
+    datosFiscales = limpiarDatosFiscales(raw, resumen.datosFiscales ?? {});
+    resultadoDeclarado = declarado !== undefined ? declarado : (resumen.resultadoDeclarado ?? ajustesDe(fila).resultadoDeclarado ?? null);
+    return { ...resumen, datosFiscales, resultadoDeclarado };
+  });
   await registrarAuditoria({ userId, companyId, action: 'ARRANQUE_DATOS_FISCALES', resourceType: 'CargaArranque', resourceId: c.id, meta: { datosFiscales, resultadoDeclarado } });
   return comprobacionesArranque(companyId, ejercicio);
 }
