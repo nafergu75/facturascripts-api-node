@@ -293,8 +293,10 @@ export function avisoExcesoRetencion(r: {
   const periodos = [...new Set(r.abonos.map((a) => (a.fechaOriginal ? periodoTexto(a.fechaOriginal) : null)).filter((x): x is string => !!x))];
   const donde = periodos.length ? `del ${r.modelo} ${periodos.length === 1 ? `del ${periodos[0]}` : `de ${periodos.join(', ')}`}, en el que se declararon` : `del ${r.modelo} en el que se declararon`;
   return (
-    `${quien} ${euroTexto(total)} de retención y en este periodo solo se pueden restar ${euroTexto(r.restado)}. ` +
-    `Los ${euroTexto(r.exceso)} restantes no se restan en ningún otro periodo: se recuperan pidiendo la rectificación ${donde} (art. 120.3 LGT). ` +
+    (r.restado > 0
+      ? `${quien} ${euroTexto(total)} de retención y en este periodo solo se pueden restar ${euroTexto(r.restado)}. `
+      : `${quien} ${euroTexto(total)} de retención y en este periodo no hay retenciones de las que ${nums.length === 1 ? 'restarla' : 'restarlas'}. `) +
+    `${r.restado > 0 ? `Los ${euroTexto(r.exceso)} restantes` : `Esos ${euroTexto(r.exceso)}`} no se restan en ningún otro periodo: se recuperan pidiendo la rectificación ${donde} (art. 120.3 LGT). ` +
     'En la contabilidad, pásalos de la 4751 a la 4709 (Hacienda deudora por devolución de impuestos).'
   );
 }

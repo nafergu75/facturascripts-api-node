@@ -279,7 +279,7 @@ describe('111, 115, 180 y 190 con la retención de un abono (decisión P1)', () 
   it('115 del 2T: a cero con aviso; el abono hereda el inmueble de la original', async () => {
     const m = await calcularModelo115(E, periodoFiscal(2027, '2T'));
     expect(m).toMatchObject({ nPerceptores: 0, baseRetenciones: 0, retenciones: 0, excesoAbonos: 190 });
-    expect(m.avisos?.[0]).toMatch(/^La rectificativa A-1R resta 190,00 € de retención y en este periodo solo se pueden restar 0,00 €/);
+    expect(m.avisos?.[0]).toMatch(/^La rectificativa A-1R resta 190,00 € de retención y en este periodo no hay retenciones de las que restarla\. Esos 190,00 € no se restan en ningún otro periodo/);
     const abono = await prisma.expenseInvoice.findFirstOrThrow({ where: { companyId: E, numeroFacturaProveedor: 'A-1R' } });
     const original = await prisma.expenseInvoice.findFirstOrThrow({ where: { companyId: E, numeroFacturaProveedor: 'A-1' } });
     expect(abono.inmuebleArrendadoId).toBe(original.inmuebleArrendadoId);
