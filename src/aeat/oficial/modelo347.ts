@@ -11,7 +11,7 @@
  */
 import dr347 from '../../domain/aeat/dr347-2025.json';
 import type { DatosModelo347 } from '../../domain/impuestos.model';
-import { aCentimos } from '../../utils/money';
+import { aCentimos, importeTexto } from '../../utils/money';
 import { exigirDiseno, PaginaOficial, RegistroAeat } from './diseno';
 import { errorNifDeclarante, importeAeat, motivoNifNoValido, nifDerecha, telefonoAeat, textoAeat } from '../common/normalizacion';
 
@@ -225,7 +225,8 @@ export function construirModelo347(ejercicio: number, declarante: Declarante347,
   const linea1 = t1.toString();
   exigirDiseno(REG('1'), linea1);
 
-  if (!registros2.length) advertencias.push(`No hay terceros que superen ${UMBRAL_347.toFixed(2).replace('.', ',')} € en ${ejercicio}: no hace falta presentar el 347.`);
+  // En una complementaria sin declarados el error ya lo dice: no es que no haya que presentar el 347.
+  if (!registros2.length && !comp) advertencias.push(`No hay terceros que superen ${importeTexto(UMBRAL_347)} en ${ejercicio}: no hace falta presentar el 347.`);
 
   const registros = [linea1, ...registros2];
   return {
