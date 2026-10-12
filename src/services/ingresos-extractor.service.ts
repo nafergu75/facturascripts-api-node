@@ -291,7 +291,8 @@ export const ingresosExtractorService = {
     // Archivar el PDF en su carpeta definitiva. No es critico: si falla, la
     // factura ya esta creada y el documento queda enlazado igualmente.
     try {
-      await invoiceExtractorService.confirmar(companyId, documentId);
+      // Lo ya dado por bueno arriba (el NIF leido, con un cliente elegido) no lo frena.
+      await invoiceExtractorService.confirmar(companyId, documentId, [...sinNifLeido]);
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error('ingresos-extractor: no se pudo archivar el PDF', err);

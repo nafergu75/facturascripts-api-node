@@ -701,8 +701,14 @@ export const invoiceExtractorService = {
   /**
    * Confirma la extracción: guarda el PDF en su carpeta definitiva.
    * Nota: La creación del asiento contable se delegará a otro servicio.
+   * `erroresRevisados`: errores que quien llama ya ha dado por buenos (en ventas,
+   * el NIF del cliente mal leído cuando se ha elegido el cliente).
    */
-  async confirmar(companyId: string, id: string): Promise<{ documentId: string; storagePath: string; extraccion: InvoiceExtraction }> {
+  async confirmar(
+    companyId: string,
+    id: string,
+    erroresRevisados: readonly string[] = [],
+  ): Promise<{ documentId: string; storagePath: string; extraccion: InvoiceExtraction }> {
     const doc = await prisma.incomeReaderDocument.findFirst({ where: { id, companyId, sourceType: 'EXTRACTOR_IA' } });
     if (!doc) throw notFound('Documento del extractor no encontrado.');
     if (doc.status !== 'READY_FOR_VERIFICATION') throw badRequest(`El documento está en estado ${doc.status}, no se puede confirmar.`);
@@ -710,9 +716,10 @@ export const invoiceExtractorService = {
     const extraccion = doc.parsedData as unknown as InvoiceExtraction;
 
     // Validar que no haya errores críticos
-    if (extraccion.validation.errors.length > 0) {
+    const erroresPendientes = extraccion.validation.errors.filter((m) => !erroresRevisados.includes(m));
+    if (erroresPendientes.length > 0) {
       throw badRequest(
-        `La extracción tiene errores de validación: ${extraccion.validation.errors.join('; ')}. Corrige antes de confirmar.`
+        `La extracción tiene errores de validación: ${erroresPendientes.join('; ')}. Corrige antes de confirmar.`
       );
     }
 
