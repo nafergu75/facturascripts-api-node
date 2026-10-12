@@ -288,6 +288,10 @@ model IncomeInvoice {
   observaciones       String?               @db.Text
   esRectificativa     Boolean               @default(false)
   facturaOriginalId   String? // Si es rectificativa, ref a la original
+  /// Rectificativa de una factura emitida fuera de la app, antes de llevar la
+  /// contabilidad en ella (p. ej. una de 2026 que trajo la gestoria): su numero y su fecha.
+  rectificaFueraNumero String? @db.VarChar(60)
+  rectificaFueraFecha String?  @db.VarChar(10)
   // Factura que nace de una proforma aceptada ("Pasar a factura"): id de la proforma.
   // Unico: una proforma solo se convierte una vez.
   proformaId          String?               @unique
