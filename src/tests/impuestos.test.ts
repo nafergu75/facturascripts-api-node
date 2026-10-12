@@ -38,6 +38,9 @@ describe('compra con una parte exenta (al 0 %, sin cuota)', () => {
     expect(m.casillas['29_cuota_deducible']).toBe(21);
     expect(m.ivaDeducible).toEqual([{ tipo: 21, base: 100, cuota: 21 }]);
     expect(m.totalBaseDeducible).toBe(100);
+    // Las casillas del diseño 2026 (las que van al fichero) siguen el mismo criterio.
+    expect(m.casillasOficiales?.['28']).toBe(100);
+    expect(m.casillasOficiales?.['29']).toBe(21);
   });
 
   it('390: el deducible no lleva una fila al 0 %', () => {
