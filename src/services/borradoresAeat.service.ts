@@ -167,12 +167,15 @@ export function entrada390Desde(
   const delAno = facturas.filter((f) => f.fecha.startsWith(String(ejercicio)));
   const compras = delAno.filter((f) => f.tipo === 'compra');
   const deducibles = compras.filter((f) => f.deducible !== false);
+  // Autoliquidadas: todas al devengado (también las de IVA no deducible, como en
+  // el 303 [10]/[11]); al deducible, solo las deducibles.
+  const intraTodas = compras.filter((f) => f.operacion === 'intracomunitaria');
   const intra = deducibles.filter((f) => f.operacion === 'intracomunitaria');
   const esServicio = (f: FacturaFiscal) => !!f.tipoGasto && f.tipoGasto !== 'COMPRA';
   const noDeducible = compras.filter((f) => f.deducible === false).reduce((a, f) => a + f.lineas.reduce((x, l) => x + aCentimos(l.base), 0), 0);
   const resultados = [1, 2, 3, 4].map((t) => agregar303(facturas, periodoFiscal(ejercicio, `${t}T`)).resultado) as Entrada390['resultadosTrimestrales'];
   const advertencias = [...(datos.advertencias ?? [])];
-  if (intra.length) {
+  if (intraTodas.length) {
     advertencias.push(
       'Las adquisiciones intracomunitarias se autoliquidan en el 390 (devengado y deducible por el mismo importe, al tipo de la línea o al 21 %). Comprueba que coincide con lo que declaraste en los 303.',
     );
@@ -188,8 +191,10 @@ export function entrada390Desde(
       ejercicio,
       identificacion,
       devengado: datos.resumenDevengado,
-      adquisicionesIntraBienes: autoliquidadas(intra.filter((f) => !esServicio(f))),
-      adquisicionesIntraServicios: autoliquidadas(intra.filter(esServicio)),
+      adquisicionesIntraBienes: autoliquidadas(intraTodas.filter((f) => !esServicio(f))),
+      adquisicionesIntraServicios: autoliquidadas(intraTodas.filter(esServicio)),
+      deducibleIntraBienes: autoliquidadas(intra.filter((f) => !esServicio(f))),
+      deducibleIntraServicios: autoliquidadas(intra.filter(esServicio)),
       deducibleInterior: porTipo(deducibles.filter((f) => f.operacion === 'interior')),
       importaciones: porTipo(importaciones),
       baseNoDeducible: noDeducible / 100,

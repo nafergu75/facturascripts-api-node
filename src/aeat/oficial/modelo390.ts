@@ -58,9 +58,18 @@ export interface Entrada390 {
   };
   /** IVA devengado de las ventas del régimen general, por tipo. */
   devengado: DesgloseIva[];
-  /** Adquisiciones intracomunitarias autoliquidadas (devengado y deducible por igual). */
+  /**
+   * Adquisiciones intracomunitarias autoliquidadas: TODAS van al devengado,
+   * también las de IVA no deducible (el IVA se devenga igual, art. 85 LIVA).
+   */
   adquisicionesIntraBienes: DesgloseIva[];
   adquisicionesIntraServicios: DesgloseIva[];
+  /**
+   * Las que se deducen (sin las de IVA no deducible). Sin ellas, se deducen
+   * todas las autoliquidadas.
+   */
+  deducibleIntraBienes?: DesgloseIva[];
+  deducibleIntraServicios?: DesgloseIva[];
   /** IVA deducible de las compras interiores corrientes, por tipo. */
   deducibleInterior: DesgloseIva[];
   /** IVA deducible de las importaciones de bienes corrientes (DUA), por tipo. */
@@ -80,6 +89,14 @@ export interface Entrada390 {
   programa?: ProgramaAeat;
 }
 
+/** Marca de la página 1 (identificación), con su valor en el fichero y lo que significa. */
+export interface MarcaPagina1_390 {
+  pos: number;
+  descripcion: string;
+  valor: string;
+  texto: string;
+}
+
 export interface PaginaGenerada {
   codigo: string;
   titulo: string;
@@ -97,6 +114,8 @@ export interface Declaracion390 {
   casillas: Record<string, number | string>;
   liquidaciones: { casilla85: number; casilla95: number; casilla97: number; casilla98: number; casilla662: number; finales: number[] };
   paginasNoGeneradas: Array<{ codigo: string; motivo: string }>;
+  /** Marcas de la página 1 (no son casillas numeradas): las enseña la pantalla. */
+  marcasPagina1: MarcaPagina1_390[];
   advertencias: string[];
   errores: string[];
   fichero: string;
@@ -180,6 +199,28 @@ export function liquidaciones390(resultados: number[], compensarAnterior = 0, ul
   };
 }
 
+/**
+ * Marcas de la página 1 que pone la app, leídas de la línea ya compuesta (lo
+ * que lleva el fichero) con su significado según el diseño: "1" sí, "2" no y
+ * "0" no o en blanco según el campo.
+ */
+const MARCAS_PAGINA1_390: Array<{ pos: number; descripcion: string; cero: string }> = [
+  { pos: 109, descripcion: 'Inscrito en el registro de devolución mensual (REDEME)', cero: 'No' },
+  { pos: 110, descripcion: 'Régimen especial del grupo de entidades', cero: 'No' },
+  { pos: 130, descripcion: 'Declarado en concurso de acreedores en el ejercicio', cero: 'En blanco' },
+  { pos: 131, descripcion: 'Régimen especial del criterio de caja', cero: 'En blanco' },
+  { pos: 132, descripcion: 'Destinatario de operaciones del régimen especial del criterio de caja', cero: 'En blanco' },
+  { pos: 133, descripcion: 'Declaración sustitutiva', cero: 'No' },
+  { pos: 430, descripcion: 'Ha presentado la declaración anual de operaciones con terceras personas (347)', cero: 'No' },
+];
+
+export function marcasPagina1_390(linea: string): MarcaPagina1_390[] {
+  return MARCAS_PAGINA1_390.map(({ pos, descripcion, cero }) => {
+    const valor = linea.charAt(pos - 1);
+    return { pos, descripcion, valor, texto: valor === '1' ? 'Sí' : valor === '2' ? 'No' : cero };
+  });
+}
+
 export function construirModelo390(e: Entrada390): Declaracion390 {
   const errores: string[] = [];
   const advertencias: string[] = [];
@@ -234,12 +275,12 @@ export function construirModelo390(e: Entrada390): Declaracion390 {
   p3.importe('48', eur(di.base)).importe('49', eur(di.cuota));
   const dimp = porTipos(p3, e.importaciones ?? [], DED_IMPORT, 'IVA deducible en importaciones de bienes corrientes', errores);
   p3.importe('52', eur(dimp.base)).importe('53', eur(dimp.cuota));
-  const dib = porTipos(p3, e.adquisicionesIntraBienes, DED_INTRA_BIENES, 'IVA deducible en adquisiciones intracomunitarias de bienes', errores);
+  const dib = porTipos(p3, e.deducibleIntraBienes ?? e.adquisicionesIntraBienes, DED_INTRA_BIENES, 'IVA deducible en adquisiciones intracomunitarias de bienes', errores);
   p3.importe('56', eur(dib.base)).importe('57', eur(dib.cuota));
 
   // --- Página 04000: intracomunitario de servicios, suma de deducciones y resultado ---
   const p4 = pag('04000');
-  const dis = porTipos(p4, e.adquisicionesIntraServicios, DED_INTRA_SERV, 'IVA deducible en adquisiciones intracomunitarias de servicios', errores);
+  const dis = porTipos(p4, e.deducibleIntraServicios ?? e.adquisicionesIntraServicios, DED_INTRA_SERV, 'IVA deducible en adquisiciones intracomunitarias de servicios', errores);
   p4.importe('597', eur(dis.base)).importe('598', eur(dis.cuota));
   const c64 = di.cuota + dimp.cuota + dib.cuota + dis.cuota; // [49]+[53]+[57]+[598] (el resto de sumandos va a cero)
   const c65 = cuota34 - c64; // [47] - [64]
@@ -302,9 +343,14 @@ export function construirModelo390(e: Entrada390): Declaracion390 {
         .texto(240, String(id.cnae ?? '').replace(/\D/g, '').slice(0, 3))
         .importe(243, eur(total))
         .importe(260, eur(conDerecho))
-        .crudo(277, 'G')
+        .texto(277, 'G') // [117] tipo de prorrata (así sale también en la pantalla)
         .entero(278, total > 0 ? Math.min(100, Math.ceil((conDerecho / total) * 100)) * 100 : 0);
-      advertencias.push('Hay operaciones exentas sin derecho a deducción: la página 7 lleva una prorrata general calculada con el volumen del año. Revísala con tu asesor.');
+      // La página 3 deduce el IVA al 100 %, como los 303 (la app no aplica la
+      // prorrata en los 303 ni en los asientos): con prorrata no casaría con la
+      // página 7, así que no se da el fichero.
+      errores.push(
+        'Hay operaciones exentas sin derecho a deducción, así que habría que aplicar la prorrata. La app no la aplica (ni en los 303 ni en el 390): el IVA deducible de la página 3 va al 100 % y no casaría con la prorrata de la página 7. Revisa con tu asesor si esas operaciones cuentan para la prorrata y, si es así, presenta el 390 desde el formulario de la sede.',
+      );
     }
     paginas.push(['07000', p7]);
   }
@@ -332,6 +378,7 @@ export function construirModelo390(e: Entrada390): Declaracion390 {
       { codigo: '08000', motivo: 'Regímenes de deducción diferenciados (art. 101 LIVA): no se aplican.' },
       ...(paginas.some(([c]) => c === '07000') ? [] : [{ codigo: '07000', motivo: 'Sin IVA no deducible ni operaciones exentas sin derecho a deducción.' }]),
     ],
+    marcasPagina1: marcasPagina1_390(p1.toString()),
     advertencias,
     errores,
     fichero: cabecera + generadas.map((p) => p.linea).join('') + cierre,

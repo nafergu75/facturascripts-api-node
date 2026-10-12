@@ -216,7 +216,7 @@ describe('390 dorado: diseño oficial vers. 1.02 (ejercicio 2025)', () => {
   });
 
   it('negativos con N en los campos N; un campo Num no admite negativos', () => {
-    const neg = construirModelo390({ ...entrada, resultadosTrimestrales: [-100, -50, -25, -1525], compensarEjercicioAnterior: 0, ultimoPeriodo: 'devolver', devengado: [], deducibleInterior: [{ tipo: 21, base: 8000, cuota: 1700 }], adquisicionesIntraBienes: [], adquisicionesIntraServicios: [] });
+    const neg = construirModelo390({ ...entrada, resultadosTrimestrales: [-100, -50, -25, -1525], compensarEjercicioAnterior: 0, ultimoPeriodo: 'devolver', devengado: [], deducibleInterior: [{ tipo: 21, base: 8000, cuota: 1700 }], adquisicionesIntraBienes: [], adquisicionesIntraServicios: [], deducibleIntraBienes: [], deducibleIntraServicios: [] });
     const p4 = neg.paginas.find((p) => p.codigo === '04000')!.linea;
     expect(campo(p4, 676, 17)).toBe('N' + '170000'.padStart(16, '0')); // [65]
     const p6 = neg.paginas.find((p) => p.codigo === '06000')!.linea;
@@ -239,3 +239,43 @@ describe('390 dorado: diseño oficial vers. 1.02 (ejercicio 2025)', () => {
     expect(malo.errores.join(' ')).toMatch(/5 %/);
   });
 });
+
+describe('390: remates (marcas de la página 1, [117] y prorrata, intracomunitarias no deducibles)', () => {
+  const base = entrada390Desde(FACTURAS, 2025, ID, { compensarEjercicioAnterior: 200 }).entrada;
+
+  it('las marcas de la página 1 salen en la pantalla con su significado, las mismas que el fichero', () => {
+    const d = construirModelo390({ ...base, identificacion: { ...base.identificacion, redeme: true, criterioCaja: false, presenta347: true } });
+    const p1 = d.paginas.find((p) => p.codigo === '01000')!.linea;
+    expect(d.marcasPagina1.map((m) => [m.pos, m.valor, m.texto])).toEqual([
+      [109, '1', 'Sí'],
+      [110, '0', 'No'],
+      [130, '2', 'No'],
+      [131, '2', 'No'],
+      [132, '2', 'No'],
+      [133, '0', 'No'],
+      [430, '1', 'Sí'],
+    ]);
+    for (const m of d.marcasPagina1) expect(campo(p1, m.pos, 1)).toBe(m.valor);
+  });
+
+  it('con exentas sin derecho a deducción: [117] = G en la pantalla y error claro (la página 3 va al 100 %)', () => {
+    const d = construirModelo390({ ...base, volumen: { ...base.volumen, exentasSinDeduccion: 1000 } });
+    const p7 = d.paginas.find((p) => p.codigo === '07000')!;
+    expect(p7.casillas['117']).toBe('G');
+    expect(campo(p7.linea, 277, 1)).toBe('G');
+    expect(d.errores).toEqual([expect.stringMatching(/habría que aplicar la prorrata.*no casaría con la prorrata de la página 7/)]);
+  });
+
+  it('una adquisición intracomunitaria con IVA no deducible se autoliquida en el devengado, pero no se deduce', () => {
+    const facturas: FacturaFiscal[] = [
+      venta('2025-02-15', [{ tipoIva: 21, base: 10000, cuota: 2100 }]),
+      compra('2025-05-20', [{ tipoIva: 21, base: 1000, cuota: 0 }], { operacion: 'intracomunitaria', cifnif: 'DE123456789', deducible: false }),
+    ];
+    const d = construirModelo390(entrada390Desde(facturas, 2025, ID).entrada);
+    expect(d.casillas['25']).toBe(1000); // devengado: base intracomunitaria al 21 %
+    expect(d.casillas['26']).toBe(210);
+    expect(d.casillas['629'] ?? 0).toBe(0); // no se deduce
+    expect(d.casillas['65']).toBe(2310); // 2.100 + 210 - 0
+  });
+});
+
