@@ -29,6 +29,8 @@ export const CAMPOS_DECIMALES: ReadonlySet<string> = new Set([
   "baseTotalDoc", "ivaTotalDoc", "retencionTotalDoc", "totalFacturaDoc", "precioUnitarioDoc", "baseLineDoc", "descuentoImporteDoc", "ivaImporteDoc", "retencionImporteDoc", "importeDoc", "importeTesoreria", "tipoCambio", "diferenciaCambio", "comisionBancaria", "unidadesPorEur", "totalDivisa",
   // Historial de declaraciones de la AEAT.
   "resultadoAnterior",
+  // Traer la contabilidad de 2026: bancos, partidas pendientes e inmovilizado.
+  "saldoContableInicial", "importeOriginal", "importePendiente", "coste", "valorResidual", "amortAcumuladaInicial", "coeficiente",
 ]);
 
 /**
@@ -144,6 +146,20 @@ export const importesComoNumero = Prisma.defineExtension({
     },
     bankAccount: {
       saldoInicial: { needs: { saldoInicial: true }, compute: (r) => aNumero(r.saldoInicial) },
+      saldoContableInicial: { needs: { saldoContableInicial: true }, compute: (r) => aNumero(r.saldoContableInicial) },
+    },
+    partidaPendiente: {
+      importeOriginal: { needs: { importeOriginal: true }, compute: (r) => aNumero(r.importeOriginal) },
+      importePendiente: { needs: { importePendiente: true }, compute: (r) => aNumero(r.importePendiente) },
+    },
+    activoFijo: {
+      coste: { needs: { coste: true }, compute: (r) => aNumero(r.coste) },
+      valorResidual: { needs: { valorResidual: true }, compute: (r) => aNumero(r.valorResidual) },
+      amortAcumuladaInicial: { needs: { amortAcumuladaInicial: true }, compute: (r) => aNumero(r.amortAcumuladaInicial) },
+      coeficiente: { needs: { coeficiente: true }, compute: (r) => aNumero(r.coeficiente) },
+    },
+    dotacionAmortizacion: {
+      importe: { needs: { importe: true }, compute: (r) => aNumero(r.importe) },
     },
     bankMovement: {
       importe: { needs: { importe: true }, compute: (r) => aNumero(r.importe) },
