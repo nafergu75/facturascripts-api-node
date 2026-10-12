@@ -29,20 +29,26 @@ describe('inicio en la app al traer la contabilidad de 2026', () => {
   let carga = '';
   let confirmacionSinFecha = '';
   let confirmacionConFecha = '';
+  let fijaSin: boolean | undefined;
+  let fijaCon: boolean | undefined;
   beforeAll(async () => {
     await empresaDePrueba(SIN_FECHA);
     const sin = await traerCarga(SIN_FECHA, Object.values(ficherosEmpresaA()), AJUSTES_A);
     carga = sin.r.carga.id;
     confirmacionSinFecha = sin.r.vista.confirmacion;
+    fijaSin = sin.r.vista.fijaInicioEnApp;
     await empresaDePrueba(CON_FECHA);
     await prisma.ajustesFiscales.create({ data: { companyId: CON_FECHA, inicioEnApp: '2026-07-01' } });
-    confirmacionConFecha = (await traerCarga(CON_FECHA, Object.values(ficherosEmpresaA()), AJUSTES_A)).r.vista.confirmacion;
+    const con = await traerCarga(CON_FECHA, Object.values(ficherosEmpresaA()), AJUSTES_A);
+    confirmacionConFecha = con.r.vista.confirmacion;
+    fijaCon = con.r.vista.fijaInicioEnApp;
   }, 180_000);
 
   it('el resumen previo dice que fijará el inicio de los impuestos, solo si no estaba indicado', () => {
     const frase = 'Los impuestos se llevarán en la app desde el 1-1-2027: los modelos de 2026 los presentó la gestoría y no saldrán como pendientes.';
     expect(confirmacionSinFecha).toContain(frase);
     expect(confirmacionConFecha).not.toContain(frase);
+    expect([fijaSin, fijaCon]).toEqual([true, false]);
   });
 
   it('sin fecha indicada, la carga la fija en el 1-1-2027 y los 303 de 2026 no salen pendientes', async () => {
