@@ -86,6 +86,8 @@ let soloA: Usuario;
 let enAyB: Usuario;
 let soloB: Usuario;
 let globalEnA: Usuario;
+let huerfano: Usuario;
+let adminAyLectorB: Usuario;
 let tokenG: string;
 let tokenAdminA: string;
 let tokenAdminB: string;
@@ -106,6 +108,10 @@ describeBd('Configuración > Usuarios, por empresa (BD real)', () => {
     enAyB = await usuario('en-a-y-b', [[A, 'contable'], [B, 'contable']]);
     soloB = await usuario('solo-b', [[B, 'solo_lectura']]);
     globalEnA = await usuario('global-en-a', [[A, 'admin']], { isGlobalAdmin: true });
+    // Cuenta que existe pero hoy no entra en ninguna empresa (alta global «Sin empresa por ahora»).
+    huerfano = await usuario('huerfano', []);
+    // Administra A y solo consulta B: B no la administra.
+    adminAyLectorB = await usuario('admin-a-lector-b', [[A, 'admin'], [B, 'solo_lectura']]);
     tokenG = await tokenDe(G.id);
     tokenAdminA = await tokenDe(adminA.id);
     tokenAdminB = await tokenDe(adminB.id);
@@ -180,7 +186,7 @@ describeBd('Configuración > Usuarios, por empresa (BD real)', () => {
         activo: true,
         estado: 'activo',
         ultimoAcceso: '2026-10-05T09:30:00.000Z',
-        puedes: { editarAcceso: true, nuevaContrasena: true, quitarAcceso: true },
+        puedes: { editarAcceso: true, nuevaContrasena: true, quitarAcceso: true, datosPersonales: true },
       });
       expect(res.body.data.find((u: { email: string }) => u.email === adminB.email)).toBeUndefined();
       expect(JSON.stringify(res.body)).not.toMatch(/passwordHash|contrasenaProvisional"/);
@@ -190,18 +196,21 @@ describeBd('Configuración > Usuarios, por empresa (BD real)', () => {
       const res = await como(tokenAdminA).get(`/companies/${A}/usuarios`);
       const de = (email: string) => res.body.data.find((u: { email: string }) => u.email === email);
       // El administrador global: ni tocarlo.
-      expect(de(globalEnA.email)).toMatchObject({ esAdminGlobal: true, puedes: { editarAcceso: false, nuevaContrasena: false, quitarAcceso: false } });
-      // También entra en B, que no administra: no le cambia la contraseña.
-      expect(de(enAyB.email).puedes).toEqual({ editarAcceso: true, nuevaContrasena: false, quitarAcceso: true });
-      // Uno mismo: su contraseña la cambia en «Cambiar contraseña».
-      expect(de(adminA.email).puedes.nuevaContrasena).toBe(false);
+      expect(de(globalEnA.email)).toMatchObject({
+        esAdminGlobal: true,
+        puedes: { editarAcceso: false, nuevaContrasena: false, quitarAcceso: false, datosPersonales: false },
+      });
+      // También entra en B, que no administra: ni su contraseña ni sus datos.
+      expect(de(enAyB.email).puedes).toEqual({ editarAcceso: true, nuevaContrasena: false, quitarAcceso: true, datosPersonales: false });
+      // Uno mismo: su contraseña la cambia en «Cambiar contraseña»; su nombre, sí.
+      expect(de(adminA.email).puedes).toMatchObject({ nuevaContrasena: false, datosPersonales: true });
     });
 
     it('el administrador global ve las de cualquier empresa y puede con todos', async () => {
       const res = await como(tokenG).get(`/companies/${B}/usuarios`);
       expect(res.status).toBe(200);
       const de = (email: string) => res.body.data.find((u: { email: string }) => u.email === email);
-      expect(de(enAyB.email).puedes).toEqual({ editarAcceso: true, nuevaContrasena: true, quitarAcceso: true });
+      expect(de(enAyB.email).puedes).toEqual({ editarAcceso: true, nuevaContrasena: true, quitarAcceso: true, datosPersonales: true });
       // Último administrador de B: no se le puede quitar el acceso.
       expect(de(adminB.email).puedes.quitarAcceso).toBe(false);
     });
@@ -212,9 +221,19 @@ describeBd('Configuración > Usuarios, por empresa (BD real)', () => {
 
     it('avisa si el correo ya tiene usuario y si ya entra en esta empresa', async () => {
       const t = como(tokenAdminA);
-      expect((await t.post(`/companies/${A}/usuarios/comprobar-correo`, { email: correo('nadie') })).body.data).toEqual({ existe: false, yaTieneAcceso: false });
-      expect((await t.post(`/companies/${A}/usuarios/comprobar-correo`, { email: `  ${soloB.email.toUpperCase()} ` })).body.data).toEqual({ existe: true, yaTieneAcceso: false });
-      expect((await t.post(`/companies/${A}/usuarios/comprobar-correo`, { email: soloA.email })).body.data).toEqual({ existe: true, yaTieneAcceso: true });
+      const comprobar = async (email: string) => (await t.post(`/companies/${A}/usuarios/comprobar-correo`, { email })).body.data;
+      expect(await comprobar(correo('nadie'))).toEqual({ existe: false, yaTieneAcceso: false, soloAdminGlobal: false });
+      expect(await comprobar(`  ${soloB.email.toUpperCase()} `)).toEqual({ existe: true, yaTieneAcceso: false, soloAdminGlobal: false });
+      expect(await comprobar(soloA.email)).toEqual({ existe: true, yaTieneAcceso: true, soloAdminGlobal: false });
+      // Ni el administrador global ni una cuenta sin empresas se reciben desde aquí.
+      expect(await comprobar(G.email)).toEqual({ existe: true, yaTieneAcceso: false, soloAdminGlobal: true });
+      expect(await comprobar(huerfano.email)).toEqual({ existe: true, yaTieneAcceso: false, soloAdminGlobal: true });
+      // El administrador global sí puede.
+      expect((await como(tokenG).post(`/companies/${A}/usuarios/comprobar-correo`, { email: huerfano.email })).body.data).toEqual({
+        existe: true,
+        yaTieneAcceso: false,
+        soloAdminGlobal: false,
+      });
       expect((await t.post(`/companies/${A}/usuarios/comprobar-correo`, { email: 'no-es-un-correo' })).status).toBe(400);
     });
 
@@ -339,6 +358,25 @@ describeBd('Configuración > Usuarios, por empresa (BD real)', () => {
       expect(res.status).toBe(403);
       expect(await acceso(G.id, A)).toBeNull();
     });
+
+    it('una cuenta sin ninguna empresa solo la recibe el administrador global: así nadie se queda con ella', async () => {
+      const antes = await prisma.user.findUniqueOrThrow({ where: { id: huerfano.id }, select: { passwordHash: true } });
+      // Si la recibiera, pasaría a estar «solo en sus empresas» y podría cambiarle la contraseña.
+      const res = await como(tokenAdminA).post(`/companies/${A}/usuarios`, { email: huerfano.email, rol: 'solo_lectura' });
+      expect(res.status).toBe(403);
+      expect(res.body.message).toContain('no entra en ninguna empresa');
+      expect(await acceso(huerfano.id, A)).toBeNull();
+      expect(await auditoria('ASIGNAR_USUARIO_EMPRESA', huerfano.id)).toHaveLength(0);
+      expect((await como(tokenAdminA).post(`/companies/${A}/usuarios/${huerfano.id}/contrasena-provisional`)).status).toBe(404);
+      expect(await prisma.user.findUniqueOrThrow({ where: { id: huerfano.id }, select: { passwordHash: true } })).toEqual(antes);
+
+      // El administrador global sí le da acceso; y desde ahí sigue la regla de siempre.
+      const global = await como(tokenG).post(`/companies/${A}/usuarios`, { email: huerfano.email, rol: 'solo_lectura' });
+      expect(global.status).toBe(200);
+      expect(global.body.data).toMatchObject({ usuarioNuevo: false, usuario: { userId: huerfano.id, rol: 'solo_lectura' } });
+      const [log] = await auditoria('ASIGNAR_USUARIO_EMPRESA', huerfano.id);
+      expect(log).toMatchObject({ userId: G.id, companyId: A });
+    });
   });
 
   describe('Editar acceso', () => {
@@ -371,6 +409,19 @@ describeBd('Configuración > Usuarios, por empresa (BD real)', () => {
       // Su acceso a esta empresa, sí.
       expect((await como(tokenAdminA).put(`/companies/${A}/usuarios/${enAyB.id}`, { rol: 'ventas' })).status).toBe(200);
       expect(await acceso(enAyB.id, B)).toMatchObject({ role: 'contable' });
+    });
+
+    it('sus propios datos sí, aunque también entre en empresas que no administra', async () => {
+      const t = como(await tokenDe(adminAyLectorB.id));
+      const lista = await t.get(`/companies/${A}/usuarios`);
+      const yo = lista.body.data.find((u: { userId: string }) => u.userId === adminAyLectorB.id);
+      expect(yo.puedes).toMatchObject({ nuevaContrasena: false, datosPersonales: true });
+      const res = await t.put(`/companies/${A}/usuarios/${adminAyLectorB.id}`, { rol: 'admin', nombre: 'Marta Ruiz', telefono: '961 111 111' });
+      expect(res.status).toBe(200);
+      expect(res.body.data).toMatchObject({ nombre: 'Marta Ruiz', telefono: '961 111 111', rol: 'admin' });
+      expect(await acceso(adminAyLectorB.id, B)).toMatchObject({ role: 'solo_lectura' });
+      // Los de otro que también entra en B, no.
+      expect((await t.put(`/companies/${A}/usuarios/${enAyB.id}`, { rol: 'ventas', nombre: 'No' })).status).toBe(403);
     });
 
     it('no toca al administrador global ni admite el modo administrador global', async () => {
@@ -504,6 +555,21 @@ describeBd('Configuración > Usuarios, por empresa (BD real)', () => {
       // adminB no entra en A.
       expect((await como(tokenAdminB).delete(`/companies/${A}/usuarios/${contableA.id}`)).status).toBe(403);
       expect(await acceso(contableA.id, A)).toMatchObject({ role: 'contable' });
+    });
+  });
+
+  describe('Comprobar correos', () => {
+    it('tiene un límite por usuario: no sirve para repasar listas de correos', async () => {
+      const adminC = await usuario('admin-c', [[C, 'admin']]);
+      const t = como(await tokenDe(adminC.id));
+      for (let i = 0; i < 60; i++) {
+        expect((await t.post(`/companies/${C}/usuarios/comprobar-correo`, { email: correo(`lista-${i}`) })).status).toBe(200);
+      }
+      const res = await t.post(`/companies/${C}/usuarios/comprobar-correo`, { email: correo('lista-60') });
+      expect(res.status).toBe(429);
+      expect(res.body.message).toContain('demasiados correos');
+      // Es por usuario: el de otra empresa sigue pudiendo.
+      expect((await como(tokenAdminA).post(`/companies/${A}/usuarios/comprobar-correo`, { email: correo('otro') })).status).toBe(200);
     });
   });
 });
