@@ -20,7 +20,7 @@ import { informeBalance, informePerdidasGanancias } from '../services/informesCo
 import { resolverPeriodo, type Periodo } from '../services/informesContables.calculo';
 import { cuotasACompensar303 } from '../services/impuestosModulo.service';
 import { calcularEstadosFinancieros } from '../services/impuestoSociedadesCalculo.service';
-import { guardarSaldosComparativo } from '../services/puestaEnMarcha/puestaEnMarcha.service';
+import { borrarComparativo, confirmarComparativo, guardarSaldosComparativo } from '../services/puestaEnMarcha/puestaEnMarcha.service';
 import { avisoModelosGestoria } from '../middleware/avisoGestoria.middleware';
 import { sendOk } from '../utils/response';
 import { AJUSTES_A, ficherosEmpresaA, ficherosEmpresaB } from './fixtures/arranque/generar';
@@ -115,5 +115,20 @@ describe('avisos de los años de la gestoría y de la apertura provisional', () 
     expect(await cuotasACompensar303(B, { ejercicio: 2027, periodo: '1T' })).toEqual({ importe: 250, origen: 'arranque', periodo: '4T de 2026' });
     expect(await cuotasACompensar303(B, { ejercicio: 2027, periodo: '2T' })).toMatchObject({ importe: 0, origen: 'sin-dato' });
     expect(await cuotasACompensar303(A, { ejercicio: 2027, periodo: '1T' })).toMatchObject({ importe: 0, origen: 'sin-dato' });
+  });
+});
+
+describe('la puesta en marcha no cambia el comparativo que trajo la carga', () => {
+  it('ni lo sustituye ni lo borra (409); el de otro año se borra con rastro', async () => {
+    const e = await borrarComparativo(B, 2026, 'u-cmp').catch((x) => x);
+    expect(e.statusCode).toBe(409);
+    expect(e.message).toMatch(/^El comparativo de 2026 lo trajo «Traer la contabilidad de 2026»/);
+    const sustituir = await confirmarComparativo(B, { cuentas: [{ codigo: '5720000001', nombre: '', saldo: 1 }] }, { ejercicio: 2026, parte: 'todo' }).catch((x) => x);
+    expect(sustituir.statusCode).toBe(409);
+    expect(await prisma.priorYearData.count({ where: { companyId: B, ejercicio: 2026 } })).toBe(1);
+
+    await guardarSaldosComparativo(B, 2024, [{ codigo: '5720000001', nombre: '', saldo: 10 }], 'todo', 'Prueba');
+    expect(await borrarComparativo(B, 2024, 'u-cmp')).toEqual({ borrado: true });
+    expect(await prisma.auditLog.count({ where: { companyId: B, action: 'BORRAR_COMPARATIVO' } })).toBe(1);
   });
 });
