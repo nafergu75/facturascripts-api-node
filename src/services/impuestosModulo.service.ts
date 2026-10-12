@@ -70,7 +70,7 @@ import {
 import { ajustesFiscalesDeFila, type AjustesFiscales } from '../domain/ajustes.model';
 import { contextoDeclaracion } from './declaracionesAeat/declaraciones.service';
 import { anioEspana, hoyEspana } from '../utils/fechas';
-import { primerDiaConDatos } from '../utils/anios';
+import { inicioDeducido } from '../utils/anios';
 import { plazoAeat, ultimoDiaFebrero } from '../domain/plazosAeat';
 
 /**
@@ -227,10 +227,7 @@ const tablaLista = (nombre: string) =>
  */
 export async function inicioImplicito(companyId: string): Promise<string | null> {
   try {
-    const primero = await primerDiaConDatos(companyId);
-    if (primero) return primero;
-    const empresa = await prisma.company.findUnique({ where: { id: companyId }, select: { createdAt: true } });
-    return empresa ? hoyEspana(empresa.createdAt) : null;
+    return await inicioDeducido(companyId);
   } catch {
     // Sin BD (tests en memoria): sin limite, como antes.
     return null;
