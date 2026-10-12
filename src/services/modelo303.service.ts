@@ -298,8 +298,19 @@ export function montarBorrador303(
       `No se puede generar el fichero del 303: hay ventas al ${sinFila.map((d) => `${d.tipo} %`).join(', ')}, que no tiene fila en el régimen general. Revisa esas facturas.`,
     );
   }
-  if (tipoDeclaracion === 'U' || tipoDeclaracion === 'D') {
-    const para = tipoDeclaracion === 'U' ? 'domiciliar el pago' : 'pedir la devolución';
+  // Nota 3 de la página DID: en una rectificativa con importe en [111] la
+  // cuenta bancaria va siempre (la AEAT devuelve ahí lo ingresado de más con
+  // la anterior), aunque el tipo no sea de devolución. La excepción es marcar el
+  // campo 33 de la página 3 (dar de baja la domiciliación), que la app no ofrece.
+  const conCuenta111 = !!rect && Math.round((casillas['111'] ?? 0) * 100) > 0;
+  const conDid = tipoDeclaracion === 'U' || tipoDeclaracion === 'D' || conCuenta111;
+  if (conDid) {
+    const para =
+      tipoDeclaracion === 'U'
+        ? 'domiciliar el pago'
+        : tipoDeclaracion === 'D'
+          ? 'pedir la devolución'
+          : 'que la AEAT devuelva lo ingresado de más con la autoliquidación anterior (casilla [111] de la rectificativa)';
     if (!ibanEscrito) errores.push(`Para ${para} hace falta una cuenta bancaria de la empresa con IBAN. Añádela en Tesorería > Cuentas bancarias.`);
     else if (!iban) errores.push(`Para ${para} hace falta un IBAN válido: el de la cuenta ${ibanEscrito.slice(0, 4)}... no pasa la comprobación de sus dígitos de control (Tesorería > Cuentas bancarias).`);
     else if (!IBAN_ES.test(iban)) errores.push(`Para ${para} la app solo admite una cuenta española (IBAN que empieza por ES y 24 caracteres): ${iban.slice(0, 4)}... no vale.`);
@@ -338,7 +349,7 @@ export function montarBorrador303(
     tiposDeclaracion,
     indicadores: opciones.comoSePresento && opciones.indicadores ? { ...opciones.indicadores } : indicadoresPagina1_303(periodo, ctx),
     sinActividad: datos.sinActividad === true,
-    iban: tipoDeclaracion === 'U' || tipoDeclaracion === 'D' ? iban : null,
+    iban: conDid ? iban : null,
     rectificativa: rect ? { justificanteAnterior: rect.justificanteAnterior } : null,
     errores,
     advertencias,
@@ -367,22 +378,24 @@ export function pagina3Borrador303(b: Borrador303): string {
   return componerPagina303('03', { casillas: b.casillas, campos });
 }
 
-/** Página DID (domiciliación o devolución): IBAN español y marca SEPA "1". */
+/** Página DID (domiciliación, devolución o [111] de una rectificativa): IBAN español y marca SEPA "1". */
 export function paginaDidBorrador303(iban: string): string {
   return componerPagina303('DID', { campos: { 6: iban, 11: '1' } });
 }
 
 /**
  * Fichero completo para importar en el formulario del 303 de la sede:
- * cabecera + página 1 + página 3 (+ DID si se domicilia o se pide la
- * devolución) + cierre. La página 2 (régimen simplificado) no va y las 4 y 5
+ * cabecera + página 1 + página 3 (+ DID si se domicilia, se pide la
+ * devolución o es una rectificativa con [111]) + cierre. La página 2 (régimen simplificado) no va y las 4 y 5
  * no tienen contenido para una sociedad en régimen general.
  */
 export function ficheroBorrador303(b: Borrador303, programa: ProgramaAeat = programaAeat()): string {
   if (b.errores.length) throw badRequest(b.errores[0], { errores: b.errores });
   const { ejercicio, periodo } = b.periodo;
   const paginas = [pagina1Borrador303(b), pagina3Borrador303(b)];
-  if (b.iban && (b.tipoDeclaracion === 'U' || b.tipoDeclaracion === 'D')) paginas.push(paginaDidBorrador303(b.iban));
+  // El borrador solo trae IBAN cuando lleva DID: domiciliación (U), devolución
+  // (D) o rectificativa con importe en [111] (Nota 3 del DP303DID).
+  if (b.iban) paginas.push(paginaDidBorrador303(b.iban));
   return cabeceraAux('303', ejercicio, periodo, programa) + paginas.join('') + cierreAux('303', ejercicio, periodo);
 }
 

@@ -496,3 +496,43 @@ describe('Indicadores de la página 1: SII voluntario (campo 22) y volumen anual
   });
 });
 
+
+describe('Rectificativa con importe en [111]: página DID con la cuenta (Nota 3 del DP303DID)', () => {
+  // 1T presentado con [69] = 1690; la rectificativa añade una compra olvidada y [69] baja a 640.
+  const P1T: PeriodoFiscal = { ejercicio: 2026, periodo: '1T', tipo: 'trimestral', fechaInicio: '2026-01-01', fechaFin: '2026-03-31' };
+  const rect = { justificanteAnterior: '3032026000001', resultadoAnterior: 1690 };
+
+  it('[71] negativo con [111] = 1050 y tipo N: lleva la DID con el IBAN y la marca SEPA', () => {
+    const datos = agregar303([venta(3047.62, 21, {}, '2026-02-10')], P1T, 0); // [69] = 640
+    const b = montarBorrador303(datos, EMPRESA, undefined, { rectificativa: rect });
+    expect([b.casillas['69'], b.casillas['70'], b.casillas['71'], b.casillas['111']]).toEqual([640, 1690, -1050, 1050]);
+    expect(b.tipoDeclaracion).toBe('N'); // [71] sin la parte de [111] = 0 (Nota 1)
+    expect(b.errores).toEqual([]);
+    const fichero = ficheroBorrador303(b, { versionPrograma: '0100', nifEmpresaDesarrollo: '' });
+    const paginas = trocear(fichero, 2026, '1T');
+    expect(Object.keys(paginas)).toEqual(['01', '03', 'DID']);
+    expect(erroresPagina('DID', paginas.DID)).toEqual([]);
+    expect(campo(paginas.DID, 23, 34).trimEnd()).toBe('ES9121000418450200051332');
+    expect(campo(paginas.DID, 194, 1)).toBe('1');
+    expect(campo(paginas['03'], 440, 1)).toBe(' '); // campo 33 (baja de la domiciliación) sin marcar
+  });
+
+  it('sin cuenta con IBAN válido no hay fichero: dice dónde añadirla', () => {
+    const datos = agregar303([venta(3047.62, 21, {}, '2026-02-10')], P1T, 0);
+    const sinCuenta = montarBorrador303(datos, { ...EMPRESA, iban: null }, undefined, { rectificativa: rect });
+    expect(sinCuenta.errores.join(' ')).toMatch(/casilla \[111\].*Tesorería > Cuentas bancarias/);
+    expect(() => ficheroBorrador303(sinCuenta)).toThrow(/Tesorería > Cuentas bancarias/);
+    const malo = montarBorrador303(datos, { ...EMPRESA, iban: 'ES0021000418450200051332' }, undefined, { rectificativa: rect });
+    expect(malo.errores.join(' ')).toMatch(/dígitos de control/);
+  });
+
+  it('rectificativa a ingresar (sin [111]) y declaración normal a compensar: sin DID', () => {
+    const datos = agregar303([venta(10000, 21, {}, '2026-02-10')], P1T, 0); // [69] = 2100
+    const b = montarBorrador303(datos, EMPRESA, 'I', { rectificativa: rect });
+    expect(b.casillas['111']).toBe(0);
+    expect(Object.keys(trocear(ficheroBorrador303(b, { versionPrograma: '0100', nifEmpresaDesarrollo: '' }), 2026, '1T'))).toEqual(['01', '03']);
+    const c = montarBorrador303(agregar303([compra(1000, 21, {}, '2026-02-10')], P1T, 0), EMPRESA);
+    expect(c.tipoDeclaracion).toBe('C');
+    expect(c.iban).toBeNull();
+  });
+});
