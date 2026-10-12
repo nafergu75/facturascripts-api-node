@@ -11,6 +11,7 @@ import {
   pdfFacturaVenta,
   TIPOS_DOCUMENTO_PRIVADOS,
 } from './archivoFacturas.service';
+import { validarEjercicio } from '../utils/anios';
 
 /** Filtro de tipo del archivo de facturas: nunca los documentos de nominas (solo con nominas:read). */
 function filtroTipo(tipo?: string): string | { notIn: string[] } {
@@ -190,9 +191,7 @@ export async function listarDocumentosPorPeriodo(
 ): Promise<{ documentos: DocumentoArchivoDTO[]; total: number }> {
   const { anio, mes, trimestre, tipo, estado, limite = 50, pagina = 1 } = opciones;
 
-  if (!anio || anio < 2000 || anio > 2099) {
-    throw badRequest('Año inválido');
-  }
+  validarEjercicio(anio, { campo: 'anio' });
 
   const where: any = { companyId, anio };
 
