@@ -20,6 +20,8 @@ import {
 import { normalizarPais, prefijoNifIvaUe } from '../domain/tipo-operacion.model';
 import { MONEDAS_FACTURA_ACTIVAS, normalizarMoneda } from '../domain/divisas';
 import { esCodigoPais } from '../utils/geografia';
+import { esClaveRepetida } from '../utils/reintento';
+import { variantesNif } from './lectura/terceros-lector';
 
 /** Cliente en formato ligero para el selector/buscador al facturar. */
 export interface ClienteResumen {
@@ -184,6 +186,25 @@ function leerDatos(data: Record<string, unknown>): { nombreFiscal?: string; nifC
   };
 }
 
+/** Cliente de la empresa con ese NIF, escrito de cualquier forma (con o sin ES, puntos o guiones). */
+async function clienteConNif(companyId: string, nif: string): Promise<{ id: string; nombreFiscal: string } | null> {
+  return (
+    (await prisma.customer.findFirst({ where: { companyId, nifCif: { in: variantesNif(nif) } }, select: { id: true, nombreFiscal: true } })) ?? null
+  );
+}
+
+/** GET /clientes/por-nif/:nif: la ficha del cliente con ese NIF (escrito de cualquier forma), o 404. */
+export async function clientePorNifFicha(companyId: ID, nif: string): Promise<Cliente> {
+  const c = (await prisma.customer.findFirst({ where: { companyId: String(companyId), nifCif: { in: variantesNif(nif) } }, orderBy: { createdAt: 'asc' } })) as CustomerRow | null;
+  if (!c) throw notFound('No hay ningún cliente con ese NIF.');
+  return (await aClientes(String(companyId), [c]))[0] as unknown as Cliente;
+}
+
+/** 409 con el cliente que ya tiene ese NIF (la pantalla lo puede enlazar). */
+function errorClienteRepetido(ya: { id: string; nombreFiscal: string }) {
+  return conflict(`Ya existe un cliente con ese NIF: ${ya.nombreFiscal}.`, { campo: 'nifCif', clienteId: ya.id });
+}
+
 /**
  * Busca clientes por texto libre (nombre fiscal, NIF, email) sobre Prisma.
  */
@@ -221,18 +242,30 @@ export const clientesService: CompanyScopedService<Cliente> = {
 
   async create(companyId: ID, data: Record<string, unknown>): Promise<Cliente> {
     const d = leerDatos(data);
-    if (!d.nombreFiscal || !d.nifCif) throw notFound('Se requiere nombre y NIF.');
-    // La subcuenta 430 se asigna en la misma transaccion que el alta.
-    const c = (await crearClienteConSubcuenta({
-      companyId: String(companyId),
-      nombreFiscal: d.nombreFiscal,
-      nifCif: d.nifCif,
-      email: d.email,
-      telefono: d.telefono,
-      ...leerDireccion(data),
-      pais: leerPais(data.pais, d.nifCif) ?? 'ES',
-      monedaPreferida: leerMonedaPreferida(data.monedaPreferida),
-    })) as CustomerRow;
+    if (!d.nombreFiscal?.trim()) throw badRequest('Falta el nombre fiscal del cliente.', { campo: 'nombreFiscal' });
+    if (!d.nifCif) throw badRequest('Falta el NIF del cliente.', { campo: 'nifCif' });
+    // El mismo NIF escrito de otra forma (con ES, puntos o guiones) es el mismo cliente: 409 con su id.
+    const ya = await clienteConNif(String(companyId), d.nifCif);
+    if (ya) throw errorClienteRepetido(ya);
+    let c: CustomerRow;
+    try {
+      // La subcuenta 430 se asigna en la misma transaccion que el alta.
+      c = (await crearClienteConSubcuenta({
+        companyId: String(companyId),
+        nombreFiscal: d.nombreFiscal.trim(),
+        nifCif: d.nifCif,
+        email: d.email,
+        telefono: d.telefono,
+        ...leerDireccion(data),
+        pais: leerPais(data.pais, d.nifCif) ?? 'ES',
+        monedaPreferida: leerMonedaPreferida(data.monedaPreferida),
+      })) as CustomerRow;
+    } catch (e) {
+      // Dos altas a la vez con el mismo NIF.
+      const otro = esClaveRepetida(e, ['nifCif']) ? await clienteConNif(String(companyId), d.nifCif) : null;
+      if (otro) throw errorClienteRepetido(otro);
+      throw e;
+    }
     return aCliente(c) as unknown as Cliente;
   },
 
