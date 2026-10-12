@@ -13,6 +13,7 @@
 import { rgb, type PDFFont, type PDFPage, type RGB } from 'pdf-lib';
 import * as XLSX from 'xlsx';
 import { crearDocumentoPdfA, guardarPdfA } from '../utils/pdf-a';
+import { hoyEspana } from '../utils/fechas';
 
 export type TipoColumna = 'texto' | 'codigo' | 'fecha' | 'importe';
 
@@ -222,7 +223,7 @@ export async function tablaAPdf(t: TablaInforme): Promise<Buffer> {
     }
   }
 
-  const generado = `Generado el ${fechaES(new Date().toISOString().slice(0, 10))}`;
+  const generado = `Generado el ${fechaES(hoyEspana())}`;
   const pie = [t.empresa.nombre, t.titulo, t.periodo].filter(Boolean).join(' · ');
   paginas.forEach((pg, i) => {
     texto(pg, `${pie} · ${generado}`, MARGEN, PIE_Y, { tam: 7, color: GRIS });

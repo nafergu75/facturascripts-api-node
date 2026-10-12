@@ -7,6 +7,7 @@ import { crearAsientoTesoreria } from './asientos.service';
 import { subcuentaTercero } from './contabilidadReglas.service';
 import { obtenerReglas } from './reglasContables.service';
 import { comprobarFechaAbierta } from './periodos.service';
+import { hoyEspana } from '../utils/fechas';
 
 /**
  * Cobros PERSISTIDOS en Prisma (tabla Cobro). Fallback en memoria si la BD no
@@ -64,7 +65,7 @@ async function cobrosPorFactura(companyId: string): Promise<Map<string, Cobro[]>
 export function calcularEstadoCobroConCobros(
   factura: Record<string, unknown>,
   cobros: Cobro[],
-  hoy: string = new Date().toISOString().slice(0, 10),
+  hoy: string = hoyEspana(),
 ): EstadoCobroFactura {
   const total = round2(Number(factura.total ?? 0));
   let importeCobrado = round2(cobros.reduce((a, c) => a + c.importe, 0));

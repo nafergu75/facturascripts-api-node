@@ -315,14 +315,13 @@ export function calcularTotales(lineas: CrearLineaGastoDTO[]): {
  * Determina el estado de una factura de gasto según su fecha de vencimiento.
  */
 function determinarEstado(fechaVencimiento: string): string {
-  const hoy = new Date().toISOString().slice(0, 10);
-  return fechaVencimiento < hoy ? 'OVERDUE' : 'PENDING';
+  return fechaVencimiento < hoyEspana() ? 'OVERDUE' : 'PENDING';
 }
 
 /** Fecha de la factura (hoy si no viene) y vencimiento (por defecto, 30 dias despues). */
 function resolverFechasGasto(dto: { fechaEmision?: string; fechaVencimiento?: string }): { fechaEmision: string; fechaVencimiento: string } {
     // 3) Resolver fechas
-    const fechaEmision = (dto.fechaEmision ?? new Date().toISOString().slice(0, 10)).slice(0, 10);
+    const fechaEmision = (dto.fechaEmision ?? hoyEspana()).slice(0, 10);
     // Mismo plazo por defecto que las facturas de venta (en UTC: sin saltos de dia).
     const fechaVencimiento = (dto.fechaVencimiento ?? vencimientoPorDefecto(fechaEmision)).slice(0, 10);
     return { fechaEmision, fechaVencimiento };
