@@ -81,6 +81,15 @@ const OriginalSchema = z.object({
   retencion: numero('la retención del reparto').optional(),
 });
 
+/** Tramo del reparto de un rappel entre periodos, con signo. */
+const TramoSchema = z.object({
+  desde: fecha('el inicio del tramo'),
+  hasta: fecha('el final del tramo'),
+  base: numero('la base del tramo'),
+  cuota: numero('la cuota del tramo').optional(),
+  retencion: numero('la retención del tramo').optional(),
+});
+
 const LineasCompletas = (nombre: string) =>
   z.object({
     lineas: z
@@ -95,7 +104,17 @@ const RectificativaSchema = z.object({
   causa: z.string({ required_error: 'Elige la causa de la rectificación.', invalid_type_error: 'Elige la causa de la rectificación.' }),
   motivo: z.string().trim().max(500, 'El motivo es demasiado largo (500 caracteres como mucho).').optional(),
   originales: z.array(OriginalSchema).max(50, 'Una rectificativa puede rectificar como mucho 50 facturas.').default([]),
-  periodo: z.object({ desde: fecha('el inicio del periodo'), hasta: fecha('el final del periodo') }).optional(),
+  periodo: z
+    .object({
+      desde: fecha('el inicio del periodo'),
+      hasta: fecha('el final del periodo'),
+      /**
+       * Rappel de varios periodos: lo que toca a cada tramo (para el 349). Sin
+       * el, la app lo reparte por meses en proporcion a lo comprado a ese proveedor.
+       */
+      reparto: z.array(TramoSchema).max(60, 'El reparto admite como mucho 60 tramos.').optional(),
+    })
+    .optional(),
   corregida: LineasCompletas('la factura corregida').optional(),
   importesOriginales: LineasCompletas('la factura original').optional(),
   /** La pantalla lo manda tras el 409 rectificar_303 (seccion 11). */
@@ -291,6 +310,14 @@ function validarBloqueRectificativa(d: FacturaGastoBody): void {
       throw error('Un periodo solo vale para un rappel o un descuento por volumen: indica la factura que rectifica.', 'rectificativa.periodo');
     }
     if (r.periodo.hasta < r.periodo.desde) throw error('El final del periodo no puede ser anterior al inicio.', 'rectificativa.periodo.hasta');
+    const tramos = [...(r.periodo.reparto ?? [])].map((t, i) => ({ ...t, i })).sort((a, b) => a.desde.localeCompare(b.desde));
+    tramos.forEach((t, k) => {
+      const campo = `rectificativa.periodo.reparto.${t.i}`;
+      if (t.hasta < t.desde || t.desde < r.periodo!.desde || t.hasta > r.periodo!.hasta) {
+        throw error('Cada tramo del reparto tiene que estar dentro del periodo del rappel.', campo);
+      }
+      if (k > 0 && t.desde <= tramos[k - 1].hasta) throw error('Los tramos del reparto no pueden solaparse.', campo);
+    });
     if (r.tipo === 'S') throw error('Una rectificativa por sustitución corrige una factura concreta: indica cuál.', 'rectificativa.periodo');
   }
   r.originales.forEach((o, i) => {
@@ -359,6 +386,16 @@ export function comprobarImportesRectificativa(d: FacturaGastoBody): void {
         `El total calculado (${eur(esperado)}) no coincide con el de la factura (${eur(d.totalDocumento)}): revisa las bases, el IVA, la retención y el signo.`,
         'totalDocumento',
       );
+    }
+  }
+  const tramos = r.periodo?.reparto ?? [];
+  if (tramos.length) {
+    const suma = (k: 'base' | 'cuota' | 'retencion') => tramos.reduce((a, x) => a + aCentimos(x[k] ?? 0), 0);
+    if (suma('base') !== aCentimos(base)) {
+      throw error(`El reparto por periodos (${eur(suma('base') / 100)}) no suma la base de la rectificativa (${eur(base)}).`, 'rectificativa.periodo.reparto');
+    }
+    if (tramos.every((x) => x.cuota !== undefined) && suma('cuota') !== aCentimos(iva)) {
+      throw error(`El reparto del IVA por periodos (${eur(suma('cuota') / 100)}) no suma el IVA de la rectificativa (${eur(iva)}).`, 'rectificativa.periodo.reparto');
     }
   }
   if (r.originales.length > 1 && r.originales.some((o) => o.base !== undefined || o.cuota !== undefined)) {
