@@ -28,6 +28,7 @@ import { comprobarFechaAbierta } from './periodos.service';
 import { aplicadoPorFactura, recalcularEstadoPagoGasto } from './cobrosPagos.service';
 import { cuentaProveedorDeFactura } from './rectificativasGasto.service';
 import { registrarAuditoria } from './auditoria.service';
+import { partidasDeCompensacion, pendientePorPartida, recalcularEstadoPartidas } from './arranque/partidas.service';
 
 type Db = TransaccionBD | typeof prisma;
 
@@ -53,10 +54,41 @@ async function bloquear(tx: TransaccionBD, ids: string[]): Promise<void> {
   for (const id of [...new Set(ids)].sort()) await tx.$queryRaw`SELECT id FROM ExpenseInvoice WHERE id = ${id} FOR UPDATE`;
 }
 
-/** Pendiente con signo (total - aplicado) de cada factura, leido dentro de la transaccion. */
+/**
+ * Pendiente con signo (total - aplicado) de cada factura, leido dentro de la
+ * transaccion. Una factura de 2026 que la gestoria trajo pendiente (partida de
+ * «Traer la contabilidad de 2026» enlazada) se paga contra su partida: lo que
+ * queda es lo de la partida, no lo de la factura.
+ */
 async function pendientes(tx: TransaccionBD, companyId: string, fs: Array<{ id: string; totalFactura: number }>): Promise<Map<string, number>> {
-  const aplicado = await aplicadoPorFactura(companyId, fs.map((f) => f.id), undefined, tx);
-  return new Map(fs.map((f) => [f.id, aCentimos(Number(f.totalFactura)) - aCentimos(aplicado.get(f.id) ?? 0)]));
+  const ids = fs.map((f) => f.id);
+  const [aplicado, partidas] = await Promise.all([aplicadoPorFactura(companyId, ids, undefined, tx), partidasDeCompensacion(tx, companyId, { facturaIds: ids })]);
+  const quedaPartida = await pendientePorPartida(tx, companyId, partidas.map((p) => p.id));
+  const porFactura = new Map(partidas.map((p) => [p.expenseInvoiceId!, aCentimos(quedaPartida.get(p.id) ?? 0)]));
+  return new Map(fs.map((f) => [f.id, porFactura.get(f.id) ?? aCentimos(Number(f.totalFactura)) - aCentimos(aplicado.get(f.id) ?? 0)]));
+}
+
+/**
+ * Partida de 2026 de una factura de fuera de la app (mismo proveedor y mismo
+ * numero) y lo que queda de ella en centimos; null si la gestoria no la trajo.
+ */
+async function partidaFuera(tx: TransaccionBD, companyId: string, supplierId: string, numero: string | null | undefined): Promise<{ id: string; quedaCent: number } | null> {
+  if (!numero) return null;
+  const [p] = await partidasDeCompensacion(tx, companyId, { fuera: { supplierId, numero } });
+  if (!p) return null;
+  const queda = await pendientePorPartida(tx, companyId, [p.id]);
+  return { id: p.id, quedaCent: aCentimos(queda.get(p.id) ?? 0) };
+}
+
+/** Partidas de 2026 que toca una compensacion (las de sus dos facturas o la de fuera con su numero). */
+async function partidasTocadas(tx: TransaccionBD, companyId: string, c: { abonoId: string; facturaId: string | null; numeroFuera?: string | null }): Promise<string[]> {
+  const facturaIds = [c.abonoId, ...(c.facturaId ? [c.facturaId] : [])];
+  let fuera: { supplierId: string; numero: string } | undefined;
+  if (!c.facturaId && c.numeroFuera) {
+    const abono = await tx.expenseInvoice.findFirst({ where: { id: c.abonoId, companyId }, select: { supplierId: true } });
+    if (abono) fuera = { supplierId: abono.supplierId, numero: c.numeroFuera };
+  }
+  return (await partidasDeCompensacion(tx, companyId, { facturaIds, fuera })).map((p) => p.id);
 }
 
 /**
@@ -140,16 +172,32 @@ export async function crearCompensacionesAuto(tx: TransaccionBD, companyId: stri
   // «No, se descuenta de lo que le debo»: el abono de una factura llevada fuera se aplica a ella.
   // Sin `fuera` (aprobacion del borrador del lector), la respuesta guardada en el alta.
   const fuera = abono.rectifica.find((e) => !e.originalId && !e.periodoDesde && e.numeroOriginal && e.fechaOriginal);
+  const tocadas = new Set((await partidasDeCompensacion(tx, companyId, { facturaIds: [abonoId, ...originales.map((o) => o.id)] })).map((p) => p.id));
   if ((opciones.fuera ?? abono.compensarFuera === true) && fuera && aFavor > 0) {
-    await tx.compensacionGasto.create({
-      data: { companyId, abonoId, facturaId: null, numeroFuera: fuera.numeroOriginal, fechaFuera: fuera.fechaOriginal, fecha, importe: aFavor / 100, origen: 'AUTO', userId: opciones.userId ?? null },
-    });
+    // Si la gestoria trajo esa factura entre las pendientes de 2026, el abono
+    // rebaja su partida, como mucho hasta lo que quede de ella.
+    const partida = await partidaFuera(tx, companyId, abono.supplierId, fuera.numeroOriginal);
+    const importe = partida ? Math.min(aFavor, Math.max(0, partida.quedaCent)) : aFavor;
+    if (importe > 0) {
+      await tx.compensacionGasto.create({
+        data: { companyId, abonoId, facturaId: null, numeroFuera: fuera.numeroOriginal, fechaFuera: fuera.fechaOriginal, fecha, importe: importe / 100, origen: 'AUTO', userId: opciones.userId ?? null },
+      });
+      if (partida) tocadas.add(partida.id);
+    }
   }
   await recalcularEstadoPagoGasto(tx, companyId, abonoId);
+  await recalcularEstadoPartidas(tx, companyId, [...tocadas]);
 }
 
 /** Anula una compensacion dentro de una transaccion: su asiento de traspaso pasa a REVERSED (o contraasiento si su periodo esta cerrado). */
-async function anularEnTx(tx: TransaccionBD, companyId: string, c: { id: string; abonoId: string; facturaId: string | null; journalEntryId: string | null }, fecha: string): Promise<void> {
+async function anularEnTx(
+  tx: TransaccionBD,
+  companyId: string,
+  c: { id: string; abonoId: string; facturaId: string | null; numeroFuera?: string | null; journalEntryId: string | null },
+  fecha: string,
+): Promise<void> {
+  // Partidas de 2026 que vuelven a tener pendiente lo que se les habia descontado.
+  const tocadas = await partidasTocadas(tx, companyId, c);
   const r = await tx.compensacionGasto.updateMany({ where: { id: c.id, estado: 'ACTIVO' }, data: { estado: 'ANULADO', anuladaEn: fecha } });
   if (r.count !== 1) throw conflict('Esa aplicación ya está anulada.');
   if (c.journalEntryId) {
@@ -180,6 +228,7 @@ async function anularEnTx(tx: TransaccionBD, companyId: string, c: { id: string;
   }
   await recalcularEstadoPagoGasto(tx, companyId, c.abonoId);
   if (c.facturaId) await recalcularEstadoPagoGasto(tx, companyId, c.facturaId);
+  await recalcularEstadoPartidas(tx, companyId, tocadas);
 }
 
 /** Anula las compensaciones AUTO de un abono (al anularlo o antes de rehacerlas al corregirlo). */
@@ -290,12 +339,18 @@ export async function aplicarAbono(
       const pend = await pendientes(tx, companyId, [abonoAhora, ...(facturaAhora ? [facturaAhora] : [])]);
       const aFavor = -(pend.get(abono.id) ?? 0);
       if (aFavor <= 0) throw conflict(`No queda nada a tu favor en el abono ${numeroDe(abono)}: ya está devuelto o aplicado.`);
-      const tope = factura ? Math.min(aFavor, pend.get(factura.id) ?? 0) : aFavor;
+      // Factura de fuera que la gestoria trajo entre las pendientes de 2026: como mucho, lo que quede de ella.
+      const partida = factura ? null : await partidaFuera(tx, companyId, abono.supplierId, numeroFuera);
+      if (partida && partida.quedaCent <= 0) {
+        throw conflict(`La factura ${numeroFuera} ya no tiene nada pendiente de pago: está entre las pendientes de 2026 que trajo la gestoría y ya se pagó.`);
+      }
+      const tope = factura ? Math.min(aFavor, pend.get(factura.id) ?? 0) : partida ? Math.min(aFavor, partida.quedaCent) : aFavor;
       if (factura && tope <= 0) throw conflict(`La factura ${numeroDe(factura)} no tiene nada pendiente de pago.`);
       const importe = solicitado ?? tope;
       if (importe > tope) {
+        const deFactura = (factura || partida) && tope < aFavor;
         throw badRequest(
-          `El importe (${importeTexto(importe / 100)}) supera lo que queda ${factura && tope < aFavor ? `pendiente de la factura ${numeroDe(factura)}` : 'a tu favor en el abono'} (${importeTexto(tope / 100)}).`,
+          `El importe (${importeTexto(importe / 100)}) supera lo que queda ${deFactura ? `pendiente de la factura ${factura ? numeroDe(factura) : numeroFuera}` : 'a tu favor en el abono'} (${importeTexto(tope / 100)}).`,
           { campo: 'importe' },
         );
       }
@@ -324,6 +379,7 @@ export async function aplicarAbono(
       });
       await recalcularEstadoPagoGasto(tx, companyId, abono.id);
       if (factura) await recalcularEstadoPagoGasto(tx, companyId, factura.id);
+      await recalcularEstadoPartidas(tx, companyId, await partidasTocadas(tx, companyId, c));
       return c.id;
     }),
   );
