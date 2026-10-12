@@ -38,3 +38,15 @@ export const redondear2 = (n: number): number => redondearSimetrico(n, 2);
 export const redondear4 = (n: number): number => redondearSimetrico(n, 4);
 /** Redondeo simetrico a 8 decimales (tipos de cambio). */
 export const redondear8 = (n: number): number => redondearSimetrico(n, 8);
+
+/**
+ * Importe para los textos que lee la persona (avisos y errores): «-2.000,00 €»,
+ * con punto de miles también en las cifras de cuatro dígitos y coma decimal,
+ * como formatoImporte del frontend. No sirve para ficheros ni para cálculos.
+ */
+export function importeTexto(euros: number): string {
+  const c = Math.abs(aCentimos(Number(euros) || 0));
+  const entero = String(Math.floor(c / 100)).replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+  const decimales = String(c % 100).padStart(2, '0');
+  return `${(Number(euros) || 0) < 0 && c !== 0 ? '-' : ''}${entero},${decimales} €`;
+}
