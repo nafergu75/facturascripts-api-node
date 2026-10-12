@@ -194,24 +194,30 @@ async function ejerciciosConEstado(companyId: string) {
 
 /**
  * Crea el ejercicio del año en curso (hora de España) si falta y la empresa ya
- * lleva contabilidad en la app: tiene algún ejercicio o algún asiento. Así, el
- * 1 de enero el año nuevo aparece solo en informes, cierres y Registro
+ * llevaba contabilidad en la app antes de este año o durante él: tiene un
+ * ejercicio que empieza antes o un asiento con fecha de este año o anterior.
+ * Así, el 1 de enero el año nuevo aparece solo en informes, cierres y Registro
  * Mercantil sin que nadie tenga que darlo de alta. Una empresa recién creada,
- * sin nada, no recibe ejercicios que no ha pedido. Si otro ejercicio con otras
- * fechas ocupa ese año, o dos peticiones llegan a la vez, no hace nada.
- * Devuelve el ejercicio creado o null.
+ * sin nada, no recibe ejercicios que no ha pedido; tampoco la que empieza más
+ * adelante (p. ej. solo tiene el ejercicio 2027 y hoy es noviembre de 2026).
+ * Si otro ejercicio con otras fechas ocupa ese año, o dos peticiones llegan a
+ * la vez, no hace nada. Devuelve el ejercicio creado o null.
  */
 export async function asegurarEjercicioEnCurso(companyId: string, ahora: Date = new Date()) {
   const anio = anioEspana(ahora);
   const label = String(anio);
   const existentes = await prisma.fiscalYear.findMany({ where: { companyId }, select: { label: true, fechaInicio: true, fechaFin: true } });
   if (existentes.some((e) => e.label === label)) return null;
-  if (!existentes.length) {
-    const asiento = await prisma.journalEntry.findFirst({ where: { companyId }, select: { id: true } });
-    if (!asiento) return null;
-  }
   const fechaInicio = `${anio}-01-01`;
   const fechaFin = `${anio}-12-31`;
+  if (!existentes.some((e) => !!e.fechaInicio && e.fechaInicio < fechaInicio)) {
+    // Sin un ejercicio anterior, solo cuenta un asiento de este año o de antes.
+    const asiento = await prisma.journalEntry.findFirst({
+      where: { companyId, fecha: { lt: new Date(`${anio + 1}-01-01T00:00:00Z`) } },
+      select: { id: true },
+    });
+    if (!asiento) return null;
+  }
   if (existentes.some((e) => e.fechaInicio && e.fechaFin && e.fechaInicio <= fechaFin && e.fechaFin >= fechaInicio)) return null;
   try {
     return await prisma.fiscalYear.create({ data: { companyId, label, fechaInicio, fechaFin, estado: 'OPEN' } });
