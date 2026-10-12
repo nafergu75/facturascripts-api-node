@@ -137,6 +137,7 @@ export const incomeInvoicesController = {
     const factura = await incomeInvoicesService.finalizar(req.companyId!, req.params.id, {
       fechaEmision: req.body?.fechaEmision,
       tipoCambio: req.body?.tipoCambio,
+      confirmaDevengoFuera: req.body?.confirmaDevengoFuera === true,
     });
     await registrarAuditoria({
       userId: req.user?.userId || 'unknown',
