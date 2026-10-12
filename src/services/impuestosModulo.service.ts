@@ -1076,7 +1076,8 @@ const eurosTexto = (n: number) => `${n.toLocaleString('es-ES', { minimumFraction
  * fecha de su IVA (fechaIvaGasto: la de la original en una ERROR_IVA).
  */
 export async function avisosAbonosTrasPresentar(companyId: string, periodo: PeriodoFiscal): Promise<string[]> {
-  if (!dbOk()) return [];
+  // Sin BD (o sin la tabla, en los tests que la simulan): sin avisos.
+  if (!dbOk() || typeof (prisma as unknown as { expenseInvoice?: { findMany?: unknown } }).expenseInvoice?.findMany !== 'function') return [];
   const rango = { gte: periodo.fechaInicio, lte: periodo.fechaFin };
   const abonos = await prisma.expenseInvoice.findMany({
     where: {
