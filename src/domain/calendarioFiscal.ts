@@ -37,6 +37,8 @@ export const PRIMER_EJERCICIO_202 = 2027;
  * Desde cuando se lleva la contabilidad en la app (2026 y antes se llevan
  * fuera). Un 303 de antes no esta en la app, pero ya se presento: un abono
  * que reduce su IVA (ERROR_IVA de una factura de 2026) obliga a rectificarlo.
+ * Es solo el respaldo: cada empresa tiene el suyo (inicioLlevanzaApp, en
+ * utils/anios.ts: el que indico o el deducido de sus datos).
  */
 export const INICIO_LLEVANZA_APP = '2027-01-01';
 const MESES = Array.from({ length: 12 }, (_, i) => String(i + 1).padStart(2, '0'));
