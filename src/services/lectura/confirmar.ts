@@ -106,16 +106,22 @@ export async function comprobarLecturaParaConfirmar(companyId: string, lecturaId
  * falta "He revisado"; y lo que la lectura dejo en error sigue bloqueando,
  * aunque el documento se haya corregido despues por PUT /invoice-extractor/:id
  * (que rehace validation.errors con las validaciones antiguas).
+ *
+ * `ignorar`: codigos de validacion que ya no aplican (p. ej. NIF_RECEPTOR
+ * cuando se ha elegido un cliente dado de alta). Devuelve los mensajes de las
+ * validaciones ignoradas, para quitarlos tambien de los errores del documento.
  */
-export async function comprobarRevisionVenta(companyId: string, incomeReaderDocumentId: string, revisado: boolean): Promise<void> {
+export async function comprobarRevisionVenta(companyId: string, incomeReaderDocumentId: string, revisado: boolean, ignorar: string[] = []): Promise<string[]> {
   const fila = await prisma.lecturaDocumento.findFirst({ where: { companyId, incomeReaderDocumentId, lector: 'VENTA' }, select: { estado: true, estadoValidacion: true, validaciones: true } });
-  if (!fila) return; // Documento del lector de siempre (/extraer-ia): como hoy.
+  if (!fila) return []; // Documento del lector de siempre (/extraer-ia): como hoy.
   if (fila.estado === 'CONFIRMADA') throw conflict('Esta factura ya se registró.', { codigo: 'LECTURA_YA_CONFIRMADA' });
   if (necesitaRevision(fila) && !revisado) throw badRequest(MENSAJE_FALTA_REVISION, { codigo: 'FALTA_REVISION' });
-  const errores = validacionesGuardadas(fila).filter((v) => v.nivel === 'error');
+  const ignoradas = validacionesGuardadas(fila).filter((v) => ignorar.includes(v.codigo));
+  const errores = validacionesGuardadas(fila).filter((v) => v.nivel === 'error' && !ignorar.includes(v.codigo));
   if (errores.length) {
     throw badRequest(`No se puede registrar: ${[...new Set(errores.map((v) => v.mensaje))].join(' ')}`, { codigo: 'VALIDACION_LECTURA', validaciones: errores });
   }
+  return ignoradas.map((v) => v.mensaje);
 }
 
 /** Tras registrar: la lectura queda CONFIRMADA. Nunca rompe el alta (lo que falle va al log). */
