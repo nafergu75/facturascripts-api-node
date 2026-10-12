@@ -19,7 +19,17 @@ export interface LineaNueva {
 export interface AsientoNuevo {
   fecha: string; // yyyy-mm-dd
   concepto: string;
-  origen: 'APERTURA' | 'REGULARIZACION' | 'CIERRE' | 'IMPORTACION';
+  origen:
+    | 'APERTURA'
+    | 'REGULARIZACION'
+    | 'CIERRE'
+    | 'IMPORTACION'
+    // Traer la contabilidad de 2026: diario historico de la gestoria y ajuste de la apertura.
+    | 'HISTORICO'
+    | 'HISTORICO_APERTURA'
+    | 'HISTORICO_REGULARIZACION'
+    | 'HISTORICO_CIERRE'
+    | 'APERTURA_AJUSTE';
   lineas: LineaNueva[];
 }
 
@@ -28,6 +38,11 @@ const PREFIJO: Record<AsientoNuevo['origen'], string> = {
   REGULARIZACION: 'REGUL',
   CIERRE: 'CIERRE',
   IMPORTACION: 'IMP',
+  HISTORICO: 'HIST',
+  HISTORICO_APERTURA: 'HIST',
+  HISTORICO_REGULARIZACION: 'HIST',
+  HISTORICO_CIERRE: 'HIST',
+  APERTURA_AJUSTE: 'APAJ',
 };
 
 /**
