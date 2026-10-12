@@ -833,6 +833,10 @@ model ExpenseInvoice {
   fechaImputacionIva     String?  @db.VarChar(10)
   /// Cuando se confirmo «Registrar y avisarme de rectificar el 303».
   rectificar303ConfirmadoEn String? @db.VarChar(25)
+  /// Abono de una factura de fuera de la app que no estaba pagada («No, se
+  /// descuenta de lo que le debo»): al contabilizarlo (alta o aprobacion del
+  /// borrador del lector) se aplica a ella. null = no se pregunto.
+  compensarFuera         Boolean?
   /// Sustitucion: lineas y totales de la factura corregida tal como los manda el proveedor (informativo).
   datosSustitucion       Json?
   createdAt        DateTime             @default(now())
