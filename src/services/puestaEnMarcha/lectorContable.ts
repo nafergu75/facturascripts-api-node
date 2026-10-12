@@ -717,8 +717,51 @@ export interface AsientoAgrupado {
   debe: number;
   haber: number;
   cuadra: boolean;
-  /** APERTURA / REGULARIZACION / CIERRE si el concepto lo dice: no se importan por defecto. */
-  especial: 'APERTURA' | 'REGULARIZACION' | 'CIERRE' | null;
+  /**
+   * APERTURA / REGULARIZACION / CIERRE por lo que contiene el asiento (el
+   * concepto solo desempata): no se importan por defecto. Ver especialDe.
+   */
+  especial: TipoEspecial | null;
+}
+
+export type TipoEspecial = 'APERTURA' | 'REGULARIZACION' | 'CIERRE';
+
+/**
+ * Asiento especial por su contenido, no por el texto del concepto (una
+ * «Regularización de existencias» o una «Comisión apertura póliza» son asientos
+ * normales):
+ *  - Regularizacion: lleva los gastos e ingresos de 6 y 7 a la 129 (solo
+ *    esas cuentas, y si acaso tambien 8/9 contra el 13), o los de 8 y 9 a su
+ *    cuenta del subgrupo 13 (solo 8/9 y 13 o 115).
+ *  - Apertura: solo cuentas de balance (1 a 5), el 1 de enero o el primer
+ *    asiento del año, y el concepto lo dice (o sin concepto: el 1 de enero, el
+ *    primero y con 3 lineas o mas).
+ *  - Cierre: solo cuentas de balance, el 31 de diciembre o el ultimo asiento
+ *    del año, y el concepto lo dice (o sin concepto: el 31-12, el ultimo y con
+ *    3 lineas o mas).
+ */
+export function especialDe(
+  a: { fecha: string; lineas: Array<{ cuenta: string }>; texto: string },
+  posicion: { primero: boolean; ultimo: boolean },
+): TipoEspecial | null {
+  const cuentas = a.lineas.map((l) => l.cuenta);
+  if (!cuentas.length) return null;
+  const con129 = cuentas.some((c) => c.startsWith('129'));
+  const deResultado = cuentas.some((c) => /^[6-9]/.test(c));
+  if (con129 && deResultado && cuentas.every((c) => /^([6-9]|129|13|115)/.test(c))) return 'REGULARIZACION';
+  if (deResultado && cuentas.some((c) => /^(13|115)/.test(c)) && cuentas.every((c) => /^([89]|13|115)/.test(c))) return 'REGULARIZACION';
+  if (!cuentas.every((c) => /^[1-5]/.test(c))) return null;
+  const mmdd = a.fecha.slice(5);
+  const varias = cuentas.length >= 3;
+  const sinTexto = !a.texto.trim();
+  if ((mmdd === '01-01' || posicion.primero) && (/\bapertura\b/.test(a.texto) || (sinTexto && mmdd === '01-01' && posicion.primero && varias))) return 'APERTURA';
+  if (
+    (mmdd === '12-31' || posicion.ultimo) &&
+    ((/\bcierre\b/.test(a.texto) && /\b(asiento|ejercicio|contable|contabilidad)\b/.test(a.texto)) || (sinTexto && mmdd === '12-31' && posicion.ultimo && varias))
+  ) {
+    return 'CIERRE';
+  }
+  return null;
 }
 
 /**
@@ -737,6 +780,7 @@ export function agruparAsientos(apuntes: ApunteLeido[], agrupacion: Agrupacion =
     grupos.set(clave, g);
   }
   const asientos: AsientoAgrupado[] = [];
+  const textos = new Map<string, string>();
   for (const [clave, g] of grupos) {
     const fecha = modo === 'mes' ? g.reduce((m, a) => (a.fecha > m ? a.fecha : m), '') : g.reduce((m, a) => (a.fecha < m ? a.fecha : m), g[0].fecha);
     const debe = round2(g.reduce((s, a) => s + a.debe, 0));
@@ -744,13 +788,7 @@ export function agruparAsientos(apuntes: ApunteLeido[], agrupacion: Agrupacion =
     const conceptos = g.map((a) => a.concepto).filter(Boolean);
     const conceptoBase = conceptos[0] ?? '';
     const todo = normalizarTitulo(conceptos.join(' '));
-    const especial = /\bapertura\b/.test(todo)
-      ? 'APERTURA'
-      : /\bregularizacion\b/.test(todo)
-        ? 'REGULARIZACION'
-        : /\bcierre\b/.test(todo) && /\b(asiento|ejercicio)\b/.test(todo)
-          ? 'CIERRE'
-          : null;
+    textos.set(clave, todo);
     const numeroOriginal = modo === 'asiento' ? g[0].asiento : '';
     asientos.push({
       clave,
@@ -766,10 +804,23 @@ export function agruparAsientos(apuntes: ApunteLeido[], agrupacion: Agrupacion =
       debe,
       haber,
       cuadra: aCentimos(debe) === aCentimos(haber),
-      especial,
+      especial: null,
     });
   }
   asientos.sort((a, b) => (a.fecha === b.fecha ? a.clave.localeCompare(b.clave, 'es', { numeric: true }) : a.fecha.localeCompare(b.fecha)));
+  // Los especiales, ya ordenados: el primero y el ultimo asiento de cada año cuentan.
+  if (modo !== 'mes') {
+    const anios = new Map<string, { primero: AsientoAgrupado; ultimo: AsientoAgrupado }>();
+    for (const a of asientos) {
+      const e = anios.get(a.fecha.slice(0, 4));
+      if (!e) anios.set(a.fecha.slice(0, 4), { primero: a, ultimo: a });
+      else e.ultimo = a;
+    }
+    for (const a of asientos) {
+      const e = anios.get(a.fecha.slice(0, 4))!;
+      a.especial = especialDe({ fecha: a.fecha, lineas: a.lineas, texto: textos.get(a.clave) ?? '' }, { primero: e.primero === a, ultimo: e.ultimo === a });
+    }
+  }
   return { asientos, agrupacion: modo };
 }
 
