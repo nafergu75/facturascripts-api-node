@@ -101,6 +101,26 @@ export const FICHAS: FichaFAQ[] = [
     etiquetas: ['gasto', 'compra', 'proveedor', 'factura recibida', 'ocr', 'lector'],
   },
   {
+    id: 'app-abono-proveedor',
+    bloque: 'app',
+    pregunta: '¿Cómo registro un abono o una factura rectificativa de un proveedor?',
+    variantes: [
+      'el proveedor me ha mandado un abono',
+      'registrar rectificativa de proveedor',
+      'devolucion de mercancia al proveedor',
+      'rappel de un proveedor',
+      'descuento por pronto pago de un proveedor',
+      'factura en negativo de un proveedor',
+      'nota de abono recibida',
+    ],
+    respuesta:
+      'Entra en Compras → Nueva y elige «Abono o rectificativa», o abre la factura original y pulsa «Registrar abono o rectificativa». Indica qué factura corrige (o el periodo, si es un rappel), la causa y los importes. El abono resta de lo pendiente de esa factura; si sobra, queda a tu favor: registra la devolución que te haga el proveedor o aplícalo a otra de sus facturas. Si lo lees con el Lector de gastos, propone la factura original.',
+    fuente: APP('/dashboard/compras', 'Compras'),
+    ...VERIFICADA,
+    enlaceApp: { texto: 'Registrar un abono de proveedor', href: '/dashboard/compras/nueva?tipo=rectificativa' },
+    etiquetas: ['abono', 'rectificativa', 'proveedor', 'devolucion', 'rappel', 'descuento', 'compra', 'negativo'],
+  },
+  {
     id: 'app-importar-extracto',
     bloque: 'app',
     pregunta: '¿Cómo importo el extracto del banco?',
