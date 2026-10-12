@@ -20,6 +20,7 @@
  *    rectificada = anterior + la diferencia.
  */
 import { prisma } from '../../config/database';
+import { estadosEnRectificacion } from '../declaracionesAeat/declaraciones.service';
 import { importeTexto } from '../../utils/money';
 import { badRequest } from '../../utils/http-errors';
 import { aparicionesEntre, fechaContableGasto, whereGastosFiscales } from '../../domain/factura-gasto.model';
@@ -79,6 +80,8 @@ export interface Borrador349 {
   ejercicio: number;
   periodo: string;
   estado: string;
+  /** Presentado con una complementaria, sustitutiva o rectificativa en preparación (si no, null). */
+  estadoTexto: string | null;
   /** Tipo y anterior salen del historial de declaraciones (B4); cambioPeriodicidad, de las opciones. */
   opciones: { tipoDeclaracion: 'C' | 'S' | null; declaracionAnterior: string | null; cambioPeriodicidad: boolean };
   /** Numero identificativo (B5); null hasta que se descarga o se presenta. */
@@ -322,6 +325,7 @@ export async function calcularBorrador349(companyId: string, ejercicio: number, 
     ejercicio,
     periodo: p.periodo,
     estado: fila?.estado ?? 'vigente',
+    estadoTexto: (await estadosEnRectificacion(companyId, '349', ejercicio)).get(p.periodo) ?? null,
     opciones,
     numeroDeclaracion: entrada.declarante.numeroDeclaracion ?? null,
     entrada,
