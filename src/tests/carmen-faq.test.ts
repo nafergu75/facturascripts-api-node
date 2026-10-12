@@ -125,7 +125,7 @@ describe('plazos', () => {
   it('coinciden con fechaVencimientoModelo en los modelos que comparten', () => {
     for (const ejercicio of [2025, 2026, 2027]) {
       for (const p of plazosDelEjercicio(ejercicio)) {
-        if (['303', '111', '115', '349'].includes(p.modelo) || ['390', '200'].includes(p.modelo)) {
+        if (['303', '111', '115', '349', '202'].includes(p.modelo) || ['390', '200', '347', '190', '180'].includes(p.modelo)) {
           expect({ m: p.modelo, per: p.periodo, f: p.fecha }).toEqual({ m: p.modelo, per: p.periodo, f: fechaVencimientoModelo(p.modelo, ejercicio, p.periodo) });
         }
       }
@@ -135,7 +135,10 @@ describe('plazos', () => {
   it('el 347 vence el último día de febrero (29 en bisiesto) y el 4T del 111 el 20 de enero', () => {
     expect(plazosDelEjercicio(2027).find((p) => p.modelo === '347')?.fecha).toBe('2028-02-29');
     expect(plazosDelEjercicio(2026).find((p) => p.modelo === '111' && p.periodo === '4T')?.fecha).toBe('2027-01-20');
-    expect(plazosDelEjercicio(2026).find((p) => p.modelo === '190')?.fecha).toBe('2027-01-31');
+    // 31-1-2027 es domingo: el 190 de 2026 vence el lunes 1-2-2027.
+    expect(plazosDelEjercicio(2026).find((p) => p.modelo === '190')?.fecha).toBe('2027-02-01');
+    // 28-2-2027 es domingo: el 347 de 2026, el 1-3-2027.
+    expect(plazosDelEjercicio(2026).find((p) => p.modelo === '347')?.fecha).toBe('2027-03-01');
   });
 
   it('próximo plazo del 303 a 07/10/2026: el 3T, hasta el 20/10/2026', () => {
@@ -143,7 +146,8 @@ describe('plazos', () => {
     expect(p).toMatchObject({ periodo: '3T', ejercicio: 2026, fecha: '2026-10-20' });
     expect(frasePlazo(p, HOY)).toBe('El modelo 303 (IVA trimestral) del 3T de 2026 se presenta hasta el 20/10/2026 (quedan 13 días).');
     const [enero] = proximosPlazos('2027-01-05', 1, '303');
-    expect(enero).toMatchObject({ periodo: '4T', ejercicio: 2026, fecha: '2027-01-30' });
+    // 30-1-2027 es sábado: pasa al lunes 1-2-2027.
+    expect(enero).toMatchObject({ periodo: '4T', ejercicio: 2026, fecha: '2027-02-01' });
   });
 });
 

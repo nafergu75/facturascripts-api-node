@@ -4,17 +4,15 @@
  * fechaVencimientoModelo (impuestosModulo) en los modelos que comparten y añade
  * 130, 180, 190 y 202. El 347 vence el último día de febrero (29 en bisiesto).
  *
- * Son los plazos ordinarios: si el último día cae en sábado, domingo o festivo,
- * pasa al siguiente día hábil, y eso no se calcula aquí. Por eso las respuestas
- * llevan siempre el aviso AVISO_FESTIVOS.
- *
- * Diferencia conocida con frontend/web/lib/aeatCalendar.ts: allí el 4T del 111
- * y del 115 vence el 30 de enero; el plazo correcto es el 20 de enero.
+ * Si el último día cae en sábado, domingo o fiesta nacional (Viernes Santo
+ * incluido), pasa al siguiente día hábil (plazoAeat). Las fiestas autonómicas y
+ * locales no se cuentan: por eso las respuestas llevan el aviso AVISO_FESTIVOS.
  */
 import { fechaES } from '../plantillas';
+import { plazoAeat, ultimoDiaFebrero } from '../../../domain/plazosAeat';
 
 export const AVISO_FESTIVOS =
-  'Si el último día cae en festivo o fin de semana, pasa al siguiente día hábil; confírmalo en el calendario de la AEAT.';
+  'La fecha ya cuenta los fines de semana y las fiestas nacionales. Si ese día es festivo en tu comunidad o tu municipio, confírmalo en el calendario de la AEAT.';
 
 export const FUENTE_CALENDARIO = {
   titulo: 'Calendario del contribuyente (AEAT)',
@@ -28,7 +26,7 @@ export interface Plazo {
   /** '1T'..'4T', '1P'..'3P' (pagos fraccionados del 202) o '0A' (anual). */
   periodo: string;
   ejercicio: number;
-  /** Último día de presentación (AAAA-MM-DD). */
+  /** Último día de presentación (AAAA-MM-DD), ya movido al siguiente día hábil si hace falta. */
   fecha: string;
   /** Pantalla de la app donde se prepara, si existe. */
   href?: string;
@@ -65,8 +63,6 @@ const NOTAS: Record<string, string> = {
   '130': 'Solo autónomos en estimación directa. No están obligados los profesionales que el año anterior tuvieron retención en al menos el 70 % de sus ingresos.',
 };
 
-const ultimoDiaFebrero = (anio: number) => (new Date(Date.UTC(anio, 2, 0)).getUTCDate() === 29 ? `${anio}-02-29` : `${anio}-02-28`);
-
 /** Plazos de los modelos de un ejercicio (los anuales y el 4T se presentan al año siguiente). */
 export function plazosDelEjercicio(ejercicio: number): Plazo[] {
   const sig = ejercicio + 1;
@@ -102,7 +98,7 @@ function crear(modelo: string, periodo: string, ejercicio: number, fecha: string
     nombre: NOMBRES_MODELO[modelo],
     periodo,
     ejercicio,
-    fecha,
+    fecha: plazoAeat(fecha),
     ...(HREF[modelo] ? { href: HREF[modelo] } : {}),
     ...(NOTAS[modelo] ? { nota: NOTAS[modelo] } : {}),
   };
