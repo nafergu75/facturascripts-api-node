@@ -261,6 +261,32 @@ export async function contextoDeclaracion(companyId: string, codigo: string, eje
   };
 }
 
+/**
+ * Texto del estado de los periodos del modelo y ejercicio que tienen una
+ * declaración presentada y otra en preparación (complementaria, sustitutiva o
+ * rectificativa): «Presentado · complementaria en preparación». En ese caso
+ * ModeloImpuesto está en 'vigente' (diseño B4) y, sin este texto, la pantalla
+ * diría «Sin presentar» junto al historial con la presentada. Solo lee.
+ */
+export async function estadosEnRectificacion(companyId: string, codigo: string, ejercicio: number): Promise<Map<string, string>> {
+  const tabla = (prisma as { declaracionAeat?: { findMany?: unknown } }).declaracionAeat;
+  if (typeof tabla?.findMany !== 'function') return new Map();
+  const config = configModelo(codigo);
+  const filas = await prisma.declaracionAeat.findMany({
+    where: { companyId, codigo, ejercicio, estado: { in: ['presentada', 'preparada'] } },
+    select: { periodo: true, estado: true, tipo: true },
+  });
+  const salida = new Map<string, string>();
+  for (const periodo of new Set(filas.map((f) => f.periodo))) {
+    const delPeriodo = filas.filter((f) => f.periodo === periodo);
+    const enCurso = delPeriodo.find((f) => f.estado === 'preparada' && f.tipo !== 'N');
+    if (enCurso && delPeriodo.some((f) => f.estado === 'presentada')) {
+      salida.set(periodo, `Presentado · ${config.nombres[enCurso.tipo as TipoDeclaracionAeat] ?? 'rectificación'} en preparación`);
+    }
+  }
+  return salida;
+}
+
 /** Lo que quedó presentado de un modelo y periodo (para los modelos que lo leen: 390, 202). */
 export interface FilaPresentada {
   casillas: Record<string, unknown>;
