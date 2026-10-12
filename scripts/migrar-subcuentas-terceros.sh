@@ -6,8 +6,14 @@
 # esquema, despues de scripts/aplicar-esquema-prod.sh):
 #   ENV_PROD=../backend/.env.vercel-prod.local bash scripts/migrar-subcuentas-terceros.sh --todas
 #   ENV_PROD=... bash scripts/migrar-subcuentas-terceros.sh --empresa <id> [--incluir-cerrados] [--longitud 8]
+# Orden: esquema, push del backend y del frontend, traer el plan de 2026 de
+# cada empresa desde la app (Contabilidad > Puesta en marcha > 1. Plan de
+# cuentas; esa pantalla solo existe con el backend nuevo publicado) ANTES de
+# dar de alta, leer, emitir o cobrar nada, y despues este script.
 # Una empresa sin longitud de subcuentas fijada (ni plan de 2026 traido) se
-# para: trae antes su plan de 2026 o indica --longitud N (7 a 10).
+# para: trae su plan de 2026 o indica --longitud N (7 a 10). --longitud fija
+# la longitud para siempre: un plan traido despues con otra longitud dejaria
+# las dos conviviendo.
 # Siempre SIMULA primero (ensena lo que haria sin escribir). Con --aplicar,
 # despues de la simulacion pide "si" y solo entonces escribe. Se puede repetir:
 # una segunda pasada no cambia nada.

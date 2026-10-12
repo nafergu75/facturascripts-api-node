@@ -103,8 +103,10 @@ export class LongitudSinFijarError extends Error {
   constructor() {
     super(
       'Aún no tiene fijada la longitud de las subcuentas de clientes y proveedores. ' +
-        'Si vas a traer su plan contable de 2026, tráelo antes (Puesta en marcha > Plan de cuentas): fija la longitud de ese plan. ' +
-        `Si no, repite con --longitud 8 (o la que quieras, de ${LONGITUD_SUBCUENTAS_MIN} a ${LONGITUD_SUBCUENTAS_MAX}).`,
+        'Si vas a traer su plan contable de 2026, tráelo primero desde la app, ya con este backend publicado ' +
+        '(Contabilidad > Puesta en marcha > 1. Plan de cuentas), y repite: se usará la longitud de ese plan. ' +
+        `Si no lo vas a traer, repite con --longitud N (de ${LONGITUD_SUBCUENTAS_MIN} a ${LONGITUD_SUBCUENTAS_MAX}; lo habitual, 8). ` +
+        'Ojo: la longitud queda fijada para siempre; si después traes un plan con otra, convivirán las dos.',
     );
   }
 }

@@ -69,7 +69,7 @@ beforeAll(async () => {
 describe('migrar subcuentas de terceros', () => {
   it('sin longitud guardada ni subcuentas en el plan se para y pide --longitud (no elige 8 por su cuenta)', async () => {
     await expect(migrarSubcuentasTerceros(E)).rejects.toBeInstanceOf(LongitudSinFijarError);
-    await expect(migrarSubcuentasTerceros(E, { aplicar: true })).rejects.toThrow(/tráelo antes .*--longitud 8/s);
+    await expect(migrarSubcuentasTerceros(E, { aplicar: true })).rejects.toThrow(/tráelo primero desde la app.*--longitud N.*para siempre/s);
     await expect(migrarSubcuentasTerceros(E, { longitud: 11 })).rejects.toThrow(/de 7 a 10/);
     expect(await prisma.reglasContables.count({ where: { companyId: E } })).toBe(0);
   });
