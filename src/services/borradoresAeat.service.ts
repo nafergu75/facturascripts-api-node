@@ -32,7 +32,7 @@ import { listarCuentasBancarias } from './bancos.service';
 import { periodoFiscal } from './nominas/fiscal';
 import { claveDeclarado347 } from '../aeat/oficial/modelo347';
 import { AVISO_SIN_NUMERO, contactoEmpresa, declaracionInformativa, erroresContacto, exigirNumero, registrosElegidos } from './borradoresAeat/comun';
-import { avisoCongelada, contextoDeclaracion, datosDe } from './declaracionesAeat/declaraciones.service';
+import { avisoCongelada, contextoDeclaracion, datosDe, filaPresentada } from './declaracionesAeat/declaraciones.service';
 import { casillasOficiales303De } from './modelo303.service';
 import type { DatosModelo303 } from '../domain/impuestos.model';
 
@@ -300,11 +300,17 @@ export async function resultados303DelAno(companyId: string, ejercicio: number, 
     const usarMeses = hayMes || (mensualPorDefecto && !fila.has(`${t}T`));
     periodos.push(...(usarMeses ? meses : [`${t}T`]));
   }
+  // Lo presentado de cada periodo, del historial (también con una rectificativa
+  // en preparación, cuando ModeloImpuesto ha vuelto a 'vigente').
+  const presentadas = await Promise.all(periodos.map((p) => filaPresentada(companyId, '303', ejercicio, p).catch(() => null)));
   const sinPresentar: string[] = [];
-  const resultados = periodos.map((p) => {
+  const enRectificacion: string[] = [];
+  const resultados = periodos.map((p, i) => {
+    const pres = presentadas[i];
     const f = fila.get(p);
-    const datos = f?.datos as (DatosModelo303 & { casillasOficiales?: Record<string, number> }) | null | undefined;
-    if (f?.estado === 'presentado' && datos && (datos.casillasOficiales || typeof datos.resultado === 'number')) {
+    const datos = (pres ? pres.datos : f?.estado === 'presentado' ? f.datos : null) as (DatosModelo303 & { casillasOficiales?: Record<string, number> }) | null | undefined;
+    if (datos && (datos.casillasOficiales || typeof datos.resultado === 'number')) {
+      if (pres?.rectificacionEnCurso) enRectificacion.push(p);
       const c = casillasOficiales303De(datos);
       if (typeof c['69'] === 'number') return Math.round((c['69'] + (c['78'] ?? 0)) * 100) / 100;
       return Number(datos.resultado ?? c['46'] ?? 0) || 0;
@@ -317,6 +323,11 @@ export async function resultados303DelAno(companyId: string, ejercicio: number, 
         `${sinPresentar.length === 1 ? 'El 303 de' : 'Los 303 de'} ${sinPresentar.join(', ')} no ${sinPresentar.length === 1 ? 'está marcado' : 'están marcados'} como presentado${sinPresentar.length === 1 ? '' : 's'}: el resultado de ${sinPresentar.length === 1 ? 'ese periodo' : 'esos periodos'} sale de las facturas de hoy. Márcalos como presentados para que el 390 use lo que se presentó.`,
       ]
     : [];
+  if (enRectificacion.length) {
+    avisos.push(
+      `${enRectificacion.length === 1 ? 'El 303 de' : 'Los 303 de'} ${enRectificacion.join(', ')} ${enRectificacion.length === 1 ? 'tiene' : 'tienen'} una rectificativa en preparación: el 390 usa lo presentado. Cuando la presentes, revisa el 390.`,
+    );
+  }
   return { periodos, resultados, avisos };
 }
 
