@@ -244,6 +244,8 @@ export interface OperacionTercero {
   provincia?: string | null;
   /** Arrendamiento de local de negocio: va en un registro aparte con 'X' (art. 34.1 RD 1065/2007). */
   arrendamiento?: boolean;
+  /** Compras con inversion del sujeto pasivo: registro aparte con 'X' en la posicion 282 del 347. */
+  inversionSujetoPasivo?: boolean;
   /** Cobros en metalico del ano si pasan de 6.000 € (solo clientes). */
   metalico?: number;
 }

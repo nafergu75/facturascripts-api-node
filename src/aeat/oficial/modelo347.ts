@@ -104,6 +104,7 @@ export function declarados347Desde(datos: DatosModelo347): Declarado347[] {
     trimestres: o.trimestres ?? [o.baseAnual, 0, 0, 0],
     ...(o.metalico ? { metalico: o.metalico, ejercicioMetalico: datos.ejercicio } : {}),
     ...(o.arrendamiento ? { arrendamiento: true } : {}),
+    ...(o.inversionSujetoPasivo ? { inversionSujetoPasivo: true } : {}),
   }));
 }
 
@@ -121,9 +122,14 @@ export function provincia347(codigo: string | null | undefined): string | null {
   return /^(0[1-9]|[1-4]\d|5[0-2])$/.test(c) ? c : null;
 }
 
-/** Clave de un registro de declarado: NIF y clave (A o B). La usa la complementaria para elegirlos. */
-export function claveDeclarado347(d: Pick<Declarado347, 'nif' | 'clave'>): string {
-  return `${nifDerecha(d.nif)}|${d.clave}`;
+/**
+ * Clave de un registro de declarado: NIF y clave (A o B), y una marca si es el
+ * registro aparte del arrendamiento de local (L) o de las compras con
+ * inversión del sujeto pasivo (I). Un mismo proveedor puede tener los tres y
+ * la complementaria tiene que poder elegirlos por separado.
+ */
+export function claveDeclarado347(d: Pick<Declarado347, 'nif' | 'clave' | 'arrendamiento' | 'inversionSujetoPasivo'>): string {
+  return `${nifDerecha(d.nif)}|${d.clave}${d.arrendamiento ? '|L' : ''}${d.inversionSujetoPasivo ? '|I' : ''}`;
 }
 
 /**

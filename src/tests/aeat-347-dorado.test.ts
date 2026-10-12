@@ -7,7 +7,7 @@
  */
 import dr347 from '../domain/aeat/dr347-2025.json';
 import { agregar347 } from '../services/impuestosCalculo.service';
-import { construirModelo347, declarados347Desde, DISENO_347, provincia347 } from '../aeat/oficial/modelo347';
+import { claveDeclarado347, construirModelo347, declarados347Desde, DISENO_347, provincia347 } from '../aeat/oficial/modelo347';
 import { validarRegistro, type PaginaOficial } from '../aeat/oficial/diseno';
 import type { FacturaFiscal } from '../domain/impuestos.model';
 
@@ -194,5 +194,30 @@ describe('347 dorado: diseño oficial "Ejercicio 2025 y siguientes"', () => {
     expect(campo(t1, 121, 122)).toBe(' S');
     expect(campo(t1, 123, 135)).toBe('3470000000001');
     expect(validarRegistro(reg('1'), t1)).toEqual([]);
+  });
+});
+
+describe('347: registros aparte del mismo proveedor (alquiler de local e inversión del sujeto pasivo)', () => {
+  const NIF = 'B12345674';
+  const facturas: FacturaFiscal[] = [
+    compra(NIF, 'Inmobiliaria Turia SL', '2025-01-10', 3000, 630, { tipoGasto: 'ALQUILER', idFactura: 'alq-1', cpTercero: '46001' }),
+    compra(NIF, 'Inmobiliaria Turia SL', '2025-02-10', 3000, 630, { tipoGasto: 'ALQUILER', idFactura: 'alq-2', cpTercero: '46001' }),
+    compra(NIF, 'Inmobiliaria Turia SL', '2025-03-10', 2000, 420, { idFactura: 'obra-1', cpTercero: '46001' }),
+    compra(NIF, 'Inmobiliaria Turia SL', '2025-04-10', 1000, 210, { isp: true, idFactura: 'isp-1', cpTercero: '46001' }),
+  ];
+  const declarados = declarados347Desde(agregar347(facturas, 2025));
+
+  it('tres registros con claves distintas: la complementaria puede elegir cada uno', () => {
+    const porClave = Object.fromEntries(declarados.map((d) => [claveDeclarado347(d), d.importeAnual]));
+    expect(porClave).toEqual({ [`${NIF}|A|L`]: 7260, [`${NIF}|A`]: 2420, [`${NIF}|A|I`]: 1000 });
+  });
+
+  it('X en la 100 solo en el alquiler y X en la 282 solo en el de inversión del sujeto pasivo, sin IVA', () => {
+    const d = construirModelo347(2025, DECLARANTE, declarados);
+    expect(d.errores).toEqual([]);
+    const [, ...t2] = d.registros;
+    const marcas = t2.map((l) => [campo(l, 100, 100), campo(l, 282, 282)]).sort();
+    expect(marcas).toEqual([[' ', ' '], [' ', 'X'], ['X', ' ']]);
+    for (const l of t2) expect(validarRegistro(reg('2D'), l)).toEqual([]);
   });
 });

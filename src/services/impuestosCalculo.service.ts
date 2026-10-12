@@ -493,13 +493,17 @@ export function agregar347(
     // el 180 (art. 33.2 del RD 1065/2007). Solo cuentan sus lineas sin retencion.
     const lineas = f.lineas.filter((l) => !l.conRetencion);
     if (!lineas.length) continue;
+    // Compras con inversion del sujeto pasivo: registro aparte ('X' en la
+    // posicion 282 del 347). El proveedor no repercute IVA (la cuota la
+    // autoliquida la empresa), asi que va la base.
+    const isp = f.tipo === 'compra' && f.isp === true;
     // El 347 se declara con IVA incluido (antes se sumaba solo la base).
-    const importe = lineas.reduce((a, l) => a + cent(l.base) + cent(l.cuota), 0);
+    const importe = lineas.reduce((a, l) => a + cent(l.base) + (isp ? 0 : cent(l.cuota)), 0);
     const nif = limpiarNif(f.cifnif);
     const tipo: OperacionTercero['tipo'] = f.tipo === 'venta' ? 'cliente' : 'proveedor';
     // El arrendamiento de local de negocio va en un registro aparte con 'X' (art. 34.1 RD 1065/2007).
     const arrendamiento = f.tipo === 'compra' && f.tipoGasto === 'ALQUILER';
-    const key = `${tipo}:${nif}:${arrendamiento ? 'X' : ''}`;
+    const key = `${tipo}:${nif}:${arrendamiento ? 'X' : ''}:${isp ? 'I' : ''}`;
     const a =
       acumulado.get(key) ??
       ({
@@ -510,6 +514,7 @@ export function agregar347(
           baseAnual: 0,
           provincia: codigoProvincia(f.cpTercero, f.provinciaTercero),
           ...(arrendamiento && { arrendamiento: true }),
+          ...(isp && { inversionSujetoPasivo: true }),
         },
         trim: [0, 0, 0, 0],
         contado: 0,
