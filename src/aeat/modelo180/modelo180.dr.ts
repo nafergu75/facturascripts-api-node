@@ -12,7 +12,7 @@
  */
 import { DISENO_180 } from '../../domain/aeat/disenos';
 import { componerRegistroDr, leerRegistroDr, registroDe, type CampoLeidoDr } from '../common/disenoRegistro';
-import { errorNifDeclarante, nifDerecha, telefonoAeat, textoAeat } from '../common/normalizacion';
+import { errorNifDeclarante, motivoNifNoValido, nifDerecha, telefonoAeat, textoAeat } from '../common/normalizacion';
 import { esNifEspanolValido } from '../../utils/nif';
 import type { ColumnaDr } from '../modelo349/modelo349.dr';
 
@@ -99,7 +99,12 @@ export function erroresEntrada180(e: Entrada180): string[] {
   for (const p of e.perceptores) {
     const i = p.inmueble;
     if (!esNifEspanolValido(nifDerecha(p.nif))) {
-      errores.push(`${quien(p)}: el 180 solo admite arrendadores con NIF español. Un arrendador no residente va en el 216/296.`);
+      // Un NIF con la letra o el control mal es un error de la ficha, no de residencia.
+      const motivo = motivoNifNoValido(p.nif) ?? 'no es válido';
+      if (motivo === 'falta') errores.push(`${quien(p)}: falta el NIF del arrendador. Rellénalo en la ficha del proveedor.`);
+      else if (motivo.startsWith('no tiene la forma')) {
+        errores.push(`${quien(p)}: el NIF ${motivo}. El 180 solo admite arrendadores con NIF español: un arrendador no residente va en el 216/296.`);
+      } else errores.push(`${quien(p)}: el NIF no es válido, ${motivo}. Corrígelo en la ficha del proveedor.`);
       continue;
     }
     if (!PROVINCIA.test(p.provincia ?? '')) errores.push(`${quien(p)}: falta la provincia de su domicilio (ficha del proveedor).`);

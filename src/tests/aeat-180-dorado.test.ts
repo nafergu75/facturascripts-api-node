@@ -219,6 +219,18 @@ describe('180: reintegros, complementaria y lo que impide el fichero', () => {
     expect(() => generarFichero180(e)).toThrow(/Dupont/);
   });
 
+  it('un DNI con la letra mal dice que la letra no corresponde, no que sea no residente', () => {
+    const e = entrada();
+    e.perceptores.push({ nif: '20202020A', nombre: 'Letra mal', provincia: '46', base: 100, porcentaje: 19, retenciones: 19, inmueble: valencia });
+    e.perceptores.push({ nif: '', nombre: 'Sin NIF', provincia: '46', base: 100, porcentaje: 19, retenciones: 19, inmueble: valencia });
+    const errores = erroresEntrada180(e);
+    expect(errores).toEqual([
+      expect.stringMatching(/Letra mal.*la letra no corresponde a sus cifras.*ficha del proveedor/),
+      expect.stringMatching(/Sin NIF.*falta el NIF/),
+    ]);
+    expect(errores.join(' ')).not.toMatch(/216|no residente/);
+  });
+
   it('situación 4 (sin referencia catastral) no la pide', () => {
     const e = entrada();
     e.perceptores = [{ ...e.perceptores[0], inmueble: { ...valencia, situacion: 4, referenciaCatastral: '' } }];
