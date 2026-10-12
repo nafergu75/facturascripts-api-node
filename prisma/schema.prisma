@@ -813,11 +813,35 @@ model ExpenseInvoice {
   /// 180: inmueble de una factura de ALQUILER. null = el unico inmueble activo
   /// del arrendador (si tiene varios, hay que elegirlo).
   inmuebleArrendadoId    String?
+  /// Rectificativa o abono recibido del proveedor (importes con signo: en
+  /// negativo si baja, en positivo si sube). domain/rectificativa-gasto.model.ts.
+  esRectificativa        Boolean  @default(false)
+  /// I = por diferencias. S = por sustitucion (tambien se guarda la diferencia;
+  /// la factura corregida va en datosSustitucion).
+  tipoRectificativa      String?  @db.VarChar(1)
+  /// DEVOLUCION | DESCUENTO | RAPPEL | PRONTO_PAGO | ANULACION_PRECIO | ERROR_IVA | ERROR_DERECHO
+  causaRectificacion     String?  @db.VarChar(16)
+  /// Motivo tal como lo pone el proveedor o lo escribe el usuario.
+  motivoRectificacion    String?  @db.Text
+  /// Rappels y descuentos por volumen: periodo al que se refieren (art. 15.4 RD 1619/2012).
+  rectificaDesde         String?  @db.VarChar(10)
+  rectificaHasta         String?  @db.VarChar(10)
+  /// Fecha que cuenta en el 303, el 390 y el libro de IVA cuando no es la
+  /// contable: solo en ERROR_IVA que reduce la deduccion (el periodo de la
+  /// original, art. 114 LIVA). null = fechaContableGasto. El 347, el 349 y las
+  /// retenciones siguen la contable.
+  fechaImputacionIva     String?  @db.VarChar(10)
+  /// Cuando se confirmo «Registrar y avisarme de rectificar el 303».
+  rectificar303ConfirmadoEn String? @db.VarChar(25)
+  /// Sustitucion: lineas y totales de la factura corregida tal como los manda el proveedor (informativo).
+  datosSustitucion       Json?
   createdAt        DateTime             @default(now())
   updatedAt        DateTime             @updatedAt
   lineas           ExpenseInvoiceLine[]
   supplier         Supplier             @relation(fields: [supplierId], references: [id], onDelete: Restrict)
   inmuebleArrendado InmuebleArrendado?  @relation(fields: [inmuebleArrendadoId], references: [id], onDelete: SetNull)
+  rectifica        ExpenseInvoiceRectificada[] @relation("Rectificativa")
+  rectificadaPor   ExpenseInvoiceRectificada[] @relation("Original")
 
   @@unique([companyId, serie, numero])
   // El mismo numero del mismo proveedor no se registra dos veces (las anuladas no cuentan: null).
@@ -828,6 +852,63 @@ model ExpenseInvoice {
   @@index([companyId, estado])
   @@index([supplierId])
   @@index([inmuebleArrendadoId])
+  @@index([companyId, esRectificativa])
+}
+
+/// Que rectifica una rectificativa de gasto: una o varias facturas (de la app
+/// o de fuera) o un periodo (rappel). Art. 15.4 RD 1619/2012.
+model ExpenseInvoiceRectificada {
+  id                   String          @id @default(cuid())
+  companyId            String
+  rectificativaId      String
+  /// Original registrada en la app. null: de antes de la app o llevada fuera.
+  originalId           String?
+  /// Numero que puso el proveedor en la original y su fecha de expedicion.
+  /// Obligatorios sin originalId (se copian de la original si la hay).
+  numeroOriginal       String?         @db.VarChar(60)
+  fechaOriginal        String?         @db.VarChar(10)
+  /// Fila de periodo (rappel): desde y hasta. Excluye originalId y numeroOriginal.
+  periodoDesde         String?         @db.VarChar(10)
+  periodoHasta         String?         @db.VarChar(10)
+  /// Parte de la rectificacion que toca a esta fila, con signo. Nombres
+  /// propios: CAMPOS_DECIMALES va por nombre en todos los modelos.
+  baseRectificada      Decimal?        @db.Decimal(14, 2)
+  cuotaRectificada     Decimal?        @db.Decimal(14, 2)
+  retencionRectificada Decimal?        @db.Decimal(14, 2)
+  rectificativa        ExpenseInvoice  @relation("Rectificativa", fields: [rectificativaId], references: [id], onDelete: Cascade)
+  original             ExpenseInvoice? @relation("Original", fields: [originalId], references: [id], onDelete: Restrict)
+
+  @@index([companyId, originalId])
+  @@index([rectificativaId])
+}
+
+/// Aplicacion de un abono de proveedor (ExpenseInvoice con total < 0) a una
+/// factura del mismo proveedor, sin movimiento de dinero.
+model CompensacionGasto {
+  id             String   @id @default(cuid())
+  companyId      String
+  abonoId        String
+  /// null: factura de fuera de la app (2026 llevada fuera). Entonces son
+  /// obligatorios numeroFuera y fechaFuera.
+  facturaId      String?
+  numeroFuera    String?  @db.VarChar(60)
+  fechaFuera     String?  @db.VarChar(10)
+  fecha          String   @db.VarChar(10)
+  /// Positivo: lo que se descuenta de la factura y del abono.
+  importe        Decimal  @db.Decimal(14, 2)
+  /// AUTO (al contabilizar el abono, contra su original) | MANUAL
+  origen         String   @db.VarChar(6)
+  /// ACTIVO | ANULADO
+  estado         String   @default("ACTIVO") @db.VarChar(8)
+  /// Asiento de traspaso si abono y factura van a subcuentas distintas (400N
+  /// frente a 410N), con origen TESORERIA e invoiceId null. null si comparten subcuenta.
+  journalEntryId String?
+  userId         String?
+  anuladaEn      String?  @db.VarChar(10)
+  createdAt      DateTime @default(now())
+
+  @@index([companyId, abonoId])
+  @@index([companyId, facturaId])
 }
 
 /// Inmueble urbano que nos alquila un proveedor (modelo 180: un registro por
