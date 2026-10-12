@@ -15,7 +15,7 @@
 import { cabeceraAux, cierreAux, programaAeat, type ProgramaAeat } from '../common/cabeceraAux';
 import dr390 from '../../domain/aeat/dr390-v102.json';
 import type { DesgloseIva, VolumenOperaciones390 } from '../../domain/impuestos.model';
-import { aCentimos } from '../../utils/money';
+import { aCentimos, importeTexto } from '../../utils/money';
 import { CampoOficial, exigirDiseno, PaginaOficial, RegistroAeat } from './diseno';
 import { errorNifDeclarante, nifAeat, textoAeat } from '../common/normalizacion';
 
@@ -161,7 +161,7 @@ function porTipos(r: RegistroAeat, filas: DesgloseIva[], mapa: Record<number, [s
     const c = mapa[d.tipo];
     if (!c) {
       if (d.tipo === 0 && cent(d.cuota) === 0) continue; // al 0 % no hay cuota que declarar
-      errores.push(`${bloque}: hay operaciones al ${d.tipo} % (base ${d.base.toFixed(2)} €), que no tiene casilla en el 390 de este ejercicio.`);
+      errores.push(`${bloque}: hay operaciones al ${d.tipo} % (base ${importeTexto(d.base)}), que no tiene casilla en el 390 de este ejercicio.`);
       continue;
     }
     r.importe(c[0], d.base).importe(c[1], d.cuota);
@@ -342,7 +342,7 @@ export function construirModelo390(e: Entrada390): Declaracion390 {
   const cuadre = cent(liq.casilla95) - cent(liq.casilla97) - cent(liq.casilla98) - cent(liq.casilla662);
   if (cuadre !== c86) {
     advertencias.push(
-      `El resultado de la liquidación [86] (${eur(c86).toFixed(2)} €) no cuadra con los 303 del año (a ingresar ${liq.casilla95.toFixed(2)} €, a compensar o devolver ${(liq.casilla97 + liq.casilla98 + liq.casilla662).toFixed(2)} €). Revisa los 303 presentados.`,
+      `El resultado de la liquidación [86] (${importeTexto(eur(c86))}) no cuadra con los 303 del año (a ingresar ${importeTexto(liq.casilla95)}, a compensar o devolver ${importeTexto(liq.casilla97 + liq.casilla98 + liq.casilla662)}). Revisa los 303 presentados.`,
     );
   }
   if (liq.casilla98) advertencias.push('El último periodo sale a devolver: comprueba que en el 303 del 4T pediste la devolución.');
