@@ -297,6 +297,6 @@ export const puestaEnMarchaController = {
   }),
 
   borrarComparativo: asyncHandler(async (req, res) => {
-    sendOk(res, await borrarComparativo(req.companyId!, ejercicioDe(req.params.ejercicio)));
+    sendOk(res, await borrarComparativo(req.companyId!, ejercicioDe(req.params.ejercicio), req.user?.userId));
   }),
 };
