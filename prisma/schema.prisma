@@ -33,6 +33,11 @@ model User {
   /// pedir otra. NULL = no caduca (la propia, o cuando el administrador solo
   /// pide que cambie la que ya tenia).
   contrasenaProvisionalHasta DateTime?
+  /// Nombre y apellidos del usuario (Configuracion > Usuarios). NULL en los
+  /// usuarios dados de alta antes de existir el campo: se muestra el correo.
+  nombre        String?      @db.VarChar(120)
+  /// Telefono de contacto del usuario (opcional). No sirve para entrar.
+  telefono      String?      @db.VarChar(30)
   createdAt     DateTime     @default(now())
   memberships   Membership[]
 }
