@@ -384,11 +384,13 @@ export function basePorCuenta(lineas: Array<{ cuenta: string | null | undefined;
  * Cuenta de gasto habitual de un proveedor: la que mas se repite en las lineas
  * de sus ultimas facturas (como mucho 10), si sigue activa en el plan. El
  * lector de gastos la propone para las lineas (p. ej. 6280001 «Luz oficina»
- * para la compania electrica). null si no tiene facturas con cuenta.
+ * para la compania electrica). Los abonos no cuentan. null si no tiene
+ * facturas con cuenta.
  */
 export async function cuentaHabitualDeProveedor(companyId: string, supplierId: string): Promise<{ codigo: string; nombre: string } | null> {
   const facturas = await prisma.expenseInvoice.findMany({
-    where: { companyId, supplierId, estado: { not: 'ANULADA' } },
+    // Sin abonos ni rectificativas: su cuenta (608, 609, 606...) resta compras y no es la habitual.
+    where: { companyId, supplierId, estado: { not: 'ANULADA' }, esRectificativa: false },
     orderBy: { createdAt: 'desc' },
     take: 10,
     select: { lineas: { select: { accountCode: true } } },
