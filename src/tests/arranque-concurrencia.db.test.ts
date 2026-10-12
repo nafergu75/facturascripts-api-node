@@ -7,6 +7,7 @@
  *  - Dos /aplicar a la vez no duplican los bienes del inmovilizado.
  *  - Deshacer mientras se cobra una factura pendiente: nunca queda un cobro
  *    vivo contra una partida anulada.
+ *  - Bancos, datos fiscales y avisos aceptados guardados a la vez no se pisan.
  *
  * Necesita MySQL.
  */
@@ -16,6 +17,7 @@ import { aplicarFase, confirmarCarga } from '../services/arranque/aplicar.servic
 import { estadoArranque, quitarFichero, subirYAnalizar } from '../services/arranque/cargas.service';
 import { deshacerCarga } from '../services/arranque/deshacer.service';
 import { liquidarPartida } from '../services/arranque/partidas.service';
+import { aceptarAviso, guardarBancos, guardarDatosFiscales } from '../services/arranque/seguimiento.service';
 import { AJUSTES_A, ficherosEmpresaA } from './fixtures/arranque/generar';
 import { aplicarTodo, empresaDePrueba, traerCarga, TODOS, USUARIO_PRUEBA } from './fixtures/arranque/importar';
 
@@ -122,5 +124,24 @@ describe('deshacer mientras se cobra una factura pendiente de 2026', () => {
     if (p.estado === 'ANULADA') expect(cobrosVivos).toBe(0);
     if (resultados[0].status === 'fulfilled') expect(cobrosVivos).toBe(0);
     if (cobrosVivos) expect(p.estado).not.toBe('ANULADA');
+  }, 120_000);
+});
+
+describe('guardar a la vez bancos, datos fiscales y un aviso aceptado', () => {
+  it('no se pisan: los tres quedan guardados', async () => {
+    const E = `arr-conc-res-${SUFIJO}`;
+    await empresaDePrueba(E);
+    await traerCarga(E, Object.values(ficherosEmpresaA()), { resultadoDeclarado: 7200 });
+    await Promise.all([
+      guardarDatosFiscales(E, 2027, { resultado303T4: 1785 }, USUARIO_PRUEBA),
+      aceptarAviso(E, 2027, 'bancos:cuenta', 'La doy de alta en Bancos', USUARIO_PRUEBA),
+      guardarBancos(E, 2027, { '5720000001': { saldoExtracto: 18630 } }, USUARIO_PRUEBA),
+    ]);
+    const c = await prisma.cargaArranque.findFirstOrThrow({ where: { companyId: E, estado: 'CONFIRMADA' } });
+    const resumen = c.resumen as { datosFiscales?: { resultado303T4?: number }; avisosAceptados?: Array<{ clave: string }>; bancos?: Record<string, { saldoExtracto: number }>; resultadoDeclarado?: number };
+    expect(resumen.datosFiscales?.resultado303T4).toBe(1785);
+    expect(resumen.avisosAceptados?.map((a) => a.clave)).toEqual(['bancos:cuenta']);
+    expect(resumen.bancos?.['5720000001']?.saldoExtracto).toBe(18630);
+    expect(resumen.resultadoDeclarado).toBe(7200);
   }, 120_000);
 });
