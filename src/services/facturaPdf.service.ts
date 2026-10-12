@@ -1279,7 +1279,12 @@ export async function datosPdfFactura(companyId: string, id: string): Promise<{ 
           pais: perfil.pais,
         }
       : null,
-    original: original ? { numeroCompleto: original.numeroCompleto, fechaEmision: original.fechaEmision } : null,
+    // La que rectifica: la de la app o, si era de fuera de la app (de antes de llevarla aqui), la escrita.
+    original: original
+      ? { numeroCompleto: original.numeroCompleto, fechaEmision: original.fechaEmision }
+      : factura.rectificaFueraNumero
+        ? { numeroCompleto: factura.rectificaFueraNumero, fechaEmision: factura.rectificaFueraFecha ?? '' }
+        : null,
     cuenta,
     textoPie,
     logo: empresa?.logo && empresa.logoMime ? { bytes: new Uint8Array(empresa.logo), mime: empresa.logoMime } : null,
