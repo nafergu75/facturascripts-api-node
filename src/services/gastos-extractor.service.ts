@@ -29,7 +29,7 @@ import { randomUUID as uuid } from 'crypto';
 import { badRequest, HttpError } from '../utils/http-errors';
 import { validarNifEspanol } from '../utils/nif';
 import { prefijoNifIvaUe } from '../domain/tipo-operacion.model';
-import { tipoGastoDeCuenta, type TipoGasto } from '../domain/factura-gasto.model';
+import { TIPO_GASTO_INFO, tipoGastoDeCuenta, type TipoGasto } from '../domain/factura-gasto.model';
 import { listarCuentasBase } from './planContable.service';
 
 // ---------------------------------------------------------------------------
@@ -216,6 +216,36 @@ export function sugerirCuentaParaGasto(concepto: string | null): { codigo: strin
     codigo: default629?.codigo ?? '629',
     nombre: default629?.nombre ?? 'Otros servicios',
   };
+}
+
+/**
+ * Tipo de gasto que admite una retencion leida, cuando el sugerido no la
+ * admite: el 19 % es la de los alquileres (modelo 115) y el 7 y el 15 %, la de
+ * los profesionales (modelo 111). null si ninguno la admite (1 o 2 %, de otras
+ * actividades): entonces el formulario la conserva y avisa.
+ */
+export function tipoGastoParaRetencion(tipoRetencion: number | null | undefined): TipoGasto | null {
+  const r = Number(tipoRetencion);
+  if (!Number.isFinite(r) || r <= 0) return null;
+  if (r === 19) return 'ALQUILER';
+  return TIPO_GASTO_INFO.SERVICIO_PROFESIONAL.retenciones.includes(r) ? 'SERVICIO_PROFESIONAL' : null;
+}
+
+/**
+ * La cuenta sugerida por el concepto, corregida por la retencion: si la
+ * factura trae retencion, el tipo de gasto sugerido tiene que admitirla. Una
+ * «Asesoramiento fiscal» con IRPF del 15 % no va a la 629 (Suministros, sin
+ * retencion, que la perderia) sino a la 623 (Profesionales independientes).
+ */
+export function sugerirCuentaConRetencion(concepto: string | null, tipoRetencion: number | null | undefined): { codigo: string; nombre: string } {
+  const cuenta = sugerirCuentaParaGasto(concepto);
+  const r = Number(tipoRetencion);
+  if (!Number.isFinite(r) || r <= 0 || TIPO_GASTO_INFO[tipoGastoDeCuenta(cuenta.codigo)].retenciones.includes(r)) return cuenta;
+  const tipo = tipoGastoParaRetencion(r);
+  if (!tipo) return cuenta;
+  const codigo = TIPO_GASTO_INFO[tipo].cuenta;
+  const base = listarCuentasBase().find((c) => c.codigo === codigo);
+  return { codigo, nombre: base?.nombre ?? TIPO_GASTO_INFO[tipo].texto };
 }
 
 /**
@@ -462,7 +492,7 @@ function construirGastoExtraido(lectura: LecturaClaude): GastoExtraido {
   if (tipoDocumento !== 'factura') errores.unshift(AVISO_NO_FACTURA[tipoDocumento]);
 
   // Sugerir cuenta
-  const cuenta = tipoDocumento === 'factura' ? sugerirCuentaParaGasto(lectura.concepto) : null;
+  const cuenta = tipoDocumento === 'factura' ? sugerirCuentaConRetencion(lectura.concepto, tipoRetencion) : null;
 
   confianza = Math.max(Math.min(confianza, 1.0), 0.0);
 

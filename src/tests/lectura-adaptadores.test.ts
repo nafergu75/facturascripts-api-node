@@ -69,6 +69,33 @@ describe('aGastoExtraido', () => {
     expect(g.errores).toContain('La fecha de la factura es posterior a hoy.');
   });
 
+  it('con IRPF, el tipo de gasto sugerido admite la retencion (no se pierde en el formulario)', async () => {
+    // «Asesoramiento fiscal» no casa con ningun concepto: sin retencion seria la 629 (Suministros, sin IRPF).
+    const l = leer('resultado-irpf');
+    l.concepto = { valor: 'Asesoramiento fiscal', confianza: null, fuente: 'azure' };
+    const g = aGastoExtraido(l, (await validarLectura(l, ctx())).validaciones, 0.9);
+    expect(g).toMatchObject({ tipoRetencion: 15, cuentaContableBase: '623', tipoGastoSugerido: 'SERVICIO_PROFESIONAL' });
+    // El 19 % es el de los alquileres.
+    if (l.retencion) l.retencion.tipo.valor = 19;
+    expect(aGastoExtraido(l, [], 0.9)).toMatchObject({ tipoRetencion: 19, cuentaContableBase: '621', tipoGastoSugerido: 'ALQUILER' });
+    // Un alquiler con su 19 % sigue en la 621; una retencion que ningun tipo admite no cambia la sugerencia.
+    l.concepto.valor = 'Alquiler del local';
+    expect(aGastoExtraido(l, [], 0.9)).toMatchObject({ cuentaContableBase: '621', tipoGastoSugerido: 'ALQUILER' });
+    l.concepto.valor = 'Asesoramiento fiscal';
+    if (l.retencion) l.retencion.tipo.valor = 2;
+    expect(aGastoExtraido(l, [], 0.9)).toMatchObject({ tipoRetencion: 2, cuentaContableBase: '629', tipoGastoSugerido: 'SUMINISTROS' });
+  });
+
+  it('el extractor clasico tambien sugiere un tipo que admite la retencion', () => {
+    const g = _construirGastoExtraido({
+      numero: 'F1', fecha: '2026-03-04', proveedor: 'Asesores SL', nif_proveedor: null, concepto: 'Asesoramiento fiscal',
+      base: 100, iva_porcentaje: 21, iva_cantidad: 21, total: 106, retencion_porcentaje: 15, retencion_cantidad: 15, raw_text: null,
+    });
+    expect(g).toMatchObject({ tipoRetencion: 15, cuentaContableBase: '623', tipoGastoSugerido: 'SERVICIO_PROFESIONAL' });
+    const sin = _construirGastoExtraido({ numero: 'F1', fecha: '2026-03-04', proveedor: 'Asesores SL', nif_proveedor: null, concepto: 'Asesoramiento fiscal', base: 100, iva_porcentaje: 21, iva_cantidad: 21, total: 121, raw_text: null });
+    expect(sin).toMatchObject({ cuentaContableBase: '629', tipoGastoSugerido: 'SUMINISTROS' });
+  });
+
   it('una nomina: sin cuenta y con el aviso de hoy el primero', async () => {
     const l = leer('resultado-simple');
     l.tipoDocumento = { valor: 'nomina', confianza: null, fuente: 'claude' };

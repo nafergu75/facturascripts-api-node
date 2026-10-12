@@ -8,7 +8,7 @@
  */
 import { tipoGastoDeCuenta } from '../../domain/factura-gasto.model';
 import { redondear2 } from '../../utils/money';
-import { AVISO_NO_FACTURA, sugerirCuentaParaGasto, type GastoExtraido, type TipoDocumentoGasto } from '../gastos-extractor.service';
+import { AVISO_NO_FACTURA, sugerirCuentaConRetencion, type GastoExtraido, type TipoDocumentoGasto } from '../gastos-extractor.service';
 import type { InvoiceExtraction } from '../invoice-extractor.service';
 import type { LecturaNormalizada, ResultadoValidacion } from './tipos';
 
@@ -23,14 +23,16 @@ function tipoPrincipal(l: LecturaNormalizada): number | null {
 export function aGastoExtraido(l: LecturaNormalizada, validaciones: ResultadoValidacion[], confianza: number | null): GastoExtraido {
   const tipoLeido = l.tipoDocumento.valor;
   const tipoDocumento: TipoDocumentoGasto = tipoLeido === 'nomina' || tipoLeido === 'seguros_sociales' ? tipoLeido : 'factura';
-  const cuenta = tipoDocumento === 'factura' ? sugerirCuentaParaGasto(l.concepto.valor) : null;
+  const retencion = l.retencion?.importe.valor ?? l.totales.retencion.valor ?? 0;
+  const tipoRetencion = retencion ? (l.retencion?.tipo.valor ?? null) : null;
+  // Con retencion, el tipo de gasto sugerido tiene que admitirla (si no, se perderia en el formulario).
+  const cuenta = tipoDocumento === 'factura' ? sugerirCuentaConRetencion(l.concepto.valor, tipoRetencion) : null;
   let errores = validaciones.filter((v) => v.nivel !== 'ok').map((v) => v.mensaje);
   // Como hoy: el aviso de "no es una factura" va el primero.
   if (tipoDocumento !== 'factura') {
     const aviso = AVISO_NO_FACTURA[tipoDocumento];
     errores = [aviso, ...errores.filter((e) => e !== aviso)];
   }
-  const retencion = l.retencion?.importe.valor ?? l.totales.retencion.valor ?? 0;
   return {
     numeroFactura: l.numero.valor,
     proveedor: l.emisor.nombre.valor,
@@ -41,7 +43,7 @@ export function aGastoExtraido(l: LecturaNormalizada, validaciones: ResultadoVal
     iva: l.desglose.length ? sumar(l.desglose.map((t) => t.cuota.valor)) : (l.totales.cuotaIva.valor ?? 0),
     total: l.totales.totalAPagar.valor ?? 0,
     tipoIva: tipoPrincipal(l),
-    tipoRetencion: retencion ? (l.retencion?.tipo.valor ?? null) : null,
+    tipoRetencion,
     retencion: redondear2(retencion),
     moneda: l.moneda.valor,
     cuentaContableBase: cuenta?.codigo ?? null,
