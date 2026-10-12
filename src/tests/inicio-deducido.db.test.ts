@@ -11,7 +11,7 @@ import { randomBytes } from 'crypto';
 import { prisma } from '../config/database';
 import { listarModelosImpuesto, inicioImplicito, calendarioFiscalSoloLectura } from '../services/impuestosModulo.service';
 import { obtenerAjustesFiscales } from '../services/ajustesFiscales.service';
-import { primerDiaConDatos } from '../utils/anios';
+import { inicioLlevanzaApp, primerDiaConDatos } from '../utils/anios';
 import { relojEn, relojReal } from './reloj-falso';
 
 const SUFIJO = `${Date.now()}${randomBytes(3).toString('hex')}`;
@@ -19,7 +19,8 @@ const VACIA = `ided-a-${SUFIJO}`; // dada de alta el 12-10-2026, sin nada
 const DE_2027 = `ided-b-${SUFIJO}`; // dada de alta el 12-10-2026, solo con el ejercicio 2027
 const CON_FACTURA = `ided-c-${SUFIJO}`; // primer asiento el 10-5-2025
 const INDICADA = `ided-d-${SUFIJO}`; // datos de 2025, pero indica inicio el 1-1-2024
-const TODAS = [VACIA, DE_2027, CON_FACTURA, INDICADA];
+const DE_MARZO = `ided-e-${SUFIJO}`; // primer asiento el 15-3-2027
+const TODAS = [VACIA, DE_2027, CON_FACTURA, INDICADA, DE_MARZO];
 const ALTA = new Date('2026-10-12T08:00:00Z');
 
 const claves = (lista: Array<{ codigo: string; periodo: string }>) => lista.map((m) => `${m.codigo}:${m.periodo}`).sort();
@@ -34,6 +35,9 @@ beforeAll(async () => {
       data: { companyId, fecha: new Date('2025-05-10T00:00:00Z'), numeroAsiento: `A-${SUFIJO}`, descripcion: 'Primer gasto', origen: 'AJUSTE_MANUAL' },
     });
   }
+  await prisma.journalEntry.create({
+    data: { companyId: DE_MARZO, fecha: new Date('2027-03-15T00:00:00Z'), numeroAsiento: `A-${SUFIJO}`, descripcion: 'Primer gasto', origen: 'AJUSTE_MANUAL' },
+  });
   await prisma.ajustesFiscales.create({ data: { companyId: INDICADA, inicioEnApp: '2024-01-01' } });
 });
 
@@ -98,5 +102,30 @@ describe('modelos con el inicio deducido', () => {
     const lista = await listarModelosImpuesto(INDICADA, 2025);
     expect(lista.find((m) => m.codigo === '303' && m.periodo === '1T')).toMatchObject({ estado: 'expirado' });
     expect((await obtenerAjustesFiscales(INDICADA)).inicioDeducido).toBeNull();
+  });
+});
+
+/**
+ * Inicio de la llevanza en la app para los abonos (integracion-4): decide si el
+ * 303 de la factura que rectifica se presentó fuera. Manda la fecha indicada;
+ * si no hay, la deducida, pero nunca antes del 1-1-2027 (2026 se lleva fuera).
+ */
+describe('inicioLlevanzaApp', () => {
+  it('la fecha indicada en Configuración > Impuestos manda, aunque sea anterior a 2027', async () => {
+    expect(await inicioLlevanzaApp(INDICADA)).toBe('2024-01-01');
+  });
+
+  it('sin fecha indicada y con datos de 2025 o dada de alta en 2026, el 1-1-2027', async () => {
+    expect(await inicioLlevanzaApp(CON_FACTURA)).toBe('2027-01-01');
+    expect(await inicioLlevanzaApp(VACIA)).toBe('2027-01-01');
+    expect(await inicioLlevanzaApp(DE_2027)).toBe('2027-01-01');
+  });
+
+  it('sin fecha indicada, si los datos empiezan después del 1-1-2027 cuenta ese día', async () => {
+    expect(await inicioLlevanzaApp(DE_MARZO)).toBe('2027-03-15');
+  });
+
+  it('una empresa que no existe se queda con el 1-1-2027', async () => {
+    expect(await inicioLlevanzaApp(`ided-nada-${SUFIJO}`)).toBe('2027-01-01');
   });
 });
