@@ -17,7 +17,9 @@
  *
  * Inicio en la app (B.8): `inicioEnApp` (AAAA-MM-DD o null) es el primer día
  * que la empresa lleva sus impuestos con la app. Los periodos que acaban antes
- * no se crean ni cuentan como pendientes: los presentó la gestoría.
+ * no se crean ni cuentan como pendientes: los presentó la gestoría. Si no se
+ * indica, se deduce (`inicioDeducido`): el primer día con datos de la empresa
+ * o, sin datos, el de su alta.
  *
  * Sin fila, los valores por defecto (sin crearla). El PUT hace un upsert y
  * adapta el calendario del año en curso y siguientes (aplicarCambioCalendario):
@@ -43,6 +45,7 @@ import { perfilEmpresa } from './perfilEmpresa.service';
 import {
   aplicarCambioCalendario,
   calendarioResultante,
+  inicioImplicito,
   opcionesCalendarioEmpresa,
   type CambioCalendario,
   type ModeloPrevisto,
@@ -66,6 +69,11 @@ export interface AjustesFiscalesResp extends AjustesFiscales {
   actualizadoPor: string | null;
   /** Primer día que la empresa lleva sus impuestos con la app (AAAA-MM-DD); null = sin límite. */
   inicioEnApp: string | null;
+  /**
+   * Sin inicioEnApp, el que la app da por bueno: el primer día con datos de la
+   * empresa o, sin datos, el de su alta. Con inicioEnApp, null.
+   */
+  inicioDeducido: string | null;
   /** Modelos del ejercicio en curso: los que hay (presentados incluidos) y los que se crearán. */
   calendario: { ejercicio: number; modelos: ModeloPrevisto[] };
 }
@@ -93,6 +101,7 @@ export async function obtenerAjustesFiscales(companyId: string, hoy: string = ho
     actualizadoEn: fila?.updatedAt.toISOString() ?? null,
     actualizadoPor: fila?.updatedBy ?? null,
     inicioEnApp: fila?.inicioEnApp ?? null,
+    inicioDeducido: fila?.inicioEnApp ? null : await inicioImplicito(companyId),
     calendario: { ejercicio, modelos },
   };
 }

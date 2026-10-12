@@ -15,7 +15,7 @@
  */
 import { prisma } from '../config/database';
 import { badRequest } from './http-errors';
-import { anioEspana } from './fechas';
+import { anioEspana, hoyEspana } from './fechas';
 import { fiscalYearsService } from '../services/fiscalYears.service';
 import type { EstadoEfectivoEjercicio } from '../services/fiscalYears.service';
 
@@ -104,6 +104,40 @@ async function aniosConDatos(companyId: string): Promise<number[]> {
     aniosDe(prisma.$queryRaw<FilaAnio[]>`SELECT DISTINCT ejercicio AS anio FROM Nomina WHERE companyId = ${companyId}`),
   ]);
   return [...new Set(listas.flat())];
+}
+
+const FECHA_RAZONABLE = (f: string | null | undefined): f is string =>
+  !!f && /^\d{4}-\d{2}-\d{2}/.test(f) && ANIO_RAZONABLE(Number(f.slice(0, 4)));
+
+/**
+ * Primer día con algo de la empresa en la app (AAAA-MM-DD): el inicio del
+ * primer ejercicio, la primera factura emitida o recibida (emisión o
+ * registro), el primer asiento, el primer movimiento bancario o el primer mes
+ * con nóminas. Las mismas fuentes que `primero` de aniosEmpresa, con el día.
+ * null si la empresa no tiene nada.
+ */
+export async function primerDiaConDatos(companyId: string): Promise<string | null> {
+  const where = { companyId };
+  const [fy, emitida, recibida, asiento, banco, nomina] = await Promise.all([
+    prisma.fiscalYear.aggregate({ where, _min: { fechaInicio: true } }),
+    prisma.incomeInvoice.aggregate({ where, _min: { fechaEmision: true } }),
+    prisma.expenseInvoice.aggregate({ where, _min: { fechaEmision: true, fechaRegistro: true } }),
+    prisma.journalEntry.aggregate({ where, _min: { fecha: true } }),
+    prisma.bankMovement.aggregate({ where, _min: { fecha: true } }),
+    prisma.nomina.findFirst({ where, orderBy: [{ ejercicio: 'asc' }, { mes: 'asc' }], select: { ejercicio: true, mes: true } }),
+  ]);
+  const fechas = [
+    fy._min.fechaInicio,
+    emitida._min.fechaEmision,
+    recibida._min.fechaEmision,
+    recibida._min.fechaRegistro,
+    asiento._min.fecha ? hoyEspana(asiento._min.fecha) : null,
+    banco._min.fecha,
+    nomina ? `${nomina.ejercicio}-${String(nomina.mes).padStart(2, '0')}-01` : null,
+  ]
+    .filter(FECHA_RAZONABLE)
+    .map((f) => f.slice(0, 10));
+  return fechas.length ? fechas.reduce((a, b) => (b < a ? b : a)) : null;
 }
 
 /** Años de la empresa para los desplegables (GET /companies/:companyId/anios). */

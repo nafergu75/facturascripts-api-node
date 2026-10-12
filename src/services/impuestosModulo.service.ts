@@ -70,6 +70,7 @@ import {
 import { ajustesFiscalesDeFila, type AjustesFiscales } from '../domain/ajustes.model';
 import { contextoDeclaracion } from './declaracionesAeat/declaraciones.service';
 import { anioEspana, hoyEspana } from '../utils/fechas';
+import { primerDiaConDatos } from '../utils/anios';
 import { plazoAeat, ultimoDiaFebrero } from '../domain/plazosAeat';
 
 /**
@@ -195,8 +196,14 @@ export interface DatosCalendarioEmpresa {
   vigencias: VigenciaRegimen[];
   /** Forma juridica AUTONOMO: 130 en lugar del 200. */
   autonomo: boolean;
-  /** Primer dia que la empresa lleva sus impuestos con la app (null = sin limite). */
+  /**
+   * Primer dia que la empresa lleva sus impuestos con la app (null = sin
+   * limite): el indicado en Configuracion > Impuestos o, si no hay, el que se
+   * deduce (inicioImplicito).
+   */
   inicioEnApp: string | null;
+  /** true si inicioEnApp lo indico la empresa; false si se ha deducido. */
+  inicioIndicado: boolean;
 }
 
 const tablaLista = (nombre: string) =>
@@ -211,7 +218,26 @@ const tablaLista = (nombre: string) =>
  * los guardo (la regla de antes, que no cambia nada de lo ya creado); la
  * primera vez que vuelva a guardarlos se apunta como vigencia de verdad.
  */
-export async function datosCalendarioEmpresa(companyId: string): Promise<DatosCalendarioEmpresa> {
+/**
+ * Inicio en la app cuando la empresa no lo ha indicado: el primer dia con
+ * algo suyo en la app (ejercicio, factura, asiento, banco o nomina) y, si no
+ * tiene nada, el dia en que se dio de alta (hora de España). Asi una empresa
+ * que empieza hoy, o que empieza en 2027, no ve como vencidos los modelos de
+ * periodos en los que todavia no estaba en la app.
+ */
+export async function inicioImplicito(companyId: string): Promise<string | null> {
+  try {
+    const primero = await primerDiaConDatos(companyId);
+    if (primero) return primero;
+    const empresa = await prisma.company.findUnique({ where: { id: companyId }, select: { createdAt: true } });
+    return empresa ? hoyEspana(empresa.createdAt) : null;
+  } catch {
+    // Sin BD (tests en memoria): sin limite, como antes.
+    return null;
+  }
+}
+
+export async function datosCalendarioEmpresa(companyId: string, opciones: { sinInicio?: boolean } = {}): Promise<DatosCalendarioEmpresa> {
   const [fila, cfg, guardadas] = await Promise.all([
     tablaLista('ajustesFiscales') ? prisma.ajustesFiscales.findUnique({ where: { companyId } }).catch(() => null) : null,
     tablaLista('legalConfig') ? prisma.legalConfig.findUnique({ where: { companyId }, select: { tipoSociedad: true } }).catch(() => null) : null,
@@ -225,7 +251,10 @@ export async function datosCalendarioEmpresa(companyId: string): Promise<DatosCa
     : fila
       ? [{ desde: `${anioEspana(fila.updatedAt)}-01-01`, ...regimenDe(ajustes) }]
       : [];
-  return { ajustes, vigencias, autonomo: cfg?.tipoSociedad === 'AUTONOMO', inicioEnApp: fila?.inicioEnApp ?? null };
+  const indicado = fila?.inicioEnApp || null;
+  // El inicio deducido solo hace falta para el calendario (sinInicio: solo el regimen).
+  const inicioEnApp = indicado ?? (dbOk() && !opciones.sinInicio ? await inicioImplicito(companyId) : null);
+  return { ajustes, vigencias, autonomo: cfg?.tipoSociedad === 'AUTONOMO', inicioEnApp, inicioIndicado: !!indicado };
 }
 
 /**
@@ -235,7 +264,7 @@ export async function datosCalendarioEmpresa(companyId: string): Promise<DatosCa
  * años pasados).
  */
 export async function opcionesCalendarioEmpresa(companyId: string, ejercicio?: number): Promise<OpcionesCalendario> {
-  const d = await datosCalendarioEmpresa(companyId);
+  const d = await datosCalendarioEmpresa(companyId, { sinInicio: true });
   if (ejercicio === undefined) return { ajustes: d.ajustes, autonomo: d.autonomo };
   return { ajustes: { ...d.ajustes, ...regimenEn(d.vigencias, `${ejercicio}-01-01`) }, autonomo: d.autonomo };
 }
@@ -372,16 +401,22 @@ export async function calendarioResultante(
         select: { id: true, codigo: true, ejercicio: true, periodo: true, estado: true, origen: true },
       })
     : [...memoria.values()].filter((f) => f.companyId === companyId && f.ejercicio === ejercicio);
+  // Lo pendiente de periodos que acaban antes del inicio en la app (indicado o
+  // deducido) no sale: no se creara ni cuenta como pendiente.
+  const { inicioEnApp } = await datosCalendarioEmpresa(companyId);
+  const sinAnteriores = (m: ModeloPrevisto) => !pendienteAntesDelInicio({ ejercicio, periodo: m.periodo, estado: m.estado }, inicioEnApp);
   if (!filas.length) {
     const aplicadoDesde = ejercicio >= anio ? `${ejercicio}-01-01` : null;
-    return { aplicadoDesde, modelos: vistaCalendario(ejercicio, opciones, hoy), borradas: 0, creadas: 0, borradasVencidas: 0 };
+    return { aplicadoDesde, modelos: vistaCalendario(ejercicio, opciones, hoy).filter(sinAnteriores), borradas: 0, creadas: 0, borradasVencidas: 0 };
   }
   const plan = ejercicio >= anio ? planDelEjercicio(ejercicio, filas, opciones, hoy, aplicarDesde) : { aplicadoDesde: null, borrar: [], crear: [] };
   const borrar = new Set(plan.borrar);
   const modelos = [
     ...filas.filter((f) => !borrar.has(f.id)).map((f) => aPrevisto(f, hoy)),
     ...plan.crear.map(({ codigo, periodo }) => aPrevisto({ codigo, ejercicio, periodo, estado: 'vigente' }, hoy)),
-  ].sort(porVencimiento);
+  ]
+    .filter(sinAnteriores)
+    .sort(porVencimiento);
   return {
     aplicadoDesde: plan.aplicadoDesde,
     modelos,
@@ -1105,7 +1140,7 @@ const ibanTapado = (iban: string): string => {
  * Sin periodo, el del 1 de enero del ejercicio.
  */
 async function ajustesFiscales303(companyId: string, ejercicio: number, periodo?: string): Promise<AjustesFiscales> {
-  const d = await datosCalendarioEmpresa(companyId);
+  const d = await datosCalendarioEmpresa(companyId, { sinInicio: true });
   const fecha = (periodo && rangoPeriodo(ejercicio, periodo)?.inicio) || `${ejercicio}-01-01`;
   return { ...d.ajustes, ...regimenEn(d.vigencias, fecha) };
 }
