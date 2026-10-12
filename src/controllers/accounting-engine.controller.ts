@@ -24,6 +24,7 @@ import { fechaContableGasto } from '../domain/factura-gasto.model';
 import { cuentaAcreedorDePagos, datosContablesGastoConSubcuenta, motivoPeriodoBloqueado, retencionDe } from '../services/expense-invoices.service';
 import { conReintentoSubcuenta, fichaDeSubcuenta, subcuentaClienteParaApunte, type FichaDeSubcuenta } from '../services/terceros/subcuentas';
 import { esSubcuentaGenerica } from '../services/terceros/numeracion';
+import { ESTADO_SUSTITUIDO, TEXTO_SUSTITUIDO } from '../domain/asientosCierre';
 
 /** Mismo cliente o proveedor. */
 const mismaFicha = (a: { tipo: string; id: string } | null | undefined, b: { tipo: string; id: string } | null | undefined) =>
@@ -378,6 +379,7 @@ export class AccountingEngineController {
 
       // Validar estado: los asientos AUTO se crean en DRAFT y los MANUAL en
       // PENDING_REVIEW; ambos son aprobables (mismo criterio que ajustarLineaAsiento).
+      if (asiento.estado === 'SUSTITUIDO') throw conflict(TEXTO_SUSTITUIDO, { estado: asiento.estado });
       if (!['DRAFT', 'PENDING_REVIEW'].includes(asiento.estado)) {
         throw badRequest(
           `No se puede aprobar un asiento en estado ${asiento.estado}. Solo se pueden aprobar asientos en DRAFT o PENDING_REVIEW.`
@@ -594,6 +596,7 @@ export class AccountingEngineController {
         // Lo mismo que acepta aprobarAsiento.
         permitidoAprobar: ['DRAFT', 'PENDING_REVIEW'].includes(asiento.estado),
         permitidoAjustar: ['DRAFT', 'PENDING_REVIEW'].includes(asiento.estado),
+        ...(asiento.estado === 'SUSTITUIDO' ? { estadoTexto: ESTADO_SUSTITUIDO } : {}),
       };
     } catch (err) {
       if (err instanceof Error && 'statusCode' in err) {
@@ -685,6 +688,7 @@ export class AccountingEngineController {
       }
 
       // Validar estado
+      if (asiento.estado === 'SUSTITUIDO') throw conflict(TEXTO_SUSTITUIDO, { estado: asiento.estado });
       if (!['DRAFT', 'PENDING_REVIEW'].includes(asiento.estado)) {
         throw badRequest(
           `No se puede ajustar un asiento en estado ${asiento.estado}. Solo se pueden ajustar asientos en DRAFT o PENDING_REVIEW.`
