@@ -38,6 +38,7 @@ import {
   type ModeloPrevisto,
 } from './impuestosModulo.service';
 import { iniciosTrimestre } from '../domain/calendarioFiscal';
+import { validarEjercicio } from '../utils/anios';
 
 export const MENSAJE_EMPRESA_NO_ESPANOLA =
   'La empresa no está establecida en España: no presenta modelos de la AEAT y no tiene ajustes fiscales.';
@@ -225,10 +226,7 @@ export async function previsualizarAjustesFiscales(
 ): Promise<{ ajustes: AjustesFiscales; ejercicio: number; modelos: ModeloPrevisto[]; aplicadoDesde: string | null; aviso: string | null }> {
   await exigirEmpresaEspanola(companyId);
   const { ejercicio: ejercicioPedido, aplicarDesde: pedido, ...resto } = (entrada ?? {}) as Record<string, unknown>;
-  const ejercicio = ejercicioPedido === undefined ? Number(hoy.slice(0, 4)) : Number(ejercicioPedido);
-  if (!Number.isInteger(ejercicio) || ejercicio < 1990 || ejercicio > 2100) {
-    throw badRequest('Indica el año del ejercicio con cuatro cifras.', { campo: 'ejercicio' });
-  }
+  const ejercicio = ejercicioPedido === undefined ? Number(hoy.slice(0, 4)) : validarEjercicio(ejercicioPedido);
   const aplicarDesde = leerAplicarDesde(pedido, hoy);
   const antes = ajustesFiscalesDeFila(await leerFila(companyId));
   const ajustes = await combinar(companyId, resto);

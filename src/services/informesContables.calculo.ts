@@ -15,6 +15,7 @@
  *    129 (resultado pendiente), para que la suma de saldos iniciales siga a cero.
  */
 import { tipoAsiento, type TipoAsiento } from './contabilidadDatos.service';
+import { validarEjercicio } from '../utils/anios';
 
 const round2 = (n: number): number => Math.round((n + Number.EPSILON) * 100) / 100;
 
@@ -104,9 +105,11 @@ export function resolverPeriodo(q: { ejercicio?: unknown; desde?: unknown; hasta
     if (d.slice(0, 4) !== h.slice(0, 4)) return 'El periodo tiene que estar dentro de un mismo ejercicio.';
     return { desde: d, hasta: h, ejercicio: anio };
   }
-  const ejercicio = Number(q.ejercicio);
-  if (!Number.isInteger(ejercicio) || ejercicio < 1990 || ejercicio > 2100) {
-    return 'Indica el ejercicio (año) o un periodo desde/hasta.';
+  let ejercicio: number;
+  try {
+    ejercicio = validarEjercicio(q.ejercicio);
+  } catch (e) {
+    return `${(e as Error).message} O indica un periodo desde/hasta.`;
   }
   return { desde: `${ejercicio}-01-01`, hasta: `${ejercicio}-12-31`, ejercicio };
 }
