@@ -314,6 +314,7 @@ export function opciones200De(q: Record<string, unknown>): Opciones200 {
     pagosFraccionados: pf.some((x) => x !== undefined) ? (pf.map((x) => x ?? 0) as [number, number, number]) : undefined,
     retenciones: importeOpcion(q, 'retenciones'),
     nuevaCreacion: nueva === undefined ? undefined : nueva === '1' || nueva === 'true',
+    cifraNegociosAnterior: importeOpcion(q, 'incnAnterior'),
   };
 }
 
@@ -377,13 +378,29 @@ export interface Opciones200 {
   pagosFraccionados?: [number, number, number];
   retenciones?: number;
   nuevaCreacion?: boolean;
+  /** Cifra de negocios del año anterior escrita a mano (2027, primer año en la app, sin datos de 2026). */
+  cifraNegociosAnterior?: number;
 }
 
-export async function borrador200(companyId: string, ejercicio: number, opciones: Opciones200 = {}): Promise<Declaracion200 & { congelada?: boolean }> {
+/** De dónde sale la cifra de negocios del año anterior del 200. */
+export interface CifraNegocios200 {
+  importe: number | null;
+  /** manual: la escrita en la pantalla; contabilidad: la del año anterior en la app o importada en Puesta en marcha. */
+  origen: 'manual' | 'contabilidad' | 'ninguno';
+}
+
+export type Borrador200 = Declaracion200 & {
+  congelada?: boolean;
+  cifraNegociosAnterior?: CifraNegocios200;
+  /** Cifra de negocios de este ejercicio: la usa el 202 del año siguiente cuando el 200 se presenta en la app. */
+  cifraNegociosEjercicio?: number;
+};
+
+export async function borrador200(companyId: string, ejercicio: number, opciones: Opciones200 = {}): Promise<Borrador200> {
   if (!(await esEmpresaEspanolaFiscal(companyId))) throw badRequest(MENSAJE_SIN_MODELOS);
   // Presentado: la pantalla es la que se guardó al presentarlo (B4).
   const ctx = await contextoDeclaracion(companyId, '200', ejercicio, '0A');
-  const congelado = ctx.congelada ? (datosDe(ctx.ultimaPresentada).pantalla as Declaracion200 | null) : null;
+  const congelado = ctx.congelada ? (datosDe(ctx.ultimaPresentada).pantalla as Borrador200 | null) : null;
   if (congelado) return { ...congelado, congelada: true, advertencias: [avisoCongelada(ctx.ultimaPresentada!), ...(congelado.advertencias ?? [])] };
   const [estados, soc, cuentas, fy, contacto] = await Promise.all([
     calcularEstadosFinancieros(companyId, ejercicio),
@@ -396,6 +413,15 @@ export async function borrador200(companyId: string, ejercicio: number, opciones
   ]);
   const anterior = estados.anterior.pyg;
   const hayAnterior = (anterior.partidas ?? []).some((x) => x.importe !== 0) || anterior.importeNetoCifraNegocios !== 0;
+  // Cifra de negocios del año anterior: la escrita a mano manda; si no, la de la
+  // contabilidad del año anterior (llevada en la app o importada en Puesta en
+  // marcha). Sin ninguna, error: no se supone el tipo general.
+  const incn: CifraNegocios200 =
+    opciones.cifraNegociosAnterior !== undefined
+      ? { importe: opciones.cifraNegociosAnterior, origen: 'manual' }
+      : hayAnterior
+        ? { importe: anterior.importeNetoCifraNegocios, origen: 'contabilidad' }
+        : { importe: null, origen: 'ninguno' };
   const notas = (fy?.memoriaNotas ?? {}) as { plantillaMedia?: number | null };
   const decl = construirModelo200({
     ejercicio,
@@ -414,7 +440,7 @@ export async function borrador200(companyId: string, ejercicio: number, opciones
     balance: estados.balance,
     pyg: estados.pyg,
     reservaLegal: estados.reservaLegal,
-    incnAnterior: hayAnterior ? anterior.importeNetoCifraNegocios : null,
+    incnAnterior: incn.importe,
     plantilla: notas.plantillaMedia != null ? { fijo: Number(notas.plantillaMedia) || 0, noFijo: 0 } : null,
     binsPendientes: opciones.binsPendientes,
     pagosFraccionados: opciones.pagosFraccionados,
@@ -438,7 +464,7 @@ export async function borrador200(companyId: string, ejercicio: number, opciones
     );
   }
   if (notas.plantillaMedia != null) decl.advertencias.push('La plantilla media de la memoria va entera como personal fijo [00041]: sepárala si hay personal no fijo.');
-  return decl;
+  return { ...decl, cifraNegociosAnterior: incn, cifraNegociosEjercicio: estados.pyg.importeNetoCifraNegocios };
 }
 
 export async function fichero200(companyId: string, ejercicio: number, opciones: Opciones200 = {}) {
