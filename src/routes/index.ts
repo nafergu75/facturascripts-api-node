@@ -60,6 +60,7 @@ import tiposCambioRoutes from './tiposCambio.routes';
 import ajustesFacturacionRoutes from './ajustesFacturacion.routes';
 import ajustesFiscalesRoutes from './ajustesFiscales.routes';
 import miembrosRoutes from './miembros.routes';
+import usuariosEmpresaRoutes from './usuariosEmpresa.routes';
 import verifactuRoutes from './verifactu.routes';
 
 const router = Router();
@@ -137,6 +138,7 @@ scoped.use('/anios', aniosRoutes);
 scoped.use('/ajustes-facturacion', ajustesFacturacionRoutes);
 scoped.use('/ajustes-fiscales', ajustesFiscalesRoutes);
 scoped.use('/miembros', miembrosRoutes);
+scoped.use('/usuarios', usuariosEmpresaRoutes);
 scoped.use('/verifactu', verifactuRoutes);
 scoped.use('/movements', movementsRoutes);
 scoped.use('/archivo', archivoRoutes);

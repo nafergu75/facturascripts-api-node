@@ -13,6 +13,7 @@ import {
 } from '../services/admin.service';
 import { registrarAuditoria } from '../services/auditoria.service';
 import type { CambiosUsuario } from '../services/admin.service';
+import type { AccesoAsignado } from '../domain/admin.model';
 import type { Response } from 'express';
 import type { UsuarioConContrasena } from '../domain/admin.model';
 
@@ -40,16 +41,58 @@ export async function auditarAltaUsuario(actorId: string, usuario: UsuarioConCon
   });
 }
 
-/** Auditoria de un cambio de usuario, si lo hubo. (La usa tambien PUT/DELETE /users.) */
-export async function auditarCambioUsuario(actorId: string, userId: string, email: string, cambios: CambiosUsuario): Promise<void> {
+/**
+ * Auditoria de un cambio de usuario, si lo hubo. (La usan tambien PUT/DELETE
+ * /users y Configuracion > Usuarios, que indica la empresa desde la que se hizo.)
+ */
+export async function auditarCambioUsuario(
+  actorId: string,
+  userId: string,
+  email: string,
+  cambios: CambiosUsuario,
+  companyId?: string,
+): Promise<void> {
   if (!Object.keys(cambios).length) return;
   await registrarAuditoria({
     userId: actorId,
+    companyId,
     action: 'UPDATE_USUARIO',
     resourceType: 'USUARIO',
     resourceId: userId,
     // Solo QUE cambio: de la contrasena, que se restablecio, nunca cual es.
     meta: { email, ...cambios },
+  });
+}
+
+/**
+ * Auditoria de dar o cambiar un acceso (si cambio algo): ASIGNAR_USUARIO_EMPRESA,
+ * CAMBIAR_ROL_EMPRESA o CAMBIAR_PERMISOS_EMPRESA. (La usa tambien Configuracion > Usuarios.)
+ */
+export async function auditarAcceso(actorId: string, userId: string, companyId: string, r: AccesoAsignado): Promise<void> {
+  if (!r.cambiado) return;
+  const base = { targetUserId: userId, companyId, rol: r.rol, personalizado: r.personalizado, areas: r.areas };
+  const [action, meta] = !r.rolAnterior
+    ? ['ASIGNAR_USUARIO_EMPRESA', base]
+    : r.rolAnterior !== r.rol
+      ? ['CAMBIAR_ROL_EMPRESA', { ...base, rolAnterior: r.rolAnterior, areasAnteriores: r.areasAnteriores }]
+      : ['CAMBIAR_PERMISOS_EMPRESA', { ...base, personalizadoAntes: r.personalizadoAntes, areasAnteriores: r.areasAnteriores }];
+  await registrarAuditoria({ userId: actorId, companyId, action: action as string, resourceType: 'MEMBERSHIP', resourceId: userId, meta });
+}
+
+/** Auditoria de quitar el acceso a una empresa. (La usa tambien Configuracion > Usuarios.) */
+export async function auditarQuitarAcceso(
+  actorId: string,
+  userId: string,
+  companyId: string,
+  r: { rolAnterior: string; personalizadoAntes: boolean },
+): Promise<void> {
+  await registrarAuditoria({
+    userId: actorId,
+    companyId,
+    action: 'QUITAR_USUARIO_EMPRESA',
+    resourceType: 'MEMBERSHIP',
+    resourceId: userId,
+    meta: { targetUserId: userId, companyId, rolAnterior: r.rolAnterior, personalizadoAntes: r.personalizadoAntes },
   });
 }
 
@@ -110,21 +153,26 @@ export const adminController = {
    * (contrasenaProvisional). Con ella escrita, no se repite. Siempre provisional.
    */
   crearUsuario: asyncHandler(async (req, res) => {
-    const { email, password, esAdminGlobal, companyId, rol, role, areas } = req.body ?? {};
-    const usuario = await crearUsuario({ email, password, esAdminGlobal, companyId, rol: rol ?? role, areas }, { generarSiFalta: true });
+    const { email, password, esAdminGlobal, companyId, rol, role, areas, nombre, telefono } = req.body ?? {};
+    const usuario = await crearUsuario(
+      { email, password, esAdminGlobal, companyId, rol: rol ?? role, areas, nombre, telefono },
+      { generarSiFalta: true },
+    );
     await auditarAltaUsuario(req.user!.userId, usuario);
     sinCache(res);
     sendOk(res, usuario, undefined, 201);
   }),
 
   actualizarUsuario: asyncHandler(async (req, res) => {
-    const { activo, esAdminGlobal, nuevaContrasena, restablecerContrasena, exigirCambioContrasena } = req.body ?? {};
+    const { activo, esAdminGlobal, nuevaContrasena, restablecerContrasena, exigirCambioContrasena, nombre, telefono } = req.body ?? {};
     const { usuario, cambios, contrasenaProvisional } = await actualizarUsuario(req.user!.userId, req.params.userId, {
       activo,
       esAdminGlobal,
       nuevaContrasena,
       restablecerContrasena,
       exigirCambioContrasena,
+      nombre,
+      telefono,
     });
     await auditarCambioUsuario(req.user!.userId, req.params.userId, usuario.email, cambios);
     sinCache(res);
@@ -140,15 +188,7 @@ export const adminController = {
     const pedido = req.body?.rol ?? req.body?.role ?? (Array.isArray(req.body?.roles) ? req.body.roles[0] : undefined);
     const { userId, companyId } = req.params;
     const r = await asignarRol(userId, companyId, pedido, req.body?.areas);
-    if (r.cambiado) {
-      const base = { targetUserId: userId, companyId, rol: r.rol, personalizado: r.personalizado, areas: r.areas };
-      const [action, meta] = !r.rolAnterior
-        ? ['ASIGNAR_USUARIO_EMPRESA', base]
-        : r.rolAnterior !== r.rol
-          ? ['CAMBIAR_ROL_EMPRESA', { ...base, rolAnterior: r.rolAnterior, areasAnteriores: r.areasAnteriores }]
-          : ['CAMBIAR_PERMISOS_EMPRESA', { ...base, personalizadoAntes: r.personalizadoAntes, areasAnteriores: r.areasAnteriores }];
-      await registrarAuditoria({ userId: req.user!.userId, companyId, action: action as string, resourceType: 'MEMBERSHIP', resourceId: userId, meta });
-    }
+    await auditarAcceso(req.user!.userId, userId, companyId, r);
     sendOk(res, {
       userId,
       companyId,
@@ -163,15 +203,7 @@ export const adminController = {
 
   quitarAcceso: asyncHandler(async (req, res) => {
     const { userId, companyId } = req.params;
-    const { rolAnterior, personalizadoAntes } = await quitarAcceso(userId, companyId);
-    await registrarAuditoria({
-      userId: req.user!.userId,
-      companyId,
-      action: 'QUITAR_USUARIO_EMPRESA',
-      resourceType: 'MEMBERSHIP',
-      resourceId: userId,
-      meta: { targetUserId: userId, companyId, rolAnterior, personalizadoAntes },
-    });
+    await auditarQuitarAcceso(req.user!.userId, userId, companyId, await quitarAcceso(userId, companyId));
     sendOk(res, { userId, companyId, quitado: true });
   }),
 };

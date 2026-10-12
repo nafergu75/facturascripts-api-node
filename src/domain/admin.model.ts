@@ -36,6 +36,10 @@ export interface AccesoEmpresa {
 export interface UsuarioAdmin {
   id: string;
   email: string;
+  /** Nombre y apellidos; null en los usuarios dados de alta sin el. */
+  nombre: string | null;
+  /** Telefono de contacto (opcional). */
+  telefono: string | null;
   activo: boolean;
   esAdminGlobal: boolean;
   /** Contrasena provisional: todavia no ha puesto la suya. */
