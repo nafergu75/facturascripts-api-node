@@ -1655,7 +1655,13 @@ async function obtenerDetalle(companyId: string, id: string): Promise<GastoDetal
       : activos > 0
         ? { permitido: false, motivo: mensajeConPagos }
         : bloqueoEdicion
-          ? { permitido: false, motivo: bloqueoEditar ? bloqueoEditar.texto : textoNoModificable(bloqueoEdicion) }
+          ? {
+              permitido: false,
+              // En una factura (no en un abono): lo que manda el proveedor se registra, no se anula la original.
+              motivo: bloqueoEditar
+                ? bloqueoEditar.texto
+                : `${textoNoModificable(bloqueoEdicion)}${f.esRectificativa ? '' : ' Si el proveedor te ha mandado un abono o una rectificativa, regístrala con «Registrar abono o rectificativa».'}`,
+            }
           : { permitido: true };
   const anular =
     f.estado === 'ANULADA'
