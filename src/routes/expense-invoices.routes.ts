@@ -10,10 +10,18 @@ const router = Router({ mergeParams: true });
 router.get('/', authorize('compras:read', 'contabilidad:read'), expenseInvoicesController.list);
 
 // POST /companies/:companyId/expense-invoices - Alta con su asiento en firme
+// (con el bloque `rectificativa`, un abono o rectificativa del proveedor)
 router.post('/', authorize('compras:write'), expenseInvoicesController.create);
+
+// GET /companies/:companyId/expense-invoices/originales - Candidatas a original de un abono
+// (antes de /:id, para que «originales» no se tome por un id)
+router.get('/originales', authorize('compras:read', 'contabilidad:read'), expenseInvoicesController.originales);
 
 // GET /companies/:companyId/expense-invoices/:id - Ficha de la factura
 router.get('/:id', authorize('compras:read', 'contabilidad:read'), expenseInvoicesController.getById);
+
+// GET /companies/:companyId/expense-invoices/:id/rectificar - Datos para prellenar un abono de la factura
+router.get('/:id/rectificar', authorize('compras:read', 'contabilidad:read'), expenseInvoicesController.paraRectificar);
 
 // PUT /companies/:companyId/expense-invoices/:id - Corregir (rehace el asiento y los libros)
 router.put('/:id', authorize('compras:write'), expenseInvoicesController.update);
