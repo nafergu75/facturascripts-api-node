@@ -48,6 +48,8 @@ export interface EntradaComprobaciones {
   sumasSaldos: { analisis: AnalisisSaldos; fechaCorte: string | null } | null;
   /** Saldos sacados del diario porque no hay sumas y saldos. */
   saldosDesdeDiario: boolean;
+  /** Los saldos de los que sale la apertura del 1-1 (del sumas y saldos o del diario). */
+  apertura?: AnalisisSaldos | null;
   pyg: TotalesOficiales | null;
   resultadoDeclarado: number | null;
   diario: AnalisisDiario | null;
@@ -202,6 +204,35 @@ export function comprobarCarga(e: EntradaComprobaciones): ResultadoComprobacione
     }
   } else if (e.saldosDesdeDiario) {
     p({ clave: 'sys:desde-diario', nivel: 'AVISO', texto: 'Sin sumas y saldos, la apertura del 1-1-2027 se calcula con los saldos del diario. Pide el sumas y saldos para comprobarlo.' });
+  }
+
+  // 3b. La apertura que se va a grabar: tiene que cuadrar siempre (si no, la fase de la
+  //     apertura fallaria a mitad de la importacion). Grupos 8 y 9 a su cuenta del 13.
+  const ap = e.apertura ?? null;
+  if (ap && ap.tipo !== 'CON_CIERRE') {
+    if (ap.grupos89.sinDestino.length) {
+      p({
+        clave: 'apertura:grupos-89',
+        nivel: 'ERROR',
+        texto: `${varios(ap.grupos89.sinDestino.length, 'cuenta de los grupos 8 o 9 tiene', 'cuentas de los grupos 8 y 9 tienen')} saldo y no se sabe a qué cuenta del patrimonio neto va. Pide a la gestoría el sumas y saldos con los grupos 8 y 9 ya regularizados.`,
+        detalle: lista(ap.grupos89.sinDestino.map((c) => `${c.codigo} ${c.nombre} (${eur(c.saldo)})`)),
+      });
+    }
+    if (ap.grupos89.traspasos.length) {
+      p({
+        clave: 'apertura:grupos-89-traspaso',
+        nivel: 'INFO',
+        texto: `${varios(ap.grupos89.traspasos.length, 'cuenta de los grupos 8 o 9 tiene', 'cuentas de los grupos 8 y 9 tienen')} saldo: en la apertura pasa a su cuenta del patrimonio neto (subvenciones, ajustes por cambios de valor...), como al cerrar el año.`,
+        detalle: lista(ap.grupos89.traspasos.map((c) => `${c.codigo} ${c.nombre} (${eur(c.saldo)}) → ${c.a}`)),
+      });
+    }
+    if (!ap.totalesApertura.cuadra && !puntos.some((x) => x.clave === 'sys:descuadre')) {
+      p({
+        clave: 'apertura:descuadre',
+        nivel: 'ERROR',
+        texto: `La apertura del 1-1-${anio + 1} no cuadra: debe ${eur(ap.totalesApertura.debe)} y haber ${eur(ap.totalesApertura.haber)} (diferencia ${eur(Math.round((ap.totalesApertura.debe - ap.totalesApertura.haber) * 100) / 100)}). Falta alguna cuenta en los ficheros: pide a la gestoría el sumas y saldos completo a 31-12-${anio}.`,
+      });
+    }
   }
 
   // 4. Plan: codigos fuera del PGC con saldo y longitudes.
