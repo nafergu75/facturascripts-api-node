@@ -16,6 +16,7 @@
  * Por ahora solo en euros: una partida en otra moneda no se liquida desde
  * aqui (no hay su contravalor a 31-12 para calcular la diferencia de cambio).
  */
+import type { Prisma } from '@prisma/client';
 import { prisma, type TransaccionBD } from '../../config/database';
 import { badRequest, conflict, notFound } from '../../utils/http-errors';
 import { aCentimos, importeTexto } from '../../utils/money';
@@ -322,6 +323,28 @@ export interface FiltrosPartidas {
 }
 
 /**
+ * Lo que busca el cuadro de «Facturas de 2026 pendientes»: el numero de la
+ * factura, el nombre o el NIF del cliente o proveedor (su ficha) y, en las
+ * partidas sin ficha, el nombre de su subcuenta o la subcuenta.
+ */
+async function busquedaPartidas(companyId: string, q: string): Promise<Prisma.PartidaPendienteWhereInput[]> {
+  const nif = q.replace(/[\s.-]/g, '').toUpperCase();
+  const quien = { companyId, OR: [{ nombreFiscal: { contains: q } }, ...(nif ? [{ nifCif: { contains: nif } }] : [])] };
+  const [clientes, proveedores, cuentas] = await Promise.all([
+    prisma.customer.findMany({ where: quien, select: { id: true }, take: 500 }),
+    prisma.supplier.findMany({ where: quien, select: { id: true }, take: 500 }),
+    prisma.chartOfAccounts.findMany({ where: { companyId, nombre: { contains: q }, codigo: { startsWith: '4' } }, select: { codigo: true }, take: 500 }),
+  ]);
+  return [
+    { numeroDocumento: { contains: q } },
+    { subcuenta: { startsWith: q } },
+    ...(clientes.length ? [{ customerId: { in: clientes.map((c) => c.id) } }] : []),
+    ...(proveedores.length ? [{ supplierId: { in: proveedores.map((p) => p.id) } }] : []),
+    ...(cuentas.length ? [{ subcuenta: { in: cuentas.map((c) => c.codigo) } }] : []),
+  ];
+}
+
+/**
  * Lista de partidas (las anuladas no salen salvo que se pidan). `tercero` es el
  * id de un cliente o proveedor, o una subcuenta.
  */
@@ -336,8 +359,10 @@ export async function listarPartidas(companyId: string, f: FiltrosPartidas) {
       companyId,
       tipo: { in: f.tipos },
       estado: estado === 'ABIERTAS' ? { in: ['PENDIENTE', 'PARCIAL'] } : estado ? estado : { not: 'ANULADA' },
-      ...(tercero ? { OR: [{ customerId: tercero }, { supplierId: tercero }, { subcuenta: tercero }] } : {}),
-      ...(q ? { numeroDocumento: { contains: q } } : {}),
+      AND: [
+        ...(tercero ? [{ OR: [{ customerId: tercero }, { supplierId: tercero }, { subcuenta: tercero }] }] : []),
+        ...(q ? [{ OR: await busquedaPartidas(companyId, q) }] : []),
+      ],
     },
     orderBy: [{ fechaVencimiento: 'asc' }, { numeroDocumento: 'asc' }],
     take: 2000,
