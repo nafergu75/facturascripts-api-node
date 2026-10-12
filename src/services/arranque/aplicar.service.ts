@@ -11,12 +11,14 @@
  *
  * Orden: ejercicios -> plan y subcuentas con clientes y proveedores -> diario
  * de 2026 (historico de solo lectura) -> apertura del 1-1-2027 -> cartera
- * pendiente -> inmovilizado -> comparativo de 2026 -> comprobacion final.
+ * pendiente -> inmovilizado -> bancos y datos fiscales -> comparativo de 2026
+ * -> comprobacion final.
  */
 import { Prisma } from '@prisma/client';
 import { prisma, type TransaccionBD } from '../../config/database';
 import { FILTRO_ASIENTOS_APERTURA } from '../../domain/asientosCierre';
 import { badRequest, conflict } from '../../utils/http-errors';
+import { importeTexto } from '../../utils/money';
 import { registrarAuditoria } from '../auditoria.service';
 import { asegurarPlanContableEmpresa } from '../chart-of-accounts.service';
 import { grabarAsientos, OPCIONES_TX, rangoEjercicio, type AsientoNuevo } from '../puestaEnMarcha/asientosEnBloque';
@@ -25,9 +27,11 @@ import { asegurarEjercicio, guardarSaldosComparativo } from '../puestaEnMarcha/p
 import { conReintentoSubcuenta } from '../terceros/subcuentas';
 import { CONCEPTO_APERTURA_ARRANQUE, type AnalisisCarga } from './analisis.service';
 import { analizarCargaGuardada, cargaDeEmpresa, validarEjercicio, type CargaFila } from './cargas.service';
+import { aplicarBancos, saldos572 } from './bancos.service';
+import { comprobacionesArranque, type ComprobacionesArranque } from './seguimiento.service';
 import { origenHistorico, saldosDesdeDiario } from './historico';
 
-export const FASES = ['EJERCICIOS', 'PLAN_Y_TERCEROS', 'HISTORICO', 'APERTURA', 'CARTERA', 'INMOVILIZADO', 'COMPARATIVO', 'FINAL'] as const;
+export const FASES = ['EJERCICIOS', 'PLAN_Y_TERCEROS', 'HISTORICO', 'APERTURA', 'CARTERA', 'INMOVILIZADO', 'BANCOS', 'COMPARATIVO', 'FINAL'] as const;
 export type Fase = (typeof FASES)[number];
 
 export const NOMBRE_FASE: Record<Fase, string> = {
@@ -37,6 +41,7 @@ export const NOMBRE_FASE: Record<Fase, string> = {
   APERTURA: 'Apertura del 1-1-2027',
   CARTERA: 'Facturas pendientes de cobro y pago',
   INMOVILIZADO: 'Inmovilizado',
+  BANCOS: 'Bancos y datos fiscales',
   COMPARATIVO: 'Comparativo de 2026',
   FINAL: 'Comprobación final',
 };
@@ -122,6 +127,8 @@ export interface ResultadoFase {
   terminada: boolean;
   progreso: { cursor: number; total: number } | null;
   fases: EstadoFase[];
+  /** Al terminar: el mensaje de A4 con todo importado. */
+  comprobaciones: ComprobacionesArranque | null;
 }
 
 interface ContextoFase {
@@ -170,8 +177,24 @@ export async function aplicarFase(companyId: string, ejercicioRaw: unknown, carg
     });
     return { hecho, fases };
   };
-  const { hecho, fases } = await conReintentoSubcuenta(() => prisma.$transaction(ejecutar, OPCIONES_TX));
+  const r = await conReintentoSubcuenta(() => prisma.$transaction(ejecutar, OPCIONES_TX));
+  const { fases } = r;
+  let { hecho } = r;
   const actual = fases.find((f) => f.fase === pendiente.fase)!;
+  let comprobaciones: ComprobacionesArranque | null = null;
+  if (actual.fase === 'FINAL' && actual.estado !== 'PENDIENTE') {
+    // El mensaje final de A4 se calcula ya con todo importado (bancos, fichas, series, datos de la empresa).
+    comprobaciones = await comprobacionesArranque(companyId, ejercicio);
+    if (comprobaciones) {
+      const c = await prisma.cargaArranque.findUniqueOrThrow({ where: { id: c0.id }, select: { resumen: true } });
+      await prisma.cargaArranque.update({ where: { id: c0.id }, data: { resumen: json({ ...objeto(c.resumen), final: { nivel: comprobaciones.nivel, en: new Date().toISOString() } }) } });
+      hecho =
+        comprobaciones.nivel === 'CORRECTO'
+          ? `La contabilidad de ${ejercicio - 1} está completa y cuadra. Ya puedes seguir con ${ejercicio}.`
+          : `Contabilidad de ${ejercicio - 1} importada. Quedan datos por completar: los verás en el aviso del panel y en las comprobaciones.`;
+      actual.resultado = hecho;
+    }
+  }
   await registrarAuditoria({
     userId,
     companyId,
@@ -189,6 +212,7 @@ export async function aplicarFase(companyId: string, ejercicioRaw: unknown, carg
     terminada: siguiente === null,
     progreso: actual.total !== undefined ? { cursor: actual.cursor ?? 0, total: actual.total } : null,
     fases,
+    comprobaciones,
   };
 }
 
@@ -216,6 +240,7 @@ const FUNCIONES: Record<Fase, (ctx: ContextoFase) => Promise<string>> = {
   APERTURA: faseApertura,
   CARTERA: faseCartera,
   INMOVILIZADO: faseInmovilizado,
+  BANCOS: faseBancos,
   COMPARATIVO: faseComparativo,
   FINAL: faseFinal,
 };
@@ -415,6 +440,21 @@ async function faseInmovilizado({ tx, c, a, estado, anterior, creado }: Contexto
   });
   creado.activos = a.inmovilizado.activos.length;
   return `${varios(a.inmovilizado.activos.length, 'bien', 'bienes')} de inmovilizado.`;
+}
+
+/** 7. Bancos y datos fiscales: saldo de los extractos a 31-12 (escrito en el resumen) y lo que se arrastra de 2026. */
+async function faseBancos({ tx, c, a, estado, anterior, creado }: ContextoFase): Promise<string> {
+  const bancos = a.ajustes.bancos ?? {};
+  const fiscales = a.ajustes.datosFiscales ?? {};
+  await tx.cargaArranque.update({ where: { id: c.id }, data: { resumen: json({ ...objeto(c.resumen), bancos, datosFiscales: fiscales }) } });
+  const fiscalesTexto = fiscales.cuotasIvaACompensar ? `; ${importeTexto(fiscales.cuotasIvaACompensar)} de IVA a compensar en el 303 del 1T` : '';
+  if (!a.apertura) {
+    estado.estado = 'OMITIDA';
+    return `Sin apertura no hay bancos que enlazar${fiscalesTexto}.`;
+  }
+  const r = await aplicarBancos(tx, c.companyId, c.ejercicio - 1, saldos572(a.apertura.lineas), bancos, anterior, creado);
+  if (!r.tocadas) return `Ningún banco con el saldo del extracto todavía: escríbelo después en el resumen de la carga${fiscalesTexto}.`;
+  return `${varios(r.tocadas, 'banco enlazado', 'bancos enlazados')} con el saldo del extracto a 31-12-${c.ejercicio - 1}${r.altas ? ` (${varios(r.altas, 'cuenta nueva', 'cuentas nuevas')} en Tesorería)` : ''}${fiscalesTexto}.`;
 }
 
 /** Tamano maximo del comparativo (PriorYearData.datosJSON es TEXT, 64 KB). */
