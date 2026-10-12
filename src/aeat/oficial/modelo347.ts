@@ -146,11 +146,11 @@ export function construirModelo347(ejercicio: number, declarante: Declarante347,
   if (errorNif) errores.push(errorNif);
   const razon = textoAeat(declarante.razonSocial);
   if (!razon) errores.push('Falta la razón social de la empresa. Rellénala en Registro Mercantil > Datos para la memoria.');
-  // Persona de contacto y teléfono (B3): los de Registro Mercantil > Datos; sin ellos no hay fichero.
+  // Persona de contacto y teléfono (B3): los de Datos de la empresa (apartado Contacto); sin ellos no hay fichero.
   const telefono = telefonoAeat(declarante.telefono);
-  if (!telefono) errores.push('Falta el teléfono de contacto con Hacienda (9 cifras). Rellénalo en Registro Mercantil > Datos.');
+  if (!telefono) errores.push('Falta el teléfono de contacto con Hacienda (9 cifras). Rellénalo en Datos de la empresa, apartado Contacto.');
   const contacto = textoAeat(declarante.contacto);
-  if (!contacto) errores.push('Falta la persona de contacto con Hacienda (apellidos y nombre). Rellénala en Registro Mercantil > Datos.');
+  if (!contacto) errores.push('Falta la persona de contacto con Hacienda (apellidos y nombre). Rellénala en Datos de la empresa, apartado Contacto.');
   // Número identificativo (B5): lo pone el historial de declaraciones. Sin él, a ceros (solo para la pantalla).
   const numero = /^347\d{10}$/.test(declarante.numeroIdentificativo ?? '') ? declarante.numeroIdentificativo! : '0'.repeat(13);
   const comp = declarante.complementaria ?? null;

@@ -229,8 +229,8 @@ describe('190: complementaria, sustitutiva y datos que faltan', () => {
     const [g] = perceptores.filter((p) => p.clave === 'G');
     const reintegro = { ...perceptores.find((p) => p.percepcionIntegra < 0)!, ejercicioDevengo: null };
     expect(erroresFichero190({ ...declarante, telefono: '', contacto: '' }, [{ ...g, subclave: '09' }, reintegro])).toEqual([
-      'Falta la persona de contacto con Hacienda (apellidos y nombre). Rellénala en Registro Mercantil > Datos.',
-      'Falta el teléfono de contacto con Hacienda (9 cifras). Rellénalo en Registro Mercantil > Datos.',
+      'Falta la persona de contacto con Hacienda (apellidos y nombre). Rellénala en Datos de la empresa, apartado Contacto.',
+      'Falta el teléfono de contacto con Hacienda (9 cifras). Rellénalo en Datos de la empresa, apartado Contacto.',
       'Asesoría Muñoz, C.B.: la clave G necesita una subclave válida (01, 02, 03, 04, 05, 06, 07, 08).',
       'García Ruiz Blas: un reintegro (percepción negativa) necesita el ejercicio en que se cobró de más.',
     ]);

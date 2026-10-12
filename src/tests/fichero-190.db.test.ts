@@ -1,6 +1,6 @@
 /**
  * Fichero del 190 sobre BD real con el historial de declaraciones (B3, B4 y B5):
- *  - la persona de contacto y el telefono son los de Registro Mercantil > Datos
+ *  - la persona de contacto y el telefono son los de Datos de la empresa (apartado Contacto)
  *    (sin ellos, 400 que dice donde rellenarlos);
  *  - el numero identificativo (108-120) lo pone una operacion de escritura y el
  *    fichero (GET) solo lo lee: el mismo en todas las descargas, nunca repetido;
@@ -43,8 +43,8 @@ beforeAll(async () => {
 });
 
 describe('persona de contacto (B3)', () => {
-  it('sin persona de contacto ni telefono en Registro Mercantil > Datos: 400 que dice donde rellenarlos', async () => {
-    await expect(ficheroModelo190(COMPANY, 2025)).rejects.toMatchObject({ statusCode: 400, message: expect.stringMatching(/persona de contacto.*Registro Mercantil > Datos/) });
+  it('sin persona de contacto ni telefono en Datos de la empresa: 400 que dice donde rellenarlos', async () => {
+    await expect(ficheroModelo190(COMPANY, 2025)).rejects.toMatchObject({ statusCode: 400, message: expect.stringMatching(/persona de contacto.*Datos de la empresa, apartado Contacto/) });
     await prisma.legalConfig.update({ where: { companyId: COMPANY }, data: { personaContacto: 'Contacto Prueba Ana', telefono: '+34 600 000 000' } });
   });
 });

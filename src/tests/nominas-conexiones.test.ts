@@ -310,8 +310,8 @@ describe('fichero del 190 (diseno de registro del ejercicio 2025)', () => {
     const sinDatos = { ...perceptorA, provincia: null, anioNacimiento: null };
     expect(erroresFichero190({ nif: '', nombre: 'X' }, [sinDatos])).toEqual([
       'Falta el NIF de la empresa. Rellénalo en Registro Mercantil > Datos para la memoria y vuelve a descargar el fichero.',
-      'Falta la persona de contacto con Hacienda (apellidos y nombre). Rellénala en Registro Mercantil > Datos.',
-      'Falta el teléfono de contacto con Hacienda (9 cifras). Rellénalo en Registro Mercantil > Datos.',
+      'Falta la persona de contacto con Hacienda (apellidos y nombre). Rellénala en Datos de la empresa, apartado Contacto.',
+      'Falta el teléfono de contacto con Hacienda (9 cifras). Rellénalo en Datos de la empresa, apartado Contacto.',
       'Prueba Uno Ana: falta el código de provincia.',
       'Prueba Uno Ana: falta el año de nacimiento.',
     ]);
@@ -407,7 +407,7 @@ describe('permisos de las rutas nuevas de nominas', () => {
     expect((await request(a).get('/nominas/retenciones/2026/7T')).status).toBe(400);
     expect((await request(a).get('/nominas/informes/coste?ejercicio=2026&agrupar=semana')).status).toBe(400);
     expect((await request(a).get('/nominas/190/2024/fichero')).status).toBe(409);
-    // Ya no hay POST: la persona de contacto sale de Registro Mercantil > Datos y el número del historial.
+    // Ya no hay POST: la persona de contacto sale de Datos de la empresa (apartado Contacto) y el número del historial.
     expect((await request(a).post('/nominas/190/2024/fichero').send({ telefono: '600000000', contacto: 'Persona Contacto' })).status).toBe(404);
     const pdf = await request(a).post('/nominas/periodos/2026/1/documentos').attach('archivo', Buffer.from('hola'), { filename: 'nomina.txt', contentType: 'text/plain' });
     expect(pdf.status).toBe(400);

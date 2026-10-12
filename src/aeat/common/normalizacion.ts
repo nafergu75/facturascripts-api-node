@@ -93,10 +93,10 @@ export const nifAeatValido = (valor: unknown): boolean => motivoNifNoValido(valo
 export function erroresContactoAeat(d: { personaContacto?: string | null; telefono?: string | null }): string[] {
   const errores: string[] = [];
   if (!textoAeat(d.personaContacto)) {
-    errores.push('Falta la persona de contacto con Hacienda (apellidos y nombre). Rellénala en Registro Mercantil > Datos.');
+    errores.push('Falta la persona de contacto con Hacienda (apellidos y nombre). Rellénala en Datos de la empresa, apartado Contacto.');
   }
   if (!telefonoAeat(d.telefono)) {
-    errores.push('Falta el teléfono de contacto con Hacienda (9 cifras). Rellénalo en Registro Mercantil > Datos.');
+    errores.push('Falta el teléfono de contacto con Hacienda (9 cifras). Rellénalo en Datos de la empresa, apartado Contacto.');
   }
   return errores;
 }
