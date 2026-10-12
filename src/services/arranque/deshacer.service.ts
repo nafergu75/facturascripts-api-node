@@ -31,6 +31,7 @@ import { OPCIONES_TX, rangoEjercicio } from '../puestaEnMarcha/asientosEnBloque'
 import { longitudSubcuentasGuardada } from '../terceros/subcuentas';
 import { NOTA_CUENTA_DESHECHA, numeroDe } from './aplicar.service';
 import { deshacerBancos } from './bancos.service';
+import { partidasConMovimientos } from './partidas.service';
 import { cargaDeEmpresa, validarEjercicio, type CargaFila } from './cargas.service';
 
 const objeto = (v: Prisma.JsonValue | null | undefined): Record<string, unknown> => (v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : {});
@@ -133,12 +134,21 @@ export async function planDeshacer(c: CargaFila, db: TransaccionBD | typeof pris
   if (otra) bloqueos.push(`La versión ${otra.version} se está importando: termínala o deshazla antes.`);
 
   const partidas = await db.partidaPendiente.findMany({ where: { companyId: c.companyId, cargaId: c.id, estado: { not: 'ANULADA' } }, select: { id: true, numeroDocumento: true } });
-  const conCobros = partidas.length
-    ? await db.invoicePayment.findMany({ where: { companyId: c.companyId, invoiceType: 'PARTIDA', estado: 'ACTIVO', invoiceId: { in: partidas.map((p) => p.id) } }, select: { invoiceId: true } })
-    : [];
-  if (conCobros.length) {
-    const docs = [...new Set(conCobros.map((x) => partidas.find((p) => p.id === x.invoiceId)!.numeroDocumento))];
-    bloqueos.push(`${varios(docs.length, 'factura pendiente de 2026 ya tiene', 'facturas pendientes de 2026 ya tienen')} cobros o pagos de ${c.ejercicio} (${docs.slice(0, 10).join(', ')}${docs.length > 10 ? '…' : ''}). Anúlalos antes en Cobros y pagos.`);
+  const movimientos = await partidasConMovimientos(db, c.companyId, partidas.map((p) => p.id));
+  const docsDe = (ids: string[]) => {
+    const docs = [...new Set(ids.map((id) => partidas.find((p) => p.id === id)!.numeroDocumento))];
+    return { n: docs.length, texto: `${docs.slice(0, 10).join(', ')}${docs.length > 10 ? '…' : ''}` };
+  };
+  const conCobros = docsDe([...movimientos].filter(([, m]) => m.cobros > 0).map(([id]) => id));
+  if (conCobros.n) {
+    bloqueos.push(`${varios(conCobros.n, `factura pendiente de ${anio} ya tiene`, `facturas pendientes de ${anio} ya tienen`)} cobros o pagos de ${c.ejercicio} (${conCobros.texto}). Anúlalos antes en Cobros y pagos.`);
+  }
+  // Abonos del proveedor de este ejercicio ya descontados de una partida: cuentan como pagado.
+  const conAbonos = docsDe([...movimientos].filter(([, m]) => m.abonos !== 0).map(([id]) => id));
+  if (conAbonos.n) {
+    bloqueos.push(
+      `${varios(conAbonos.n, `factura pendiente de ${anio} ya tiene`, `facturas pendientes de ${anio} ya tienen`)} abonos de ${c.ejercicio} descontados (${conAbonos.texto}). Anula antes su aplicación en la ficha del abono, en Compras («Aplicado a otras facturas»).`,
+    );
   }
   const activos = await db.activoFijo.findMany({ where: { companyId: c.companyId, cargaId: c.id }, select: { id: true, descripcion: true } });
   const dotados = activos.length
