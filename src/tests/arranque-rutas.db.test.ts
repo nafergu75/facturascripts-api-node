@@ -129,6 +129,8 @@ describe('rutas y permisos', () => {
     const c0 = datos(await request(lector).get('/arranque/2027/comprobaciones'));
     expect(c0).toMatchObject({ nivel: 'FALTAN_DATOS', completado: false, deBorrador: false, carga: { id: cargaId } });
     expect(c0.puntos.filter((p: { nivel: string }) => p.nivel === 'FALTA').map((p: { clave: string }) => p.clave)).toEqual(['bancos:extracto', 'bancos:cuenta', 'iva:303-4t', 'empresa:datos']);
+    // Los bancos de la apertura vienen con la respuesta, para completarlos en pantalla.
+    expect(c0.bancos).toEqual([expect.objectContaining({ subcuenta: '5720000001', saldoApertura: 18630, saldoExtracto: null, cuenta: null, aceptada: false })]);
 
     // Bancos: tesorería o contabilidad.
     const bancos = { '5720000001': { saldoExtracto: '18.600,00', nueva: { iban: 'ES91 2100 0418 4502 0005 1332', bancoNombre: 'Sabadell' } } };
@@ -141,6 +143,7 @@ describe('rutas y permisos', () => {
     expect(cuenta).toMatchObject({ iban: 'ES9121000418450200051332', saldoInicial: 18600, fechaSaldoInicial: '2026-12-31', saldoContableInicial: 18630 });
     const b2 = await request(app(['contabilidad:write'])).put('/arranque/2027/bancos').send({ bancos: { '5720000001': { saldoExtracto: 18600, aceptarDiferencia: true } } });
     expect(datos(b2).puntos.find((p: { clave: string }) => p.clave === 'bancos:transito')).toMatchObject({ nivel: 'INFO' });
+    expect(datos(b2).bancos).toEqual([expect.objectContaining({ subcuenta: '5720000001', saldoExtracto: 18600, cuenta: 'ES9121000418450200051332', aceptada: true })]);
     expect((await request(app(['contabilidad:write'])).put('/arranque/2027/bancos').send({ bancos: { '5720000009': { saldoExtracto: 1 } } })).status).toBe(400);
 
     // 303 del 4T: impuestos o contabilidad.
