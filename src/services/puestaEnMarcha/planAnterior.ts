@@ -618,6 +618,12 @@ export interface OpcionesPlan {
   nombresGestoria?: boolean;
   /** Nota de las cuentas creadas (por defecto, la de la puesta en marcha). */
   nota?: string;
+  /**
+   * Como mucho, cuantas fichas se enlazan o crean en esta llamada (las demas
+   * quedan para la siguiente: Traer la contabilidad de 2026 lo hace por trozos
+   * para que ninguna peticion sea larga). Sin limite, todas.
+   */
+  limiteTerceros?: number;
 }
 
 /**
@@ -674,6 +680,8 @@ export interface ResultadoPlan {
   longitudFijada: number | null;
   /** Lo que se ha creado o cambiado, para poder deshacerlo (Traer la contabilidad de 2026). */
   creado: CreadoPorPlan;
+  /** Fichas que quedan por enlazar o crear (con limiteTerceros). */
+  quedan: number;
 }
 
 export interface CreadoPorPlan {
@@ -830,7 +838,12 @@ export async function confirmarPlanEnTx(tx: TransaccionBD, companyId: string, en
   const nuevasPorNif = new Map<string, string>();
   const proveedoresTocados = new Set<string>();
   const creado: CreadoPorPlan = { cuentas: creadas, clientes: [], proveedores: [], enlaces: [], nombresAnteriores, longitudAnterior };
-  for (const t of vista.terceros) {
+  const accionables = vista.terceros.filter((t) => (t.accion === 'enlazar' && t.ficha?.id) || (t.accion === 'crear' && t.nif));
+  const limite = opciones.limiteTerceros && opciones.limiteTerceros > 0 ? opciones.limiteTerceros : accionables.length;
+  // No se corta entre la 400 y la 410 del mismo NIF: van a la misma ficha nueva.
+  let corte = Math.min(limite, accionables.length);
+  while (corte > 0 && corte < accionables.length && accionables[corte].nif && accionables[corte].nif === accionables[corte - 1].nif) corte++;
+  for (const t of accionables.slice(0, corte)) {
     if (t.accion === 'enlazar' && t.ficha?.id) {
       const { sustituida } = await enlazarEnTx(tx, companyId, t.codigo, { tipo: t.tipo, id: t.ficha.id });
       creado.enlaces.push({ tipo: t.tipo, fichaId: t.ficha.id, codigo: t.codigo, sustituida });
@@ -865,6 +878,7 @@ export async function confirmarPlanEnTx(tx: TransaccionBD, companyId: string, en
     noSeEnlazan: vista.resumen.noSeEnlazan,
     longitudFijada,
     creado,
+    quedan: accionables.length - corte,
   };
 }
 
