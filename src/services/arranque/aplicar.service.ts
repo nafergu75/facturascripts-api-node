@@ -28,6 +28,7 @@ import { conReintentoSubcuenta } from '../terceros/subcuentas';
 import { CONCEPTO_APERTURA_ARRANQUE, type AnalisisCarga } from './analisis.service';
 import { analizarCargaGuardada, cargaDeEmpresa, validarEjercicio, type CargaFila } from './cargas.service';
 import { aplicarBancos, saldos572 } from './bancos.service';
+import { claveActivo, clavePartida } from './definitiva';
 import { comprobacionesArranque, type ComprobacionesArranque } from './seguimiento.service';
 import { origenHistorico, saldosDesdeDiario } from './historico';
 
@@ -61,6 +62,8 @@ export interface EstadoFase {
 export const TROZO_HISTORICO = 1000;
 /** Clientes y proveedores que se enlazan o crean en cada llamada. */
 export const TROZO_TERCEROS = 100;
+/** Principio de la nota de las cuentas que se desactivan al deshacer una carga. */
+export const NOTA_CUENTA_DESHECHA = 'Desactivada al deshacer la carga';
 
 /** Quien confirma es administrador de la empresa: puede dar de alta clientes y proveedores. */
 const TODOS: PermisosAlta = { cliente: true, proveedor: true };
@@ -68,6 +71,11 @@ const TODOS: PermisosAlta = { cliente: true, proveedor: true };
 const fasesDe = (c: CargaFila): EstadoFase[] => (Array.isArray(c.fases) ? (c.fases as unknown as EstadoFase[]) : []);
 const objeto = (v: Prisma.JsonValue | null): Record<string, unknown> => (v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : {});
 const json = (v: unknown) => v as Prisma.InputJsonValue;
+/** Numero de un asiento «HIST-00042» (42), o null. */
+export const numeroDe = (numero: string): number | null => {
+  const n = Number(numero.slice(numero.lastIndexOf('-') + 1));
+  return Number.isInteger(n) ? n : null;
+};
 const varios = (n: number, uno: string, muchos: string) => `${n.toLocaleString('es-ES')} ${n === 1 ? uno : muchos}`;
 
 /** Sin la marca de una partida ni de una carga, y con el ejercicio abierto: 409. */
@@ -114,7 +122,7 @@ export async function confirmarCarga(companyId: string, ejercicioRaw: unknown, c
     await prisma.cargaArranque.update({ where: { id: c.id }, data: { estado: 'BORRADOR', fases: Prisma.DbNull, confirmadaPor: null } });
     throw conflict('Ya hay otra carga importándose en esta empresa.');
   }
-  await registrarAuditoria({ userId, companyId, action: 'ARRANQUE_CONFIRMAR', resourceType: 'CargaArranque', resourceId: c.id, meta: { version: c.version, huella, nivel: a.comprobaciones.nivel } });
+  await registrarAuditoria({ userId, companyId, action: 'ARRANQUE_CONFIRMAR', resourceType: 'CargaArranque', resourceId: c.id, meta: { version: c.version, tipo: a.tipoCarga, huella, nivel: a.comprobaciones.nivel, modoApertura: a.repeticion.modo, ...(a.repeticion.modo === 'COMPLEMENTARIO' ? { motivoAjuste: a.ajustes.motivoAjuste ?? null, ajuste: a.repeticion.ajuste } : {}) } });
   return { cargaId: c.id, version: c.version, fases };
 }
 
@@ -270,6 +278,29 @@ async function fasePlan({ tx, c, a, creado, anterior, estado }: ContextoFase): P
   if (!a.cuentas.length) {
     return 'La carga no trae cuentas.';
   }
+  // Para deshacer: las subcuentas que tenian las fichas antes de la carga (solo la primera vez).
+  if (!anterior.fichas) {
+    const [cs, ps] = await Promise.all([
+      tx.customer.findMany({ where: { companyId: c.companyId, subcuenta430: { not: null } }, select: { id: true, subcuenta430: true } }),
+      tx.supplier.findMany({ where: { companyId: c.companyId, OR: [{ subcuenta400: { not: null } }, { subcuenta410: { not: null } }] }, select: { id: true, subcuenta400: true, subcuenta410: true } }),
+    ]);
+    anterior.fichas = { clientes: cs.map((x) => [x.id, x.subcuenta430]), proveedores: ps.map((x) => [x.id, x.subcuenta400, x.subcuenta410]) };
+    // Cuentas que la carga trae y se desactivaron al deshacer una carga anterior: vuelven a estar
+    // activas. Las que la empresa desactivo a mano se quedan como estan.
+    const codigos = a.cuentas.map((x) => x.codigo);
+    const inactivas: string[] = [];
+    for (let i = 0; i < codigos.length; i += 1000) {
+      const filas = await tx.chartOfAccounts.findMany({
+        where: { companyId: c.companyId, activo: false, notas: { startsWith: NOTA_CUENTA_DESHECHA }, codigo: { in: codigos.slice(i, i + 1000) } },
+        select: { codigo: true },
+      });
+      inactivas.push(...filas.map((f) => f.codigo));
+    }
+    if (inactivas.length) {
+      await tx.chartOfAccounts.updateMany({ where: { companyId: c.companyId, codigo: { in: inactivas } }, data: { activo: true, notas: `Arranque ${c.ejercicio}, carga ${c.id}` } });
+    }
+    anterior.reactivadas = inactivas;
+  }
   // Por trozos: cada llamada enlaza o crea como mucho TROZO_TERCEROS fichas; las ya hechas salen como «ya enlazadas».
   const r = await confirmarPlanEnTx(
     tx,
@@ -313,10 +344,12 @@ async function faseHistorico({ tx, c, a, estado, anterior, creado }: ContextoFas
     // Repetir la carga: el historico de la version anterior se sustituye por el nuevo.
     const previos = await tx.journalEntry.findMany({
       where: { companyId: c.companyId, estado: 'POSTED', origen: { startsWith: 'HISTORICO' }, fecha: rangoEjercicio(c.ejercicio - 1) },
-      select: { id: true },
+      select: { id: true, numeroAsiento: true },
     });
     if (previos.length) await tx.journalEntry.updateMany({ where: { id: { in: previos.map((p) => p.id) } }, data: { estado: 'REVERSED' } });
-    anterior.historicoAnulado = previos.length;
+    // Para deshacer: el tramo de numeros del historico anterior (HIST-...), que vuelve si se deshace esta carga.
+    const numeros = previos.map((p) => numeroDe(p.numeroAsiento)).filter((n): n is number => n !== null);
+    anterior.historicoAnulado = numeros.length ? { n: previos.length, desde: Math.min(...numeros), hasta: Math.max(...numeros) } : null;
   }
   const nombres = new Map(a.cuentas.map((x) => [x.codigo, x.nombre]));
   const trozo: AsientoNuevo[] = asientos.slice(desde, desde + TROZO_HISTORICO).map((x) => ({
@@ -344,6 +377,21 @@ async function faseApertura({ tx, c, a, estado, anterior, creado }: ContextoFase
     estado.estado = 'OMITIDA';
     return 'La carga no trae saldos a 31-12: la apertura queda pendiente.';
   }
+  if (a.repeticion.modo === 'COMPLEMENTARIO') {
+    // Enero bloqueado: la apertura no se toca; solo las diferencias, en un asiento de ajuste.
+    anterior.aperturas = [];
+    if (!a.repeticion.ajuste.length) return 'La apertura no cambia: no hace falta ajuste.';
+    const [ajuste] = await grabarAsientos(tx, c.companyId, [
+      {
+        fecha: a.apertura.fecha,
+        concepto: `Ajuste de la apertura ${c.ejercicio} con el cierre definitivo de la gestoría`,
+        origen: 'APERTURA_AJUSTE',
+        lineas: a.repeticion.ajuste.map((l) => ({ ...l, referencia: (a.ajustes.motivoAjuste ?? '').slice(0, 180) || undefined })),
+      },
+    ]);
+    creado.ajuste = ajuste;
+    return `Asiento de ajuste ${ajuste.numero} con ${varios(a.repeticion.ajuste.length, 'línea', 'líneas')} (enero está bloqueado: la apertura no se toca).`;
+  }
   const previas = await tx.journalEntry.findMany({
     where: { companyId: c.companyId, estado: 'POSTED', ...FILTRO_ASIENTOS_APERTURA, fecha: rangoEjercicio(c.ejercicio) },
     select: { id: true, numeroAsiento: true },
@@ -368,11 +416,17 @@ async function faseCartera({ tx, c, a, estado, anterior, creado }: ContextoFase)
     estado.estado = 'OMITIDA';
     return 'No hay facturas pendientes de cobro ni de pago.';
   }
-  // Repetir la carga: las partidas de la version anterior (sin cobros ni pagos) se anulan.
+  // Repetir la carga: las partidas de la version anterior se anulan, salvo las que ya tienen
+  // cobros o pagos y la cartera nueva trae igual: esas siguen (pasan a esta carga).
   const vigente = await tx.cargaArranque.findFirst({ where: { companyId: c.companyId, ejercicio: c.ejercicio, estado: 'CONFIRMADA' }, select: { id: true } });
+  const siguen = new Set(a.repeticion.partidasMantenidas.map((p) => p.clave));
   if (vigente) {
-    const r = await tx.partidaPendiente.updateMany({ where: { companyId: c.companyId, cargaId: vigente.id, estado: 'PENDIENTE' }, data: { estado: 'ANULADA' } });
-    anterior.partidasAnuladas = { cargaId: vigente.id, n: r.count };
+    const mantenidas = a.repeticion.partidasMantenidas.map((p) => p.id);
+    const anular = await tx.partidaPendiente.findMany({ where: { companyId: c.companyId, cargaId: vigente.id, estado: { not: 'ANULADA' }, id: { notIn: mantenidas } }, select: { id: true } });
+    if (anular.length) await tx.partidaPendiente.updateMany({ where: { id: { in: anular.map((p) => p.id) } }, data: { estado: 'ANULADA' } });
+    if (mantenidas.length) await tx.partidaPendiente.updateMany({ where: { id: { in: mantenidas } }, data: { cargaId: c.id } });
+    anterior.partidasAnuladas = anular.map((p) => p.id);
+    anterior.partidasMovidas = { cargaId: vigente.id, ids: mantenidas };
   }
   const subcuentas = [...new Set([...a.cartera.partidas, ...a.cartera.sinDetalle].map((p) => p.subcuenta))];
   const [clientes, proveedores] = await Promise.all([
@@ -385,7 +439,7 @@ async function faseCartera({ tx, c, a, estado, anterior, creado }: ContextoFase)
     if (x.subcuenta400) ficha.set(x.subcuenta400, { supplierId: x.id });
     if (x.subcuenta410) ficha.set(x.subcuenta410, { supplierId: x.id });
   }
-  const filas = [...a.cartera.partidas, ...a.cartera.sinDetalle].map((p) => ({
+  const filas = [...a.cartera.partidas, ...a.cartera.sinDetalle].filter((p) => !siguen.has(clavePartida(p))).map((p) => ({
     companyId: c.companyId,
     cargaId: c.id,
     tipo: p.tipo,
@@ -403,7 +457,8 @@ async function faseCartera({ tx, c, a, estado, anterior, creado }: ContextoFase)
   for (let i = 0; i < filas.length; i += 1000) await tx.partidaPendiente.createMany({ data: filas.slice(i, i + 1000) });
   creado.partidas = filas.length;
   const cobros = filas.filter((f) => f.tipo === 'COBRO').length;
-  return `${varios(cobros, 'factura pendiente de cobro', 'facturas pendientes de cobro')} y ${varios(filas.length - cobros, 'de pago', 'de pago')}${a.cartera.sinDetalle.length ? ` (${varios(a.cartera.sinDetalle.length, 'saldo sin detalle', 'saldos sin detalle')})` : ''}.`;
+  const textoSiguen = siguen.size ? `; ${varios(siguen.size, 'factura con cobros o pagos sigue', 'facturas con cobros o pagos siguen')} como estaban` : '';
+  return `${varios(cobros, 'factura pendiente de cobro', 'facturas pendientes de cobro')} y ${varios(filas.length - cobros, 'de pago', 'de pago')}${a.cartera.sinDetalle.length ? ` (${varios(a.cartera.sinDetalle.length, 'saldo sin detalle', 'saldos sin detalle')})` : ''}${textoSiguen}.`;
 }
 
 /** 6. Inmovilizado: fichas con la amortizacion acumulada a 31-12; la de 2027 empieza el 1-1-2027 (D2 si no cuadra). */
@@ -412,17 +467,23 @@ async function faseInmovilizado({ tx, c, a, estado, anterior, creado }: Contexto
     estado.estado = 'OMITIDA';
     return a.inmovilizado ? 'Las fichas de inmovilizado no se importan: no cuadran con sus cuentas (queda en «Faltan datos»).' : 'La carga no trae inmovilizado.';
   }
-  // Repetir la carga: las fichas de la version anterior sin dotaciones se dan de baja.
+  // Repetir la carga: las fichas de la version anterior se dan de baja, salvo las que ya tienen
+  // amortizacion apuntada y el fichero nuevo trae igual: esas siguen (pasan a esta carga).
   const vigente = await tx.cargaArranque.findFirst({ where: { companyId: c.companyId, ejercicio: c.ejercicio, estado: 'CONFIRMADA' }, select: { id: true } });
+  const siguen = new Set(a.repeticion.activosMantenidos.map((x) => x.clave));
   if (vigente) {
-    const previos = await tx.activoFijo.findMany({ where: { companyId: c.companyId, cargaId: vigente.id, activo: true, dotaciones: { none: {} } }, select: { id: true } });
+    const mantenidos = a.repeticion.activosMantenidos.map((x) => x.id);
+    const previos = await tx.activoFijo.findMany({ where: { companyId: c.companyId, cargaId: vigente.id, activo: true, id: { notIn: mantenidos } }, select: { id: true } });
     if (previos.length) await tx.activoFijo.updateMany({ where: { id: { in: previos.map((p) => p.id) } }, data: { activo: false } });
+    if (mantenidos.length) await tx.activoFijo.updateMany({ where: { id: { in: mantenidos } }, data: { cargaId: c.id } });
     anterior.activosRetirados = previos.map((p) => p.id);
+    anterior.activosMovidos = { cargaId: vigente.id, ids: mantenidos };
   }
   const inicio = `${c.ejercicio}-01-01`;
   const fin = `${c.ejercicio - 1}-12-31`;
+  const nuevos = a.inmovilizado.activos.filter((x) => !siguen.has(claveActivo({ descripcion: x.descripcion, cuentaBien: x.cuentaBien })));
   await tx.activoFijo.createMany({
-    data: a.inmovilizado.activos.map((x) => ({
+    data: nuevos.map((x) => ({
       companyId: c.companyId,
       cargaId: c.id,
       descripcion: x.descripcion,
@@ -438,8 +499,8 @@ async function faseInmovilizado({ tx, c, a, estado, anterior, creado }: Contexto
       coeficiente: x.coeficiente ?? 0,
     })),
   });
-  creado.activos = a.inmovilizado.activos.length;
-  return `${varios(a.inmovilizado.activos.length, 'bien', 'bienes')} de inmovilizado.`;
+  creado.activos = nuevos.length;
+  return `${varios(nuevos.length, 'bien', 'bienes')} de inmovilizado${siguen.size ? `; ${varios(siguen.size, 'bien con amortización apuntada sigue', 'bienes con amortización apuntada siguen')} como estaban` : ''}.`;
 }
 
 /** 7. Bancos y datos fiscales: saldo de los extractos a 31-12 (escrito en el resumen) y lo que se arrastra de 2026. */
@@ -493,7 +554,21 @@ async function faseComparativo({ tx, c, a, estado, anterior, creado }: ContextoF
   }
   const anio = c.ejercicio - 1;
   const previo = await tx.priorYearData.findFirst({ where: { companyId: c.companyId, ejercicio: anio } });
-  anterior.comparativo = previo ? { datosJSON: previo.datosJSON, observaciones: previo.observaciones } : null;
+  // Para deshacer: la fila entera (sin id ni fechas).
+  anterior.comparativo = previo
+    ? {
+        estado: previo.estado,
+        baseImponible: Number(previo.baseImponible),
+        ivaDevengado: Number(previo.ivaDevengado),
+        ivaRepercutido: Number(previo.ivaRepercutido),
+        irpfRetenido: Number(previo.irpfRetenido),
+        gasto: Number(previo.gasto),
+        ingresos: Number(previo.ingresos),
+        beneficio: Number(previo.beneficio),
+        datosJSON: previo.datosJSON,
+        observaciones: previo.observaciones,
+      }
+    : null;
   // Se sustituye entero (no se mezcla con lo que hubiera).
   if (previo) await tx.priorYearData.delete({ where: { id: previo.id } });
   await guardarSaldosComparativo(c.companyId, anio, cuentas, 'todo', `Traído de la gestoría (carga ${c.version})`, tx);
