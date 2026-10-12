@@ -8,10 +8,12 @@
  */
 import { describe, it, expect } from '@jest/globals';
 import { prisma } from '../config/database';
-import { subirYAnalizar } from '../services/arranque/cargas.service';
+import { estadoArranque, subirYAnalizar } from '../services/arranque/cargas.service';
 import { saldosComparativosImportados } from '../services/puestaEnMarcha/puestaEnMarcha.service';
 import { analizarPlanSinEscribir } from '../services/puestaEnMarcha/planAnterior';
-import { ficherosEmpresaA, ficherosEmpresaB, filasCartera, filasDiario, filasSumasYSaldos, libro, NIF, PLAN_A, type AsientoPrueba } from './fixtures/arranque/generar';
+import { createHash } from 'crypto';
+import { AJUSTES_A, anchoFijo, ficherosEmpresaA, ficherosEmpresaB, filasCartera, filasDiario, filasSumasYSaldos, libro, NIF, pdf, PLAN_A, type AsientoPrueba } from './fixtures/arranque/generar';
+import { idHoja } from '../services/arranque/datos';
 import { empresaDePrueba, traerCarga, TODOS, USUARIO_PRUEBA } from './fixtures/arranque/importar';
 
 const SUFIJO = Date.now();
@@ -223,5 +225,21 @@ describe('el diálogo de confirmación dice lo que cambia en 2026', () => {
     expect(r.vista.confirmacion).toContain('y 2 bienes de inmovilizado.');
     expect(r.vista.confirmacion).toContain('2026 quedará como «lo llevó la gestoría»: se podrá consultar, pero no apuntar nada con fecha de 2026.');
     expect(r.vista.confirmacion).toContain('1 asiento de 2026 apuntado en la app se retira (no se borra).');
+  });
+});
+
+describe('la carga vigente separa los ficheros usados de los que no', () => {
+  it('un PDF y un fichero de ancho fijo marcados «No usar» salen como no usados', async () => {
+    const E = `arr-rev-nous-${SUFIJO}`;
+    await empresaDePrueba(E);
+    const fs = [...Object.values(ficherosEmpresaA()), pdf(), anchoFijo()];
+    const ajustes = { ...AJUSTES_A, hojas: Object.fromEntries([pdf(), anchoFijo()].map((f) => [idHoja(createHash('sha256').update(f.contenido).digest('hex'), f.nombre), { excluida: true }])) };
+    await traerCarga(E, fs, ajustes);
+    const estado = await estadoArranque(E, 2027);
+    expect(estado.vigente?.ficheros).toHaveLength(9);
+    expect([...(estado.vigente?.ficherosNoUsados ?? [])].sort()).toEqual(['balance.pdf', 'export.txt']);
+    // Un fichero que no se puede leer no trae avisos de lectura, solo su error.
+    const r = await subirYAnalizar(`${E}`, 2027, USUARIO_PRUEBA, [anchoFijo()], undefined, TODOS);
+    expect(r.vista.hojas[0].avisos).toEqual([]);
   });
 });
