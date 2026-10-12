@@ -369,6 +369,12 @@ describe('la puesta en marcha no toca lo que trajo la carga', () => {
     const e1 = await error(pem.anularApertura(E, 2027));
     expect(e1.statusCode).toBe(409);
     expect(e1.message).toMatch(/Traer la contabilidad de 2026/);
+    // La pantalla lo sabe antes de ofrecer «Anular» o «Borrar»: lo que vino de la carga va marcado.
+    const estado = await pem.estadoPuestaEnMarcha(E);
+    expect(estado.enlaceCarga).toBe('/dashboard/contabilidad/arranque');
+    expect(estado.aperturas.find((x) => x.ejercicio === 2027)).toMatchObject({ deCarga: true });
+    expect(estado.comparativos.filter((c) => c.ejercicio === 2026).every((c) => c.deCarga)).toBe(true);
+    expect(estado.diariosImportados.every((d) => d.ejercicio !== 2026 || d.deCarga)).toBe(true);
     const cuentas = [
       { codigo: '5720000001', nombre: 'Banco', saldo: 10 },
       { codigo: '1000000000', nombre: 'Capital', saldo: -10 },

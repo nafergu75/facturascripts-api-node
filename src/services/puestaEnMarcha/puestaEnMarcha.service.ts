@@ -725,8 +725,18 @@ export async function estadoPuestaEnMarcha(companyId: string) {
     porAnio.set(y, r);
   }
 
+  // Lo que trajo «Traer la contabilidad de 2026» no se anula ni se borra desde
+  // aqui (el servidor da 409): la pantalla lo sabe antes y enlaza a la carga.
+  const aniosApertura = [...new Set(aperturas.map((a) => a.fecha.getUTCFullYear()))];
+  const [aperturaCarga, diarioCarga, comparativoCarga] = await Promise.all([
+    Promise.all(aniosApertura.map(async (y) => [y, await aperturaDeCarga(companyId, y)] as const)).then((l) => new Map(l)),
+    Promise.all([...porAnio.keys()].map(async (y) => [y, await llevanzaExterna(companyId, y)] as const)).then((l) => new Map(l)),
+    Promise.all(comparativos.map(async (c) => [c.ejercicio, await comparativoDeCarga(companyId, c.ejercicio)] as const)).then((l) => new Map(l)),
+  ]);
+
   return {
     ejercicios,
+    enlaceCarga: ENLACE_ARRANQUE,
     aperturas: aperturas.map((a) => ({
       ejercicio: a.fecha.getUTCFullYear(),
       id: a.id,
@@ -734,8 +744,11 @@ export async function estadoPuestaEnMarcha(companyId: string) {
       fecha: a.fecha.toISOString().slice(0, 10),
       importe: round2(a.lineas.reduce((s, l) => s + Number(l.debe), 0)),
       apuntes: a.lineas.length,
+      deCarga: aperturaCarga.get(a.fecha.getUTCFullYear()) ?? false,
     })),
-    diariosImportados: [...porAnio.entries()].sort((a, b) => b[0] - a[0]).map(([ejercicio, r]) => ({ ejercicio, ...r })),
+    diariosImportados: [...porAnio.entries()]
+      .sort((a, b) => b[0] - a[0])
+      .map(([ejercicio, r]) => ({ ejercicio, ...r, deCarga: diarioCarga.get(ejercicio) ?? false })),
     comparativos: comparativos.map((c) => {
       const d = leerDatosComparativo(c.datosJSON);
       const r = d ? resumenComparativo(d.cuentas) : null;
@@ -745,6 +758,7 @@ export async function estadoPuestaEnMarcha(companyId: string) {
         cuentasPyg: r?.cuentasPyg ?? 0,
         resultado: r?.resultado ?? Number(c.beneficio),
         actualizado: c.updatedAt.toISOString(),
+        deCarga: comparativoCarga.get(c.ejercicio) ?? false,
       };
     }),
   };
