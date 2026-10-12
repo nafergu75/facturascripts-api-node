@@ -169,6 +169,27 @@ describe('abonos y rectificativas de proveedor (bloque rectificativa)', () => {
     expect(error(abono({ causa: 'RAPPEL', originales: [], periodo: { desde: '2027-03-31', hasta: '2027-01-01' } })).campo).toBe('rectificativa.periodo.hasta');
   });
 
+  it('rappel de varios periodos: el reparto por periodo va dentro del periodo y suma la base', () => {
+    const periodo = (reparto: unknown[]) => ({ causa: 'RAPPEL', originales: [], periodo: { desde: '2027-01-01', hasta: '2027-06-30', reparto } });
+    const bien = [
+      { desde: '2027-01-01', hasta: '2027-03-31', base: -20 },
+      { desde: '2027-04-01', hasta: '2027-06-30', base: -100 },
+    ];
+    expect(validarFacturaGasto(abono(periodo(bien))).rectificativa?.periodo?.reparto).toHaveLength(2);
+    expect(error(abono(periodo([bien[0], { ...bien[1], base: -90 }])))).toMatchObject({
+      message: 'El reparto por periodos (-110,00 €) no suma la base de la rectificativa (-120,00 €).',
+      campo: 'rectificativa.periodo.reparto',
+    });
+    expect(error(abono(periodo([bien[0], { ...bien[1], hasta: '2027-07-31' }])))).toMatchObject({
+      message: 'Cada tramo del reparto tiene que estar dentro del periodo del rappel.',
+      campo: 'rectificativa.periodo.reparto.1',
+    });
+    expect(error(abono(periodo([bien[0], { ...bien[1], desde: '2027-03-01' }])))).toMatchObject({
+      message: 'Los tramos del reparto no pueden solaparse.',
+      campo: 'rectificativa.periodo.reparto.1',
+    });
+  });
+
   it('cada original de fuera lleva número y fecha, y no puede ser posterior a la rectificativa', () => {
     expect(error(abono({ originales: [{ numero: 'F-2026/118' }] }))).toMatchObject({ campo: 'rectificativa.originales.0.fecha' });
     expect(error(abono({ originales: [{ fecha: '2026-11-30' }] }))).toMatchObject({ campo: 'rectificativa.originales.0.numero' });
