@@ -10,6 +10,8 @@ import dr390 from '../domain/aeat/dr390-v102.json';
 import { construirModelo390, DISENO_390, liquidaciones390 } from '../aeat/oficial/modelo390';
 import { validarRegistro, type PaginaOficial } from '../aeat/oficial/diseno';
 import { entrada390Desde } from '../services/borradoresAeat.service';
+import { agregar303 } from '../services/impuestosCalculo.service';
+import { periodoFiscal } from '../services/nominas/fiscal';
 import type { FacturaFiscal } from '../domain/impuestos.model';
 
 const PAGINAS = (dr390 as any).paginas as Record<string, PaginaOficial>;
@@ -295,5 +297,47 @@ describe('390: compra con una parte exenta (al 0 %, sin cuota)', () => {
     expect(d.casillas['606']).toBe(21);
     expect(d.casillas['48']).toBe(100);
     expect(d.casillas['49']).toBe(21);
+  });
+});
+
+describe('390 frente a los cuatro 303 del año: misma regla para las intracomunitarias y las rectificativas', () => {
+  const facturas: FacturaFiscal[] = [
+    venta('2027-02-15', [{ tipoIva: 21, base: 10000, cuota: 2100 }]),
+    venta('2027-05-10', [{ tipoIva: 21, base: 2000, cuota: 420 }]),
+    // Rectificativa que anula la venta del 2T: el 303 la lleva a [14]/[15].
+    venta('2027-08-01', [{ tipoIva: 21, base: -2000, cuota: -420 }], { rectificativa: true }),
+    // Compras a Italia y Francia registradas al 0 %: el IVA se autoliquida al 21 %.
+    compra('2027-03-10', [{ tipoIva: 0, base: 2500, cuota: 0 }], { operacion: 'intracomunitaria', cifnif: 'IT12345678901' }),
+    compra('2027-06-10', [{ tipoIva: 0, base: 1200, cuota: 0 }], { operacion: 'intracomunitaria', cifnif: 'FR12345678901' }),
+    compra('2027-09-15', [{ tipoIva: 21, base: 1000, cuota: 210 }]),
+    // Compra anulada en el 4T: el 303 la lleva a [40]/[41].
+    compra('2027-11-20', [{ tipoIva: 21, base: -300, cuota: -63 }], { rectificativa: true }),
+  ];
+  const trimestres = ['1T', '2T', '3T', '4T'].map((p) => agregar303(facturas, periodoFiscal(2027, p)).casillasOficiales ?? {});
+  const suma303 = (c: string) => Math.round(trimestres.reduce((a, t) => a + (t[c] ?? 0) * 100, 0)) / 100;
+  const { entrada, advertencias } = entrada390Desde(facturas, 2027, ID);
+  const d = construirModelo390(entrada);
+
+  it('las compras intracomunitarias al 0 % llevan la misma cuota en el 303 ([11]/[37]) y en el 390 ([26]/[630])', () => {
+    expect([suma303('10'), suma303('11'), suma303('36'), suma303('37')]).toEqual([3700, 777, 3700, 777]);
+    expect([d.casillas['25'], d.casillas['26'], d.casillas['629'], d.casillas['630']]).toEqual([3700, 777, 3700, 777]);
+    expect(advertencias.some((a) => /sin IVA en la factura \(base 3700\.00 €\)/.test(a))).toBe(true);
+    expect(advertencias.some((a) => /Comprueba que coincide/.test(a))).toBe(false);
+  });
+
+  it('la rectificativa de venta va a [29]/[30] como [14]/[15] de los 303, y la compra anulada a [639]/[62] como [40]/[41]', () => {
+    expect([suma303('14'), suma303('15')]).toEqual([-2000, -420]);
+    expect([d.casillas['29'], d.casillas['30']]).toEqual([-2000, -420]);
+    expect([d.casillas['05'], d.casillas['06']]).toEqual([12000, 2520]); // solo las ventas, sin la rectificativa
+    expect([suma303('40'), suma303('41')]).toEqual([-300, -63]);
+    expect([d.casillas['639'], d.casillas['62']]).toEqual([-300, -63]);
+    expect([d.casillas['605'], d.casillas['606']]).toEqual([1000, 210]);
+  });
+
+  it('la suma de [27] y de [45] de los cuatro 303 es [47] y [64] del 390, y el resultado [65] cuadra', () => {
+    expect(d.errores).toEqual([]);
+    expect(d.casillas['47']).toBe(suma303('27'));
+    expect(d.casillas['64']).toBe(suma303('45'));
+    expect(d.casillas['65']).toBe(suma303('46'));
   });
 });
