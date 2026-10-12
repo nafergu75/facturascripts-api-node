@@ -367,6 +367,12 @@ export interface OpcionesLectura<C extends string> {
   filaCabecera?: number; // 1-based
   convencionSigno?: ConvencionSigno;
   separadorDecimal?: SeparadorDecimal;
+  /**
+   * Conserva las cuentas con saldo cero (Traer la contabilidad de 2026: el plan
+   * de la gestoria se trae entero, tambien sus subcuentas a cero). Por defecto
+   * se quitan, como hasta ahora.
+   */
+  conservarCeros?: boolean;
   /** Solo para tipar el mapeo por campos. */
   _campos?: C;
 }
@@ -501,7 +507,7 @@ export function leerBalanceDeFilas(filas: unknown[][], opciones: OpcionesLectura
     avisos.push(`Se han ignorado ${agregadas.length} cuenta(s) de nivel superior (${agregadas.slice(0, 5).join(', ')}${agregadas.length > 5 ? '...' : ''}) porque el fichero trae también sus subcuentas.`);
   }
 
-  let cuentas = [...porCodigo.values()].filter((c) => aCentimos(c.saldo) !== 0);
+  let cuentas = [...porCodigo.values()].filter((c) => opciones.conservarCeros || aCentimos(c.saldo) !== 0);
   cuentas.sort((a, b) => a.codigo.localeCompare(b.codigo));
 
   // Convencion de signo: solo importa cuando hay una unica columna de saldo.
@@ -511,8 +517,9 @@ export function leerBalanceDeFilas(filas: unknown[][], opciones: OpcionesLectura
     if (pedida === 'naturaleza') convencion = 'naturaleza';
     else if (pedida === 'auto') {
       const hayNegativos = cuentas.some((c) => c.saldo < 0);
+      const hayPositivos = cuentas.some((c) => c.saldo > 0);
       const conNaturaleza = cuentas.map((c) => ({ ...c, saldo: esAcreedoraPorNaturaleza(c.codigo) ? -Math.abs(c.saldo) : Math.abs(c.saldo) }));
-      if (!hayNegativos && cuentas.length > 0) {
+      if (!hayNegativos && hayPositivos) {
         convencion = 'naturaleza';
       } else if (aCentimos(totalesSaldos(cuentas).diferencia) !== 0 && aCentimos(totalesSaldos(conNaturaleza).diferencia) === 0) {
         convencion = 'naturaleza';
