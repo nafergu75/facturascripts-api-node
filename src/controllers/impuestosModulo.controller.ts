@@ -23,12 +23,10 @@ import { presentarDeclaracion } from '../services/declaracionesAeat/presentar';
 import { fichaModelo } from '../services/impuestosTextos';
 import { generarPdfSimple } from '../utils/pdf-simple';
 import { registrarAuditoria } from '../services/auditoria.service';
+import { validarEjercicio } from '../utils/anios';
 
-function parseEjercicio(raw: unknown): number {
-  const e = Number(raw);
-  if (!Number.isInteger(e)) throw badRequest('Parametro "ejercicio" invalido.');
-  return e;
-}
+/** Ejercicio de la consulta: de 1990 al año que viene (hora de España). */
+const parseEjercicio = (raw: unknown): number => validarEjercicio(raw);
 
 function enviarTxt(res: Response, nombre: string, contenido: string): void {
   res.setHeader('Content-Type', 'text/plain; charset=ISO-8859-1');
