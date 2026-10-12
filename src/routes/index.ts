@@ -47,6 +47,7 @@ import archivoRoutes from './archivo.routes';
 import puestaEnMarchaRoutes from './puestaEnMarcha.routes';
 import arranqueRoutes from './arranque.routes';
 import inmovilizadoRoutes from './inmovilizado.routes';
+import { avisoModelosGestoria } from '../middleware/avisoGestoria.middleware';
 import ocrRoutes from './ocr.routes';
 import ocrSessionsRoutes from './ocr-sessions.routes';
 import ocrAnalyticsRoutes from './ocr-analytics.routes';
@@ -89,6 +90,9 @@ scoped.use('/clientes', clientesRoutes);
 scoped.use('/proveedores', proveedoresRoutes);
 scoped.use('/compras', comprasRoutes);
 scoped.use('/productos', productosRoutes);
+// Modelos de un año que llevo la gestoria: la respuesta lleva el aviso «lo presenta tu gestoría».
+scoped.use('/impuestos', avisoModelosGestoria);
+scoped.use('/tax-models', avisoModelosGestoria);
 scoped.use('/impuestos', impuestosModuloRoutes);
 scoped.use('/reglas-contables', reglasContablesRoutes);
 scoped.use('/plantillas', plantillasRoutes);
