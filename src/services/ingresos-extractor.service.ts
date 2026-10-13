@@ -8,6 +8,7 @@ import { archivarVentaSinRomper } from './archivoFacturas.service';
 import { accountingHooksService } from './accounting-hooks.service';
 import { comprobarRevisionVenta, vincularLectura } from './lectura/confirmar';
 import { clientePorNif, errorTerceroNoDadoDeAlta } from './lectura/terceros-lector';
+import { detalleFalloBD, errorFalloBD, motivoSinAsiento, QUE_HACER_REGISTRAR } from '../utils/errores-bd';
 
 /**
  * Lector de facturas de INGRESO (pantalla "Lector de ingresos").
@@ -211,10 +212,10 @@ export async function contabilizarVentaLeida(companyId: string, facturaId: strin
     const asiento = await prisma.journalEntry.findFirst({ where: { id: r.journalEntryId, companyId }, select: { estado: true } });
     return { contabilizada: true, asientoId: r.journalEntryId, asientoEnBorrador: asiento?.estado !== 'POSTED' };
   } catch (err) {
-    const motivo = err instanceof Error ? err.message : String(err);
     // eslint-disable-next-line no-console
-    console.error(`Aviso: no se pudo contabilizar la factura ${facturaId} del lector:`, motivo);
-    return { contabilizada: false, motivoSinAsiento: motivo };
+    console.error(`Aviso: no se pudo contabilizar la factura ${facturaId} del lector:`, detalleFalloBD(err) ?? (err instanceof Error ? err.message : String(err)));
+    // Un fallo de la base de datos, en castellano (no el texto de Prisma).
+    return { contabilizada: false, motivoSinAsiento: motivoSinAsiento(err) };
   }
 }
 
@@ -273,20 +274,25 @@ export const ingresosExtractorService = {
 
     // Origen lector: la fiscalidad avisa en vez de rechazar (y en una empresa no
     // espanola quita el IVA que el OCR pone por defecto).
-    const factura = await incomeInvoicesService.crearIngreso(
-      {
-        companyId,
-        customer,
-        serie,
-        numero,
-        fechaEmision: e.invoice.issue_date ?? undefined,
-        fechaVencimiento: e.invoice.due_date ?? undefined,
-        lineas,
-        observaciones: `Digitalizada desde ${doc.originalFileName}`,
-      },
-      // El numero se guarda tal como se leyo (con sus ceros y su separador), el que ve la pantalla.
-      { origen: 'lector', numeroLeido: resumen.numeroFactura },
-    );
+    const factura = await incomeInvoicesService
+      .crearIngreso(
+        {
+          companyId,
+          customer,
+          serie,
+          numero,
+          fechaEmision: e.invoice.issue_date ?? undefined,
+          fechaVencimiento: e.invoice.due_date ?? undefined,
+          lineas,
+          observaciones: `Digitalizada desde ${doc.originalFileName}`,
+        },
+        // El numero se guarda tal como se leyo (con sus ceros y su separador), el que ve la pantalla.
+        { origen: 'lector', numeroLeido: resumen.numeroFactura },
+      )
+      // Si la base de datos falla, la factura no queda registrada: se dice asi, en castellano.
+      .catch((err: unknown) => {
+        throw errorFalloBD(err, QUE_HACER_REGISTRAR, 'registrar la factura de venta leída') ?? err;
+      });
 
     // Archivar el PDF en su carpeta definitiva. No es critico: si falla, la
     // factura ya esta creada y el documento queda enlazado igualmente.
