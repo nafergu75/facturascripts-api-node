@@ -91,7 +91,10 @@ export const movementsController = {
   /**
    * Resumen fiscal del periodo a partir de las FACTURAS (no de los movimientos):
    * ventas emitidas e IVA repercutido, gastos e IVA soportado, y retenciones.
-   * Mismo criterio que el 303: ventas FINAL y ni ventas ni gastos en borrador.
+   * Las mismas facturas que el 303 (ventas FINAL; ni ventas ni gastos en
+   * borrador), pero por la FECHA DE FACTURA: el 303 pone un gasto en su fecha
+   * de registro y una venta en la de la operacion si la tiene, asi que un
+   * gasto registrado tarde puede caer aqui en otro periodo (resumenFiscal.service).
    * Importes SIEMPRE en la moneda de cuenta (las columnas de siempre), tambien
    * de las facturas emitidas en otra moneda; `monedaCuenta` dice cual es.
    * GET /stats/fiscal?anio=2026[&trimestre=1-4 | &mes=1-12]: el mismo periodo
@@ -140,7 +143,10 @@ export const movementsController = {
     sendOk(res, await porMesPanel(companyId, periodo, opcionesPanel(req, companyId)));
   }),
 
-  /** GET /stats/ingresos-por-cliente?anio=2026[&trimestre | &mes]: base de las ventas por cliente. */
+  /**
+   * GET /stats/ingresos-por-cliente?anio=2026[&trimestre | &mes]: base de las
+   * ventas por cliente. Tambien con solo Ventas (ventas:read): son sus ventas.
+   */
   getIngresosPorCliente: asyncHandler(async (req, res) => {
     const companyId = req.companyId ?? req.params.companyId;
     sendOk(res, await ingresosPorClientePanel(companyId, periodoPanel(req.query)));
