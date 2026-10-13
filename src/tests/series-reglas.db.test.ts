@@ -204,18 +204,18 @@ describe('rectificativas de tickets (RECTIFICATIVA_SIMPLIFICADA)', () => {
   });
 
   it('la primera R5 crea la RT activa y predeterminada; la siguiente usa la misma', async () => {
-    expect(await codigoSerieTickets(OTRA)).toEqual({ codigo: 'RT', existe: false });
+    expect(await codigoSerieTickets(OTRA)).toEqual({ codigo: 'RT', existe: false, desactivada: false });
     const rt = await obtenerOCrearSerieTickets(OTRA);
     expect(rt).toMatchObject({ codigo: 'RT', tipoDocumento: 'RECTIFICATIVA_SIMPLIFICADA', activa: true, porDefecto: true });
     expect((await obtenerOCrearSerieTickets(OTRA)).id).toBe(rt.id);
-    expect(await codigoSerieTickets(OTRA)).toEqual({ codigo: 'RT', existe: true });
+    expect(await codigoSerieTickets(OTRA)).toEqual({ codigo: 'RT', existe: true, desactivada: false });
   });
 
   it('si RT es otra serie, crea la RTK', async () => {
     const empresa = `${COMPANY_ID}-rtk`;
     await prisma.company.create({ data: { id: empresa, name: 'Series RTK SL', fsBaseUrl: 'http://localhost:8080', fsApiKeyEnc: 'k' } });
     await prisma.invoiceSeries.create({ data: { companyId: empresa, codigo: 'RT', descripcion: 'Otra cosa', tipoDocumento: 'FACTURA', activa: true } });
-    expect(await codigoSerieTickets(empresa)).toEqual({ codigo: 'RTK', existe: false });
+    expect(await codigoSerieTickets(empresa)).toEqual({ codigo: 'RTK', existe: false, desactivada: false });
     expect((await obtenerOCrearSerieTickets(empresa)).codigo).toBe('RTK');
   });
 
@@ -224,6 +224,25 @@ describe('rectificativas de tickets (RECTIFICATIVA_SIMPLIFICADA)', () => {
     await prisma.company.create({ data: { id: empresa, name: 'Series RT off SL', fsBaseUrl: 'http://localhost:8080', fsApiKeyEnc: 'k' } });
     await prisma.invoiceSeries.create({ data: { companyId: empresa, codigo: 'TK', descripcion: 'Tickets', tipoDocumento: 'RECTIFICATIVA_SIMPLIFICADA', activa: false } });
     await expect(obtenerOCrearSerieTickets(empresa)).rejects.toMatchObject({ statusCode: 400, details: { codigo: 'SERIE_TICKETS_DESACTIVADA', campo: 'serie' } });
+    // La pantalla lo sabe antes de guardar: existe, pero desactivada (no «se crea al guardar»).
+    expect(await codigoSerieTickets(empresa)).toEqual({ codigo: 'TK', existe: true, desactivada: true });
+  });
+
+  it('una serie histórica del lector de ese tipo no cuenta: la primera R5 crea la RT (y una histórica RT se salta)', async () => {
+    const empresa = `${COMPANY_ID}-rthist`;
+    await prisma.company.create({ data: { id: empresa, name: 'Series RT hist SL', fsBaseUrl: 'http://localhost:8080', fsApiKeyEnc: 'k' } });
+    const cliente = await prisma.customer.create({ data: { companyId: empresa, nombreFiscal: 'Cliente', nifCif: 'B50000091' } });
+    // Dos series históricas de rectificativas de tickets, con una factura leída cada una (numeración del otro programa).
+    for (const codigo of ['TKH', 'RT']) {
+      await prisma.invoiceSeries.create({ data: { companyId: empresa, codigo, descripcion: `Serie ${codigo} (facturas de otro programa)`, tipoDocumento: 'RECTIFICATIVA_SIMPLIFICADA', activa: false } });
+      await prisma.incomeInvoice.create({
+        data: { companyId: empresa, customerId: cliente.id, serie: codigo, numero: 1, numeroCompleto: `${codigo}-1`, fechaEmision: '2026-05-01', fechaVencimiento: '2026-05-01', origen: 'lector', estadoDocumento: 'FINAL', esRectificativa: true, tipoFactura: 'R5' },
+      });
+    }
+    expect(await codigoSerieTickets(empresa)).toEqual({ codigo: 'RTK', existe: false, desactivada: false });
+    const rtk = await obtenerOCrearSerieTickets(empresa);
+    expect(rtk).toMatchObject({ codigo: 'RTK', tipoDocumento: 'RECTIFICATIVA_SIMPLIFICADA', activa: true, porDefecto: true });
+    await prisma.incomeInvoice.deleteMany({ where: { companyId: empresa } });
   });
 
   it('se puede crear desde Configuración > Series y listar por su tipo', async () => {
