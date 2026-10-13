@@ -543,8 +543,10 @@ async function faseBancos({ tx, c, a, estado, anterior, creado }: ContextoFase):
     return `Sin apertura no hay bancos que enlazar${fiscalesTexto}.`;
   }
   const r = await aplicarBancos(tx, c.companyId, c.ejercicio - 1, saldos572(a.apertura.lineas), bancos, anterior, creado);
-  if (!r.tocadas) return `Ningún banco con el saldo del extracto todavía: escríbelo después en el resumen de la carga${fiscalesTexto}.`;
-  return `${varios(r.tocadas, 'banco enlazado', 'bancos enlazados')} con el saldo del extracto a 31-12-${c.ejercicio - 1}${r.altas ? ` (${varios(r.altas, 'cuenta nueva', 'cuentas nuevas')} en Tesorería)` : ''}${fiscalesTexto}.`;
+  // Avisos de las cuentas enlazadas por su IBAN (ver aplicarBancos).
+  const avisos = r.avisos?.length ? ` ${r.avisos.join(' ')}` : '';
+  if (!r.tocadas) return `Ningún banco con el saldo del extracto todavía: escríbelo después en el resumen de la carga${fiscalesTexto}.${avisos}`;
+  return `${varios(r.tocadas, 'banco enlazado', 'bancos enlazados')} con el saldo del extracto a 31-12-${c.ejercicio - 1}${r.altas ? ` (${varios(r.altas, 'cuenta nueva', 'cuentas nuevas')} en Tesorería)` : ''}${fiscalesTexto}.${avisos}`;
 }
 
 /** Tamano maximo del comparativo (PriorYearData.datosJSON es TEXT, 64 KB). */
