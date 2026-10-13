@@ -253,3 +253,25 @@ describe('347 con abonos de proveedor: ejemplo de la sede y umbral en valor abso
     expect(campo(l, 136, 136)).toBe('N');
   });
 });
+
+describe('347: abono de venta de una factura del año anterior', () => {
+  it('resta en el trimestre de su fecha, con signo, y el umbral se mide en valor absoluto (ejemplo de la sede)', () => {
+    const facturas: FacturaFiscal[] = [
+      venta('B12345674', 'Distribuciones Turia, S.L.', '2026-11-10', 5000, 1050),
+      // Devolución de 4.000 € (con IVA, -4.840) de la venta de 2026, en el 1T de 2027.
+      venta('B12345674', 'Distribuciones Turia, S.L.', '2027-02-15', -4000, -840, { rectificativa: true }),
+    ];
+    const op2027 = agregar347(facturas, 2027).operaciones;
+    expect(op2027).toEqual([expect.objectContaining({ cifnif: 'B12345674', tipo: 'cliente', baseAnual: -4840, trimestres: [-4840, 0, 0, 0] })]);
+    // El de 2026 no cambia.
+    expect(agregar347(facturas, 2026).operaciones).toEqual([expect.objectContaining({ baseAnual: 6050 })]);
+  });
+
+  it('una sustitución cuenta la diferencia (llega así de obtenerFacturasFiscales): no suma la factura entera otra vez', () => {
+    const facturas: FacturaFiscal[] = [
+      venta('B12345674', 'Distribuciones Turia, S.L.', '2027-02-15', 5000, 1050),
+      venta('B12345674', 'Distribuciones Turia, S.L.', '2027-05-15', -1000, -210, { rectificativa: true }),
+    ];
+    expect(agregar347(facturas, 2027).operaciones).toEqual([expect.objectContaining({ baseAnual: 4840, trimestres: [6050, -1210, 0, 0] })]);
+  });
+});
