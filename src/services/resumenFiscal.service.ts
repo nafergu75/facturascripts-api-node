@@ -20,7 +20,7 @@ import type { Prisma } from '@prisma/client';
 import { prisma } from '../config/database';
 import { GASTO_VIGENTE } from '../domain/factura-gasto.model';
 import { fechaDevengoVenta } from '../domain/tipo-operacion.model';
-import { diferenciaSustitucion } from '../domain/rectificativa-venta.model';
+import { diferenciaSustitucion, type DiferenciaSustitucion } from '../domain/rectificativa-venta.model';
 import { aCentimos } from '../utils/money';
 import { originalesDeSustituciones, ventasQuePuedenDevengarseEntre } from './impuestosCalculo.service';
 import { lineasImportesDe } from './rectificativasVenta.service';
@@ -100,14 +100,36 @@ export interface VentaResumen {
 }
 
 /**
+ * La diferencia con su original de cada rectificativa por sustitucion (S) de la
+ * lista que tiene la original en la app, por sus lineas, como el 303
+ * (diferenciaSustitucion). Las demas facturas no salen. Solo se leen las
+ * lineas de esas S y de sus originales (son pocas).
+ */
+export async function diferenciasDeSustituciones(
+  companyId: string,
+  ventas: Array<{ id: string; esRectificativa: boolean; tipoRectificativa: string | null; facturaOriginalId: string | null }>,
+): Promise<Map<string, DiferenciaSustitucion>> {
+  const originales = await originalesDeSustituciones(companyId, ventas);
+  const out = new Map<string, DiferenciaSustitucion>();
+  if (!originales.size) return out;
+  const lineas = await prisma.incomeInvoiceLine.findMany({
+    where: { invoiceId: { in: [...originales.keys()] } },
+    select: { invoiceId: true, tipoIva: true, accountCode: true, baseLine: true, ivaImporte: true, retencionImporte: true },
+  });
+  for (const [sId, o] of originales) {
+    const deLaS = lineas.filter((l) => l.invoiceId === sId);
+    out.set(sId, diferenciaSustitucion(lineasImportesDe({ lineas: deLaS }), lineasImportesDe(o)));
+  }
+  return out;
+}
+
+/**
  * Ventas del periodo como las cuenta el 303: emitidas, por la fecha de su
  * devengo (fechaDevengoVenta), y una rectificativa por sustitucion con la
  * original en la app, por su diferencia (diferenciaSustitucion), en el periodo
  * de la S. Con `customerId`, las de ese cliente (la S va siempre a nombre del
  * cliente de su original). La misma lista para el resumen, los meses y los
  * clientes del panel: asi cuadran.
- *
- * Las lineas solo se leen de las S con la original en la app (son pocas).
  */
 export async function ventasDelResumen(companyId: string, rango: RangoFechas, customerId?: string): Promise<VentaResumen[]> {
   const { desde, hasta } = rango;
@@ -129,22 +151,9 @@ export async function ventasDelResumen(companyId: string, rango: RangoFechas, cu
     },
   });
   const delPeriodo = filas.map((f) => ({ ...f, fecha: fechaDevengoVenta(f) })).filter((f) => f.fecha >= desde && f.fecha <= hasta);
-  const originales = await originalesDeSustituciones(companyId, delPeriodo);
-  const lineasDe = new Map<string, Array<{ tipoIva: number; accountCode: string | null; baseLine: number; ivaImporte: number; retencionImporte: number }>>();
-  if (originales.size) {
-    const lineas = await prisma.incomeInvoiceLine.findMany({
-      where: { invoiceId: { in: [...originales.keys()] } },
-      select: { invoiceId: true, tipoIva: true, accountCode: true, baseLine: true, ivaImporte: true, retencionImporte: true },
-    });
-    for (const l of lineas) {
-      const de = lineasDe.get(l.invoiceId) ?? [];
-      de.push({ tipoIva: l.tipoIva, accountCode: l.accountCode, baseLine: Number(l.baseLine), ivaImporte: Number(l.ivaImporte), retencionImporte: Number(l.retencionImporte) });
-      lineasDe.set(l.invoiceId, de);
-    }
-  }
+  const diferencias = await diferenciasDeSustituciones(companyId, delPeriodo);
   return delPeriodo.map((f) => {
-    const o = originales.get(f.id);
-    const d = o ? diferenciaSustitucion(lineasImportesDe({ lineas: lineasDe.get(f.id) ?? [] }), lineasImportesDe(o)) : null;
+    const d = diferencias.get(f.id);
     return {
       id: f.id,
       customerId: f.customerId,
