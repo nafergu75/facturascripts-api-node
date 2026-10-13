@@ -431,7 +431,8 @@ export interface UltimaFacturaPanel {
   status: 'approved';
   /**
    * Cobro o pago, para la persona. Ventas: «Cobrada», «Cobrada en parte»,
-   * «Vencida», «Pendiente de cobro» o «Rectificativa». Gastos: «Pagada»,
+   * «Vencida», «Pendiente de cobro», «Rectificativa» o «Sustituida» (la
+   * original de una rectificativa por sustitucion). Gastos: «Pagada»,
    * «Pagada en parte», «Vencida», «Pendiente de pago», «Abono» (rectificativa
    * que baja) o «Rectificativa» (la que sube o se queda igual).
    */
@@ -495,20 +496,31 @@ export async function ultimasFacturasPanel(companyId: string, limite: number, an
       },
     }),
   ]);
-  // Lo cobrado de cada venta de la lista (en la moneda de cuenta, como su total).
-  const cobros = ventas.length
-    ? await prisma.invoicePayment.groupBy({
-        by: ['invoiceId'],
-        where: { companyId, invoiceType: 'INGRESO', estado: 'ACTIVO', invoiceId: { in: ventas.map((f) => f.id) } },
-        _sum: { importe: true },
-      })
-    : [];
+  // Lo cobrado de cada venta de la lista (en la moneda de cuenta, como su total)
+  // y las que ha sustituido una rectificativa por sustitucion (S) emitida.
+  const idsVentas = ventas.map((f) => f.id);
+  const [cobros, sustituciones] = idsVentas.length
+    ? await Promise.all([
+        prisma.invoicePayment.groupBy({
+          by: ['invoiceId'],
+          where: { companyId, invoiceType: 'INGRESO', estado: 'ACTIVO', invoiceId: { in: idsVentas } },
+          _sum: { importe: true },
+        }),
+        prisma.incomeInvoice.findMany({
+          where: { ...whereVentasResumen(companyId), esRectificativa: true, tipoRectificativa: 'S', facturaOriginalId: { in: idsVentas } },
+          select: { facturaOriginalId: true },
+        }),
+      ])
+    : [[], []];
   const cobradoDe = new Map(cobros.map((c) => [c.invoiceId, centimosDe(c._sum.importe)]));
+  const sustituidas = new Set(sustituciones.map((s) => s.facturaOriginalId));
   /** Estado de cobro de una venta: con los cobros registrados, como el de pago de un gasto. */
   const estadoVenta = (f: (typeof ventas)[number]): string => {
     const total = centimosDe(f.totalFactura);
     // Una rectificativa (también la que sube o la de sustitución) no se presenta como un cobro.
     if (f.esRectificativa || total < 0) return 'Rectificativa';
+    // La ocupa la rectificativa que la sustituye: ya no se cobra esta (como en «Cobros de clientes»).
+    if (sustituidas.has(f.id)) return 'Sustituida';
     const cobrado = cobradoDe.get(f.id) ?? 0;
     // PAID sin cobros: marcada como cobrada a mano antes de que existieran los cobros.
     if (f.estado === 'PAID' || (total > 0 && cobrado >= total)) return 'Cobrada';
