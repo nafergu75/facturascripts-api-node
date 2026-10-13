@@ -8,6 +8,7 @@ import { textoInscripcionRegistral } from './legalConfig.service';
 import { desgloseIvaPorTipo } from './accounting-engine.service';
 import { perfilDesdeConfig } from './perfilEmpresa.service';
 import { cuentaParaFactura, leerAjustesFacturacion } from './ajustesFacturacion.service';
+import { enlacesDeVentas } from './rectificativasVenta.service';
 import { importesDoc, nombreMoneda, textoTipo } from '../domain/divisas';
 import {
   esPaisEspana,
@@ -133,6 +134,14 @@ export interface DatosFacturaPdf {
   } | null;
   /** Factura que corrige una rectificativa. */
   original: { numeroCompleto: string | null; fechaEmision: string } | null;
+  /**
+   * Rectificativas (art. 15.4 y 15.5 RD 1619/2012): todas las facturas que
+   * corrige (numero y fecha; de la app o de fuera) o el periodo de un rappel, y
+   * el codigo de la causa. Sin ellas, la de `original`.
+   */
+  rectificadas?: Array<{ numero: string; fecha: string | null }>;
+  periodoRectificado?: { desde: string; hasta: string } | null;
+  causaRectificacion?: string | null;
   /** Cuenta donde se cobra (solo se imprime si la forma de pago es transferencia). */
   cuenta: { iban: string; bic: string | null } | null;
   /** Texto legal al pie (Configuración > Facturación), en letra pequeña al final. */
@@ -220,8 +229,11 @@ interface TextosPdf {
   giro: string;
   bic: string;
   rectificacion: string;
-  rectifica: (ref: { numero: string; fecha: string } | null, sustitucion: boolean, tipoFactura: string) => string;
+  /** Que corrige: una o varias facturas (numero y fecha ya formateada) o un periodo, la forma y el tipo. */
+  rectifica: (refs: Array<{ numero: string; fecha: string }>, periodo: { desde: string; hasta: string } | null, sustitucion: boolean, tipoFactura: string) => string;
   motivo: string;
+  /** Causa de la rectificativa por su codigo (domain/rectificativa-venta.model.ts). */
+  causas: Record<string, string>;
   concepto: string;
   cant: string;
   precio: string;
@@ -288,11 +300,29 @@ const TEXTOS: Record<Idioma, TextosPdf> = {
     giro: 'Recibo domiciliado en su cuenta',
     bic: 'BIC',
     rectificacion: 'Rectificación',
-    rectifica: (ref, sustitucion, tipoFactura) =>
-      `Rectifica ${ref ? `la factura ${ref.numero}, de ${ref.fecha}` : 'una factura anterior'}, ${
-        sustitucion ? 'por sustitución' : 'por diferencias'
-      } (${tipoFactura}).`,
+    rectifica: (refs, periodo, sustitucion, tipoFactura) => {
+      const una = (r: { numero: string; fecha: string }) => `${r.numero}${r.fecha ? `, de ${r.fecha}` : ''}`;
+      const que = periodo
+        ? `las ventas del ${periodo.desde} al ${periodo.hasta}`
+        : !refs.length
+          ? 'una factura anterior'
+          : refs.length === 1
+            ? `la factura ${una(refs[0])}`
+            : `las facturas ${refs.slice(0, -1).map(una).join('; ')} y ${una(refs[refs.length - 1])}`;
+      return `Rectifica ${que}, ${sustitucion ? 'por sustitución' : 'por diferencias'} (${tipoFactura}).`;
+    },
     motivo: 'Motivo',
+    causas: {
+      DEVOLUCION: 'Devolución de mercancías o envases',
+      DESCUENTO: 'Descuento o bonificación posterior',
+      RAPPEL: 'Rappel por volumen',
+      CAMBIO_PRECIO: 'La operación queda sin efecto o cambia el precio pactado',
+      ERROR_DERECHO: 'Error al interpretar la norma (error fundado de derecho)',
+      ERROR: 'Error en datos o importes',
+      OTROS: 'Otra causa',
+      CONCURSO: 'Concurso del cliente',
+      IMPAGO: 'Impago (crédito incobrable)',
+    },
     concepto: 'Concepto',
     cant: 'Cant.',
     precio: 'Precio',
@@ -356,9 +386,29 @@ const TEXTOS: Record<Idioma, TextosPdf> = {
     giro: 'Direct debit from your account',
     bic: 'SWIFT/BIC',
     rectificacion: 'Credit note',
-    rectifica: (ref, sustitucion) =>
-      `${sustitucion ? 'Replaces' : 'Corrects'} ${ref ? `invoice ${ref.numero}, dated ${ref.fecha}` : 'a previous invoice'}.`,
+    rectifica: (refs, periodo, sustitucion) => {
+      const una = (r: { numero: string; fecha: string }) => `${r.numero}${r.fecha ? `, dated ${r.fecha}` : ''}`;
+      const que = periodo
+        ? `sales from ${periodo.desde} to ${periodo.hasta}`
+        : !refs.length
+          ? 'a previous invoice'
+          : refs.length === 1
+            ? `invoice ${una(refs[0])}`
+            : `invoices ${refs.slice(0, -1).map(una).join('; ')} and ${una(refs[refs.length - 1])}`;
+      return `${sustitucion ? 'Replaces' : 'Corrects'} ${que}.`;
+    },
     motivo: 'Reason',
+    causas: {
+      DEVOLUCION: 'Return of goods or packaging',
+      DESCUENTO: 'Discount or bonus after the invoice',
+      RAPPEL: 'Volume rebate',
+      CAMBIO_PRECIO: 'Sale cancelled or agreed price changed',
+      ERROR_DERECHO: 'Misapplication of the law',
+      ERROR: 'Error in data or amounts',
+      OTROS: 'Other reason',
+      CONCURSO: 'Customer insolvency proceedings',
+      IMPAGO: 'Bad debt (unpaid)',
+    },
     concepto: 'Description',
     cant: 'Qty',
     precio: 'Unit price',
@@ -604,6 +654,28 @@ export function mencionDocumento(f: DatosFacturaPdf): { es: string; en: string |
 
 // ---------- Dibujo ----------
 
+/**
+ * Bloque «Rectificación» del PDF (art. 15.4 y 15.5 RD 1619/2012): que facturas
+ * corrige (o el periodo de un rappel), por diferencias o por sustitucion, el
+ * tipo (R1-R5) y la causa con su explicacion. Una linea por frase, sin partir.
+ */
+export function textoRectificacionPdf(f: DatosFacturaPdf, idioma: Idioma): string[] {
+  const T = TEXTOS[idioma];
+  const F = formatos(idioma, formatoPorPais(f.emisor?.pais ?? 'ES'), f.moneda ?? 'EUR');
+  const refs = f.rectificadas?.length
+    ? f.rectificadas.map((r) => ({ numero: r.numero, fecha: r.fecha ? F.fecha(r.fecha) : '' }))
+    : f.original?.numeroCompleto
+      ? [{ numero: f.original.numeroCompleto, fecha: f.original.fechaEmision ? F.fecha(f.original.fechaEmision) : '' }]
+      : [];
+  const periodo = f.periodoRectificado ? { desde: F.fecha(f.periodoRectificado.desde), hasta: F.fecha(f.periodoRectificado.hasta) } : null;
+  const out = [T.rectifica(refs, periodo, f.tipoRectificativa === 'S', f.tipoFactura)];
+  const causa = f.causaRectificacion ? T.causas[f.causaRectificacion] : null;
+  const explicacion = f.motivoRectificacion?.trim() ?? '';
+  if (causa) out.push(`${T.motivo}: ${causa}.${explicacion ? ` ${explicacion}` : ''}`);
+  else if (explicacion) out.push(`${T.motivo}: ${explicacion}`);
+  return out;
+}
+
 /** Dibuja la factura y devuelve el PDF/A. No toca la BD. */
 export async function renderizarFactura(f: DatosFacturaPdf): Promise<Buffer> {
   const formato = formatoPorPais(f.emisor?.pais ?? 'ES');
@@ -831,14 +903,12 @@ export async function renderizarFactura(f: DatosFacturaPdf): Promise<Buffer> {
   if (pagoNota) texto(p, pagoNota, COL_B, yVal - 13, { tam: 8, fuente: mono, color: GRIS });
   y -= altoFranja + 26;
 
-  // ---------- Rectificativa: a que factura corrige y por que ----------
+  // ---------- Rectificativa: que facturas corrige (o que periodo), como y por que ----------
   if (f.esRectificativa) {
-    const ref = f.original?.numeroCompleto ? { numero: f.original.numeroCompleto, fecha: F.fecha(f.original.fechaEmision) } : null;
-    const lineas = partir(T.rectifica(ref, f.tipoRectificativa === 'S', f.tipoFactura), normal, 9, anchoUtil);
-    const motivo = f.motivoRectificacion?.trim() ? partir(`${T.motivo}: ${f.motivoRectificacion.trim()}`, normal, 9, anchoUtil) : [];
+    const lineas = textoRectificacionPdf(f, idioma).flatMap((t) => partir(t, normal, 9, anchoUtil));
     etiqueta(p, T.rectificacion, MARGEN, y);
     y -= 14;
-    for (const l of [...lineas, ...motivo]) {
+    for (const l of lineas) {
       texto(p, l, MARGEN, y);
       y -= 12;
     }
@@ -1165,6 +1235,8 @@ export async function datosPdfFactura(companyId: string, id: string): Promise<{ 
   // Las antiguas del lector no tienen origen, pero si su documento leido.
   const registroLector = factura.origen === 'lector' || !!factura.readerDocument;
 
+  // Rectificativa: todas las facturas que corrige (enlaces) o el periodo, y la causa.
+  const rect = factura.esRectificativa ? ((await enlacesDeVentas(prisma, [factura])).get(factura.id) ?? null) : null;
   const [empresa, original, todasCuentas, compania, ajustes] = await Promise.all([
     prisma.legalConfig.findUnique({ where: { companyId } }).catch(() => null),
     factura.facturaOriginalId
@@ -1285,6 +1357,13 @@ export async function datosPdfFactura(companyId: string, id: string): Promise<{ 
       : factura.rectificaFueraNumero
         ? { numeroCompleto: factura.rectificaFueraNumero, fechaEmision: factura.rectificaFueraFecha ?? '' }
         : null,
+    ...(rect
+      ? {
+          rectificadas: rect.originales.map((o) => ({ numero: o.numeroCompleto, fecha: o.fecha })),
+          periodoRectificado: rect.periodo,
+          causaRectificacion: factura.causaRectificacion ?? null,
+        }
+      : {}),
     cuenta,
     textoPie,
     logo: empresa?.logo && empresa.logoMime ? { bytes: new Uint8Array(empresa.logo), mime: empresa.logoMime } : null,
