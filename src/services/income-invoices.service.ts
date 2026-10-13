@@ -303,7 +303,8 @@ export interface IncomeInvoiceResp {
   /** Proforma ya pasada a factura: id de la factura creada. */
   facturaGeneradaId?: string;
   /** Solo en la ficha (obtenerPorId): rectificativas emitidas de esta factura (por sus enlaces y por facturaOriginalId). */
-  rectificadaPor?: Array<{ id: string; numeroCompleto: string | null; fechaEmision: string; totalFactura: number; tipoRectificativa: string | null; tipoFactura: string }>;
+  /** totalFactura: el de la rectificativa entera; parte: lo que toca a esta factura (su reparto o, por sustitucion, la diferencia). */
+  rectificadaPor?: Array<{ id: string; numeroCompleto: string | null; fechaEmision: string; totalFactura: number; parte: number; tipoRectificativa: string | null; tipoFactura: string }>;
   /** Rectificativas: que rectifica (facturas de la app o de fuera, o un periodo), forma, motivo y explicacion. */
   rectificativa?: RectificativaResp;
   /** Solo en la ficha de un abono (total < 0): lo que queda a favor del cliente, en la moneda de la factura y sin lo ya devuelto. */
