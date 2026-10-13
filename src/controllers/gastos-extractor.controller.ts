@@ -11,6 +11,7 @@ import { Request, Response } from 'express';
 import { asyncHandler } from '../utils/async-handler';
 import { badRequest } from '../utils/http-errors';
 import { prisma } from '../config/database';
+import { logger } from '../config/logger';
 import { AVISO_NO_FACTURA, gastosExtractorService, GastoExtraido, GastoExtraidoEmpresa } from '../services/gastos-extractor.service';
 import { cuentaHabitualDeProveedor } from '../services/cuentasLinea.service';
 import { empresaConNominas, expenseInvoicesService } from '../services/expense-invoices.service';
@@ -18,7 +19,7 @@ import { normalizarNumeroProveedor } from '../domain/factura-gasto.model';
 import { limpiarNif } from '../domain/tipo-operacion.model';
 import { normalizarNif } from '../utils/nif';
 import { registrarAuditoria } from '../services/auditoria.service';
-import { errorFalloBD, QUE_HACER_REGISTRAR } from '../utils/errores-bd';
+import { CODIGO_FALLO_BD, errorFalloBD, QUE_HACER_REGISTRAR } from '../utils/errores-bd';
 import { comprobarLecturaParaConfirmar, esLecturaRectificativa, prefijoObservaciones, vincularLectura } from '../services/lectura/confirmar';
 import { exigirProveedorDadoDeAlta } from '../services/lectura/terceros-lector';
 
@@ -143,13 +144,23 @@ export const gastosExtractorController = {
     const { cuentaContableBase: _antigua, lecturaId: _lectura, revisado: _revisado, noEsRectificativa: _noEs, ...resto } = cuerpo;
     // Factura y asiento van en la misma transaccion: si la base de datos falla,
     // no queda nada registrado y se dice asi, en castellano (no el texto de Prisma).
+    // Si falla justo despues de grabarla, registrarGasto ya dice que si esta
+    // registrada (y su id): la lectura se enlaza igual, para que el original
+    // quede con la factura y no se pueda registrar otra vez.
     const r = await expenseInvoicesService
       .registrarGasto(
         companyId,
         { ...resto, ...(cuerpo.cuentaGasto === undefined && cuenta ? { cuentaGasto: cuenta } : {}) },
         { contabilizar: 'DRAFT', prefijoObservaciones: prefijo, usuarioEmail: req.user?.email, userId: req.user?.userId },
       )
-      .catch((e: unknown) => {
+      .catch(async (e: unknown) => {
+        const d = (e as { details?: { codigo?: unknown; facturaYaRegistradaId?: unknown } } | null)?.details;
+        const yaGrabada = d?.codigo === CODIGO_FALLO_BD ? d.facturaYaRegistradaId : undefined;
+        if (lectura && typeof yaGrabada === 'string') {
+          await vincularLectura(companyId, { lecturaId: lectura.id }, { expenseInvoiceId: yaGrabada, userId: req.user?.userId, revisada: cuerpo.revisado === true }).catch(
+            (err: unknown) => logger.warn('[lectura] No se ha podido enlazar la lectura con la factura ya registrada', { lecturaId: lectura.id, error: (err as { name?: string })?.name ?? 'Error' }),
+          );
+        }
         throw errorFalloBD(e, QUE_HACER_REGISTRAR, 'registrar la factura de gasto leída') ?? e;
       });
     if (lectura) await vincularLectura(companyId, { lecturaId: lectura.id }, { expenseInvoiceId: r.factura.id, userId: req.user?.userId, revisada: cuerpo.revisado === true });
