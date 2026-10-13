@@ -263,12 +263,37 @@ export async function obtenerSeriePorDefecto(
 /** Codigos que se prueban, en orden, para la serie de rectificativas de tickets. */
 const CODIGOS_TICKETS = ['RT', 'RTK'];
 
-/** Codigo que tendra la serie de rectificativas de tickets: la que ya existe o la que se crearia (RT o, si esta ocupada, RTK). */
-export async function codigoSerieTickets(companyId: string): Promise<{ codigo: string; existe: boolean }> {
+/**
+ * Serie historica: desactivada, con facturas del lector y ninguna emitida por
+ * la app. Guarda la numeracion de otro programa (obtenerOCrearSerieHistorica):
+ * no cuenta como una serie de la empresa que se haya desactivado.
+ */
+async function esSerieHistorica(companyId: string, s: { codigo: string; activa: boolean }): Promise<boolean> {
+  if (s.activa) return false;
+  if (await tieneFacturasDeLaApp(companyId, s.codigo)) return false;
+  return (await prisma.incomeInvoice.count({ where: { companyId, serie: s.codigo } })) > 0;
+}
+
+/** La primera serie de rectificativas de tickets de la empresa desactivada (sin contar las historicas del lector), o null. */
+async function serieTicketsDesactivada(companyId: string): Promise<{ codigo: string } | null> {
+  const series = await prisma.invoiceSeries.findMany({ where: { companyId, tipoDocumento: 'RECTIFICATIVA_SIMPLIFICADA', activa: false }, orderBy: { codigo: 'asc' } });
+  for (const s of series) if (!(await esSerieHistorica(companyId, s))) return { codigo: s.codigo };
+  return null;
+}
+
+/**
+ * Serie de rectificativas de tickets para la pantalla: la que ya existe y esta
+ * activa; la de la empresa que existe pero esta desactivada (`desactivada`: no
+ * se crea otra, hay que activarla en Configuracion > Series); o la que se
+ * crearia al guardar la primera R5 (RT o, si esta ocupada, RTK; `existe` false).
+ */
+export async function codigoSerieTickets(companyId: string): Promise<{ codigo: string; existe: boolean; desactivada: boolean }> {
   const def = await obtenerSeriePorDefecto(companyId, 'RECTIFICATIVA_SIMPLIFICADA');
-  if (def) return { codigo: def.codigo, existe: true };
+  if (def) return { codigo: def.codigo, existe: true, desactivada: false };
+  const desactivada = await serieTicketsDesactivada(companyId);
+  if (desactivada) return { codigo: desactivada.codigo, existe: true, desactivada: true };
   const ocupados = new Set((await prisma.invoiceSeries.findMany({ where: { companyId, codigo: { in: CODIGOS_TICKETS } }, select: { codigo: true } })).map((s) => s.codigo));
-  return { codigo: CODIGOS_TICKETS.find((c) => !ocupados.has(c)) ?? CODIGOS_TICKETS[0], existe: false };
+  return { codigo: CODIGOS_TICKETS.find((c) => !ocupados.has(c)) ?? CODIGOS_TICKETS[0], existe: false, desactivada: false };
 }
 
 /**
@@ -277,12 +302,13 @@ export async function codigoSerieTickets(companyId: string): Promise<{ codigo: s
  * activa y predeterminada. La ley pide que vayan aparte de la R (art. 7.1.a RD
  * 1619/2012). Si la empresa ya tiene series de este tipo pero todas
  * desactivadas, 400 SERIE_TICKETS_DESACTIVADA: no se crea otra a sus espaldas.
+ * Las historicas del lector (numeracion de otro programa) no cuentan: con ellas
+ * se crea la RT igual, y su codigo no se reutiliza.
  */
 export async function obtenerOCrearSerieTickets(companyId: string): Promise<SerieDocumento> {
   const def = await obtenerSeriePorDefecto(companyId, 'RECTIFICATIVA_SIMPLIFICADA');
   if (def) return def;
-  const existentes = await prisma.invoiceSeries.count({ where: { companyId, tipoDocumento: 'RECTIFICATIVA_SIMPLIFICADA' } });
-  if (existentes > 0) {
+  if (await serieTicketsDesactivada(companyId)) {
     throw badRequest('Las series de rectificativas de tickets están desactivadas. Activa una en Configuración > Series para rectificar tickets.', {
       codigo: 'SERIE_TICKETS_DESACTIVADA',
       campo: 'serie',
@@ -295,7 +321,8 @@ export async function obtenerOCrearSerieTickets(companyId: string): Promise<Seri
       create: { companyId, codigo, descripcion: 'Rectificativas de tickets', tipoDocumento: 'RECTIFICATIVA_SIMPLIFICADA', activa: true, porDefecto: true },
       update: {},
     });
-    if (s.tipoDocumento === 'RECTIFICATIVA_SIMPLIFICADA') return aDominio(s);
+    // Una historica del lector con ese codigo (desactivada) no sirve: se prueba el siguiente.
+    if (s.tipoDocumento === 'RECTIFICATIVA_SIMPLIFICADA' && s.activa) return aDominio(s);
   }
   throw conflict('Las series RT y RTK ya existen y son de otro tipo: crea en Configuración > Series una serie de rectificativas de tickets.', {
     codigo: 'SERIE_TICKETS_OCUPADA',
