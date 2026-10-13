@@ -227,6 +227,8 @@ export async function contabilizarFacturaIngreso(
     desgloseIva?: DesgloseIva[];
     /** Texto que se anade a la descripcion (p. ej. la nota de divisa). */
     notaDescripcion?: string;
+    /** Rectificativas: que rectifican, su tipo, forma y causa (observaciones del libro de expedidas). */
+    observacionesLibro?: string;
     /** POSTED (por defecto): la factura emitida es definitiva. DRAFT: pendiente de revisar (OCR). */
     estadoAsiento?: 'POSTED' | 'DRAFT';
   },
@@ -368,6 +370,7 @@ export async function contabilizarFacturaIngreso(
     // Devengo distinto de la emision: el libro (y el 303) en el periodo del devengo, con la fecha de expedicion anotada.
     const devengo = invoiceData.fechaDevengo && invoiceData.fechaDevengo !== invoiceData.fechaEmision ? invoiceData.fechaDevengo : null;
     const fechaExpedicion = `${invoiceData.fechaEmision.slice(8, 10)}/${invoiceData.fechaEmision.slice(5, 7)}/${invoiceData.fechaEmision.slice(0, 4)}`;
+    const observaciones = [invoiceData.observacionesLibro, devengo ? `Fecha de expedición: ${fechaExpedicion}` : null].filter(Boolean).join(' ');
     for (const apunte of apuntesLibroIva(invoiceData)) {
       await db.vATBook.create({
         data: {
@@ -375,7 +378,7 @@ export async function contabilizarFacturaIngreso(
           tipoLibro: 'EMITIDAS',
           numeroFactura: invoiceData.numeroFactura,
           fechaFactura: new Date(devengo ?? invoiceData.fechaEmision),
-          ...(devengo ? { observaciones: `Fecha de expedición: ${fechaExpedicion}` } : {}),
+          ...(observaciones ? { observaciones } : {}),
           nifTercero: invoiceData.clienteNif,
           nombreTercero: invoiceData.clienteNombre,
           baseImponible: apunte.base,
