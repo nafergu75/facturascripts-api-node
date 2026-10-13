@@ -9,6 +9,7 @@ import { archivarVentaSinRomper } from '../services/archivoFacturas.service';
 import { contextoFiscalEmpresa, sugerirOperacion } from '../services/fiscalidad-venta.service';
 import { resumenCobrosClientes } from '../services/cobrosClientes.service';
 import { ejercicioOActual } from '../utils/anios';
+import { detalleFalloBD, motivoSinAsiento } from '../utils/errores-bd';
 
 /** Datos de divisa para la auditoria: total en moneda de cuenta y en la de la factura. */
 function metaDivisa(f: { totalFactura: number; moneda: string; totalFacturaDoc: number; tipoCambio: number; fuenteTipoCambio: string }) {
@@ -26,9 +27,8 @@ async function contabilizar(companyId: string, invoiceId: string): Promise<Resul
   try {
     r = await accountingHooksService.onIncomeInvoiceConfirmed(companyId, invoiceId);
   } catch (err) {
-    const motivo = err instanceof Error ? err.message : String(err);
-    console.error(`Aviso: no se pudo contabilizar automáticamente la factura ${invoiceId}:`, motivo);
-    r = { contabilizada: false, motivo };
+    console.error(`Aviso: no se pudo contabilizar automáticamente la factura ${invoiceId}:`, detalleFalloBD(err) ?? (err instanceof Error ? err.message : String(err)));
+    r = { contabilizada: false, motivo: motivoSinAsiento(err) };
   }
   await archivarVentaSinRomper(companyId, invoiceId);
   return r;
