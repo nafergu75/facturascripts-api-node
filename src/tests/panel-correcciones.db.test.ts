@@ -5,7 +5,8 @@
  *    diferencia con la original (antes la venta contaba dos veces);
  *  - las ventas van por su devengo, como en el 303: una con fecha de la
  *    operacion cuenta en ese mes en el resumen, los meses y los clientes;
- *  - estados de «Ultimas facturas»: venta cobrada en parte y rectificativas
+ *  - estados de «Ultimas facturas»: venta cobrada en parte, abonos y
+ *    sustituciones como en «Cobros de clientes», y rectificativas
  *    que no bajan;
  *  - el trimestre y el mes solo admiten cifras;
  *  - con solo Ventas se leen las ventas por cliente (y nada mas del panel).
@@ -21,6 +22,7 @@ import { errorMiddleware } from '../middleware/error.middleware';
 import movementsRoutes from '../routes/movements.routes';
 import { resumenFiscalPeriodo } from '../services/resumenFiscal.service';
 import { incomeInvoicesService } from '../services/income-invoices.service';
+import { facturasPorCobrar } from '../services/cobrosClientes.service';
 
 const SUF = `${Date.now()}${randomBytes(3).toString('hex')}`;
 const E1 = `panelc-${SUF}`;
@@ -231,12 +233,48 @@ describe('estados de «Últimas facturas»', () => {
     // Las originales de una S: la sustituta ocupa su lugar.
     expect(estado('o1')).toBe('Sustituida');
     expect(estado('o2')).toBe('Sustituida');
-    // Rectificativas de venta con total positivo: por sustitución y al alza.
-    expect(estado('s1')).toBe('Rectificativa');
-    expect(estado('alza')).toBe('Rectificativa');
+    // Rectificativas de venta con total positivo (por sustitución y al alza): se cobran, como en «Cobros de clientes».
+    expect(estado('s1')).toBe('Pendiente de cobro');
+    expect(estado('alza')).toBe('Pendiente de cobro');
     // En gastos, «Abono» solo si baja; la que sube es «Rectificativa».
     expect(estado('gAlza')).toBe('Rectificativa');
     expect(estado('gAbono')).toBe('Abono');
+  });
+
+  it('con abonos y sustituciones dice lo mismo que «Cobros de clientes» y la ficha', async () => {
+    // Anulada entera por un abono, sin cobros: nada pendiente.
+    await venta('anulada', { cliente: 'gamma', fecha: '2026-06-02', base: 200, vence: '2026-06-10' });
+    await venta('abonoAnula', { cliente: 'gamma', fecha: '2026-06-03', base: -200, rectifica: { original: 'anulada', tipo: 'I' } });
+    // Cobrada entera, anulada después y devuelto el dinero al cliente.
+    await venta('devuelta', { cliente: 'gamma', fecha: '2026-06-04', base: 80 });
+    await cobro('devuelta', 96.8);
+    await venta('abonoDevuelto', { cliente: 'gamma', fecha: '2026-06-05', base: -80, rectifica: { original: 'devuelta', tipo: 'I' } });
+    await cobro('abonoDevuelto', -96.8);
+    // Rebajada a la mitad por un abono y cobrada por el resto.
+    await venta('rebajada', { cliente: 'gamma', fecha: '2026-06-06', base: 100, vence: '2026-06-10' });
+    await venta('abonoRebaja', { cliente: 'gamma', fecha: '2026-06-07', base: -50, rectifica: { original: 'rebajada', tipo: 'I' } });
+    await cobro('rebajada', 60.5);
+    // Cobrada en parte (50 de 121) y sustituida por una de 181,50: lo cobrado pasa a la S.
+    await venta('o3', { cliente: 'gamma', fecha: '2026-06-08', base: 100 });
+    await cobro('o3', 50);
+    await venta('s3', { cliente: 'gamma', fecha: '2026-06-09', base: 150, rectifica: { original: 'o3', tipo: 'S' } });
+
+    const filas = datos(await get('/stats/ultimas-facturas?limit=50&anio=2026')) as Array<{ facturaId: string; estado: string }>;
+    const estado = (clave: string) => filas.find((f) => f.facturaId === ids[clave])?.estado;
+    expect(estado('anulada')).toBe('Anulada');
+    expect(estado('devuelta')).toBe('Anulada');
+    expect(estado('rebajada')).toBe('Cobrada');
+    expect(estado('o3')).toBe('Sustituida');
+    expect(estado('s3')).toBe('Cobrada en parte');
+    // Los abonos no se cobran: restan de lo que rectifican.
+    for (const abono of ['abonoAnula', 'abonoDevuelto', 'abonoRebaja']) expect(`${abono}: ${estado(abono)}`).toBe(`${abono}: Rectificativa`);
+
+    // La cartera: de estas, solo la S tiene algo pendiente (181,50 - 50).
+    const cartera = await facturasPorCobrar(E1);
+    const nuevas = ['anulada', 'devuelta', 'rebajada', 'o3', 's3'].map((c) => ids[c]);
+    expect(cartera.facturas.filter((f) => nuevas.includes(f.id)).map((f) => [f.id, f.pendiente])).toEqual([[ids.s3, 131.5]]);
+    // La ficha de la anulada sin cobros dice lo mismo.
+    expect((await incomeInvoicesService.obtenerPorId(E1, ids.anulada)).anuladaPorCompleto).toBe(true);
   });
 });
 

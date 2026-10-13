@@ -35,8 +35,10 @@ import { hoyEspana } from '../utils/fechas';
 import { esTipoGasto, esVencida, textoEstadoPago, TIPO_GASTO_INFO, type TipoGasto } from '../domain/factura-gasto.model';
 import { ESTADOS_CONTABILIZADOS } from '../domain/nominas.model';
 import { cuadreNomina } from './nominas/calculo';
+import { cobrosDeVentasEmitidas, type CobroDeVenta } from './cobrosClientes.service';
 import { nombresDeCuentas } from './cuentasLinea.service';
 import { perfilEmpresa } from './perfilEmpresa.service';
+import { restantePorOriginal, type Restante } from './rectificativasVenta.service';
 import { resumenFiscalPeriodo, ventasDelResumen, whereGastosResumen, whereVentasResumen } from './resumenFiscal.service';
 
 // ---------------------------------------------------------------------------
@@ -427,8 +429,10 @@ export interface UltimaFacturaPanel {
   status: 'approved';
   /**
    * Cobro o pago, para la persona. Ventas: «Cobrada», «Cobrada en parte»,
-   * «Vencida», «Pendiente de cobro», «Rectificativa» o «Sustituida» (la
-   * original de una rectificativa por sustitucion). Gastos: «Pagada»,
+   * «Vencida» o «Pendiente de cobro», con lo pendiente de «Cobros de
+   * clientes» (también las rectificativas en positivo); «Rectificativa» (un
+   * abono), «Sustituida» (la original de una rectificativa por sustitucion) o
+   * «Anulada» (sus rectificativas la dejan a cero). Gastos: «Pagada»,
    * «Pagada en parte», «Vencida», «Pendiente de pago», «Abono» (rectificativa
    * que baja) o «Rectificativa» (la que sube o se queda igual).
    */
@@ -465,6 +469,7 @@ export async function ultimasFacturasPanel(companyId: string, limite: number, an
         fechaVencimiento: true,
         estado: true,
         baseTotal: true,
+        ivaTotal: true,
         totalFactura: true,
         esRectificativa: true,
         createdAt: true,
@@ -492,36 +497,40 @@ export async function ultimasFacturasPanel(companyId: string, limite: number, an
       },
     }),
   ]);
-  // Lo cobrado de cada venta de la lista (en la moneda de cuenta, como su total)
-  // y las que ha sustituido una rectificativa por sustitucion (S) emitida.
-  const idsVentas = ventas.map((f) => f.id);
-  const [cobros, sustituciones] = idsVentas.length
+  // Lo cobrado y lo pendiente de cada venta salen del mismo cálculo que
+  // «Cobros de clientes» (abonos, sustituciones, cobros con fecha futura y
+  // cobradas a mano), y la anulada entera, del de la ficha de la factura: el
+  // panel dice lo mismo que la cartera y que la ficha.
+  const originales = ventas.filter((f) => !f.esRectificativa && centimosDe(f.totalFactura) !== 0);
+  const [cobros, restantes] = ventas.length
     ? await Promise.all([
-        prisma.invoicePayment.groupBy({
-          by: ['invoiceId'],
-          where: { companyId, invoiceType: 'INGRESO', estado: 'ACTIVO', invoiceId: { in: idsVentas } },
-          _sum: { importe: true },
-        }),
-        prisma.incomeInvoice.findMany({
-          where: { ...whereVentasResumen(companyId), esRectificativa: true, tipoRectificativa: 'S', facturaOriginalId: { in: idsVentas } },
-          select: { facturaOriginalId: true },
-        }),
+        cobrosDeVentasEmitidas(companyId, hoy),
+        restantePorOriginal(
+          prisma,
+          companyId,
+          originales.map((f) => ({ id: f.id, baseTotal: Number(f.baseTotal), ivaTotal: Number(f.ivaTotal), totalFactura: Number(f.totalFactura) })),
+        ),
       ])
-    : [[], []];
-  const cobradoDe = new Map(cobros.map((c) => [c.invoiceId, centimosDe(c._sum.importe)]));
-  const sustituidas = new Set(sustituciones.map((s) => s.facturaOriginalId));
-  /** Estado de cobro de una venta: con los cobros registrados, como el de pago de un gasto. */
+    : [new Map<string, CobroDeVenta>(), new Map<string, Restante>()];
+  /**
+   * Estado de cobro de una venta. Las rectificativas en positivo (la de
+   * sustitución, que es la que se cobra, y la que sube) tienen el estado de sus
+   * cobros, como cualquier venta.
+   */
   const estadoVenta = (f: (typeof ventas)[number]): string => {
     const total = centimosDe(f.totalFactura);
-    // Una rectificativa (también la que sube o la de sustitución) no se presenta como un cobro.
-    if (f.esRectificativa || total < 0) return 'Rectificativa';
-    // La ocupa la rectificativa que la sustituye: ya no se cobra esta (como en «Cobros de clientes»).
-    if (sustituidas.has(f.id)) return 'Sustituida';
-    const cobrado = cobradoDe.get(f.id) ?? 0;
-    // PAID sin cobros: marcada como cobrada a mano antes de que existieran los cobros.
-    if (f.estado === 'PAID' || (total > 0 && cobrado >= total)) return 'Cobrada';
+    // Un abono (o una rectificativa a cero) no se cobra: resta de lo que rectifica.
+    if (total < 0 || (f.esRectificativa && total === 0)) return 'Rectificativa';
+    const c = cobros.get(f.id);
+    // La ocupa la rectificativa que la sustituye: ya no se cobra esta.
+    if (c?.sustituida) return 'Sustituida';
+    // Sus rectificativas la dejan a cero (como «anuladaPorCompleto» en la ficha).
+    const restante = restantes.get(f.id);
+    if ((restante && aCentimos(restante.total) === 0) || (c && c.neto <= 0)) return 'Anulada';
+    // Nada pendiente (por sus cobros, a mano o por lo que restan sus abonos), o una venta a cero.
+    if (!c || c.pendiente === 0) return 'Cobrada';
     if (f.estado === 'OVERDUE' || f.fechaVencimiento < hoy) return 'Vencida';
-    return cobrado > 0 ? 'Cobrada en parte' : 'Pendiente de cobro';
+    return c.cobrado > 0 ? 'Cobrada en parte' : 'Pendiente de cobro';
   };
   const base = (v: unknown) => euros(centimosDe(v));
   const filas: Array<UltimaFacturaPanel & { _alta: number }> = [
