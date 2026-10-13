@@ -804,7 +804,11 @@ export async function obtenerFacturasFiscales(companyId: string, desde: string, 
   for (const f of ventas) {
     // El IVA va en el periodo del devengo (art. 75 LIVA), aunque la factura se emita despues.
     const devengo = fechaDevengoVenta(f);
-    if (!enRango(devengo, desde, hasta)) continue;
+    // Una rectificativa con fecha de la operacion (la R4 que sube el IVA, que va al
+    // 303 del periodo de la original): el 347 y el 349 la llevan al periodo en que
+    // se rectifica, el de su emision (`fecha`); el 303 y el 390, a su devengo (`fechaIva`).
+    const fecha = f.esRectificativa && f.fechaOperacion ? f.fechaEmision : devengo;
+    if (!enRango(devengo, desde, hasta) && !enRango(fecha, desde, hasta)) continue;
     const tipo = esTipoOperacion(f.tipoOperacion) ? f.tipoOperacion : null;
     if (tipo && !REGLA_OPERACION[tipo].enModelos) continue; // empresa extranjera: sin modelos
     // Sin tipo (anteriores): el pais congelado en la factura, si se cambio la ficha despues.
@@ -818,7 +822,8 @@ export async function obtenerFacturasFiscales(companyId: string, desde: string, 
       tipo: 'venta',
       cifnif: nif,
       nombreTercero: f.customer?.nombreFiscal ?? '',
-      fecha: devengo,
+      fecha,
+      ...(fecha !== devengo && { fechaIva: devengo }),
       operacion: tipo ? operacionDeTipo(tipo, ctx) : OPERACION_DE_TIPO[tipoOperacionLegacy(pais, nif) as keyof typeof OPERACION_DE_TIPO],
       // Datos del 347 (provincia y cobros al contado): solo si los hay.
       ...(f.customer?.cp && { cpTercero: f.customer.cp }),
