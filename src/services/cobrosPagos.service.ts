@@ -137,6 +137,17 @@ export interface ResumenCobros {
    * tiene). Solo para ensenarla: no asigna nada.
    */
   cuentaTercero: string | null;
+  /**
+   * Ventas: la rectificativa por sustitucion que reemplazo esta factura. Ya no
+   * se cobra (lo pendiente es 0): los cobros se apuntan en la sustituta.
+   */
+  sustituidaPor?: { id: string; numeroCompleto: string | null };
+  /**
+   * Ventas, en una rectificativa por sustitucion: lo cobrado a la factura que
+   * sustituye (en la moneda de la factura y en la de cuenta). Cuenta como
+   * cobrado: lo pendiente es su total menos sus cobros y estos.
+   */
+  cobradoEnOriginal?: { id: string; numeroCompleto: string | null; importe: number; importeCuenta: number };
   cobros: CobroResp[];
 }
 
@@ -276,6 +287,49 @@ async function compensadoDe(db: Tx | typeof prisma, companyId: string, invoiceId
   return (aCentimos(Number(recibido._sum.importe ?? 0)) - aCentimos(Number(aplicado._sum.importe ?? 0))) / 100;
 }
 
+/**
+ * Venta y rectificativa por sustitucion (la S reemplaza a su original, con el
+ * mismo criterio que la cartera, pendienteSinAbonos):
+ *  - la original sustituida ya no se cobra: `sustituidaPor`;
+ *  - en la S, lo cobrado a la original cuenta como cobrado: `original` y
+ *    `cobradoOriginal`.
+ */
+interface SustitucionVenta {
+  sustituidaPor: { id: string; numeroCompleto: string | null } | null;
+  original: { id: string; numeroCompleto: string | null } | null;
+  cobradoOriginal: { doc: number; cuenta: number };
+}
+
+const SIN_SUSTITUCION: SustitucionVenta = { sustituidaPor: null, original: null, cobradoOriginal: { doc: 0, cuenta: 0 } };
+
+async function sustitucionVenta(db: Tx | typeof prisma, companyId: string, invoiceId: string): Promise<SustitucionVenta> {
+  // Con una BD simulada sin la tabla de enlaces: como antes.
+  if (typeof (db as unknown as { incomeInvoiceRectificada?: { findFirst?: unknown } }).incomeInvoiceRectificada?.findFirst !== 'function') return SIN_SUSTITUCION;
+  const f = await db.incomeInvoice.findFirst({ where: { id: invoiceId, companyId }, select: { esRectificativa: true, tipoRectificativa: true, facturaOriginalId: true } });
+  if (!f) return SIN_SUSTITUCION;
+  if (!f.esRectificativa) {
+    const enlace = await db.incomeInvoiceRectificada.findFirst({
+      where: { companyId, originalId: invoiceId, rectificativa: { estadoDocumento: 'FINAL', tipoRectificativa: 'S' } },
+      select: { rectificativa: { select: { id: true, numeroCompleto: true } } },
+    });
+    const s =
+      enlace?.rectificativa ??
+      (await db.incomeInvoice.findFirst({
+        where: { companyId, facturaOriginalId: invoiceId, estadoDocumento: 'FINAL', tipoRectificativa: 'S', enlacesRectifica: { none: {} } },
+        select: { id: true, numeroCompleto: true },
+      }));
+    return s ? { ...SIN_SUSTITUCION, sustituidaPor: s } : SIN_SUSTITUCION;
+  }
+  if (f.tipoRectificativa !== 'S') return SIN_SUSTITUCION;
+  const enlace = await db.incomeInvoiceRectificada.findFirst({
+    where: { companyId, rectificativaId: invoiceId, originalId: { not: null } },
+    select: { original: { select: { id: true, numeroCompleto: true } } },
+  });
+  const o = enlace?.original ?? (f.facturaOriginalId ? await db.incomeInvoice.findFirst({ where: { id: f.facturaOriginalId, companyId }, select: { id: true, numeroCompleto: true } }) : null);
+  if (!o) return SIN_SUSTITUCION;
+  return { sustituidaPor: null, original: o, cobradoOriginal: await sumaActivos(db, companyId, 'INGRESO', o.id) };
+}
+
 /** Recalcula el estado de pago de una factura de gasto (pagos, devoluciones y compensaciones). */
 export async function recalcularEstadoPagoGasto(tx: Tx, companyId: string, invoiceId: string): Promise<string> {
   const f = await tx.expenseInvoice.findFirst({ where: { id: invoiceId, companyId }, select: { id: true, totalFactura: true, fechaVencimiento: true } });
@@ -286,12 +340,38 @@ export async function recalcularEstadoPagoGasto(tx: Tx, companyId: string, invoi
   return estado;
 }
 
-/** Guarda el estado de cobro/pago de la factura segun sus cobros activos (en la moneda de la factura). */
+/**
+ * Guarda el estado de cobro/pago de la factura segun sus cobros activos (en la
+ * moneda de la factura). En una venta por sustitucion cuentan tambien los
+ * cobros de la original; un cobro de una original sustituida mueve el estado de su sustituta.
+ */
 async function actualizarEstadoFactura(tx: Tx, f: FacturaBase, tipo: TipoDocumento): Promise<string> {
   const cobrado = await sumaActivos(tx, f.companyId, tipo, f.id);
-  const estado = estadoTrasCobros(tipo, { totalFactura: f.totalDoc, fechaVencimiento: f.fechaVencimiento }, cobrado.doc);
+  const sust = tipo === 'INGRESO' ? await sustitucionVenta(tx, f.companyId, f.id) : SIN_SUSTITUCION;
+  const estado = estadoTrasCobros(tipo, { totalFactura: f.totalDoc, fechaVencimiento: f.fechaVencimiento }, round2(cobrado.doc + sust.cobradoOriginal.doc));
   if (tipo === 'INGRESO') await tx.incomeInvoice.update({ where: { id: f.id }, data: { estado } });
   else await tx.expenseInvoice.update({ where: { id: f.id }, data: { estadoPago: estado } });
+  if (sust.sustituidaPor) await recalcularEstadoCobroVenta(tx, f.companyId, sust.sustituidaPor.id);
+  return estado;
+}
+
+/**
+ * Estado de cobro de una venta segun sus cobros (y, en una sustitucion, los de
+ * su original). Lo usa la emision de una rectificativa por sustitucion: si la
+ * original ya estaba cobrada, la S nace cobrada.
+ */
+export async function recalcularEstadoCobroVenta(tx: Tx, companyId: string, invoiceId: string): Promise<string | null> {
+  const f = await tx.incomeInvoice.findFirst({
+    where: { id: invoiceId, companyId, estadoDocumento: 'FINAL' },
+    select: { id: true, totalFactura: true, totalFacturaDoc: true, fechaVencimiento: true, estado: true },
+  });
+  if (!f) return null;
+  const cobrado = await sumaActivos(tx, companyId, 'INGRESO', f.id);
+  const sust = await sustitucionVenta(tx, companyId, f.id);
+  // Cobrada a mano antes de los cobros (PAID sin cobros): se queda como esta.
+  if (cobradaSinCobros('INGRESO', f.estado, cobrado.doc) && !sust.original) return f.estado;
+  const estado = estadoTrasCobros('INGRESO', { totalFactura: Number(f.totalFacturaDoc ?? f.totalFactura), fechaVencimiento: f.fechaVencimiento }, round2(cobrado.doc + sust.cobradoOriginal.doc));
+  if (estado !== f.estado) await tx.incomeInvoice.update({ where: { id: f.id }, data: { estado } });
   return estado;
 }
 
@@ -526,13 +606,19 @@ export async function listarCobros(companyId: string, tipo: TipoDocumento, invoi
   const compensado = tipo === 'GASTO' ? await compensadoDe(prisma, companyId, invoiceId) : 0;
   const cobrado = round2(activos.reduce((s, p) => s + (p.importeDoc ?? p.importe), 0) + compensado);
   const cobradoCuenta = round2(activos.reduce((s, p) => s + p.importe, 0) + compensado);
+  // Venta por sustitucion: lo cobrado a la original cuenta en la S; la original sustituida ya no se cobra.
+  const sust = tipo === 'INGRESO' ? await sustitucionVenta(prisma, companyId, invoiceId) : SIN_SUSTITUCION;
+  const conOriginal = round2(cobrado + sust.cobradoOriginal.doc);
+  const conOriginalCuenta = round2(cobradoCuenta + sust.cobradoOriginal.cuenta);
   const enDoc = { totalFactura: f.totalDoc, fechaVencimiento: f.fechaVencimiento };
   const estado =
     tipo === 'INGRESO'
-      ? cobradaSinCobros(tipo, f.estado, cobrado)
+      ? cobradaSinCobros(tipo, f.estado, conOriginal)
         ? 'PAID'
-        : estadoTrasCobros(tipo, enDoc, cobrado)
+        : estadoTrasCobros(tipo, enDoc, conOriginal)
       : estadoTrasCobros(tipo, enDoc, cobrado);
+  const pendiente = (total: number, c: number, conO: number) =>
+    sust.sustituidaPor ? 0 : sust.original ? Math.max(0, calcularPendiente(tipo, total, f.estado, conO)) : calcularPendiente(tipo, total, f.estado, c);
   return {
     invoiceId: f.id,
     tipo,
@@ -544,12 +630,14 @@ export async function listarCobros(companyId: string, tipo: TipoDocumento, invoi
     importeCompensado: compensado,
     esAbono: aCentimos(f.totalFactura) < 0,
     ...(tipo === 'INGRESO' && aCentimos(f.totalFactura) < 0 ? { aFavor: (await aFavorDeAbonos(prisma, companyId, [invoiceId])).get(invoiceId) ?? 0 } : {}),
-    importePendiente: calcularPendiente(tipo, f.totalDoc, f.estado, cobrado),
+    importePendiente: pendiente(f.totalDoc, cobrado, conOriginal),
     totalFacturaCuenta: f.totalFactura,
     importeCobradoCuenta: cobradoCuenta,
-    importePendienteCuenta: calcularPendiente(tipo, f.totalFactura, f.estado, cobradoCuenta),
+    importePendienteCuenta: pendiente(f.totalFactura, cobradoCuenta, conOriginalCuenta),
     estado,
     cuentaTercero: await cuentaTerceroParaVer(companyId, tipo, invoiceId),
+    ...(sust.sustituidaPor ? { sustituidaPor: sust.sustituidaPor } : {}),
+    ...(sust.original ? { cobradoEnOriginal: { ...sust.original, importe: sust.cobradoOriginal.doc, importeCuenta: sust.cobradoOriginal.cuenta } } : {}),
     cobros: filas.map((p) => aCobroResp(p, numeros)),
   };
 }
@@ -603,6 +691,15 @@ export async function registrarCobroFactura(
   if (enlazada) {
     throw conflict(`Esta factura está entre las pendientes de 2026 que trajo la gestoría (${enlazada.numeroDocumento}): el ${t.cobro} se apunta desde allí.`, { codigo: 'FACTURA_CON_PARTIDA_2026', partidaId: enlazada.id });
   }
+  // Venta sustituida por una rectificativa por sustitucion: lo que se debe es la sustituta.
+  const sustAntes = tipo === 'INGRESO' && !esAbono ? await sustitucionVenta(prisma, companyId, invoiceId) : SIN_SUSTITUCION;
+  if (sustAntes.sustituidaPor) {
+    const otra = sustAntes.sustituidaPor.numeroCompleto ?? 'rectificativa que la sustituye';
+    throw conflict(`La factura ${f.numeroCompleto ?? ''} está sustituida por la ${otra}: el ${t.cobro} se apunta en la ${otra}.`, {
+      codigo: 'FACTURA_SUSTITUIDA',
+      facturaId: sustAntes.sustituidaPor.id,
+    });
+  }
   if (!esAbono && aCentimos(f.totalFactura) <= 0) {
 
     throw badRequest(`La factura tiene importe cero o negativo (rectificativa): no admite ${t.cobro}s desde aquí.`);
@@ -648,7 +745,10 @@ export async function registrarCobroFactura(
     prisma.$transaction(async (tx) => {
       await bloquearFactura(tx, tipo, invoiceId);
       const actual = await cargarFactura(tx, companyId, tipo, invoiceId);
-      const cobrado = await sumaActivos(tx, companyId, tipo, invoiceId);
+      const propio = await sumaActivos(tx, companyId, tipo, invoiceId);
+      // Rectificativa de venta por sustitucion: lo cobrado a su original cuenta como cobrado.
+      const sust = tipo === 'INGRESO' && !esAbono ? await sustitucionVenta(tx, companyId, invoiceId) : SIN_SUSTITUCION;
+      const cobrado = { doc: round2(propio.doc + sust.cobradoOriginal.doc), cuenta: round2(propio.cuenta + sust.cobradoOriginal.cuenta) };
       // En un abono todo va con el signo cambiado: lo pendiente es lo que queda a tu favor.
       const s = esAbono ? -1 : 1;
       // Abono de venta: solo lo que no han descontado sus originales (aFavor, ya sin lo devuelto).
