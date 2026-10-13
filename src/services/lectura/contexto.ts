@@ -1,6 +1,6 @@
 /**
- * Lo que las validaciones necesitan de la BD, cargado antes de validar: NIF y
- * perfil de la empresa, periodos abiertos y duplicados (factura y archivo).
+ * Lo que las validaciones necesitan de la BD, cargado antes de validar: NIF,
+ * nombres y perfil de la empresa, periodos abiertos y duplicados (factura y archivo).
  */
 import { prisma } from '../../config/database';
 import { normalizarNumeroProveedor } from '../../domain/factura-gasto.model';
@@ -11,6 +11,7 @@ import { numeroCompletoLeido } from '../income-invoices.service';
 import { separarNumero } from '../ingresos-extractor.service';
 import { perfilEmpresa } from '../perfilEmpresa.service';
 import { comprobarFechaAbierta } from '../periodos.service';
+import { datosEmpresaValidacion } from './datosEmpresa';
 import type { Lector, LecturaNormalizada } from './tipos';
 import type { ContextoValidacion } from './validaciones';
 
@@ -68,15 +69,16 @@ export async function contextoValidacion(
   l: LecturaNormalizada,
   opciones: { archivoHash?: string | null; lecturaId?: string | null } = {},
 ): Promise<ContextoValidacion> {
-  const [legal, perfil, factura, archivo] = await Promise.all([
-    prisma.legalConfig.findUnique({ where: { companyId }, select: { nif: true } }),
+  const [empresa, perfil, factura, archivo] = await Promise.all([
+    datosEmpresaValidacion(companyId),
     perfilEmpresa(companyId),
     facturaDuplicada(companyId, lector, l),
     archivoRepetido(companyId, opciones.archivoHash ?? null, opciones.lecturaId ?? null),
   ]);
   return {
     lector,
-    nifEmpresa: legal?.nif ?? null,
+    nifEmpresa: empresa.nifEmpresa,
+    nombresEmpresa: empresa.nombresEmpresa,
     empresaEspanola: perfil.espanola,
     monedaCuenta: perfil.monedaCuenta,
     hoy: hoyEspana(),
