@@ -21,6 +21,7 @@ import { subcuentaClienteParaApunte, subcuentaProveedorParaApunte } from './terc
 import { esSubcuentaGenerica } from './terceros/numeracion';
 import { conReintento } from '../utils/reintento';
 import { aFavorDeAbonos } from './rectificativasVenta.service';
+import { asegurarSubcuentaBancoEnPlan, exigirSubcuentaDeBanco, nombreSubcuentaBanco } from './subcuentaBanco.service';
 
 /**
  * Cobros de facturas de venta y pagos de facturas de gasto, con su asiento.
@@ -452,26 +453,34 @@ export { comprobarFechaAbierta };
  * Cuenta de tesoreria: la de la cuenta bancaria indicada, caja, o la primera
  * cuenta bancaria activa. `moneda` es la de la cuenta bancaria (null en caja:
  * la de cuenta).
+ *
+ * La subcuenta de la cuenta bancaria tiene que ser de bancos (una 572 por debajo
+ * de las de agrupacion): las dadas de alta antes de comprobarlo pueden tener
+ * otra cosa (por ejemplo «0001») y el asiento iria a una cuenta que no es de
+ * bancos. Si es una 572 que aun no esta en el plan, se da de alta al apuntar
+ * (`altaEnPlan`, con el nombre del banco).
  */
 async function resolverTesoreria(
   companyId: string,
   datos: DatosCobro,
   tipo: TipoDocumento,
-): Promise<{ cuenta: string; bankAccountId: string | null; nombre: string; moneda: string | null }> {
-  if (datos.caja) return { cuenta: CUENTA_CAJA, bankAccountId: null, nombre: 'Caja', moneda: null };
+): Promise<{ cuenta: string; bankAccountId: string | null; nombre: string; moneda: string | null; altaEnPlan: string | null }> {
+  if (datos.caja) return { cuenta: CUENTA_CAJA, bankAccountId: null, nombre: 'Caja', moneda: null, altaEnPlan: null };
+  let c;
   if (datos.cuentaBancariaId) {
-    const c = await prisma.bankAccount.findFirst({ where: { id: datos.cuentaBancariaId, companyId } });
+    c = await prisma.bankAccount.findFirst({ where: { id: datos.cuentaBancariaId, companyId } });
     if (!c) throw badRequest('La cuenta bancaria no existe en esta empresa.');
     if (!c.activa) throw badRequest('La cuenta bancaria está desactivada.');
-    return { cuenta: c.subcuentaCodigo, bankAccountId: c.id, nombre: c.bancoNombre || c.iban, moneda: c.moneda };
+  } else {
+    c = await prisma.bankAccount.findFirst({ where: { companyId, activa: true }, orderBy: { createdAt: 'asc' } });
+    if (!c) {
+      throw badRequest(
+        `No hay ninguna cuenta bancaria activa para apuntar el ${TXT[tipo].cobro}. Créala en Tesorería > Cuentas bancarias (con su subcuenta 572), o indica que es en efectivo (caja).`,
+      );
+    }
   }
-  const c = await prisma.bankAccount.findFirst({ where: { companyId, activa: true }, orderBy: { createdAt: 'asc' } });
-  if (!c) {
-    throw badRequest(
-      `No hay ninguna cuenta bancaria activa para apuntar el ${TXT[tipo].cobro}. Créala en Tesorería > Cuentas bancarias (con su subcuenta 572), o indica que es en efectivo (caja).`,
-    );
-  }
-  return { cuenta: c.subcuentaCodigo, bankAccountId: c.id, nombre: c.bancoNombre || c.iban, moneda: c.moneda };
+  exigirSubcuentaDeBanco(c, `registrar el ${TXT[tipo].cobro}`);
+  return { cuenta: c.subcuentaCodigo, bankAccountId: c.id, nombre: c.bancoNombre || c.iban, moneda: c.moneda, altaEnPlan: nombreSubcuentaBanco(c.bancoNombre, c.iban) };
 }
 
 function validarFecha(fecha: string | undefined): string {
@@ -812,6 +821,7 @@ export async function registrarCobroFactura(
       const descripcion = `${t.Cobro} ${esAbono ? 'del abono' : 'factura'} ${numero} - ${actual.tercero}${divisa}${nota ? ` (${nota})` : ''}`;
       // La subcuenta del tercero que uso la factura (o la suya, si aun no tiene asiento).
       const tercero = await cuentaTerceroDeFactura(tx, companyId, tipo, invoiceId);
+      if (tesoreria.altaEnPlan) await asegurarSubcuentaBancoEnPlan(tx, companyId, tesoreria.cuenta, tesoreria.altaEnPlan);
       const apuntes = apuntesDeCobro(calculo.apuntes, {
         tesoreria: { cuenta: tesoreria.cuenta, nombre: tesoreria.nombre },
         tercero: { cuenta: tercero.codigo, nombre: tercero.nombre },

@@ -13,8 +13,18 @@ export const treasuryController = {
     sendOk(res, await treasuryService.listarCuentasBancarias(req.companyId!));
   }),
 
+  // Subcuenta 572 que se propone para una cuenta nueva y las del plan que aun no tienen cuenta.
+  subcuentaPropuesta: asyncHandler(async (req, res) => {
+    sendOk(res, await treasuryService.subcuentaPropuesta(req.companyId!));
+  }),
+
   crearCuenta: asyncHandler(async (req, res) => {
     sendOk(res, await treasuryService.crearCuentaBancaria(req.companyId!, req.body ?? {}), undefined, 201);
+  }),
+
+  // Cambia la subcuenta 572 de una cuenta (solo si la de antes no tiene saldo).
+  cambiarSubcuenta: asyncHandler(async (req, res) => {
+    sendOk(res, await treasuryService.cambiarSubcuentaCuentaBancaria(req.companyId!, req.params.accountId, req.body ?? {}, req.user?.userId || 'unknown'));
   }),
 
   listarMovimientos: asyncHandler(async (req, res) => {

@@ -46,6 +46,11 @@ const aMovimiento = (m: {
   conciliado: m.conciliado,
 });
 
+/**
+ * Graba una cuenta tal cual, sin comprobar el IBAN ni la subcuenta. Solo la usan
+ * las pruebas para preparar datos: la API da de alta las cuentas con
+ * treasury.service (crearCuentaBancaria), tambien desde POST /bancos/cuentas.
+ */
 export async function crearCuentaBancaria(
   companyId: string,
   data: Omit<CuentaBancariaEmpresa, 'id' | 'companyId'>,
@@ -65,7 +70,8 @@ export async function crearCuentaBancaria(
 }
 
 export async function listarCuentasBancarias(companyId: string): Promise<CuentaBancariaEmpresa[]> {
-  const cuentas = await prisma.bankAccount.findMany({ where: { companyId } });
+  // De la mas antigua a la mas nueva: la primera es la que toma un cobro sin cuenta indicada.
+  const cuentas = await prisma.bankAccount.findMany({ where: { companyId }, orderBy: { createdAt: 'asc' } });
   return cuentas.map(aCuenta);
 }
 

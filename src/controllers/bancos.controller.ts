@@ -1,12 +1,8 @@
 import { asyncHandler } from '../utils/async-handler';
 import { sendOk } from '../utils/response';
 import { badRequest } from '../utils/http-errors';
-import {
-  crearCuentaBancaria,
-  importarMovimientosDesdeCSV,
-  listarCuentasBancarias,
-  listarMovimientos,
-} from '../services/bancos.service';
+import { importarMovimientosDesdeCSV, listarCuentasBancarias, listarMovimientos } from '../services/bancos.service';
+import { treasuryService } from '../services/treasury.service';
 import {
   conciliarMovimientoConFactura,
   conciliarMovimientoConCuenta,
@@ -16,16 +12,11 @@ export const bancosController = {
   listarCuentas: asyncHandler(async (req, res) => {
     sendOk(res, await listarCuentasBancarias(req.companyId!));
   }),
+  // Mismo alta que Tesoreria > Cuentas bancarias (POST /treasury/bank-accounts): IBAN
+  // comprobado, sin repetidos y con su subcuenta 572 (la indicada o la siguiente libre).
   crearCuenta: asyncHandler(async (req, res) => {
-    const { iban, subcuentaCodigo } = req.body ?? {};
-    if (!iban || !subcuentaCodigo) throw badRequest('Se requiere iban y subcuentaCodigo (572xxx).');
-    const cuenta = await crearCuentaBancaria(req.companyId!, {
-      iban,
-      bancoNombre: req.body.bancoNombre,
-      subcuentaCodigo,
-      activa: req.body.activa ?? true,
-    });
-    sendOk(res, cuenta, undefined, 201);
+    const { iban, bancoNombre, bic, subcuentaCodigo, saldoInicial } = req.body ?? {};
+    sendOk(res, await treasuryService.crearCuentaBancaria(req.companyId!, { iban, bancoNombre, bic, subcuentaCodigo, saldoInicial }), undefined, 201);
   }),
   importarCsv: asyncHandler(async (req, res) => {
     const csv = typeof req.body === 'string' ? req.body : (req.body?.csv as string);

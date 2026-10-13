@@ -3,16 +3,21 @@
 // y rechaza conciliaciones que el backend aun no sabe contabilizar.
 //
 // Prisma y el modulo de bancos se mockean para no depender de la BD.
-jest.mock('../config/database', () => ({
-  prisma: {
-    bankAccount: { findFirst: jest.fn(), findMany: jest.fn(), create: jest.fn() },
+jest.mock('../config/database', () => {
+  const prisma: Record<string, unknown> = {
+    bankAccount: { findFirst: jest.fn(), findMany: jest.fn(), create: jest.fn(), update: jest.fn() },
     bankMovement: { findMany: jest.fn(), count: jest.fn(), groupBy: jest.fn() },
+    // La subcuenta indicada ya esta en el plan: no se da de alta.
+    chartOfAccounts: { findFirst: jest.fn(async () => ({ id: 'plan57200001' })), create: jest.fn() },
+    // Lecturas con bloqueo (SELECT ... FOR UPDATE): la subcuenta esta en el plan y,
+    // salvo que la prueba diga otra cosa, no hay cuentas bancarias.
+    $queryRaw: jest.fn(async (sql: TemplateStringsArray) => (sql.join('?').includes('FROM ChartOfAccounts') ? [{ id: 'plan57200001' }] : [])),
     // Empresa de EE. UU.: sus cuentas van en USD (la moneda de su contabilidad).
     legalConfig: { findUnique: jest.fn(async () => ({ pais: 'US', monedaCuenta: 'USD' })) },
-  },
-  connectDatabase: jest.fn(),
-  disconnectDatabase: jest.fn(),
-}));
+  };
+  prisma.$transaction = jest.fn((fn: (tx: unknown) => unknown) => fn(prisma));
+  return { prisma, connectDatabase: jest.fn(), disconnectDatabase: jest.fn() };
+});
 jest.mock('../services/bancos.service', () => ({ importarMovimientosDesdeCSV: jest.fn() }));
 jest.mock('../services/conciliacionConfirmar.service', () => ({ conciliarMovimientoConFactura: jest.fn() }));
 
@@ -22,9 +27,14 @@ import { conciliarMovimientoConFactura } from '../services/conciliacionConfirmar
 import { treasuryService } from '../services/treasury.service';
 
 const db = prisma as unknown as {
-  bankAccount: { findFirst: jest.Mock; findMany: jest.Mock; create: jest.Mock };
+  bankAccount: { findFirst: jest.Mock; findMany: jest.Mock; create: jest.Mock; update: jest.Mock };
   bankMovement: { findMany: jest.Mock; count: jest.Mock; groupBy: jest.Mock };
+  $queryRaw: jest.Mock;
 };
+
+/** Las cuentas de la empresa que devuelve la lectura con bloqueo de BankAccount (una sola vez). */
+const conCuentasBloqueadas = (filas: Array<{ id: string; iban: string; activa: number }>) =>
+  db.$queryRaw.mockImplementationOnce(async () => filas);
 
 const cuenta = {
   id: 'acc1',
@@ -32,7 +42,7 @@ const cuenta = {
   iban: 'ES9121000418450200051332',
   bic: null,
   bancoNombre: 'Banco Demo',
-  subcuentaCodigo: '572000',
+  subcuentaCodigo: '57200001',
   saldoInicial: 1000,
   activa: true,
   createdAt: new Date('2026-01-01'),
@@ -85,7 +95,7 @@ describe('tesoreria', () => {
 
     const res = await treasuryService.crearCuentaBancaria('c1', {
       iban: 'es91 2100 0418 4502 0005 1332',
-      subcuentaCodigo: '572000',
+      subcuentaCodigo: '57200001',
       saldoInicial: 250.5,
     });
 
@@ -98,11 +108,39 @@ describe('tesoreria', () => {
     expect(res.moneda).toBe('USD');
   });
 
-  it('no crea dos cuentas con el mismo IBAN', async () => {
-    db.bankAccount.findFirst.mockResolvedValue(cuenta);
+  it('en una empresa de EE. UU. vale un numero de cuenta sin IBAN; lo que parece un IBAN se comprueba', async () => {
+    db.bankAccount.findFirst.mockResolvedValue(null);
+    db.bankAccount.create.mockImplementation(({ data }) => Promise.resolve({ ...cuenta, ...data }));
+    const res = await treasuryService.crearCuentaBancaria('c1', { iban: '0001 2345-6789', subcuentaCodigo: '57200001' });
+    expect(res.iban).toBe('000123456789');
+    await expect(treasuryService.crearCuentaBancaria('c1', { iban: 'ES9121000418450200051333', subcuentaCodigo: '57200001' })).rejects.toMatchObject({
+      statusCode: 400,
+      details: { campo: 'iban' },
+    });
+  });
+
+  it('no crea dos cuentas con el mismo IBAN (lo mira con bloqueo, dentro de la transaccion)', async () => {
+    conCuentasBloqueadas([{ id: 'acc1', iban: 'ES91 2100 0418 4502 0005 1332', activa: 1 }]);
     await expect(
-      treasuryService.crearCuentaBancaria('c1', { iban: cuenta.iban, subcuentaCodigo: '572000' }),
-    ).rejects.toThrow(/Ya existe/);
+      treasuryService.crearCuentaBancaria('c1', { iban: cuenta.iban, subcuentaCodigo: '57200001' }),
+    ).rejects.toThrow(/Ya tienes dada de alta una cuenta con el IBAN/);
+    expect(db.bankAccount.create).not.toHaveBeenCalled();
+  });
+
+  it('el IBAN de una cuenta desactivada la vuelve a activar tal como estaba', async () => {
+    conCuentasBloqueadas([{ id: 'acc1', iban: cuenta.iban, activa: 0 }]);
+    db.bankAccount.update.mockImplementation(({ data }) => Promise.resolve({ ...cuenta, ...data }));
+    const res = await treasuryService.crearCuentaBancaria('c1', { iban: cuenta.iban, subcuentaCodigo: '57200009', saldoInicial: 5 });
+    expect(db.bankAccount.update).toHaveBeenCalledWith({ where: { id: 'acc1' }, data: { activa: true } });
+    expect(db.bankAccount.create).not.toHaveBeenCalled();
+    expect(res).toMatchObject({ id: 'acc1', subcuentaCodigo: '57200001', saldoInicial: 1000, estado: 'activa', reactivada: true });
+  });
+
+  it('avisa de la cuenta cuya subcuenta no es de bancos (dada de alta antes de comprobarlo)', async () => {
+    db.bankAccount.findMany.mockResolvedValue([{ ...cuenta, subcuentaCodigo: '0001', movimientos: [] }, { ...cuenta, id: 'acc2', movimientos: [] }]);
+    const [mala, buena] = await treasuryService.listarCuentasBancarias('c1');
+    expect(mala.avisoSubcuenta).toMatch(/«0001» no es de bancos.*no se pueden apuntar cobros ni pagos/);
+    expect(buena.avisoSubcuenta).toBeUndefined();
   });
 
   it('resumen: saldo actual = saldo inicial + movimientos, redondeado a centimos', async () => {

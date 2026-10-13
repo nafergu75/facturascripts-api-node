@@ -36,6 +36,7 @@ import { nombreCompleto } from '../empleados.service';
 import { NOMBRES_CUENTAS, conceptoSubcuenta465, etiquetaTrabajador, fmtEuros } from './calculo';
 import { asegurarCuentas, cuentasNominasEmpresa, prepararPlanEmpresa } from './plan';
 import { periodoFiscal } from './fiscal';
+import { exigirSubcuentaDeBanco } from '../subcuentaBanco.service';
 
 export const OPCIONES_TX = { timeout: 120_000, maxWait: 15_000 };
 const mm = (n: number) => String(n).padStart(2, '0');
@@ -95,6 +96,7 @@ export async function resolverMedioPago(companyId: string, medio: MedioPago, cue
     if (medio.caja || (medio.cuentaBancariaId && medio.cuentaBancariaId !== mov.cuentaBancariaId)) {
       throw badRequest('Con un movimiento del banco, el pago va a su cuenta bancaria.');
     }
+    exigirSubcuentaDeBanco(mov.cuentaBancaria, 'registrar el pago');
     return {
       cuenta: mov.cuentaBancaria.subcuentaCodigo,
       nombre: mov.cuentaBancaria.bancoNombre || mov.cuentaBancaria.iban,
@@ -109,12 +111,14 @@ export async function resolverMedioPago(companyId: string, medio: MedioPago, cue
     const c = await prisma.bankAccount.findFirst({ where: { id: medio.cuentaBancariaId, companyId } });
     if (!c) throw badRequest('La cuenta bancaria no existe en esta empresa.');
     if (!c.activa) throw badRequest('La cuenta bancaria está desactivada.');
+    exigirSubcuentaDeBanco(c, 'registrar el pago');
     return { cuenta: c.subcuentaCodigo, nombre: c.bancoNombre || c.iban, bankAccountId: c.id, fecha, movimiento: null };
   }
   const c = await prisma.bankAccount.findFirst({ where: { companyId, activa: true }, orderBy: { createdAt: 'asc' } });
   if (!c) {
     throw badRequest('No hay ninguna cuenta bancaria activa para apuntar el pago. Créala en Tesorería > Cuentas bancarias (con su subcuenta 572), o indica que es en efectivo (caja).');
   }
+  exigirSubcuentaDeBanco(c, 'registrar el pago');
   return { cuenta: c.subcuentaCodigo, nombre: c.bancoNombre || c.iban, bankAccountId: c.id, fecha, movimiento: null };
 }
 

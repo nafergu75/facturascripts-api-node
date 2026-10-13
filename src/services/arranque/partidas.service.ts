@@ -25,6 +25,7 @@ import { conReintento } from '../../utils/reintento';
 import { registrarAuditoria } from '../auditoria.service';
 import { asegurarPlanContableEmpresa } from '../chart-of-accounts.service';
 import { comprobarFechaAbierta, exigirFechaContabilizable } from '../periodos.service';
+import { exigirSubcuentaDeBanco } from '../subcuentaBanco.service';
 
 const r2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100;
 const FECHA_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -552,6 +553,7 @@ async function tesoreriaDe(db: Db, companyId: string, d: { cuentaBancariaId?: un
   if (!c) throw badRequest(`No hay ninguna cuenta bancaria activa para apuntar el ${TXT[tipo].cobro}. Créala en Tesorería > Cuentas bancarias, o indica que es en efectivo (caja).`);
   if (!c.activa) throw badRequest('La cuenta bancaria está desactivada.', { campo: 'cuentaBancariaId' });
   if (!c.subcuentaCodigo) throw badRequest('La cuenta bancaria no tiene subcuenta de tesorería (572): ponla en Tesorería > Cuentas bancarias.');
+  exigirSubcuentaDeBanco(c, `apuntar el ${TXT[tipo].cobro}`);
   return { cuenta: c.subcuentaCodigo, bankAccountId: c.id as string | null, nombre: c.bancoNombre || c.iban };
 }
 

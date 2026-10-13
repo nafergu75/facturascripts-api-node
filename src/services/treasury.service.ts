@@ -1,8 +1,22 @@
-import { prisma } from '../config/database';
-import { badRequest, notFound } from '../utils/http-errors';
+import { Prisma } from '@prisma/client';
+import { prisma, type TransaccionBD } from '../config/database';
+import { badRequest, conflict, notFound } from '../utils/http-errors';
+import { importeConMoneda } from '../domain/divisas';
+import { aCentimos } from '../utils/money';
+import { esClaveRepetida } from '../utils/reintento';
+import { isValidIban } from '../utils/validateIban';
+import { registrarAuditoria } from './auditoria.service';
 import { importarMovimientosDesdeCSV } from './bancos.service';
 import { conciliarMovimientoConFactura } from './conciliacionConfirmar.service';
-import { monedaDeCuenta } from './perfilEmpresa.service';
+import { perfilEmpresa } from './perfilEmpresa.service';
+import {
+  asignarSubcuentaBanco,
+  esSubcuentaDeBanco,
+  INDICE_SUBCUENTA_BANCO,
+  nombreSubcuentaBanco,
+  subcuentasBanco,
+  usarSubcuentaBanco,
+} from './subcuentaBanco.service';
 
 /**
  * Tesoreria: la API que usa la pantalla de tesoreria del frontend.
@@ -56,10 +70,39 @@ const aCuenta = (c: {
   bic: c.bic ?? undefined,
   bancoNombre: c.bancoNombre ?? undefined,
   subcuentaCodigo: c.subcuentaCodigo,
+  /** Solo si la subcuenta no es de bancos: hasta cambiarla no se puede cobrar ni pagar con esta cuenta. */
+  avisoSubcuenta: esSubcuentaDeBanco(c.subcuentaCodigo) ? undefined : avisoSubcuentaMala(c.subcuentaCodigo),
   saldoInicial: c.saldoInicial,
   estado: c.activa ? 'activa' : 'inactiva',
   createdAt: c.createdAt,
 });
+
+/** Aviso de una cuenta cuya subcuenta no es de bancos (dada de alta cuando aun no se comprobaba). */
+const avisoSubcuentaMala = (codigo: string) =>
+  `Su subcuenta «${codigo}» no es de bancos (una 572, por ejemplo 57200001): hasta que la cambies no se pueden apuntar cobros ni pagos en esta cuenta.`;
+
+/** IBAN sin espacios ni guiones y en mayusculas (como se guarda). */
+const normalizarIban = (iban: string) => iban.replace(/[\s-]+/g, '').toUpperCase();
+
+/**
+ * Dos altas a la vez: la misma subcuenta (indice unico del plan) o un
+ * interbloqueo de MySQL al bloquear las cuentas de la empresa. Se repite la
+ * transaccion y la segunda ve lo que hizo la primera.
+ */
+const esChoqueDeAltas = (e: unknown) =>
+  esClaveRepetida(e, [INDICE_SUBCUENTA_BANCO]) ||
+  (e instanceof Prisma.PrismaClientKnownRequestError &&
+    (e.code === 'P2034' || (e.code === 'P2010' && /1213|deadlock/i.test(JSON.stringify(e.meta ?? {})))));
+
+async function conReintentoDeAltas<T>(fn: () => Promise<T>): Promise<T> {
+  for (let intento = 0; ; intento++) {
+    try {
+      return await fn();
+    } catch (e) {
+      if (intento >= 5 || !esChoqueDeAltas(e)) throw e;
+    }
+  }
+}
 
 async function cuentaDeEmpresa(companyId: string, accountId: string) {
   const cuenta = await prisma.bankAccount.findFirst({ where: { id: accountId, companyId } });
@@ -67,33 +110,131 @@ async function cuentaDeEmpresa(companyId: string, accountId: string) {
   return cuenta;
 }
 
+/**
+ * Alta de una cuenta bancaria.
+ *
+ * - Sin `subcuentaCodigo` (el alta rapida de la ventana de cobro o de pago, que
+ *   solo pide IBAN y banco): se le asigna la siguiente 572 libre y se da de alta
+ *   en el plan.
+ * - Con `subcuentaCodigo` (Tesoreria > Cuentas bancarias): tiene que ser una 572
+ *   que no use otra cuenta; si no esta en el plan, se da de alta en el.
+ *
+ * El IBAN se comprueba (digitos de control) siempre que lo parezca, y en una
+ * empresa espanola siempre. En una de EE. UU. o Hong Kong, que no usan IBAN,
+ * vale el numero de cuenta. Los errores llevan `campo` para la pantalla.
+ *
+ * Si ese IBAN es de una cuenta desactivada, se vuelve a activar tal como estaba
+ * (con su subcuenta y su saldo inicial) en vez de dar un error sin salida: la
+ * app no tiene otra forma de reactivarla. La respuesta lleva `reactivada`.
+ */
 export async function crearCuentaBancaria(
   companyId: string,
   datos: { iban?: string; bic?: string; bancoNombre?: string; subcuentaCodigo?: string; saldoInicial?: number },
 ) {
-  const iban = String(datos.iban ?? '').replace(/\s+/g, '').toUpperCase();
-  if (!iban) throw badRequest('El IBAN es obligatorio.');
-  if (!datos.subcuentaCodigo) throw badRequest('La subcuenta contable (572xxx) es obligatoria.');
+  const iban = normalizarIban(String(datos.iban ?? ''));
+  if (!iban) throw badRequest('Escribe el IBAN de la cuenta.', { campo: 'iban' });
+  const perfil = await perfilEmpresa(companyId);
+  const pareceIban = /^[A-Z]{2}\d{2}/.test(iban);
+  if ((pareceIban || perfil.espanola) && !isValidIban(iban)) {
+    throw badRequest(
+      pareceIban
+        ? 'El IBAN no es válido: revisa que esté completo y sin cifras cambiadas.'
+        : 'Escribe el IBAN completo, empezando por las letras del país (por ejemplo ES91 2100…).',
+      { campo: 'iban' },
+    );
+  }
 
   const saldoInicial = Number(datos.saldoInicial ?? 0);
-  if (!Number.isFinite(saldoInicial)) throw badRequest('El saldo inicial no es un numero valido.');
+  if (!Number.isFinite(saldoInicial)) throw badRequest('El saldo inicial no es un importe válido.', { campo: 'saldoInicial' });
 
-  const existe = await prisma.bankAccount.findFirst({ where: { companyId, iban } });
-  if (existe) throw badRequest(`Ya existe una cuenta con IBAN ${iban} en esta empresa.`);
+  const bancoNombre = datos.bancoNombre?.trim() || null;
+  const datosCuenta = {
+    companyId,
+    iban,
+    bic: datos.bic?.trim() || null,
+    bancoNombre,
+    saldoInicial: Math.round(saldoInicial * 100) / 100,
+    // Las cuentas van en la moneda de la contabilidad (cuentas en otra moneda: fuera de alcance).
+    moneda: perfil.monedaCuenta,
+  };
+  const escrita = String(datos.subcuentaCodigo ?? '').trim();
+  const nombre = nombreSubcuentaBanco(bancoNombre, iban);
+  return conReintentoDeAltas(() =>
+    prisma.$transaction(async (tx) => {
+      // El IBAN repetido se mira dentro de la transaccion y con bloqueo: dos altas
+      // a la vez del mismo IBAN se ponen en cola y la segunda ve la primera.
+      const existe = (await cuentasBloqueadas(tx, companyId)).find((c) => normalizarIban(c.iban) === iban);
+      if (existe?.activa) throw badRequest(`Ya tienes dada de alta una cuenta con el IBAN ${iban}.`, { campo: 'iban' });
+      if (existe) {
+        const reactivada = await tx.bankAccount.update({ where: { id: existe.id }, data: { activa: true } });
+        return { ...aCuenta(reactivada), reactivada: true };
+      }
+      const subcuentaCodigo = escrita ? await usarSubcuentaBanco(tx, companyId, escrita, nombre) : await asignarSubcuentaBanco(tx, companyId, nombre);
+      return aCuenta(await tx.bankAccount.create({ data: { ...datosCuenta, subcuentaCodigo } }));
+    }),
+  );
+}
 
-  const cuenta = await prisma.bankAccount.create({
-    data: {
-      companyId,
-      iban,
-      bic: datos.bic || null,
-      bancoNombre: datos.bancoNombre || null,
-      subcuentaCodigo: datos.subcuentaCodigo,
-      saldoInicial,
-      // Las cuentas van en la moneda de la contabilidad (cuentas en otra moneda: fuera de alcance).
-      moneda: await monedaDeCuenta(companyId),
-    },
+/** Cuentas bancarias de la empresa leidas con bloqueo (hasta el final de la transaccion). */
+async function cuentasBloqueadas(tx: TransaccionBD, companyId: string): Promise<Array<{ id: string; iban: string; activa: boolean }>> {
+  const filas = await tx.$queryRaw<Array<{ id: string; iban: string; activa: unknown }>>`
+    SELECT id, iban, activa FROM BankAccount WHERE companyId = ${companyId} FOR UPDATE`;
+  return filas.map((f) => ({ id: f.id, iban: f.iban, activa: Boolean(Number(f.activa)) }));
+}
+
+/**
+ * Cambia la subcuenta 572 de una cuenta bancaria: la de una cuenta dada de alta
+ * con una que no es de bancos (por ejemplo «0001», cuando aun no se comprobaba)
+ * o con otra equivocada. Lo ya apuntado se queda en la subcuenta de antes, asi
+ * que solo se deja si esta no tiene saldo: si lo tuviera, el banco quedaria
+ * partido en dos subcuentas. Antes hay que anular esos cobros y pagos, o pasar
+ * el saldo a la nueva con un asiento. La nueva se comprueba como en el alta.
+ */
+export async function cambiarSubcuentaCuentaBancaria(companyId: string, accountId: string, datos: { subcuentaCodigo?: unknown }, userId = 'unknown') {
+  const cuenta = await cuentaDeEmpresa(companyId, accountId);
+  const escrita = String(datos.subcuentaCodigo ?? '').trim();
+  if (!escrita) throw badRequest('Escribe la subcuenta 572 de la cuenta.', { campo: 'subcuentaCodigo' });
+  const antes = cuenta.subcuentaCodigo;
+  if (escrita.replace(/[\s.]/g, '') === antes) return aCuenta(cuenta);
+
+  const actualizada = await conReintentoDeAltas(() =>
+    prisma.$transaction(async (tx) => {
+      await cuentasBloqueadas(tx, companyId);
+      const sumas = await tx.journalEntryLine.aggregate({
+        where: { companyId, accountCode: antes, entry: { estado: { not: 'REVERSED' } } },
+        _sum: { debe: true, haber: true },
+      });
+      const saldo = Number(sumas._sum.debe ?? 0) - Number(sumas._sum.haber ?? 0);
+      if (aCentimos(saldo) !== 0) {
+        throw conflict(
+          `La subcuenta ${antes} ya tiene apuntes de este banco con saldo (${importeConMoneda(saldo, cuenta.moneda ?? 'EUR')}). Si la cambias, el saldo del banco quedaría partido en dos subcuentas. ` +
+            'Anula antes esos cobros o pagos (o pasa el saldo a la nueva subcuenta con un asiento) y vuelve a cambiarla.',
+          { codigo: 'SUBCUENTA_BANCO_CON_SALDO', subcuenta: antes, saldo: Math.round(saldo * 100) / 100 },
+        );
+      }
+      const subcuentaCodigo = await usarSubcuentaBanco(tx, companyId, escrita, nombreSubcuentaBanco(cuenta.bancoNombre, cuenta.iban), { cuentaId: cuenta.id });
+      return tx.bankAccount.update({ where: { id: cuenta.id }, data: { subcuentaCodigo } });
+    }),
+  );
+  await registrarAuditoria({
+    userId,
+    companyId,
+    action: 'CUENTA_BANCARIA_SUBCUENTA',
+    resourceType: 'BankAccount',
+    resourceId: cuenta.id,
+    meta: { antes, despues: actualizada.subcuentaCodigo },
   });
-  return aCuenta(cuenta);
+  return aCuenta(actualizada);
+}
+
+/**
+ * Subcuenta que se propone al dar de alta una cuenta en Tesoreria (la misma
+ * que pondria el alta rapida) y las 572 del plan que aun no son de ninguna
+ * cuenta, por si la nueva es una de ellas. Solo lee.
+ */
+export async function subcuentaPropuesta(companyId: string) {
+  const s = await subcuentasBanco(companyId);
+  return { subcuentaCodigo: s.siguiente, longitud: s.longitud, sinCuenta: s.sinCuenta };
 }
 
 /** Cuentas de la empresa, cada una con sus ultimos 5 movimientos pendientes. */
@@ -187,6 +328,8 @@ export async function obtenerResumen(companyId: string) {
 
 export const treasuryService = {
   crearCuentaBancaria,
+  cambiarSubcuentaCuentaBancaria,
+  subcuentaPropuesta,
   listarCuentasBancarias,
   listarMovimientos,
   subirExtracto,
