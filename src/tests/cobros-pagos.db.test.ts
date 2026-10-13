@@ -250,3 +250,57 @@ describe('pagos de facturas de gasto', () => {
     await expect(listarCobros('otra-empresa', 'GASTO', gastoId)).rejects.toThrow(/no encontrada/);
   });
 });
+
+describe('devolución al cliente de un abono de venta', () => {
+  const abonoDe = (originalId: string, base: number) =>
+    incomeInvoicesService.crearIngreso({
+      companyId: COMPANY_ID,
+      customer: {},
+      lineas: [linea(-base)],
+      rectificativa: { ticket: false, forma: 'I', motivo: 'DEVOLUCION', explicacion: 'Devolución', originales: [{ id: originalId }] },
+    } as unknown as Parameters<typeof incomeInvoicesService.crearIngreso>[0]);
+
+  it('de una factura ya cobrada: todo queda a favor del cliente y se devuelve hasta ese tope (430N al debe, banco al haber)', async () => {
+    const f = await facturaVenta(100, '2026-07-01');
+    await contabilizarVenta(f.id);
+    await registrarCobroFactura(COMPANY_ID, 'INGRESO', f.id, { fecha: '2026-07-02', cuentaBancariaId: bancoId });
+    const abono = await abonoDe(f.id, 100);
+    await contabilizarVenta(abono.id);
+    expect((await incomeInvoicesService.obtenerPorId(COMPANY_ID, abono.id)).aFavor).toBe(121);
+
+    const hoy = hoyEspana();
+    await expect(registrarCobroFactura(COMPANY_ID, 'INGRESO', abono.id, { fecha: hoy, importe: 150, cuentaBancariaId: bancoId })).rejects.toMatchObject({
+      statusCode: 400,
+      details: { codigo: 'DEVOLUCION_EXCEDE', campo: 'importe' },
+    });
+    const { cobro, resumen } = await registrarCobroFactura(COMPANY_ID, 'INGRESO', abono.id, { fecha: hoy, importe: 100, cuentaBancariaId: bancoId });
+    expect(cobro).toMatchObject({ importe: -100, importeDoc: -100, importeTesoreria: -100 });
+    expect(resumen).toMatchObject({ esAbono: true, aFavor: 21 });
+    const asiento = await asientoDe(cobro.asientoId);
+    const cliente = asiento.lineas.find((l) => l.accountCode.startsWith('43'))!;
+    const banco = asiento.lineas.find((l) => l.accountCode === '5720001')!;
+    expect([Number(cliente.debe), Number(banco.haber)]).toEqual([100, 100]);
+    expect(asiento.descripcion).toMatch(/^Devolución al cliente del abono/);
+
+    // Lo que queda, entero; despues ya no queda nada.
+    await registrarCobroFactura(COMPANY_ID, 'INGRESO', abono.id, { fecha: hoy, cuentaBancariaId: bancoId });
+    expect((await incomeInvoicesService.obtenerPorId(COMPANY_ID, abono.id)).aFavor).toBe(0);
+    await expect(registrarCobroFactura(COMPANY_ID, 'INGRESO', abono.id, { fecha: hoy, importe: 1, caja: true })).rejects.toMatchObject({ details: { codigo: 'DEVOLUCION_EXCEDE' } });
+    // Las devoluciones no son cobros del periodo.
+    const lista = await listarCobros(COMPANY_ID, 'INGRESO', abono.id);
+    expect(lista.cobros.map((c) => c.importe)).toEqual([-100, -21]);
+  });
+
+  it('de una factura sin cobrar: el abono se descuenta de lo que debe y no queda nada que devolver', async () => {
+    const f = await facturaVenta(100, '2026-07-03');
+    await contabilizarVenta(f.id);
+    const abono = await abonoDe(f.id, 40);
+    expect((await incomeInvoicesService.obtenerPorId(COMPANY_ID, abono.id)).aFavor).toBe(0);
+    await expect(registrarCobroFactura(COMPANY_ID, 'INGRESO', abono.id, { fecha: hoyEspana(), caja: true })).rejects.toMatchObject({ statusCode: 400, details: { codigo: 'DEVOLUCION_EXCEDE' } });
+    // Si después el cliente paga la factura entera, el abono vuelve a quedar a su favor.
+    await registrarCobroFactura(COMPANY_ID, 'INGRESO', f.id, { fecha: hoyEspana(), importe: 121, cuentaBancariaId: bancoId }).catch(() => null);
+    const pendienteF = (await listarCobros(COMPANY_ID, 'INGRESO', f.id)).importePendiente;
+    expect(pendienteF).toBe(0);
+    expect((await incomeInvoicesService.obtenerPorId(COMPANY_ID, abono.id)).aFavor).toBe(48.4);
+  });
+});
