@@ -57,6 +57,7 @@ const E = `lector-rect-${SUFIJO}`;
 const SIN_ORIGINAL = `lector-rect-sin-${SUFIJO}`;
 const OTRO = `lector-rect-otro-${SUFIJO}`;
 const RED = `lector-rect-red-${SUFIJO}`;
+const EXT = `lector-rect-ext-${SUFIJO}`;
 const PDF = Buffer.from('%PDF-1.4\n1 0 obj << /Type /Page >>\nfactura rectificativa');
 const clientes: Record<string, string> = {};
 const originales: Record<string, string> = {};
@@ -152,6 +153,7 @@ beforeAll(async () => {
   await empresa(SIN_ORIGINAL);
   await empresa(OTRO, { original: 'de-otro' });
   await empresa(RED, { original: 'del-cliente' });
+  await empresa(EXT, { original: 'de-otro' });
 });
 
 describe('lector de ventas: abono en negativo con la original en la app', () => {
@@ -330,6 +332,22 @@ describe('lector de ventas: la original es de otro cliente', () => {
     await prisma.lecturaDocumento.update({ where: { id: data.lecturaId }, data: { validaciones: [...guardadas, sinNif] as never, estadoValidacion: 'error' } });
     const r = await confirmar(OTRO, { documentId, rectificativa: { forma: 'I', motivo: 'DEVOLUCION', originales: [{ id: originales[OTRO] }] } });
     expect({ status: r.status, body: r.body }).toMatchObject({ status: 201, body: { data: { esRectificativa: true, numeroCompleto: 'RV-10' } } });
+  });
+});
+
+describe('lector de ventas: el cliente de la original es de otro país', () => {
+  it('su ficha manda en «¿De dónde es el cliente?», no la del cliente del NIF leído', async () => {
+    const original = await prisma.incomeInvoice.findUniqueOrThrow({ where: { id: originales[EXT] } });
+    await prisma.customer.update({ where: { id: original.customerId }, data: { pais: 'PT' } });
+    const data = await leer('resultado-rectificativa-venta', EXT);
+    expect(data.ingreso.rectificativa).toMatchObject({
+      propuesta: { original: { id: originales[EXT], paisCliente: 'PT' } },
+      clienteDeLaOriginal: { id: original.customerId, pais: 'PT' },
+      clienteDistinto: true,
+    });
+    // El NIF leído es el de un cliente de España dado de alta; la rectificativa va al de la original.
+    expect(data.ingreso.clienteExistente).toMatchObject({ id: clientes[EXT], pais: 'ES' });
+    expect(data.lectura.tercero).toMatchObject({ origen: 'UE', pais: 'PT', por: 'ficha' });
   });
 });
 
