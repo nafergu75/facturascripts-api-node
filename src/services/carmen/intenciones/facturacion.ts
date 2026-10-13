@@ -9,6 +9,7 @@
 import { prisma } from '../../../config/database';
 import { pendientesSegunFacturas } from '../../informesContables.service';
 import { resumenFiscalPeriodo, type ResumenFiscalPeriodo } from '../../resumenFiscal.service';
+import { aCentimos } from '../../../utils/money';
 import { listarCobros, type TipoDocumento } from '../../cobrosPagos.service';
 import { facturasPorCobrar } from '../../cobrosClientes.service';
 import type { ColumnaInforme } from '../../informesContables.documentos';
@@ -176,6 +177,17 @@ function fraseComparada(verbo: string, actual: ResumenFiscalPeriodo['ventas'], a
   return `${verbo} ${eur(actual.base)} en ${plural(actual.facturas, 'factura')}; ${comparacion}.`;
 }
 
+/**
+ * Lo gastado como en el panel: sin las compras de inmovilizado (cuenta 2xx),
+ * que no son un gasto del año. Las facturas que son solo eso no cuentan.
+ */
+const sinInmovilizado = (g: ResumenFiscalPeriodo['gastos']): ResumenFiscalPeriodo['gastos'] => ({
+  ...g,
+  base: (aCentimos(g.base) - aCentimos(g.baseInmovilizado ?? 0)) / 100,
+  facturas: g.facturas - (g.facturasSoloInmovilizado ?? 0),
+});
+const tieneInmovilizado = (g: ResumenFiscalPeriodo['gastos']) => aCentimos(g.baseInmovilizado ?? 0) !== 0;
+
 export const facturadoEnPeriodo: Ejecutor = async (ctx, h) => {
   const puedeVentas = tiene(ctx, 'ventas:read', 'contabilidad:read');
   const puedeGastos = tiene(ctx, 'compras:read', 'contabilidad:read');
@@ -238,13 +250,18 @@ export const facturadoEnPeriodo: Ejecutor = async (ctx, h) => {
   }
   if (verGastos) {
     permisos.push('compras:read|contabilidad:read');
+    // Como el panel: sin las compras de inmovilizado. Su IVA sí va en el IVA soportado.
+    const gastoActual = sinInmovilizado(actual.gastos);
+    const gastoAnterior = sinInmovilizado(anterior.gastos);
+    const conInmovilizado = tieneInmovilizado(actual.gastos) || tieneInmovilizado(anterior.gastos);
     const verbo = tercero
       ? `En ${periodo.etiqueta}${recorte} has gastado con ${tercero.nombre}`
       : `${verVentas ? 'Has gastado' : `En ${periodo.etiqueta}${recorte} has gastado`}`;
-    frases.push(fraseComparada(verbo, actual.gastos, anterior.gastos, anioAnt));
-    kpis.push({ etiqueta: `Gastado ${sinImpuesto}`, valor: eur(actual.gastos.base), detalle: plural(actual.gastos.facturas, 'factura') });
-    kpis.push({ etiqueta: `Gastos en ${anioAnt}`, valor: eur(anterior.gastos.base), detalle: variacion(actual.gastos.base, anterior.gastos.base) ?? undefined });
-    filas.push({ celdas: ['Gastos (base imponible)', actual.gastos.base, anterior.gastos.base] });
+    frases.push(fraseComparada(conInmovilizado ? `${verbo}, sin las compras de inmovilizado,` : verbo, gastoActual, gastoAnterior, anioAnt));
+    kpis.push({ etiqueta: `Gastado ${sinImpuesto}`, valor: eur(gastoActual.base), detalle: plural(gastoActual.facturas, 'factura') });
+    kpis.push({ etiqueta: `Gastos en ${anioAnt}`, valor: eur(gastoAnterior.base), detalle: variacion(gastoActual.base, gastoAnterior.base) ?? undefined });
+    filas.push({ celdas: [conInmovilizado ? 'Gastos (base imponible, sin las compras de inmovilizado)' : 'Gastos (base imponible)', gastoActual.base, gastoAnterior.base] });
+    if (conInmovilizado) filas.push({ celdas: ['Compras de inmovilizado (base)', actual.gastos.baseInmovilizado, anterior.gastos.baseInmovilizado] });
     if (ctx.espanola) filas.push({ celdas: ['IVA soportado', actual.gastos.iva, anterior.gastos.iva] });
   }
   // Los botones repiten la consulta con el mismo cliente o proveedor (por su id, nunca por el nombre).
