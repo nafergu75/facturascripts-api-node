@@ -9,7 +9,7 @@ import {
   problemaSerieAeat,
   resolverCodSerieFactura,
 } from './series.service';
-import { listarCobros, registrarCobroFactura, tieneCobrosActivos, type DatosCobro } from './cobrosPagos.service';
+import { listarCobros, recalcularEstadoCobroVenta, registrarCobroFactura, tieneCobrosActivos, type DatosCobro } from './cobrosPagos.service';
 import { comprobarFechaAbierta } from './periodos.service';
 import {
   calcularImportesFactura,
@@ -1635,6 +1635,8 @@ async function crear(dto: CrearFacturaIngresoDTO, opciones: OpcionesAlta, intern
     if (!rect) return;
     await guardarEnlacesVenta(tx, dto.companyId, id, rect.enlaces);
     if (emitida) await recalcularEstadoPartidas(tx, dto.companyId, partidasDe(rect.enlaces));
+    // Por sustitucion, lo cobrado a la original cuenta: si ya estaba cobrada, la S nace cobrada.
+    if (emitida && rect.forma === 'S') await recalcularEstadoCobroVenta(tx, dto.companyId, id);
   };
 
   // Proforma: numero de su serie al crearla (sin huecos), sin efectos fiscales.
@@ -2289,6 +2291,7 @@ export const incomeInvoicesService = {
       if (rect) {
         await guardarEnlacesVenta(tx, companyId, id, rect.enlaces);
         await recalcularEstadoPartidas(tx, companyId, partidasDe(rect.enlaces));
+        if (rect.forma === 'S') await recalcularEstadoCobroVenta(tx, companyId, id);
       }
       return tx.incomeInvoice.findUniqueOrThrow({ where: { id }, include: INCLUIR });
     }, rect ? AISLAMIENTO_RECTIFICATIVAS : undefined);
