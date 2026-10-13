@@ -19,7 +19,7 @@ import {
 } from '../services/lectura/origen-tercero';
 import type { LecturaNormalizada, ResultadoValidacion } from '../services/lectura/tipos';
 import { compararQr } from '../services/lectura/verifactu-qr';
-import { validarLectura, type ContextoValidacion } from '../services/lectura/validaciones';
+import { MENSAJE_FALTA_NIF_CLIENTE as FALTA_NIF, MENSAJE_SIMPLIFICADA_SIN_NIF, validarLectura, type ContextoValidacion } from '../services/lectura/validaciones';
 import { HttpError } from '../utils/http-errors';
 import { fixtureAzure, NIF_EMISOR, NIF_EMPRESA } from './fixtures/azure-di';
 
@@ -200,5 +200,102 @@ describe('lector de gastos: el NIF del proveedor segun de donde es', () => {
     expect(await del(proveedor('12-3456789', 'US'), gasto(), 'NIF_EMISOR')).toEqual([]);
     const es = await del(proveedor('12-3456789'), gasto({ origenTercero: ES }), 'NIF_EMISOR');
     expect(es[0]).toMatchObject({ nivel: 'error', mensaje: expect.stringMatching(/Si el proveedor es de otro país, cámbialo en «¿De dónde es el proveedor\?»\.$/) });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Revisión técnica y normativa (13-10-2026)
+// ---------------------------------------------------------------------------
+
+describe('casos limite de de donde es el tercero', () => {
+  it('un NIF-IVA de Irlanda o de Chipre sin prefijo tiene forma de DNI, pero con su pais se propone con el prefijo', async () => {
+    const ie = await del(proveedor('6388047V', 'IE'), gasto({ origenTercero: UE('IE') }), 'NIF_EMISOR');
+    expect(ie).toEqual([expect.objectContaining({ nivel: 'revisar', sugerencia: 'IE6388047V' })]);
+    const cy = await del(cliente('10259033P', 'CY'), base({ origenTercero: UE('CY') }), 'NIF_RECEPTOR');
+    expect(cy).toEqual([expect.objectContaining({ nivel: 'revisar', sugerencia: 'CY10259033P' })]);
+    // Sin pais: no se dice que sea un NIF español (su control no cuadra), se pide de que pais es.
+    const sinPais = await del(proveedor('6388047V'), gasto({ origenTercero: UE() }), 'NIF_EMISOR');
+    expect(sinPais[0].mensaje).not.toMatch(/es un NIF español/);
+    expect(sinPais[0].mensaje).toMatch(/sin el prefijo del país/);
+  });
+
+  it('ES delante de un NIF español valido es de España aunque la direccion este fuera', () => {
+    expect(origenAutomatico({ nif: `ES${NIF_EMPRESA}`, paisDireccion: 'FR' })).toEqual({ origen: 'ES', pais: 'ES', por: 'prefijo' });
+    // Con un NIF mal escrito detras del ES, la direccion manda (como antes).
+    expect(origenAutomatico({ nif: 'ESB12345670', paisDireccion: 'FR' })).toMatchObject({ origen: 'UE', por: 'direccion' });
+  });
+
+  it('Canarias, Ceuta y Melilla en la direccion son España', () => {
+    for (const p of ['Islas Canarias', 'Canary Islands', 'Ceuta', 'Melilla']) {
+      expect(origenAutomatico({ nif: NIF_EMPRESA, paisDireccion: p })).toEqual({ origen: 'ES', pais: 'ES', por: 'direccion' });
+    }
+  });
+
+  it('De fuera de la UE: un RFC que empieza por DE no se toma por un NIF-IVA aleman; con De España, si se avisa', () => {
+    expect(contradiccionOrigen({ eleccion: FUERA('MX'), nif: 'DEL850101AB1' }, 'cliente')).toBeNull();
+    expect(contradiccionOrigen({ eleccion: ES, nif: 'DEL850101AB1' }, 'cliente')).toMatchObject({ origen: 'UE', pais: 'DE' });
+  });
+
+  it('un tercero ya dado de alta: su ficha manda sobre lo elegido para validar su numero; queda el aviso', async () => {
+    expect(detectarOrigenTercero({ eleccion: ES, paisFicha: 'IE', nif: 'IE6388047V' })).toEqual({ origen: 'UE', pais: 'IE', por: 'ficha' });
+    const vs = (await validarLectura(proveedor('IE6388047V'), gasto({ origenTercero: ES, paisTerceroFicha: 'IE' }))).validaciones;
+    expect(vs.filter((v) => v.codigo === 'NIF_EMISOR')).toEqual([]);
+    expect(vs.find((v) => v.codigo === 'ORIGEN_TERCERO')).toMatchObject({ nivel: 'revisar', mensaje: expect.stringMatching(/^Lo tienes dado de alta como proveedor de Irlanda/) });
+    // Y la pantalla recibe el nombre de su numero (el de la ficha).
+    expect(infoTercero('GASTO', { eleccion: ES, paisFicha: 'US', nif: '987654321' })).toMatchObject({
+      origen: 'FUERA',
+      pais: 'US',
+      numeroFiscal: 'EIN',
+      contradiccion: { origen: 'FUERA', pais: 'US' },
+    });
+  });
+
+  it('De fuera de la UE sin pais y un numero con forma de NIF español: revisar (mal leido o de España)', async () => {
+    const mal = await del(cliente('12345678A'), base({ origenTercero: FUERA() }), 'NIF_RECEPTOR');
+    expect(mal).toEqual([expect.objectContaining({ nivel: 'revisar', mensaje: expect.stringMatching(/parece un NIF español, pero su letra o cifra de control no cuadra/) })]);
+    // Con el pais (elegido o leido), su identificacion se acepta tal cual.
+    expect(await del(cliente('12345678A', 'CL'), base({ origenTercero: FUERA() }), 'NIF_RECEPTOR')).toEqual([]);
+    expect(await del(cliente('12345678A'), base({ origenTercero: FUERA('CL') }), 'NIF_RECEPTOR')).toEqual([]);
+  });
+
+  it('dicho de otro pais pero con la direccion en España: sin NIF sigue siendo error', async () => {
+    for (const eleccion of [FUERA(), UE()]) {
+      const vs = (await validarLectura(cliente(null, 'ES'), base({ origenTercero: eleccion }))).validaciones;
+      expect(vs.find((v) => v.codigo === 'NIF_RECEPTOR')).toMatchObject({ nivel: 'error', mensaje: FALTA_NIF });
+      expect(vs.find((v) => v.codigo === 'ORIGEN_TERCERO')?.nivel).toBe('revisar');
+    }
+    expect((await del(proveedor(null, 'ES'), gasto({ origenTercero: FUERA() }), 'NIF_EMISOR'))[0].nivel).toBe('error');
+  });
+
+  it('factura simplificada de venta sin NIF del cliente: revisar (el art. 7 no lo pide), no error', async () => {
+    const l = cliente(null);
+    l.tipoDocumento = { valor: 'simplificada', confianza: 0.9, fuente: 'azure' };
+    expect(await del(l, base({ origenTercero: ES }), 'NIF_RECEPTOR')).toEqual([expect.objectContaining({ nivel: 'revisar', mensaje: MENSAJE_SIMPLIFICADA_SIN_NIF })]);
+  });
+
+  it('textos: fuera de la UE habla de la exportacion; la UE, de los servicios', async () => {
+    expect((await del(cliente(null, 'US'), base(), 'NIF_RECEPTOR'))[0].mensaje).toMatch(/exportación de bienes al 0 %.*arts\. 69 y 70/);
+    expect((await del(cliente(null), base({ origenTercero: UE('IT') }), 'NIF_RECEPTOR'))[0].mensaje).toMatch(/servicio a una empresa.*art\. 69/);
+  });
+
+  it('un NIF-IVA con prefijo y una composicion imposible para su Estado es error (el 349 lo rechazaria); el de la ficha, revisar', async () => {
+    const leido = await del(cliente('FR123'), base({ origenTercero: UE() }), 'NIF_RECEPTOR');
+    expect(leido[0]).toMatchObject({ nivel: 'error', mensaje: expect.stringMatching(/^El NIF-IVA FR123 no es válido: en Francia el NIF-IVA lleva 11 letras o cifras detrás de FR/) });
+    const deFicha = await del(proveedor('FR123'), gasto({ paisTerceroFicha: 'FR' }), 'NIF_EMISOR');
+    expect(deFicha[0]).toMatchObject({ nivel: 'revisar', mensaje: expect.stringMatching(/^El NIF-IVA de la ficha del proveedor no es válido/) });
+  });
+
+  it('el NIF-IVA propuesto para el alta sigue a la factura cuando contradice lo elegido', () => {
+    expect(infoTercero('VENTA', { eleccion: ES, nif: '40303265045', paisDireccion: 'FR' })).toMatchObject({
+      origen: 'ES',
+      contradiccion: { origen: 'UE', pais: 'FR' },
+      nifPropuesto: 'FR40303265045',
+    });
+  });
+
+  it('una eleccion que no casa con su pais dice que opcion elegir', () => {
+    expect(() => leerEleccionOrigen('FUERA', 'ES')).toThrow(/elige «De España»/);
+    expect(() => leerEleccionOrigen('UE', 'US')).toThrow(/no es de la UE: elige «De fuera de la UE»/);
+    expect(() => leerEleccionOrigen('FUERA', 'FR')).toThrow(/es de la UE: elige «De otro país de la UE»/);
   });
 });
