@@ -4,6 +4,7 @@ import { crearAsientoTesoreria } from './asientos.service';
 import { EstadoCobro, EstadoCobroFactura } from '../domain/cobros.model';
 import { badRequest } from '../utils/http-errors';
 import { comprobarFechaAbierta } from './periodos.service';
+import { exigirSubcuentaDeBanco } from './subcuentaBanco.service';
 import { prisma } from '../config/database';
 
 const round2 = (n: number): number => Math.round((n + Number.EPSILON) * 100) / 100;
@@ -80,6 +81,7 @@ export async function conciliarMovimientoConCuenta(
   const cuentas = await listarCuentasBancarias(companyId);
   const cuenta = cuentas.find((c) => c.id === mov.cuentaBancariaId);
   if (!cuenta?.subcuentaCodigo) throw badRequest('La cuenta bancaria del movimiento no tiene subcuenta de tesorería (572): ponla en Tesorería > Cuentas bancarias.');
+  exigirSubcuentaDeBanco(cuenta, 'conciliar el movimiento');
   const subBanco = cuenta.subcuentaCodigo;
 
   const importe = round2(Math.abs(mov.importe));
