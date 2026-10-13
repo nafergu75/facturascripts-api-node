@@ -69,6 +69,24 @@ describe('PDF de una rectificativa de venta', () => {
     );
   });
 
+  it('por sustitución, también el importe de la rectificación (art. 15.5); por diferencias, no', () => {
+    const f = base({
+      tipoFactura: 'R4',
+      tipoRectificativa: 'S',
+      causaRectificacion: 'ERROR',
+      motivoRectificacion: 'El precio era 450',
+      rectificadas: [{ numero: 'A-4', fecha: '2026-05-10' }],
+      importeRectificacion: { base: -50, cuota: -10.5, retencion: 0, total: -60.5 },
+    });
+    const t = textoRectificacionPdf(f, 'es');
+    expect(t).toHaveLength(3);
+    expect(t[1]).toMatch(/^Importe de la rectificación: base .50,00 €, IVA .10,50 € y total .60,50 €\.$/);
+    expect(t[2]).toBe('Motivo: Error en datos o importes. El precio era 450');
+    expect(textoRectificacionPdf({ ...f, importeRectificacion: { base: -100, cuota: -21, retencion: -15, total: -106 } }, 'es')[1]).toMatch(/retención .15,00 € y total .106,00 €/);
+    expect(textoRectificacionPdf({ ...f, emisor: { ...f.emisor!, pais: 'US' } }, 'en')[1]).toMatch(/^Amount of the correction: tax base .*50\.00, VAT .*10\.50, total .*60\.50\.$/);
+    expect(textoRectificacionPdf(base({ importeRectificacion: { base: -1, cuota: 0, retencion: 0, total: -1 } }), 'es')).toHaveLength(2);
+  });
+
   it('las de antes (sin enlaces ni causa) salen como siempre', () => {
     const f = base({ original: { numeroCompleto: 'A-1', fechaEmision: '2026-10-01' }, motivoRectificacion: 'Anulación' });
     expect(textoRectificacionPdf(f, 'es')).toEqual(['Rectifica la factura A-1, de 01/10/2026, por diferencias (R1).', 'Motivo: Anulación']);
