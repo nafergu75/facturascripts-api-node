@@ -1,11 +1,18 @@
-import { prisma } from '../config/database';
+import { Prisma } from '@prisma/client';
+import { prisma, type TransaccionBD } from '../config/database';
 import { badRequest, notFound } from '../utils/http-errors';
-import { conReintento } from '../utils/reintento';
+import { esClaveRepetida } from '../utils/reintento';
 import { isValidIban } from '../utils/validateIban';
 import { importarMovimientosDesdeCSV } from './bancos.service';
 import { conciliarMovimientoConFactura } from './conciliacionConfirmar.service';
 import { perfilEmpresa } from './perfilEmpresa.service';
-import { asignarSubcuentaBanco, INDICE_SUBCUENTA_BANCO, nombreSubcuentaBanco, subcuentasBanco, usarSubcuentaBanco } from './subcuentaBanco.service';
+import {
+  asignarSubcuentaBanco,
+  INDICE_SUBCUENTA_BANCO,
+  nombreSubcuentaBanco,
+  subcuentasBanco,
+  usarSubcuentaBanco,
+} from './subcuentaBanco.service';
 
 /**
  * Tesoreria: la API que usa la pantalla de tesoreria del frontend.
@@ -64,6 +71,29 @@ const aCuenta = (c: {
   createdAt: c.createdAt,
 });
 
+/** IBAN sin espacios ni guiones y en mayusculas (como se guarda). */
+const normalizarIban = (iban: string) => iban.replace(/[\s-]+/g, '').toUpperCase();
+
+/**
+ * Dos altas a la vez: la misma subcuenta (indice unico del plan) o un
+ * interbloqueo de MySQL al bloquear las cuentas de la empresa. Se repite la
+ * transaccion y la segunda ve lo que hizo la primera.
+ */
+const esChoqueDeAltas = (e: unknown) =>
+  esClaveRepetida(e, [INDICE_SUBCUENTA_BANCO]) ||
+  (e instanceof Prisma.PrismaClientKnownRequestError &&
+    (e.code === 'P2034' || (e.code === 'P2010' && /1213|deadlock/i.test(JSON.stringify(e.meta ?? {})))));
+
+async function conReintentoDeAltas<T>(fn: () => Promise<T>): Promise<T> {
+  for (let intento = 0; ; intento++) {
+    try {
+      return await fn();
+    } catch (e) {
+      if (intento >= 5 || !esChoqueDeAltas(e)) throw e;
+    }
+  }
+}
+
 async function cuentaDeEmpresa(companyId: string, accountId: string) {
   const cuenta = await prisma.bankAccount.findFirst({ where: { id: accountId, companyId } });
   if (!cuenta) throw notFound('Cuenta bancaria no encontrada.');
@@ -82,12 +112,16 @@ async function cuentaDeEmpresa(companyId: string, accountId: string) {
  * El IBAN se comprueba (digitos de control) siempre que lo parezca, y en una
  * empresa espanola siempre. En una de EE. UU. o Hong Kong, que no usan IBAN,
  * vale el numero de cuenta. Los errores llevan `campo` para la pantalla.
+ *
+ * Si ese IBAN es de una cuenta desactivada, se vuelve a activar tal como estaba
+ * (con su subcuenta y su saldo inicial) en vez de dar un error sin salida: la
+ * app no tiene otra forma de reactivarla. La respuesta lleva `reactivada`.
  */
 export async function crearCuentaBancaria(
   companyId: string,
   datos: { iban?: string; bic?: string; bancoNombre?: string; subcuentaCodigo?: string; saldoInicial?: number },
 ) {
-  const iban = String(datos.iban ?? '').replace(/[\s-]+/g, '').toUpperCase();
+  const iban = normalizarIban(String(datos.iban ?? ''));
   if (!iban) throw badRequest('Escribe el IBAN de la cuenta.', { campo: 'iban' });
   const perfil = await perfilEmpresa(companyId);
   const pareceIban = /^[A-Z]{2}\d{2}/.test(iban);
@@ -103,9 +137,6 @@ export async function crearCuentaBancaria(
   const saldoInicial = Number(datos.saldoInicial ?? 0);
   if (!Number.isFinite(saldoInicial)) throw badRequest('El saldo inicial no es un importe válido.', { campo: 'saldoInicial' });
 
-  const existe = await prisma.bankAccount.findFirst({ where: { companyId, iban } });
-  if (existe) throw badRequest(`Ya tienes dada de alta una cuenta con el IBAN ${iban}.`, { campo: 'iban' });
-
   const bancoNombre = datos.bancoNombre?.trim() || null;
   const datosCuenta = {
     companyId,
@@ -118,15 +149,27 @@ export async function crearCuentaBancaria(
   };
   const escrita = String(datos.subcuentaCodigo ?? '').trim();
   const nombre = nombreSubcuentaBanco(bancoNombre, iban);
-  const cuenta = await conReintento(
-    () =>
-      prisma.$transaction(async (tx) => {
-        const subcuentaCodigo = escrita ? await usarSubcuentaBanco(tx, companyId, escrita, nombre) : await asignarSubcuentaBanco(tx, companyId, nombre);
-        return tx.bankAccount.create({ data: { ...datosCuenta, subcuentaCodigo } });
-      }),
-    { indices: [INDICE_SUBCUENTA_BANCO], intentos: 5 },
+  return conReintentoDeAltas(() =>
+    prisma.$transaction(async (tx) => {
+      // El IBAN repetido se mira dentro de la transaccion y con bloqueo: dos altas
+      // a la vez del mismo IBAN se ponen en cola y la segunda ve la primera.
+      const existe = (await cuentasBloqueadas(tx, companyId)).find((c) => normalizarIban(c.iban) === iban);
+      if (existe?.activa) throw badRequest(`Ya tienes dada de alta una cuenta con el IBAN ${iban}.`, { campo: 'iban' });
+      if (existe) {
+        const reactivada = await tx.bankAccount.update({ where: { id: existe.id }, data: { activa: true } });
+        return { ...aCuenta(reactivada), reactivada: true };
+      }
+      const subcuentaCodigo = escrita ? await usarSubcuentaBanco(tx, companyId, escrita, nombre) : await asignarSubcuentaBanco(tx, companyId, nombre);
+      return aCuenta(await tx.bankAccount.create({ data: { ...datosCuenta, subcuentaCodigo } }));
+    }),
   );
-  return aCuenta(cuenta);
+}
+
+/** Cuentas bancarias de la empresa leidas con bloqueo (hasta el final de la transaccion). */
+async function cuentasBloqueadas(tx: TransaccionBD, companyId: string): Promise<Array<{ id: string; iban: string; activa: boolean }>> {
+  const filas = await tx.$queryRaw<Array<{ id: string; iban: string; activa: unknown }>>`
+    SELECT id, iban, activa FROM BankAccount WHERE companyId = ${companyId} FOR UPDATE`;
+  return filas.map((f) => ({ id: f.id, iban: f.iban, activa: Boolean(Number(f.activa)) }));
 }
 
 /**
