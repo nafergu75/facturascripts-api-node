@@ -14,7 +14,7 @@ import { AccountingEngineController } from '../controllers/accounting-engine.con
 import { anularCobroFactura, listarCobros, registrarCobroFactura } from '../services/cobrosPagos.service';
 import { informeDetalleTercero, informeMayorTerceros } from '../services/informesContables.service';
 import { cambiarEstadoPeriodo } from '../services/periodos.service';
-import { hoyEspana } from '../utils/fechas';
+import { fechaTexto, hoyEspana } from '../utils/fechas';
 
 const COMPANY_ID = `cobros-test-${Date.now()}`;
 // El cliente y el proveedor de la suite (los primeros de la empresa) se
@@ -289,6 +289,13 @@ describe('devolución al cliente de un abono de venta', () => {
     // Las devoluciones no son cobros del periodo.
     const lista = await listarCobros(COMPANY_ID, 'INGRESO', abono.id);
     expect(lista.cobros.map((c) => c.importe)).toEqual([-100, -21]);
+
+    // Los avisos hablan de «la devolución» y la fecha va en dd/mm/aaaa (antes: «La fecha del devolución… (2026-10-14)»).
+    await expect(registrarCobroFactura(COMPANY_ID, 'INGRESO', abono.id, { fecha: '2026-07-01', importe: 1, cuentaBancariaId: bancoId })).rejects.toThrow(
+      `La fecha de la devolución no puede ser anterior a la de la factura (${fechaTexto(abono.fechaEmision)}).`,
+    );
+    await anularCobroFactura(COMPANY_ID, 'INGRESO', abono.id, cobro.id);
+    await expect(anularCobroFactura(COMPANY_ID, 'INGRESO', abono.id, cobro.id)).rejects.toThrow('La devolución ya está anulada.');
   });
 
   it('de una factura sin cobrar: el abono se descuenta de lo que debe y no queda nada que devolver', async () => {
