@@ -579,6 +579,73 @@ describe('confirmar con lecturaId', () => {
   });
 });
 
+describe('empresa sin NIF (fallo del 13-10)', () => {
+  // resultado-simple: emisor IMPRENTA LEVANTE SL y cliente COMERCIAL DEMO SL.
+  const EMISORA = `${E}-sin-nif-emisora`;
+  const RECEPTORA = `${E}-sin-nif-receptora`;
+  const proveedores: Record<string, string> = {};
+  beforeAll(async () => {
+    await prisma.company.create({ data: { id: EMISORA, name: 'Imprenta Levante SL', fsBaseUrl: 'http://localhost:8080', fsApiKeyEnc: 'k' } });
+    await prisma.legalConfig.create({ data: { companyId: EMISORA } });
+    await prisma.company.create({ data: { id: RECEPTORA, name: 'Otro nombre', fsBaseUrl: 'http://localhost:8080', fsApiKeyEnc: 'k' } });
+    await prisma.legalConfig.create({ data: { companyId: RECEPTORA, denominacion: 'Comercial Demo, S.L.' } });
+    // El proveedor ya dado de alta en cada una (el lector no lo crea al registrar).
+    for (const companyId of [EMISORA, RECEPTORA]) {
+      proveedores[companyId] = (await prisma.supplier.create({ data: { companyId, nombreFiscal: 'IMPRENTA LEVANTE, S.L.', nifCif: NIF_EMISOR } })).id;
+    }
+  });
+
+  async function leerEn(companyId: string): Promise<{ id: string; body: Record<string, any> }> {
+    colaPost.push(() => aceptado());
+    const p = await subir(app(companyId));
+    expect(p.status).toBe(202);
+    const id = p.body.data.lecturaId as string;
+    await yaToca(id);
+    colaGet.push(() => resultado('resultado-simple'));
+    const r = await consultar(id, app(companyId));
+    expect(r.status).toBe(200);
+    return { id, body: r.body.data };
+  }
+  const empresa = async (id: string) => {
+    const fila = await prisma.lecturaDocumento.findUniqueOrThrow({ where: { id } });
+    return ((fila.validaciones ?? []) as Array<{ codigo: string; nivel: string; mensaje: string }>).filter((x) => x.codigo === 'EMPRESA');
+  };
+  const cuerpo = (companyId: string, lecturaId: string) => ({
+    proveedor: { id: proveedores[companyId] },
+    numeroFacturaProveedor: 'F2026/0012',
+    fechaEmision: '2026-03-04',
+    tipoGasto: 'SUMINISTROS',
+    cuentaGasto: '629',
+    lineas: [{ descripcion: 'Folletos', cantidad: 1, precioUnitario: 200, tipoIva: 21, tipoRetencion: 0 }],
+    totalDocumento: 242,
+    tipoDocumento: 'factura',
+    lecturaId,
+    revisado: true,
+  });
+
+  it('con el nombre del emisor (Company.name): error al leer y al confirmar', async () => {
+    const { id, body } = await leerEn(EMISORA);
+    expect(body.lectura.estado).toBe('error');
+    expect(await empresa(id)).toEqual([expect.objectContaining({ nivel: 'error', mensaje: 'Parece una factura emitida por la empresa: léela en el lector de ventas.' })]);
+    const r = await request(app(EMISORA)).post('/gastos-extractor/confirmar').send(cuerpo(EMISORA, id));
+    expect(r.status).toBe(400);
+    expect(r.body).toMatchObject({ message: 'Parece una factura emitida por la empresa: léela en el lector de ventas.', details: { codigo: 'VALIDACION_LECTURA', campo: 'emisor.nombre' } });
+  });
+
+  it('con el nombre del cliente (denominación): revisar pidiendo el NIF, y se registra marcando «He revisado»', async () => {
+    const { id, body } = await leerEn(RECEPTORA);
+    expect(body.lectura).toMatchObject({ estado: 'revisar', requiereRevision: true });
+    expect(await empresa(id)).toEqual([
+      expect.objectContaining({
+        nivel: 'revisar',
+        mensaje: 'Tu empresa no tiene el NIF en Más > Datos de la empresa: no se puede comprobar que esta factura vaya a su nombre. Ponlo para que el lector lo compruebe.',
+      }),
+    ]);
+    const r = await request(app(RECEPTORA)).post('/gastos-extractor/confirmar').send(cuerpo(RECEPTORA, id));
+    expect(r.status).toBe(201);
+  });
+});
+
 describe('avisos que no van ligados a un dato', () => {
   it('archivo ya registrado: el texto llega en generales y en avisos', async () => {
     const hash = createHash('sha256').update(PDF).digest('hex');
