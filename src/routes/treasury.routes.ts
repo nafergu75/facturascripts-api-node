@@ -20,6 +20,7 @@ const router = Router({ mergeParams: true });
 
 router.get('/summary', authorize('tesoreria:read'), treasuryController.resumen);
 router.get('/bank-accounts', authorize('tesoreria:read'), treasuryController.listarCuentas);
+router.get('/bank-accounts/subcuenta-propuesta', authorize('tesoreria:read'), treasuryController.subcuentaPropuesta);
 router.post('/bank-accounts', authorize('tesoreria:write'), treasuryController.crearCuenta);
 router.get('/bank-accounts/:accountId/movements', authorize('tesoreria:read'), treasuryController.listarMovimientos);
 router.post('/bank-accounts/:accountId/statements', authorize('tesoreria:write'), treasuryController.subirExtracto);

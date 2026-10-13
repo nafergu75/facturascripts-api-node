@@ -13,6 +13,11 @@ export const treasuryController = {
     sendOk(res, await treasuryService.listarCuentasBancarias(req.companyId!));
   }),
 
+  // Subcuenta 572 que se propone para una cuenta nueva y las del plan que aun no tienen cuenta.
+  subcuentaPropuesta: asyncHandler(async (req, res) => {
+    sendOk(res, await treasuryService.subcuentaPropuesta(req.companyId!));
+  }),
+
   crearCuenta: asyncHandler(async (req, res) => {
     sendOk(res, await treasuryService.crearCuentaBancaria(req.companyId!, req.body ?? {}), undefined, 201);
   }),
