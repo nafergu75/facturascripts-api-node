@@ -20,7 +20,7 @@ import { esTipoGasto, TIPO_GASTO_INFO } from '../domain/factura-gasto.model';
 import { subcuentaClienteParaApunte, subcuentaProveedorParaApunte } from './terceros/subcuentas';
 import { esSubcuentaGenerica } from './terceros/numeracion';
 import { conReintento } from '../utils/reintento';
-import { asegurarSubcuentaBancoEnPlan, esSubcuentaDeBanco, nombreSubcuentaBanco } from './subcuentaBanco.service';
+import { asegurarSubcuentaBancoEnPlan, exigirSubcuentaDeBanco, nombreSubcuentaBanco } from './subcuentaBanco.service';
 
 /**
  * Cobros de facturas de venta y pagos de facturas de gasto, con su asiento.
@@ -392,14 +392,8 @@ async function resolverTesoreria(
       );
     }
   }
-  const nombre = c.bancoNombre || c.iban;
-  if (!esSubcuentaDeBanco(c.subcuentaCodigo)) {
-    throw badRequest(
-      `La cuenta bancaria ${nombre} tiene como subcuenta «${c.subcuentaCodigo}», que no es de bancos. Cámbiala en Tesorería > Cuentas bancarias por una 572 (por ejemplo 57200001) y vuelve a registrar el ${TXT[tipo].cobro}.`,
-      { codigo: 'SUBCUENTA_BANCO_NO_VALIDA', cuentaBancariaId: c.id, subcuenta: c.subcuentaCodigo },
-    );
-  }
-  return { cuenta: c.subcuentaCodigo, bankAccountId: c.id, nombre, moneda: c.moneda, altaEnPlan: nombreSubcuentaBanco(c.bancoNombre, c.iban) };
+  exigirSubcuentaDeBanco(c, `registrar el ${TXT[tipo].cobro}`);
+  return { cuenta: c.subcuentaCodigo, bankAccountId: c.id, nombre: c.bancoNombre || c.iban, moneda: c.moneda, altaEnPlan: nombreSubcuentaBanco(c.bancoNombre, c.iban) };
 }
 
 function validarFecha(fecha: string | undefined): string {

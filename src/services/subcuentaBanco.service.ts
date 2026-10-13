@@ -44,6 +44,26 @@ const esGenerica = (codigo: string) => /^5720*$/.test(codigo);
  */
 export const esSubcuentaDeBanco = (codigo: string) => /^572\d{2,}$/.test(codigo);
 
+/** Codigo (details.codigo) del 400 al apuntar en una cuenta bancaria cuya subcuenta no es de bancos. */
+export const CODIGO_SUBCUENTA_NO_VALIDA = 'SUBCUENTA_BANCO_NO_VALIDA';
+
+/**
+ * Para antes de apuntar en una cuenta bancaria cuya subcuenta no es de bancos:
+ * el asiento iria a esa cuenta (por ejemplo «0001»). Mismo aviso en cobros y
+ * pagos de facturas, partidas de la carga, conciliacion y nominas. `accion`
+ * completa la frase: «… y vuelve a <accion>».
+ */
+export function exigirSubcuentaDeBanco(
+  cuenta: { id: string; iban: string; bancoNombre?: string | null; subcuentaCodigo: string },
+  accion: string,
+): void {
+  if (esSubcuentaDeBanco(cuenta.subcuentaCodigo)) return;
+  throw badRequest(
+    `La cuenta bancaria ${cuenta.bancoNombre || cuenta.iban} tiene como subcuenta «${cuenta.subcuentaCodigo}», que no es de bancos. Cámbiala en Tesorería > Cuentas bancarias por una 572 (por ejemplo 57200001) y vuelve a ${accion}.`,
+    { codigo: CODIGO_SUBCUENTA_NO_VALIDA, cuentaBancariaId: cuenta.id, subcuenta: cuenta.subcuentaCodigo },
+  );
+}
+
 /** Agrupacion de los bancos (572, 5720, 5721, 57200000): no se elige para una cuenta nueva. */
 const esAgrupacionBancos = (codigo: string) => !esSubcuentaDeBanco(codigo) || esGenerica(codigo);
 
