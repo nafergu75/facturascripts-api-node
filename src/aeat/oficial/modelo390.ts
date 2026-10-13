@@ -76,6 +76,12 @@ export interface Entrada390 {
    * 303 declara en [14]/[15]. No van en las filas por tipo.
    */
   modificaciones?: { base: number; cuota: number };
+  /**
+   * Modificación de bases y cuotas por concurso de acreedores [31]/[32] (con
+   * signo): las rectificativas de venta R2 (art. 80.Tres LIVA). En el 303 van
+   * con las demas en [14]/[15]; aqui, aparte. Suman en [33]/[34].
+   */
+  modificacionesConcurso?: { base: number; cuota: number };
   /** Rectificación de deducciones [639]/[62] (con signo): las compras deducibles anuladas, [40]/[41] del 303. */
   rectificacionDeducciones?: { base: number; cuota: number };
   /** IVA deducible de las compras interiores corrientes, por tipo. */
@@ -283,8 +289,12 @@ export function construirModelo390(e: Entrada390): Declaracion390 {
   // [29]/[30]: modificación de bases y cuotas (campos N, con signo).
   const mod = { base: cent(e.modificaciones?.base ?? 0), cuota: cent(e.modificaciones?.cuota ?? 0) };
   if (mod.base !== 0 || mod.cuota !== 0) p2.importe('29', eur(mod.base)).importe('30', eur(mod.cuota));
-  const base33 = rg.base + ib.base + is.base + mod.base;
-  const cuota34 = rg.cuota + ib.cuota + is.cuota + mod.cuota;
+  // [31]/[32]: modificación de bases y cuotas por concurso de acreedores (R2), tambien con signo.
+  const conc = { base: cent(e.modificacionesConcurso?.base ?? 0), cuota: cent(e.modificacionesConcurso?.cuota ?? 0) };
+  if (conc.base !== 0 || conc.cuota !== 0) p2.importe('31', eur(conc.base)).importe('32', eur(conc.cuota));
+  // El diseño no trae la formula del total: [33]/[34] suman todas las bases y cuotas de la pagina, tambien [31]/[32].
+  const base33 = rg.base + ib.base + is.base + mod.base + conc.base;
+  const cuota34 = rg.cuota + ib.cuota + is.cuota + mod.cuota + conc.cuota;
   p2.importe('33', eur(base33)).importe('34', eur(cuota34));
 
   // --- Página 02B00: recargo de equivalencia (no aplica) y [47] ---
