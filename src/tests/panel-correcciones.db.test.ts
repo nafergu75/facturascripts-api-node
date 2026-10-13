@@ -20,6 +20,7 @@ import { prisma } from '../config/database';
 import { errorMiddleware } from '../middleware/error.middleware';
 import movementsRoutes from '../routes/movements.routes';
 import { resumenFiscalPeriodo } from '../services/resumenFiscal.service';
+import { incomeInvoicesService } from '../services/income-invoices.service';
 
 const SUF = `${Date.now()}${randomBytes(3).toString('hex')}`;
 const E1 = `panelc-${SUF}`;
@@ -193,6 +194,12 @@ describe('rectificativa por sustitución (S): cuenta solo su diferencia', () => 
       ['Gamma SL', 310, 4],
       ['Beta SL', -500, 1],
     ]);
+  });
+
+  it('el resumen de ingresos por periodo (GET /invoices/income/resumen/periodo) también cuenta la S por su diferencia', async () => {
+    const r = await incomeInvoicesService.resumenPorPeriodo(E1, '2026-01-01', '2026-12-31');
+    // 1000 + (1200 - 1000) + 2000 + (1500 - 2000) + 100 + 100 + 100 + 10; IVA al 21 %.
+    expect(r).toMatchObject({ totalFacturas: 8, basePendiente: 3010, ivaTotal: 632.1 });
   });
 });
 
