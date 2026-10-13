@@ -16,6 +16,7 @@ import { aGastoExtraido, aInvoiceExtraction, tramosGasto } from '../services/lec
 import { mapearFacturaAzure } from '../services/lectura/azure-factura.mapper';
 import type { AnalyzeResult } from '../services/lectura/azure-di.client';
 import { claudeVisionExtractor } from '../services/lectura/claude-vision.adapter';
+import { direccionParaFicha } from '../services/lectura/direccion';
 import type { LecturaNormalizada } from '../services/lectura/tipos';
 import { validarLectura, type ContextoValidacion } from '../services/lectura/validaciones';
 import { fixtureAzure, fixtureClaude, NIF_EMPRESA } from './fixtures/azure-di';
@@ -96,10 +97,11 @@ describe('aGastoExtraido', () => {
     expect(sin).toMatchObject({ cuentaContableBase: '629', tipoGastoSugerido: 'SUMINISTROS' });
   });
 
-  it('la dirección del proveedor llega separada (calle, CP, municipio y provincia) para la ficha nueva', async () => {
+  it('la dirección del proveedor llega separada (calle, CP, municipio, provincia y país ISO-2) para la ficha nueva', async () => {
     const l = leer('resultado-confianza-baja');
     const g = aGastoExtraido(l, (await validarLectura(l, ctx())).validaciones, 0.9);
-    expect(g.direccionProveedor).toEqual({ calle: 'Calle Mayor 12', cp: '46001', municipio: 'Valencia', provincia: 'Valencia', revisar: false });
+    // Azure da el país en ISO-3 («ESP»): la ficha lo quiere en ISO-2.
+    expect(g.direccionProveedor).toEqual({ calle: 'Calle Mayor 12', cp: '46001', municipio: 'Valencia', provincia: 'Valencia', pais: 'ES', revisar: false });
     // Leída con poca seguridad: hay que revisarla.
     l.emisor.direccion.confianza = 0.6;
     expect(aGastoExtraido(l, [], 0.9).direccionProveedor?.revisar).toBe(true);
@@ -229,6 +231,40 @@ describe('aInvoiceExtraction', () => {
     expect(aIngresoExtraido('doc', e)).toMatchObject({ numeroFactura: 'F2026/0012', nifCliente: 'B87654323', base: 250, iva: 47, total: 297, errores: [] });
   });
 
+  it('la dirección del cliente: la calle en customer.address y, separada, en direccionCliente', async () => {
+    const l = leer('resultado-simple');
+    l.receptor.direccion = { valor: { calle: 'Avenida del Puerto 3', cp: '46021', municipio: 'Valencia', provincia: 'Valencia', pais: 'ESP' }, confianza: 0.9, fuente: 'azure' };
+    const e = aInvoiceExtraction(l, [], { confianza: 0.9, nombreArchivo: null, mime: null });
+    expect(e.customer.address).toBe('Avenida del Puerto 3');
+    expect(aIngresoExtraido('doc', e, direccionParaFicha(l.receptor.direccion)).direccionCliente).toEqual({
+      calle: 'Avenida del Puerto 3',
+      cp: '46021',
+      municipio: 'Valencia',
+      provincia: 'Valencia',
+      pais: 'ES',
+      revisar: false,
+    });
+    // Leída con poca seguridad: a revisar, como la del proveedor.
+    l.receptor.direccion.confianza = 0.55;
+    expect(aIngresoExtraido('doc', e, direccionParaFicha(l.receptor.direccion)).direccionCliente?.revisar).toBe(true);
+    // Sin dirección leída (o una lectura guardada antes, sin el campo): null.
+    expect(aIngresoExtraido('doc', e, null).direccionCliente).toBeNull();
+    const antigua = leer('resultado-simple') as unknown as { receptor: Record<string, unknown> };
+    delete antigua.receptor.direccion;
+    const ea = aInvoiceExtraction(antigua as unknown as LecturaNormalizada, [], { confianza: 0.9, nombreArchivo: null, mime: null });
+    expect(ea.customer.address).toBeNull();
+    expect(aIngresoExtraido('doc', ea, direccionParaFicha((antigua as unknown as LecturaNormalizada).receptor.direccion)).direccionCliente).toBeNull();
+    // El extractor de siempre trae la dirección en una sola cadena: entera en la calle.
+    expect(aIngresoExtraido('doc', { ...e, customer: { ...e.customer, address: 'C/ Mayor 1, 46001 Valencia' } }).direccionCliente).toEqual({
+      calle: 'C/ Mayor 1, 46001 Valencia',
+      cp: null,
+      municipio: null,
+      provincia: null,
+      pais: null,
+      revisar: false,
+    });
+  });
+
   it('con IRPF, la retencion va en withholdings y el total neto cuadra', async () => {
     const l = leer('resultado-irpf');
     const e = aInvoiceExtraction(l, [], { confianza: 0.9, nombreArchivo: null, mime: null });
@@ -288,6 +324,58 @@ describe('respaldo con Claude con vision', () => {
     expect(r.lectura.receptor.nif.valor).toBe('B87654323');
     expect(r.lectura.totales.totalFactura.valor).toBe(242);
     expect(typeof r.confianzaLector).toBe('number');
+  });
+
+  it('ventas: se piden las direcciones separadas y la del cliente llega a direccionCliente', async () => {
+    const conDirecciones = fixtureClaude<{ content: Array<{ input: Record<string, unknown> }> }>('vision-venta');
+    conDirecciones.content[0].input.customer_address_detail = { calle: 'Rua Augusta 10', cp: '1100-053', municipio: 'Lisboa', pais: 'Portugal' };
+    conDirecciones.content[0].input.vendor_address_detail = { calle: 'Calle Mayor 12', cp: '46001', municipio: 'Valencia', provincia: 'Valencia', pais: 'España' };
+    crear.mockResolvedValueOnce(conDirecciones);
+    const r = await claudeVisionExtractor('VENTA').iniciar(archivo, { companyId: 'e', lector: 'VENTA', empresaEspanola: true });
+    if (r.tipo !== 'hecho') throw new Error(r.tipo);
+    const props = crear.mock.calls[0][0].tools[0].input_schema.properties;
+    expect(Object.keys(props.customer_address_detail.properties)).toEqual(['calle', 'cp', 'municipio', 'provincia', 'pais']);
+    expect(Object.keys(props.vendor_address_detail.properties)).toEqual(['calle', 'cp', 'municipio', 'provincia', 'pais']);
+    expect(crear.mock.calls[0][0].messages[0].content[1].text).toMatch(/DIRECCIONES/);
+    expect(r.lectura.receptor.direccion).toEqual({ valor: { calle: 'Rua Augusta 10', cp: '1100-053', municipio: 'Lisboa', pais: 'Portugal' }, confianza: null, fuente: 'claude' });
+    expect(r.lectura.emisor.direccion.valor).toMatchObject({ calle: 'Calle Mayor 12', provincia: 'Valencia' });
+    const e = aInvoiceExtraction(r.lectura, [], { confianza: 0.8, nombreArchivo: null, mime: null });
+    expect(e.customer.address).toBe('Rua Augusta 10');
+    expect(aIngresoExtraido('doc', e, direccionParaFicha(r.lectura.receptor.direccion)).direccionCliente).toEqual({
+      calle: 'Rua Augusta 10',
+      cp: '1100-053',
+      municipio: 'Lisboa',
+      provincia: null,
+      pais: 'PT',
+      revisar: false,
+    });
+
+    // Sin la dirección separada, la de una sola cadena va a la calle; sin nada, vacía.
+    const enCadena = fixtureClaude<{ content: Array<{ input: Record<string, unknown> }> }>('vision-venta');
+    enCadena.content[0].input.customer_address = 'Rua Augusta 10, Lisboa';
+    crear.mockResolvedValueOnce(enCadena);
+    const r2 = await claudeVisionExtractor('VENTA').iniciar(archivo, { companyId: 'e', lector: 'VENTA', empresaEspanola: true });
+    if (r2.tipo !== 'hecho') throw new Error(r2.tipo);
+    expect(r2.lectura.receptor.direccion.valor).toEqual({ calle: 'Rua Augusta 10, Lisboa' });
+    crear.mockResolvedValueOnce(fixtureClaude('vision-venta'));
+    const r3 = await claudeVisionExtractor('VENTA').iniciar(archivo, { companyId: 'e', lector: 'VENTA', empresaEspanola: true });
+    if (r3.tipo !== 'hecho') throw new Error(r3.tipo);
+    expect(direccionParaFicha(r3.lectura.receptor.direccion)).toBeNull();
+  });
+
+  it('gastos: se pide la dirección del proveedor separada y llega a direccionProveedor', async () => {
+    const conDireccion = fixtureClaude<{ content: Array<{ input: Record<string, unknown> }> }>('vision-gasto');
+    conDireccion.content[0].input.direccion_proveedor = { calle: 'Calle Mayor 12', cp: '46001', municipio: 'Valencia', provincia: 'Valencia', pais: 'ES' };
+    crear.mockResolvedValueOnce(conDireccion);
+    const r = await claudeVisionExtractor('GASTO').iniciar(archivo, { companyId: 'e', lector: 'GASTO', empresaEspanola: true });
+    if (r.tipo !== 'hecho') throw new Error(r.tipo);
+    expect(Object.keys(crear.mock.calls[0][0].tools[0].input_schema.properties.direccion_proveedor.properties)).toEqual(['calle', 'cp', 'municipio', 'provincia', 'pais']);
+    expect(aGastoExtraido(r.lectura, [], 0.85).direccionProveedor).toEqual({ calle: 'Calle Mayor 12', cp: '46001', municipio: 'Valencia', provincia: 'Valencia', pais: 'ES', revisar: false });
+    // Sin ella, como antes: null.
+    crear.mockResolvedValueOnce(fixtureClaude('vision-gasto'));
+    const sin = await claudeVisionExtractor('GASTO').iniciar(archivo, { companyId: 'e', lector: 'GASTO', empresaEspanola: true });
+    if (sin.tipo !== 'hecho') throw new Error(sin.tipo);
+    expect(aGastoExtraido(sin.lectura, [], 0.85).direccionProveedor).toBeNull();
   });
 
   it('ventas de una empresa que lleva sus cuentas en USD: la moneda es la de la contabilidad y V17 no bloquea', async () => {
