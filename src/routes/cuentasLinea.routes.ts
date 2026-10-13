@@ -63,7 +63,7 @@ function exigirSiUsoContable(req: Request, tipo: TipoCuentaLinea, madre: unknown
   const cuentas = [digitos(madre), digitos(codigo)].filter(Boolean);
   if (!cuentas.some((c) => esCuentaDeUsoContable(c, tipo))) return;
   if (autorizado(req.user!, req.companyId, ['contabilidad:write'])) return;
-  throw forbidden('Esa cuenta es de uso contable: solo la puede usar quien lleva la contabilidad. Pídeselo al administrador.', {
+  throw forbidden('Esa cuenta es de uso contable: solo quien lleva la contabilidad puede crear subcuentas suyas. Si te sale en la lista, úsala tal cual en la línea; si necesitas una subcuenta, pídesela al administrador.', {
     permisos: ['contabilidad:write'],
     campo: 'madre',
   });
