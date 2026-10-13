@@ -25,6 +25,7 @@ import { controlCif } from '../utils/nif';
 import { DISENO_349 } from '../domain/aeat/disenos';
 import { comprobarFicheroPorLineas, posiciones } from './dorado-dr';
 import { calcularBorrador349 } from '../services/borradoresAeat/borrador349.service';
+import { guardarOpciones } from '../services/borradoresAeat/comun';
 
 const SUFIJO = `${Date.now()}`;
 const NIF = `B4699999${controlCif('4699999').cifra}`;
@@ -295,5 +296,64 @@ describe('349 de 2027 desde las facturas', () => {
     expect(r.status).toBe(400);
     expect(r.body.error?.message ?? r.body.message ?? JSON.stringify(r.body)).toMatch(/NIF de la empresa/);
     await prisma.legalConfig.update({ where: { companyId: E }, data: { nif: NIF } });
+  });
+});
+
+describe('349 con abonos de venta de varias facturas y de una de fuera de la app', () => {
+  const E = `aeat349v-${SUFIJO}`;
+  let de = '';
+
+  /** Abono intracomunitario (sin IVA) con el bloque de la rectificativa. */
+  async function abono(fecha: string, lineas: Array<ReturnType<typeof linea>>, originales: Array<Record<string, unknown>>) {
+    const b = await incomeInvoicesService.crearIngreso({
+      companyId: E,
+      customer: { id: de },
+      fechaEmision: fecha,
+      borrador: true,
+      lineas,
+      rectificativa: { forma: 'I', motivo: 'DESCUENTO', explicacion: 'Descuento pactado', originales },
+    } as unknown as Parameters<typeof incomeInvoicesService.crearIngreso>[0]);
+    return incomeInvoicesService.finalizar(E, b.id, { fechaEmision: fecha });
+  }
+
+  beforeAll(async () => {
+    jest.useFakeTimers({
+      now: new Date('2027-09-15T10:00:00Z'),
+      doNotFake: ['hrtime', 'nextTick', 'performance', 'queueMicrotask', 'setImmediate', 'clearImmediate', 'setInterval', 'clearInterval', 'setTimeout', 'clearTimeout'],
+    });
+    try {
+      await prisma.company.create({ data: { id: E, name: 'Exportadora Ventas SL', fsBaseUrl: 'http://localhost:8080', fsApiKeyEnc: 'k' } });
+      await prisma.legalConfig.create({ data: { companyId: E, denominacion: 'Exportadora Ventas, S.L.', nif: NIF, telefono: '963 12 34 56', personaContacto: 'García Muñoz Ana' } });
+      de = (await prisma.customer.create({ data: { companyId: E, nombreFiscal: 'Müller Handels GmbH', nifCif: 'DE123456789', pais: 'DE' } })).id;
+      const v1 = await venta(E, de, '2027-02-10', 10000);
+      const v2 = await venta(E, de, '2027-04-15', 5000);
+      // 3T: un abono de las dos (1.000 de la del 1T y 500 de la del 2T) y otro de una factura de 2026 de fuera.
+      await abono('2027-08-05', [linea(-1000), linea(-500)], [
+        { id: v1.id, base: -1000, cuota: 0, retencion: 0 },
+        { id: v2.id, base: -500, cuota: 0, retencion: 0 },
+      ]);
+      await abono('2027-08-06', [linea(-200)], [{ numero: 'A-2026-9', fecha: '2026-11-20' }]);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('cada original en su periodo: rectificaciones del 1T y del 2T con su parte; la de fuera pide la base declarada', async () => {
+    const b = await calcularBorrador349(E, 2027, '3T');
+    expect(b.entrada.operadores).toEqual([]);
+    expect(b.entrada.rectificaciones!.map((r) => [r.clave, r.ejercicio, r.periodo, r.baseAnterior, r.baseRectificada])).toEqual([
+      ['E', 2027, '1T', 10000, 9000],
+      ['E', 2027, '2T', 5000, 4500],
+    ]);
+    expect(b.basesPedidas).toEqual([expect.objectContaining({ ejercicio: 2026, periodo: '4T', base: null, claveOperacion: 'E' })]);
+    expect(b.errores).toContainEqual('Indica la base que declaraste para Müller Handels GmbH (clave E) en el 349 del 4T de 2026: sin ella no se puede rectificar.');
+  });
+
+  it('con la base declarada de 2026, también la rectifica', async () => {
+    const pedida = (await calcularBorrador349(E, 2027, '3T')).basesPedidas[0];
+    await guardarOpciones(E, '349', 2027, '3T', { [`base:${pedida.clave}`]: 3000 });
+    const b = await calcularBorrador349(E, 2027, '3T');
+    expect(b.errores.filter((e) => e.startsWith('Indica la base'))).toEqual([]);
+    expect(b.entrada.rectificaciones).toContainEqual(expect.objectContaining({ ejercicio: 2026, periodo: '4T', baseAnterior: 3000, baseRectificada: 2800 }));
   });
 });
