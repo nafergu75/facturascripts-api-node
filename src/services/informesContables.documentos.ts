@@ -497,7 +497,8 @@ export function tablaAXlsx(t: TablaInforme): Buffer {
     const estilo = f.estilo ?? 'normal';
     filas.push({ celdas: cols.map((c, k) => celdaExcel(f.celdas[k], c, estilo)), estilo, sangria: f.sangria, colSangria: primeraTexto });
   }
-  const ultimaFilaDatos = filas.length - 1;
+  // El total final se queda fuera del autofiltro: al filtrar u ordenar sigue abajo y a la vista.
+  const ultimaFilaDatos = filas.length - 1 - (t.filas[t.filas.length - 1]?.estilo === 'total' ? 1 : 0);
   if (t.notas?.length) {
     filas.push({ celdas: [] });
     for (const n of t.notas) filas.push(combinada(n, 'pie', 0.95));

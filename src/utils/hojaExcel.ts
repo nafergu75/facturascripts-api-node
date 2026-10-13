@@ -212,6 +212,8 @@ export function escribirHojaExcel(h: HojaExcel): Buffer {
       const formato = esFecha ? FORMATOS.fecha : esNumero && celda.formato ? FORMATOS[celda.formato] : 0;
       const s = xf({
         ...base,
+        // En una nota (la fila «Saldo inicial»), el texto en gris y la cifra en tinta normal, como en el PDF.
+        fuente: estilo === 'nota' && (esNumero || esFecha) ? POR_ESTILO.normal.fuente : base.fuente,
         formato,
         alinear: !f.combinar && col.alinear && (datos || estilo === 'cabecera') ? (col.alinear === 'derecha' ? 'right' : 'left') : '',
         ajustar: (!!col.ajustar && (datos || estilo === 'cabecera')) || (!!f.combinar && (f.lineas ?? 1) > 1),
@@ -245,7 +247,8 @@ export function escribirHojaExcel(h: HojaExcel): Buffer {
   const cols = h.columnas
     .map((c, i) => `<col min="${i + 1}" max="${i + 1}" width="${Math.max(1, Math.round((c.ancho + 0.71) * 100) / 100)}" customWidth="1"/>`)
     .join('');
-  const pie = h.imprimir?.pie ? `&amp;L&amp;8${textoPie(h.imprimir.pie)}` : '';
+  // Un espacio tras &8 si el texto empieza por una cifra: «&83D…» seria letra de tamaño 83.
+  const pie = h.imprimir?.pie ? `&amp;L&amp;8${/^\d/.test(h.imprimir.pie) ? ' ' : ''}${textoPie(h.imprimir.pie)}` : '';
   const hojaXml =
     CABECERA_XML +
     `<worksheet xmlns="${NS_MAIN}" xmlns:r="${NS_REL}">` +
