@@ -6,7 +6,9 @@
  * Criterio (decisión del usuario, 13-10-2026):
  *  - Por la fecha de la factura (devengo), esté cobrada o pagada o no.
  *  - Ingresos: la base imponible (sin IVA) de las ventas emitidas en la app y
- *    de las registradas con el lector. Las rectificativas restan.
+ *    de las registradas con el lector. Las rectificativas restan; una por
+ *    sustitucion (S) cuenta solo su diferencia con la original
+ *    (sustituidasEnRango), en el periodo de la S.
  *  - Gastos: la base de las facturas de gasto registradas (los abonos restan)
  *    más el coste de las nóminas para la empresa (bruto, dietas,
  *    indemnizaciones y Seguridad Social a cargo de la empresa: el coste que
@@ -31,7 +33,7 @@ import { ESTADOS_CONTABILIZADOS } from '../domain/nominas.model';
 import { cuadreNomina } from './nominas/calculo';
 import { nombresDeCuentas } from './cuentasLinea.service';
 import { perfilEmpresa } from './perfilEmpresa.service';
-import { resumenFiscalPeriodo, whereGastosResumen, whereVentasResumen } from './resumenFiscal.service';
+import { resumenFiscalPeriodo, sustituidasEnRango, whereGastosResumen, whereVentasResumen } from './resumenFiscal.service';
 
 // ---------------------------------------------------------------------------
 // Periodo
@@ -212,10 +214,11 @@ export interface FilaMesPanel {
 export async function porMesPanel(companyId: string, p: PeriodoPanel, op: OpcionesPanel): Promise<FilaMesPanel[]> {
   const rango = { desde: p.desde, hasta: p.hasta };
   // Agrupadas por fecha (como mucho una fila por día) y sumadas después por mes.
-  const [ventas, gastos, nominas] = await Promise.all([
+  const [ventas, gastos, nominas, sustituidas] = await Promise.all([
     prisma.incomeInvoice.groupBy({ by: ['fechaEmision'], where: whereVentasResumen(companyId, rango), _sum: { baseTotal: true }, _count: { _all: true } }),
     prisma.expenseInvoice.groupBy({ by: ['fechaEmision'], where: whereGastosResumen(companyId, rango), _sum: { baseTotal: true }, _count: { _all: true } }),
     op.incluirNominas ? nominasPorMes(companyId, p) : Promise.resolve(new Map<number, { centimos: number; nominas: number }>()),
+    sustituidasEnRango(companyId, rango),
   ]);
   const filas = new Map<number, { venta: number; nVenta: number; gasto: number; nGasto: number }>();
   for (let m = p.mesDesde; m <= p.mesHasta; m++) filas.set(m, { venta: 0, nVenta: 0, gasto: 0, nGasto: 0 });
@@ -225,6 +228,11 @@ export async function porMesPanel(companyId: string, p: PeriodoPanel, op: Opcion
     if (!f) continue;
     f.venta += centimosDe(g._sum.baseTotal);
     f.nVenta += g._count._all;
+  }
+  // Una S cuenta solo su diferencia: su original se resta en el mes de la S.
+  for (const o of sustituidas) {
+    const f = filas.get(mesDe(o.fecha));
+    if (f) f.venta -= aCentimos(o.base);
   }
   for (const g of gastos) {
     const f = filas.get(mesDe(g.fechaEmision));
@@ -336,22 +344,30 @@ export interface FilaTerceroPanel {
 const inicial = (s: string) => (s.trim().charAt(0) || '?').toUpperCase();
 const ordenar = (a: FilaTerceroPanel, b: FilaTerceroPanel) => b.total - a.total || a.name.localeCompare(b.name, 'es');
 
-/** Ventas del periodo por cliente, de mayor a menor base. */
+/**
+ * Ventas del periodo por cliente, de mayor a menor base. Una S cuenta solo su
+ * diferencia: su original se resta al cliente de la original.
+ */
 export async function ingresosPorClientePanel(companyId: string, p: PeriodoPanel): Promise<FilaTerceroPanel[]> {
-  const grupos = await prisma.incomeInvoice.groupBy({
-    by: ['customerId'],
-    where: whereVentasResumen(companyId, { desde: p.desde, hasta: p.hasta }),
-    _sum: { baseTotal: true },
-    _count: { _all: true },
-  });
-  if (!grupos.length) return [];
-  const clientes = await prisma.customer.findMany({ where: { companyId, id: { in: grupos.map((g) => g.customerId) } }, select: { id: true, nombreFiscal: true, nifCif: true } });
+  const rango = { desde: p.desde, hasta: p.hasta };
+  const [grupos, sustituidas] = await Promise.all([
+    prisma.incomeInvoice.groupBy({ by: ['customerId'], where: whereVentasResumen(companyId, rango), _sum: { baseTotal: true }, _count: { _all: true } }),
+    sustituidasEnRango(companyId, rango),
+  ]);
+  const porCliente = new Map<string, { centimos: number; facturas: number }>();
+  for (const g of grupos) porCliente.set(g.customerId, { centimos: centimosDe(g._sum.baseTotal), facturas: g._count._all });
+  for (const o of sustituidas) {
+    const c = porCliente.get(o.customerId) ?? { centimos: 0, facturas: 0 };
+    porCliente.set(o.customerId, { ...c, centimos: c.centimos - aCentimos(o.base) });
+  }
+  if (!porCliente.size) return [];
+  const clientes = await prisma.customer.findMany({ where: { companyId, id: { in: [...porCliente.keys()] } }, select: { id: true, nombreFiscal: true, nifCif: true } });
   const porId = new Map(clientes.map((c) => [c.id, c]));
-  return grupos
-    .map((g) => {
-      const c = porId.get(g.customerId);
+  return [...porCliente]
+    .map(([id, g]) => {
+      const c = porId.get(id);
       const name = c?.nombreFiscal ?? 'Cliente sin ficha';
-      return { id: g.customerId, name, nif: c?.nifCif ?? null, total: euros(centimosDe(g._sum.baseTotal)), facturas: g._count._all, letter: inicial(name) };
+      return { id, name, nif: c?.nifCif ?? null, total: euros(g.centimos), facturas: g.facturas, letter: inicial(name) };
     })
     .sort(ordenar);
 }
