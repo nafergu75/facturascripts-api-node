@@ -173,7 +173,7 @@ function recortar(s: string, fuente: PDFFont, tam: number, max: number): string 
 function partirEnLineas(s: string, fuente: PDFFont, tam: number, max: number): string[] {
   const lineas: string[] = [];
   let actual = '';
-  // Solo se parte por los espacios normales: el espacio duro ( ) une la cifra con su «€».
+  // Solo se parte por los espacios normales: el espacio duro (U+00A0) une la cifra con su «€».
   for (const p of s.split(/[ \t\r\n]+/).filter(Boolean)) {
     const prueba = actual ? `${actual} ${p}` : p;
     if (!actual || fuente.widthOfTextAtSize(prueba, tam) <= max + HOLGURA) actual = prueba;

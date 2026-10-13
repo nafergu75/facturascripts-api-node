@@ -381,7 +381,7 @@ export async function informeSumasYSaldos(companyId: string, periodo: Periodo, n
     columnas: [
       { titulo: 'Cuenta', tipo: 'codigo', ancho: 2.2 },
       { titulo: 'Nombre', tipo: 'texto', ancho: 6 },
-      { titulo: 'Saldo inicial', tipo: 'importe', ancho: 2 },
+      { titulo: 'Saldo inicial', tipo: 'importe', ancho: 2, saldo: true },
       { titulo: 'Debe', tipo: 'importe', ancho: 2 },
       { titulo: 'Haber', tipo: 'importe', ancho: 2 },
       { titulo: 'Saldo deudor', tipo: 'importe', ancho: 2 },
@@ -452,7 +452,8 @@ export async function avisoFacturasSinAsiento(companyId: string, tipo: TipoTerce
     estados.set(a.invoiceId!, s);
   }
   const moneda = await simboloCuenta(companyId);
-  const texto = (fs: typeof facturas) => fs.map((f) => `${f.numeroCompleto ?? 'sin número'} (${num(Number(f.totalFactura))} ${moneda})`).join(', ');
+  // Importe y moneda con un espacio duro: en el PDF la nota pasa a otra linea, pero nunca entre la cifra y el «€».
+  const texto = (fs: typeof facturas) => fs.map((f) => `${f.numeroCompleto ?? 'sin número'} (${num(Number(f.totalFactura))}\u00a0${moneda})`).join(', ');
   // Sin ningun asiento; o con el asiento sin aprobar (borrador o pendiente de revision).
   const sinAsiento = facturas.filter((f) => !estados.has(f.id));
   const sinAprobar = facturas.filter((f) => {
@@ -844,7 +845,7 @@ export async function informeDetalleTercero(companyId: string, tipo: TipoTercero
     const de = tipo === 'clientes' ? 'cobro' : 'pago';
     notas.push(
       facturasPendientes.length
-        ? `Según facturación, ${facturasPendientes.length} factura(s) pendiente(s) de ${de} por ${num(totalPendiente)} ${await simboloCuenta(companyId)}: ${facturasPendientes.map((f) => f.numeroCompleto ?? '').filter(Boolean).join(', ')}.`
+        ? `Según facturación, ${facturasPendientes.length} factura(s) pendiente(s) de ${de} por ${num(totalPendiente)}\u00a0${await simboloCuenta(companyId)}: ${facturasPendientes.map((f) => f.numeroCompleto ?? '').filter(Boolean).join(', ')}.`
         : `Según facturación, no tiene facturas pendientes de ${de}.`,
     );
   }
