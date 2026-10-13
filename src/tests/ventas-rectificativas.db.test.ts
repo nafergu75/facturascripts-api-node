@@ -436,4 +436,34 @@ describe('opciones y buscador', () => {
     // Tickets o sin ellos.
     expect((await buscarOriginalesVenta(E, { ticket: true, take: 20 })).candidatas.every((c) => c.tipoFactura === 'F2')).toBe(true);
   });
+
+  it('la exacta antigua no se pierde entre muchas parecidas más recientes', async () => {
+    const B = `${E}-busca`;
+    await prisma.company.create({ data: { id: B, name: 'Buscador SL', fsBaseUrl: 'http://localhost:8080', fsApiKeyEnc: 'k' } });
+    const c = await prisma.customer.create({ data: { companyId: B, nombreFiscal: 'Cliente Buscador SL', nifCif: 'B50000031' } });
+    const fila = (numero: number, fecha: string) => ({
+      companyId: B,
+      customerId: c.id,
+      serie: 'Z',
+      numero,
+      numeroCompleto: `Z-${numero}`,
+      fechaEmision: fecha,
+      fechaVencimiento: fecha,
+      estadoDocumento: 'FINAL',
+      estado: 'PENDING',
+      baseTotal: 10,
+      ivaTotal: 2.1,
+      totalFactura: 12.1,
+    });
+    // Z-1 es la más antigua; detrás, 520 facturas con un «1» en el número.
+    await prisma.incomeInvoice.createMany({ data: [fila(1, '2026-01-02'), ...Array.from({ length: 520 }, (_, i) => fila(1000 + i * 10 + 1, '2026-06-01'))] });
+    try {
+      const r = await buscarOriginalesVenta(B, { numero: 'z-1' });
+      expect(r.coincidencia).toBe('EXACTA');
+      expect(r.candidatas[0]).toMatchObject({ numeroCompleto: 'Z-1', exacta: true });
+      expect(r.candidatas.length).toBeLessThanOrEqual(10);
+    } finally {
+      await prisma.incomeInvoice.deleteMany({ where: { companyId: B } });
+    }
+  });
 });
