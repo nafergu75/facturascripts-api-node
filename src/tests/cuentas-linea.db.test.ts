@@ -223,6 +223,22 @@ describe('permisos de la ruta', () => {
   it('sin permisos de facturas ni contabilidad: 403', async () => {
     expect((await request(app('rrhh', ['nominas:read'])).get('/cuentas-linea?tipo=gasto')).status).toBe(403);
   });
+
+  it('rectificativa de venta (rectificativa=1): la 706, la 708 y la 709 en la lista para quien la hace; crear bajo ellas sigue pidiendo contabilidad:write', async () => {
+    const codigos = async (permisos: string[], q = '') =>
+      ((await request(app(`rect-${permisos.join('-')}`, permisos)).get(`/cuentas-linea?tipo=venta${q}`)).body.data as { cuentas: Array<{ codigo: string }>; otras: Array<{ codigo: string }> });
+    const sin = await codigos(['ventas:write']);
+    expect(sin.cuentas.map((c) => c.codigo)).not.toEqual(expect.arrayContaining(['708']));
+    const con = await codigos(['ventas:write'], '&rectificativa=1');
+    expect(con.cuentas.map((c) => c.codigo)).toEqual(expect.arrayContaining(['700', '706', '708', '709']));
+    // Solo lectura: no hace rectificativas, no le salen.
+    expect((await codigos(['ventas:read'], '&rectificativa=1')).cuentas.map((c) => c.codigo)).not.toEqual(expect.arrayContaining(['708']));
+    // Contabilidad «Modificar»: en la lista y no repetidas en «otras».
+    const contable = await codigos(['contabilidad:write'], '&rectificativa=1');
+    expect(contable.cuentas.map((c) => c.codigo)).toEqual(expect.arrayContaining(['708']));
+    expect(contable.otras.map((c) => c.codigo)).not.toEqual(expect.arrayContaining(['708']));
+    expect((await request(app('rect-crear', ['ventas:write'])).post('/cuentas-linea').send({ tipo: 'venta', madre: '709', nombre: 'Rappel 2027' })).status).toBe(403);
+  });
 });
 
 describe('ventas con cuenta por linea', () => {
