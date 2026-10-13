@@ -35,7 +35,7 @@ import { perfilDesdeConfig, perfilEmpresa, type PerfilEmpresa } from './perfilEm
 import { marcarTransaccion, mensajeSinTipo, resolverTipoCambio, type TipoResuelto } from './tiposCambio.service';
 import { resolverFiscalidad } from './fiscalidad-venta.service';
 import { fechaTexto, hoyEspana, sumarDiasISO } from '../utils/fechas';
-import { inicioLlevanzaApp, periodo303FueraDeLaApp } from '../utils/anios';
+import { inicioLlevanzaApp, periodo303FueraDeLaApp, regimenFiscalEn } from '../utils/anios';
 import { aCentimos, importeTexto } from '../utils/money';
 import { copiaAlEmitir, leerAjustesFacturacion } from './ajustesFacturacion.service';
 import { FORMAS_PAGO, type FormaPago } from '../domain/ajustes.model';
@@ -516,6 +516,55 @@ const textoDevengoFuera = (devengo: string, p: { ejercicio: number; periodo: str
 /** 409 de una venta con la operacion en un periodo de la gestoria, sin confirmar (ver devengoEnPeriodoDeFuera). */
 const errorDevengoFuera = (devengo: string, p: { ejercicio: number; periodo: string }) =>
   conflict(textoDevengoFuera(devengo, p), { codigo: 'DEVENGO_FUERA_APP', motivo: 'devengo_fuera_app', modelo: '303', ejercicio: p.ejercicio, periodo: p.periodo, campo: 'fechaOperacion' });
+
+/** El 303 del periodo de una fecha (el mes o el trimestre) ya presentado desde la app, o null. */
+async function periodo303Presentado(companyId: string, fecha: string): Promise<{ ejercicio: number; periodo: string } | null> {
+  const ejercicio = Number(fecha.slice(0, 4));
+  const mes = fecha.slice(5, 7);
+  const p = await prisma.modeloImpuesto.findFirst({
+    where: { companyId, codigo: '303', ejercicio, periodo: { in: [`${Math.ceil(Number(mes) / 3)}T`, mes] }, estado: 'presentado' },
+    select: { periodo: true },
+  });
+  return p ? { ejercicio, periodo: p.periodo } : null;
+}
+
+const textoRectificar303 = (p: { ejercicio: number; periodo: string }) =>
+  `Esta rectificativa sube el IVA por un error y va en el 303 ${periodo303Texto(p)}, que ya está presentado: la app no la añade a ese 303. ` +
+  'Tendrás que presentar una autoliquidación complementaria de ese periodo con esta factura (art. 89.Cinco LIVA).';
+
+/**
+ * 409 de una R4 que sube el IVA y va al 303 ya presentado de la original. Se
+ * confirma igual que DEVENGO_FUERA_APP (la pantalla repite con
+ * confirmaDevengoFuera: true); `motivo` lo distingue.
+ */
+const errorRectificar303 = (p: { ejercicio: number; periodo: string }) =>
+  conflict(textoRectificar303(p), { codigo: 'DEVENGO_FUERA_APP', motivo: 'rectificar_303', modelo: '303', ejercicio: p.ejercicio, periodo: p.periodo, campo: 'fechaEmision' });
+
+/**
+ * Una R4 que sube el IVA va al 303 de la original (cerrarPlan). Si ese periodo
+ * lo presenta la gestoria (DEVENGO_FUERA_APP) o su 303 ya esta presentado en la
+ * app (hay que presentar una complementaria), hace falta confirmarlo; con la
+ * confirmacion, el aviso queda en la factura (y en AuditLog, por el controlador).
+ */
+async function exigirPeriodoDeR4(
+  companyId: string,
+  devengo: string,
+  fechaEmision: string,
+  confirmado: boolean,
+): Promise<AvisoFiscal | null> {
+  const fuera = await devengoEnPeriodoDeFuera(companyId, devengo, fechaEmision);
+  if (fuera) {
+    if (!confirmado) throw errorDevengoFuera(devengo, fuera);
+    return { codigo: 'DEVENGO_FUERA_APP', mensaje: textoDevengoFuera(devengo, fuera) };
+  }
+  const presentado = await periodo303Presentado(companyId, devengo);
+  if (!presentado) return null;
+  if (!confirmado) throw errorRectificar303(presentado);
+  return { codigo: 'RECTIFICAR_303', mensaje: textoRectificar303(presentado) };
+}
+
+/** La empresa presenta el 303 cada mes en esa fecha (si no, cada trimestre). */
+const declaraCadaMes = async (companyId: string, fecha: string) => (await regimenFiscalEn(companyId, fecha)).periodicidadIva === 'MENSUAL';
 
 async function resolverCliente(
   companyId: string,
@@ -1481,16 +1530,16 @@ async function prepararAlta(
             retencionImporte: l.cuenta.retencionImporte,
           })),
         },
-        { fechaEmision, clienteConNif: !!cliente.fiscal.nifCif?.trim() },
+        { fechaEmision, clienteConNif: !!cliente.fiscal.nifCif?.trim(), mensual: await declaraCadaMes(dto.companyId, fechaEmision) },
       )
     : null;
-  let fueraR4: { ejercicio: number; periodo: string } | null = null;
+  let avisoR4: AvisoFiscal | null = null;
   if (cierre?.fechaOperacion) {
     fechaOperacion = cierre.fechaOperacion;
     devengo = fechaDevengoVenta({ tipoOperacion: fiscal.tipoOperacion, fechaOperacion, fechaEmision });
-    // El periodo de la original lo presenta la gestoria: se emite si se confirma (409 DEVENGO_FUERA_APP).
-    fueraR4 = emitida ? await devengoEnPeriodoDeFuera(dto.companyId, devengo, fechaEmision) : null;
-    if (fueraR4 && dto.confirmaDevengoFuera !== true) throw errorDevengoFuera(devengo, fueraR4);
+    // El periodo de la original lo presenta la gestoria, o su 303 ya esta presentado:
+    // se emite si se confirma (409 DEVENGO_FUERA_APP, con motivo rectificar_303 en el segundo caso).
+    avisoR4 = emitida ? await exigirPeriodoDeR4(dto.companyId, devengo, fechaEmision, dto.confirmaDevengoFuera === true) : null;
   }
   // Rectificativa por diferencias: no por encima de lo que queda de cada original (se repite dentro de la transaccion).
   if (cierre && bloque!.forma === 'I') await exigirLimites(prisma, dto.companyId, plan!.originalesApp, partesDe(cierre.enlaces), interno.excluirId);
@@ -1525,10 +1574,11 @@ async function prepararAlta(
     lineas: { create: lineasACrear(importes) },
   };
   // Confirmada la venta con la operacion en un periodo de la gestoria: el aviso queda en la respuesta.
-  const fuera = fueraR4 ?? (fueraPrevio ? await devengoEnPeriodoDeFuera(dto.companyId, devengo, fechaEmision) : null);
+  const fuera = !avisoR4 && fueraPrevio ? await devengoEnPeriodoDeFuera(dto.companyId, devengo, fechaEmision) : null;
   const avisosFiscales: AvisoFiscal[] = [
     ...(fiscal.avisos ?? []),
     ...(fuera ? [{ codigo: 'DEVENGO_FUERA_APP', mensaje: textoDevengoFuera(devengo, fuera) }] : []),
+    ...(avisoR4 ? [avisoR4] : []),
     ...(serie.aviso ? [serie.aviso] : []),
     ...(cierre?.avisos ?? []),
   ];
@@ -2045,8 +2095,6 @@ export const incomeInvoicesService = {
     await comprobarFechaAbierta(companyId, fechaEmision, 'emitir la factura');
     // Se mantienen los dias de plazo que tenia el borrador.
     const fechaVencimiento = sumarDias(fechaEmision, plazoDias(actual));
-    const fechaOperacion = actual.fechaOperacion && actual.fechaOperacion !== fechaEmision ? actual.fechaOperacion : null;
-
     // Rectificativa: se vuelve a comprobar su bloque (originales, cliente, tipo,
     // sustitucion y fechas) con la fecha de emision definitiva, y su serie.
     const planRect = actual.esRectificativa
@@ -2060,6 +2108,9 @@ export const incomeInvoicesService = {
           excluirId: id,
         })
       : null;
+    // Una rectificativa con motivo no lleva fecha de la operacion propia: la pone
+    // cerrarPlan con la fecha de emision definitiva (R4 que sube el IVA), no la del borrador.
+    let fechaOperacion = planRect && !planRect.bloque.legado ? null : actual.fechaOperacion && actual.fechaOperacion !== fechaEmision ? actual.fechaOperacion : null;
     if (planRect && !planRect.bloque.legado) await resolverSerie(companyId, actual.serie, { esRectificativa: true, tipoFactura: actual.tipoFactura });
     // Tipo de operacion definitivo, con el cliente y la empresa de ahora.
     const original = planRect?.herencia ?? null;
@@ -2137,9 +2188,18 @@ export const incomeInvoicesService = {
               ? importes.lineas.map((l) => ({ tipoIva: l.tipoIva, cuenta: l.cuentaContable ?? null, baseLine: l.cuenta.baseLine, ivaImporte: l.cuenta.ivaImporte, retencionImporte: l.cuenta.retencionImporte }))
               : lineasImportesDe(actual),
           },
-          { fechaEmision, clienteConNif: !!actual.customer.nifCif?.trim() },
+          { fechaEmision, clienteConNif: !!actual.customer.nifCif?.trim(), mensual: await declaraCadaMes(companyId, fechaEmision) },
         )
       : null;
+    // R4 que sube el IVA: al periodo de la original, con la fecha de emision de
+    // ahora (en el borrador pudo no hacer falta). Si es de la gestoria o su 303
+    // ya esta presentado, se confirma (409 DEVENGO_FUERA_APP).
+    let avisoR4: AvisoFiscal | null = null;
+    if (cierre?.fechaOperacion) {
+      fechaOperacion = cierre.fechaOperacion;
+      const devengoR4 = fechaDevengoVenta({ tipoOperacion: fiscal.tipoOperacion, fechaOperacion, fechaEmision });
+      avisoR4 = await exigirPeriodoDeR4(companyId, devengoR4, fechaEmision, opciones.confirmaDevengoFuera === true);
+    }
     const rect = cierre ? { forma: planRect!.bloque.forma, enlaces: cierre.enlaces } : null;
     if (rect && rect.forma === 'I') await exigirLimites(prisma, companyId, planRect!.originalesApp, partesDe(rect.enlaces), id);
     const factura = await transaccion(async (tx) => {
@@ -2195,7 +2255,8 @@ export const incomeInvoicesService = {
     });
     const avisosFiscales = [
       ...(fiscal.avisos ?? []),
-      ...(fuera ? [{ codigo: 'DEVENGO_FUERA_APP', mensaje: textoDevengoFuera(devengo, fuera) }] : []),
+      ...(fuera && !avisoR4 ? [{ codigo: 'DEVENGO_FUERA_APP', mensaje: textoDevengoFuera(devengo, fuera) }] : []),
+      ...(avisoR4 ? [avisoR4] : []),
       ...(cierre?.avisos ?? []),
     ];
     return respuesta(factura, { monedaCuenta: perfil.monedaCuenta, avisosFiscales, avisoTipoCambio: tipo.aviso });
