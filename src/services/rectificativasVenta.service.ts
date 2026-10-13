@@ -1019,7 +1019,12 @@ export async function enlacesDeVentas(db: Db, facturas: FacturaParaEnlaces[]): P
   return out;
 }
 
-/** Rectificativas emitidas que rectifican una factura (de los enlaces y de facturaOriginalId), para su ficha. */
+/**
+ * Rectificativas emitidas que rectifican una factura (de los enlaces y de
+ * facturaOriginalId), para su ficha. `totalFactura` es el de la rectificativa
+ * entera; `parte`, lo que toca a esta factura (con varias originales, su
+ * reparto; por sustitucion, la diferencia), en la moneda de cuenta.
+ */
 export async function rectificadaPorDe(companyId: string, id: string) {
   const por = await rectificativasPorOriginal(prisma, companyId, [id]);
   return (por.get(id) ?? []).map((r) => ({
@@ -1027,6 +1032,7 @@ export async function rectificadaPorDe(companyId: string, id: string) {
     numeroCompleto: r.numeroCompleto,
     fechaEmision: r.fechaEmision,
     totalFactura: r.total.total,
+    parte: r.parte.total,
     tipoRectificativa: r.forma,
     tipoFactura: r.tipoFactura,
   }));
@@ -1341,12 +1347,19 @@ export async function buscarOriginalesVenta(
   return { coincidencia, candidatas, partidasFuera };
 }
 
-/** Datos para prellenar una rectificativa de la factura `id` (GET /:id/rectificar). */
+/**
+ * Datos para prellenar una rectificativa de la factura `id` (GET /:id/rectificar).
+ * Si se sustituyo, las lineas y las cuentas que se proponen son las de su
+ * sustituta (la factura que vale ahora, la misma referencia que `restante`), y
+ * `sustituta` dice cual es; `original` sigue siendo la factura pedida.
+ */
 export async function datosParaRectificarVenta(companyId: string, id: string) {
   const [f] = await cargarFacturas(prisma, companyId, [id]);
   if (!f) throw notFound('Factura no encontrada.');
   const problema = problemaOriginal(f);
   const restante = (await restantePorOriginal(prisma, companyId, [f]))!.get(f.id)!;
+  const [sust] = restante.sustituta ? await cargarFacturas(prisma, companyId, [restante.sustituta.id]) : [];
+  const vigente = sust ?? f;
   const doc = (n: number | null | undefined, cuenta: number) => (n === null || n === undefined ? cuenta : Number(n));
   const cobros = await prisma.invoicePayment.aggregate({ where: { companyId, invoiceType: 'INGRESO', invoiceId: f.id, estado: 'ACTIVO' }, _sum: { importe: true, importeDoc: true } });
   const cobradoDoc = Number(cobros._sum.importeDoc ?? cobros._sum.importe ?? 0);
@@ -1374,7 +1387,7 @@ export async function datosParaRectificarVenta(companyId: string, id: string) {
       totalFactura: Number(f.totalFactura),
       totalFacturaDoc: totalDoc,
     },
-    lineas: f.lineas.map((l) => ({
+    lineas: vigente.lineas.map((l) => ({
       descripcion: l.descripcion,
       cantidad: Number(l.cantidad),
       precioUnitario: Number(l.precioUnitarioDoc ?? l.precioUnitario),
@@ -1386,7 +1399,9 @@ export async function datosParaRectificarVenta(companyId: string, id: string) {
       baseLine: doc(l.baseLineDoc, Number(l.baseLine)),
       ivaImporte: doc(l.ivaImporteDoc, Number(l.ivaImporte)),
     })),
-    cuentaPorTipoIva: cuentaPorTipoIva(f.lineas.map((l) => ({ tipoIva: l.tipoIva, cuenta: l.accountCode ?? null, baseLine: Number(l.baseLine) }))),
+    cuentaPorTipoIva: cuentaPorTipoIva(vigente.lineas.map((l) => ({ tipoIva: l.tipoIva, cuenta: l.accountCode ?? null, baseLine: Number(l.baseLine) }))),
+    /** La rectificativa por sustitucion que la reemplazo (de ella salen `lineas` y `cuentaPorTipoIva`), o null. */
+    sustituta: sust ? { id: sust.id, numeroCompleto: sust.numeroCompleto ?? '', fechaEmision: sust.fechaEmision } : null,
     rectificativas: restante.todas.map((r) => ({ id: r.id, numeroCompleto: r.numeroCompleto ?? '', fechaEmision: r.fechaEmision, totalFactura: r.total.total, forma: r.forma, tipoFactura: r.tipoFactura })),
     restante: { base: restante.base, cuota: restante.cuota, total: restante.total },
     pendienteCobro,
