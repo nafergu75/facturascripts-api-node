@@ -55,6 +55,8 @@ describe('contabilizar una factura descuadrada en un centimo', () => {
         db as never,
       ),
     ).rejects.toThrow(/desequilibrado/);
+    // Las lineas se cuadran antes de escribir: no se crea ni el asiento.
+    expect(db.journalEntry.create).not.toHaveBeenCalled();
     expect(db.vATBook.create).not.toHaveBeenCalled();
   });
 });
