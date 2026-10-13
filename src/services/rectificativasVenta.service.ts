@@ -580,15 +580,18 @@ export function cerrarPlan(
         { codigo: 'SUBE_IVA_CONSUMIDOR_FINAL', campo: 'lineas' },
       );
     }
-    // Plazo: cuatro años desde el devengo de la original (art. 89.Uno LIVA).
+    // Plazo: cuatro años desde el devengo de la original (art. 89.Uno LIVA). En las
+    // causas del art. 80 cuenta desde la circunstancia, que la app no conoce: solo se avisa.
     plan.filas.forEach((f, i) => {
       if (!f.devengo) return;
       const limite = limitePlazo(f.devengo);
       if (d.fechaEmision <= limite) return;
       const num = f.numeroOriginal ?? 'que rectificas';
-      if (motivo === 'ERROR' || motivo === 'ERROR_DERECHO') {
+      if (!info.art80) {
         throw badRequest(
-          `Han pasado más de cuatro años desde la factura ${num} (${fechaTexto(f.devengo)}): por un error ya no se puede rectificar (art. 89.Uno LIVA). Consúltalo con tu asesoría.`,
+          motivo === 'OTROS'
+            ? `Han pasado más de cuatro años desde la factura ${num} (${fechaTexto(f.devengo)}): ya no se puede rectificar, salvo por una devolución, un descuento, un rappel o un cambio de precio (art. 89.Uno LIVA). Consúltalo con tu asesoría.`
+            : `Han pasado más de cuatro años desde la factura ${num} (${fechaTexto(f.devengo)}): por un error ya no se puede rectificar (art. 89.Uno LIVA). Consúltalo con tu asesoría.`,
           { codigo: 'PLAZO_RECTIFICACION', campo: i === 0 ? 'fechaEmision' : `rectificativa.originales.${i}` },
         );
       }
