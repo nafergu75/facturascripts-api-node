@@ -16,7 +16,7 @@
  * Este modulo no importa income-invoices.service (que lo usa) ni
  * cobrosPagos.service (que usa aFavorDeAbonos), para no crear ciclos.
  */
-import type { Prisma } from '@prisma/client';
+import { Prisma } from '@prisma/client';
 import { prisma, type TransaccionBD } from '../config/database';
 import { badRequest, conflict, notFound } from '../utils/http-errors';
 import { aCentimos, importeTexto } from '../utils/money';
@@ -855,14 +855,27 @@ export async function exigirLimites(
   }
 }
 
-/** Bloquea facturas de venta (SELECT ... FOR UPDATE) en orden de id, para que dos operaciones a la vez no se crucen. */
+/**
+ * Aislamiento de las transacciones que comprueban las rectificativas previas
+ * de una original despues de bloquearla (exigirRectificablesEnTx). Con READ
+ * COMMITTED, cada lectura ve lo ya confirmado por la otra transaccion que
+ * tenia el bloqueo: en TiDB, con el de por defecto (REPEATABLE READ), una
+ * transaccion pesimista lee la instantanea de su inicio y dos rectificativas a
+ * la vez de la misma factura podian pasar las dos. En MySQL y MariaDB ya
+ * funcionaba (la instantanea se toma en la primera lectura normal).
+ */
+export const AISLAMIENTO_RECTIFICATIVAS = { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted };
+
+/** Bloquea facturas de venta (SELECT ... FOR UPDATE) en orden de id, en una sola consulta, para que dos operaciones a la vez no se crucen. */
 export async function bloquearFacturasVenta(tx: TransaccionBD, ids: string[]): Promise<void> {
-  for (const id of [...new Set(ids)].sort()) await tx.$queryRaw`SELECT id FROM IncomeInvoice WHERE id = ${id} FOR UPDATE`;
+  const orden = [...new Set(ids)].sort();
+  if (orden.length) await tx.$queryRaw`SELECT id FROM IncomeInvoice WHERE id IN (${Prisma.join(orden)}) ORDER BY id FOR UPDATE`;
 }
 
 /** Bloquea partidas de 2026 (FOR UPDATE, en orden de id): un cobro de la partida a la vez no se cruza con el abono. */
 export async function bloquearPartidas(tx: TransaccionBD, ids: string[]): Promise<void> {
-  for (const id of [...new Set(ids)].sort()) await tx.$queryRaw`SELECT id FROM PartidaPendiente WHERE id = ${id} FOR UPDATE`;
+  const orden = [...new Set(ids)].sort();
+  if (orden.length) await tx.$queryRaw`SELECT id FROM PartidaPendiente WHERE id IN (${Prisma.join(orden)}) ORDER BY id FOR UPDATE`;
 }
 
 /**
