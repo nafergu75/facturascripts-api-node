@@ -6,7 +6,7 @@ import { mapearFacturaAzure } from '../services/lectura/azure-factura.mapper';
 import type { AnalyzeResult } from '../services/lectura/azure-di.client';
 import { lecturaVacia, type LecturaNormalizada, type ResultadoValidacion } from '../services/lectura/tipos';
 import { compararQr, interpretarValorQr } from '../services/lectura/verifactu-qr';
-import { estadoPorConfianza, motivoNifNoValido, nombresParecidos, normalizarNombreSociedad, validarLectura, type ContextoValidacion } from '../services/lectura/validaciones';
+import { compararNombresSociedad, estadoPorConfianza, motivoNifNoValido, nombresParecidos, normalizarNombreSociedad, validarLectura, type ContextoValidacion } from '../services/lectura/validaciones';
 import { controlCif, letraDni } from '../utils/nif';
 import { fixtureAzure, NIF_EMISOR, NIF_EMPRESA } from './fixtures/azure-di';
 
@@ -156,6 +156,9 @@ describe('V09 empresa sin NIF: se compara por nombre (fallo del 13-10)', () => {
     'Tu empresa no tiene el NIF en Más > Datos de la empresa: no se puede comprobar que esta factura la haya emitido ella. Ponlo para que el lector lo compruebe.';
   const SIN_NIF_GASTO =
     'Tu empresa no tiene el NIF en Más > Datos de la empresa: no se puede comprobar que esta factura vaya a su nombre. Ponlo para que el lector lo compruebe.';
+  const DEDUCIDO = 'Lo hemos deducido por el nombre porque tu empresa no tiene el NIF puesto; si no es así, ponlo en Más > Datos de la empresa y vuelve a leerla.';
+  const RECIBIDA = `Parece una factura recibida por la empresa: léela en el lector de gastos. ${DEDUCIDO}`;
+  const EMITIDA = `Parece una factura emitida por la empresa: léela en el lector de ventas. ${DEDUCIDO}`;
   /** En resultado-simple el emisor es IMPRENTA LEVANTE SL (B12345674) y el cliente COMERCIAL DEMO SL (B87654323). */
   const venta = (extra: Partial<ContextoValidacion> = {}) => ctx({ lector: 'VENTA', ...extra });
   const empresa = async (c: ContextoValidacion, l = deFixture('resultado-simple')) => de(await codigos(l, c), 'EMPRESA');
@@ -172,6 +175,14 @@ describe('V09 empresa sin NIF: se compara por nombre (fallo del 13-10)', () => {
     expect(nombresParecidos(null, 'IFEVAL')).toBe(false);
   });
 
+  it('distingue el mismo nombre de un nombre dentro de otro', () => {
+    expect(compararNombresSociedad('IFEVAL INVERSIONES SL', 'Ifeval Inversiones, S.L.')).toBe('igual');
+    expect(compararNombresSociedad('Ifeval', 'IFEVAL SPORT SL')).toBe('contiene');
+    expect(compararNombresSociedad('García', 'Talleres García SL')).toBe('contiene');
+    expect(compararNombresSociedad('Ifeval Sport', 'Ifeval Inversiones')).toBeNull();
+    expect(compararNombresSociedad('Demo', 'Comercial Demo SL')).toBeNull();
+  });
+
   describe('ventas', () => {
     it('con NIF: como hasta ahora (la empresa emisora pasa; la receptora da error)', async () => {
       expect(await empresa(venta({ nifEmpresa: NIF_EMISOR, nombresEmpresa: ['Otra Empresa SL'] }))).toEqual([]);
@@ -186,11 +197,9 @@ describe('V09 empresa sin NIF: se compara por nombre (fallo del 13-10)', () => {
       expect(r).toEqual([expect.objectContaining({ nivel: 'revisar', mensaje: SIN_NIF_VENTA, campos: ['emisor.nif'] })]);
     });
 
-    it('sin NIF y con el nombre del cliente: error, es una factura recibida', async () => {
+    it('sin NIF y con el mismo nombre que el cliente: error, es una factura recibida, y dice que se ha deducido por el nombre', async () => {
       const r = await empresa(venta({ nifEmpresa: null, nombresEmpresa: [null, 'COMERCIAL DEMO S.L.'] }));
-      expect(r).toEqual([
-        expect.objectContaining({ nivel: 'error', mensaje: 'Parece una factura recibida por la empresa: léela en el lector de gastos.', campos: ['receptor.nombre'] }),
-      ]);
+      expect(r).toEqual([expect.objectContaining({ nivel: 'error', mensaje: RECIBIDA, campos: ['receptor.nombre'] })]);
     });
 
     it('el caso de producción: factura de LOGY a IFEVAL INVERSIONES leída en IFEVAL INVERSIONES sin NIF da error', async () => {
@@ -200,7 +209,28 @@ describe('V09 empresa sin NIF: se compara por nombre (fallo del 13-10)', () => {
       l.receptor.nombre.valor = 'IFEVAL INVERSIONES, S.L.';
       l.receptor.nif.valor = 'B98630270';
       const r = await empresa(venta({ nifEmpresa: null, nombresEmpresa: ['IFEVAL INVERSIONES SL', 'Ifeval Inversiones'] }), l);
-      expect(r[0]).toMatchObject({ nivel: 'error', mensaje: 'Parece una factura recibida por la empresa: léela en el lector de gastos.' });
+      expect(r[0]).toMatchObject({ nivel: 'error', mensaje: RECIBIDA });
+    });
+
+    it('sin NIF, la empresa «Ifeval» y el cliente «IFEVAL SPORT SL»: uno contiene al otro, revisar diciendo a qué se parece', async () => {
+      const l = con((x) => (x.receptor.nombre.valor = 'IFEVAL SPORT SL'));
+      const r = await empresa(venta({ nifEmpresa: null, nombresEmpresa: [null, 'Ifeval'] }), l);
+      expect(r).toEqual([
+        expect.objectContaining({
+          nivel: 'revisar',
+          campos: ['emisor.nif', 'receptor.nombre'],
+          mensaje: `Puede que sea una factura recibida por tu empresa: el cliente que se ha leído, «IFEVAL SPORT SL», se parece al nombre de tu empresa. Si es así, léela en el lector de gastos. ${DEDUCIDO}`,
+        }),
+      ]);
+    });
+
+    it('sin NIF, el mismo nombre que el cliente pero el del emisor también se le parece: revisar, no error', async () => {
+      const l = con((x) => {
+        x.emisor.nombre.valor = 'Comercial Demo Levante SL';
+        x.receptor.nombre.valor = 'Comercial Demo SL';
+      });
+      const r = await empresa(venta({ nifEmpresa: null, nombresEmpresa: ['Comercial Demo'] }), l);
+      expect(r).toEqual([expect.objectContaining({ nivel: 'revisar', mensaje: expect.stringContaining('Puede que sea una factura recibida por tu empresa') })]);
     });
 
     it('sin NIF y sin coincidencias: revisar, con el nombre del emisor leído', async () => {
@@ -225,10 +255,20 @@ describe('V09 empresa sin NIF: se compara por nombre (fallo del 13-10)', () => {
       });
     });
 
-    it('sin NIF y con el nombre del emisor: error, es una factura emitida', async () => {
+    it('sin NIF y con el mismo nombre que el emisor: error, es una factura emitida, y dice que se ha deducido por el nombre', async () => {
       const r = await empresa(ctx({ nifEmpresa: null, nombresEmpresa: ['Imprenta Levante'] }));
+      expect(r).toEqual([expect.objectContaining({ nivel: 'error', mensaje: EMITIDA, campos: ['emisor.nombre'] })]);
+    });
+
+    it('sin NIF, la empresa «García» y el proveedor «Talleres García SL»: revisar, no error', async () => {
+      const l = con((x) => (x.emisor.nombre.valor = 'Talleres García SL'));
+      const r = await empresa(ctx({ nifEmpresa: null, nombresEmpresa: ['García'] }), l);
       expect(r).toEqual([
-        expect.objectContaining({ nivel: 'error', mensaje: 'Parece una factura emitida por la empresa: léela en el lector de ventas.', campos: ['emisor.nombre'] }),
+        expect.objectContaining({
+          nivel: 'revisar',
+          campos: ['receptor.nif', 'emisor.nombre'],
+          mensaje: `Puede que sea una factura emitida por tu empresa: el proveedor que se ha leído, «Talleres García SL», se parece al nombre de tu empresa. Si es así, léela en el lector de ventas. ${DEDUCIDO}`,
+        }),
       ]);
     });
 
@@ -255,6 +295,47 @@ describe('V09 empresa sin NIF: se compara por nombre (fallo del 13-10)', () => {
       });
       const r = await empresa(ctx({ nifEmpresa: null, nombresEmpresa: ['Ifeval Sport SL'] }), l);
       expect(r).toEqual([expect.objectContaining({ nivel: 'revisar', mensaje: SIN_NIF_GASTO })]);
+    });
+
+    it('sin NIF ni nombre de cliente leído y el mismo nombre que el proveedor: revisar, no error (no hay con qué confirmarlo)', async () => {
+      const l = con((x) => {
+        x.receptor.nombre.valor = null;
+        x.receptor.nif.valor = null;
+      });
+      const r = await empresa(ctx({ nifEmpresa: null, nombresEmpresa: ['Imprenta Levante SL'] }), l);
+      expect(r).toEqual([
+        expect.objectContaining({
+          nivel: 'revisar',
+          mensaje: `Puede que sea una factura emitida por tu empresa: el proveedor que se ha leído, «IMPRENTA LEVANTE SL», se parece al nombre de tu empresa. Si es así, léela en el lector de ventas. ${DEDUCIDO}`,
+        }),
+      ]);
+    });
+  });
+
+  describe('empresa de fuera de España: «identificación fiscal», como en su formulario', () => {
+    const fuera = (extra: Partial<ContextoValidacion> = {}) => ctx({ nifEmpresa: null, empresaEspanola: false, ...extra });
+
+    it('al pedirla', async () => {
+      const r = await empresa(fuera({ nombresEmpresa: ['Comercial Demo SL'] }));
+      expect(r).toEqual([
+        expect.objectContaining({
+          nivel: 'revisar',
+          mensaje:
+            'Tu empresa no tiene la identificación fiscal en Más > Datos de la empresa: no se puede comprobar que esta factura vaya a su nombre. Ponla para que el lector la compruebe.',
+        }),
+      ]);
+    });
+
+    it('al deducirlo por el nombre', async () => {
+      const r = await empresa(fuera({ nombresEmpresa: ['Imprenta Levante SL'] }));
+      expect(r).toEqual([
+        expect.objectContaining({
+          nivel: 'error',
+          mensaje:
+            'Parece una factura emitida por la empresa: léela en el lector de ventas. Lo hemos deducido por el nombre porque tu empresa no tiene la identificación fiscal puesta; si no es así, ponla en Más > Datos de la empresa y vuelve a leerla.',
+        }),
+      ]);
+      expect(r[0].mensaje).not.toMatch(/\bNIF\b/);
     });
   });
 });
