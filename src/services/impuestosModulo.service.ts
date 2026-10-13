@@ -1265,6 +1265,9 @@ const eurosTexto = (n: number) => `${n.toLocaleString('es-ES', { minimumFraction
  * llevar la contabilidad en la app): sin presentar, su borrador ya lleva el
  * abono. Y solo los confirmados despues de la ultima declaracion presentada
  * desde la app: la autoliquidacion rectificativa ya los recoge.
+ *
+ * Con el mismo criterio, las rectificativas de venta R4 que suben el IVA de
+ * este periodo (van al de la original) emitidas despues de presentarlo.
  */
 export async function avisosAbonosTrasPresentar(companyId: string, periodo: PeriodoFiscal): Promise<string[]> {
   // Sin BD (o sin la tabla, en los tests que la simulan): sin avisos.
@@ -1294,11 +1297,34 @@ export async function avisosAbonosTrasPresentar(companyId: string, periodo: Peri
     orderBy: { numero: 'asc' },
   });
   const desde = ultima?.presentadoEn?.getTime() ?? null;
-  return abonos.filter((a) => desde === null || Date.parse(a.rectificar303ConfirmadoEn ?? '') >= desde).map(
+  const deCompras = abonos.filter((a) => desde === null || Date.parse(a.rectificar303ConfirmadoEn ?? '') >= desde).map(
     (a) =>
       `La rectificativa ${a.numeroFacturaProveedor ?? a.numeroCompleto} (registro ${a.numeroCompleto}) se registró después de presentar este 303 y reduce el IVA deducido en ${eurosTexto(Math.abs(Number(a.ivaTotal)))}: ` +
       'prepara la autoliquidación rectificativa de este periodo. En la contabilidad, apunta a mano la regularización del IVA (472 y 4750), el recargo (678) y los intereses de demora (669) cuando los pagues.',
   );
+  // Ventas: la R4 que sube el IVA va al 303 de la original (fechaOperacion en este
+  // periodo, emitida despues de que acabara). Se emitio con la confirmacion
+  // (409 DEVENGO_FUERA_APP): el 303 presentado no la lleva.
+  const conVentas = typeof (prisma as unknown as { incomeInvoice?: { findMany?: unknown } }).incomeInvoice?.findMany === 'function';
+  const ventas = conVentas
+    ? await prisma.incomeInvoice.findMany({
+        where: { companyId, esRectificativa: true, estadoDocumento: 'FINAL', fechaOperacion: rango, fechaEmision: { gt: periodo.fechaFin } },
+        select: { numeroCompleto: true, ivaTotal: true, finalizadaEn: true, enlacesRectifica: { select: { cuotaRectificada: true } } },
+        orderBy: { numero: 'asc' },
+      })
+    : [];
+  const deVentas = ventas
+    .filter((v) => desde === null || (v.finalizadaEn?.getTime() ?? 0) >= desde)
+    .map((v) => {
+      // En una sustitucion, la diferencia (la parte de sus enlaces); si no, su IVA.
+      const partes = v.enlacesRectifica.filter((e) => e.cuotaRectificada !== null);
+      const cuota = partes.length ? partes.reduce((s, e) => s + Number(e.cuotaRectificada), 0) : Number(v.ivaTotal);
+      return (
+        `La rectificativa de venta ${v.numeroCompleto ?? ''} se emitió después de presentar este 303 y sube el IVA repercutido en ${eurosTexto(Math.abs(cuota))}: ` +
+        'prepara la autoliquidación complementaria de este periodo. En la contabilidad, apunta a mano el recargo y los intereses de demora cuando los pagues.'
+      );
+    });
+  return [...deCompras, ...deVentas];
 }
 
 async function borrador303DelPeriodo(companyId: string, periodo: PeriodoFiscal, opciones: OpcionesBorrador303): Promise<ResultadoBorrador303> {
