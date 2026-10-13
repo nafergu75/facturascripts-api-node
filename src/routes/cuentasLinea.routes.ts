@@ -2,8 +2,10 @@
  * Cuentas de gasto o de ingreso para las lineas de las facturas
  * (montado en /companies/:companyId/cuentas-linea).
  *
- *  GET  /?tipo=gasto|venta|servicio[&q=][&madre=]  cuentas elegibles del plan (las de
- *       uso contable, 608, 640, 68x..., aparte en `otras` y solo para contabilidad:write)
+ *  GET  /?tipo=gasto|venta|servicio[&q=][&madre=][&rectificativa=1]  cuentas elegibles del plan (las de
+ *       uso contable, 608, 640, 68x..., aparte en `otras` y solo para contabilidad:write).
+ *       Con rectificativa=1 y tipo venta, la 706, la 708 y la 709 (y sus subcuentas) van en
+ *       `cuentas` para quien puede hacer rectificativas (ventas:write o contabilidad:write).
  *  GET  /nombres?tipo=&codigos=608,6280001         nombre de esas cuentas (tambien las de
  *       uso contable), para la cuenta que ya lleva una linea
  *  GET  /siguiente?tipo=&madre=628                 codigo que recibiria una subcuenta nueva
@@ -74,7 +76,10 @@ router.get(
     const tipo = tipoCuentaLinea(req.query.tipo);
     exigir(req, tipo, 'leer');
     const verUsoContable = autorizado(req.user!, req.companyId, ['contabilidad:write']);
-    sendOk(res, await listarCuentasLinea(req.companyId!, tipo, { q: texto(req.query.q), madre: texto(req.query.madre) }, { verUsoContable }));
+    // Lineas de una rectificativa de venta: 706, 708 y 709 como una cuenta mas, para quien la hace.
+    const pideRectificativa = req.query.rectificativa === '1' || req.query.rectificativa === 'true';
+    const rectificativa = pideRectificativa && tipo === 'venta' && autorizado(req.user!, req.companyId, ['ventas:write', 'contabilidad:write']);
+    sendOk(res, await listarCuentasLinea(req.companyId!, tipo, { q: texto(req.query.q), madre: texto(req.query.madre) }, { verUsoContable, rectificativa }));
   }),
 );
 
