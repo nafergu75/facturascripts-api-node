@@ -12,6 +12,7 @@ import { prisma } from '../config/database';
 import { incomeInvoicesService, type CrearFacturaIngresoDTO } from '../services/income-invoices.service';
 import { calcularModelo303, obtenerFacturasFiscales } from '../services/impuestosCalculo.service';
 import { periodoFiscal } from '../services/nominas/fiscal';
+import { resumenFiscalPeriodo } from '../services/resumenFiscal.service';
 
 const E = `m303-rect-venta-${Date.now()}`;
 let cliente = '';
@@ -63,6 +64,14 @@ describe('303 con rectificativas de venta', () => {
   it('en el periodo de hoy: [14]/[15] = sustitución (-20 / -4,20) + abono (-50 / -10,50); la R4 que sube no está', async () => {
     const c = await casillas(trimestreDe(HOY));
     expect([Number(c['14']), Number(c['15'])]).toEqual([-70, -14.7]);
+  });
+
+  it('el resumen fiscal (panel y Carmen) cuenta lo mismo: la diferencia de la sustitución y el devengo de la R4', async () => {
+    const anio = Number(HOY.slice(0, 4));
+    const hoy = periodoFiscal(anio, trimestreDe(HOY));
+    expect((await resumenFiscalPeriodo(E, hoy.fechaInicio, hoy.fechaFin)).ventas).toMatchObject({ base: -70, iva: -14.7 });
+    const t1 = periodoFiscal(anio, '1T');
+    expect((await resumenFiscalPeriodo(E, t1.fechaInicio, t1.fechaFin)).ventas).toMatchObject({ facturas: 4, base: 410, iva: 86.1 });
   });
 
   it('en el 1T: las tres ventas en el 21 % y la R4 que sube el IVA en [14]/[15]', async () => {
