@@ -290,6 +290,31 @@ describe('cifras exactas con BD', () => {
     expect(!antiguo.sinPermiso && antiguo.sinCifras).toBe(true);
   });
 
+  it('INT-13: un abono de varias facturas dice cuáles rectifica, y cada original lo cuenta', async () => {
+    // 2023: fuera de los periodos de las demás cifras. Se borra al acabar.
+    await venta('m1', { customerId: ids.perez, serie: '2023', numero: 1, fecha: '2023-02-01', vence: '2023-03-01', base: 100 });
+    await venta('m2', { customerId: ids.perez, serie: '2023', numero: 2, fecha: '2023-02-02', vence: '2023-03-02', base: 200 });
+    await venta('ab', { customerId: ids.perez, serie: 'R23', numero: 1, fecha: '2023-02-10', vence: '2023-02-10', base: -150 });
+    await prisma.incomeInvoice.update({ where: { id: ids.ab }, data: { esRectificativa: true, tipoRectificativa: 'I', tipoFactura: 'R1' } });
+    await prisma.incomeInvoiceRectificada.createMany({
+      data: [
+        { companyId: EMPRESA, rectificativaId: ids.ab, originalId: ids.m1, numeroOriginal: '2023-1', fechaOriginal: '2023-02-01', baseRectificada: -50, cuotaRectificada: -10.5, retencionRectificada: 0 },
+        { companyId: EMPRESA, rectificativaId: ids.ab, originalId: ids.m2, numeroOriginal: '2023-2', fechaOriginal: '2023-02-02', baseRectificada: -100, cuotaRectificada: -21, retencionRectificada: 0 },
+      ],
+    });
+    try {
+      const abono = cifras(await ejecutar('INT-13', { numeroFactura: 'R23-1' }));
+      expect(abono.texto).toMatch(/^La factura R23-1 es una rectificativa en negativo \(un abono\) de las facturas 2023-1 y 2023-2, del 10\/02\/2023, por -181,50 €\. No se cobra: resta de lo pendiente de las 2023-1 y 2023-2/);
+      expect(abono.enlaces?.map((e) => e.href)).toEqual(expect.arrayContaining([`/dashboard/facturas/${ids.m1}`, `/dashboard/facturas/${ids.m2}`]));
+      const m2 = cifras(await ejecutar('INT-13', { numeroFactura: '2023-2' }));
+      expect(m2.texto).toContain('R23-1');
+    } finally {
+      await prisma.incomeInvoiceRectificada.deleteMany({ where: { rectificativaId: ids.ab } });
+      await prisma.incomeInvoiceLine.deleteMany({ where: { invoiceId: { in: [ids.m1, ids.m2, ids.ab] } } });
+      await prisma.incomeInvoice.deleteMany({ where: { id: { in: [ids.m1, ids.m2, ids.ab] } } });
+    }
+  });
+
   it('INT-13: una venta en dólares sale en moneda de cuenta (total − cobrado = pendiente) y con su importe en USD aparte', async () => {
     // 1.391,50 USD a 1,15 = 1.210 €; cobrados 695,75 USD = 605 €. Se borra al acabar para no tocar las demás cifras.
     const f = await prisma.incomeInvoice.create({
