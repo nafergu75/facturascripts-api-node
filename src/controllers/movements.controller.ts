@@ -5,7 +5,29 @@ import { prisma } from '../config/database';
 import { Decimal } from '@prisma/client/runtime/library';
 import { perfilEmpresa } from '../services/perfilEmpresa.service';
 import { resumenFiscalPeriodo } from '../services/resumenFiscal.service';
+import {
+  gastosPorProveedorPanel,
+  ingresosPorClientePanel,
+  limiteUltimas,
+  periodoPanel,
+  porCategoriaPanel,
+  porMesPanel,
+  resumenPanel,
+  ultimasFacturasPanel,
+  type OpcionesPanel,
+} from '../services/panel.service';
+import { autorizado } from '../services/rbac.service';
 import { ejercicioOActual } from '../utils/anios';
+import type { Request } from 'express';
+
+/**
+ * Lo que ve del panel quien pregunta: el coste de las nominas (dato de
+ * personal) solo con permiso de Nominas o de Contabilidad (que ya lo ve en la
+ * 640 y la 642); con solo Tesoreria, los gastos van sin nominas y se avisa.
+ */
+const opcionesPanel = (req: Request, companyId: string): OpcionesPanel => ({
+  incluirNominas: !!req.user && autorizado(req.user, companyId, ['nominas:read', 'contabilidad:read']),
+});
 
 export const movementsController = {
   // POST /companies/:companyId/movements
@@ -53,30 +75,18 @@ export const movementsController = {
     sendOk(res, movements);
   }),
 
-  // GET /companies/:companyId/stats/summary - resumen totales
+  /**
+   * GET /stats/summary?anio=2026[&trimestre=1-4 | &mes=1-12]
+   * Resumen del panel sacado de las FACTURAS y las NOMINAS (panel.service), no
+   * de la tabla Movement: ingresos (base de las ventas), gastos (base de las
+   * facturas de gasto y coste de las nominas), resultado y numero de facturas.
+   * Sin anio, el año en curso en España. `movimientosManuales` cuenta los de
+   * «Nuevo movimiento», que ya no entran aqui.
+   */
   getSummary: asyncHandler(async (req, res) => {
-    const { companyId } = req.params;
-
-    const movements = await prisma.movement.findMany({
-      where: { companyId },
-    });
-
-    const totalIncome = movements
-      .filter((m) => m.type === 'income')
-      .reduce((sum, m) => sum.plus(m.amount), new Decimal(0));
-
-    const totalExpense = movements
-      .filter((m) => m.type === 'expense')
-      .reduce((sum, m) => sum.plus(m.amount), new Decimal(0));
-
-    const balance = totalIncome.minus(totalExpense);
-
-    sendOk(res, {
-      totalIncome: parseFloat(totalIncome.toString()),
-      totalExpense: parseFloat(totalExpense.toString()),
-      balance: parseFloat(balance.toString()),
-      totalMovements: movements.length,
-    });
+    const companyId = req.companyId ?? req.params.companyId;
+    const periodo = periodoPanel(req.query);
+    sendOk(res, await resumenPanel(companyId, periodo, opcionesPanel(req, companyId)));
   }),
 
   /**
@@ -112,75 +122,50 @@ export const movementsController = {
     });
   }),
 
-  // GET /companies/:companyId/stats/by-category - gastos por categoría
+  /**
+   * GET /stats/by-category?anio=2026[&trimestre | &mes]
+   * Gastos por cuenta de gasto (3 cifras del PGC, con su nombre) y «Personal»
+   * (nominas), de mayor a menor, con su porcentaje sobre el total.
+   */
   getByCategory: asyncHandler(async (req, res) => {
-    const { companyId } = req.params;
-
-    const movements = await prisma.movement.findMany({
-      where: { companyId, type: 'expense' },
-    });
-
-    const byCategory = movements.reduce(
-      (acc, m) => {
-        if (!acc[m.category]) {
-          acc[m.category] = new Decimal(0);
-        }
-        acc[m.category] = acc[m.category].plus(m.amount);
-        return acc;
-      },
-      {} as Record<string, Decimal>
-    );
-
-    const totalExpense = Object.values(byCategory).reduce((sum, amount) => sum.plus(amount), new Decimal(0));
-
-    const result = Object.entries(byCategory).map(([category, expense]) => ({
-      category,
-      expense: parseFloat(expense.toString()),
-      percentage: totalExpense.greaterThan(0)
-        ? (parseFloat(expense.toString()) / parseFloat(totalExpense.toString())) * 100
-        : 0,
-    }));
-
-    sendOk(res, result.sort((a, b) => b.expense - a.expense));
+    const companyId = req.companyId ?? req.params.companyId;
+    const periodo = periodoPanel(req.query);
+    sendOk(res, await porCategoriaPanel(companyId, periodo, opcionesPanel(req, companyId)));
   }),
 
-  // GET /companies/:companyId/stats/by-month - ingresos y gastos por mes
+  /**
+   * GET /stats/by-month?anio=2026[&trimestre | &mes]
+   * Ingresos y gastos de cada mes del periodo (los doce del año si no se pide
+   * otro), tengan datos o no.
+   */
   getByMonth: asyncHandler(async (req, res) => {
-    const { companyId } = req.params;
+    const companyId = req.companyId ?? req.params.companyId;
+    const periodo = periodoPanel(req.query);
+    sendOk(res, await porMesPanel(companyId, periodo, opcionesPanel(req, companyId)));
+  }),
 
-    const movements = await prisma.movement.findMany({
-      where: { companyId },
-    });
+  /** GET /stats/ingresos-por-cliente?anio=2026[&trimestre | &mes]: base de las ventas por cliente. */
+  getIngresosPorCliente: asyncHandler(async (req, res) => {
+    const companyId = req.companyId ?? req.params.companyId;
+    sendOk(res, await ingresosPorClientePanel(companyId, periodoPanel(req.query)));
+  }),
 
-    const byMonth = movements.reduce(
-      (acc, m) => {
-        const monthKey = m.date.toISOString().substring(0, 7);
+  /** GET /stats/gastos-por-proveedor?anio=2026[&trimestre | &mes]: base de los gastos por proveedor, y las nominas. */
+  getGastosPorProveedor: asyncHandler(async (req, res) => {
+    const companyId = req.companyId ?? req.params.companyId;
+    sendOk(res, await gastosPorProveedorPanel(companyId, periodoPanel(req.query), opcionesPanel(req, companyId)));
+  }),
 
-        if (!acc[monthKey]) {
-          acc[monthKey] = { income: new Decimal(0), expense: new Decimal(0) };
-        }
-
-        if (m.type === 'income') {
-          acc[monthKey].income = acc[monthKey].income.plus(m.amount);
-        } else {
-          acc[monthKey].expense = acc[monthKey].expense.plus(m.amount);
-        }
-
-        return acc;
-      },
-      {} as Record<string, { income: Decimal; expense: Decimal }>
-    );
-
-    const result = Object.entries(byMonth)
-      .sort(([keyA], [keyB]) => keyA.localeCompare(keyB))
-      .map(([month, { income, expense }]) => ({
-        month,
-        income: parseFloat(income.toString()),
-        expense: parseFloat(expense.toString()),
-        balance: parseFloat(income.minus(expense).toString()),
-      }));
-
-    sendOk(res, result);
+  /**
+   * GET /stats/ultimas-facturas?limit=15[&anio=2026]
+   * Las ultimas facturas de venta y de gasto, juntas y de la mas reciente a la
+   * mas antigua, con el enlace para abrirlas. Sustituye en el panel a
+   * GET /movements?limit=15, que sigue listando los movimientos manuales.
+   */
+  getUltimasFacturas: asyncHandler(async (req, res) => {
+    const companyId = req.companyId ?? req.params.companyId;
+    const anio = req.query.anio === undefined || String(req.query.anio).trim() === '' ? null : ejercicioOActual(req.query.anio, { campo: 'anio' });
+    sendOk(res, await ultimasFacturasPanel(companyId, limiteUltimas(req.query.limit), anio));
   }),
 
   // PATCH /companies/:companyId/movements/:id
