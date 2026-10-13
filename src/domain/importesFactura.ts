@@ -67,13 +67,28 @@ const cent = (n: number): number => Math.round(n * 100);
 const sinCeroNegativo = (n: number): number => (n === 0 ? 0 : n);
 
 /**
- * Lado documento: el calculo de siempre (antes calcularTotales de
- * income-invoices.service.ts), sin cambios.
+ * Redondeo de las rectificativas: el signo por el redondeo del valor absoluto
+ * (-0,525 da -0,53, como 0,525 da 0,53). Con el de siempre, -0,525 da -0,52 y
+ * una rectificativa en negativo no deja su original a cero. En positivo da
+ * exactamente lo mismo que round2: las facturas de siempre no cambian.
  */
-export function calcularLineasDoc(lineas: LineaEntrada[]): {
+const round2Simetrico = (n: number): number => sinCeroNegativo(Math.sign(n) * round2(Math.abs(n)));
+
+/** Opciones del calculo: `simetrico` solo en las rectificativas (round2Simetrico). */
+export interface OpcionesCalculo {
+  simetrico?: boolean;
+}
+
+/**
+ * Lado documento: el calculo de siempre (antes calcularTotales de
+ * income-invoices.service.ts), sin cambios. Con `simetrico` (rectificativas),
+ * cada redondeo es round2Simetrico.
+ */
+export function calcularLineasDoc(lineas: LineaEntrada[], { simetrico = false }: OpcionesCalculo = {}): {
   totales: Totales;
   lineas: Array<Omit<LineaCalculada, 'doc' | 'cuenta'> & { importes: ImportesLinea }>;
 } {
+  const r2 = simetrico ? round2Simetrico : round2;
   let baseTotal = 0;
   let ivaTotal = 0;
   let retencionTotal = 0;
@@ -83,15 +98,15 @@ export function calcularLineasDoc(lineas: LineaEntrada[]): {
     const tipoRetencion = l.tipoRetencion ?? 0;
     const descuentoPorcentaje = l.descuentoPorcentaje ?? 0;
 
-    const pvpSinDescuento = round2(l.cantidad * l.precioUnitario);
-    const descuentoImporte = round2((pvpSinDescuento * descuentoPorcentaje) / 100);
-    const baseLine = round2(pvpSinDescuento - descuentoImporte);
-    const ivaImporte = round2((baseLine * tipoIva) / 100);
-    const retencionImporte = round2((baseLine * tipoRetencion) / 100);
+    const pvpSinDescuento = r2(l.cantidad * l.precioUnitario);
+    const descuentoImporte = r2((pvpSinDescuento * descuentoPorcentaje) / 100);
+    const baseLine = r2(pvpSinDescuento - descuentoImporte);
+    const ivaImporte = r2((baseLine * tipoIva) / 100);
+    const retencionImporte = r2((baseLine * tipoRetencion) / 100);
 
-    baseTotal = round2(baseTotal + baseLine);
-    ivaTotal = round2(ivaTotal + ivaImporte);
-    retencionTotal = round2(retencionTotal + retencionImporte);
+    baseTotal = r2(baseTotal + baseLine);
+    ivaTotal = r2(ivaTotal + ivaImporte);
+    retencionTotal = r2(retencionTotal + retencionImporte);
 
     return {
       descripcion: l.descripcion,
@@ -106,7 +121,7 @@ export function calcularLineasDoc(lineas: LineaEntrada[]): {
   });
 
   return {
-    totales: { baseTotal, ivaTotal, retencionTotal, totalFactura: round2(baseTotal + ivaTotal - retencionTotal) },
+    totales: { baseTotal, ivaTotal, retencionTotal, totalFactura: r2(baseTotal + ivaTotal - retencionTotal) },
     lineas: out,
   };
 }
@@ -216,12 +231,13 @@ const CEROS: ImportesLinea = { precioUnitario: 0, baseLine: 0, descuentoImporte:
  *  - `tipoCambio` null (tipo PENDIENTE, solo en borradores y proformas): la
  *    moneda de cuenta queda a 0 hasta que haya tipo; nada lee esos importes
  *    como si fueran de cuenta mientras no se emita.
+ *  - `simetrico`: el redondeo de las rectificativas (calcularLineasDoc).
  */
 export function calcularImportesFactura(
   lineas: LineaEntrada[],
-  { tipoCambio, mismaMoneda }: { tipoCambio: number | null; mismaMoneda: boolean },
+  { tipoCambio, mismaMoneda, simetrico = false }: { tipoCambio: number | null; mismaMoneda: boolean } & OpcionesCalculo,
 ): ImportesFactura {
-  const { totales: doc, lineas: lineasDoc } = calcularLineasDoc(lineas);
+  const { totales: doc, lineas: lineasDoc } = calcularLineasDoc(lineas, { simetrico });
   let cuentaLineas: ImportesLinea[];
   if (mismaMoneda) cuentaLineas = lineasDoc.map((l) => ({ ...l.importes }));
   else if (tipoCambio === null) cuentaLineas = lineasDoc.map(() => ({ ...CEROS }));
