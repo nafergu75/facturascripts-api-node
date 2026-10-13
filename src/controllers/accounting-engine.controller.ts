@@ -38,6 +38,8 @@ import { bloquearFacturasGasto } from '../services/rectificativasGasto.service';
 import { conReintentoSubcuenta, fichaDeSubcuenta, subcuentaClienteParaApunte, type FichaDeSubcuenta } from '../services/terceros/subcuentas';
 import { esSubcuentaGenerica } from '../services/terceros/numeracion';
 import { ESTADO_SUSTITUIDO, TEXTO_SUSTITUIDO } from '../domain/asientosCierre';
+import { diferenciaSustitucion, textoRectificaVenta, type DiferenciaSustitucion, type MotivoVenta } from '../domain/rectificativa-venta.model';
+import { enlacesDeVentas, lineasImportesDe } from '../services/rectificativasVenta.service';
 
 /** Mismo cliente o proveedor. */
 const mismaFicha = (a: { tipo: string; id: string } | null | undefined, b: { tipo: string; id: string } | null | undefined) =>
@@ -108,6 +110,47 @@ async function ingresosPorCuenta(
   const reparto = basePorCuenta(lineas.map((l) => ({ cuenta: l.accountCode, base: Number(l.baseLine) })), '700');
   const nombres = await nombresDeCuentas(tx, companyId, reparto.map((r) => r.cuenta));
   return reparto.map((r) => ({ ...r, nombre: nombres.get(r.cuenta) ?? 'Ventas' }));
+}
+
+/** Rectificativa de venta: lo que rectifica, para la descripcion del asiento y el libro de expedidas, y la diferencia si es por sustitucion. */
+interface ContabilidadRectificativa {
+  /** «; rectifica A-12» (la descripcion del asiento). */
+  nota: string;
+  /** «Rectificativa (R1, por diferencias) de A-12 de 03/02/2027. Causa: ...» (libro de expedidas). */
+  libro: string;
+  /** Por sustitucion con la original en la app: lo que cuenta es la diferencia con ella (observacion 17). */
+  sustitucion: DiferenciaSustitucion | null;
+}
+
+async function contabilidadRectificativa(
+  companyId: string,
+  factura: Parameters<typeof enlacesDeVentas>[1][number] & { lineas: Array<{ tipoIva: number; accountCode: string | null; baseLine: number; ivaImporte: number; retencionImporte: number }> },
+): Promise<ContabilidadRectificativa | null> {
+  if (!factura.esRectificativa) return null;
+  const r = (await enlacesDeVentas(prisma, [factura])).get(factura.id);
+  if (!r) return null;
+  const numeros = r.periodo ? `las ventas del ${r.periodo.desde.split('-').reverse().join('/')} al ${r.periodo.hasta.split('-').reverse().join('/')}` : r.originales.map((o) => o.numeroCompleto).filter(Boolean).join(', ');
+  const nota = numeros ? `; rectifica ${numeros.length > 60 ? `${numeros.slice(0, 57)}...` : numeros}` : '';
+  const libro = textoRectificaVenta({
+    tipoFactura: factura.tipoFactura,
+    forma: r.forma,
+    originales: r.originales.map((o) => ({ numero: o.numeroCompleto, fecha: o.fecha })),
+    periodo: r.periodo,
+    motivo: (r.motivo as MotivoVenta | null) ?? null,
+  });
+  let sustitucion: DiferenciaSustitucion | null = null;
+  const originalId = r.forma === 'S' ? r.originales.find((o) => o.id)?.id : null;
+  if (originalId) {
+    const original = await prisma.incomeInvoice.findFirst({ where: { id: originalId, companyId }, include: { lineas: true } });
+    if (original) sustitucion = diferenciaSustitucion(lineasImportesDe(factura), lineasImportesDe(original));
+  }
+  return { nota, libro, sustitucion };
+}
+
+/** Base de la diferencia de una sustitucion por cuenta de ingresos, con el nombre del plan. */
+async function ingresosDeDiferencia(tx: TransaccionBD, companyId: string, porCuenta: Array<{ cuenta: string; base: number }>) {
+  const nombres = await nombresDeCuentas(tx, companyId, porCuenta.map((r) => r.cuenta));
+  return porCuenta.map((r) => ({ ...r, nombre: nombres.get(r.cuenta) ?? 'Ventas' }));
 }
 
 export class AccountingEngineController {
@@ -182,24 +225,27 @@ export class AccountingEngineController {
       }
       // Ni en un mes bloqueado ni en un ejercicio cerrado (tambien desde el hook AUTO).
       await comprobarFechaAbierta(companyId, factura.fechaEmision, 'contabilizar la factura');
+      // Rectificativa: lo que rectifica y, por sustitucion, solo la diferencia con la original.
+      const rect = await contabilidadRectificativa(companyId, factura);
+      const dif = rect?.sustitucion ?? null;
 
       // Transacción atómica: subcuenta del cliente (430N, asignada y en el plan
       // si falta) + asiento + líneas + VATBook. Las rectificativas van a la del
       // cliente de la original (es el mismo customerId).
       const result = await conReintentoSubcuenta(() => prisma.$transaction(async (tx) => {
         const cliente = await subcuentaClienteParaApunte(tx, companyId, factura.customerId);
-        const ingresoPorCuenta = await ingresosPorCuenta(tx, companyId, factura.lineas);
+        const ingresoPorCuenta = dif ? await ingresosDeDiferencia(tx, companyId, dif.porCuenta) : await ingresosPorCuenta(tx, companyId, factura.lineas);
         const asiento = await accountingEngineService.contabilizarFacturaIngreso(
           companyId,
           invoiceId,
           {
-            baseTotal: factura.baseTotal,
-            ivaTotal: factura.ivaTotal,
+            baseTotal: dif ? dif.base : factura.baseTotal,
+            ivaTotal: dif ? dif.cuota : factura.ivaTotal,
             ivaRate: factura.lineas[0]?.tipoIva ?? 21,
-            retencionTotal: factura.retencionTotal,
+            retencionTotal: dif ? dif.retencion : factura.retencionTotal,
             retencionRate: factura.lineas[0]?.tipoRetencion ?? 0,
-            desgloseIva: desgloseIvaPorTipo(factura.lineas),
-            totalFactura: factura.totalFactura,
+            desgloseIva: dif ? dif.porTipoIva : desgloseIvaPorTipo(factura.lineas),
+            totalFactura: dif ? dif.total : factura.totalFactura,
             fechaEmision: factura.fechaEmision,
             fechaDevengo: fechaDevengoVenta(factura),
             numeroFactura: factura.numeroCompleto ?? '',
@@ -213,7 +259,8 @@ export class AccountingEngineController {
             // El tipo guardado; las facturas anteriores (sin tipo) se contabilizan como siempre.
             tipoOperacion: esTipoOperacion(factura.tipoOperacion) ? factura.tipoOperacion : undefined,
             causaExencion: factura.causaExencion,
-            notaDescripcion: notaDivisa(factura, monedaCuenta),
+            notaDescripcion: `${rect?.nota ?? ''}${notaDivisa(factura, monedaCuenta)}`,
+            ...(rect ? { observacionesLibro: rect.libro } : {}),
             estadoAsiento: desdeOcr ? 'DRAFT' : 'POSTED',
           },
           tx,
