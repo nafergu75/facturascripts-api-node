@@ -16,6 +16,10 @@ import { app } from '../app';
 import { prisma } from '../config/database';
 import { authService } from '../services/auth.service';
 import { anularCobroFactura, registrarCobroFactura } from '../services/cobrosPagos.service';
+import { importarMovimientosDesdeCSV } from '../services/bancos.service';
+import { conciliarMovimientoConCuenta } from '../services/conciliacionConfirmar.service';
+import { resolverMedioPago } from '../services/nominas/tesoreria';
+import type { CuentasNominas } from '../domain/nominas.model';
 import { incomeInvoicesService } from '../services/income-invoices.service';
 import { treasuryService } from '../services/treasury.service';
 import { CODIGO_SUBCUENTA_POR_ELEGIR, esSubcuentaDeBanco, nombreSubcuentaBanco, siguienteSubcuenta572 } from '../services/subcuentaBanco.service';
@@ -276,6 +280,27 @@ describe('cobrar con una cuenta cuya subcuenta no es de bancos, y cambiarla', ()
     expect(await prisma.journalEntryLine.count({ where: { companyId: COBROS, accountCode: '0001' } })).toBe(0);
     const { cobro } = await registrarCobroFactura(COBROS, 'INGRESO', factura, { caja: true, importe: 1 });
     expect(cobro.cuentaTesoreria).toBe('570');
+  });
+
+  it('tampoco al conciliar un movimiento contra una cuenta ni al pagar una nomina', async () => {
+    const [mov] = await importarMovimientosDesdeCSV(COBROS, mala, '2026-05-04;-90.00;Comision bancaria');
+    await prisma.chartOfAccounts.upsert({
+      where: { companyId_codigo: { companyId: COBROS, codigo: '555' } },
+      update: { activo: true },
+      create: { companyId: COBROS, codigo: '555', nombre: 'Partidas pendientes de aplicación', grupo: 5, nivel: 3, naturaleza: 'ACTIVO', tipoUso: 'BALANCE' },
+    });
+    const conciliar = await errorDe(conciliarMovimientoConCuenta(COBROS, mov.id));
+    expect(conciliar).toMatchObject({ statusCode: 400, details: { codigo: 'SUBCUENTA_BANCO_NO_VALIDA', cuentaBancariaId: mala, subcuenta: '0001' } });
+    expect((conciliar as Error).message).toMatch(/vuelve a conciliar el movimiento/);
+    expect((await prisma.bankMovement.findUniqueOrThrow({ where: { id: mov.id } })).conciliado).toBe(false);
+
+    const cuentasNominas = { caja: '570' } as CuentasNominas;
+    for (const medio of [{ cuentaBancariaId: mala, fecha: '2026-05-31' }, { fecha: '2026-05-31' }, { movimientoId: mov.id }]) {
+      const e = await errorDe(resolverMedioPago(COBROS, medio, cuentasNominas));
+      expect(e).toMatchObject({ statusCode: 400, details: { codigo: 'SUBCUENTA_BANCO_NO_VALIDA', subcuenta: '0001' } });
+      expect((e as Error).message).toMatch(/vuelve a registrar el pago/);
+    }
+    expect(await prisma.journalEntryLine.count({ where: { companyId: COBROS, accountCode: '0001' } })).toBe(0);
   });
 
   it('la lista de Tesoreria lo avisa', async () => {
