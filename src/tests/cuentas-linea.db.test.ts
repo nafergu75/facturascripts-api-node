@@ -304,6 +304,8 @@ describe('ventas con cuenta por linea', () => {
     });
     const f = await incomeInvoicesService.crearIngreso({ companyId: E, customer: { id: clienteId }, fechaEmision: '2026-05-08', fechaVencimiento: '2099-12-31', lineas: [linea(500, '7050077')] });
     await motor.contabilizarFacturaIngreso(E, f.id);
+    // Otra con la misma cuenta, para la sustitucion (una factura ya anulada no se sustituye).
+    const f2 = await incomeInvoicesService.crearIngreso({ companyId: E, customer: { id: clienteId }, fechaEmision: '2026-05-08', fechaVencimiento: '2099-12-31', lineas: [linea(500, '7050077')] });
     await prisma.chartOfAccounts.updateMany({ where: { companyId: E, codigo: '7050077' }, data: { activo: false } });
     try {
       // Una factura nueva no puede usarla...
@@ -315,7 +317,7 @@ describe('ventas con cuenta por linea', () => {
       expect(rect.lineas.map((l) => l.cuenta)).toEqual(['7050077']);
       const a = await asiento((await motor.contabilizarFacturaIngreso(E, rect.id)).journalEntryId);
       expect(porCuenta(a.lineas)['7050077']).toEqual([0, -500]);
-      const borrador = await incomeInvoicesService.crearRectificativa(E, f.id, { motivo: 'Descuento', borrador: true, tipoRectificativa: 'S', lineas: [linea(400, '7050077')] });
+      const borrador = await incomeInvoicesService.crearRectificativa(E, f2.id, { motivo: 'Descuento', borrador: true, tipoRectificativa: 'S', lineas: [linea(400, '7050077')] });
       expect(borrador.lineas.map((l) => l.cuenta)).toEqual(['7050077']);
       const editado = await incomeInvoicesService.actualizarBorrador(E, borrador.id, { lineas: [linea(300, '7050077')] });
       expect(editado.lineas.map((l) => l.cuenta)).toEqual(['7050077']);

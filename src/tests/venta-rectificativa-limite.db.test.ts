@@ -37,6 +37,8 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  // Los enlaces de las rectificativas antes que las facturas: la original no se borra con rectificativas enlazadas.
+  await prisma.incomeInvoiceRectificada.deleteMany({ where: { companyId: COMPANY_ID } });
   await prisma.incomeInvoiceLine.deleteMany({ where: { invoice: { companyId: COMPANY_ID } } });
   await prisma.incomeInvoice.deleteMany({ where: { companyId: COMPANY_ID } });
 });
@@ -59,7 +61,9 @@ describe('límite de las rectificativas de venta', () => {
     // La ficha lo dice: anulada entera, con su rectificativa.
     const ficha = await incomeInvoicesService.obtenerPorId(COMPANY_ID, a.id);
     expect(ficha.anuladaPorCompleto).toBe(true);
-    expect(ficha.rectificadaPor).toEqual([{ id: r1.id, numeroCompleto: r1.numeroCompleto, totalFactura: -726, tipoRectificativa: 'I' }]);
+    expect(ficha.rectificadaPor).toEqual([
+      { id: r1.id, numeroCompleto: r1.numeroCompleto, fechaEmision: r1.fechaEmision, totalFactura: -726, tipoRectificativa: 'I', tipoFactura: 'R1' },
+    ]);
   });
 
   it('una parcial cabe; la total después ya no, y avisa de lo que queda', async () => {
