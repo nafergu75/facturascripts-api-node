@@ -1200,6 +1200,8 @@ export interface CandidataOriginalVenta {
   customerId: string;
   cliente: string;
   nifCliente: string | null;
+  /** Pais (ISO-2) de la ficha del cliente: en el lector manda sobre «¿De donde es el cliente?». */
+  paisCliente: string;
   tipoFactura: string;
   moneda: string;
   tipoOperacion: string | null;
@@ -1290,7 +1292,7 @@ export async function buscarOriginalesVenta(
     const sinEsp = q.replace(/\s+/g, '');
     and.push({ OR: [{ numeroCompleto: { contains: sinEsp } }, { customer: { nombreFiscal: { contains: q } } }, { customer: { nifCif: { contains: sinEsp.toUpperCase() } } }] });
   }
-  const incluir = { customer: { select: { nombreFiscal: true, nifCif: true } } } as const;
+  const incluir = { customer: { select: { nombreFiscal: true, nifCif: true, pais: true } } } as const;
   const orden = [{ fechaEmision: 'desc' as const }, { numero: 'desc' as const }];
   // La que coincide exacta, aparte: entre muchas parecidas (A-1 en «1», «10», «21»...) no se pierde.
   const exactas = numero ? await prisma.incomeInvoice.findMany({ where: { ...where, numeroCompleto: numero }, include: incluir, orderBy: orden, take }) : [];
@@ -1330,6 +1332,7 @@ export async function buscarOriginalesVenta(
       customerId: x.customerId,
       cliente: x.customer.nombreFiscal,
       nifCliente: x.customer.nifCif ?? null,
+      paisCliente: x.customer.pais,
       tipoFactura: x.tipoFactura,
       moneda: x.moneda,
       tipoOperacion: x.tipoOperacion ?? null,
