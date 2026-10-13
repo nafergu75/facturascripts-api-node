@@ -7,10 +7,15 @@ import { registrarAuditoria } from '../services/auditoria.service';
 import { accountingHooksService, type ResultadoContabilizacion } from '../services/accounting-hooks.service';
 import { archivarVentaSinRomper } from '../services/archivoFacturas.service';
 import { contextoFiscalEmpresa, sugerirOperacion } from '../services/fiscalidad-venta.service';
-import { resumenCobrosClientes } from '../services/cobrosClientes.service';
-import { ejercicioOActual } from '../utils/anios';
 import { buscarOriginalesVenta, datosParaRectificarVenta, opcionesRectificativa } from '../services/rectificativasVenta.service';
 import type { IncomeInvoiceResp } from '../services/income-invoices.service';
+import { resumenCobrosClientes } from '../services/cobrosClientes.service';
+import { ejercicioOActual } from '../utils/anios';
+
+/** Datos de divisa para la auditoria: total en moneda de cuenta y en la de la factura. */
+function metaDivisa(f: { totalFactura: number; moneda: string; totalFacturaDoc: number; tipoCambio: number; fuenteTipoCambio: string }) {
+  return { total: f.totalFactura, moneda: f.moneda, totalDoc: f.totalFacturaDoc, tipoCambio: f.tipoCambio, fuente: f.fuenteTipoCambio };
+}
 
 /** Lo que queda en AuditLog de una rectificativa: forma, motivo, facturas que rectifica o periodo. */
 function metaRectificativa(f: IncomeInvoiceResp) {
@@ -34,11 +39,6 @@ const fechaQuery = (v: unknown, campo: string): string | undefined => {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(t)) throw badRequest(`La fecha «${campo}» no es válida (AAAA-MM-DD).`, { campo });
   return t;
 };
-
-/** Datos de divisa para la auditoria: total en moneda de cuenta y en la de la factura. */
-function metaDivisa(f: { totalFactura: number; moneda: string; totalFacturaDoc: number; tipoCambio: number; fuenteTipoCambio: string }) {
-  return { total: f.totalFactura, moneda: f.moneda, totalDoc: f.totalFacturaDoc, tipoCambio: f.tipoCambio, fuente: f.fuenteTipoCambio };
-}
 
 /**
  * Contabiliza una factura recien emitida y la guarda en el archivo de su
