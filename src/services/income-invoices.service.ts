@@ -51,6 +51,7 @@ import {
   enlacesDeVentas,
   exigirLimites,
   exigirRectificablesEnTx,
+  exigirTipoRectificativaDisponible,
   guardarEnlacesVenta,
   leerBloque,
   prepararRectificativaVenta,
@@ -1307,6 +1308,8 @@ async function prepararAlta(
     if (rectFuera && (dto.tipoRectificativa ?? 'I') !== 'I') {
       throw badRequest('La rectificativa de una factura de fuera de la app va por diferencias: escribe solo lo que cambia (en negativo si baja).');
     }
+    // La R2 (concurso) y la R3 (impago) aun no: ni con los campos antiguos ni por /credit-note.
+    if (bloque) exigirTipoRectificativaDisponible(tipoFactura);
     if (bloque && !dto.borrador && !String(dto.motivoRectificacion ?? '').trim()) {
       throw badRequest('Indica el motivo de la rectificación.', { campo: 'motivoRectificacion' });
     }
@@ -1781,6 +1784,7 @@ export const incomeInvoicesService = {
     if (dto.tipoFactura !== undefined) {
       const t = validarTipoFactura(dto.tipoFactura, 'F1');
       if (actual.esRectificativa !== t.startsWith('R')) throw badRequest('El tipo no corresponde a esta factura.');
+      exigirTipoRectificativaDisponible(t);
       data.tipoFactura = t;
       tipoFactura = t;
     }
@@ -2026,6 +2030,8 @@ export const incomeInvoicesService = {
     );
     const perfil = await exigirDatosEmisor(companyId);
     if (actual.lineas.length === 0) throw badRequest('La factura no tiene líneas.');
+    // Un borrador antiguo de R2 o R3 tampoco se emite: aun no se pueden hacer.
+    if (actual.esRectificativa) exigirTipoRectificativaDisponible(actual.tipoFactura);
     if (actual.esRectificativa && !actual.motivoRectificacion?.trim()) {
       throw actual.causaRectificacion
         ? badRequest('Explica en una frase por qué rectificas la factura: es obligatorio y sale en el PDF.', { codigo: 'FALTA_EXPLICACION', campo: 'rectificativa.explicacion' })
