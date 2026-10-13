@@ -450,6 +450,36 @@ export async function prepararRectificativaVenta(b: BloqueVenta, ctx: ContextoPl
   return { bloque: b, tipoFactura, originalesApp, herencia, customerId, filas, avisos };
 }
 
+/**
+ * Motivo con el que se aplican las reglas de la ley (signo, art. 89.Tres, plazo
+ * de cuatro años y periodo de la original de una R4 que sube el IVA). El del
+ * bloque o, en una rectificativa hecha con los campos antiguos (frontend
+ * antiguo y /credit-note, sin motivo), el que sale de su tipo: la R1 como una
+ * causa del art. 80 (cambio de precio: el plazo solo se avisa) y la R4 como
+ * «Otra causa». La R5 no dice su causa: sin reglas de motivo. La R2 y la R3 no
+ * llegan aqui (exigirTipoRectificativaDisponible).
+ */
+export function motivoDeReglas(b: BloqueVenta, tipoFactura: string): MotivoVenta | null {
+  if (b.motivo) return b.motivo;
+  if (!b.legado) return null;
+  if (tipoFactura === 'R1') return 'CAMBIO_PRECIO';
+  if (tipoFactura === 'R4') return 'OTROS';
+  return null;
+}
+
+/**
+ * La R2 (concurso) y la R3 (impago) aun no se pueden hacer (MOTIVO_INFO, disponible
+ * = false): tampoco con los campos antiguos ni por /credit-note, que las dejaban
+ * crear con el asiento completo cuando solo se rectifica el IVA.
+ */
+export function exigirTipoRectificativaDisponible(tipoFactura: string | null | undefined): void {
+  const t = String(tipoFactura ?? '').toUpperCase();
+  const motivo: MotivoVenta | null = t === 'R2' ? 'CONCURSO' : t === 'R3' ? 'IMPAGO' : null;
+  if (!motivo || MOTIVO_INFO[motivo].disponible) return;
+  const que = motivo === 'CONCURSO' ? 'La R2 es la rectificativa por concurso del cliente.' : 'La R3 es la rectificativa por impago (crédito incobrable).';
+  throw badRequest(`${que} ${MOTIVO_INFO[motivo].aviso ?? 'Todavía no se puede hacer desde la app.'}`, { codigo: 'MOTIVO_NO_DISPONIBLE', campo: 'tipoFactura' });
+}
+
 /** 409 de una sustitucion sobre una factura que ya tiene rectificativas. */
 function errorSustitucionConRectificativas(f: { id: string; numeroCompleto: string | null }, previas: Array<{ id: string; numeroCompleto: string | null }>) {
   const lista = previas.map((r) => r.numeroCompleto ?? 'sin número').join(', ');
@@ -534,15 +564,17 @@ export function cerrarPlan(
   }
 
   let fechaOperacion: string | null = null;
-  if (b.motivo) {
-    const info = MOTIVO_INFO[b.motivo];
+  // Con los campos antiguos (sin motivo), el que sale de su tipo: las reglas de la ley tambien valen ahi.
+  const motivo = motivoDeReglas(b, plan.tipoFactura);
+  if (motivo) {
+    const info = MOTIVO_INFO[motivo];
     if (info.soloResta && !(aCentimos(rect.base) < 0 && aCentimos(rect.total) < 0)) {
       throw badRequest(
         `${info.texto} resta: ${b.forma === 'S' ? 'la factura corregida tiene que ser menor que la original' : 'las líneas van en negativo (por ejemplo, cantidad -1)'}.`,
         { codigo: 'SIGNO_NO_CUADRA', campo: 'lineas' },
       );
     }
-    if (subeCuotaAConsumidorFinal({ motivo: b.motivo, cuota: rect.cuota, clienteConNif: d.clienteConNif, ticket: b.ticket })) {
+    if (subeCuotaAConsumidorFinal({ motivo, cuota: rect.cuota, clienteConNif: d.clienteConNif, ticket: b.ticket })) {
       throw badRequest(
         'A quien no es empresario ni profesional (cliente sin NIF o ticket) no se le puede subir el IVA por un error: solo por una devolución, un descuento, un rappel o un cambio de precio (art. 89.Tres LIVA).',
         { codigo: 'SUBE_IVA_CONSUMIDOR_FINAL', campo: 'lineas' },
@@ -554,7 +586,7 @@ export function cerrarPlan(
       const limite = limitePlazo(f.devengo);
       if (d.fechaEmision <= limite) return;
       const num = f.numeroOriginal ?? 'que rectificas';
-      if (b.motivo === 'ERROR' || b.motivo === 'ERROR_DERECHO') {
+      if (motivo === 'ERROR' || motivo === 'ERROR_DERECHO') {
         throw badRequest(
           `Han pasado más de cuatro años desde la factura ${num} (${fechaTexto(f.devengo)}): por un error ya no se puede rectificar (art. 89.Uno LIVA). Consúltalo con tu asesoría.`,
           { codigo: 'PLAZO_RECTIFICACION', campo: i === 0 ? 'fechaEmision' : `rectificativa.originales.${i}` },
@@ -566,7 +598,7 @@ export function cerrarPlan(
       });
     });
     // R4 que sube el IVA: se declara en el periodo de la original (art. 89.Cinco LIVA).
-    if (exigeImputarAlPeriodoOriginal({ motivo: b.motivo, ticket: b.ticket, cuota: rect.cuota })) {
+    if (exigeImputarAlPeriodoOriginal({ motivo, ticket: b.ticket, cuota: rect.cuota })) {
       const conDevengo = plan.filas.filter((f) => !!f.devengo).sort((x, y) => x.devengo!.localeCompare(y.devengo!));
       const primera = conDevengo[0];
       if (primera && primera.devengo! < d.fechaEmision) {
