@@ -359,7 +359,16 @@ export const ingresosExtractorService = {
   async confirmar(
     companyId: string,
     documentId: string,
-    opciones: { revisado?: boolean; userId?: string; lineas?: unknown; clienteId?: string; rectificativa?: unknown; noEsRectificativa?: boolean } = {},
+    opciones: {
+      revisado?: boolean;
+      userId?: string;
+      lineas?: unknown;
+      clienteId?: string;
+      rectificativa?: unknown;
+      noEsRectificativa?: boolean;
+      /** Tras el 409 DEVENGO_FUERA_APP (una R4 que sube el IVA de un periodo de la gestoria o de un 303 presentado). */
+      confirmaDevengoFuera?: boolean;
+    } = {},
   ): Promise<{ facturaId: string; numeroCompleto: string; total: number; esRectificativa: boolean; avisos?: string[] } & ContabilidadVentaLeida> {
     const doc = await prisma.incomeReaderDocument.findFirst({
       where: { id: documentId, companyId, sourceType: 'EXTRACTOR_IA' },
@@ -423,6 +432,7 @@ export const ingresosExtractorService = {
         lineas,
         observaciones: `Digitalizada desde ${doc.originalFileName}`,
         ...(rect ? { rectificativa: rect.bloque } : {}),
+        ...(opciones.confirmaDevengoFuera === true ? { confirmaDevengoFuera: true } : {}),
       },
       // El numero se guarda tal como se leyo (con sus ceros y su separador), el que ve la pantalla.
       { origen: 'lector', numeroLeido: resumen.numeroFactura },
@@ -456,6 +466,17 @@ export const ingresosExtractorService = {
         resourceType: 'INCOME_INVOICE',
         resourceId: factura.id,
         meta: { documentId, numeroCompleto: factura.numeroCompleto },
+      });
+    }
+    // R4 que sube el IVA de un 303 ya presentado, registrada con la confirmacion: queda la marca.
+    if (factura.avisosFiscales?.some((a) => a.codigo === 'RECTIFICAR_303')) {
+      await registrarAuditoria({
+        userId: opciones.userId ?? 'unknown',
+        companyId,
+        action: 'RECTIFICAR_303_PENDIENTE',
+        resourceType: 'INCOME_INVOICE',
+        resourceId: factura.id,
+        meta: { documentId, numeroCompleto: factura.numeroCompleto, fechaIva: factura.fechaOperacion ?? null },
       });
     }
     const avisos = (factura.avisosFiscales ?? []).map((a) => a.mensaje);
