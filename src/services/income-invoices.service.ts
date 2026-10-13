@@ -1,7 +1,14 @@
 import type { Prisma } from '@prisma/client';
 import { badRequest, conflict, notFound } from '../utils/http-errors';
 import { prisma, type TransaccionBD as Tx } from '../config/database';
-import { buscarSeriePorCodigo, obtenerOCrearSerieHistorica, obtenerSeriePorDefecto, problemaSerieAeat, resolverCodSerieFactura } from './series.service';
+import {
+  buscarSeriePorCodigo,
+  obtenerOCrearSerieHistorica,
+  obtenerOCrearSerieTickets,
+  obtenerSeriePorDefecto,
+  problemaSerieAeat,
+  resolverCodSerieFactura,
+} from './series.service';
 import { listarCobros, registrarCobroFactura, tieneCobrosActivos, type DatosCobro } from './cobrosPagos.service';
 import { comprobarFechaAbierta } from './periodos.service';
 import {
@@ -35,7 +42,25 @@ import { FORMAS_PAGO, type FormaPago } from '../domain/ajustes.model';
 import { leerPais } from './clientes.service';
 import { crearClienteConSubcuenta } from './terceros/subcuentas';
 import { esCuentaDeTipo, problemaCuentasLinea } from './cuentasLinea.service';
+import { MOTIVOS_VENTA } from '../domain/rectificativa-venta.model';
 import { ahoraRedSeguridad, exigirPuedeEmitirFinal } from './verifactu/redSeguridad';
+import {
+  aFavorDeAbonos,
+  cerrarPlan,
+  enlacesDeVentas,
+  exigirLimites,
+  exigirRectificablesEnTx,
+  guardarEnlacesVenta,
+  leerBloque,
+  prepararRectificativaVenta,
+  rectificadaPorDe,
+  restantePorOriginal,
+  lineasImportesDe,
+  type BloqueVenta,
+  type EnlaceVenta,
+  type PlanVenta,
+  type RectificativaResp,
+} from './rectificativasVenta.service';
 
 /**
  * Facturas de venta.
@@ -142,6 +167,13 @@ export interface CrearFacturaIngresoDTO {
   rectificaFuera?: { numero?: unknown; fecha?: unknown } | null;
   tipoRectificativa?: 'S' | 'I';
   motivoRectificacion?: string;
+  /**
+   * Rectificativa o abono (bloque nuevo, services/rectificativasVenta.service.ts):
+   * ticket, forma (I/S), motivo, explicacion y que rectifica (facturas de la
+   * app, de fuera o un periodo). No se junta con facturaOriginalId,
+   * rectificaFuera ni tipoRectificativa (los campos de antes).
+   */
+  rectificativa?: unknown;
   /** Moneda de la factura (ISO 4217). Por defecto, la de la contabilidad. */
   moneda?: string;
   /**
@@ -201,6 +233,7 @@ export type ActualizarBorradorDTO = Partial<
     | 'tipoOperacion'
     | 'causaExencion'
     | 'referenciaLegal'
+    | 'rectificativa'
   >
 >;
 
@@ -265,8 +298,12 @@ export interface IncomeInvoiceResp {
   proformaId?: string;
   /** Proforma ya pasada a factura: id de la factura creada. */
   facturaGeneradaId?: string;
-  /** Solo en la ficha (obtenerPorId): rectificativas emitidas de esta factura. */
-  rectificadaPor?: Array<{ id: string; numeroCompleto: string | null; totalFactura: number; tipoRectificativa: string | null }>;
+  /** Solo en la ficha (obtenerPorId): rectificativas emitidas de esta factura (por sus enlaces y por facturaOriginalId). */
+  rectificadaPor?: Array<{ id: string; numeroCompleto: string | null; fechaEmision: string; totalFactura: number; tipoRectificativa: string | null; tipoFactura: string }>;
+  /** Rectificativas: que rectifica (facturas de la app o de fuera, o un periodo), forma, motivo y explicacion. */
+  rectificativa?: RectificativaResp;
+  /** Solo en la ficha de un abono (total < 0): lo que queda a favor del cliente, en la moneda de la factura y sin lo ya devuelto. */
+  aFavor?: number;
   /** Solo en la ficha: sus rectificativas la dejan a cero (anulada entera). */
   anuladaPorCompleto?: boolean;
   /** Solo en la ficha: el asiento de la factura (no el de sus cobros), o null si no tiene. */
@@ -581,10 +618,15 @@ function cuentaDeLinea(v: unknown): string | undefined {
  * o la 705 si es un servicio), siempre que exista en el plan. Sin ninguna, la
  * linea queda sin cuenta y va a la 700 al contabilizar.
  */
-async function conCuentasDeVenta(companyId: string, lineas: LineaEntrada[], original?: FacturaConLineas | null): Promise<LineaEntrada[]> {
-  // En una rectificativa, las cuentas de la factura original valen aunque se
+async function conCuentasDeVenta(
+  companyId: string,
+  lineas: LineaEntrada[],
+  original?: { lineas: Array<{ accountCode: string | null }> } | Array<{ lineas: Array<{ accountCode: string | null }> }> | null,
+): Promise<LineaEntrada[]> {
+  // En una rectificativa, las cuentas de las facturas originales valen aunque se
   // hayan desactivado despues: rectificar es obligatorio y va a la misma cuenta.
-  const deLaOriginal = (original?.lineas ?? []).map((l) => l.accountCode).filter((c): c is string => !!c);
+  const originales = Array.isArray(original) ? original : original ? [original] : [];
+  const deLaOriginal = originales.flatMap((o) => o.lineas).map((l) => l.accountCode).filter((c): c is string => !!c);
   const indicada = await problemaCuentasLinea(companyId, 'venta', lineas.map((l) => l.cuentaContable), prisma, { permitirInactivas: deLaOriginal });
   if (indicada) throw badRequest(`Línea ${indicada.indice + 1}: ${indicada.mensaje}`, { campo: `lineas.${indicada.indice}.cuenta` });
   const ids = [...new Set(lineas.filter((l) => !l.cuentaContable && l.productoServicioId).map((l) => l.productoServicioId!))];
@@ -783,38 +825,67 @@ const serieNoExiste = (codigo: string) =>
     campo: 'serie',
   });
 
+/** Aviso de una factura del lector registrada en una serie historica que mezcla facturas y rectificativas. */
+const avisoSerieMixta = (codigo: string): AvisoFiscal => ({
+  codigo: 'SERIE_HISTORICA_MIXTA',
+  mensaje: `La serie ${codigo} del otro programa tiene facturas y rectificativas juntas: se registra igual, porque esa numeración no es de la app.`,
+});
+
 /**
  * Serie elegida en el DTO (o la por defecto). Desde la pantalla o la API tiene
  * que existir y estar activa. Solo una factura del lector, que trae su numero
  * original, puede crear su serie (desactivada: guarda la numeracion de otro
- * programa, pero no sale para emitir facturas nuevas).
+ * programa, pero no sale para emitir facturas nuevas); si esa serie historica
+ * ya existe con facturas del otro tipo, se usa con el aviso SERIE_HISTORICA_MIXTA.
+ *
+ * Rectificativas (art. 6.1.a y 7.1.a RD 1619/2012): las R1-R4 solo en series
+ * de rectificativas (por defecto, la R) y las R5 (tickets) solo en una de
+ * rectificativas de tickets (por defecto la RT, que se crea con la primera).
+ * Nunca en una serie de facturas (A, B) ni de proformas.
  */
 async function resolverSerie(
   companyId: string,
   codigo: string | undefined,
-  esRectificativa: boolean,
-  origen: OrigenFactura = 'pantalla',
-): Promise<string> {
-  if (esRectificativa && !codigo) {
-    const r = await obtenerSeriePorDefecto(companyId, 'RECTIFICATIVA');
-    if (!r) throw badRequest('No hay serie de rectificativas configurada.');
-    return r.codigo;
+  r: { esRectificativa: boolean; tipoFactura: string; origen?: OrigenFactura },
+): Promise<{ codigo: string; aviso?: AvisoFiscal }> {
+  const tickets = r.esRectificativa && r.tipoFactura === 'R5';
+  if (r.esRectificativa && !codigo) {
+    if (tickets) return { codigo: (await obtenerOCrearSerieTickets(companyId)).codigo };
+    const def = await obtenerSeriePorDefecto(companyId, 'RECTIFICATIVA');
+    if (!def) throw badRequest('No hay serie de rectificativas configurada.', { codigo: 'SERIE_NO_RECTIFICATIVA', campo: 'serie' });
+    return { codigo: def.codigo };
   }
-  if (!codigo) return resolverCodSerieFactura(companyId, {});
-  const lector = origen === 'lector';
-  const serie = lector ? await obtenerOCrearSerieHistorica(companyId, String(codigo)) : await buscarSeriePorCodigo(companyId, String(codigo));
+  if (!codigo) return { codigo: await resolverCodSerieFactura(companyId, {}) };
+  const lector = r.origen === 'lector';
+  const tipoSerie = !r.esRectificativa ? 'FACTURA' : tickets ? 'RECTIFICATIVA_SIMPLIFICADA' : 'RECTIFICATIVA';
+  const serie = lector
+    ? await obtenerOCrearSerieHistorica(companyId, String(codigo), tipoSerie, { aceptarOtroTipo: true })
+    : await buscarSeriePorCodigo(companyId, String(codigo));
   if (!serie) throw serieNoExiste(String(codigo));
   if (!serie.activa && !lector) throw badRequest(`La serie ${serie.codigo} está desactivada.`, { campo: 'serie' });
-  if (esRectificativa && serie.tipoDocumento !== 'RECTIFICATIVA') {
-    throw badRequest('Las rectificativas van en una serie propia de rectificativas, no en la de facturas.');
-  }
-  if (!esRectificativa && serie.tipoDocumento === 'RECTIFICATIVA') {
-    throw badRequest(`La serie ${serie.codigo} es solo para rectificativas.`);
-  }
+  if (lector && 'mixta' in serie && serie.mixta) return { codigo: serie.codigo, aviso: avisoSerieMixta(serie.codigo) };
   if (serie.tipoDocumento === 'PROFORMA') {
-    throw badRequest(`La serie ${serie.codigo} es de proformas: una factura no puede ir en ella.`);
+    throw badRequest(`La serie ${serie.codigo} es de proformas: una factura no puede ir en ella.`, { campo: 'serie' });
   }
-  return serie.codigo;
+  if (r.esRectificativa && serie.tipoDocumento === 'FACTURA') {
+    throw badRequest('Las rectificativas van en una serie propia de rectificativas, no en la de facturas.', { codigo: 'SERIE_NO_RECTIFICATIVA', campo: 'serie' });
+  }
+  if (r.esRectificativa && !tickets && serie.tipoDocumento === 'RECTIFICATIVA_SIMPLIFICADA') {
+    throw badRequest(`La serie ${serie.codigo} es de rectificativas de tickets: la rectificativa de una factura completa va en la serie de rectificativas.`, {
+      codigo: 'SERIE_NO_RECTIFICATIVA',
+      campo: 'serie',
+    });
+  }
+  if (tickets && serie.tipoDocumento === 'RECTIFICATIVA') {
+    throw badRequest('La rectificativa de un ticket (R5) va en una serie propia, distinta de la de rectificativas: elige la de rectificativas de tickets.', {
+      codigo: 'SERIE_NO_RECTIFICATIVA',
+      campo: 'serie',
+    });
+  }
+  if (!r.esRectificativa && serie.tipoDocumento !== 'FACTURA') {
+    throw badRequest(`La serie ${serie.codigo} es solo para rectificativas.`, { campo: 'serie' });
+  }
+  return { codigo: serie.codigo };
 }
 
 /** Serie de las proformas: la indicada (si es de proformas) o la por defecto. */
@@ -954,69 +1025,6 @@ async function cargar(companyId: string, id: string): Promise<FacturaConLineas> 
   return factura;
 }
 
-type Db = Tx | typeof prisma;
-
-/**
- * Rectificativas por diferencias ya emitidas de una factura (sin borradores):
- * lo que ya le han restado o sumado, en la moneda de cuenta.
- */
-async function rectificadoDe(db: Db, companyId: string, originalId: string, excluirId?: string) {
-  return db.incomeInvoice.findMany({
-    where: {
-      companyId,
-      facturaOriginalId: originalId,
-      estadoDocumento: ESTADO_FINAL,
-      tipoRectificativa: 'I',
-      ...(excluirId ? { id: { not: excluirId } } : {}),
-    },
-    select: { id: true, numeroCompleto: true, baseTotal: true, totalFactura: true },
-    orderBy: { numero: 'asc' },
-  });
-}
-
-/**
- * Una rectificativa no puede rectificar otra (para corregir la R, se rectifica
- * otra vez la original) ni dejar la original por debajo de cero: una venta
- * anulada entera no se anula otra vez (el 303 restaria el IVA dos veces).
- * Suma en centimos la base y el total de las rectificativas por diferencias ya
- * emitidas y la nueva; con `tx` bloquea antes la original (FOR UPDATE) para que
- * dos rectificativas a la vez no pasen las dos. Las de sustitucion (S) llevan
- * los importes buenos enteros, no una diferencia: no entran en la cuenta.
- */
-async function exigirRectificableHasta(
-  db: Db,
-  companyId: string,
-  original: { id: string; numeroCompleto: string | null; esRectificativa: boolean; baseTotal: unknown; totalFactura: unknown },
-  nueva: { tipoRectificativa: string; baseTotal: unknown; totalFactura: unknown; excluirId?: string },
-  bloquear: boolean,
-): Promise<void> {
-  if (original.esRectificativa) {
-    throw badRequest(
-      `La ${original.numeroCompleto ?? 'factura'} ya es una rectificativa: no se rectifica. Si hay que corregirla, haz otra rectificativa de la factura original.`,
-    );
-  }
-  if (nueva.tipoRectificativa !== 'I') return;
-  if (bloquear) await db.$queryRaw`SELECT id FROM IncomeInvoice WHERE id = ${original.id} FOR UPDATE`;
-  const previas = await rectificadoDe(db, companyId, original.id, nueva.excluirId);
-  const signo = Math.sign(aCentimos(Number(original.totalFactura))) || Math.sign(aCentimos(Number(original.baseTotal)));
-  if (!signo) return;
-  const suma = (campo: 'baseTotal' | 'totalFactura') =>
-    aCentimos(Number(original[campo])) + previas.reduce((a, r) => a + aCentimos(Number(r[campo])), 0) + aCentimos(Number(nueva[campo]));
-  const pasa = (c: number) => c * signo < 0;
-  if (!pasa(suma('totalFactura')) && !pasa(suma('baseTotal'))) return;
-  const numero = original.numeroCompleto ?? 'original';
-  const restante = (aCentimos(Number(original.totalFactura)) + previas.reduce((a, r) => a + aCentimos(Number(r.totalFactura)), 0)) / 100;
-  const lista = previas.map((r) => r.numeroCompleto).filter(Boolean).join(', ');
-  throw conflict(
-    !previas.length
-      ? `La rectificativa (${importeTexto(Number(nueva.totalFactura))}) es mayor que la factura ${numero} (${importeTexto(Number(original.totalFactura))}).`
-      : aCentimos(restante) === 0
-        ? `La factura ${numero} ya está anulada por completo con la ${lista}. No se puede rectificar otra vez.`
-        : `La rectificativa deja la factura ${numero} por debajo de cero: después de la ${lista} solo quedan ${importeTexto(restante)} por rectificar.`,
-    { codigo: 'RECTIFICATIVA_EXCEDE_ORIGINAL', facturaOriginalId: original.id, rectificativas: previas.map((r) => r.id) },
-  );
-}
-
 function exigirBorrador(f: FacturaConLineas, accion: string): void {
   if (f.estadoDocumento === ESTADO_PROFORMA) {
     throw badRequest(`La proforma ${f.numeroCompleto ?? ''} no se puede ${accion}: para facturarla usa «Pasar a factura».`);
@@ -1067,16 +1075,28 @@ function tipoHeredado(original: FacturaConLineas, monedaCuenta: string): TipoRes
 }
 
 /** Una rectificativa va en la moneda y al tipo de la factura que rectifica. */
-function comprobarHerencia(original: FacturaConLineas, dto: { moneda?: string | null; tipoCambio?: unknown; tipoOperacion?: string | null }): void {
+function comprobarHerencia(
+  original: FacturaConLineas,
+  dto: { moneda?: string | null; tipoCambio?: unknown; tipoOperacion?: string | null; causaExencion?: string | null },
+  forma: 'I' | 'S' = 'I',
+): void {
   if (hayValor(dto.moneda) && normalizarMoneda(dto.moneda) !== original.moneda) {
     throw badRequest(`Una rectificativa va en la moneda de la factura que rectifica (${original.moneda}).`);
   }
   if (hayValor(dto.tipoCambio) && validarFormatoTipoCambio(dto.tipoCambio) !== original.tipoCambio) {
     throw badRequest('Una rectificativa lleva el tipo de cambio de la factura que rectifica.');
   }
-  if (hayValor(dto.tipoOperacion) && String(dto.tipoOperacion).trim().toUpperCase() !== (original.tipoOperacion ?? String(dto.tipoOperacion).trim().toUpperCase())) {
-    throw badRequest('Una rectificativa lleva el tipo de operación de la factura que rectifica.');
+  const otroTipo = hayValor(dto.tipoOperacion) && String(dto.tipoOperacion).trim().toUpperCase() !== (original.tipoOperacion ?? String(dto.tipoOperacion).trim().toUpperCase());
+  const otraCausa = hayValor(dto.causaExencion) && hayValor(original.causaExencion) && String(dto.causaExencion).trim().toUpperCase() !== original.causaExencion;
+  // Por sustitucion no se cambia el regimen de IVA: la factura corregida y la
+  // original irian a casillas distintas. Se anula por diferencias y se factura de nuevo.
+  if (forma === 'S' && (otroTipo || otraCausa)) {
+    throw badRequest(
+      'Por sustitución no se puede cambiar el tipo de operación ni la exención de la factura. Para corregirlos, rectifica la factura entera por diferencias (con el motivo «Error al interpretar la norma» si fue un error al aplicar la ley) y emite una factura nueva con el tipo correcto.',
+      { codigo: 'SUSTITUCION_CAMBIA_OPERACION', campo: 'tipoOperacion' },
+    );
   }
+  if (otroTipo) throw badRequest('Una rectificativa lleva el tipo de operación de la factura que rectifica.', { campo: 'tipoOperacion' });
 }
 
 /** Lo que una rectificativa hereda de la factura que rectifica para su fiscalidad. */
@@ -1101,11 +1121,137 @@ interface Interno {
   importes?: ImportesFactura;
 }
 
+const MOTIVOS_RECT = new Set<string>(MOTIVOS_VENTA);
+
 /**
- * Crea una factura (borrador, proforma, emitida o rectificativa). `opciones`
- * lo fija el servidor; `interno` solo lo usa este servicio.
+ * La respuesta de siempre y, en una rectificativa, que rectifica (enlaces de la
+ * tabla o, en las anteriores, facturaOriginalId o rectificaFuera).
  */
-async function crear(dto: CrearFacturaIngresoDTO, opciones: { origen?: OrigenFactura; numeroLeido?: string | null }, interno: Interno): Promise<IncomeInvoiceResp> {
+async function respuesta(f: FacturaConLineas, ctx: ContextoRespuesta): Promise<IncomeInvoiceResp> {
+  const resp = aRespuesta(f, ctx);
+  if (f.esRectificativa) {
+    const r = (await enlacesDeVentas(prisma, [f])).get(f.id);
+    if (r) resp.rectificativa = r;
+  }
+  return resp;
+}
+
+/**
+ * Lineas de una rectificativa que son el espejo exacto de las de su original
+ * (mismo orden, cantidad por precio con el signo cambiado, mismo IVA,
+ * retencion, descuento y cuenta): se copian sus importes en negativo
+ * (lineasEspejo), asi la pareja suma cero tambien en divisa.
+ */
+function esEspejoDe(lineas: LineaEntrada[], original: FacturaConLineas): boolean {
+  const o = lineasDocGuardadas(original);
+  if (o.length !== lineas.length || !o.length) return false;
+  return lineas.every((l, i) => {
+    const x = o[i];
+    return (
+      Math.sign(l.cantidad) === -Math.sign(x.cantidad) &&
+      Math.abs(l.cantidad) === Math.abs(x.cantidad) &&
+      l.precioUnitario === x.precioUnitario &&
+      (l.tipoIva ?? 21) === (x.tipoIva ?? 21) &&
+      (l.tipoRetencion ?? 0) === (x.tipoRetencion ?? 0) &&
+      (l.descuentoPorcentaje ?? 0) === (x.descuentoPorcentaje ?? 0) &&
+      (l.cuentaContable ?? null) === (x.cuentaContable ?? null)
+    );
+  });
+}
+
+/** El bloque de una rectificativa hecha con los campos antiguos (facturaOriginalId o rectificaFuera). */
+function bloqueDeCamposAntiguos(dto: CrearFacturaIngresoDTO, rectFuera: { numero: string; fecha: string } | null): BloqueVenta {
+  return {
+    ticket: String(dto.tipoFactura ?? '').toUpperCase() === 'R5',
+    forma: dto.tipoRectificativa === 'S' ? 'S' : 'I',
+    motivo: null,
+    explicacion: String(dto.motivoRectificacion ?? '').trim(),
+    originales: dto.facturaOriginalId ? [{ id: String(dto.facturaOriginalId) }] : rectFuera ? [{ numero: rectFuera.numero, fecha: rectFuera.fecha }] : [],
+    periodo: null,
+    legado: true,
+  };
+}
+
+/** Columnas de compatibilidad de una rectificativa con una sola original: facturaOriginalId o rectificaFuera. */
+function columnasCompatibles(enlaces: EnlaceVenta[]) {
+  const una = enlaces.length === 1 ? enlaces[0] : null;
+  return {
+    facturaOriginalId: una?.originalId ?? null,
+    rectificaFueraNumero: una && !una.originalId && !una.periodoDesde ? una.numeroOriginal : null,
+    rectificaFueraFecha: una && !una.originalId && !una.periodoDesde ? una.fechaOriginal : null,
+  };
+}
+
+/** El bloque de un borrador de rectificativa ya guardado (enlaces o campos antiguos), para volver a comprobarlo. */
+async function bloqueGuardado(f: FacturaConLineas): Promise<BloqueVenta> {
+  const filas = await prisma.incomeInvoiceRectificada.findMany({ where: { companyId: f.companyId, rectificativaId: f.id }, orderBy: { createdAt: 'asc' } });
+  const motivo = f.causaRectificacion && MOTIVOS_RECT.has(f.causaRectificacion) ? (f.causaRectificacion as BloqueVenta['motivo']) : null;
+  const periodo = filas.find((x) => x.periodoDesde && x.periodoHasta);
+  const varias = filas.filter((x) => !x.periodoDesde).length > 1;
+  const importes = (x: (typeof filas)[number]) =>
+    varias ? { base: x.baseRectificada ?? undefined, cuota: x.cuotaRectificada ?? undefined, retencion: x.retencionRectificada ?? undefined } : {};
+  const originales = filas.length
+    ? filas
+        .filter((x) => !x.periodoDesde)
+        .map((x) =>
+          x.originalId
+            ? { id: x.originalId, ...importes(x) }
+            : { numero: x.numeroOriginal ?? '', fecha: x.fechaOriginal ?? '', ...(x.partidaPendienteId ? { partidaId: x.partidaPendienteId } : {}), ...importes(x) },
+        )
+    : f.facturaOriginalId
+      ? [{ id: f.facturaOriginalId }]
+      : f.rectificaFueraNumero
+        ? [{ numero: f.rectificaFueraNumero, fecha: f.rectificaFueraFecha ?? '' }]
+        : [];
+  return {
+    ticket: f.tipoFactura === 'R5',
+    forma: f.tipoRectificativa === 'S' ? 'S' : 'I',
+    motivo,
+    explicacion: (f.motivoRectificacion ?? '').trim(),
+    originales,
+    periodo: periodo ? { desde: periodo.periodoDesde!, hasta: periodo.periodoHasta! } : null,
+    legado: !motivo,
+  };
+}
+
+/** Lo que prepara un alta antes de guardar nada (lo usan crear y la correccion de un borrador de rectificativa). */
+interface AltaPreparada {
+  comunes: Prisma.IncomeInvoiceUncheckedCreateInput;
+  ctx: ContextoRespuesta;
+  serie: string;
+  fechaEmision: string;
+  fechaVencimiento: string;
+  /** Rectificativa: forma y enlaces (con la parte de cada original), o null. */
+  rect: { forma: 'I' | 'S'; enlaces: EnlaceVenta[] } | null;
+}
+
+/** Partes de las originales de la app para comprobar sus limites. */
+const partesDe = (enlaces: EnlaceVenta[]) =>
+  enlaces
+    .map((e, indice) => ({ e, indice }))
+    .filter(({ e }) => !!e.originalId)
+    .map(({ e, indice }) => ({
+      originalId: e.originalId!,
+      base: e.baseRectificada,
+      total: (aCentimos(e.baseRectificada) + aCentimos(e.cuotaRectificada) - aCentimos(e.retencionRectificada)) / 100,
+      indice,
+    }));
+
+/**
+ * Comprueba y calcula un alta (borrador, proforma, emitida o rectificativa)
+ * sin guardar nada, salvo el cliente nuevo. `opciones` lo fija el servidor;
+ * `interno` solo lo usa este servicio.
+ *
+ * Rectificativas: con el bloque `rectificativa` (rectificativasVenta.service:
+ * motivo, forma, originales de la app o de fuera, periodo) o con los campos
+ * antiguos (facturaOriginalId o rectificaFuera), que se traducen al bloque con
+ * las reglas y los textos de antes.
+ */
+async function prepararAlta(
+  dto: CrearFacturaIngresoDTO,
+  opciones: { origen?: OrigenFactura; numeroLeido?: string | null },
+  interno: Interno & { excluirId?: string },
+): Promise<AltaPreparada> {
   const origen: OrigenFactura = opciones.origen ?? 'pantalla';
   if (dto.numero !== undefined && dto.numero !== null && origen !== 'lector') {
     throw badRequest('El número de la factura lo pone la serie al emitirla: no se puede indicar.', { campo: 'numero' });
@@ -1125,25 +1271,41 @@ async function crear(dto: CrearFacturaIngresoDTO, opciones: { origen?: OrigenFac
     }
     if (dto.borrador || dto.proforma) throw badRequest('Una factura leída se registra ya emitida: no es un borrador ni una proforma.');
   }
-  // La factura que se rectifica (si lo es): sus cuentas valen aunque se hayan desactivado.
-  const originalLeida = interno.original ?? (dto.facturaOriginalId ? await buscarConLineas(dto.companyId, String(dto.facturaOriginalId)) : null);
-  let lineas = await conCuentasDeVenta(dto.companyId, validarLineas(dto.lineas), originalLeida);
-  // Rectificativa de una factura de fuera de la app (una de 2026 que trajo la gestoria, por ejemplo).
-  const rectFuera = dto.rectificaFuera !== undefined && dto.rectificaFuera !== null ? leerRectificaFuera(dto.rectificaFuera) : null;
+  const lineasPedidas = validarLineas(dto.lineas);
+  // Rectificativa: el bloque nuevo o los campos de antes, nunca los dos.
+  const hayBloque = dto.rectificativa !== undefined && dto.rectificativa !== null;
+  const hayFuera = dto.rectificaFuera !== undefined && dto.rectificaFuera !== null;
+  if (hayBloque && (dto.facturaOriginalId || hayFuera || (dto.tipoRectificativa !== undefined && dto.tipoRectificativa !== null))) {
+    throw badRequest('La rectificativa va solo en su bloque: sin facturaOriginalId, rectificaFuera ni tipoRectificativa.', {
+      codigo: 'RECTIFICATIVA_MEZCLA_CAMPOS',
+      campo: 'rectificativa',
+    });
+  }
+  // Rectificativa de una factura de fuera de la app con los campos de antes (una de 2026 que trajo la gestoria, por ejemplo).
+  const rectFuera = hayFuera ? leerRectificaFuera(dto.rectificaFuera) : null;
   if (rectFuera && dto.facturaOriginalId) throw badRequest('Indica la factura que rectificas de la app o la de fuera, no las dos.');
-  if (dto.proforma && (dto.facturaOriginalId || rectFuera)) throw badRequest('Una proforma no puede ser una rectificativa.');
-  if (rectFuera && origen === 'lector') throw badRequest('El lector no registra rectificativas de ventas.');
-  const esRectificativa = !!dto.facturaOriginalId || !!rectFuera;
-  const tipoFactura = validarTipoFactura(dto.tipoFactura, esRectificativa ? 'R1' : 'F1');
-  if (esRectificativa !== tipoFactura.startsWith('R')) {
-    throw badRequest('Una factura rectificativa debe ser de tipo R1 a R5, y solo las rectificativas pueden serlo.');
-  }
-  if (rectFuera && tipoFactura === 'R5') throw badRequest('La R5 rectifica una factura simplificada de la app: para una de fuera, usa R1 a R4.');
-  if (rectFuera && (dto.tipoRectificativa ?? 'I') !== 'I') {
-    throw badRequest('La rectificativa de una factura de fuera de la app va por diferencias: escribe solo lo que cambia (en negativo si baja).');
-  }
-  if (rectFuera && !dto.borrador && !String(dto.motivoRectificacion ?? '').trim()) {
-    throw badRequest('Indica el motivo de la rectificación.', { campo: 'motivoRectificacion' });
+  if (dto.proforma && (hayBloque || dto.facturaOriginalId || rectFuera)) throw badRequest('Una proforma no puede ser una rectificativa.');
+  const bloque: BloqueVenta | null = hayBloque ? leerBloque(dto.rectificativa) : dto.facturaOriginalId || rectFuera ? bloqueDeCamposAntiguos(dto, rectFuera) : null;
+  const esRectificativa = !!bloque;
+  const nuevo = !!bloque && !bloque.legado;
+
+  // Campos de antes: el tipo pedido y las reglas y textos de siempre.
+  let tipoFactura = nuevo ? '' : validarTipoFactura(dto.tipoFactura, esRectificativa ? 'R1' : 'F1');
+  const originalAntigua = bloque?.legado && dto.facturaOriginalId ? (interno.original ?? (await buscarConLineas(dto.companyId, String(dto.facturaOriginalId)))) : null;
+  if (!nuevo) {
+    if (esRectificativa !== tipoFactura.startsWith('R')) {
+      throw badRequest('Una factura rectificativa debe ser de tipo R1 a R5, y solo las rectificativas pueden serlo.');
+    }
+    if (bloque && dto.tipoRectificativa !== undefined && dto.tipoRectificativa !== null && !['S', 'I'].includes(dto.tipoRectificativa)) {
+      throw badRequest('Tipo de rectificativa no válido: S (sustitución) o I (diferencias).');
+    }
+    if (rectFuera && tipoFactura === 'R5') throw badRequest('La R5 rectifica una factura simplificada de la app: para una de fuera, usa R1 a R4.');
+    if (rectFuera && (dto.tipoRectificativa ?? 'I') !== 'I') {
+      throw badRequest('La rectificativa de una factura de fuera de la app va por diferencias: escribe solo lo que cambia (en negativo si baja).');
+    }
+    if (bloque && !dto.borrador && !String(dto.motivoRectificacion ?? '').trim()) {
+      throw badRequest('Indica el motivo de la rectificación.', { campo: 'motivoRectificacion' });
+    }
   }
   // Red de seguridad de VERI*FACTU: antes de crear nada (cliente, numero...).
   // Emitir aqui es la emision directa y la rectificativa emitida al momento; el
@@ -1165,28 +1327,19 @@ async function crear(dto: CrearFacturaIngresoDTO, opciones: { origen?: OrigenFac
   }
 
   const perfil = await perfilEmpresa(dto.companyId);
-  const original: FacturaConLineas | null = esRectificativa ? originalLeida : null;
-  if (dto.facturaOriginalId && !original) throw badRequest('La factura que se rectifica no existe.');
+  if (bloque?.legado && dto.facturaOriginalId && !originalAntigua) throw badRequest('La factura que se rectifica no existe.');
   // Solo se rectifica una factura emitida (ni un borrador ni una proforma: su tipo de cambio no es definitivo).
-  if (original && original.estadoDocumento !== ESTADO_FINAL) {
+  if (originalAntigua && originalAntigua.estadoDocumento !== ESTADO_FINAL) {
     throw badRequest(
-      original.estadoDocumento === ESTADO_PROFORMA
+      originalAntigua.estadoDocumento === ESTADO_PROFORMA
         ? 'Una proforma no se rectifica: mientras esté pendiente, modifícala.'
         : 'Un borrador no se rectifica: modifícalo directamente.',
     );
   }
-  if (original) comprobarHerencia(original, dto);
-  exigirR5SobreSimplificada(tipoFactura, original);
-  const moneda = original ? original.moneda : validarMoneda(dto.moneda ?? perfil.monedaCuenta, perfil.monedasFactura);
-  comprobarMonedaLineas(dto.lineas, moneda, false);
+  if (originalAntigua) exigirR5SobreSimplificada(tipoFactura, originalAntigua);
 
   const fechaEmision = validarFecha(dto.fechaEmision ?? hoy, 'fecha de emisión');
   if (emiteLaApp) exigirFechaNoFutura(fechaEmision, hoy);
-  // Sin forma de pago o sin vencimiento: los de Configuración > Facturación.
-  const ajustes = await leerAjustesFacturacion(dto.companyId);
-  const fechaVencimiento = validarFecha(dto.fechaVencimiento ?? sumarDiasISO(fechaEmision, ajustes.diasVencimiento), 'fecha de vencimiento');
-  if (fechaVencimiento < fechaEmision) throw badRequest('El vencimiento no puede ser anterior a la fecha de emisión.');
-  const fechaOperacion = validarFechaOperacion(dto.fechaOperacion, fechaEmision);
   if (rectFuera) {
     if (rectFuera.fecha > fechaEmision) {
       throw badRequest(`La factura que rectificas (${fechaTexto(rectFuera.fecha)}) no puede ser posterior a la rectificativa.`, { campo: 'rectificaFuera.fecha' });
@@ -1198,6 +1351,40 @@ async function crear(dto: CrearFacturaIngresoDTO, opciones: { origen?: OrigenFac
       });
     }
   }
+
+  // Plan de la rectificativa: originales, cliente, tipo R, sustitucion y fechas.
+  const plan: PlanVenta | null = bloque
+    ? await prepararRectificativaVenta(bloque, {
+        companyId: dto.companyId,
+        fechaEmision,
+        borrador: !!dto.borrador,
+        monedaCuenta: perfil.monedaCuenta,
+        tipoFacturaPedido: nuevo ? (dto.tipoFactura ?? undefined) : tipoFactura,
+        customerId: dto.customer?.id ?? null,
+        customerNuevo: !!dto.customer?.nuevo,
+        excluirId: interno.excluirId,
+      })
+    : null;
+  if (plan && nuevo) tipoFactura = plan.tipoFactura;
+  const original: FacturaConLineas | null = plan?.herencia ?? null;
+  if (original) comprobarHerencia(original, dto, bloque!.forma);
+  const moneda = original ? original.moneda : validarMoneda(dto.moneda ?? perfil.monedaCuenta, perfil.monedasFactura);
+  comprobarMonedaLineas(dto.lineas, moneda, false);
+  // Las cuentas de las facturas que se rectifican valen aunque se hayan desactivado.
+  let lineas = await conCuentasDeVenta(dto.companyId, lineasPedidas, plan?.originalesApp ?? null);
+
+  // Sin forma de pago o sin vencimiento: los de Configuración > Facturación.
+  const ajustes = await leerAjustesFacturacion(dto.companyId);
+  const fechaVencimiento = validarFecha(dto.fechaVencimiento ?? sumarDiasISO(fechaEmision, ajustes.diasVencimiento), 'fecha de vencimiento');
+  if (fechaVencimiento < fechaEmision) throw badRequest('El vencimiento no puede ser anterior a la fecha de emisión.');
+  // Una rectificativa del bloque nuevo no lleva fecha de la operacion: la pone el servidor si una R4 sube el IVA.
+  if (nuevo && hayValor(dto.fechaOperacion)) {
+    throw badRequest('Una rectificativa no lleva fecha de la operación: va en el periodo de su fecha de emisión. Si la corrección sube el IVA por un error, la app la lleva sola al periodo de la factura que rectifica.', {
+      codigo: 'SIN_FECHA_OPERACION',
+      campo: 'fechaOperacion',
+    });
+  }
+  let fechaOperacion = validarFechaOperacion(dto.fechaOperacion, fechaEmision);
   // Una factura emitida (o registrada desde el lector) lleva asiento en su fecha:
   // no puede caer en un mes bloqueado ni en un ejercicio cerrado. Se comprueba
   // antes de numerarla, para no gastar un numero de la serie.
@@ -1216,11 +1403,12 @@ async function crear(dto: CrearFacturaIngresoDTO, opciones: { origen?: OrigenFac
   const fueraPrevio = emitida ? await devengoEnPeriodoDeFuera(dto.companyId, devengoPrevio, fechaEmision) : null;
   if (fueraPrevio && dto.confirmaDevengoFuera !== true) throw errorDevengoFuera(devengoPrevio, fueraPrevio);
   // Cliente y serie despues de las fechas: una factura rechazada no deja nada creado.
-  const cliente = await resolverCliente(dto.companyId, dto.customer);
+  // Con una original de la app (o una partida de 2026), el cliente es el suyo.
+  const cliente = await resolverCliente(dto.companyId, plan?.customerId ? { id: plan.customerId } : dto.customer);
   const serie = dto.proforma
-    ? await resolverSerieProforma(dto.companyId, dto.serie)
-    : await resolverSerie(dto.companyId, dto.serie, esRectificativa, origen);
-  if (emiteLaApp) exigirSerieValidaAeat(serie);
+    ? { codigo: await resolverSerieProforma(dto.companyId, dto.serie) }
+    : await resolverSerie(dto.companyId, dto.serie, { esRectificativa, tipoFactura, origen });
+  if (emiteLaApp) exigirSerieValidaAeat(serie.codigo);
 
   // Quien revisa la fiscalidad lo decide el servidor, nunca el cuerpo.
   const modo: ModoFiscal = original
@@ -1238,16 +1426,24 @@ async function crear(dto: CrearFacturaIngresoDTO, opciones: { origen?: OrigenFac
       tipoOperacion: dto.tipoOperacion,
       causaExencion: dto.causaExencion,
       referenciaLegal: dto.referenciaLegal,
-      tipoFactura,
+      tipoFactura: tipoFactura as TipoFactura,
       lineas,
       ...(original ? { heredado: herencia(original) } : {}),
     },
     modo,
   );
-  // Las lineas espejo de una rectificativa total se copian tal cual de la original.
-  if (!interno.importes) lineas = conFiscalidad(lineas, fiscal);
+  // Rectificativa total: las lineas espejo se copian tal cual de la original
+  // (las de crearRectificativa o, por diferencias, unas que lo son exactamente).
+  let espejo = interno.importes ?? null;
+  if (!espejo) {
+    lineas = conFiscalidad(lineas, fiscal);
+    if (plan && original && bloque!.forma === 'I' && plan.filas.length === 1 && esEspejoDe(lineas, original)) {
+      const copia = lineasEspejo(importesGuardados(original));
+      espejo = { ...copia, lineas: copia.lineas.map((l, i) => ({ ...l, descripcion: lineas[i].descripcion })) };
+    }
+  }
   // Devengo (fija el tipo de cambio, art. 79.Once LIVA): el de la operacion o el de emision.
-  const devengo = fechaDevengoVenta({ tipoOperacion: fiscal.tipoOperacion, fechaOperacion, fechaEmision });
+  let devengo = fechaDevengoVenta({ tipoOperacion: fiscal.tipoOperacion, fechaOperacion, fechaEmision });
 
   // Tipo de cambio, ANTES de cualquier transaccion. Emitir exige el definitivo.
   const emite = !dto.proforma && !dto.borrador;
@@ -1256,27 +1452,48 @@ async function crear(dto: CrearFacturaIngresoDTO, opciones: { origen?: OrigenFac
     : await resolverTipoCambio({ monedaCuenta: perfil.monedaCuenta, moneda, devengo, manual: dto.tipoCambio, definitivo: emite });
   if (emite && tipo.tipoCambio === null) throw badRequest(mensajeSinTipo(moneda, devengo));
 
+  // Las rectificativas redondean con signo (simetrico): -0,525 da -0,53, como la original da 0,53.
   const importes =
-    interno.importes ?? calcularImportesFactura(lineas, { tipoCambio: tipo.tipoCambio, mismaMoneda: moneda === perfil.monedaCuenta });
-  // Rectificativa de una factura de la app: ni de otra rectificativa ni por
-  // encima de lo que queda de la original (se repite dentro de la transaccion).
-  const rectificable = original
-    ? (db: Db, bloquear: boolean) =>
-        exigirRectificableHasta(
-          db,
-          dto.companyId,
-          original,
-          { tipoRectificativa: dto.tipoRectificativa ?? 'I', baseTotal: importes.cuenta.baseTotal, totalFactura: importes.cuenta.totalFactura },
-          bloquear,
-        )
+    espejo ?? calcularImportesFactura(lineas, { tipoCambio: tipo.tipoCambio, mismaMoneda: moneda === perfil.monedaCuenta, simetrico: esRectificativa });
+
+  // Cierre del plan con los importes: la parte de cada original, el signo, los
+  // plazos y la fecha de la operacion de una R4 que sube el IVA.
+  const cierre = plan
+    ? cerrarPlan(
+        plan,
+        {
+          base: importes.cuenta.baseTotal,
+          cuota: importes.cuenta.ivaTotal,
+          retencion: importes.cuenta.retencionTotal,
+          total: importes.cuenta.totalFactura,
+          lineas: importes.lineas.map((l) => ({
+            tipoIva: l.tipoIva,
+            cuenta: l.cuentaContable ?? null,
+            baseLine: l.cuenta.baseLine,
+            ivaImporte: l.cuenta.ivaImporte,
+            retencionImporte: l.cuenta.retencionImporte,
+          })),
+        },
+        { fechaEmision, clienteConNif: !!cliente.fiscal.nifCif?.trim() },
+      )
     : null;
-  if (rectificable) await rectificable(prisma, false);
+  let fueraR4: { ejercicio: number; periodo: string } | null = null;
+  if (cierre?.fechaOperacion) {
+    fechaOperacion = cierre.fechaOperacion;
+    devengo = fechaDevengoVenta({ tipoOperacion: fiscal.tipoOperacion, fechaOperacion, fechaEmision });
+    // El periodo de la original lo presenta la gestoria: se emite si se confirma (409 DEVENGO_FUERA_APP).
+    fueraR4 = emitida ? await devengoEnPeriodoDeFuera(dto.companyId, devengo, fechaEmision) : null;
+    if (fueraR4 && dto.confirmaDevengoFuera !== true) throw errorDevengoFuera(devengo, fueraR4);
+  }
+  // Rectificativa por diferencias: no por encima de lo que queda de cada original (se repite dentro de la transaccion).
+  if (cierre && bloque!.forma === 'I') await exigirLimites(prisma, dto.companyId, plan!.originalesApp, partesDe(cierre.enlaces), interno.excluirId);
   if (emiteLaApp) exigirLimiteSimplificada(tipoFactura, perfil, importes.cuenta);
-  const comunes = {
+
+  const comunes: Prisma.IncomeInvoiceUncheckedCreateInput = {
     companyId: dto.companyId,
     origen,
     customerId: cliente.id,
-    serie,
+    serie: serie.codigo,
     fechaEmision,
     fechaVencimiento,
     fechaOperacion,
@@ -1293,17 +1510,42 @@ async function crear(dto: CrearFacturaIngresoDTO, opciones: { origen?: OrigenFac
     plantillaId: dto.plantillaId || 'default',
     observaciones: dto.observaciones,
     esRectificativa,
-    facturaOriginalId: dto.facturaOriginalId,
-    rectificaFueraNumero: rectFuera?.numero ?? null,
-    rectificaFueraFecha: rectFuera?.fecha ?? null,
-    tipoRectificativa: esRectificativa ? (dto.tipoRectificativa ?? 'I') : null,
-    motivoRectificacion: esRectificativa ? dto.motivoRectificacion : null,
+    // Con una sola original, tambien en los campos de antes (Carmen, la cartera y el PDF los leen).
+    ...(cierre ? columnasCompatibles(cierre.enlaces) : { facturaOriginalId: null, rectificaFueraNumero: null, rectificaFueraFecha: null }),
+    tipoRectificativa: bloque ? bloque.forma : null,
+    motivoRectificacion: bloque ? bloque.explicacion || null : null,
+    causaRectificacion: bloque?.motivo ?? null,
     lineas: { create: lineasACrear(importes) },
   };
   // Confirmada la venta con la operacion en un periodo de la gestoria: el aviso queda en la respuesta.
-  const fuera = fueraPrevio ? await devengoEnPeriodoDeFuera(dto.companyId, devengo, fechaEmision) : null;
-  const avisosFiscales = fuera ? [...(fiscal.avisos ?? []), { codigo: 'DEVENGO_FUERA_APP', mensaje: textoDevengoFuera(devengo, fuera) }] : fiscal.avisos;
-  const ctx: ContextoRespuesta = { monedaCuenta: perfil.monedaCuenta, avisosFiscales, avisoTipoCambio: tipo.aviso };
+  const fuera = fueraR4 ?? (fueraPrevio ? await devengoEnPeriodoDeFuera(dto.companyId, devengo, fechaEmision) : null);
+  const avisosFiscales: AvisoFiscal[] = [
+    ...(fiscal.avisos ?? []),
+    ...(fuera ? [{ codigo: 'DEVENGO_FUERA_APP', mensaje: textoDevengoFuera(devengo, fuera) }] : []),
+    ...(serie.aviso ? [serie.aviso] : []),
+    ...(cierre?.avisos ?? []),
+  ];
+  return {
+    comunes,
+    ctx: { monedaCuenta: perfil.monedaCuenta, avisosFiscales, avisoTipoCambio: tipo.aviso },
+    serie: serie.codigo,
+    fechaEmision,
+    fechaVencimiento,
+    rect: cierre ? { forma: bloque!.forma, enlaces: cierre.enlaces } : null,
+  };
+}
+
+/**
+ * Crea una factura (borrador, proforma, emitida o rectificativa). Los enlaces
+ * de una rectificativa se guardan en la misma transaccion que la factura, en
+ * los tres caminos (borrador, lector y emision directa).
+ */
+async function crear(dto: CrearFacturaIngresoDTO, opciones: { origen?: OrigenFactura; numeroLeido?: string | null }, interno: Interno): Promise<IncomeInvoiceResp> {
+  const a = await prepararAlta(dto, opciones, interno);
+  const { comunes, ctx, serie, fechaEmision, fechaVencimiento, rect } = a;
+  const enlazar = async (tx: Tx, id: string) => {
+    if (rect) await guardarEnlacesVenta(tx, dto.companyId, id, rect.enlaces);
+  };
 
   // Proforma: numero de su serie al crearla (sin huecos), sin efectos fiscales.
   if (dto.proforma) {
@@ -1320,20 +1562,24 @@ async function crear(dto: CrearFacturaIngresoDTO, opciones: { origen?: OrigenFac
         include: INCLUIR,
       });
     });
-    return aRespuesta(proforma, ctx);
+    return respuesta(proforma, ctx);
   }
 
   // Borrador: sin numero, no cuenta para nada hasta que se finalice.
   if (dto.borrador) {
-    const factura = await prisma.incomeInvoice.create({
-      data: { ...comunes, estadoDocumento: ESTADO_BORRADOR, estado: 'DRAFT' },
-      include: INCLUIR,
+    const factura = await transaccion(async (tx) => {
+      const f = await tx.incomeInvoice.create({
+        data: { ...comunes, estadoDocumento: ESTADO_BORRADOR, estado: 'DRAFT' },
+        include: INCLUIR,
+      });
+      await enlazar(tx, f.id);
+      return f;
     });
-    return aRespuesta(factura, ctx);
+    return respuesta(factura, ctx);
   }
 
   // Al emitir se copian el IBAN y el pie de ahora: el PDF ya no cambia con los ajustes.
-  const copia = await copiaAlEmitir(dto.companyId, moneda);
+  const copia = await copiaAlEmitir(dto.companyId, String(comunes.moneda));
 
   // Factura emitida fuera de la app (lector): conserva su numero original. La
   // comprobacion, el alta y el contador de su serie (historica) van juntos.
@@ -1344,12 +1590,12 @@ async function crear(dto: CrearFacturaIngresoDTO, opciones: { origen?: OrigenFac
     const numero = dto.numero;
     const numeroCompleto = numeroCompletoLeido(opciones.numeroLeido, serie) ?? `${serie}-${numero}`;
     const factura = await transaccion(async (tx) => {
-      if (rectificable) await rectificable(tx, true);
+      if (rect) await exigirRectificablesEnTx(tx, dto.companyId, rect);
       const existe = await tx.incomeInvoice.findFirst({
         where: { companyId: dto.companyId, OR: [{ serie, numero }, { numeroCompleto }] },
         select: { numeroCompleto: true },
       });
-      if (existe) throw badRequest(`La factura ${existe.numeroCompleto ?? numeroCompleto} ya existe.`);
+      if (existe) throw badRequest(`La factura ${existe.numeroCompleto ?? numeroCompleto} ya existe.`, { codigo: 'FACTURA_DUPLICADA', campo: 'numero' });
       const creada = await tx.incomeInvoice.create({
         data: {
           ...comunes,
@@ -1362,20 +1608,21 @@ async function crear(dto: CrearFacturaIngresoDTO, opciones: { origen?: OrigenFac
         },
         include: INCLUIR,
       });
+      await enlazar(tx, creada.id);
       await tx.invoiceSeries.updateMany({
         where: { companyId: dto.companyId, codigo: serie, ultimoNumero: { lt: numero } },
         data: { ultimoNumero: numero },
       });
       return creada;
     });
-    return aRespuesta(factura, ctx);
+    return respuesta(factura, ctx);
   }
 
   // Emision directa: numero de la serie en la misma transaccion.
   const factura = await transaccion(async (tx) => {
-    if (rectificable) await rectificable(tx, true);
+    if (rect) await exigirRectificablesEnTx(tx, dto.companyId, rect);
     const numero = await asignarNumero(tx, dto.companyId, serie, fechaEmision);
-    return tx.incomeInvoice.create({
+    const creada = await tx.incomeInvoice.create({
       data: {
         ...comunes,
         ...copia,
@@ -1387,8 +1634,77 @@ async function crear(dto: CrearFacturaIngresoDTO, opciones: { origen?: OrigenFac
       },
       include: INCLUIR,
     });
+    await enlazar(tx, creada.id);
+    return creada;
   });
-  return aRespuesta(factura, ctx);
+  return respuesta(factura, ctx);
+}
+
+/** Un bloque guardado, en la forma del cuerpo (para volver a pasarlo por leerBloque al corregir el borrador). */
+function bloqueApi(b: BloqueVenta): Record<string, unknown> {
+  return {
+    ticket: b.ticket,
+    forma: b.forma,
+    motivo: b.motivo,
+    explicacion: b.explicacion,
+    ...(b.periodo ? { periodo: b.periodo } : { originales: b.originales }),
+  };
+}
+
+/**
+ * Corrige el borrador de una rectificativa con su bloque: se vuelve a
+ * comprobar entero, como un alta (prepararAlta), y se cambian en la misma
+ * transaccion la cabecera, las lineas y los enlaces. Lo que no llega en el
+ * cuerpo se toma del borrador; la moneda, el tipo de cambio y el tipo de
+ * operacion solo sin original de la app (con ella se heredan).
+ */
+async function actualizarBorradorRectificativa(actual: FacturaConLineas, dto: ActualizarBorradorDTO, rectificativa: unknown): Promise<IncomeInvoiceResp> {
+  const companyId = actual.companyId;
+  const r = (rectificativa && typeof rectificativa === 'object' ? rectificativa : {}) as { originales?: unknown };
+  const conApp = Array.isArray(r.originales) && r.originales.some((o) => !!o && typeof o === 'object' && typeof (o as { id?: unknown }).id === 'string');
+  const deActual = <T,>(v: T | undefined, a: T): T | undefined => (v !== undefined ? v : conApp ? undefined : a);
+  const merged: CrearFacturaIngresoDTO = {
+    companyId,
+    // Sin cliente en el cuerpo y con original de la app: el de la original (lo pone el plan).
+    customer: dto.customer ?? (conApp ? {} : { id: actual.customerId }),
+    serie: dto.serie ?? actual.serie,
+    fechaEmision: dto.fechaEmision ?? actual.fechaEmision,
+    fechaVencimiento: dto.fechaVencimiento ?? actual.fechaVencimiento,
+    lineas: dto.lineas ?? lineasDocGuardadas(actual).map(({ cuentaContable, ...l }) => ({ ...l, cuenta: cuentaContable ?? null })),
+    plantillaId: dto.plantillaId ?? actual.plantillaId,
+    observaciones: dto.observaciones ?? actual.observaciones ?? undefined,
+    borrador: true,
+    ...(dto.tipoFactura !== undefined ? { tipoFactura: dto.tipoFactura } : {}),
+    formaPago: (dto.formaPago ?? actual.formaPago) as FormaPago,
+    moneda: deActual(dto.moneda, actual.moneda),
+    tipoCambio: deActual(dto.tipoCambio, actual.fuenteTipoCambio === 'MANUAL' ? actual.tipoCambio : undefined),
+    tipoOperacion: deActual(dto.tipoOperacion, actual.tipoOperacion),
+    causaExencion: deActual(dto.causaExencion, actual.causaExencion),
+    referenciaLegal: deActual(dto.referenciaLegal, actual.referenciaLegal),
+    fechaOperacion: dto.fechaOperacion,
+    rectificativa,
+  };
+  const a = await prepararAlta(merged, { origen: (actual.origen as OrigenFactura | null) ?? 'pantalla' }, { excluirId: actual.id });
+  const { companyId: _empresa, origen: _origen, ...datos } = a.comunes;
+  void _empresa;
+  void _origen;
+  const factura = await transaccion(async (tx) => {
+    // Solo si nadie la ha emitido ni cambiado desde que se leyo.
+    const libre = await tx.incomeInvoice.updateMany({
+      where: { id: actual.id, companyId, estadoDocumento: ESTADO_BORRADOR, updatedAt: actual.updatedAt },
+      data: { updatedAt: new Date() },
+    });
+    if (libre.count !== 1) throw badRequest('La factura ha cambiado (o se ha emitido) mientras se guardaba: vuelve a abrirla y repite el cambio.');
+    await tx.incomeInvoiceLine.deleteMany({ where: { invoiceId: actual.id } });
+    const f = await tx.incomeInvoice.update({
+      where: { id: actual.id },
+      data: { ...(datos as Prisma.IncomeInvoiceUncheckedUpdateInput), estadoDocumento: ESTADO_BORRADOR, estado: 'DRAFT' },
+      include: INCLUIR,
+    });
+    await guardarEnlacesVenta(tx, companyId, actual.id, a.rect?.enlaces ?? []);
+    return f;
+  });
+  return respuesta(factura, a.ctx);
 }
 
 export const incomeInvoicesService = {
@@ -1417,11 +1733,26 @@ export const incomeInvoicesService = {
     return crear(limpio, { origen: opciones.origen, ...(opciones.origen === 'lector' ? { numeroLeido: opciones.numeroLeido } : {}) }, {});
   },
 
-  /** Modifica un borrador. Una factura emitida no se toca. */
+  /**
+   * Modifica un borrador. Una factura emitida no se toca. El borrador de una
+   * rectificativa con el bloque `rectificativa` (o hecho con el bloque nuevo)
+   * se vuelve a comprobar entero y cambia lineas y enlaces en la misma
+   * transaccion. Un borrador de factura no pasa a rectificativa ni al reves.
+   */
   async actualizarBorrador(companyId: string, id: string, dto: ActualizarBorradorDTO): Promise<IncomeInvoiceResp> {
     const actual = await cargar(companyId, id);
     exigirEditable(actual, 'modificar');
     exigirNoFinal(actual);
+    const conBloque = dto.rectificativa !== undefined && dto.rectificativa !== null;
+    if (conBloque && !actual.esRectificativa) {
+      throw badRequest('Un borrador de factura no se convierte en rectificativa: crea la rectificativa desde «Nueva factura».', {
+        codigo: 'NO_ES_RECTIFICATIVA',
+        campo: 'rectificativa',
+      });
+    }
+    if (actual.esRectificativa && actual.estadoDocumento === ESTADO_BORRADOR && (conBloque || actual.causaRectificacion)) {
+      return actualizarBorradorRectificativa(actual, dto, conBloque ? dto.rectificativa : bloqueApi(await bloqueGuardado(actual)));
+    }
     const perfil = await perfilEmpresa(companyId);
 
     const data: Prisma.IncomeInvoiceUncheckedUpdateInput = {};
@@ -1437,7 +1768,7 @@ export const incomeInvoicesService = {
         throw badRequest('Una proforma ya numerada no cambia de serie.');
       }
     } else if (dto.serie !== undefined) {
-      data.serie = await resolverSerie(companyId, dto.serie, actual.esRectificativa);
+      data.serie = (await resolverSerie(companyId, dto.serie, { esRectificativa: actual.esRectificativa, tipoFactura: dto.tipoFactura ?? actual.tipoFactura })).codigo;
     }
     let tipoFactura = actual.tipoFactura;
     if (dto.tipoFactura !== undefined) {
@@ -1536,7 +1867,7 @@ export const incomeInvoicesService = {
       }
       if (recalcular) {
         exigirNoFinal(actual);
-        const importes = calcularImportesFactura(lineas, { tipoCambio, mismaMoneda: misma });
+        const importes = calcularImportesFactura(lineas, { tipoCambio, mismaMoneda: misma, simetrico: actual.esRectificativa });
         await tx.incomeInvoiceLine.deleteMany({ where: { invoiceId: id } });
         Object.assign(data, cabecera(importes), { lineas: { create: lineasACrear(importes) } });
       }
@@ -1689,7 +2020,9 @@ export const incomeInvoicesService = {
     const perfil = await exigirDatosEmisor(companyId);
     if (actual.lineas.length === 0) throw badRequest('La factura no tiene líneas.');
     if (actual.esRectificativa && !actual.motivoRectificacion?.trim()) {
-      throw badRequest('Indica el motivo de la rectificación antes de emitirla.');
+      throw actual.causaRectificacion
+        ? badRequest('Explica en una frase por qué rectificas la factura: es obligatorio y sale en el PDF.', { codigo: 'FALTA_EXPLICACION', campo: 'rectificativa.explicacion' })
+        : badRequest('Indica el motivo de la rectificación antes de emitirla.');
     }
 
     const fechaEmision = validarFecha(opciones.fechaEmision ?? hoy, 'fecha de emisión');
@@ -1701,8 +2034,22 @@ export const incomeInvoicesService = {
     const fechaVencimiento = sumarDias(fechaEmision, plazoDias(actual));
     const fechaOperacion = actual.fechaOperacion && actual.fechaOperacion !== fechaEmision ? actual.fechaOperacion : null;
 
+    // Rectificativa: se vuelve a comprobar su bloque (originales, cliente, tipo,
+    // sustitucion y fechas) con la fecha de emision definitiva, y su serie.
+    const planRect = actual.esRectificativa
+      ? await prepararRectificativaVenta(await bloqueGuardado(actual), {
+          companyId,
+          fechaEmision,
+          borrador: false,
+          monedaCuenta: perfil.monedaCuenta,
+          tipoFacturaPedido: actual.tipoFactura,
+          customerId: actual.customerId,
+          excluirId: id,
+        })
+      : null;
+    if (planRect && !planRect.bloque.legado) await resolverSerie(companyId, actual.serie, { esRectificativa: true, tipoFactura: actual.tipoFactura });
     // Tipo de operacion definitivo, con el cliente y la empresa de ahora.
-    const original = actual.esRectificativa && actual.facturaOriginalId ? await buscarConLineas(companyId, actual.facturaOriginalId) : null;
+    const original = planRect?.herencia ?? null;
     // P9: una R5 solo rectifica una F2, aunque el tipo se cambiara en el borrador.
     exigirR5SobreSimplificada(actual.tipoFactura, original);
     let lineas = lineasDocGuardadas(actual);
@@ -1757,23 +2104,33 @@ export const incomeInvoicesService = {
     const heredado = !misma && (actual.fuenteTipoCambio === 'HEREDADO' || !!original);
     const recalcular = normaliza || (!misma && !heredado);
     exigirNoFinal(actual);
-    const importes = recalcular ? calcularImportesFactura(lineas, { tipoCambio: tipo.tipoCambio, mismaMoneda: misma }) : null;
+    const importes = recalcular ? calcularImportesFactura(lineas, { tipoCambio: tipo.tipoCambio, mismaMoneda: misma, simetrico: actual.esRectificativa }) : null;
     exigirLimiteSimplificada(actual.tipoFactura, perfil, importes ? importes.cuenta : actual);
     // IBAN y pie de ahora, copiados en la factura: su PDF ya no cambia con los ajustes.
     const copia = await copiaAlEmitir(companyId, actual.moneda);
 
-    // Rectificativa: ni de otra rectificativa ni por encima de lo que queda de la original.
-    const nuevaRect = original
-      ? {
-          tipoRectificativa: actual.tipoRectificativa ?? 'I',
-          baseTotal: importes ? importes.cuenta.baseTotal : actual.baseTotal,
-          totalFactura: importes ? importes.cuenta.totalFactura : actual.totalFactura,
-          excluirId: id,
-        }
+    // Rectificativa: la parte de cada original, ni de otra rectificativa ni por
+    // encima de lo que queda de cada original (se repite en la transaccion).
+    const cuenta = importes ? importes.cuenta : { baseTotal: actual.baseTotal, ivaTotal: actual.ivaTotal, retencionTotal: actual.retencionTotal, totalFactura: actual.totalFactura };
+    const cierre = planRect
+      ? cerrarPlan(
+          planRect,
+          {
+            base: cuenta.baseTotal,
+            cuota: cuenta.ivaTotal,
+            retencion: cuenta.retencionTotal,
+            total: cuenta.totalFactura,
+            lineas: importes
+              ? importes.lineas.map((l) => ({ tipoIva: l.tipoIva, cuenta: l.cuentaContable ?? null, baseLine: l.cuenta.baseLine, ivaImporte: l.cuenta.ivaImporte, retencionImporte: l.cuenta.retencionImporte }))
+              : lineasImportesDe(actual),
+          },
+          { fechaEmision, clienteConNif: !!actual.customer.nifCif?.trim() },
+        )
       : null;
-    if (original && nuevaRect) await exigirRectificableHasta(prisma, companyId, original, nuevaRect, false);
+    const rect = cierre ? { forma: planRect!.bloque.forma, enlaces: cierre.enlaces } : null;
+    if (rect && rect.forma === 'I') await exigirLimites(prisma, companyId, planRect!.originalesApp, partesDe(rect.enlaces), id);
     const factura = await transaccion(async (tx) => {
-      if (original && nuevaRect) await exigirRectificableHasta(tx, companyId, original, nuevaRect, true);
+      if (rect) await exigirRectificablesEnTx(tx, companyId, rect, id);
       const numero = await asignarNumero(tx, companyId, actual.serie, fechaEmision);
       // Solo se finaliza si sigue en borrador y sin cambios desde que se leyo (otra
       // peticion podria haberla emitido o modificado: moneda, lineas, tipo...).
@@ -1817,10 +2174,15 @@ export const incomeInvoicesService = {
           await tx.incomeInvoiceLine.update({ where: { id: actual.lineas[i].id }, data: importesLinea(importes.lineas[i]) });
         }
       }
+      if (rect) await guardarEnlacesVenta(tx, companyId, id, rect.enlaces);
       return tx.incomeInvoice.findUniqueOrThrow({ where: { id }, include: INCLUIR });
     });
-    const avisosFiscales = fuera ? [...(fiscal.avisos ?? []), { codigo: 'DEVENGO_FUERA_APP', mensaje: textoDevengoFuera(devengo, fuera) }] : fiscal.avisos;
-    return aRespuesta(factura, { monedaCuenta: perfil.monedaCuenta, avisosFiscales, avisoTipoCambio: tipo.aviso });
+    const avisosFiscales = [
+      ...(fiscal.avisos ?? []),
+      ...(fuera ? [{ codigo: 'DEVENGO_FUERA_APP', mensaje: textoDevengoFuera(devengo, fuera) }] : []),
+      ...(cierre?.avisos ?? []),
+    ];
+    return respuesta(factura, { monedaCuenta: perfil.monedaCuenta, avisosFiscales, avisoTipoCambio: tipo.aviso });
   },
 
   /**
@@ -1951,29 +2313,28 @@ export const incomeInvoicesService = {
    */
   async obtenerPorId(companyId: string, id: string): Promise<IncomeInvoiceResp> {
     const f = await cargar(companyId, id);
-    const resp = aRespuesta(f, { monedaCuenta: (await perfilEmpresa(companyId)).monedaCuenta });
+    const resp = await respuesta(f, { monedaCuenta: (await perfilEmpresa(companyId)).monedaCuenta });
     if (f.estadoDocumento === ESTADO_PROFORMA && f.estado === 'ACEPTADA') {
       const generada = await prisma.incomeInvoice.findFirst({ where: { companyId, proformaId: f.id }, select: { id: true } });
       if (generada) resp.facturaGeneradaId = generada.id;
     }
     if (f.estadoDocumento === ESTADO_FINAL) {
-      const [rects, asiento] = await Promise.all([
-        prisma.incomeInvoice.findMany({
-          where: { companyId, facturaOriginalId: f.id, estadoDocumento: ESTADO_FINAL },
-          select: { id: true, numeroCompleto: true, totalFactura: true, tipoRectificativa: true },
-          orderBy: { numero: 'asc' },
-        }),
+      const [rects, restante, asiento] = await Promise.all([
+        // Las que la rectifican: por sus enlaces (tambien con varias originales) y por facturaOriginalId.
+        rectificadaPorDe(companyId, f.id),
+        restantePorOriginal(prisma, companyId, [f]),
         // El de la factura, no los de sus cobros (TESORERIA tambien lleva invoiceId).
         prisma.journalEntry.findFirst({
           where: { companyId, invoiceId: f.id, origen: { not: 'TESORERIA' }, estado: { in: ['POSTED', 'PENDING_REVIEW', 'DRAFT'] } },
           select: { id: true, numeroAsiento: true, estado: true },
         }),
       ]);
-      resp.rectificadaPor = rects.map((r) => ({ id: r.id, numeroCompleto: r.numeroCompleto, totalFactura: Number(r.totalFactura), tipoRectificativa: r.tipoRectificativa }));
-      const total = aCentimos(Number(f.totalFactura));
-      const neto = total + rects.filter((r) => r.tipoRectificativa !== 'S').reduce((a, r) => a + aCentimos(Number(r.totalFactura)), 0);
-      resp.anuladaPorCompleto = !f.esRectificativa && total !== 0 && neto === 0;
+      resp.rectificadaPor = rects;
+      // Anulada entera: lo que queda por rectificar (la original o su sustituta, mas sus abonos) es cero.
+      resp.anuladaPorCompleto = !f.esRectificativa && aCentimos(Number(f.totalFactura)) !== 0 && aCentimos(restante.get(f.id)?.total ?? 1) === 0;
       resp.asiento = asiento ? { id: asiento.id, numero: asiento.numeroAsiento ?? null, estado: String(asiento.estado) } : null;
+      // Un abono: lo que no han absorbido sus originales y se puede devolver al cliente.
+      if (f.esRectificativa && aCentimos(Number(f.totalFactura)) < 0) resp.aFavor = (await aFavorDeAbonos(prisma, companyId, [f.id])).get(f.id) ?? 0;
     }
     return resp;
   },
@@ -2054,7 +2415,7 @@ export const incomeInvoicesService = {
     if (tipoRectificativa === 'S' && !opciones.lineas?.length) {
       throw badRequest('Una rectificativa por sustitución necesita las líneas correctas de la factura.');
     }
-    comprobarHerencia(original, { moneda: opciones.moneda, tipoCambio: opciones.tipoCambio, tipoOperacion: opciones.tipoOperacion });
+    comprobarHerencia(original, { moneda: opciones.moneda, tipoCambio: opciones.tipoCambio, tipoOperacion: opciones.tipoOperacion }, tipoRectificativa);
 
     const interno: Interno = { original };
     let lineas: CrearLineaIngresoDTO[];
