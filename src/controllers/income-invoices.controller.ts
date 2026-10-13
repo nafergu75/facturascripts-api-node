@@ -28,6 +28,8 @@ function metaRectificativa(f: IncomeInvoiceResp) {
       motivo: r.motivo,
       originales: r.originales.map((o) => (o.id ? { id: o.id, numero: o.numeroCompleto } : { numero: o.numeroCompleto, fecha: o.fecha, partidaId: o.partidaId })),
       periodo: r.periodo,
+      // R4 que sube el IVA de un 303 ya presentado, emitida con la confirmacion: queda la marca (hay que presentar una complementaria).
+      ...(f.avisosFiscales?.some((a) => a.codigo === 'RECTIFICAR_303') ? { rectificar303: { fechaIva: f.fechaOperacion ?? null } } : {}),
     },
   };
 }
