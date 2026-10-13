@@ -7,6 +7,7 @@ import { invoiceExtractorService, type InvoiceExtraction } from './invoice-extra
 import { archivarVentaSinRomper } from './archivoFacturas.service';
 import { accountingHooksService } from './accounting-hooks.service';
 import { comprobarRevisionVenta, MENSAJE_FALTA_RECTIFICATIVA, vincularLectura } from './lectura/confirmar';
+import { MENSAJE_FALTA_NIF_CLIENTE } from './lectura/validaciones';
 import { cuentaPorTipoIva, esMotivoVenta, MOTIVO_INFO } from '../domain/rectificativa-venta.model';
 import { registrarAuditoria } from './auditoria.service';
 import { clientePorNif, errorTerceroNoDadoDeAlta } from './lectura/terceros-lector';
@@ -59,8 +60,8 @@ export interface IngresoExtraido {
 /** Cuenta de ventas por defecto del PGC (700 Ventas de mercaderias / prestacion de servicios). */
 const CUENTA_VENTAS = '700';
 
-/** Error de la lectura sin NIF del cliente (tambien lo da la validacion NIF_RECEPTOR). */
-export const MENSAJE_FALTA_NIF_CLIENTE = 'Falta el NIF del cliente: es obligatorio en una factura de ingreso.';
+/** Error de la lectura sin NIF del cliente (tambien lo da la validacion NIF_RECEPTOR, con un cliente de España). */
+export { MENSAJE_FALTA_NIF_CLIENTE };
 
 const limpiarNif = (v: string | null | undefined): string | null => {
   if (!v) return null;
@@ -72,10 +73,15 @@ const limpiarNif = (v: string | null | undefined): string | null => {
  * Lo que muestra la pantalla. `direccion`: la del cliente leida con la lectura
  * nueva (lectura/direccion.ts); sin ella (extractor de siempre), la direccion
  * que trae la extraccion, entera en la calle.
+ *
+ * `nifYaValidado`: la extraccion viene de una lectura (/lecturas), cuyas
+ * validaciones ya dicen si falta el NIF del cliente segun de donde es (error
+ * con un cliente de España; «revisar» con uno de fuera, que puede no tenerlo).
+ * Sin ella (extractor de siempre), falta el NIF es siempre un error.
  */
-export function aIngresoExtraido(documentId: string, e: InvoiceExtraction, direccion?: DireccionFicha | null): IngresoExtraido {
+export function aIngresoExtraido(documentId: string, e: InvoiceExtraction, direccion?: DireccionFicha | null, opciones: { nifYaValidado?: boolean } = {}): IngresoExtraido {
   const errores = [...e.validation.errors];
-  if (!limpiarNif(e.customer.tax_id)) errores.push(MENSAJE_FALTA_NIF_CLIENTE);
+  if (!opciones.nifYaValidado && !limpiarNif(e.customer.tax_id)) errores.push(MENSAJE_FALTA_NIF_CLIENTE);
   if (!e.invoice.number) errores.push('No se ha podido leer el numero de la factura.');
   if (e.amounts.bases.length === 0) errores.push('No se ha podido leer ninguna base imponible.');
   if (e.amounts.withholdings.length > 1) errores.push('La factura tiene varias retenciones; registrala a mano.');
@@ -453,14 +459,19 @@ export const ingresosExtractorService = {
       ? (r0!.originales as unknown[]).map((o) => (o && typeof o === 'object' ? (o as { id?: unknown }).id : null)).filter((x): x is string => typeof x === 'string' && !!x)
       : [];
     const conOriginalApp = idsOriginales.length > 0 && (await prisma.incomeInvoice.count({ where: { companyId, id: { in: idsOriginales } } })) > 0;
-    const ignorados = await comprobarRevisionVenta(companyId, documentId, opciones.revisado === true, elegido || conOriginalApp ? ['NIF_RECEPTOR'] : [], {
-      bloque: conBloque,
-      noEsRectificativa,
-    });
+    const { ignoradas: ignorados, deLectura } = await comprobarRevisionVenta(
+      companyId,
+      documentId,
+      opciones.revisado === true,
+      elegido || conOriginalApp ? ['NIF_RECEPTOR'] : [],
+      { bloque: conBloque, noEsRectificativa },
+    );
     // Documento del lector de siempre con importes en negativo: tambien hace falta decir que rectifica.
     if (!conBloque && !noEsRectificativa && importesLeidosNegativos(e)) throw badRequest(MENSAJE_FALTA_RECTIFICATIVA, { codigo: 'FALTA_RECTIFICATIVA', campo: 'rectificativa' });
 
-    const resumen = aIngresoExtraido(documentId, e);
+    // Leida con /lecturas: que falte el NIF del cliente ya lo han dicho sus validaciones (un
+    // cliente de fuera de la UE puede no tenerlo); sin cliente, el 400 TERCERO_NO_DADO_DE_ALTA de abajo.
+    const resumen = aIngresoExtraido(documentId, e, undefined, { nifYaValidado: deLectura });
     // La cuenta de cada linea, si se cambio en la pantalla (no cambia importes).
     const cuentas = cuentasElegidas(opciones.lineas, e.amounts.bases.length);
     const leidas = lineasDesdeExtraccion(e, resumen.concepto);

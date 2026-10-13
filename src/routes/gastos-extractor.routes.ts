@@ -5,6 +5,7 @@
  *  POST /extraer-ia     extraer datos de un PDF/imagen de comprobante de gasto (4 MB como mucho)
  *  POST /confirmar      registrar la factura revisada (factura y asiento en borrador)
  *  POST /lecturas, GET /lecturas/:id, POST /lecturas/:id/descartar   lectura con Azure (ver lecturas.controller.ts)
+ *  POST /lecturas/:id/origen-tercero   de donde es el proveedor: vuelve a validar sin leer otra vez
  */
 
 import { RequestHandler, Router } from 'express';
@@ -34,5 +35,6 @@ router.post('/confirmar', authorize('compras:write'), gastosExtractorController.
 router.post('/lecturas', authorize('compras:write'), subirArchivoLectura, lecturasGastos.crear);
 router.get('/lecturas/:id', authorize('compras:read', 'compras:write'), lecturasGastos.consultar);
 router.post('/lecturas/:id/descartar', authorize('compras:write'), lecturasGastos.descartar);
+router.post('/lecturas/:id/origen-tercero', authorize('compras:write'), lecturasGastos.cambiarOrigen);
 
 export default router;

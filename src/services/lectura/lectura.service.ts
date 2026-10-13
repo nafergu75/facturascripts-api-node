@@ -35,6 +35,7 @@ import { direccionParaFicha } from './direccion';
 import { claudeConfigurado, claudeVisionExtractor } from './claude-vision.adapter';
 import { MENSAJE_LECTURA_NO_ENCONTRADA } from './confirmar';
 import { contextoValidacion, gastoDuplicado, proveedorPorNif } from './contexto';
+import { datosTerceroDeLectura, eleccionGuardada, infoTercero, type EleccionOrigenTercero, type InfoTercero } from './origen-tercero';
 import { clientePorNif, type TerceroExistente } from './terceros-lector';
 import { rectificativaLeida, type RectificativaLeida } from './rectificativa';
 import { rectificativaVentaLeida, type RectificativaVentaLeida } from './rectificativa-venta';
@@ -107,6 +108,12 @@ export interface InfoLectura {
   generales: Array<{ nivel: NivelValidacion; mensaje: string }>;
   avisos: string[];
   paginas: { archivo: number | null; leidas: number | null };
+  /**
+   * El tercero (el cliente en ventas, el proveedor en gastos): de donde ha
+   * dicho la persona que es, de donde parece por la factura, si se contradicen
+   * y como se llama su numero fiscal (NIF, NIF-IVA (VAT), RNC...).
+   */
+  tercero: InfoTercero;
 }
 
 export interface LecturaGastoLista {
@@ -132,10 +139,15 @@ export type RespuestaLectura =
   | { lecturaId: string; estado: 'ERROR'; codigo: string; mensaje: string }
   | { lecturaId: string; estado: 'CONFIRMADA' | 'DESCARTADA' };
 
-/** Lo que se guarda en LecturaDocumento.resultado. */
+/**
+ * Lo que se guarda en LecturaDocumento.resultado. origenTercero: de donde ha
+ * dicho la persona que es el tercero; se guarda ya al subir la factura (solo
+ * con eso, mientras se lee) y se conserva al terminar y al cambiarlo.
+ */
 interface ResultadoGuardado {
   lectura: LecturaNormalizada;
   campos: Partial<Record<CampoId, EstadoCampo>>;
+  origenTercero?: EleccionOrigenTercero | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -231,7 +243,7 @@ async function guardarLista(
     confianza: extra.confianza,
     estadoValidacion: val.estado,
     qrEstado: l.qr?.estado ?? null,
-    resultado: json({ lectura: l, campos: val.campos } satisfies ResultadoGuardado),
+    resultado: json({ lectura: l, campos: val.campos, origenTercero: eleccionGuardada(fila.resultado) } satisfies ResultadoGuardado),
     validaciones: json(val.validaciones),
     avisos: json(l.avisos),
     paginasLeidas: l.paginas.leidas,
@@ -270,8 +282,8 @@ async function guardarLista(
   });
 }
 
-async function validar(fila: FilaLectura, l: LecturaNormalizada): Promise<ResultadoValidacionLectura> {
-  const ctx = await contextoValidacion(fila.companyId, fila.lector as Lector, l, { archivoHash: fila.archivoHash, lecturaId: fila.id });
+async function validar(fila: FilaLectura, l: LecturaNormalizada, eleccion = eleccionGuardada(fila.resultado)): Promise<ResultadoValidacionLectura> {
+  const ctx = await contextoValidacion(fila.companyId, fila.lector as Lector, l, { archivoHash: fila.archivoHash, lecturaId: fila.id, origenTercero: eleccion });
   return validarLectura(l, ctx);
 }
 
@@ -302,7 +314,7 @@ async function terminarConAzure(fila: FilaLectura, hecho: LecturaHecha): Promise
   const preguntas = decidirComplemento(l, hecho.texto, lector);
   let origen: OrigenLectura = 'AZURE';
   if (preguntas.length) {
-    const ctxPrevio = await contextoValidacion(fila.companyId, lector, l, { archivoHash: fila.archivoHash, lecturaId: fila.id });
+    const ctxPrevio = await contextoValidacion(fila.companyId, lector, l, { archivoHash: fila.archivoHash, lecturaId: fila.id, origenTercero: eleccionGuardada(fila.resultado) });
     const c = await completarConClaude(l, hecho.texto, preguntas, ctxPrevio);
     if (c.tipo === 'sin_texto') return respaldoConClaude(fila, 'AZURE_SIN_FACTURA');
     l = c.lectura;
@@ -326,7 +338,7 @@ async function recargar(id: string): Promise<FilaLectura> {
 // Respuestas
 // ---------------------------------------------------------------------------
 
-function infoLectura(fila: FilaLectura, guardado: ResultadoGuardado, validaciones: ResultadoValidacion[]): InfoLectura {
+function infoLectura(fila: FilaLectura, guardado: ResultadoGuardado, validaciones: ResultadoValidacion[], tercero: InfoTercero): InfoLectura {
   const l = guardado.lectura;
   const generales = validaciones.filter((v) => v.campos.length === 0 && v.nivel !== 'ok').map((v) => ({ nivel: v.nivel, mensaje: v.mensaje }));
   const avisos = Array.isArray(fila.avisos) ? (fila.avisos as string[]) : [];
@@ -353,6 +365,7 @@ function infoLectura(fila: FilaLectura, guardado: ResultadoGuardado, validacione
     // Los generales tambien como avisos: sin ellos la pantalla pedia "He revisado" sin decir que.
     avisos: sinRepetidos([...generales.map((g) => g.mensaje), ...avisos]),
     paginas: { archivo: fila.paginasArchivo, leidas: fila.paginasLeidas },
+    tercero,
   };
 }
 
@@ -378,9 +391,12 @@ async function respuestaDe(fila: FilaLectura): Promise<RespuestaLectura> {
   }
   const guardado = fila.resultado as unknown as ResultadoGuardado;
   const validaciones = (fila.validaciones ?? []) as unknown as ResultadoValidacion[];
-  const lectura = infoLectura(fila, guardado, validaciones);
+  const lector = fila.lector as Lector;
+  const eleccion = eleccionGuardada(guardado);
+  const tercero = (paisFicha: string | null | undefined) =>
+    infoTercero(lector, datosTerceroDeLectura(lector, guardado.lectura, { eleccion, paisFicha: paisFicha ?? null }));
 
-  if (fila.lector === 'GASTO') {
+  if (lector === 'GASTO') {
     const g = aGastoExtraido(guardado.lectura, validaciones, fila.confianza);
     const proveedorExistente = await proveedorPorNif(fila.companyId, g.nifProveedor);
     const duplicada = proveedorExistente ? await gastoDuplicado(fila.companyId, proveedorExistente.id, g.numeroFactura) : null;
@@ -388,14 +404,17 @@ async function respuestaDe(fila: FilaLectura): Promise<RespuestaLectura> {
     const cuentaHabitual = proveedorExistente ? await cuentaHabitualDeProveedor(fila.companyId, proveedorExistente.id) : null;
     // Rectificativa o abono: la factura que rectifica y lo que se propone para el formulario.
     const rectificativa = await rectificativaLeida(fila.companyId, guardado.lectura);
+    const lectura = infoLectura(fila, guardado, validaciones, tercero(proveedorExistente?.pais));
     return { lecturaId: fila.id, estado: 'LISTA', gasto: { ...g, tramos: tramosGasto(guardado.lectura), proveedorExistente, duplicada, cuentaHabitual, rectificativa }, lectura };
   }
   const extraccion = aInvoiceExtraction(guardado.lectura, validaciones, { confianza: fila.confianza, nombreArchivo: fila.archivoNombre, mime: fila.archivoTipo });
-  // La direccion del cliente, separada, para darlo de alta con la ficha rellena.
-  const ingreso = aIngresoExtraido(fila.incomeReaderDocumentId ?? '', extraccion, direccionParaFicha(guardado.lectura.receptor?.direccion));
+  // La direccion del cliente, separada, para darlo de alta con la ficha rellena. Que falte el NIF
+  // del cliente ya lo dicen las validaciones (error si es de España, «revisar» si es de fuera).
+  const ingreso = aIngresoExtraido(fila.incomeReaderDocumentId ?? '', extraccion, direccionParaFicha(guardado.lectura.receptor?.direccion), { nifYaValidado: true });
   const clienteExistente = await clientePorNif(fila.companyId, ingreso.nifCliente);
   // Rectificativa o abono de venta: la factura que rectifica y lo que se propone.
   const rectificativa = await rectificativaVentaLeida(fila.companyId, guardado.lectura);
+  const lectura = infoLectura(fila, guardado, validaciones, tercero(clienteExistente?.pais));
   return { lecturaId: fila.id, estado: 'LISTA', ingreso: { ...ingreso, errores: sinRepetidos(ingreso.errores), clienteExistente, rectificativa }, lectura };
 }
 
@@ -474,6 +493,7 @@ export async function iniciarLectura(
   userId: string | undefined,
   lector: Lector,
   entrada: ArchivoEntrada,
+  eleccion: EleccionOrigenTercero | null = null,
 ): Promise<{ status: 200 | 202; data: RespuestaLectura }> {
   if (entrada.buffer.length > MAX_ARCHIVO_LECTURA) throw badRequest(MENSAJE_ARCHIVO_GRANDE, { codigo: 'ARCHIVO_GRANDE' });
   if (!MIME_ADMITIDOS.has(entrada.mimetype)) throw badRequest('Solo se admiten facturas en PDF o imagen (JPG, PNG, WEBP).', { codigo: 'ARCHIVO_NO_VALIDO' });
@@ -506,6 +526,8 @@ export async function iniciarLectura(
       archivoTamanio: archivo.buffer.length,
       archivoHash: archivo.hash,
       paginasArchivo: contarPaginasPdf(archivo.buffer),
+      // De donde ha dicho la persona que es el tercero: se usa al validar en cuanto termine la lectura.
+      ...(eleccion ? { resultado: json({ origenTercero: eleccion }) } : {}),
     },
   });
   const archivoRef = await putObject(`lecturas/${companyId}/${fila.id}-${nombreSeguro(archivo.nombre)}`, archivo.buffer, archivo.mime);
@@ -570,6 +592,44 @@ export async function consultarLectura(companyId: string, lector: Lector, id: st
   }
   limpiarAzure(fila.azureResultId);
   return terminarConAzure(propia, r);
+}
+
+export const MENSAJE_LECTURA_NO_CAMBIABLE = 'Esta lectura ya no se puede cambiar: está descartada o no ha terminado. Vuelve a leer la factura.';
+
+/**
+ * POST /lecturas/:id/origen-tercero. Cambia de donde es el tercero (o lo
+ * quita, con null) y vuelve a hacer las validaciones con lo que ya se leyo,
+ * sin leer otra vez la factura. Se quita la marca «He revisado». En ventas
+ * tambien se rehacen los errores del documento del lector (los usa
+ * /ingresos-extractor/confirmar). Devuelve la lectura como el GET.
+ */
+export async function cambiarOrigenTercero(companyId: string, lector: Lector, id: string, eleccion: EleccionOrigenTercero | null): Promise<RespuestaLectura> {
+  const fila = await buscar(companyId, lector, id);
+  if (fila.estado === 'CONFIRMADA') throw conflict('Esta factura ya se registró: ya no se puede cambiar.', { codigo: 'LECTURA_YA_CONFIRMADA' });
+  if (fila.estado !== 'LISTA' || !fila.resultado) throw badRequest(MENSAJE_LECTURA_NO_CAMBIABLE, { codigo: 'LECTURA_NO_LISTA' });
+  const guardado = fila.resultado as unknown as ResultadoGuardado;
+  const l = guardado.lectura;
+  const val = await validar(fila, l, eleccion);
+  await prisma.$transaction(async (tx) => {
+    const r = await tx.lecturaDocumento.updateMany({
+      where: { id: fila.id, estado: 'LISTA' },
+      data: {
+        estadoValidacion: val.estado,
+        resultado: json({ lectura: l, campos: val.campos, origenTercero: eleccion } satisfies ResultadoGuardado),
+        validaciones: json(val.validaciones),
+        revisada: false,
+      },
+    });
+    if (r.count === 0) throw badRequest(MENSAJE_LECTURA_NO_CAMBIABLE, { codigo: 'LECTURA_NO_LISTA' });
+    if (lector === 'VENTA' && fila.incomeReaderDocumentId) {
+      await tx.incomeReaderDocument.updateMany({
+        where: { id: fila.incomeReaderDocumentId, companyId, status: 'READY_FOR_VERIFICATION' },
+        data: { parsedData: json(aInvoiceExtraction(l, val.validaciones, { confianza: fila.confianza, nombreArchivo: fila.archivoNombre, mime: fila.archivoTipo })) },
+      });
+    }
+  });
+  logger.info('[lectura] Origen del tercero cambiado', { lecturaId: fila.id, companyId, lector, origen: eleccion?.origen ?? null });
+  return respuestaDe(await recargar(fila.id));
 }
 
 /** POST /lecturas/:id/descartar. Borra el archivo; la lectura queda como DESCARTADA. */

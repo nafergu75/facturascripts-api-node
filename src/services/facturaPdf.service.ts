@@ -11,6 +11,7 @@ import { cuentaParaFactura, leerAjustesFacturacion } from './ajustesFacturacion.
 import { enlacesDeVentas } from './rectificativasVenta.service';
 import { diferenciaSustitucion, type LineaImportes } from '../domain/rectificativa-venta.model';
 import { importesDoc, nombreMoneda, textoTipo } from '../domain/divisas';
+import { nombreNumeroFiscal, NUMERO_FISCAL_GENERICO } from '../domain/numero-fiscal';
 import {
   esPaisEspana,
   formatearFecha,
@@ -221,7 +222,6 @@ interface TextosPdf {
   cliente: string;
   nif: string;
   nifIva: string;
-  nifExtranjero: string;
   faltaDenominacion: string;
   faltaNif: string;
   tel: string;
@@ -294,7 +294,6 @@ const TEXTOS: Record<Idioma, TextosPdf> = {
     cliente: 'Cliente',
     nif: 'NIF',
     nifIva: 'NIF-IVA / VAT No.',
-    nifExtranjero: 'NIF / Tax ID',
     faltaDenominacion: 'Falta la denominación de la empresa',
     faltaNif: 'falta el NIF',
     tel: 'Tel.',
@@ -382,7 +381,6 @@ const TEXTOS: Record<Idioma, TextosPdf> = {
     cliente: 'Bill to',
     nif: 'Tax ID',
     nifIva: 'VAT No.',
-    nifExtranjero: 'Tax ID',
     faltaDenominacion: 'Company name missing',
     faltaNif: 'Tax ID missing',
     tel: 'Tel.',
@@ -654,6 +652,20 @@ export function facturaConIva(
   return empresaEspanola || tipoOperacion !== null || ivaTotal !== 0 || tiposIva.some((t) => t !== 0);
 }
 
+/**
+ * Etiqueta del numero fiscal del cliente en el PDF: la de su pais («NIF»,
+ * «NIF-IVA (VAT)», «RNC», «EIN»...; en ingles, «VAT No.» o «Tax ID» si no hay
+ * una propia). Un cliente de otro pais de la UE sin NIF-IVA (un particular)
+ * lleva otro documento: «Número fiscal (Tax ID)». La de la empresa no pasa por
+ * aqui: es su NIF.
+ */
+export function etiquetaNifCliente(cliente: DatosFacturaPdf['cliente'], idioma: Idioma): string {
+  const fiscal = { pais: cliente.pais, nifCif: cliente.nifCif, cp: cliente.cp };
+  const pais = paisDelCliente(fiscal);
+  if (pais !== 'ES' && esPaisUe(pais) && !tieneNifIvaUe(fiscal)) return idioma === 'en' ? 'Tax ID' : NUMERO_FISCAL_GENERICO;
+  return nombreNumeroFiscal(pais, idioma);
+}
+
 export function mencionDocumento(f: DatosFacturaPdf): { es: string; en: string | null } | null {
   if (f.conIva === false) return null;
   const tipo = tipoDelDocumento(f);
@@ -811,7 +823,6 @@ export async function renderizarFactura(f: DatosFacturaPdf): Promise<Buffer> {
   // ---------- Emisor y cliente ----------
   // NIF-IVA (VAT No.) en las entregas intracomunitarias y en los servicios a un cliente de la UE.
   const conNifIva = conIva && (tipoOp === 'INTRACOMUNITARIA' || (tipoOp === 'SERVICIOS_EXTRANJERO' && tieneNifIvaUe(cliente)));
-  const clienteEspanol = paisDelCliente(cliente) === 'ES';
   const anchoA = COL_B - MARGEN - 24;
   const anchoB = derecha - COL_B;
   const bloqueParte = (
@@ -871,7 +882,8 @@ export async function renderizarFactura(f: DatosFacturaPdf): Promise<Buffer> {
     idioma === 'es'
       ? !!paisCliente && paisCliente.toUpperCase() !== 'ES' && paisCliente.toUpperCase() !== 'ESPAÑA'
       : !!paisCliente && normalizarPais(paisCliente) !== paisEmpresa;
-  const etqNifCliente = conNifIva ? T.nifIva : idioma === 'es' && conIva && !clienteEspanol ? T.nifExtranjero : T.nif;
+  // El numero del cliente con el nombre que tiene en su pais: NIF, NIF-IVA (VAT), RNC, EIN... (domain/numero-fiscal).
+  const etqNifCliente = etiquetaNifCliente(f.cliente, idioma);
   const yCliente = bloqueParte(COL_B, anchoB, T.cliente, c.nombreFiscal, etqNifCliente, nifDe(c.nifCif, paisDelCliente(cliente)) || '—', [
     c.direccion,
     lineaPoblacion(c.cp, c.municipio, c.provincia, paisDelCliente(cliente)),

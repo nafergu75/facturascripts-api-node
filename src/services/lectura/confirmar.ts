@@ -21,6 +21,7 @@ import { archivarGastoSinRomper } from '../archivoFacturas.service';
 import { perfilEmpresa } from '../perfilEmpresa.service';
 import { datosEmpresaValidacion } from './datosEmpresa';
 import { lecturaVacia, type Lector, type LecturaNormalizada, type OrigenLectura, type ResultadoValidacion } from './tipos';
+import { eleccionGuardada } from './origen-tercero';
 import { validacionesSincronas } from './validaciones';
 
 export const MENSAJE_FALTA_REVISION = 'Marca que has revisado los datos señalados antes de registrar.';
@@ -57,8 +58,17 @@ export const esLecturaRectificativa = (fila: { validaciones: unknown }) => valid
 /** Validaciones que se repiten sobre lo que llega al confirmar un gasto (V14 la sigue haciendo registrarGasto, con su 409). */
 const REVALIDAR_GASTO = new Set(['TIPO_IVA', 'NIF_EMISOR', 'EMPRESA', 'FECHA']);
 
-/** El cuerpo del alta de un gasto, como lectura, para volver a validarlo. */
-async function lecturaDelCuerpo(companyId: string, cuerpo: Record<string, unknown>, guardada: LecturaNormalizada | null): Promise<LecturaNormalizada> {
+/**
+ * El cuerpo del alta de un gasto, como lectura, para volver a validarlo. Con
+ * el pais de la ficha del proveedor elegido (paisProveedor: manda sobre lo
+ * elegido, ver detectarOrigenTercero). El pais escrito para un proveedor nuevo
+ * no es una ficha: cuenta como el de su direccion.
+ */
+async function lecturaDelCuerpo(
+  companyId: string,
+  cuerpo: Record<string, unknown>,
+  guardada: LecturaNormalizada | null,
+): Promise<{ lectura: LecturaNormalizada; paisProveedor: string | null }> {
   const l = lecturaVacia('claude');
   const prov = (cuerpo.proveedor ?? {}) as { id?: unknown; nuevo?: Record<string, unknown> };
   // El proveedor nuevo admite los mismos nombres de campo que su alta (datosProveedor).
@@ -66,11 +76,17 @@ async function lecturaDelCuerpo(companyId: string, cuerpo: Record<string, unknow
   const texto = (x: unknown) => (typeof x === 'string' && x.trim() ? x : null);
   let nif: string | null = texto(nuevo.nifCif ?? nuevo.cifnif ?? nuevo.nif);
   let nombre: string | null = texto(nuevo.nombreFiscal ?? nuevo.nombre ?? nuevo.razonsocial);
+  const paisNuevo: string | null = texto(nuevo.pais);
+  let paisProveedor: string | null = null;
   if (!nif && typeof prov.id === 'string') {
-    const elegido = await prisma.supplier.findFirst({ where: { id: prov.id, companyId }, select: { nifCif: true, nombreFiscal: true } });
+    const elegido = await prisma.supplier.findFirst({ where: { id: prov.id, companyId }, select: { nifCif: true, nombreFiscal: true, pais: true } });
     nif = elegido?.nifCif ?? null;
     nombre = elegido?.nombreFiscal ?? null;
+    paisProveedor = elegido?.pais ?? null;
   }
+  // La direccion leida del proveedor (su pais) sigue contando si no hay ficha; la de un proveedor nuevo, con el pais escrito.
+  if (guardada?.emisor.direccion) l.emisor.direccion = guardada.emisor.direccion;
+  if (paisNuevo) l.emisor.direccion = { valor: { ...(l.emisor.direccion?.valor ?? {}), pais: paisNuevo }, confianza: null, fuente: 'claude' };
   l.emisor.nif = { valor: nif, confianza: null, fuente: 'claude' };
   // El nombre sirve a V09 cuando la empresa no tiene NIF (se compara por nombre).
   l.emisor.nombre = { valor: nombre, confianza: null, fuente: 'claude' };
@@ -83,7 +99,7 @@ async function lecturaDelCuerpo(companyId: string, cuerpo: Record<string, unknow
     if (typeof linea.tipoIva === 'number') tipos.add(linea.tipoIva);
   }
   l.desglose = [...tipos].map((tipoIva) => ({ tipoIva, base: { valor: 0, confianza: null, fuente: 'claude' }, cuota: { valor: 0, confianza: null, fuente: 'claude' }, tipoRecargo: null, cuotaRecargo: null }));
-  return l;
+  return { lectura: l, paisProveedor };
 }
 
 /**
@@ -103,7 +119,7 @@ export async function comprobarLecturaParaConfirmar(companyId: string, lecturaId
   }
 
   const guardada = ((fila.resultado as { lectura?: LecturaNormalizada } | null)?.lectura ?? null) as LecturaNormalizada | null;
-  const l = await lecturaDelCuerpo(companyId, cuerpo, guardada);
+  const { lectura: l, paisProveedor } = await lecturaDelCuerpo(companyId, cuerpo, guardada);
   const [empresa, perfil] = await Promise.all([datosEmpresaValidacion(companyId), perfilEmpresa(companyId)]);
   const errores = validacionesSincronas(l, {
     lector,
@@ -114,6 +130,9 @@ export async function comprobarLecturaParaConfirmar(companyId: string, lecturaId
     hoy: hoyEspana(),
     periodoAbierto: async () => true,
     duplicado: { factura: null, archivo: null },
+    // De donde dijo la persona que es el proveedor (manda) y el pais de su ficha.
+    origenTercero: eleccionGuardada(fila.resultado),
+    paisTerceroFicha: paisProveedor,
   }).filter((v) => REVALIDAR_GASTO.has(v.codigo) && v.nivel === 'error');
   if (errores.length) {
     throw badRequest(errores[0].mensaje, { codigo: 'VALIDACION_LECTURA', campo: errores[0].campos[0] ?? null, validaciones: errores });
@@ -129,7 +148,8 @@ export async function comprobarLecturaParaConfirmar(companyId: string, lecturaId
  *
  * `ignorar`: codigos de validacion que ya no aplican (p. ej. NIF_RECEPTOR
  * cuando se ha elegido un cliente dado de alta). Devuelve los mensajes de las
- * validaciones ignoradas, para quitarlos tambien de los errores del documento.
+ * validaciones ignoradas, para quitarlos tambien de los errores del documento,
+ * y si el documento viene de una lectura (/lecturas).
  *
  * Rectificativas (V19, codigo RECTIFICATIVA): hay que decir que rectifica (el
  * bloque `rectificativa`) o marcar que no lo es (`noEsRectificativa`); si no,
@@ -142,9 +162,9 @@ export async function comprobarRevisionVenta(
   revisado: boolean,
   ignorar: string[] = [],
   rect: { bloque: boolean; noEsRectificativa: boolean } = { bloque: false, noEsRectificativa: false },
-): Promise<string[]> {
+): Promise<{ ignoradas: string[]; deLectura: boolean }> {
   const fila = await prisma.lecturaDocumento.findFirst({ where: { companyId, incomeReaderDocumentId, lector: 'VENTA' }, select: { estado: true, estadoValidacion: true, validaciones: true } });
-  if (!fila) return []; // Documento del lector de siempre (/extraer-ia): como hoy.
+  if (!fila) return { ignoradas: [], deLectura: false }; // Documento del lector de siempre (/extraer-ia): como hoy.
   if (fila.estado === 'CONFIRMADA') throw conflict('Esta factura ya se registró.', { codigo: 'LECTURA_YA_CONFIRMADA' });
   if (necesitaRevision(fila) && !revisado) throw badRequest(MENSAJE_FALTA_REVISION, { codigo: 'FALTA_REVISION' });
   if (esLecturaRectificativa(fila)) {
@@ -156,7 +176,7 @@ export async function comprobarRevisionVenta(
   if (errores.length) {
     throw badRequest(`No se puede registrar: ${[...new Set(errores.map((v) => v.mensaje))].join(' ')}`, { codigo: 'VALIDACION_LECTURA', validaciones: errores });
   }
-  return ignoradas.map((v) => v.mensaje);
+  return { ignoradas: ignoradas.map((v) => v.mensaje), deLectura: true };
 }
 
 /** Tras registrar: la lectura queda CONFIRMADA. Nunca rompe el alta (lo que falle va al log). */

@@ -226,6 +226,8 @@ export interface ResultadoValidacion {
   nivel: NivelValidacion;
   campos: CampoId[];
   mensaje: string;
+  /** Valor que se propone para el campo (el NIF-IVA con el prefijo de su pais...): va a EstadoCampo.sugerencia. */
+  sugerencia?: string;
 }
 
 /** Umbrales de confianza de Azure. */
