@@ -1390,6 +1390,7 @@ export async function opcionesRectificativa(companyId: string) {
         disponible: m.disponible,
       };
     }),
-    series: { rectificativas: { codigo: r?.codigo ?? 'R', existe: true }, tickets },
+    // existe: hay una serie de rectificativas activa (si no, no se puede emitir: hay que activarla o crearla).
+    series: { rectificativas: { codigo: r?.codigo ?? 'R', existe: !!r }, tickets },
   };
 }
