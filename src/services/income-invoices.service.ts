@@ -814,7 +814,12 @@ function datosTipo(t: TipoResuelto) {
 
 /** Aplica a las lineas el IVA y la retencion que decide la fiscalidad (empresa no espanola: 0). */
 function conFiscalidad(lineas: LineaEntrada[], fiscal: { lineas: Array<{ tipoIva: number; tipoRetencion: number }> }): LineaEntrada[] {
-  return lineas.map((l, i) => ({ ...l, tipoIva: fiscal.lineas[i].tipoIva, tipoRetencion: fiscal.lineas[i].tipoRetencion }));
+  return lineas.map((l, i) => {
+    // Una cuota fijada deja de valer si la fiscalidad cambia el tipo de IVA de la linea.
+    const { cuotaFija, ...resto } = l;
+    const mismoTipo = cuotaFija !== undefined && fiscal.lineas[i].tipoIva === (l.tipoIva ?? 21);
+    return { ...resto, ...(mismoTipo ? { cuotaFija } : {}), tipoIva: fiscal.lineas[i].tipoIva, tipoRetencion: fiscal.lineas[i].tipoRetencion };
+  });
 }
 
 /** Un recalculo de importes nunca toca una factura emitida (sus datos estan congelados). */
@@ -1166,6 +1171,17 @@ function paisCongelado(f: FacturaConLineas): string {
   return f.paisClienteLegacy ?? f.customer.pais ?? '';
 }
 
+/**
+ * Lo que fija el servidor al crear: el origen y, del lector, el numero leido y
+ * las cuotas de IVA ya fijadas de algunas lineas (cuotasFijas, por indice: los
+ * importes de la original de una sustitucion de fuera de la app).
+ */
+export interface OpcionesAlta {
+  origen?: OrigenFactura;
+  numeroLeido?: string | null;
+  cuotasFijas?: Array<number | undefined>;
+}
+
 /** Herencia y lineas espejo de una rectificativa: solo se pasan desde este servicio. */
 interface Interno {
   original?: FacturaConLineas;
@@ -1304,7 +1320,7 @@ const partesDe = (enlaces: EnlaceVenta[]) =>
  */
 async function prepararAlta(
   dto: CrearFacturaIngresoDTO,
-  opciones: { origen?: OrigenFactura; numeroLeido?: string | null },
+  opciones: OpcionesAlta,
   interno: Interno & { excluirId?: string },
 ): Promise<AltaPreparada> {
   const origen: OrigenFactura = opciones.origen ?? 'pantalla';
@@ -1326,7 +1342,10 @@ async function prepararAlta(
     }
     if (dto.borrador || dto.proforma) throw badRequest('Una factura leída se registra ya emitida: no es un borrador ni una proforma.');
   }
-  const lineasPedidas = validarLineas(dto.lineas);
+  // Del lector, las cuotas ya fijadas de algunas lineas (nunca desde el cuerpo).
+  const lineasPedidas = validarLineas(dto.lineas).map((l, i) =>
+    origen === 'lector' && opciones.cuotasFijas?.[i] !== undefined ? { ...l, cuotaFija: opciones.cuotasFijas[i] } : l,
+  );
   // Rectificativa: el bloque nuevo o los campos de antes, nunca los dos.
   const hayBloque = dto.rectificativa !== undefined && dto.rectificativa !== null;
   const hayFuera = dto.rectificaFuera !== undefined && dto.rectificaFuera !== null;
@@ -1600,7 +1619,7 @@ async function prepararAlta(
  * de una rectificativa se guardan en la misma transaccion que la factura, en
  * los tres caminos (borrador, lector y emision directa).
  */
-async function crear(dto: CrearFacturaIngresoDTO, opciones: { origen?: OrigenFactura; numeroLeido?: string | null }, interno: Interno): Promise<IncomeInvoiceResp> {
+async function crear(dto: CrearFacturaIngresoDTO, opciones: OpcionesAlta, interno: Interno): Promise<IncomeInvoiceResp> {
   const a = await prepararAlta(dto, opciones, interno);
   const { comunes, ctx, serie, fechaEmision, fechaVencimiento, rect } = a;
   // Los enlaces y, si ya cuenta (emitida o registrada), el estado de las partidas de 2026 que rebaja.
@@ -1776,7 +1795,7 @@ export const incomeInvoicesService = {
    * `opciones.origen` lo pone quien llama desde el servidor (lector OCR,
    * copia); lo que llegue en el cuerpo con ese nombre se ignora.
    */
-  async crearIngreso(dto: CrearFacturaIngresoDTO, opciones: { origen?: OrigenFactura; numeroLeido?: string | null } = {}): Promise<IncomeInvoiceResp> {
+  async crearIngreso(dto: CrearFacturaIngresoDTO, opciones: OpcionesAlta = {}): Promise<IncomeInvoiceResp> {
     const limpio = { ...dto } as CrearFacturaIngresoDTO & Record<string, unknown>;
     // Campos que fija el servidor: nunca desde el cuerpo.
     for (const campo of [
@@ -1793,7 +1812,11 @@ export const incomeInvoicesService = {
     // El numero solo lo trae una factura del lector (la expidio otro programa).
     // Desde la pantalla o la API lo pone siempre la serie, dentro de la transaccion.
     if (opciones.origen !== 'lector') delete limpio.numero;
-    return crear(limpio, { origen: opciones.origen, ...(opciones.origen === 'lector' ? { numeroLeido: opciones.numeroLeido } : {}) }, {});
+    return crear(
+      limpio,
+      { origen: opciones.origen, ...(opciones.origen === 'lector' ? { numeroLeido: opciones.numeroLeido, cuotasFijas: opciones.cuotasFijas } : {}) },
+      {},
+    );
   },
 
   /**
