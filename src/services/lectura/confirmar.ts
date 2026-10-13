@@ -60,7 +60,9 @@ const REVALIDAR_GASTO = new Set(['TIPO_IVA', 'NIF_EMISOR', 'EMPRESA', 'FECHA']);
 
 /**
  * El cuerpo del alta de un gasto, como lectura, para volver a validarlo. Con
- * el pais del proveedor elegido (su ficha) o del nuevo: dice de donde es.
+ * el pais de la ficha del proveedor elegido (paisProveedor: manda sobre lo
+ * elegido, ver detectarOrigenTercero). El pais escrito para un proveedor nuevo
+ * no es una ficha: cuenta como el de su direccion.
  */
 async function lecturaDelCuerpo(
   companyId: string,
@@ -74,15 +76,17 @@ async function lecturaDelCuerpo(
   const texto = (x: unknown) => (typeof x === 'string' && x.trim() ? x : null);
   let nif: string | null = texto(nuevo.nifCif ?? nuevo.cifnif ?? nuevo.nif);
   let nombre: string | null = texto(nuevo.nombreFiscal ?? nuevo.nombre ?? nuevo.razonsocial);
-  let paisProveedor: string | null = texto(nuevo.pais);
+  const paisNuevo: string | null = texto(nuevo.pais);
+  let paisProveedor: string | null = null;
   if (!nif && typeof prov.id === 'string') {
     const elegido = await prisma.supplier.findFirst({ where: { id: prov.id, companyId }, select: { nifCif: true, nombreFiscal: true, pais: true } });
     nif = elegido?.nifCif ?? null;
     nombre = elegido?.nombreFiscal ?? null;
     paisProveedor = elegido?.pais ?? null;
   }
-  // La direccion leida del proveedor (su pais) sigue contando si no hay ficha.
+  // La direccion leida del proveedor (su pais) sigue contando si no hay ficha; la de un proveedor nuevo, con el pais escrito.
   if (guardada?.emisor.direccion) l.emisor.direccion = guardada.emisor.direccion;
+  if (paisNuevo) l.emisor.direccion = { valor: { ...(l.emisor.direccion?.valor ?? {}), pais: paisNuevo }, confianza: null, fuente: 'claude' };
   l.emisor.nif = { valor: nif, confianza: null, fuente: 'claude' };
   // El nombre sirve a V09 cuando la empresa no tiene NIF (se compara por nombre).
   l.emisor.nombre = { valor: nombre, confianza: null, fuente: 'claude' };
