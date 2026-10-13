@@ -43,6 +43,7 @@ import { leerPais } from './clientes.service';
 import { crearClienteConSubcuenta } from './terceros/subcuentas';
 import { esCuentaDeTipo, problemaCuentasLinea } from './cuentasLinea.service';
 import { MOTIVOS_VENTA } from '../domain/rectificativa-venta.model';
+import { recalcularEstadoPartidas } from './arranque/partidas.service';
 import { ahoraRedSeguridad, exigirPuedeEmitirFinal } from './verifactu/redSeguridad';
 import {
   aFavorDeAbonos,
@@ -1225,6 +1226,9 @@ interface AltaPreparada {
   rect: { forma: 'I' | 'S'; enlaces: EnlaceVenta[] } | null;
 }
 
+/** Partidas de cobro de 2026 que rebajan los enlaces de una rectificativa. */
+const partidasDe = (enlaces: EnlaceVenta[]) => [...new Set(enlaces.map((e) => e.partidaPendienteId).filter((x): x is string => !!x))];
+
 /** Partes de las originales de la app para comprobar sus limites. */
 const partesDe = (enlaces: EnlaceVenta[]) =>
   enlaces
@@ -1543,8 +1547,11 @@ async function prepararAlta(
 async function crear(dto: CrearFacturaIngresoDTO, opciones: { origen?: OrigenFactura; numeroLeido?: string | null }, interno: Interno): Promise<IncomeInvoiceResp> {
   const a = await prepararAlta(dto, opciones, interno);
   const { comunes, ctx, serie, fechaEmision, fechaVencimiento, rect } = a;
-  const enlazar = async (tx: Tx, id: string) => {
-    if (rect) await guardarEnlacesVenta(tx, dto.companyId, id, rect.enlaces);
+  // Los enlaces y, si ya cuenta (emitida o registrada), el estado de las partidas de 2026 que rebaja.
+  const enlazar = async (tx: Tx, id: string, emitida = false) => {
+    if (!rect) return;
+    await guardarEnlacesVenta(tx, dto.companyId, id, rect.enlaces);
+    if (emitida) await recalcularEstadoPartidas(tx, dto.companyId, partidasDe(rect.enlaces));
   };
 
   // Proforma: numero de su serie al crearla (sin huecos), sin efectos fiscales.
@@ -1608,7 +1615,7 @@ async function crear(dto: CrearFacturaIngresoDTO, opciones: { origen?: OrigenFac
         },
         include: INCLUIR,
       });
-      await enlazar(tx, creada.id);
+      await enlazar(tx, creada.id, true);
       await tx.invoiceSeries.updateMany({
         where: { companyId: dto.companyId, codigo: serie, ultimoNumero: { lt: numero } },
         data: { ultimoNumero: numero },
@@ -1634,7 +1641,7 @@ async function crear(dto: CrearFacturaIngresoDTO, opciones: { origen?: OrigenFac
       },
       include: INCLUIR,
     });
-    await enlazar(tx, creada.id);
+    await enlazar(tx, creada.id, true);
     return creada;
   });
   return respuesta(factura, ctx);
@@ -2174,7 +2181,10 @@ export const incomeInvoicesService = {
           await tx.incomeInvoiceLine.update({ where: { id: actual.lineas[i].id }, data: importesLinea(importes.lineas[i]) });
         }
       }
-      if (rect) await guardarEnlacesVenta(tx, companyId, id, rect.enlaces);
+      if (rect) {
+        await guardarEnlacesVenta(tx, companyId, id, rect.enlaces);
+        await recalcularEstadoPartidas(tx, companyId, partidasDe(rect.enlaces));
+      }
       return tx.incomeInvoice.findUniqueOrThrow({ where: { id }, include: INCLUIR });
     });
     const avisosFiscales = [
