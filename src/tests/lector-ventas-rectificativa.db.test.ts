@@ -118,6 +118,13 @@ async function conNumero(documentId: string, numero: string) {
   await prisma.incomeReaderDocument.update({ where: { id: documentId }, data: { parsedData: { ...parsed, invoice: { ...parsed.invoice, number: numero } } } });
 }
 
+/** Cambia los importes leídos guardados (por ejemplo, para que la factura lleve IRPF). */
+async function conImportes(documentId: string, amounts: Record<string, unknown>) {
+  const doc = await prisma.incomeReaderDocument.findUniqueOrThrow({ where: { id: documentId } });
+  const parsed = doc.parsedData as Record<string, any>;
+  await prisma.incomeReaderDocument.update({ where: { id: documentId }, data: { parsedData: { ...parsed, amounts: { ...parsed.amounts, ...amounts } } } });
+}
+
 const confirmar = (companyId: string, cuerpo: Record<string, unknown>) => request(app(companyId)).post('/ingresos-extractor/confirmar').send({ revisado: true, ...cuerpo });
 
 /** Empresa emisora de los fixtures, con el cliente leído y, si se pide, su A-12 de la app. */
@@ -254,6 +261,41 @@ describe('lector de ventas: sin la original en la app', () => {
     expect(r.body.data).toMatchObject({ total: -60.5, esRectificativa: true });
     const enlace = await prisma.incomeInvoiceRectificada.findFirstOrThrow({ where: { rectificativaId: r.body.data.facturaId } });
     expect(enlace).toMatchObject({ partidaPendienteId: p.id, numeroOriginal: 'A-12', baseRectificada: -50 });
+  });
+
+  it('por sustitución con IRPF: la original lleva la retención leída y su IVA escrito, si cuadra con la base', async () => {
+    const data = await leer('resultado-rectificativa', SIN_ORIGINAL);
+    const documentId = data.ingreso.documentId;
+    await conNumero(documentId, 'RV-9');
+    // Corregida: 900 + 189 - 135 (IRPF 15 %).
+    await conImportes(documentId, {
+      bases: [{ tax_rate: 21, base_amount: 900, tax_amount: 189 }],
+      withholdings: [{ type: 'IRPF', rate: 15, amount: 135 }],
+      subtotal: 900,
+      tax_total: 189,
+      withholding_total: 135,
+      total_gross: 1089,
+      total_net: 954,
+    });
+    const bloque = { forma: 'S', motivo: 'ERROR', explicacion: 'Precio corregido', originales: [{ numero: 'A-2025-40', fecha: '2025-11-03' }] };
+    const mal = await confirmar(SIN_ORIGINAL, { documentId, rectificativa: { ...bloque, importesOriginales: [{ tipoIva: 21, base: 1000, cuota: 2100 }] } });
+    expect(mal.status).toBe(400);
+    expect(mal.body.details).toMatchObject({ codigo: 'IMPORTES_ORIGINALES_NO_CUADRAN', campo: 'rectificativa.importesOriginales.0.cuota' });
+    // Original: 1.000 + 210,01 (IVA línea a línea) - 150. Se registra la diferencia, también de la retención.
+    const r = await confirmar(SIN_ORIGINAL, { documentId, rectificativa: { ...bloque, importesOriginales: [{ tipoIva: 21, base: 1000, cuota: 210.01 }] } });
+    expect(r.status).toBe(201);
+    const f = await prisma.incomeInvoice.findUniqueOrThrow({ where: { id: r.body.data.facturaId } });
+    expect([f.baseTotal, f.ivaTotal, f.retencionTotal, f.totalFactura]).toEqual([-100, -21.01, -15, -106.01]);
+  });
+
+  it('por sustitución con importes leídos en negativo: 400 SIGNO_NO_CUADRA', async () => {
+    const data = await leer('resultado-rectificativa-venta', SIN_ORIGINAL);
+    const r = await confirmar(SIN_ORIGINAL, {
+      documentId: data.ingreso.documentId,
+      rectificativa: { forma: 'S', motivo: 'ERROR', originales: [{ numero: 'A-2025-41', fecha: '2025-11-04' }], importesOriginales: [{ tipoIva: 21, base: 300, cuota: 63 }] },
+    });
+    expect(r.status).toBe(400);
+    expect(r.body.details).toMatchObject({ codigo: 'SIGNO_NO_CUADRA', campo: 'rectificativa.forma' });
   });
 });
 
