@@ -14,7 +14,9 @@
  * Tesoreria eligiendo su subcuenta.
  *
  * Concurrencia: si dos altas a la vez sacan el mismo codigo, salta el indice
- * unico del plan (P2002) y quien llama repite la transaccion.
+ * unico del plan (P2002) y quien llama repite la transaccion. Con una subcuenta
+ * que ya esta en el plan, su fila se bloquea (SELECT ... FOR UPDATE) y la
+ * segunda alta espera a la primera y ve que ya es suya.
  */
 import { prisma, type ClienteBD, type TransaccionBD } from '../config/database';
 import { badRequest, conflict } from '../utils/http-errors';
@@ -33,6 +35,17 @@ export const CODIGO_SUBCUENTA_POR_ELEGIR = 'SUBCUENTA_BANCO_POR_ELEGIR';
 
 /** 572 seguida solo de ceros (572, 5720, 57200000): la cuenta de bancos, no la de un banco. */
 const esGenerica = (codigo: string) => /^5720*$/.test(codigo);
+
+/**
+ * Subcuenta en la que se pueden apuntar los cobros y pagos de un banco: una 572
+ * con cifras por debajo de las de agrupacion (572, 5720, 5721 no lo son). Es lo
+ * que se exige al cobrar o pagar; las cuentas dadas de alta antes de comprobarlo
+ * pueden tener cualquier cosa (por ejemplo «0001»).
+ */
+export const esSubcuentaDeBanco = (codigo: string) => /^572\d{2,}$/.test(codigo);
+
+/** Agrupacion de los bancos (572, 5720, 5721, 57200000): no se elige para una cuenta nueva. */
+const esAgrupacionBancos = (codigo: string) => !esSubcuentaDeBanco(codigo) || esGenerica(codigo);
 
 /** Siguiente subcuenta libre de la 572 con esa longitud: la mayor ocupada + 1 (el 0 no se usa). */
 export function siguienteSubcuenta572(ocupadas: Iterable<string>, longitud: number): string {
@@ -76,27 +89,40 @@ export async function subcuentasBanco(companyId: string, db: Db = prisma): Promi
   return { longitud, siguiente: siguienteSubcuenta572([...plan.map((c) => c.codigo), ...usadas], longitud), sinCuenta };
 }
 
-/** Da de alta la subcuenta en el plan, colgando de la 572 (o de la 57 o la 5 si el plan no la tiene). */
-async function darDeAltaEnPlan(tx: TransaccionBD, companyId: string, codigo: string, nombre: string): Promise<void> {
+/** Fila del plan de la subcuenta de un banco, colgando de la 572 (o de la 57 o la 5 si el plan no la tiene). */
+async function filaDelPlan(tx: TransaccionBD, companyId: string, codigo: string, nombre: string) {
   const padre =
     (await tx.chartOfAccounts.findFirst({ where: { companyId, codigo: PREFIJO_BANCOS } })) ??
     (await tx.chartOfAccounts.findFirst({ where: { companyId, codigo: { in: ['57', '5'] } }, orderBy: { codigo: 'desc' } }));
-  await tx.chartOfAccounts.create({
-    data: {
-      companyId,
-      codigo,
-      nombre,
-      grupo: 5,
-      nivel: (padre?.nivel ?? 3) + 1,
-      naturaleza: padre?.naturaleza ?? 'ACTIVO',
-      tipoUso: padre?.tipoUso ?? 'BALANCE',
-      esBasePGC: false,
-      esPersonalizadaEmpresa: true,
-      parentId: padre?.id ?? null,
-      parentCodigo: padre?.codigo ?? PREFIJO_BANCOS,
-      notas: 'Subcuenta de una cuenta bancaria (asignada al darla de alta).',
-    },
-  });
+  return {
+    companyId,
+    codigo,
+    nombre,
+    grupo: 5,
+    nivel: (padre?.nivel ?? 3) + 1,
+    naturaleza: padre?.naturaleza ?? 'ACTIVO',
+    tipoUso: padre?.tipoUso ?? 'BALANCE',
+    esBasePGC: false,
+    esPersonalizadaEmpresa: true,
+    parentId: padre?.id ?? null,
+    parentCodigo: padre?.codigo ?? PREFIJO_BANCOS,
+    notas: 'Subcuenta de una cuenta bancaria (asignada al darla de alta).',
+  };
+}
+
+/** Da de alta la subcuenta en el plan (si otra alta a la vez saca el mismo codigo, salta el indice unico). */
+async function darDeAltaEnPlan(tx: TransaccionBD, companyId: string, codigo: string, nombre: string): Promise<void> {
+  await tx.chartOfAccounts.create({ data: await filaDelPlan(tx, companyId, codigo, nombre) });
+}
+
+/**
+ * Se asegura de que la subcuenta de un banco este en el plan, dentro de la
+ * transaccion `tx` (al cobrar o pagar con una cuenta dada de alta cuando aun no
+ * se daba de alta en el plan). Si otro cobro a la vez la da de alta, no falla.
+ */
+export async function asegurarSubcuentaBancoEnPlan(tx: TransaccionBD, companyId: string, codigo: string, nombre: string): Promise<void> {
+  if (await tx.chartOfAccounts.findFirst({ where: { companyId, codigo }, select: { id: true } })) return;
+  await tx.chartOfAccounts.createMany({ data: [await filaDelPlan(tx, companyId, codigo, nombre)], skipDuplicates: true });
 }
 
 /**
@@ -124,25 +150,41 @@ export async function asignarSubcuentaBanco(tx: TransaccionBD, companyId: string
 /**
  * Comprueba la subcuenta que ha escrito la persona y, si no esta en el plan, la
  * da de alta, dentro de la transaccion `tx`. Devuelve el codigo limpio. Errores
- * con `campo: 'subcuentaCodigo'` para enseñarlos junto al campo.
+ * con `campo: 'subcuentaCodigo'` para enseñarlos junto al campo. `cuentaId`: la
+ * cuenta bancaria a la que se le cambia (su propia subcuenta no cuenta como de otra).
  */
-export async function usarSubcuentaBanco(tx: TransaccionBD, companyId: string, escrita: string, nombre: string): Promise<string> {
+export async function usarSubcuentaBanco(
+  tx: TransaccionBD,
+  companyId: string,
+  escrita: string,
+  nombre: string,
+  opciones: { cuentaId?: string } = {},
+): Promise<string> {
   const codigo = escrita.replace(/[\s.]/g, '');
   const campo = { campo: 'subcuentaCodigo' };
   if (!/^572\d{1,9}$/.test(codigo)) {
     throw badRequest('La subcuenta de un banco empieza por 572 y lleva solo cifras, por ejemplo 57200001.', campo);
   }
-  // Sin bloqueos: dos altas a la vez con una subcuenta NUEVA chocan en el indice
-  // unico del plan y la que repite ve la otra cuenta. Con una que ya esta en el
-  // plan, dos altas en el mismo instante podrian quedarse las dos con ella.
-  const [enPlan, otra] = await Promise.all([
-    tx.chartOfAccounts.findFirst({ where: { companyId, codigo }, select: { id: true } }),
-    tx.bankAccount.findFirst({ where: { companyId, subcuentaCodigo: codigo }, select: { iban: true } }),
-  ]);
+  if (esAgrupacionBancos(codigo)) {
+    const longitud = await longitudSubcuentasEmpresa(companyId, tx);
+    throw badRequest(
+      `La ${codigo} es la cuenta que agrupa los bancos, no la de un banco. Elige una subcuenta por debajo, por ejemplo ${codigoSubcuenta(PREFIJO_BANCOS, 1, longitud)}.`,
+      campo,
+    );
+  }
+  // Lecturas con bloqueo: si la subcuenta ya esta en el plan, su fila queda
+  // bloqueada hasta el final y otra alta a la vez con la misma espera y despues
+  // ve esta cuenta. Con una subcuenta NUEVA, las dos chocan en el indice unico
+  // del plan y la que repite la ve. (Una lectura normal veria la foto de antes.)
+  const enPlan = await tx.$queryRaw<Array<{ id: string }>>`
+    SELECT id FROM ChartOfAccounts WHERE companyId = ${companyId} AND codigo = ${codigo} FOR UPDATE`;
+  const deCuentas = await tx.$queryRaw<Array<{ id: string; iban: string }>>`
+    SELECT id, iban FROM BankAccount WHERE companyId = ${companyId} AND subcuentaCodigo = ${codigo} FOR UPDATE`;
+  const otra = deCuentas.find((c) => c.id !== opciones.cuentaId);
   if (otra) {
     throw badRequest(`La subcuenta ${codigo} ya es de otra cuenta bancaria (IBAN acabado en ${otra.iban.slice(-4)}). Cada cuenta lleva la suya.`, campo);
   }
-  if (enPlan) return codigo;
+  if (enPlan.length) return codigo;
   const longitud = await longitudSubcuentasEmpresa(companyId, tx);
   if (codigo.length !== longitud) {
     throw badRequest(

@@ -8,7 +8,10 @@ jest.mock('../config/database', () => {
     bankAccount: { findFirst: jest.fn(), findMany: jest.fn(), create: jest.fn() },
     bankMovement: { findMany: jest.fn(), count: jest.fn(), groupBy: jest.fn() },
     // La subcuenta indicada ya esta en el plan: no se da de alta.
-    chartOfAccounts: { findFirst: jest.fn(async () => ({ id: 'plan572000' })), create: jest.fn() },
+    chartOfAccounts: { findFirst: jest.fn(async () => ({ id: 'plan57200001' })), create: jest.fn() },
+    // Lecturas con bloqueo (SELECT ... FOR UPDATE): la subcuenta esta en el plan y,
+    // salvo que la prueba diga otra cosa, no hay cuentas bancarias.
+    $queryRaw: jest.fn(async (sql: TemplateStringsArray) => (sql.join('?').includes('FROM ChartOfAccounts') ? [{ id: 'plan57200001' }] : [])),
     // Empresa de EE. UU.: sus cuentas van en USD (la moneda de su contabilidad).
     legalConfig: { findUnique: jest.fn(async () => ({ pais: 'US', monedaCuenta: 'USD' })) },
   };
@@ -34,7 +37,7 @@ const cuenta = {
   iban: 'ES9121000418450200051332',
   bic: null,
   bancoNombre: 'Banco Demo',
-  subcuentaCodigo: '572000',
+  subcuentaCodigo: '57200001',
   saldoInicial: 1000,
   activa: true,
   createdAt: new Date('2026-01-01'),
@@ -87,7 +90,7 @@ describe('tesoreria', () => {
 
     const res = await treasuryService.crearCuentaBancaria('c1', {
       iban: 'es91 2100 0418 4502 0005 1332',
-      subcuentaCodigo: '572000',
+      subcuentaCodigo: '57200001',
       saldoInicial: 250.5,
     });
 
@@ -103,9 +106,9 @@ describe('tesoreria', () => {
   it('en una empresa de EE. UU. vale un numero de cuenta sin IBAN; lo que parece un IBAN se comprueba', async () => {
     db.bankAccount.findFirst.mockResolvedValue(null);
     db.bankAccount.create.mockImplementation(({ data }) => Promise.resolve({ ...cuenta, ...data }));
-    const res = await treasuryService.crearCuentaBancaria('c1', { iban: '0001 2345-6789', subcuentaCodigo: '572000' });
+    const res = await treasuryService.crearCuentaBancaria('c1', { iban: '0001 2345-6789', subcuentaCodigo: '57200001' });
     expect(res.iban).toBe('000123456789');
-    await expect(treasuryService.crearCuentaBancaria('c1', { iban: 'ES9121000418450200051333', subcuentaCodigo: '572000' })).rejects.toMatchObject({
+    await expect(treasuryService.crearCuentaBancaria('c1', { iban: 'ES9121000418450200051333', subcuentaCodigo: '57200001' })).rejects.toMatchObject({
       statusCode: 400,
       details: { campo: 'iban' },
     });
@@ -114,7 +117,7 @@ describe('tesoreria', () => {
   it('no crea dos cuentas con el mismo IBAN', async () => {
     db.bankAccount.findFirst.mockResolvedValue(cuenta);
     await expect(
-      treasuryService.crearCuentaBancaria('c1', { iban: cuenta.iban, subcuentaCodigo: '572000' }),
+      treasuryService.crearCuentaBancaria('c1', { iban: cuenta.iban, subcuentaCodigo: '57200001' }),
     ).rejects.toThrow(/Ya tienes dada de alta una cuenta con el IBAN/);
   });
 
