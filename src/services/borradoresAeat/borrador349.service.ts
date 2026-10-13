@@ -132,38 +132,74 @@ export async function movimientos349(companyId: string, p: PeriodoFiscal): Promi
     const clave = clave349De(f);
     if (clave) conClave.push({ f, clave });
   }
-  // Rectificativas cuya original se devengo en un periodo anterior.
-  const numeros = conClave.map((x) => String(x.f.idFactura));
+  // Rectificativas de venta: por cada factura (o periodo) que rectifican, su
+  // parte. Si la original es de un periodo anterior (su devengo, la fecha de
+  // una de fuera o el inicio del rappel), registro de rectificacion de ese
+  // periodo; si no, resta en el registro normal del operador.
+  const numeros = conClave.filter((x) => x.f.rectificativa).map((x) => String(x.f.idFactura));
   const rectificativas = numeros.length
     ? await prisma.incomeInvoice.findMany({
-        where: { companyId, esRectificativa: true, facturaOriginalId: { not: null }, numeroCompleto: { in: numeros } },
-        select: { numeroCompleto: true, facturaOriginalId: true },
+        where: { companyId, esRectificativa: true, numeroCompleto: { in: numeros } },
+        select: {
+          numeroCompleto: true,
+          facturaOriginalId: true,
+          rectificaFueraFecha: true,
+          enlacesRectifica: {
+            select: {
+              originalId: true,
+              fechaOriginal: true,
+              periodoDesde: true,
+              baseRectificada: true,
+              original: { select: { fechaEmision: true, fechaOperacion: true, tipoOperacion: true } },
+            },
+            orderBy: { createdAt: 'asc' },
+          },
+        },
       })
     : [];
-  const originales = rectificativas.length
+  const antiguas = rectificativas.filter((r) => !r.enlacesRectifica.length && r.facturaOriginalId);
+  const originalesAntiguas = antiguas.length
     ? await prisma.incomeInvoice.findMany({
-        where: { companyId, id: { in: rectificativas.map((r) => r.facturaOriginalId!) } },
+        where: { companyId, id: { in: antiguas.map((r) => r.facturaOriginalId!) } },
         select: { id: true, fechaEmision: true, fechaOperacion: true, tipoOperacion: true },
       })
     : [];
-  const devengoOriginal = new Map<string, string>();
+  /** Filas de cada rectificativa: fecha de origen, parte de la base (null = toda) y si es de fuera de la app. */
+  const filasDe = new Map<string, Array<{ origen: string | null; base: number | null; fuera: boolean }>>();
   for (const r of rectificativas) {
-    const o = originales.find((x) => x.id === r.facturaOriginalId);
-    if (o && r.numeroCompleto) devengoOriginal.set(r.numeroCompleto, fechaDevengoVenta(o));
+    if (!r.numeroCompleto) continue;
+    if (r.enlacesRectifica.length) {
+      const varias = r.enlacesRectifica.length > 1;
+      filasDe.set(
+        r.numeroCompleto,
+        r.enlacesRectifica.map((e) => ({
+          origen: e.original ? fechaDevengoVenta(e.original) : (e.fechaOriginal ?? e.periodoDesde),
+          base: varias && e.baseRectificada !== null ? Number(e.baseRectificada) : null,
+          fuera: !e.originalId && !e.periodoDesde,
+        })),
+      );
+    } else {
+      const o = originalesAntiguas.find((x) => x.id === r.facturaOriginalId);
+      if (o) filasDe.set(r.numeroCompleto, [{ origen: fechaDevengoVenta(o), base: null, fuera: false }]);
+      else if (r.rectificaFueraFecha) filasDe.set(r.numeroCompleto, [{ origen: r.rectificaFueraFecha, base: null, fuera: true }]);
+    }
   }
   for (const { f, clave } of conClave) {
-    const devengo = devengoOriginal.get(String(f.idFactura));
-    out.push({
-      factura: String(f.idFactura),
-      tipo: 'venta',
-      fecha: f.fecha,
-      nifIva: f.cifnif,
-      pais: f.paisTercero ?? null,
-      nombre: f.nombreTercero,
-      clave,
-      base: f.lineas.reduce((a, l) => a + cent(l.base), 0) / 100,
-      ...(devengo && devengo < p.fechaInicio ? { rectifica: periodoDeFecha(devengo, p.tipo) } : {}),
-    });
+    const base = f.lineas.reduce((a, l) => a + cent(l.base), 0) / 100;
+    const comun = { factura: String(f.idFactura), tipo: 'venta' as const, fecha: f.fecha, nifIva: f.cifnif, pais: f.paisTercero ?? null, nombre: f.nombreTercero, clave };
+    const filas = f.rectificativa ? filasDe.get(String(f.idFactura)) : undefined;
+    if (!filas?.length) {
+      out.push({ ...comun, base });
+      continue;
+    }
+    for (const e of filas) {
+      out.push({
+        ...comun,
+        base: e.base ?? base,
+        // Original de fuera de la app: su base declarada se pide a mano si su 349 no esta en la app.
+        ...(e.origen && e.origen < p.fechaInicio ? { rectifica: periodoDeFecha(e.origen, p.tipo), ...(e.fuera ? { fuera: true } : {}) } : {}),
+      });
+    }
   }
 
   // Compras: facturas de gasto por fecha contable (una anulada con contraasiento resta en su periodo).
