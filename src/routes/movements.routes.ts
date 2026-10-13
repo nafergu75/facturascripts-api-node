@@ -13,6 +13,10 @@ router.get('/', authorize('contabilidad:read', 'tesoreria:read'), movementsContr
 // ⚠️ IMPORTANT: Specific routes MUST come BEFORE dynamic routes like /:id
 // Otherwise Express will treat /stats/summary as /:id where id='stats/summary'
 
+// Panel del resumen (panel.service): sale de las FACTURAS y las NOMINAS, por la
+// fecha de la factura, no de la tabla Movement. Todas admiten ?anio (por defecto
+// el año en curso) y ?trimestre=1-4 o ?mes=1-12.
+
 // GET /companies/:companyId/movements/stats/summary
 router.get('/stats/summary', authorize('contabilidad:read', 'tesoreria:read'), movementsController.getSummary);
 
@@ -25,6 +29,15 @@ router.get('/stats/by-category', authorize('contabilidad:read', 'tesoreria:read'
 
 // GET /companies/:companyId/movements/stats/by-month
 router.get('/stats/by-month', authorize('contabilidad:read', 'tesoreria:read'), movementsController.getByMonth);
+
+// GET /companies/:companyId/movements/stats/ingresos-por-cliente
+router.get('/stats/ingresos-por-cliente', authorize('contabilidad:read', 'tesoreria:read'), movementsController.getIngresosPorCliente);
+
+// GET /companies/:companyId/movements/stats/gastos-por-proveedor
+router.get('/stats/gastos-por-proveedor', authorize('contabilidad:read', 'tesoreria:read'), movementsController.getGastosPorProveedor);
+
+// GET /companies/:companyId/movements/stats/ultimas-facturas?limit=15[&anio=2026]
+router.get('/stats/ultimas-facturas', authorize('contabilidad:read', 'tesoreria:read'), movementsController.getUltimasFacturas);
 
 // PATCH /companies/:companyId/movements/:id
 router.patch('/:id', authorize('contabilidad:write'), movementsController.update);
