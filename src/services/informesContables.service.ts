@@ -756,6 +756,99 @@ export async function informeMayorTerceros(companyId: string, tipo: TipoTercero,
   return { tipo, periodo, terceros: filasDatos, totales, tabla };
 }
 
+/**
+ * Una factura del cliente o del proveedor que no sale en su mayor (el mayor
+ * solo lee asientos aprobados, POSTED): no tiene asiento o lo tiene en
+ * borrador. Así se explica que el mayor diga 0 y facturación diga que hay algo
+ * pendiente (caso de NZ004_26, 13-10-2026).
+ */
+export interface FacturaFueraDelMayor {
+  id: string;
+  tipo: 'venta' | 'gasto';
+  numeroCompleto: string | null;
+  fechaEmision: string;
+  totalFactura: number;
+  /** SIN_ASIENTO: no se ha contabilizado. BORRADOR: su asiento espera a que se apruebe en el Motor contable. */
+  estadoContable: 'SIN_ASIENTO' | 'BORRADOR';
+  /** El asiento en borrador (null si no tiene). */
+  asientoId: string | null;
+  /** CONTABILIZAR (desde la factura) o APROBAR (el asiento, en el Motor contable). */
+  accion: 'CONTABILIZAR' | 'APROBAR';
+  /** Pantalla donde se arregla: la factura o el asiento en el Motor contable. */
+  enlace: string;
+}
+
+/**
+ * Facturas del tercero hasta `hasta` que no salen en su mayor: emitidas (ventas
+ * FINAL, sin borradores ni proformas) o recibidas (sin las anuladas; las del
+ * lector sin revisar llevan el asiento en borrador), sin un asiento aprobado.
+ * Las de un año que llevó la gestoría no cuentan: su saldo entró con la
+ * apertura. Solo lee.
+ */
+export async function facturasFueraDelMayor(companyId: string, tipo: TipoTercero, terceroId: string, hasta: string): Promise<FacturaFueraDelMayor[]> {
+  if (terceroId === SIN_IDENTIFICAR || terceroId.startsWith('subcuenta:')) return [];
+  const finExterna = await finLlevanzaExternaAntesDe(companyId, hasta);
+  const venta = tipo === 'clientes';
+  const facturas = venta
+    ? await prisma.incomeInvoice.findMany({
+        where: { companyId, customerId: terceroId, estadoDocumento: 'FINAL', estado: { not: 'DRAFT' }, fechaEmision: { lte: hasta, ...(finExterna ? { gt: finExterna } : {}) } },
+        select: { id: true, numeroCompleto: true, fechaEmision: true, totalFactura: true },
+        orderBy: [{ fechaEmision: 'asc' }, { createdAt: 'asc' }],
+      })
+    : (
+        await prisma.expenseInvoice.findMany({
+          where: { companyId, supplierId: terceroId, estado: { not: 'ANULADA' }, fechaEmision: { lte: hasta } },
+          select: { id: true, numeroCompleto: true, numeroFacturaProveedor: true, fechaEmision: true, fechaRegistro: true, totalFactura: true },
+          orderBy: [{ fechaEmision: 'asc' }, { createdAt: 'asc' }],
+        })
+      )
+        .filter((f) => !finExterna || fechaContableGasto(f) > finExterna)
+        .map((f) => ({ id: f.id, numeroCompleto: f.numeroFacturaProveedor || f.numeroCompleto, fechaEmision: f.fechaEmision, totalFactura: f.totalFactura }));
+  if (!facturas.length) return [];
+  // El asiento de la factura (no los de sus cobros o pagos), sin los anulados.
+  const asientos = await prisma.journalEntry.findMany({
+    where: {
+      companyId,
+      invoiceId: { in: facturas.map((f) => f.id) },
+      origen: venta ? 'FACTURA_INGRESO' : 'FACTURA_GASTO',
+      estado: { in: ['POSTED', 'DRAFT', 'PENDING_REVIEW'] },
+    },
+    select: { id: true, invoiceId: true, estado: true },
+    orderBy: { createdAt: 'desc' },
+  });
+  const fuera: FacturaFueraDelMayor[] = [];
+  for (const f of facturas) {
+    const suyos = asientos.filter((a) => a.invoiceId === f.id);
+    if (suyos.some((a) => a.estado === 'POSTED')) continue;
+    const borrador = suyos[0] ?? null;
+    fuera.push({
+      id: f.id,
+      tipo: venta ? 'venta' : 'gasto',
+      numeroCompleto: f.numeroCompleto ?? null,
+      fechaEmision: f.fechaEmision,
+      totalFactura: round2(Number(f.totalFactura)),
+      estadoContable: borrador ? 'BORRADOR' : 'SIN_ASIENTO',
+      asientoId: borrador?.id ?? null,
+      accion: borrador ? 'APROBAR' : 'CONTABILIZAR',
+      enlace: borrador ? `/dashboard/motor-contable/${borrador.id}` : venta ? `/dashboard/facturas/${f.id}` : `/dashboard/compras/${f.id}`,
+    });
+  }
+  return fuera;
+}
+
+/** «2 facturas no salen en este mayor... Sin asiento: NZ004_26 (8.654,68 €); contabilízala desde la factura. Con el asiento en borrador: ...». */
+function notaFueraDelMayor(fuera: FacturaFueraDelMayor[], simbolo: string): string {
+  const sin = fuera.filter((f) => f.estadoContable === 'SIN_ASIENTO');
+  const borrador = fuera.filter((f) => f.estadoContable === 'BORRADOR');
+  const lista = (xs: FacturaFueraDelMayor[]) => xs.map((f) => `${f.numeroCompleto ?? 'sin número'} (${num(f.totalFactura)} ${simbolo})`).join(', ');
+  const partes = [
+    ...(sin.length ? [`sin asiento: ${lista(sin)}; contabilízala${sin.length > 1 ? 's' : ''} desde la factura`] : []),
+    ...(borrador.length ? [`con el asiento en borrador: ${lista(borrador)}; apruéba${borrador.length > 1 ? 'los' : 'lo'} en el Motor contable`] : []),
+  ];
+  const cuantas = fuera.length === 1 ? 'Una factura no sale' : `${fuera.length} facturas no salen`;
+  return `${cuantas} en este mayor, que solo cuenta los asientos aprobados. ${partes.map((p) => p.charAt(0).toUpperCase() + p.slice(1)).join('. ')}.`;
+}
+
 export async function informeDetalleTercero(companyId: string, tipo: TipoTercero, periodo: Periodo, terceroId: string) {
   const terceros = await calcularTerceros(companyId, tipo, periodo);
   let t: (SaldoTercero & { subcuentas: string[] }) | undefined = terceros.find((x) => x.id === terceroId);
@@ -766,6 +859,8 @@ export async function informeDetalleTercero(companyId: string, tipo: TipoTercero
   }
   const facturasPendientes = (await pendientesSegunFacturas(companyId, tipo, periodo.hasta, { conPartidas: true })).filter((f) => f.terceroId === t!.id);
   const totalPendiente = round2(facturasPendientes.reduce((s, f) => s + f.importePendiente, 0));
+  // Las facturas que el mayor no cuenta (sin asiento o con él en borrador), con su enlace para arreglarlo.
+  const fueraDelMayor = await facturasFueraDelMayor(companyId, tipo, t.id, periodo.hasta);
 
   const filas: FilaInforme[] = [
     { celdas: [null, null, 'Saldo inicial', null, null, null, t.saldoInicial], estilo: 'nota' },
@@ -783,6 +878,7 @@ export async function informeDetalleTercero(companyId: string, tipo: TipoTercero
         ? `Según facturación, ${facturasPendientes.length} factura(s) pendiente(s) de ${de} por ${num(totalPendiente)} ${await simboloCuenta(companyId)}: ${facturasPendientes.map((f) => f.numeroCompleto ?? '').filter(Boolean).join(', ')}.`
         : `Según facturación, no tiene facturas pendientes de ${de}.`,
     );
+    if (fueraDelMayor.length) notas.push(notaFueraDelMayor(fueraDelMayor, await simboloCuenta(companyId)));
   }
   const tabla: TablaInforme = {
     titulo: `${tipo === 'clientes' ? 'Mayor del cliente' : 'Mayor del proveedor'} ${t.nombre}`,
@@ -802,7 +898,7 @@ export async function informeDetalleTercero(companyId: string, tipo: TipoTercero
     notas,
     fichero: `mayor_${t.nombre}_${periodo.desde}_${periodo.hasta}`,
   };
-  return { tipo, periodo, tercero: t, facturasPendientes, totalPendiente, tabla };
+  return { tipo, periodo, tercero: t, facturasPendientes, totalPendiente, facturasFueraDelMayor: fueraDelMayor, tabla };
 }
 
 // ---------------------------------------------------------------------------
