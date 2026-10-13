@@ -46,6 +46,11 @@ const aMovimiento = (m: {
   conciliado: m.conciliado,
 });
 
+/**
+ * Graba una cuenta tal cual, sin comprobar el IBAN ni la subcuenta. Solo la usan
+ * las pruebas para preparar datos: la API da de alta las cuentas con
+ * treasury.service (crearCuentaBancaria), tambien desde POST /bancos/cuentas.
+ */
 export async function crearCuentaBancaria(
   companyId: string,
   data: Omit<CuentaBancariaEmpresa, 'id' | 'companyId'>,
