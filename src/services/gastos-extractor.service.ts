@@ -112,6 +112,7 @@ REGLAS CLAVE:
 2. FECHA: Formatos españoles DD/MM/YYYY, convierte a YYYY-MM-DD.
 3. PROVEEDOR: Nombre de quien emite el comprobante.
 4. NIF/CIF PROVEEDOR: Patrón español (8 dígitos + letra, o letra + 7 dígitos + letra).
+CLIENTE: nombre de a quien va dirigida la factura (el destinatario), si aparece.
 5. CONCEPTO: Tipo de gasto ("arrendamiento", "reparación", "servicios", "suministros", "nómina", "compra", etc.).
 6. BASE IMPONIBLE: Cantidad sin impuestos.
 7. IVA: Porcentaje y/o cantidad.
@@ -133,6 +134,7 @@ const HERRAMIENTA_EXTRACCION: Anthropic.Tool = {
       fecha: { type: 'string', description: 'Fecha de emisión, YYYY-MM-DD' },
       proveedor: { type: 'string', description: 'Razón social del proveedor' },
       nif_proveedor: { type: 'string', description: 'NIF/CIF del proveedor, sin prefijo ES' },
+      cliente: { type: 'string', description: 'Razón social del cliente: a quien va dirigida la factura' },
       concepto: {
         type: 'string',
         description: 'Tipo de gasto: arrendamiento, reparación, servicios, suministros, nómina, compra, publicidad, etc.',
@@ -349,6 +351,8 @@ interface LecturaClaude {
   fecha: string | null;
   proveedor: string | null;
   nif_proveedor: string | null;
+  /** A quien va la factura (opcional: las lecturas guardadas antes no lo traen). */
+  cliente?: string | null;
   concepto: string | null;
   base: number | null;
   iva_porcentaje: number | null;
@@ -423,6 +427,7 @@ export async function leerDocumentoConClaude(buffer: Buffer, mimeType: string, p
     fecha: cadena(input.fecha),
     proveedor: cadena(input.proveedor),
     nif_proveedor: limpiarNif(input.nif_proveedor),
+    cliente: cadena(input.cliente),
     concepto: cadena(input.concepto),
     base: numero(input.base) ?? null,
     iva_porcentaje: numero(input.iva_porcentaje) ?? null,
