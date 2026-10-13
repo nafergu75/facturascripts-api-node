@@ -2588,6 +2588,8 @@ export const incomeInvoicesService = {
    * Importes en la moneda de cuenta. Una rectificativa por sustitucion (S) con
    * la original en la app lleva la factura corregida entera: cuenta solo su
    * diferencia con la original, como en el 303 y en el resumen fiscal.
+   * OJO: filtra por la fecha de la factura (fechaEmision), no por el devengo
+   * como el panel y el 303. Hoy ninguna pantalla lo usa.
    */
   async resumenPorPeriodo(companyId: string, desde?: string, hasta?: string) {
     const where: Prisma.IncomeInvoiceWhereInput = { companyId, estadoDocumento: ESTADO_FINAL };
