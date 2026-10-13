@@ -292,7 +292,7 @@ describe('tickets (R5)', () => {
     const ticket = await emitir(50, { tipoFactura: 'F2' });
     const r5 = await rect({ ticket: true, originales: [{ id: ticket.id }] }, { lineas: [linea(-50)] });
     expect(r5).toMatchObject({ tipoFactura: 'R5', serie: 'RT' });
-    expect((await opcionesRectificativa(E)).series.tickets).toEqual({ codigo: 'RT', existe: true });
+    expect((await opcionesRectificativa(E)).series.tickets).toEqual({ codigo: 'RT', existe: true, desactivada: false });
     const completa = await emitir(50);
     const e = await error(rect({ ticket: true, originales: [{ id: completa.id }] }, { lineas: [linea(-50)] }));
     expect(e.details).toMatchObject({ codigo: 'TICKET_SOLO_SIMPLIFICADAS' });

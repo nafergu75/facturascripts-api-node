@@ -53,6 +53,10 @@ describe('rectificativas hechas en la app', () => {
     const ticket = await incomeInvoicesService.crearIngreso({ companyId: E, customer: { id: cliente }, tipoFactura: 'F2', lineas: [linea(40)] });
     const completa = await incomeInvoicesService.crearIngreso({ companyId: E, customer: { id: cliente }, lineas: [linea(40)] });
     const bloque = (id: string, ticketSi = false) => ({ ticket: ticketSi, forma: 'I', motivo: 'DEVOLUCION', explicacion: 'Devolución', originales: [{ id }] });
+    // Una R5 rechazada (una devolución que suma) no deja creada la RT.
+    const rechazada = await error(incomeInvoicesService.crearIngreso({ companyId: E, customer: {}, lineas: [linea(10)], rectificativa: bloque(ticket.id, true) } as unknown as CrearFacturaIngresoDTO));
+    expect(rechazada.details).toMatchObject({ codigo: 'SIGNO_NO_CUADRA' });
+    expect(await prisma.invoiceSeries.count({ where: { companyId: E, tipoDocumento: 'RECTIFICATIVA_SIMPLIFICADA' } })).toBe(0);
     const r5 = await incomeInvoicesService.crearIngreso({ companyId: E, customer: {}, lineas: [linea(-10)], rectificativa: bloque(ticket.id, true) } as unknown as CrearFacturaIngresoDTO);
     expect(r5).toMatchObject({ tipoFactura: 'R5', serie: 'RT', numeroCompleto: 'RT-1' });
     expect(await prisma.invoiceSeries.findUniqueOrThrow({ where: { companyId_codigo: { companyId: E, codigo: 'RT' } } })).toMatchObject({ tipoDocumento: 'RECTIFICATIVA_SIMPLIFICADA', activa: true, porDefecto: true });
