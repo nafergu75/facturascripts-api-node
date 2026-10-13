@@ -480,6 +480,28 @@ export function exigirTipoRectificativaDisponible(tipoFactura: string | null | u
   throw badRequest(`${que} ${MOTIVO_INFO[motivo].aviso ?? 'Todavía no se puede hacer desde la app.'}`, { codigo: 'MOTIVO_NO_DISPONIBLE', campo: 'tipoFactura' });
 }
 
+/**
+ * Por diferencias, cada linea lleva la retencion de las facturas que rectifica
+ * (todas de la app; con una de fuera o un periodo no se sabe cual era). Un
+ * abono sin la retencion de su original dejaba la 473 sin ajustar y la 430N
+ * por encima de lo que de verdad se debe. Por sustitucion, la factura
+ * corregida puede cambiarla. Lo comprueban el alta, el lector y la emision.
+ */
+export function exigirRetencionDeOriginales(plan: PlanVenta, lineas: Array<{ tipoRetencion?: number | null }>): void {
+  if (plan.bloque.forma !== 'I' || !plan.originalesApp.length || plan.filas.some((f) => !f.originalId)) return;
+  const tipos = [...new Set(plan.originalesApp.flatMap((f) => f.lineas.map((l) => Number(l.tipoRetencion ?? 0))))].sort((a, b) => a - b);
+  const i = lineas.findIndex((l) => !tipos.includes(Number(l.tipoRetencion ?? 0)));
+  if (i < 0) return;
+  const texto = (t: number) => (t ? `con una retención de IRPF del ${t} %` : 'sin retención');
+  const deLa = plan.originalesApp.length === 1 ? `La factura ${numeroDe(plan.originalesApp[0])}` : 'Las facturas que rectificas';
+  throw badRequest(
+    tipos.length === 1
+      ? `${deLa} ${plan.originalesApp.length === 1 ? 'va' : 'van'} ${texto(tipos[0])} y la línea ${i + 1} de la rectificativa, ${texto(Number(lineas[i].tipoRetencion ?? 0))}. Por diferencias, la rectificativa lleva la misma retención que la factura que corrige.`
+      : `La línea ${i + 1} de la rectificativa va ${texto(Number(lineas[i].tipoRetencion ?? 0))}, y las facturas que rectificas llevan ${tipos.map(texto).join(' o ')}. Por diferencias, cada línea lleva la retención de la factura que corrige.`,
+    { codigo: 'RETENCION_NO_CUADRA', campo: 'tipoRetencion' },
+  );
+}
+
 /** 409 de una sustitucion sobre una factura que ya tiene rectificativas. */
 function errorSustitucionConRectificativas(f: { id: string; numeroCompleto: string | null }, previas: Array<{ id: string; numeroCompleto: string | null }>) {
   const lista = previas.map((r) => r.numeroCompleto ?? 'sin número').join(', ');
