@@ -8,6 +8,7 @@ import { archivarVentaSinRomper } from './archivoFacturas.service';
 import { accountingHooksService } from './accounting-hooks.service';
 import { comprobarRevisionVenta, vincularLectura } from './lectura/confirmar';
 import { clientePorNif, errorTerceroNoDadoDeAlta } from './lectura/terceros-lector';
+import type { DireccionFicha } from './lectura/direccion';
 import { detalleFalloBD, errorFalloBD, motivoSinAsiento, QUE_HACER_REGISTRAR } from '../utils/errores-bd';
 
 /**
@@ -45,6 +46,12 @@ export interface IngresoExtraido {
    * que en el confirmar: la pantalla deja elegir la cuenta de cada una.
    */
   lineas: Array<{ descripcion: string; base: number; tipoIva: number }>;
+  /**
+   * Direccion leida del cliente, para darlo de alta desde el lector con la
+   * ficha rellena: { calle, cp, municipio, provincia, pais (ISO-2 o null),
+   * revisar }. null si no se ha leido nada de la direccion.
+   */
+  direccionCliente: DireccionFicha | null;
 }
 
 /** Cuenta de ventas por defecto del PGC (700 Ventas de mercaderias / prestacion de servicios). */
@@ -59,7 +66,12 @@ const limpiarNif = (v: string | null | undefined): string | null => {
   return limpio || null;
 };
 
-export function aIngresoExtraido(documentId: string, e: InvoiceExtraction): IngresoExtraido {
+/**
+ * Lo que muestra la pantalla. `direccion`: la del cliente leida con la lectura
+ * nueva (lectura/direccion.ts); sin ella (extractor de siempre), la direccion
+ * que trae la extraccion, entera en la calle.
+ */
+export function aIngresoExtraido(documentId: string, e: InvoiceExtraction, direccion?: DireccionFicha | null): IngresoExtraido {
   const errores = [...e.validation.errors];
   if (!limpiarNif(e.customer.tax_id)) errores.push(MENSAJE_FALTA_NIF_CLIENTE);
   if (!e.invoice.number) errores.push('No se ha podido leer el numero de la factura.');
@@ -82,7 +94,14 @@ export function aIngresoExtraido(documentId: string, e: InvoiceExtraction): Ingr
     confianza: e.confidence,
     errores,
     lineas: e.amounts.bases.map((b) => ({ descripcion: descripcionLinea(e, b, concepto), base: b.base_amount, tipoIva: b.tax_rate })),
+    direccionCliente: direccion !== undefined ? direccion : direccionDeTexto(e.customer.address),
   };
+}
+
+/** Una direccion en una sola cadena (extractor de siempre): toda en la calle. */
+function direccionDeTexto(texto: string | null | undefined): DireccionFicha | null {
+  const calle = (texto ?? '').replace(/\s+/g, ' ').trim();
+  return calle ? { calle, cp: null, municipio: null, provincia: null, pais: null, revisar: false } : null;
 }
 
 /** Texto de relleno de las lineas sin descripcion (aInvoiceExtraction pone «Item 2»...). */
