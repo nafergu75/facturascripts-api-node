@@ -182,6 +182,20 @@ describe('aplicarCorrecciones', () => {
     expect(v.find((x) => x.codigo === 'CUADRE')).toMatchObject({ nivel: 'error', campos: ['totales.totalAPagar'] });
   });
 
+  it('recargo de equivalencia leído: sin tocar las líneas sigue bloqueando; corregidas, va sin recargo y el AuditLog guarda el leído', () => {
+    const conRecargo = leida();
+    conRecargo.desglose[0] = { ...conRecargo.desglose[0], tipoRecargo: 5.2, cuotaRecargo: { valor: 10.4, confianza: 0.9, fuente: 'azure' } };
+    conRecargo.totales.totalFactura.valor = 252.4;
+    conRecargo.totales.totalAPagar.valor = 252.4;
+    const ctx = { lector: 'VENTA' as const, nifEmpresa: 'B12345674', empresaEspanola: true, monedaCuenta: 'EUR', hoy: '2026-10-14', periodoAbierto: async () => true, duplicado: { factura: null, archivo: null } };
+    expect(validacionesSincronas(aplicarCorrecciones(conRecargo, { numero: 'F-9' }), ctx).find((v) => v.codigo === 'RECARGO_NO_SOPORTADO')?.nivel).toBe('error');
+    const c: CorreccionesVenta = { lineas: [{ descripcion: 'Folletos', base: 200, tipoIva: 21 }], total: 242 };
+    const corregida = aplicarCorrecciones(conRecargo, c);
+    expect(corregida.desglose[0]).toMatchObject({ tipoRecargo: null, cuotaRecargo: null });
+    expect(validacionesSincronas(corregida, ctx).some((v) => v.codigo === 'RECARGO_NO_SOPORTADO' || v.codigo === 'CUADRE')).toBe(false);
+    expect(cambiosCorregidos(conRecargo, c)[0]).toMatchObject({ campo: 'lineas', leido: [{ tipoIva: 21, base: 200, cuota: 42, recargo: 10.4 }] });
+  });
+
   it('el QR se coteja otra vez: un número corregido que lo contradice es un error', () => {
     const conQr = compararQr({ estado: 'VALIDO', verifactu: true, datos: { nif: 'B12345674', numserie: 'F2026/0012', fecha: '2026-03-04', importe: 242 } }, leida());
     expect(conQr.qr?.estado).toBe('COINCIDE');
