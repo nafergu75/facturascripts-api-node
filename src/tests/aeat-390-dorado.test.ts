@@ -341,3 +341,33 @@ describe('390 frente a los cuatro 303 del año: misma regla para las intracomuni
     expect(d.casillas['65']).toBe(suma303('46'));
   });
 });
+
+describe('390: rectificativas de venta por concurso (R2) y por sustitución', () => {
+  const facturas: FacturaFiscal[] = [
+    venta('2027-02-15', [{ tipoIva: 21, base: 10000, cuota: 2100 }]),
+    venta('2027-03-01', [{ tipoIva: 21, base: 3000, cuota: 630 }]),
+    // Concurso del cliente (R2): en el 303 con las demás en [14]/[15]; en el 390 aparte, en [31]/[32].
+    venta('2027-06-10', [{ tipoIva: 21, base: -3000, cuota: -630 }], { rectificativa: true, concurso: true }),
+    // Una sustitución llega ya como la diferencia con su original (obtenerFacturasFiscales): [29]/[30].
+    venta('2027-09-01', [{ tipoIva: 21, base: -500, cuota: -105 }], { rectificativa: true }),
+  ];
+  const trimestres = ['1T', '2T', '3T', '4T'].map((p) => agregar303(facturas, periodoFiscal(2027, p)).casillasOficiales ?? {});
+  const suma303 = (c: string) => Math.round(trimestres.reduce((a, t) => a + (t[c] ?? 0) * 100, 0)) / 100;
+  const d = construirModelo390(entrada390Desde(facturas, 2027, ID).entrada);
+  const p2 = d.paginas.find((p) => p.codigo === '02000')!.linea;
+
+  it('la R2 va a [31]/[32] y la otra a [29]/[30]; [33]/[34] suman las dos y cuadran con los 303', () => {
+    expect([suma303('14'), suma303('15')]).toEqual([-3500, -735]);
+    expect([d.casillas['29'], d.casillas['30']]).toEqual([-500, -105]);
+    expect([d.casillas['31'], d.casillas['32']]).toEqual([-3000, -630]);
+    expect([d.casillas['33'], d.casillas['34']]).toEqual([9500, 1995]);
+    expect(d.casillas['47']).toBe(suma303('27'));
+    expect(d.errores).toEqual([]);
+  });
+
+  it('en el fichero, [31]/[32] con signo en sus posiciones (1577 y 1594)', () => {
+    expect(campo(p2, 1577, 17)).toBe('N' + '300000'.padStart(16, '0')); // [31]
+    expect(campo(p2, 1594, 17)).toBe('N' + '63000'.padStart(16, '0')); // [32]
+    expect(campo(p2, 1611, 17)).toBe(imp17(9500)); // [33]
+  });
+});
