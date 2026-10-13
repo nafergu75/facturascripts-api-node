@@ -65,7 +65,8 @@ export async function crearCuentaBancaria(
 }
 
 export async function listarCuentasBancarias(companyId: string): Promise<CuentaBancariaEmpresa[]> {
-  const cuentas = await prisma.bankAccount.findMany({ where: { companyId } });
+  // De la mas antigua a la mas nueva: la primera es la que toma un cobro sin cuenta indicada.
+  const cuentas = await prisma.bankAccount.findMany({ where: { companyId }, orderBy: { createdAt: 'asc' } });
   return cuentas.map(aCuenta);
 }
 
