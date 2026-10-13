@@ -411,6 +411,18 @@ describe('borrador', () => {
   });
 });
 
+describe('borrador que cambia de modo', () => {
+  it('a «Rectificativa de un ticket» sin decir la serie: va a la de tickets; y de vuelta, a la R', async () => {
+    const fuera = [{ numero: 'T-2025-9', fecha: '2025-12-20' }];
+    const borrador = await rect({ originales: fuera, explicacion: '' }, { borrador: true, customer: { id: cliente }, lineas: [linea(-10)] });
+    expect(borrador).toMatchObject({ tipoFactura: 'R1', serie: 'R' });
+    const ticket = await incomeInvoicesService.actualizarBorrador(E, borrador.id, { rectificativa: { ticket: true, forma: 'I', motivo: 'DEVOLUCION', explicacion: '', originales: fuera } });
+    expect(ticket).toMatchObject({ tipoFactura: 'R5', serie: 'RT' });
+    const deVuelta = await incomeInvoicesService.actualizarBorrador(E, borrador.id, { rectificativa: { ticket: false, forma: 'I', motivo: 'DEVOLUCION', explicacion: '', originales: fuera } });
+    expect(deVuelta).toMatchObject({ tipoFactura: 'R1', serie: 'R' });
+  });
+});
+
 describe('opciones y buscador', () => {
   it('motivos con su tipo; impago y concurso, desactivados', async () => {
     const o = await opcionesRectificativa(E);
