@@ -11,7 +11,8 @@
  */
 import { MONEDAS_FACTURA_ACTIVAS } from '../../domain/divisas';
 import { TIPOS_IVA_GASTO } from '../../domain/factura-gasto.model';
-import { prefijoNifIvaUe, validarFormatoNifIvaUe } from '../../domain/tipo-operacion.model';
+import { limpiarNif, normalizarPais, PREFIJOS_NIF_UE, prefijoNifIvaUe, validarFormatoNifIvaUe } from '../../domain/tipo-operacion.model';
+import { nombrePaisEs, pareceNifEspanol, tieneFormaNifIvaUe } from '../../domain/numero-fiscal';
 import { esFechaReal } from '../../schemas/factura-gasto.schemas';
 import { aCentimos } from '../../utils/money';
 import { normalizarNif, validarNifEspanol } from '../../utils/nif';
@@ -27,6 +28,19 @@ import {
   type NivelValidacion,
   type ResultadoValidacion,
 } from './tipos';
+import {
+  contradiccionOrigen,
+  datosTerceroDeLectura,
+  detectarOrigenTercero,
+  nifIvaConPrefijo,
+  numeroFiscalDe,
+  numeroFiscalEnFraseDe,
+  tipoTercero,
+  type Contradiccion,
+  type EleccionOrigenTercero,
+  type OrigenDetectado,
+  type TipoTercero,
+} from './origen-tercero';
 
 export interface ContextoValidacion {
   lector: Lector;
@@ -43,7 +57,18 @@ export interface ContextoValidacion {
   hoy: string;
   periodoAbierto: (fecha: string) => Promise<boolean>;
   duplicado: { factura: { numeroCompleto: string } | null; archivo: { fecha: string } | null };
+  /**
+   * De donde ha dicho la persona que es el tercero (el cliente en ventas, el
+   * proveedor en gastos) antes de subir la factura. Manda sobre lo que se
+   * deduce (origen-tercero.ts). null o sin poner: se deduce.
+   */
+  origenTercero?: EleccionOrigenTercero | null;
+  /** Pais de la ficha del tercero ya dado de alta con el NIF leido (null si no lo hay). */
+  paisTerceroFicha?: string | null;
 }
+
+/** Error de la lectura de ventas sin NIF de un cliente espanol (tambien lo usa ingresos-extractor). */
+export const MENSAJE_FALTA_NIF_CLIENTE = 'Falta el NIF del cliente: es obligatorio en una factura de ingreso.';
 
 export interface ResultadoValidacionLectura {
   campos: Partial<Record<CampoId, EstadoCampo>>;
@@ -181,7 +206,12 @@ function v06Irpf(l: LecturaNormalizada): ResultadoValidacion[] {
 /** DNI (8 cifras y letra), NIE o NIF especial (X, Y, Z, K, L, M) y CIF (letra, 7 cifras y control). */
 const FORMA_NIF_ESPANOL = /^(ES)?(\d{8}[A-Z]|[XYZKLM]\d{7}[A-Z]|[ABCDEFGHJNPQRSUVW]\d{7}[0-9A-J])$/i;
 
-/** Motivo por el que el NIF no vale, o null. Un NIF-IVA de otro pais de la UE solo se mira el formato. */
+/**
+ * Motivo por el que el NIF no vale, o null. Un NIF-IVA de otro pais de la UE
+ * solo se mira el formato. Es la regla de la propia empresa (el emisor en
+ * ventas, el cliente en gastos) y la de los terceros de una empresa de fuera
+ * de Espana cuando no se ha dicho de donde son.
+ */
 export function motivoNifNoValido(nif: string, empresaEspanola: boolean): string | null {
   const ue = prefijoNifIvaUe(nif);
   if (ue && ue.pais !== 'ES') return validarFormatoNifIvaUe(nif) ? null : `El NIF-IVA ${nif} no tiene un formato válido.`;
@@ -191,20 +221,163 @@ export function motivoNifNoValido(nif: string, empresaEspanola: boolean): string
   return r.valido ? null : (r.motivo ?? 'El NIF no es válido.');
 }
 
-function v07NifEmisor(l: LecturaNormalizada, ctx: ContextoValidacion): ResultadoValidacion[] {
-  const nif = l.emisor.nif.valor;
-  if (!nif) {
-    if (ctx.lector !== 'GASTO') return [];
-    return [v('NIF_EMISOR', ctx.empresaEspanola ? 'error' : 'revisar', ['emisor.nif'], 'No se ha podido leer el NIF del proveedor.')];
+/** Lo que la validacion del NIF del tercero necesita saber de el y de la factura. */
+interface TerceroValidado {
+  lector: Lector;
+  /** «cliente» o «proveedor». */
+  tipo: TipoTercero;
+  campo: CampoId;
+  codigo: 'NIF_EMISOR' | 'NIF_RECEPTOR';
+  nif: string | null;
+  origen: OrigenDetectado;
+  /** Lo leido contradice lo que dijo la persona (ese aviso ya pide cambiarlo). */
+  contradiccion: Contradiccion | null;
+}
+
+/** «Si el cliente es de otro país, cámbialo en «¿De dónde es el cliente?».» */
+const siEsDeOtroPais = (tipo: TipoTercero) => `Si el ${tipo} es de otro país, cámbialo en «¿De dónde es el ${tipo}?».`;
+
+/**
+ * Sin NIF del tercero (el cliente en ventas, el proveedor en gastos).
+ * - De Espana (o sin saber de donde es): como siempre. En ventas es error (art.
+ *   6.1.d del RD 1619/2012: con un cliente espanol la operacion tributa en
+ *   Espana); en gastos, error si la empresa es espanola.
+ * - De otro pais de la UE: «revisar». En ventas, sin su NIF-IVA no puede ir
+ *   como entrega intracomunitaria exenta (art. 25 LIVA); el tipo de operacion
+ *   lo decide despues la fiscalidad de la venta (inferirTipoOperacion).
+ * - De fuera de la UE: «revisar». El numero del destinatario solo es
+ *   obligatorio si la operacion tributa en Espana (art. 6.1.d.3.º).
+ */
+function faltaNifTercero(t: TerceroValidado, ctx: ContextoValidacion): ResultadoValidacion[] {
+  const venta = t.lector === 'VENTA';
+  const elegido = t.origen.por === 'eleccion';
+  if (t.origen.origen === 'UE') {
+    const n = numeroFiscalDe(t.origen);
+    const mensaje = venta
+      ? `Falta el ${n} del cliente. Sin él, la venta no puede ir como entrega intracomunitaria exenta (art. 25 de la Ley del IVA): compruébalo.`
+      : `No se ha podido leer el ${n} del proveedor: compruébalo con la factura.`;
+    return [v(t.codigo, 'revisar', [t.campo], mensaje)];
   }
+  if (t.origen.origen === 'FUERA') {
+    const n = numeroFiscalEnFraseDe(t.origen);
+    const mensaje = venta
+      ? `La factura no lleva el ${n} del cliente. Con un cliente de fuera de la UE solo es obligatorio si la venta tributa en España, es decir, si lleva IVA español (art. 6.1.d del Reglamento de facturación): compruébalo.`
+      : `No se ha podido leer el ${n} del proveedor. Un proveedor de fuera de la UE puede no tenerlo en la factura: compruébalo.`;
+    return [v(t.codigo, 'revisar', [t.campo], mensaje)];
+  }
+  // De Espana o sin saber de donde es: como siempre. Si lo dijo la persona, como salir de ahi.
+  const otroPais = elegido && !t.contradiccion ? ` ${siEsDeOtroPais(t.tipo)}` : '';
+  if (venta) return [v(t.codigo, 'error', [t.campo], `${MENSAJE_FALTA_NIF_CLIENTE}${otroPais}`)];
+  return [v(t.codigo, ctx.empresaEspanola ? 'error' : 'revisar', [t.campo], `No se ha podido leer el NIF del proveedor.${otroPais}`)];
+}
+
+/** NIF-IVA de un tercero de otro pais de la UE: con o sin prefijo, quitando espacios y puntos. */
+function nifIvaUeNoValido(t: TerceroValidado): ResultadoValidacion[] {
+  const nif = limpiarNif(t.nif);
+  const pais = t.origen.pais;
+  const nombre = pais ? nombrePaisEs(pais) : null;
+  const pref = prefijoNifIvaUe(nif);
+  const letras = nif.slice(0, 2);
+  // Empieza por el prefijo de un Estado (FR, DE...) pero no tiene el largo de un NIF-IVA.
+  if (!pref && /^[A-Z]{2}/.test(nif) && letras !== 'ES' && PREFIJOS_NIF_UE[letras]) return [v(t.codigo, 'error', [t.campo], `El NIF-IVA ${nif} no tiene un formato válido.`)];
+  // XI: Irlanda del Norte (solo en las entregas de bienes); la fiscalidad de la venta lo trata aparte.
+  if (pref?.prefijo === 'XI') return [];
+  if (pref && pref.prefijo !== 'ES') {
+    if (!validarFormatoNifIvaUe(nif)) return [v(t.codigo, 'error', [t.campo], `El NIF-IVA ${nif} no tiene un formato válido.`)];
+    // Otro pais que el dicho: lo explica el aviso de la contradiccion.
+    if (pais && normalizarPais(pref.pais) !== normalizarPais(pais)) {
+      return t.contradiccion ? [] : [v(t.codigo, 'revisar', [t.campo], `El NIF-IVA ${nif} es de ${nombrePaisEs(pref.pais)} y el ${t.tipo} es de ${nombre}: compruébalo.`)];
+    }
+    if (!tieneFormaNifIvaUe(pref.prefijo, nif.slice(2))) {
+      return [v(t.codigo, 'revisar', [t.campo], `El NIF-IVA ${nif} no tiene la forma de los de ${nombrePaisEs(pref.pais)}: compruébalo con la factura.`)];
+    }
+    return [];
+  }
+  // Un NIF espanol (con o sin ES) en un tercero que se ha dicho de otro pais de la UE.
+  if (pref?.prefijo === 'ES' || pareceNifEspanol(nif)) {
+    return t.contradiccion ? [] : [v(t.codigo, 'revisar', [t.campo], `${nif} es un NIF español, no un NIF-IVA de otro país de la UE: compruébalo.`)];
+  }
+  const conPrefijo = nifIvaConPrefijo(nif, pais);
+  if (conPrefijo) {
+    return [
+      {
+        ...v(t.codigo, 'revisar', [t.campo], `El NIF-IVA se ha leído sin el prefijo del país: es ${conPrefijo}. Compruébalo y escríbelo así en la ficha del ${t.tipo}.`),
+        sugerencia: conPrefijo,
+      },
+    ];
+  }
+  if (nombre) return [v(t.codigo, 'revisar', [t.campo], `${nif} no tiene la forma de un NIF-IVA de ${nombre}: compruébalo con la factura.`)];
+  return [v(t.codigo, 'revisar', [t.campo], `El NIF-IVA ${nif} se ha leído sin el prefijo del país (FR, DE, IT...): compruébalo e indica de qué país es el ${t.tipo}.`)];
+}
+
+/**
+ * El NIF del tercero, segun de donde sea:
+ * - de Espana: NIF espanol valido (con su control), como siempre;
+ * - de otro pais de la UE: NIF-IVA por su formato (nifIvaUeNoValido);
+ * - de fuera de la UE: su identificacion se acepta tal cual;
+ * - sin saber de donde es y sin forma de NIF espanol: «revisar», pidiendo el pais.
+ * En una empresa de fuera de Espana, si no se ha dicho de donde es el tercero,
+ * la regla de siempre (motivoNifNoValido).
+ */
+function nifTerceroNoValido(t: TerceroValidado, ctx: ContextoValidacion): ResultadoValidacion[] {
+  const nif = t.nif as string;
+  if (!ctx.empresaEspanola && t.origen.por !== 'eleccion') {
+    const motivo = motivoNifNoValido(nif, false);
+    return motivo ? [v(t.codigo, 'error', [t.campo], motivo)] : [];
+  }
+  switch (t.origen.origen) {
+    case 'ES': {
+      const r = validarNifEspanol(nif);
+      if (r.valido) return [];
+      const otroPais = t.origen.por === 'eleccion' && !t.contradiccion && !pareceNifEspanol(nif) ? ` ${siEsDeOtroPais(t.tipo)}` : '';
+      return [v(t.codigo, 'error', [t.campo], `${r.motivo ?? 'El NIF no es válido.'}${otroPais}`)];
+    }
+    case 'UE':
+      return nifIvaUeNoValido(t);
+    case 'FUERA':
+      return [];
+    default:
+      return [v(t.codigo, 'revisar', [t.campo], `${limpiarNif(nif)} no parece un NIF español. Si el ${t.tipo} es de otro país, indícalo en «¿De dónde es el ${t.tipo}?».`)];
+  }
+}
+
+/** El tercero de la factura: el proveedor (emisor) en gastos y el cliente (receptor) en ventas. */
+function terceroDe(l: LecturaNormalizada, ctx: ContextoValidacion): TerceroValidado {
+  const venta = ctx.lector === 'VENTA';
+  const d = datosTerceroDeLectura(ctx.lector, l, { eleccion: ctx.origenTercero ?? null, paisFicha: ctx.paisTerceroFicha ?? null });
+  return {
+    lector: ctx.lector,
+    tipo: tipoTercero(ctx.lector),
+    campo: venta ? 'receptor.nif' : 'emisor.nif',
+    codigo: venta ? 'NIF_RECEPTOR' : 'NIF_EMISOR',
+    nif: (venta ? l.receptor : l.emisor).nif.valor,
+    origen: detectarOrigenTercero(d),
+    contradiccion: contradiccionOrigen(d, tipoTercero(ctx.lector)),
+  };
+}
+
+/** V07, V08 y la contradiccion con lo que se dijo: el NIF del tercero. */
+function nifDelTercero(l: LecturaNormalizada, ctx: ContextoValidacion): ResultadoValidacion[] {
+  const t = terceroDe(l, ctx);
+  const r = t.nif ? nifTerceroNoValido(t, ctx) : faltaNifTercero(t, ctx);
+  if (t.contradiccion) r.push(v('ORIGEN_TERCERO', 'revisar', [t.campo], t.contradiccion.mensaje));
+  return r;
+}
+
+/** V07: en gastos, el proveedor (nifDelTercero); en ventas, el emisor es la propia empresa. */
+function v07NifEmisor(l: LecturaNormalizada, ctx: ContextoValidacion): ResultadoValidacion[] {
+  if (ctx.lector === 'GASTO') return nifDelTercero(l, ctx);
+  const nif = l.emisor.nif.valor;
+  if (!nif) return [];
   const motivo = motivoNifNoValido(nif, ctx.empresaEspanola);
   return motivo ? [v('NIF_EMISOR', 'error', ['emisor.nif'], motivo)] : [];
 }
 
+/** V08: en ventas, el cliente (nifDelTercero); en gastos, el receptor es la propia empresa. */
 function v08NifReceptor(l: LecturaNormalizada, ctx: ContextoValidacion): ResultadoValidacion[] {
+  if (ctx.lector === 'VENTA') return nifDelTercero(l, ctx);
   const nif = l.receptor.nif.valor;
   if (!nif) {
-    if (ctx.lector === 'VENTA') return [v('NIF_RECEPTOR', 'error', ['receptor.nif'], 'Falta el NIF del cliente: es obligatorio en una factura de ingreso.')];
     // La lectura de gastos con Claude no pregunta por el cliente: que falte no dice nada.
     if (l.receptor.nif.fuente === 'claude') return [];
     if (['simplificada', 'ticket', 'recibo'].includes(l.tipoDocumento.valor ?? '')) return [];
@@ -578,6 +751,7 @@ export function combinar(l: LecturaNormalizada, validaciones: ResultadoValidacio
       e.estado = peor(e.estado, val.nivel);
       if (!e.motivos.includes(val.mensaje)) e.motivos.push(val.mensaje);
       if (val.nivel !== 'ok' && !(e.codigos ??= []).includes(val.codigo)) e.codigos.push(val.codigo);
+      if (val.sugerencia && !e.sugerencia) e.sugerencia = val.sugerencia;
     }
   }
   // El tipo de IVA de cada tramo, para que la pantalla diga "Base del 21 %".
