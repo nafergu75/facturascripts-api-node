@@ -99,6 +99,20 @@ describe('asiento de las rectificativas de venta', () => {
     expect(as.lineas.some((l) => l.accountCode === '700')).toBe(false);
   });
 
+  it('con la base neta a cero (cambia el tipo de IVA), sin línea vacía de la 700', async () => {
+    const a = await emitir([linea(100, { tipoIva: 10 }), linea(100)]);
+    await asientoDe(a.id);
+    const r = await rect({ motivo: 'CAMBIO_PRECIO', originales: [{ id: a.id }] }, [linea(-100, { tipoIva: 10 }), linea(100)]);
+    expect([r.baseTotal, r.ivaTotal]).toEqual([0, 11]);
+    const as = await asientoDe(r.id);
+    expect(cuadra(as)).toBe(true);
+    expect(as.lineas.some((l) => l.accountCode.startsWith('70'))).toBe(false);
+    expect(as.lineas.map((l) => [l.accountCode.slice(0, 3), Number(l.debe), Number(l.haber)]).sort()).toEqual([
+      ['430', 11, 0],
+      ['477', 0, 11],
+    ]);
+  });
+
   it('con varias originales, el libro cita todas', async () => {
     const a = await emitir([linea(100)]);
     const b = await emitir([linea(50)]);
