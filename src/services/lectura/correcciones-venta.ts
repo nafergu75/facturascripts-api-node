@@ -302,7 +302,8 @@ export function cambiosCorregidos(leida: LecturaNormalizada | null, c: Correccio
   if (c.lineas !== undefined) {
     anotar(
       'lineas',
-      leida ? leida.desglose.map((t) => ({ tipoIva: t.tipoIva, base: t.base.valor, cuota: t.cuota.valor })) : null,
+      // Con el recargo leido, si lo habia: al corregir las lineas se registra sin el (nadie vende en recargo, 11-10-2026).
+      leida ? leida.desglose.map((t) => ({ tipoIva: t.tipoIva, base: t.base.valor, cuota: t.cuota.valor, ...(t.cuotaRecargo?.valor ? { recargo: t.cuotaRecargo.valor } : {}) })) : null,
       c.lineas.map((x) => ({ descripcion: x.descripcion, base: x.base, tipoIva: x.tipoIva })),
     );
   }
