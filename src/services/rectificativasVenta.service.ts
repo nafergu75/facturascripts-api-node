@@ -1284,12 +1284,18 @@ export async function buscarOriginalesVenta(
     const sinEsp = q.replace(/\s+/g, '');
     and.push({ OR: [{ numeroCompleto: { contains: sinEsp } }, { customer: { nombreFiscal: { contains: q } } }, { customer: { nifCif: { contains: sinEsp.toUpperCase() } } }] });
   }
-  const filas = await prisma.incomeInvoice.findMany({
-    where: { ...where, ...(and.length ? { AND: and } : {}) },
-    include: { customer: { select: { nombreFiscal: true, nifCif: true } } },
-    orderBy: [{ fechaEmision: 'desc' }, { numero: 'desc' }],
-    take: 500,
+  const incluir = { customer: { select: { nombreFiscal: true, nifCif: true } } } as const;
+  const orden = [{ fechaEmision: 'desc' as const }, { numero: 'desc' as const }];
+  // La que coincide exacta, aparte: entre muchas parecidas (A-1 en «1», «10», «21»...) no se pierde.
+  const exactas = numero ? await prisma.incomeInvoice.findMany({ where: { ...where, numeroCompleto: numero }, include: incluir, orderBy: orden, take }) : [];
+  // Sin numero ni texto basta con las `take` mas recientes; con ellos, las mas recientes que coinciden.
+  const resto = await prisma.incomeInvoice.findMany({
+    where: { ...where, ...(and.length ? { AND: and } : {}), ...(exactas.length ? { id: { notIn: exactas.map((x) => x.id) } } : {}) },
+    include: incluir,
+    orderBy: orden,
+    take: numero || q ? 200 : take,
   });
+  const filas = [...exactas, ...resto];
   const qNorm = sinTildes(q);
   const puntuadas = filas
     .map((x) => {
