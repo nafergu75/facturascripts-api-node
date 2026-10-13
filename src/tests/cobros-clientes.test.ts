@@ -268,3 +268,41 @@ describe('proximas', () => {
     expect(r).toMatchObject({ anio: 2026, hoy: HOY, proximas: [] });
   });
 });
+
+describe('rectificativas con enlaces (varias originales, sustituta, periodo)', () => {
+  it('un abono de varias facturas resta de cada una su parte', () => {
+    const a = factura({ totalFactura: 1210 });
+    const b = factura({ totalFactura: 605 });
+    const abono = factura({ totalFactura: -181.5, tipoRectificativa: 'I', partes: [{ originalId: a.id, total: -121 }, { originalId: b.id, total: -60.5 }] });
+    const r = resumir([a, b, abono]);
+    expect(r.proximas.find((f) => f.id === a.id)).toMatchObject({ abonado: 121, pendiente: 1089 });
+    expect(r.proximas.find((f) => f.id === b.id)).toMatchObject({ abonado: 60.5, pendiente: 544.5 });
+    expect(r.pendientes).toEqual({ numero: 2, importe: 1633.5 });
+  });
+
+  it('lo devuelto al cliente ya no resta: cada parte en proporción a lo que queda del abono', () => {
+    const a = factura({ totalFactura: 1000 });
+    const b = factura({ totalFactura: 1000 });
+    const abono = factura({ totalFactura: -200, tipoRectificativa: 'I', partes: [{ originalId: a.id, total: -100 }, { originalId: b.id, total: -100 }] });
+    // Se le devolvieron 100 al cliente (cobro en negativo del abono).
+    const r = resumir([a, b, abono], { [abono.id]: -100 });
+    expect(r.proximas.find((f) => f.id === a.id)?.pendiente).toBe(950);
+    expect(r.proximas.find((f) => f.id === b.id)?.pendiente).toBe(950);
+  });
+
+  it('tras una sustitución, el abono de la original resta de la sustituta', () => {
+    const original = factura({ totalFactura: 1210 });
+    const sustituta = factura({ totalFactura: 968, facturaOriginalId: original.id, tipoRectificativa: 'S', partes: [{ originalId: original.id, total: -242 }] });
+    const abono = factura({ totalFactura: -121, tipoRectificativa: 'I', partes: [{ originalId: original.id, total: -121 }] });
+    const r = resumir([original, sustituta, abono]);
+    expect(r.pendientes).toEqual({ numero: 1, importe: 847 });
+    expect(r.proximas[0]).toMatchObject({ id: sustituta.id, abonado: 121 });
+  });
+
+  it('el abono de un periodo (rappel) o de una factura de fuera no resta de ninguna factura', () => {
+    const a = factura({ totalFactura: 1000 });
+    const rappel = factura({ totalFactura: -50, tipoRectificativa: 'I', partes: [{ originalId: null, total: -50 }] });
+    const deFuera = factura({ totalFactura: -30, tipoRectificativa: 'I', partes: [{ originalId: null, total: -30 }] });
+    expect(resumir([a, rappel, deFuera]).pendientes).toEqual({ numero: 1, importe: 1000 });
+  });
+});
