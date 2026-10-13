@@ -5,6 +5,7 @@
  *  GET  /<lector>/lecturas/:id             estado de la lectura (la pantalla consulta cada pocos segundos)
  *  POST /<lector>/lecturas/:id/descartar   la deja descartada y borra el archivo
  *  POST /<lector>/lecturas/:id/origen-tercero   { origen, pais }: de donde es el cliente o el proveedor; se vuelve a validar sin leer otra vez
+ *  POST /<lector>/lecturas/:id/manual      «Rellenarla a mano»: sin nada leido y con el archivo ya subido (lectura fallida, lenta o muy incompleta)
  *
  * Al subir el archivo (multipart o JSON) puede llegar de donde es el tercero,
  * con los campos origenTercero (ES, UE o FUERA) y paisTercero (ISO-2, opcional).
@@ -18,7 +19,15 @@ import { asyncHandler } from '../utils/async-handler';
 import { leerFacturaSubida } from '../utils/archivo-subido';
 import { badRequest } from '../utils/http-errors';
 import { sendOk } from '../utils/response';
-import { cambiarOrigenTercero, consultarLectura, descartarLectura, iniciarLectura, MAX_ARCHIVO_LECTURA, MENSAJE_ARCHIVO_GRANDE } from '../services/lectura/lectura.service';
+import {
+  cambiarOrigenTercero,
+  consultarLectura,
+  descartarLectura,
+  iniciarLectura,
+  MAX_ARCHIVO_LECTURA,
+  MENSAJE_ARCHIVO_GRANDE,
+  rellenarAMano,
+} from '../services/lectura/lectura.service';
 import { leerEleccionOrigen } from '../services/lectura/origen-tercero';
 import type { Lector } from '../services/lectura/tipos';
 
@@ -55,6 +64,11 @@ export function controladorLecturas(lector: Lector) {
     cambiarOrigen: asyncHandler(async (req: Request, res: Response) => {
       const cuerpo = (req.body ?? {}) as Record<string, unknown>;
       sendOk(res, await cambiarOrigenTercero(req.companyId as string, lector, req.params.id, leerEleccionOrigen(cuerpo.origen, cuerpo.pais)));
+    }),
+
+    /** Sin cuerpo. Responde como el GET de una lectura LISTA, vacia y con origen MANUAL. */
+    manual: asyncHandler(async (req: Request, res: Response) => {
+      sendOk(res, await rellenarAMano(req.companyId as string, lector, req.params.id, req.user?.userId));
     }),
 
     descartar: asyncHandler(async (req: Request, res: Response) => {

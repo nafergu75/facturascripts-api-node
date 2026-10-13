@@ -6,6 +6,7 @@
  *  POST /confirmar      registrar la factura revisada (factura y asiento en borrador)
  *  POST /lecturas, GET /lecturas/:id, POST /lecturas/:id/descartar   lectura con Azure (ver lecturas.controller.ts)
  *  POST /lecturas/:id/origen-tercero   de donde es el proveedor: vuelve a validar sin leer otra vez
+ *  POST /lecturas/:id/manual           «Rellenarla a mano» con el archivo ya subido (formulario vacio)
  */
 
 import { RequestHandler, Router } from 'express';
@@ -36,5 +37,6 @@ router.post('/lecturas', authorize('compras:write'), subirArchivoLectura, lectur
 router.get('/lecturas/:id', authorize('compras:read', 'compras:write'), lecturasGastos.consultar);
 router.post('/lecturas/:id/descartar', authorize('compras:write'), lecturasGastos.descartar);
 router.post('/lecturas/:id/origen-tercero', authorize('compras:write'), lecturasGastos.cambiarOrigen);
+router.post('/lecturas/:id/manual', authorize('compras:write'), lecturasGastos.manual);
 
 export default router;

@@ -6,6 +6,7 @@
  *                     (con la cuenta elegida en cada linea y, si se corrigieron, los datos puestos a mano)
  *  POST /lecturas, GET /lecturas/:id, POST /lecturas/:id/descartar   lectura con Azure, 4 MB como mucho (ver lecturas.controller.ts)
  *  POST /lecturas/:id/origen-tercero   de donde es el cliente: vuelve a validar sin leer otra vez
+ *  POST /lecturas/:id/manual           «Rellenarla a mano» con el archivo ya subido (se registra con /confirmar y sus correcciones)
  */
 import { Router } from 'express';
 import multer from 'multer';
@@ -26,5 +27,6 @@ router.post('/lecturas', authorize('ventas:write'), subirArchivoLectura, lectura
 router.get('/lecturas/:id', authorize('ventas:read', 'ventas:write'), lecturasVentas.consultar);
 router.post('/lecturas/:id/descartar', authorize('ventas:write'), lecturasVentas.descartar);
 router.post('/lecturas/:id/origen-tercero', authorize('ventas:write'), lecturasVentas.cambiarOrigen);
+router.post('/lecturas/:id/manual', authorize('ventas:write'), lecturasVentas.manual);
 
 export default router;
