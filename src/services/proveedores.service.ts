@@ -16,6 +16,7 @@ import { badRequest, conflict, notFound } from '../utils/http-errors';
 import { normalizarNif, validarNifEspanol } from '../utils/nif';
 import { esCodigoPais, problemaCodigoPostal } from '../utils/geografia';
 import { limpiarNif, normalizarPais, prefijoNifIvaUe } from '../domain/tipo-operacion.model';
+import { numeroFiscalEnFrase } from '../domain/numero-fiscal';
 import { logCreate, logDelete, logUpdate } from './suppliers/supplierAudit.service';
 import { hoyEspana } from '../utils/fechas';
 import {
@@ -314,7 +315,8 @@ export function datosProveedor(
   }
 
   const nif = nifCrudo !== undefined ? textoONull(nifCrudo) : existente?.nifCif ?? null;
-  if (!nif) throw errorCampo('Falta el NIF del proveedor.', 'nifCif');
+  // «Falta el RNC del proveedor», «Falta el NIF-IVA (VAT)...»: como se llama en su pais.
+  if (!nif) throw errorCampo(`Falta el ${numeroFiscalEnFrase(textoONull(data.pais) ?? existente?.pais)} del proveedor.`, 'nifCif');
 
   // Pais: el que llega, o (si cambia el NIF) el que diga su prefijo de NIF-IVA.
   let pais: string | undefined;
