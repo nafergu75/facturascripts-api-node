@@ -1752,14 +1752,16 @@ function bloqueApi(b: BloqueVenta): Record<string, unknown> {
  */
 async function actualizarBorradorRectificativa(actual: FacturaConLineas, dto: ActualizarBorradorDTO, rectificativa: unknown): Promise<IncomeInvoiceResp> {
   const companyId = actual.companyId;
-  const r = (rectificativa && typeof rectificativa === 'object' ? rectificativa : {}) as { originales?: unknown };
+  const r = (rectificativa && typeof rectificativa === 'object' ? rectificativa : {}) as { originales?: unknown; ticket?: unknown };
   const conApp = Array.isArray(r.originales) && r.originales.some((o) => !!o && typeof o === 'object' && typeof (o as { id?: unknown }).id === 'string');
   const deActual = <T,>(v: T | undefined, a: T): T | undefined => (v !== undefined ? v : conApp ? undefined : a);
   const merged: CrearFacturaIngresoDTO = {
     companyId,
     // Sin cliente en el cuerpo y con original de la app: el de la original (lo pone el plan).
     customer: dto.customer ?? (conApp ? {} : { id: actual.customerId }),
-    serie: dto.serie ?? actual.serie,
+    // Si pasa de «Rectificativa o abono» a «de un ticket» (o al reves) sin decir la serie,
+    // la de su tipo por defecto (la RT se crea si aun no existe), no la que tenia.
+    serie: dto.serie ?? ((r.ticket === true) === (actual.tipoFactura === 'R5') ? actual.serie : undefined),
     fechaEmision: dto.fechaEmision ?? actual.fechaEmision,
     fechaVencimiento: dto.fechaVencimiento ?? actual.fechaVencimiento,
     lineas: dto.lineas ?? lineasDocGuardadas(actual).map(({ cuentaContable, ...l }) => ({ ...l, cuenta: cuentaContable ?? null })),
