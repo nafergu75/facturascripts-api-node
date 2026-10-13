@@ -31,6 +31,12 @@ export interface FacturaVentaCobro {
   facturaOriginalId: string | null;
   /** Solo rectificativas: 'S' (por sustitución) o 'I' (por diferencias). */
   tipoRectificativa?: string | null;
+  /**
+   * Rectificativas con enlaces (IncomeInvoiceRectificada): la parte de cada
+   * fila (total con su signo). Las filas sin originalId (factura de fuera o
+   * periodo) no restan de ninguna factura de la app.
+   */
+  partes?: Array<{ originalId: string | null; total: number }>;
 }
 
 export interface FacturaPorCobrar {
@@ -84,7 +90,7 @@ export const CRITERIO_COBROS: ResumenCobrosClientes['criterio'] = {
   cobradoEnElAnio:
     'Suma de los cobros registrados con fecha en el año elegido, hasta hoy. No incluye las facturas marcadas como cobradas a mano sin registrar el cobro, porque no tienen fecha de cobro.',
   rectificativas:
-    'Una rectificativa en negativo no es un cobro pendiente: resta de lo pendiente de la factura que rectifica mientras esta tenga algo por cobrar (sin bajar de cero). Si la original ya estaba cobrada, el abono se debe al cliente y no cuenta como pendiente. Una rectificativa por sustitución (tipo S) ocupa el lugar de la original: la original deja de contar y lo que se le cobró se descuenta de la sustituta. Las rectificativas en positivo por diferencias se tratan como una factura más.',
+    'Una rectificativa en negativo no es un cobro pendiente: resta de lo pendiente de la factura que rectifica mientras esta tenga algo por cobrar (sin bajar de cero); si rectifica varias, a cada una su parte. Si la original ya estaba cobrada, el abono se debe al cliente y no cuenta como pendiente. El abono de un periodo (rappel) o de una factura de fuera de la app no resta de ninguna factura: queda a favor del cliente en su ficha. Una rectificativa por sustitución (tipo S) ocupa el lugar de la original: la original deja de contar y lo que se le cobró se descuenta de la sustituta. Las rectificativas en positivo por diferencias se tratan como una factura más.',
 };
 
 const MAX_PROXIMAS = 8;
@@ -153,12 +159,22 @@ export function resumirCobrosClientes(
   }
 
   // Rectificativas en negativo por diferencias: lo que les queda (en céntimos,
-  // negativo) se descuenta de la factura que rectifican.
+  // negativo; lo devuelto al cliente ya no) se descuenta de la factura que
+  // rectifican. Con varias originales, a cada una su parte; las filas de fuera
+  // de la app o de un periodo no restan de ninguna.
   const abonos = new Map<string, number>();
   for (const f of facturas) {
-    if (aCentimos(f.totalFactura) >= 0 || !f.facturaOriginalId || f.tipoRectificativa === 'S' || sustituta.has(f.id)) continue;
+    if (aCentimos(f.totalFactura) >= 0 || f.tipoRectificativa === 'S' || sustituta.has(f.id)) continue;
     const abono = pendientePropio(f);
-    if (abono < 0) sumarEn(abonos, vigente(f.facturaOriginalId), abono);
+    if (abono >= 0) continue;
+    if (f.partes?.length) {
+      const total = aCentimos(f.totalFactura);
+      for (const p of f.partes) {
+        if (!p.originalId) continue;
+        const parte = Math.round((aCentimos(p.total) * abono) / total);
+        if (parte < 0) sumarEn(abonos, vigente(p.originalId), parte);
+      }
+    } else if (f.facturaOriginalId) sumarEn(abonos, vigente(f.facturaOriginalId), abono);
   }
 
   const prefijoAnio = `${opciones.anio}-`;
@@ -239,12 +255,21 @@ async function facturasEmitidas(companyId: string): Promise<FacturaVentaCobro[]>
       tipoRectificativa: true,
       customerId: true,
       customer: { select: { nombreFiscal: true } },
+      enlacesRectifica: { select: { originalId: true, baseRectificada: true, cuotaRectificada: true, retencionRectificada: true } },
     },
   });
-  return filas.map(({ customer, ...f }) => ({
+  return filas.map(({ customer, enlacesRectifica, ...f }) => ({
     ...f,
     totalFactura: Number(f.totalFactura),
     cliente: customer.nombreFiscal,
+    ...(enlacesRectifica.length
+      ? {
+          partes: enlacesRectifica.map((e) => ({
+            originalId: e.originalId,
+            total: (aCentimos(Number(e.baseRectificada ?? 0)) + aCentimos(Number(e.cuotaRectificada ?? 0)) - aCentimos(Number(e.retencionRectificada ?? 0))) / 100,
+          })),
+        }
+      : {}),
   }));
 }
 
