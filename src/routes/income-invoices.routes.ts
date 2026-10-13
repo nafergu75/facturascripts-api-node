@@ -45,6 +45,19 @@ router.post('/sugerir-operacion', authorize('ventas:read'), incomeInvoicesContro
 router.get('/stats/cobros', authorize('ventas:read', 'contabilidad:read'), incomeInvoicesController.estadisticasCobros);
 
 /**
+ * Rectificativas y abonos (van ANTES de '/:id'):
+ * GET /rectificativas/opciones  -> motivos (con su tipo R1-R4) y series R y RT.
+ * GET /originales?q=&numero=&customerId=&desde=&hasta=&ticket=0|1&take=
+ *                               -> facturas emitidas que se pueden rectificar
+ *                                  y, con customerId, sus cobros de 2026 pendientes.
+ * GET /:id/rectificar           -> la original con sus lineas, lo que queda por
+ *                                  rectificar y si admite sustitucion.
+ */
+router.get('/rectificativas/opciones', authorize('ventas:read', 'contabilidad:read'), incomeInvoicesController.opcionesRectificativa);
+router.get('/originales', authorize('ventas:read', 'contabilidad:read'), incomeInvoicesController.originales);
+router.get('/:id/rectificar', authorize('ventas:read', 'contabilidad:read'), incomeInvoicesController.paraRectificar);
+
+/**
  * Obtener factura por ID.
  * GET /api/invoices/income/:id
  */
@@ -88,7 +101,9 @@ router.post('/:id/cobros', authorize('ventas:write', 'contabilidad:write'), cobr
 router.post('/:id/cobros/:cobroId/anular', authorize('ventas:write', 'contabilidad:write'), cobrosController.anular);
 
 /**
- * Crear factura rectificativa (abono).
+ * Crear factura rectificativa (abono) con el cuerpo de antes (frontend
+ * anterior): { motivo, lineas?, tipoFactura?, tipoRectificativa?, serie?, borrador? }.
+ * Por dentro va por el mismo camino que el bloque `rectificativa` de POST /.
  * POST /api/invoices/income/:id/credit-note
  */
 router.post('/:id/credit-note', authorize('ventas:write'), incomeInvoicesController.crearRectificativa);
