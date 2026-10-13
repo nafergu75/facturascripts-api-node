@@ -781,3 +781,52 @@ describe('descartar y purgar', () => {
     expect(borrados).toContain('mem://otra');
   });
 });
+
+describe('lector editable: lo corregido en el formulario ya no bloquea', () => {
+  /** La factura de siempre con el total y la fecha mal leidos: CUADRE y FECHA en error. */
+  async function leerConErrores(): Promise<string> {
+    const f = fixtureAzure<{ analyzeResult: { documents: Array<{ fields: Record<string, any> }> } }>('resultado-simple');
+    const campos = f.analyzeResult.documents[0].fields;
+    campos.InvoiceTotal.valueCurrency.amount = 250;
+    campos.AmountDue.valueCurrency.amount = 250;
+    campos.InvoiceDate.valueDate = '2099-03-04';
+    colaPost.push(() => aceptado());
+    const p = await subir();
+    const id = p.body.data.lecturaId as string;
+    await yaToca(id);
+    colaGet.push(() => respuesta(f, 200));
+    const r = await consultar(id);
+    expect(r.body.data.lectura.estado).toBe('error');
+    const codigos = (await prisma.lecturaDocumento.findUniqueOrThrow({ where: { id } })).validaciones as Array<{ codigo: string; nivel: string }>;
+    expect(codigos.filter((v) => v.nivel === 'error').map((v) => v.codigo)).toEqual(expect.arrayContaining(['CUADRE', 'FECHA']));
+    return id;
+  }
+
+  const cuerpo = (lecturaId: string, extra: Record<string, unknown> = {}) => ({
+    proveedor: { id: supId },
+    numeroFacturaProveedor: 'EDIT-2026-1',
+    fechaEmision: '2026-03-04',
+    tipoGasto: 'SUMINISTROS',
+    cuentaGasto: '629',
+    lineas: [{ descripcion: 'Folletos', cantidad: 1, precioUnitario: 200, tipoIva: 21, tipoRetencion: 0 }],
+    totalDocumento: 242,
+    tipoDocumento: 'factura',
+    revisado: true,
+    lecturaId,
+    ...extra,
+  });
+
+  it('con la fecha y los importes corregidos y «He revisado»: 201', async () => {
+    const id = await leerConErrores();
+    const r = await request(app()).post('/gastos-extractor/confirmar').send(cuerpo(id));
+    expect(r.status).toBe(201);
+    expect(r.body.data.factura).toMatchObject({ fechaEmision: '2026-03-04', totalFactura: 242 });
+  });
+
+  it('si la fecha sigue siendo posterior a hoy: 400 VALIDACION_LECTURA en la fecha', async () => {
+    const id = await leerConErrores();
+    const r = await request(app()).post('/gastos-extractor/confirmar').send(cuerpo(id, { numeroFacturaProveedor: 'EDIT-2026-2', fechaEmision: '2099-03-04' }));
+    expect(r.status).toBe(400);
+    expect(r.body.details).toMatchObject({ codigo: 'VALIDACION_LECTURA', campo: 'fechaEmision' });
+  });
+});
