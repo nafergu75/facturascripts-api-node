@@ -60,9 +60,12 @@ const REVALIDAR_GASTO = new Set(['TIPO_IVA', 'NIF_EMISOR', 'EMPRESA', 'FECHA']);
 /** El cuerpo del alta de un gasto, como lectura, para volver a validarlo. */
 async function lecturaDelCuerpo(companyId: string, cuerpo: Record<string, unknown>, guardada: LecturaNormalizada | null): Promise<LecturaNormalizada> {
   const l = lecturaVacia('claude');
-  const prov = (cuerpo.proveedor ?? {}) as { id?: unknown; nuevo?: { nifCif?: unknown; nombreFiscal?: unknown } };
-  let nif: string | null = typeof prov.nuevo?.nifCif === 'string' ? prov.nuevo.nifCif : null;
-  let nombre: string | null = typeof prov.nuevo?.nombreFiscal === 'string' ? prov.nuevo.nombreFiscal : null;
+  const prov = (cuerpo.proveedor ?? {}) as { id?: unknown; nuevo?: Record<string, unknown> };
+  // El proveedor nuevo admite los mismos nombres de campo que su alta (datosProveedor).
+  const nuevo = prov.nuevo ?? {};
+  const texto = (x: unknown) => (typeof x === 'string' && x.trim() ? x : null);
+  let nif: string | null = texto(nuevo.nifCif ?? nuevo.cifnif ?? nuevo.nif);
+  let nombre: string | null = texto(nuevo.nombreFiscal ?? nuevo.nombre ?? nuevo.razonsocial);
   if (!nif && typeof prov.id === 'string') {
     const elegido = await prisma.supplier.findFirst({ where: { id: prov.id, companyId }, select: { nifCif: true, nombreFiscal: true } });
     nif = elegido?.nifCif ?? null;
