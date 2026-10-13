@@ -24,7 +24,7 @@ export const ingresosExtractorController = {
   /**
    * POST /confirmar { documentId, clienteId?, revisado?, lineas?: [{ cuenta }],
    * rectificativa?: { forma, motivo, explicacion?, cambiarSigno?, originales?,
-   * periodo?, importesOriginales? }, noEsRectificativa? }:
+   * periodo?, importesOriginales? }, noEsRectificativa?, confirmaDevengoFuera? }:
    * crea la factura de ingreso con los datos guardados al leer. Del cuerpo solo
    * se toman el cliente elegido (clienteId, uno dado de alta), la cuenta de
    * cada linea («Cambiar cuenta») y, en una rectificativa o un abono, su
@@ -55,6 +55,8 @@ export const ingresosExtractorController = {
         clienteId: clienteId ? clienteId.trim() : undefined,
         rectificativa,
         noEsRectificativa: noEsRectificativa === true,
+        // Tras el 409 DEVENGO_FUERA_APP: una R4 que sube el IVA de un periodo de la gestoria o de un 303 presentado.
+        confirmaDevengoFuera: (req.body ?? {}).confirmaDevengoFuera === true,
       }),
       undefined,
       201,
