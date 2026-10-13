@@ -107,7 +107,10 @@ export async function listarCuentasLinea(
   companyId: string,
   tipo: TipoCuentaLinea,
   filtro: { q?: string; madre?: string } = {},
-  opciones: { verUsoContable?: boolean } = {},
+  // rectificativa: lineas de una rectificativa de venta, que pueden ir a la 706,
+  // la 708 o la 709 (descuentos, devoluciones y rappels sobre ventas): salen en
+  // `cuentas` como una mas (nunca se proponen solas).
+  opciones: { verUsoContable?: boolean; rectificativa?: boolean } = {},
 ): Promise<ListadoCuentasLinea> {
   const { prefijo, porDefecto } = REGLA[tipo];
   const madre = filtro.madre?.replace(/\D/g, '') || undefined;
@@ -132,8 +135,9 @@ export async function listarCuentasLinea(
     .filter((c) => c.codigo.length >= 3 && c.codigo.startsWith(prefijo))
     .filter((c) => !q || sinTildes(`${c.codigo} ${c.nombre}`).includes(q))
     .map((c) => ({ codigo: c.codigo, nombre: c.nombre, madre: c.parentCodigo ?? null, propia: c.esPersonalizadaEmpresa }));
-  const cuentas = todas.filter((c) => !esCuentaDeUsoContable(c.codigo, tipo));
-  const otras = opciones.verUsoContable ? todas.filter((c) => esCuentaDeUsoContable(c.codigo, tipo)) : [];
+  const deRectificativa = (c: { codigo: string }) => !!opciones.rectificativa && tipo === 'venta' && ['706', '708', '709'].some((p) => c.codigo.startsWith(p));
+  const cuentas = todas.filter((c) => !esCuentaDeUsoContable(c.codigo, tipo) || deRectificativa(c));
+  const otras = opciones.verUsoContable ? todas.filter((c) => esCuentaDeUsoContable(c.codigo, tipo) && !deRectificativa(c)) : [];
   return { tipo, porDefecto, longitud: await longitudSubcuentasEmpresa(companyId), cuentas, otras };
 }
 
