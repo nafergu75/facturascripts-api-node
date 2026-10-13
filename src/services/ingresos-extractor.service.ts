@@ -426,8 +426,17 @@ export const ingresosExtractorService = {
       throw badRequest('Los importes son negativos: es un abono. Indica qué factura rectifica.', { codigo: 'NO_ES_RECTIFICATIVA_CON_NEGATIVOS', campo: 'noEsRectificativa' });
     }
     // Leido con /lecturas: si algo estaba marcado, hace falta "He revisado". Con un
-    // cliente elegido, el NIF leido del cliente (que falte o este mal) ya no bloquea.
-    const ignorados = await comprobarRevisionVenta(companyId, documentId, opciones.revisado === true, elegido ? ['NIF_RECEPTOR'] : [], { bloque: conBloque, noEsRectificativa });
+    // cliente elegido, o con una original de la app (el cliente es el suyo), el NIF
+    // leido del cliente (que falte o este mal) ya no bloquea.
+    const r0 = conBloque && typeof opciones.rectificativa === 'object' ? (opciones.rectificativa as { originales?: unknown }) : null;
+    const idsOriginales = Array.isArray(r0?.originales)
+      ? (r0!.originales as unknown[]).map((o) => (o && typeof o === 'object' ? (o as { id?: unknown }).id : null)).filter((x): x is string => typeof x === 'string' && !!x)
+      : [];
+    const conOriginalApp = idsOriginales.length > 0 && (await prisma.incomeInvoice.count({ where: { companyId, id: { in: idsOriginales } } })) > 0;
+    const ignorados = await comprobarRevisionVenta(companyId, documentId, opciones.revisado === true, elegido || conOriginalApp ? ['NIF_RECEPTOR'] : [], {
+      bloque: conBloque,
+      noEsRectificativa,
+    });
     // Documento del lector de siempre con importes en negativo: tambien hace falta decir que rectifica.
     if (!conBloque && !noEsRectificativa && importesLeidosNegativos(e)) throw badRequest(MENSAJE_FALTA_RECTIFICATIVA, { codigo: 'FALTA_RECTIFICATIVA', campo: 'rectificativa' });
 
