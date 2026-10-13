@@ -63,6 +63,12 @@ export interface FacturaFiscal {
    */
   rectificativa?: boolean;
   /**
+   * Venta rectificativa por el concurso del cliente (R2, art. 80.Tres LIVA): en
+   * el 303 va con las demas modificaciones ([14]/[15]); en el 390, aparte, en
+   * «Modificación de bases y cuotas por concurso de acreedores» [31]/[32].
+   */
+  concurso?: boolean;
+  /**
    * Compra con inversion del sujeto pasivo (la cuota la declara la empresa):
    * autodevengo en [12]/[13] y deduccion en [28]/[29] o [30]/[31]. Hoy las
    * compras no llevan esta marca: queda listo para cuando la tengan.
