@@ -6,8 +6,9 @@
 import { describe, it, expect } from '@jest/globals';
 import * as XLSX from 'xlsx';
 import { PDFDocument } from 'pdf-lib';
-import { aImporte, num, tablaAPdf, tablaAXlsx, textoCelda, type TablaInforme } from '../services/informesContables.documentos';
+import { aImporte, fechaES, num, tablaAPdf, tablaAXlsx, textoCelda, type TablaInforme } from '../services/informesContables.documentos';
 import { escaparXml, letraColumna, nombreHoja } from '../utils/hojaExcel';
+import { hoyEspana } from '../utils/fechas';
 import { textosDePdf } from './texto-pdf';
 import { fallosColumnasPdf, fallosColumnasXlsx, FILA_CABECERA_XLSX } from './columnas-informe';
 
@@ -141,6 +142,43 @@ describe('PDF', () => {
     // El saldo inicial a cero de la fila normal se escribe.
     expect(textos.filter((x) => x.texto === '0,00').length).toBe(2);
   });
+
+  it('el asiento mas largo de su columna sale entero, sin «…» por redondeo (6, 12 y 27 caracteres)', async () => {
+    // La columna mide justo lo que su codigo mas largo: con 57,6 + 10 − 10 = 57,5999… se recortaba «FAC-ING-A-…».
+    for (const codigos of [['AJ-001', 'AJ-002'], ['FAC-ING-A-10', 'FAC-ING-A-43', 'COBRO-00012'], ['FAC-GAST-2026/INV-000123456', 'PAGO-00001']]) {
+      for (const apaisado of [true, false]) {
+        const base = detalle({ apaisado });
+        let i = 0;
+        const filas = base.filas.map((f) => ((f.estilo ?? 'normal') === 'normal' ? { ...f, celdas: f.celdas.map((v, k) => (k === 1 ? codigos[i++ % codigos.length] : v)) } : f));
+        const t = { ...base, filas };
+        const textos = await textosDePdf(await tablaAPdf(t));
+        expect(fallosColumnasPdf(t, textos)).toEqual([]);
+        expect(textos.map((x) => x.texto)).toEqual(expect.arrayContaining(codigos));
+      }
+    }
+  });
+
+  it('una nota larga pasa a otra linea en vez de cortarse, y el pie conserva entera la fecha de generacion', async () => {
+    // Como en el aviso real, cifra y «€» con espacio duro: la linea nunca se parte entre los dos.
+    const ventas = Array.from({ length: 30 }, (_, i) => `A-${100 + i} (2.420,00\u00a0€)`).join(', ');
+    const nota = `Atención: las ventas ${ventas} no tienen asiento y no salen en el mayor. Contabilízalas desde la ficha de cada factura.`;
+    const t = detalle({
+      apaisado: false,
+      titulo: 'Mayor del cliente Distribuciones Cerámicas del Mediterráneo y Baleares Sociedad Limitada',
+      periodo: 'Ejercicio 2026 · NIF B12345678 · Subcuentas 4300000001 y 4300000002',
+      notas: ['Saldo positivo: lo que nos debe.', nota],
+    });
+    const textos = await textosDePdf(await tablaAPdf(t));
+    const lineas = textos.filter((x) => x.tam === 7.5).map((x) => x.texto);
+    expect(lineas.length).toBeGreaterThan(2);
+    expect(lineas.some((l) => l.endsWith('…'))).toBe(false);
+    expect(lineas.some((l) => l.startsWith('€'))).toBe(false);
+    expect(lineas.join(' ')).toBe(`Saldo positivo: lo que nos debe. ${nota}`);
+    // Pie: se recorta el titulo, nunca «Generado el dd/mm/aaaa».
+    const pie = textos.find((x) => x.tam === 7 && x.texto.includes('Generado el'))!;
+    expect(pie.texto.endsWith(` · Generado el ${fechaES(hoyEspana())}`)).toBe(true);
+    expect(pie.texto).toContain('…');
+  });
 });
 
 describe('Excel', () => {
@@ -185,7 +223,8 @@ describe('Excel', () => {
     const estilos = parte(buf, 'xl/styles.xml');
     const libro = parte(buf, 'xl/workbook.xml');
     expect(hoja).toContain('<pane ySplit="5" topLeftCell="A6" activePane="bottomLeft" state="frozen"/>');
-    expect(hoja).toContain('<autoFilter ref="A5:G11"/>');
+    // El total final queda fuera del autofiltro (fila 11): al filtrar sigue a la vista.
+    expect(hoja).toContain('<autoFilter ref="A5:G10"/>');
     expect(hoja).toContain('orientation="landscape" fitToWidth="1" fitToHeight="0"');
     expect(hoja).toContain('<pageSetUpPr fitToPage="1"/>');
     expect(libro).toContain('_xlnm.Print_Titles');
@@ -200,6 +239,15 @@ describe('Excel', () => {
     expect(total?.[2]).toBe('1');
     expect(total?.[3]).not.toBe('0');
     expect(estilos).toContain('<b/>');
+    // «Saldo inicial»: el texto en gris (fuente 3) y la cifra en tinta normal (fuente 0), como en el PDF.
+    expect(estiloDe('C6')?.[2]).toBe('3');
+    expect(estiloDe('G6')?.[2]).toBe('0');
+  });
+
+  it('pie de pagina con una empresa que empieza por una cifra: no se lee como tamaño de letra', () => {
+    const hoja = parte(tablaAXlsx(detalle({ empresa: { nombre: '3D Cerámicas SL', nif: '' } })), 'xl/worksheets/sheet1.xml');
+    expect(hoja).toContain('<oddFooter>&amp;L&amp;8 3D Cerámicas SL · ');
+    expect(parte(tablaAXlsx(detalle()), 'xl/worksheets/sheet1.xml')).toContain('<oddFooter>&amp;L&amp;8Empresa Ñandú SL · ');
   });
 
   it('vuelve a leerse igual (Debe, Haber y Saldo numericos) y los tres informes de 3 columnas se imprimen en vertical', () => {

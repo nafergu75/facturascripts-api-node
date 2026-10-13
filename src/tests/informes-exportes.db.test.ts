@@ -61,6 +61,8 @@ async function venta(customerId: string, fecha: string, lineas: Array<Record<str
 let cliente: string;
 let subcuenta: string;
 let sinAsiento: string;
+/** Cliente de mostrador: seis ventas cobradas en caja el mismo dia (de la A-5 a la A-10). */
+let mostrador: string;
 
 beforeAll(async () => {
   await prisma.company.create({ data: { id: E, name: 'Exportes Informes SL', fsBaseUrl: 'http://localhost', fsApiKeyEnc: 'k' } });
@@ -85,6 +87,13 @@ beforeAll(async () => {
     await motor.contabilizarFacturaIngreso(E, r.id);
     // Emitida sin asiento (como una venta del lector cuyo asiento no llego a crearse).
     sinAsiento = await venta(cliente, '2026-05-02', [linea('Pedido sin contabilizar', 2000)], false);
+    // Ventas al contado: cada una cobrada en caja el mismo dia que se emite.
+    mostrador = ((await clientesService.create(E, { nombreFiscal: 'Bar Pepe', nifCif: cif(), cp: '46002' })) as unknown as { id: string }).id;
+    for (let i = 0; i < 6; i++) {
+      const fecha = `2026-05-${String(10 + i).padStart(2, '0')}`;
+      const v = await venta(mostrador, fecha, [linea('Azulejo de reposición', 100)]); // 121,00
+      await registrarCobroFactura(E, 'INGRESO', v, { fecha, caja: true });
+    }
   } finally {
     relojReal();
   }
@@ -162,7 +171,24 @@ describe('mayor de un cliente con ventas, abono y cobros, en PDF y Excel', () =>
     // La venta sin asiento no sale en el mayor, pero se avisa con su numero.
     const numero = (await prisma.incomeInvoice.findUnique({ where: { id: sinAsiento }, select: { numeroCompleto: true } }))!.numeroCompleto!;
     const aviso = d.tabla.notas?.find((x) => x.startsWith('Atención'));
-    expect(aviso).toContain(`la venta ${numero} (2.420,00 €) no tiene asiento`);
+    expect(aviso).toContain(`la venta ${numero} (2.420,00\u00a0€) no tiene asiento`);
+  });
+
+  it('ventas cobradas el mismo dia: la factura antes que su cobro (sin saldos negativos de paso) y el asiento entero', async () => {
+    const d = await informeDetalleTercero(E, 'clientes', P, mostrador);
+    const movs = d.tercero.movimientos;
+    expect(movs).toHaveLength(12);
+    // Factura y cobro alternados: 121,00 y 0,00, nunca −121,00.
+    expect(movs.map((m) => m.saldo)).toEqual(Array.from({ length: 12 }, (_, i) => (i % 2 ? 0 : 121)));
+    expect(movs.filter((_, i) => i % 2 === 0).every((m) => m.asiento.startsWith('FAC-ING-'))).toBe(true);
+    expect(movs.map((m) => m.asiento)).toContain('FAC-ING-A-10');
+    compruebaSaldos(d.tabla.filas, 0, 4, 5, 6);
+    // «FAC-ING-A-10» es el asiento mas largo de su columna: sale entero, sin «…» (y el resto tambien).
+    const { textos } = await exportaBien(d.tabla);
+    expect(textos).toEqual(expect.arrayContaining(movs.map((m) => m.asiento)));
+    expect(textos.some((x) => x.startsWith('FAC-ING-') && x.endsWith('…'))).toBe(false);
+    // Lo mismo en el Libro mayor de su subcuenta.
+    await exportaBien((await informeMayor(E, P, {}, await terceroParaMayor(E, 'cliente', mostrador))).tabla);
   });
 
   it('Libro mayor del cliente: su subcuenta con saldo inicial, movimientos y totales en sus columnas', async () => {
