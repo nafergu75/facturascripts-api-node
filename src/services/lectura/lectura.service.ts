@@ -36,6 +36,7 @@ import { MENSAJE_LECTURA_NO_ENCONTRADA } from './confirmar';
 import { contextoValidacion, gastoDuplicado, proveedorPorNif } from './contexto';
 import { clientePorNif, type TerceroExistente } from './terceros-lector';
 import { rectificativaLeida, type RectificativaLeida } from './rectificativa';
+import { rectificativaVentaLeida, type RectificativaVentaLeida } from './rectificativa-venta';
 import type {
   ArchivoLectura,
   CampoId,
@@ -119,7 +120,8 @@ export interface LecturaIngresoLista {
   lecturaId: string;
   estado: 'LISTA';
   /** clienteExistente: el cliente dado de alta con ese NIF, o null (hay que darlo de alta o elegir uno). */
-  ingreso: IngresoExtraido & { clienteExistente: TerceroExistente | null };
+  /** rectificativa: si es una rectificativa o un abono de venta, la factura que rectifica propuesta, el motivo y si hay que decir el signo (null si no lo es). */
+  ingreso: IngresoExtraido & { clienteExistente: TerceroExistente | null; rectificativa: RectificativaVentaLeida | null };
   lectura: InfoLectura;
 }
 export type RespuestaLectura =
@@ -390,7 +392,9 @@ async function respuestaDe(fila: FilaLectura): Promise<RespuestaLectura> {
   const extraccion = aInvoiceExtraction(guardado.lectura, validaciones, { confianza: fila.confianza, nombreArchivo: fila.archivoNombre, mime: fila.archivoTipo });
   const ingreso = aIngresoExtraido(fila.incomeReaderDocumentId ?? '', extraccion);
   const clienteExistente = await clientePorNif(fila.companyId, ingreso.nifCliente);
-  return { lecturaId: fila.id, estado: 'LISTA', ingreso: { ...ingreso, errores: sinRepetidos(ingreso.errores), clienteExistente }, lectura };
+  // Rectificativa o abono de venta: la factura que rectifica y lo que se propone.
+  const rectificativa = await rectificativaVentaLeida(fila.companyId, guardado.lectura);
+  return { lecturaId: fila.id, estado: 'LISTA', ingreso: { ...ingreso, errores: sinRepetidos(ingreso.errores), clienteExistente, rectificativa }, lectura };
 }
 
 // ---------------------------------------------------------------------------
