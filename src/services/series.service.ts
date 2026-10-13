@@ -21,6 +21,7 @@ const TIPOS_CON_SERIE_OBLIGATORIA: readonly TipoDocumentoSerie[] = ['FACTURA', '
 const NOMBRE_TIPO: Record<TipoDocumentoSerie, string> = {
   FACTURA: 'facturas',
   RECTIFICATIVA: 'rectificativas',
+  RECTIFICATIVA_SIMPLIFICADA: 'rectificativas de tickets',
   PROFORMA: 'proformas',
 };
 
@@ -259,6 +260,49 @@ export async function obtenerSeriePorDefecto(
   return series.find((s) => s.porDefecto) ?? series[0] ?? null;
 }
 
+/** Codigos que se prueban, en orden, para la serie de rectificativas de tickets. */
+const CODIGOS_TICKETS = ['RT', 'RTK'];
+
+/** Codigo que tendra la serie de rectificativas de tickets: la que ya existe o la que se crearia (RT o, si esta ocupada, RTK). */
+export async function codigoSerieTickets(companyId: string): Promise<{ codigo: string; existe: boolean }> {
+  const def = await obtenerSeriePorDefecto(companyId, 'RECTIFICATIVA_SIMPLIFICADA');
+  if (def) return { codigo: def.codigo, existe: true };
+  const ocupados = new Set((await prisma.invoiceSeries.findMany({ where: { companyId, codigo: { in: CODIGOS_TICKETS } }, select: { codigo: true } })).map((s) => s.codigo));
+  return { codigo: CODIGOS_TICKETS.find((c) => !ocupados.has(c)) ?? CODIGOS_TICKETS[0], existe: false };
+}
+
+/**
+ * Serie de las rectificativas de tickets (R5): la predeterminada de su tipo o,
+ * la primera vez que se guarda una R5, la RT (o RTK si RT ya es otra serie),
+ * activa y predeterminada. La ley pide que vayan aparte de la R (art. 7.1.a RD
+ * 1619/2012). Si la empresa ya tiene series de este tipo pero todas
+ * desactivadas, 400 SERIE_TICKETS_DESACTIVADA: no se crea otra a sus espaldas.
+ */
+export async function obtenerOCrearSerieTickets(companyId: string): Promise<SerieDocumento> {
+  const def = await obtenerSeriePorDefecto(companyId, 'RECTIFICATIVA_SIMPLIFICADA');
+  if (def) return def;
+  const existentes = await prisma.invoiceSeries.count({ where: { companyId, tipoDocumento: 'RECTIFICATIVA_SIMPLIFICADA' } });
+  if (existentes > 0) {
+    throw badRequest('Las series de rectificativas de tickets están desactivadas. Activa una en Configuración > Series para rectificar tickets.', {
+      codigo: 'SERIE_TICKETS_DESACTIVADA',
+      campo: 'serie',
+    });
+  }
+  for (const codigo of CODIGOS_TICKETS) {
+    // upsert: dos R5 a la vez no chocan con el unico (empresa, codigo).
+    const s = await prisma.invoiceSeries.upsert({
+      where: { companyId_codigo: { companyId, codigo } },
+      create: { companyId, codigo, descripcion: 'Rectificativas de tickets', tipoDocumento: 'RECTIFICATIVA_SIMPLIFICADA', activa: true, porDefecto: true },
+      update: {},
+    });
+    if (s.tipoDocumento === 'RECTIFICATIVA_SIMPLIFICADA') return aDominio(s);
+  }
+  throw conflict('Las series RT y RTK ya existen y son de otro tipo: crea en Configuración > Series una serie de rectificativas de tickets.', {
+    codigo: 'SERIE_TICKETS_OCUPADA',
+    campo: 'serie',
+  });
+}
+
 /**
  * Resuelve la serie a usar al crear una factura a partir del DTO:
  *  - serieId     -> esa serie (de la empresa y de tipo FACTURA)
@@ -364,7 +408,11 @@ export async function obtenerOCrearSerieHistorica(
   companyId: string,
   codigoLeido: string,
   tipoDocumento: TipoDocumentoSerie = 'FACTURA',
-): Promise<SerieDocumento> {
+  // Lector: una serie historica de OTRO tipo (el otro programa numera facturas
+  // y rectificativas en la misma serie) se usa igual, y la respuesta lo dice
+  // (`mixta`) para avisar. Con una serie de la app sigue siendo 409.
+  opciones: { aceptarOtroTipo?: boolean } = {},
+): Promise<SerieDocumento & { mixta?: boolean }> {
   const codigo = normalizarCodigoSerie(codigoLeido);
   if (!CODIGO_RE.test(codigo)) {
     throw badRequest(`La serie "${codigoLeido}" de la factura no es válida: corrígela (letras, números y guiones, máximo 10).`, { campo: 'serie' });
@@ -372,9 +420,9 @@ export async function obtenerOCrearSerieHistorica(
   // Tal cual se leyo (o en mayusculas) y, si no, ya normalizado («fac/26» -> FAC-26).
   const existente = (await buscarSeriePorCodigo(companyId, codigoLeido)) ?? (await buscarSeriePorCodigo(companyId, codigo));
   if (existente) {
-    if (!existente.activa && existente.tipoDocumento === tipoDocumento && !(await tieneFacturasDeLaApp(companyId, existente.codigo))) {
-      return existente;
-    }
+    const historica = !existente.activa && existente.tipoDocumento !== 'PROFORMA' && !(await tieneFacturasDeLaApp(companyId, existente.codigo));
+    if (historica && existente.tipoDocumento === tipoDocumento) return existente;
+    if (historica && opciones.aceptarOtroTipo) return { ...existente, mixta: true };
     throw choqueConSerieDeLaApp(existente.codigo);
   }
 
