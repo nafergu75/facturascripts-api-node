@@ -226,18 +226,24 @@ describe('permisos de la ruta', () => {
 
   it('rectificativa de venta (rectificativa=1): la 706, la 708 y la 709 en la lista para quien la hace; crear bajo ellas sigue pidiendo contabilidad:write', async () => {
     const codigos = async (permisos: string[], q = '') =>
-      ((await request(app(`rect-${permisos.join('-')}`, permisos)).get(`/cuentas-linea?tipo=venta${q}`)).body.data as { cuentas: Array<{ codigo: string }>; otras: Array<{ codigo: string }> });
+      ((await request(app(`rect-${permisos.join('-')}`, permisos)).get(`/cuentas-linea?tipo=venta${q}`)).body.data as { cuentas: Array<{ codigo: string; crearSubcuenta?: false }>; otras: Array<{ codigo: string }> });
     const sin = await codigos(['ventas:write']);
     expect(sin.cuentas.map((c) => c.codigo)).not.toEqual(expect.arrayContaining(['708']));
     const con = await codigos(['ventas:write'], '&rectificativa=1');
     expect(con.cuentas.map((c) => c.codigo)).toEqual(expect.arrayContaining(['700', '706', '708', '709']));
+    // Se eligen para la línea, pero no se ofrecen para crear subcuentas a quien no puede.
+    expect(con.cuentas.find((c) => c.codigo === '708')).toMatchObject({ crearSubcuenta: false });
+    expect(con.cuentas.find((c) => c.codigo === '700')).not.toHaveProperty('crearSubcuenta');
     // Solo lectura: no hace rectificativas, no le salen.
     expect((await codigos(['ventas:read'], '&rectificativa=1')).cuentas.map((c) => c.codigo)).not.toEqual(expect.arrayContaining(['708']));
     // Contabilidad «Modificar»: en la lista y no repetidas en «otras».
     const contable = await codigos(['contabilidad:write'], '&rectificativa=1');
     expect(contable.cuentas.map((c) => c.codigo)).toEqual(expect.arrayContaining(['708']));
     expect(contable.otras.map((c) => c.codigo)).not.toEqual(expect.arrayContaining(['708']));
-    expect((await request(app('rect-crear', ['ventas:write'])).post('/cuentas-linea').send({ tipo: 'venta', madre: '709', nombre: 'Rappel 2027' })).status).toBe(403);
+    expect(contable.cuentas.find((c) => c.codigo === '708')).not.toHaveProperty('crearSubcuenta');
+    const crear = await request(app('rect-crear', ['ventas:write'])).post('/cuentas-linea').send({ tipo: 'venta', madre: '709', nombre: 'Rappel 2027' });
+    expect(crear.status).toBe(403);
+    expect(crear.body.message).toMatch(/úsala tal cual en la línea/);
   });
 });
 
