@@ -17,12 +17,14 @@
 import { createHash } from 'crypto';
 import { Prisma } from '@prisma/client';
 import { leerAzure, modoLector } from '../../config/azure';
-import { prisma } from '../../config/database';
+import { prisma, type TransaccionBD } from '../../config/database';
 import { logger } from '../../config/logger';
 import { badRequest, conflict, HttpError, notFound } from '../../utils/http-errors';
 import { nombreSeguro } from '../../utils/nombre-seguro';
 import { deleteObject, getObject, putObject } from '../../utils/storage';
 import { MENSAJE_LECTOR_SIN_IA, type GastoExtraidoEmpresa } from '../gastos-extractor.service';
+import type { InvoiceExtraction } from '../invoice-extractor.service';
+import { registrarAuditoria } from '../auditoria.service';
 import { aIngresoExtraido, type IngresoExtraido } from '../ingresos-extractor.service';
 import { cuentaHabitualDeProveedor } from '../cuentasLinea.service';
 import { perfilEmpresa } from '../perfilEmpresa.service';
@@ -39,6 +41,7 @@ import { datosTerceroDeLectura, eleccionGuardada, infoTercero, type EleccionOrig
 import { clientePorNif, type TerceroExistente } from './terceros-lector';
 import { rectificativaLeida, type RectificativaLeida } from './rectificativa';
 import { rectificativaVentaLeida, type RectificativaVentaLeida } from './rectificativa-venta';
+import { lecturaVacia } from './tipos';
 import type {
   ArchivoLectura,
   CampoId,
@@ -136,7 +139,8 @@ export type RespuestaLectura =
   | { lecturaId: string; estado: 'LEYENDO'; reintentarEnMs: number; segundos: number }
   | LecturaGastoLista
   | LecturaIngresoLista
-  | { lecturaId: string; estado: 'ERROR'; codigo: string; mensaje: string }
+  /** puedeRellenarAMano: el archivo sigue guardado y se puede terminar a mano (POST /lecturas/:id/manual). */
+  | { lecturaId: string; estado: 'ERROR'; codigo: string; mensaje: string; puedeRellenarAMano: boolean }
   | { lecturaId: string; estado: 'CONFIRMADA' | 'DESCARTADA' };
 
 /**
@@ -148,6 +152,8 @@ interface ResultadoGuardado {
   lectura: LecturaNormalizada;
   campos: Partial<Record<CampoId, EstadoCampo>>;
   origenTercero?: EleccionOrigenTercero | null;
+  /** Rellenada a mano sobre una lectura que ya estaba LISTA: lo que se leyo (queda hasta la purga, como pista). */
+  leidaAntes?: LecturaNormalizada;
 }
 
 // ---------------------------------------------------------------------------
@@ -222,12 +228,44 @@ function limpiarAzure(resultId: string | null): void {
   void azureExtractor.limpiar({ resultId }).catch(() => undefined);
 }
 
-/** La lectura no se ha podido hacer. El original ya no sirve (una lectura en ERROR no se reintenta): se borra. */
+/**
+ * La lectura no se ha podido hacer (una lectura en ERROR no se reintenta). El
+ * original se guarda para poder rellenarla a mano («Rellenarla a mano»); lo
+ * borran descartar y la purga de los 7 dias. Si el archivo no vale
+ * (ARCHIVO_NO_VALIDO), se borra ya: tampoco sirve para eso.
+ */
 async function terminarConError(fila: FilaLectura, codigo: string): Promise<RespuestaLectura> {
-  const r = await prisma.lecturaDocumento.updateMany({ where: { id: fila.id, estado: 'LEYENDO' }, data: { estado: 'ERROR', errorCodigo: codigo, terminadaEn: new Date(), archivoRef: null } });
+  const borrar = codigo === 'ARCHIVO_NO_VALIDO';
+  const r = await prisma.lecturaDocumento.updateMany({
+    where: { id: fila.id, estado: 'LEYENDO' },
+    data: { estado: 'ERROR', errorCodigo: codigo, terminadaEn: new Date(), ...(borrar ? { archivoRef: null } : {}) },
+  });
   logger.warn('[lectura] Lectura sin terminar', { lecturaId: fila.id, companyId: fila.companyId, lector: fila.lector, codigo });
-  if (r.count > 0 && fila.archivoRef) await borrarArchivo(fila.id, fila.archivoRef);
-  return { lecturaId: fila.id, estado: 'ERROR', codigo, mensaje: mensajeError(codigo, fila.lector) };
+  if (r.count > 0 && borrar && fila.archivoRef) await borrarArchivo(fila.id, fila.archivoRef);
+  if (r.count === 0) return respuestaDe(await recargar(fila.id));
+  return { lecturaId: fila.id, estado: 'ERROR', codigo, mensaje: mensajeError(codigo, fila.lector), puedeRellenarAMano: !borrar && !!fila.archivoRef };
+}
+
+/** El documento del lector de ventas de siempre (IncomeReaderDocument) de una lectura, enlazado a ella. */
+async function crearDocumentoVenta(tx: TransaccionBD, fila: FilaLectura, parsedData: InvoiceExtraction): Promise<void> {
+  const ahora = new Date();
+  const doc = await tx.incomeReaderDocument.create({
+    data: {
+      companyId: fila.companyId,
+      userId: fila.userId,
+      sourceType: 'EXTRACTOR_IA',
+      originalFileName: fila.archivoNombre,
+      mimeType: fila.archivoTipo,
+      fileSize: fila.archivoTamanio,
+      storagePath: fila.archivoRef ?? '',
+      status: 'READY_FOR_VERIFICATION',
+      uploadedAt: fila.iniciadaEn,
+      processingStartedAt: fila.iniciadaEn,
+      processingCompletedAt: ahora,
+      parsedData: json(parsedData),
+    },
+  });
+  await tx.lecturaDocumento.update({ where: { id: fila.id }, data: { incomeReaderDocumentId: doc.id } });
 }
 
 /** Guarda la lectura validada (LISTA). En ventas crea, en la misma transaccion, el documento del lector de siempre. */
@@ -251,26 +289,10 @@ async function guardarLista(
     terminadaEn: new Date(),
   };
   await prisma.$transaction(async (tx) => {
+    // Solo si sigue leyendo: si mientras tanto se descarto o se paso a rellenar a mano, no se pisa.
     const r = await tx.lecturaDocumento.updateMany({ where: { id: fila.id, estado: 'LEYENDO' }, data: datos });
     if (r.count === 0 || fila.lector !== 'VENTA') return;
-    const ahora = new Date();
-    const doc = await tx.incomeReaderDocument.create({
-      data: {
-        companyId: fila.companyId,
-        userId: fila.userId,
-        sourceType: 'EXTRACTOR_IA',
-        originalFileName: fila.archivoNombre,
-        mimeType: fila.archivoTipo,
-        fileSize: fila.archivoTamanio,
-        storagePath: fila.archivoRef ?? '',
-        status: 'READY_FOR_VERIFICATION',
-        uploadedAt: fila.iniciadaEn,
-        processingStartedAt: fila.iniciadaEn,
-        processingCompletedAt: ahora,
-        parsedData: json(aInvoiceExtraction(l, val.validaciones, { confianza: extra.confianza, nombreArchivo: fila.archivoNombre, mime: fila.archivoTipo })),
-      },
-    });
-    await tx.lecturaDocumento.update({ where: { id: fila.id }, data: { incomeReaderDocumentId: doc.id } });
+    await crearDocumentoVenta(tx, fila, aInvoiceExtraction(l, val.validaciones, { confianza: extra.confianza, nombreArchivo: fila.archivoNombre, mime: fila.archivoTipo }));
   });
   logger.info('[lectura] Lectura lista', {
     lecturaId: fila.id,
@@ -357,7 +379,8 @@ function infoLectura(fila: FilaLectura, guardado: ResultadoGuardado, validacione
     qr: {
       estado: l.qr?.estado ?? 'SIN_QR',
       verifactu: l.qr?.verifactu ?? null,
-      texto: textoQr(l.qr),
+      // Rellenada a mano: no se ha mirado ningun QR y no hay nada que decir de el.
+      texto: origen === 'MANUAL' ? '' : textoQr(l.qr),
       diferencias: l.qr?.diferencias ?? [],
       completados: l.qr?.completados ?? [],
       pruebas: l.qr?.pruebas === true,
@@ -383,7 +406,15 @@ function sinRepetidos(textos: string[]): string[] {
 
 async function respuestaDe(fila: FilaLectura): Promise<RespuestaLectura> {
   if (fila.estado === 'CONFIRMADA' || fila.estado === 'DESCARTADA') return { lecturaId: fila.id, estado: fila.estado };
-  if (fila.estado === 'ERROR') return { lecturaId: fila.id, estado: 'ERROR', codigo: fila.errorCodigo ?? 'NO_LEGIBLE', mensaje: mensajeError(fila.errorCodigo, fila.lector) };
+  if (fila.estado === 'ERROR') {
+    return {
+      lecturaId: fila.id,
+      estado: 'ERROR',
+      codigo: fila.errorCodigo ?? 'NO_LEGIBLE',
+      mensaje: mensajeError(fila.errorCodigo, fila.lector),
+      puedeRellenarAMano: !!fila.archivoRef && fila.errorCodigo !== 'ARCHIVO_NO_VALIDO',
+    };
+  }
   if (fila.estado !== 'LISTA' || !fila.resultado) {
     const segundos = Math.round((Date.now() - fila.iniciadaEn.getTime()) / 1000);
     const falta = fila.azureProximaConsulta ? fila.azureProximaConsulta.getTime() - Date.now() : 2000;
@@ -396,6 +427,18 @@ async function respuestaDe(fila: FilaLectura): Promise<RespuestaLectura> {
   const eleccion = eleccionGuardada(guardado);
   const tercero = (paisFicha: string | null | undefined) =>
     infoTercero(lector, datosTerceroDeLectura(lector, guardado.lectura, { eleccion, paisFicha: paisFicha ?? null }));
+
+  // Rellenada a mano: el formulario vacio, sin buscar tercero, duplicado ni rectificativa (no hay nada leido).
+  if (fila.origen === 'MANUAL') {
+    const lectura = infoLectura(fila, guardado, [], tercero(null));
+    if (lector === 'GASTO') {
+      const g = aGastoExtraido(guardado.lectura, [], null);
+      return { lecturaId: fila.id, estado: 'LISTA', gasto: { ...g, tramos: [], proveedorExistente: null, duplicada: null, cuentaHabitual: null, rectificativa: null }, lectura };
+    }
+    const vacia = aInvoiceExtraction(guardado.lectura, [], { confianza: null, nombreArchivo: fila.archivoNombre, mime: fila.archivoTipo });
+    const ingreso = aIngresoExtraido(fila.incomeReaderDocumentId ?? '', vacia, null, { nifYaValidado: true });
+    return { lecturaId: fila.id, estado: 'LISTA', ingreso: { ...ingreso, lineas: [], errores: [], clienteExistente: null, rectificativa: null }, lectura };
+  }
 
   if (lector === 'GASTO') {
     const g = aGastoExtraido(guardado.lectura, validaciones, fila.confianza);
@@ -612,6 +655,15 @@ export async function cambiarOrigenTercero(companyId: string, lector: Lector, id
   if (fila.estado !== 'LISTA' || !fila.resultado) throw badRequest(MENSAJE_LECTURA_NO_CAMBIABLE, { codigo: 'LECTURA_NO_LISTA' });
   const guardado = fila.resultado as unknown as ResultadoGuardado;
   const l = guardado.lectura;
+  // Rellenada a mano: no hay nada leido que validar; solo se guarda la eleccion (cuenta al registrarla).
+  if (fila.origen === 'MANUAL') {
+    const r = await prisma.lecturaDocumento.updateMany({
+      where: { id: fila.id, estado: 'LISTA' },
+      data: { resultado: json({ ...guardado, origenTercero: eleccion } satisfies ResultadoGuardado) },
+    });
+    if (r.count === 0) throw badRequest(MENSAJE_LECTURA_NO_CAMBIABLE, { codigo: 'LECTURA_NO_LISTA' });
+    return respuestaDe(await recargar(fila.id));
+  }
   const val = await validar(fila, l, eleccion);
   await prisma.$transaction(async (tx) => {
     const r = await tx.lecturaDocumento.updateMany({
@@ -632,6 +684,82 @@ export async function cambiarOrigenTercero(companyId: string, lector: Lector, id
     }
   });
   logger.info('[lectura] Origen del tercero cambiado', { lecturaId: fila.id, companyId, lector, origen: eleccion?.origen ?? null });
+  return respuestaDe(await recargar(fila.id));
+}
+
+export const MENSAJE_ARCHIVO_YA_BORRADO = 'El archivo ya no está: vuelve a subir la factura.';
+
+/**
+ * POST /lecturas/:id/manual («Rellenarla a mano»). La lectura que ha fallado
+ * (ERROR), que tarda demasiado (LEYENDO) o que ha salido muy incompleta
+ * (LISTA) pasa a LISTA con origen MANUAL: sin nada leido y con el archivo ya
+ * subido, que se archiva con la factura al registrarla. En ventas, el
+ * documento del lector de siempre se crea (o se vacia) para registrarla con
+ * /ingresos-extractor/confirmar y sus `correcciones`. Si ya es MANUAL,
+ * devuelve lo mismo. Una que siguiera leyendo ya no pisa nada al terminar
+ * (guardarLista solo escribe sobre LEYENDO). Queda en AuditLog (LECTURA_A_MANO).
+ */
+export async function rellenarAMano(companyId: string, lector: Lector, id: string, userId?: string | null, intento = 0): Promise<RespuestaLectura> {
+  const fila = await buscar(companyId, lector, id);
+  if (fila.estado === 'CONFIRMADA') throw conflict('Esta factura ya se registró.', { codigo: 'LECTURA_YA_CONFIRMADA' });
+  if (fila.estado === 'DESCARTADA') throw badRequest(MENSAJE_LECTURA_NO_CAMBIABLE, { codigo: 'LECTURA_NO_LISTA' });
+  if (fila.estado === 'LISTA' && fila.origen === 'MANUAL') return respuestaDe(fila);
+  if (!fila.archivoRef) throw conflict(MENSAJE_ARCHIVO_YA_BORRADO, { codigo: 'ARCHIVO_YA_BORRADO' });
+
+  const anterior = (fila.resultado ?? null) as Partial<ResultadoGuardado> | null;
+  const vacia = lecturaVacia('manual');
+  const resultado: ResultadoGuardado = {
+    lectura: vacia,
+    campos: {},
+    origenTercero: eleccionGuardada(fila.resultado),
+    ...(fila.estado === 'LISTA' && anterior?.lectura ? { leidaAntes: anterior.lectura } : {}),
+  };
+  const hecho = await prisma.$transaction(async (tx) => {
+    const r = await tx.lecturaDocumento.updateMany({
+      where: { id: fila.id, estado: fila.estado },
+      data: {
+        estado: 'LISTA',
+        origen: 'MANUAL',
+        motivoRespaldo: null,
+        confianza: null,
+        estadoValidacion: 'ok',
+        qrEstado: null,
+        resultado: json(resultado),
+        validaciones: json([]),
+        avisos: json([]),
+        errorCodigo: null,
+        revisada: false,
+        terminadaEn: new Date(),
+      },
+    });
+    if (r.count === 0) return false;
+    if (lector === 'VENTA') {
+      const datos = aInvoiceExtraction(vacia, [], { confianza: null, nombreArchivo: fila.archivoNombre, mime: fila.archivoTipo });
+      const vaciado = fila.incomeReaderDocumentId
+        ? await tx.incomeReaderDocument.updateMany({
+            where: { id: fila.incomeReaderDocumentId, companyId, status: 'READY_FOR_VERIFICATION' },
+            data: { parsedData: json(datos), storagePath: fila.archivoRef ?? '' },
+          })
+        : { count: 0 };
+      if (vaciado.count === 0) await crearDocumentoVenta(tx, fila, datos);
+    }
+    return true;
+  });
+  // Ha cambiado de estado entretanto (la lectura ha terminado): se mira otra vez, una sola.
+  if (!hecho) {
+    if (intento > 0) return respuestaDe(await recargar(fila.id));
+    return rellenarAMano(companyId, lector, id, userId, intento + 1);
+  }
+  if (fila.estado === 'LEYENDO') limpiarAzure(fila.azureResultId);
+  logger.info('[lectura] Rellenada a mano', { lecturaId: fila.id, companyId, lector, estadoAnterior: fila.estado });
+  await registrarAuditoria({
+    userId: userId ?? 'unknown',
+    companyId,
+    action: 'LECTURA_A_MANO',
+    resourceType: 'LECTURA_DOCUMENTO',
+    resourceId: fila.id,
+    meta: { lecturaId: fila.id, lector, estadoAnterior: fila.estado, errorCodigo: fila.errorCodigo ?? null },
+  });
   return respuestaDe(await recargar(fila.id));
 }
 
