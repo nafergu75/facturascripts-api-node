@@ -80,6 +80,12 @@ export interface CuentaElegible {
   madre: string | null;
   /** Subcuenta propia de la empresa (creada por ella o traida de su plan anterior). */
   propia: boolean;
+  /**
+   * false: se puede elegir para la linea, pero quien pide la lista no puede crear
+   * subcuentas bajo ella (la 706, la 708 y la 709 de una rectificativa, que son de
+   * uso contable, para quien no tiene contabilidad:write). Sin el campo, si puede.
+   */
+  crearSubcuenta?: false;
 }
 
 export interface ListadoCuentasLinea {
@@ -136,7 +142,9 @@ export async function listarCuentasLinea(
     .filter((c) => !q || sinTildes(`${c.codigo} ${c.nombre}`).includes(q))
     .map((c) => ({ codigo: c.codigo, nombre: c.nombre, madre: c.parentCodigo ?? null, propia: c.esPersonalizadaEmpresa }));
   const deRectificativa = (c: { codigo: string }) => !!opciones.rectificativa && tipo === 'venta' && ['706', '708', '709'].some((p) => c.codigo.startsWith(p));
-  const cuentas = todas.filter((c) => !esCuentaDeUsoContable(c.codigo, tipo) || deRectificativa(c));
+  const cuentas = todas
+    .filter((c) => !esCuentaDeUsoContable(c.codigo, tipo) || deRectificativa(c))
+    .map((c) => (deRectificativa(c) && esCuentaDeUsoContable(c.codigo, tipo) && !opciones.verUsoContable ? { ...c, crearSubcuenta: false as const } : c));
   const otras = opciones.verUsoContable ? todas.filter((c) => esCuentaDeUsoContable(c.codigo, tipo) && !deRectificativa(c)) : [];
   return { tipo, porDefecto, longitud: await longitudSubcuentasEmpresa(companyId), cuentas, otras };
 }
