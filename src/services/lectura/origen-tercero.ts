@@ -216,6 +216,8 @@ export function contradiccionOrigen(d: DatosOrigenTercero, tipo: TipoTercero): C
   const nif = limpiarNif(d.nif) || null;
   if (auto.por === 'forma' && !validarNifEspanol(nif).valido) return null;
   if (auto.por === 'prefijo' && e.origen === 'FUERA' && !prefijoConSuForma(nif ?? '')) return null;
+  // XI (Irlanda del Norte) con la direccion en el Reino Unido: en las entregas de bienes cuenta como de la UE.
+  if (e.origen === 'UE' && auto.pais === 'GB' && prefijoNifIvaUe(nif)?.prefijo === 'XI') return null;
   const otroLado = auto.origen !== e.origen;
   const otroPais = !otroLado && !!e.pais && !!auto.pais && normalizarPais(e.pais) !== normalizarPais(auto.pais);
   if (!otroLado && !otroPais) return null;

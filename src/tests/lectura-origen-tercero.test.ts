@@ -236,6 +236,12 @@ describe('casos limite de de donde es el tercero', () => {
     expect(contradiccionOrigen({ eleccion: ES, nif: 'DEL850101AB1' }, 'cliente')).toMatchObject({ origen: 'UE', pais: 'DE' });
   });
 
+  it('un NIF-IVA XI (Irlanda del Norte) con la direccion en el Reino Unido y De otro pais de la UE: sin aviso', async () => {
+    expect(contradiccionOrigen({ eleccion: UE(), nif: 'XI123456789', paisDireccion: 'GB' }, 'cliente')).toBeNull();
+    const vs = (await validarLectura(cliente('XI123456789', 'GB'), base({ origenTercero: UE() }))).validaciones;
+    expect(vs.filter((v) => ['NIF_RECEPTOR', 'ORIGEN_TERCERO'].includes(v.codigo))).toEqual([]);
+  });
+
   it('un tercero ya dado de alta: su ficha manda sobre lo elegido para validar su numero; queda el aviso', async () => {
     expect(detectarOrigenTercero({ eleccion: ES, paisFicha: 'IE', nif: 'IE6388047V' })).toEqual({ origen: 'UE', pais: 'IE', por: 'ficha' });
     const vs = (await validarLectura(proveedor('IE6388047V'), gasto({ origenTercero: ES, paisTerceroFicha: 'IE' }))).validaciones;
