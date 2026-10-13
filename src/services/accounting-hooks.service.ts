@@ -210,7 +210,8 @@ export class AccountingHooksService {
         },
       });
     } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : String(err);
+      // Como en ventas: al log y a la auditoria, el detalle tecnico (no el texto traducido).
+      const errorMsg = detalleFalloBD(err) ?? (err instanceof Error ? err.message : String(err));
       console.error(`❌ Error contabilizando gasto ${invoiceId}: ${errorMsg}`);
 
       try {
