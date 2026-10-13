@@ -125,6 +125,19 @@ describe('una original', () => {
     expect(sube.totalFactura).toBe(60.5);
   });
 
+  it('por diferencias lleva la retención de la original: sin ella, 400 RETENCION_NO_CUADRA', async () => {
+    const a = await emitir(1000, { lineas: [linea(1000, { tipoRetencion: 15 })] }); // 1.000 + 210 - 150
+    const sin = await error(rect({ motivo: 'DESCUENTO', originales: [{ id: a.id }] }));
+    expect(sin.statusCode).toBe(400);
+    expect(sin.details).toMatchObject({ codigo: 'RETENCION_NO_CUADRA', campo: 'tipoRetencion' });
+    expect(sin.message).toContain('15 %');
+    const con = await rect({ motivo: 'DESCUENTO', originales: [{ id: a.id }] }, { lineas: [linea(-100, { tipoRetencion: 15 })] });
+    expect([con.baseTotal, con.ivaTotal, con.retencionTotal, con.totalFactura]).toEqual([-100, -21, -15, -106]);
+    // Por sustitución, la factura corregida puede cambiarla.
+    const b = await emitir(500, { lineas: [linea(500, { tipoRetencion: 15 })] });
+    expect((await rect({ forma: 'S', motivo: 'ERROR', originales: [{ id: b.id }] }, { lineas: [linea(500)] })).retencionTotal).toBe(0);
+  });
+
   it('el cliente es el de la original: otro, 400 ORIGINAL_DE_OTRO_CLIENTE', async () => {
     const a = await emitir(400);
     const e = await error(rect({ originales: [{ id: a.id }] }, { customer: { id: otroCliente } }));
