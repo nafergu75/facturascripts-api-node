@@ -6,7 +6,9 @@ import { incomeInvoicesService, type CrearLineaIngresoDTO } from './income-invoi
 import { invoiceExtractorService, type InvoiceExtraction } from './invoice-extractor.service';
 import { archivarVentaSinRomper } from './archivoFacturas.service';
 import { accountingHooksService } from './accounting-hooks.service';
-import { comprobarRevisionVenta, vincularLectura } from './lectura/confirmar';
+import { comprobarRevisionVenta, MENSAJE_FALTA_RECTIFICATIVA, vincularLectura } from './lectura/confirmar';
+import { cuentaPorTipoIva, esMotivoVenta, MOTIVO_INFO } from '../domain/rectificativa-venta.model';
+import { registrarAuditoria } from './auditoria.service';
 import { clientePorNif, errorTerceroNoDadoDeAlta } from './lectura/terceros-lector';
 
 /**
@@ -167,23 +169,136 @@ export function lineasDesdeExtraccion(e: InvoiceExtraction, concepto: string | n
  * Comprueba ANTES de crear la factura que las lineas reproducen al centimo el
  * total leido. Si no, la factura quedaria registrada con otros importes.
  */
-export function comprobarTotales(lineas: CrearLineaIngresoDTO[], e: InvoiceExtraction): void {
+export function comprobarTotales(lineas: CrearLineaIngresoDTO[], e: InvoiceExtraction, signo: 1 | -1 = 1): void {
+  // Con signo (una rectificativa en negativo): redondeo del valor absoluto, como
+  // la rectificativa; en positivo, exactamente el de siempre.
+  const r = (n: number) => (n < 0 ? -centimos(-n) : centimos(n));
   let base = 0;
   let iva = 0;
   let retencion = 0;
   for (const l of lineas) {
-    const b = centimos(l.cantidad * l.precioUnitario);
+    const b = r(l.cantidad * l.precioUnitario);
     base += b;
-    iva += centimos((b * (l.tipoIva ?? 0)) / 100);
-    retencion += centimos((b * (l.tipoRetencion ?? 0)) / 100);
+    iva += r((b * (l.tipoIva ?? 0)) / 100);
+    retencion += r((b * (l.tipoRetencion ?? 0)) / 100);
   }
   const total = base + iva - retencion;
-  if (aCentimos(total) !== aCentimos(e.amounts.total_net)) {
+  const leido = signo * e.amounts.total_net;
+  if (aCentimos(total) !== aCentimos(leido)) {
     throw badRequest(
-      `Los importes leidos no cuadran: las bases y tipos dan ${centimos(total).toFixed(2)} EUR y el total de la factura es ` +
-        `${e.amounts.total_net.toFixed(2)} EUR. Revisa la factura y registrala a mano.`,
+      `Los importes leidos no cuadran: las bases y tipos dan ${r(total).toFixed(2)} EUR y el total de la factura es ` +
+        `${leido.toFixed(2)} EUR. Revisa la factura y registrala a mano.`,
     );
   }
+}
+
+/** Algun importe leido en negativo (base, total o total a pagar): un abono, aunque no diga «rectificativa». */
+const importesLeidosNegativos = (e: InvoiceExtraction) =>
+  [...e.amounts.bases.map((b) => b.base_amount), e.amounts.total_gross, e.amounts.total_net].some((x) => typeof x === 'number' && aCentimos(x) < 0);
+
+/** Rectificativa leida lista para el alta: el bloque, las lineas y el cliente que manda la original. */
+interface RectificativaLector {
+  bloque: Record<string, unknown>;
+  lineas: CrearLineaIngresoDTO[];
+  /** Cliente de las originales de la app (manda sobre el NIF leido); null si no hay original de la app. */
+  clienteOriginal: string | null;
+  /** -1 si los importes leidos en positivo se registran en negativo. */
+  signo: 1 | -1;
+}
+
+const TIPOS_IVA_LECTOR = [0, 4, 5, 10, 21];
+
+/**
+ * Bloque `rectificativa` de /ingresos-extractor/confirmar. De lo leido salen
+ * las lineas (una por tipo de IVA); del cuerpo, la forma, el motivo, el signo
+ * (cambiarSigno: con importes en positivo, si restan), las originales o el
+ * periodo y, en una sustitucion sin la original en la app, sus importes, que se
+ * guardan como lineas en negativo junto a las leidas (lo guardado ya es la
+ * diferencia). Sin cuenta elegida, cada linea va a la de la original para su
+ * tipo de IVA: la de la linea de mayor base de ese tipo entre todas las
+ * originales de la app (cuentaPorTipoIva).
+ */
+async function rectificativaDelLector(
+  companyId: string,
+  documentId: string,
+  raw: unknown,
+  e: InvoiceExtraction,
+  lineasLeidas: CrearLineaIngresoDTO[],
+  cuentasElegidas: Array<string | undefined>,
+): Promise<RectificativaLector> {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw badRequest('Los datos de la rectificativa no tienen el formato esperado.', { codigo: 'RECTIFICATIVA_NO_VALIDA', campo: 'rectificativa' });
+  }
+  const r = raw as Record<string, unknown>;
+  const forma = r.forma === undefined || r.forma === null || r.forma === '' ? 'I' : r.forma;
+  if (forma !== 'I' && forma !== 'S') throw badRequest('Elige cómo rectifica: por diferencias o por sustitución.', { codigo: 'FORMA_NO_VALIDA', campo: 'rectificativa.forma' });
+  const negativos = importesLeidosNegativos(e);
+  const originales = Array.isArray(r.originales) ? (r.originales as Array<Record<string, unknown>>) : [];
+  const ids = originales.map((o) => (o && typeof o.id === 'string' ? o.id : null)).filter((x): x is string => !!x);
+  const deLaApp = ids.length
+    ? await prisma.incomeInvoice.findMany({ where: { companyId, id: { in: ids } }, select: { id: true, customerId: true, tipoFactura: true, lineas: { select: { tipoIva: true, accountCode: true, baseLine: true } } } })
+    : [];
+
+  // Signo: con importes en positivo, por diferencias hay que decir si restan o suman.
+  let signo: 1 | -1 = 1;
+  if (forma === 'I' && !negativos) {
+    if (typeof r.cambiarSigno !== 'boolean') {
+      throw badRequest('Indica si los importes de la rectificativa restan (es un abono) o suman a la factura que rectifica.', {
+        codigo: 'FALTA_SIGNO',
+        campo: 'rectificativa.cambiarSigno',
+      });
+    }
+    if (r.cambiarSigno) signo = -1;
+  }
+  // Sin cuenta elegida: la de la original para su tipo de IVA.
+  const cuentaOriginal = cuentaPorTipoIva(deLaApp.flatMap((f) => f.lineas.map((l) => ({ tipoIva: l.tipoIva, cuenta: l.accountCode ?? null, baseLine: Number(l.baseLine) }))));
+  let lineas = lineasLeidas.map((l, i) => {
+    const cuenta = cuentasElegidas[i] ?? (deLaApp.length ? cuentaOriginal[String(l.tipoIva ?? 21)] : undefined);
+    return { ...l, precioUnitario: signo * l.precioUnitario, ...(cuenta ? { cuenta } : {}) };
+  });
+  let formaBloque: 'I' | 'S' = forma;
+  // Por sustitucion sin la original en la app: sus importes, en negativo, junto a los leidos.
+  if (forma === 'S' && !deLaApp.length) {
+    const io = Array.isArray(r.importesOriginales) ? (r.importesOriginales as Array<Record<string, unknown>>) : [];
+    if (!io.length) {
+      throw badRequest('Escribe la base y el IVA de la factura original, por tipo de IVA: sin ellos no se sabe qué cambia.', {
+        codigo: 'FALTA_IMPORTES_ORIGINALES',
+        campo: 'rectificativa.importesOriginales',
+      });
+    }
+    const deOriginal = io.map((x, i) => {
+      const tipoIva = Number(x?.tipoIva);
+      const base = Number(x?.base);
+      if (!TIPOS_IVA_LECTOR.includes(tipoIva) || !Number.isFinite(base)) {
+        throw badRequest('Los importes de la factura original no son válidos: un tipo de IVA y su base.', { codigo: 'FALTA_IMPORTES_ORIGINALES', campo: `rectificativa.importesOriginales.${i}` });
+      }
+      return { descripcion: `Factura rectificada (IVA ${tipoIva} %)`, cantidad: -1, precioUnitario: base, descuentoPorcentaje: 0, tipoIva, tipoRetencion: 0 };
+    });
+    lineas = [...lineas, ...deOriginal];
+    // Lo guardado ya es la diferencia con la original: por diferencias.
+    formaBloque = 'I';
+  }
+  // Explicacion por defecto: el motivo leido (o el texto del motivo).
+  let explicacion = typeof r.explicacion === 'string' ? r.explicacion.trim() : '';
+  if (!explicacion) {
+    const fila = await prisma.lecturaDocumento.findFirst({ where: { companyId, incomeReaderDocumentId: documentId, lector: 'VENTA' }, select: { resultado: true } });
+    const leida = (fila?.resultado as { lectura?: { rectificativa?: { motivo?: { valor?: string | null } } | null } } | null)?.lectura;
+    explicacion = leida?.rectificativa?.motivo?.valor?.trim() || (esMotivoVenta(r.motivo) ? MOTIVO_INFO[r.motivo].texto : '');
+  }
+  const clientes = [...new Set(deLaApp.map((f) => f.customerId))];
+  return {
+    bloque: {
+      // La de un ticket (R5) la decide la original: si todas las de la app son simplificadas.
+      ticket: deLaApp.length > 0 && deLaApp.every((f) => f.tipoFactura === 'F2'),
+      forma: formaBloque,
+      motivo: r.motivo,
+      explicacion,
+      ...(r.periodo !== undefined && r.periodo !== null ? { periodo: r.periodo } : { originales }),
+    },
+    lineas,
+    clienteOriginal: clientes.length === 1 ? clientes[0] : null,
+    signo,
+  };
 }
 
 /** Lo que ha pasado con el asiento de una factura registrada desde el lector. */
@@ -234,12 +349,18 @@ export const ingresosExtractorService = {
    * tiene que estar dado de alta: el elegido en la pantalla (clienteId) o el
    * de la empresa con el NIF leido. Si no hay ninguno, 400
    * TERCERO_NO_DADO_DE_ALTA: ya no se crea solo.
+   *
+   * Rectificativa o abono: con el bloque `rectificativa` se registra como
+   * rectificativa (rectificativaDelLector); con una original de la app, su
+   * cliente manda (otro clienteId: 400 ORIGINAL_DE_OTRO_CLIENTE). Con importes
+   * en positivo se puede marcar que no lo es (noEsRectificativa, queda en
+   * AuditLog); con importes en negativo, no.
    */
   async confirmar(
     companyId: string,
     documentId: string,
-    opciones: { revisado?: boolean; userId?: string; lineas?: unknown; clienteId?: string } = {},
-  ): Promise<{ facturaId: string; numeroCompleto: string; total: number } & ContabilidadVentaLeida> {
+    opciones: { revisado?: boolean; userId?: string; lineas?: unknown; clienteId?: string; rectificativa?: unknown; noEsRectificativa?: boolean } = {},
+  ): Promise<{ facturaId: string; numeroCompleto: string; total: number; esRectificativa: boolean; avisos?: string[] } & ContabilidadVentaLeida> {
     const doc = await prisma.incomeReaderDocument.findFirst({
       where: { id: documentId, companyId, sourceType: 'EXTRACTOR_IA' },
     });
@@ -250,24 +371,42 @@ export const ingresosExtractorService = {
       ? await prisma.customer.findFirst({ where: { id: opciones.clienteId, companyId }, select: { id: true } })
       : null;
     if (opciones.clienteId && !elegido) throw notFound('Cliente no encontrado.');
+    const e = doc.parsedData as unknown as InvoiceExtraction;
+    // Rectificativa o abono: su bloque, o marcar que no lo es (solo con importes en positivo).
+    const conBloque = opciones.rectificativa !== undefined && opciones.rectificativa !== null;
+    const noEsRectificativa = opciones.noEsRectificativa === true;
+    if (conBloque && noEsRectificativa) {
+      throw badRequest('Indica qué factura rectifica o marca que no es una rectificativa, pero no las dos cosas.', { codigo: 'RECTIFICATIVA_NO_VALIDA', campo: 'noEsRectificativa' });
+    }
+    if (noEsRectificativa && importesLeidosNegativos(e)) {
+      throw badRequest('Los importes son negativos: es un abono. Indica qué factura rectifica.', { codigo: 'NO_ES_RECTIFICATIVA_CON_NEGATIVOS', campo: 'noEsRectificativa' });
+    }
     // Leido con /lecturas: si algo estaba marcado, hace falta "He revisado". Con un
     // cliente elegido, el NIF leido del cliente (que falte o este mal) ya no bloquea.
-    const ignorados = await comprobarRevisionVenta(companyId, documentId, opciones.revisado === true, elegido ? ['NIF_RECEPTOR'] : []);
+    const ignorados = await comprobarRevisionVenta(companyId, documentId, opciones.revisado === true, elegido ? ['NIF_RECEPTOR'] : [], { bloque: conBloque, noEsRectificativa });
+    // Documento del lector de siempre con importes en negativo: tambien hace falta decir que rectifica.
+    if (!conBloque && !noEsRectificativa && importesLeidosNegativos(e)) throw badRequest(MENSAJE_FALTA_RECTIFICATIVA, { codigo: 'FALTA_RECTIFICATIVA', campo: 'rectificativa' });
 
-    const e = doc.parsedData as unknown as InvoiceExtraction;
     const resumen = aIngresoExtraido(documentId, e);
-    const sinNifLeido = new Set(elegido ? [MENSAJE_FALTA_NIF_CLIENTE, ...ignorados] : []);
+    // La cuenta de cada linea, si se cambio en la pantalla (no cambia importes).
+    const cuentas = cuentasElegidas(opciones.lineas, e.amounts.bases.length);
+    const leidas = lineasDesdeExtraccion(e, resumen.concepto);
+    const rect = conBloque ? await rectificativaDelLector(companyId, documentId, opciones.rectificativa, e, leidas, cuentas) : null;
+    if (rect?.clienteOriginal && elegido && elegido.id !== rect.clienteOriginal) {
+      throw badRequest('La factura que rectifica es de otro cliente: la rectificativa va a su nombre.', { codigo: 'ORIGINAL_DE_OTRO_CLIENTE', campo: 'clienteId' });
+    }
+    // Con una original de la app, su cliente: el NIF leido (que falte o este mal) ya no bloquea.
+    const sinNifLeido = new Set([...(elegido || rect?.clienteOriginal ? [MENSAJE_FALTA_NIF_CLIENTE] : []), ...ignorados]);
     const errores = resumen.errores.filter((m) => !sinNifLeido.has(m));
     if (errores.length > 0) throw badRequest(`No se puede registrar: ${errores.join(' ')}`);
 
-    const existente = elegido ?? (await clientePorNif(companyId, resumen.nifCliente));
+    const existente = rect?.clienteOriginal ? { id: rect.clienteOriginal } : (elegido ?? (await clientePorNif(companyId, resumen.nifCliente)));
     if (!existente) throw errorTerceroNoDadoDeAlta('cliente', { nombre: e.customer.name, nif: resumen.nifCliente });
 
     const { serie, numero } = separarNumero(e.invoice.series, e.invoice.number, e.invoice.issue_date);
-    // La cuenta de cada linea, si se cambio en la pantalla (no cambia importes).
-    const cuentas = cuentasElegidas(opciones.lineas, e.amounts.bases.length);
-    const lineas = lineasDesdeExtraccion(e, resumen.concepto).map((l, i) => (cuentas[i] ? { ...l, cuenta: cuentas[i] } : l));
-    comprobarTotales(lineas, e);
+    const lineas = rect ? rect.lineas : leidas.map((l, i) => (cuentas[i] ? { ...l, cuenta: cuentas[i] } : l));
+    // Lo leido (con su signo) tiene que cuadrar al centimo con el total de la factura.
+    comprobarTotales(rect ? rect.lineas.slice(0, leidas.length) : lineas, e, rect?.signo ?? 1);
 
     const customer = { id: existente.id };
 
@@ -283,6 +422,7 @@ export const ingresosExtractorService = {
         fechaVencimiento: e.invoice.due_date ?? undefined,
         lineas,
         observaciones: `Digitalizada desde ${doc.originalFileName}`,
+        ...(rect ? { rectificativa: rect.bloque } : {}),
       },
       // El numero se guarda tal como se leyo (con sus ceros y su separador), el que ve la pantalla.
       { origen: 'lector', numeroLeido: resumen.numeroFactura },
@@ -308,7 +448,25 @@ export const ingresosExtractorService = {
 
     // Despues de enlazar el documento: asi el asiento sale en borrador, como el de las compras leidas.
     const contable = await contabilizarVentaLeida(companyId, factura.id);
+    if (noEsRectificativa) {
+      await registrarAuditoria({
+        userId: opciones.userId ?? 'unknown',
+        companyId,
+        action: 'LECTOR_VENTA_NO_ES_RECTIFICATIVA',
+        resourceType: 'INCOME_INVOICE',
+        resourceId: factura.id,
+        meta: { documentId, numeroCompleto: factura.numeroCompleto },
+      });
+    }
+    const avisos = (factura.avisosFiscales ?? []).map((a) => a.mensaje);
 
-    return { facturaId: factura.id, numeroCompleto: factura.numeroCompleto ?? '', total: factura.totalFactura, ...contable };
+    return {
+      facturaId: factura.id,
+      numeroCompleto: factura.numeroCompleto ?? '',
+      total: factura.totalFactura,
+      esRectificativa: factura.esRectificativa,
+      ...(avisos.length ? { avisos } : {}),
+      ...contable,
+    };
   },
 };

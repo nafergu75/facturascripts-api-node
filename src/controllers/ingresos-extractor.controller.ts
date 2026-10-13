@@ -22,12 +22,16 @@ export const ingresosExtractorController = {
   }),
 
   /**
-   * POST /confirmar { documentId, clienteId?, revisado?, lineas?: [{ cuenta }] }:
+   * POST /confirmar { documentId, clienteId?, revisado?, lineas?: [{ cuenta }],
+   * rectificativa?: { forma, motivo, explicacion?, cambiarSigno?, originales?,
+   * periodo?, importesOriginales? }, noEsRectificativa? }:
    * crea la factura de ingreso con los datos guardados al leer. Del cuerpo solo
-   * se toman el cliente elegido (clienteId, uno dado de alta) y la cuenta de
-   * cada linea («Cambiar cuenta»); el resto se ignora a proposito. Sin
-   * clienteId, el cliente dado de alta con el NIF leido; si no hay ninguno, 400
-   * TERCERO_NO_DADO_DE_ALTA (ya no se crea solo).
+   * se toman el cliente elegido (clienteId, uno dado de alta), la cuenta de
+   * cada linea («Cambiar cuenta») y, en una rectificativa o un abono, su
+   * bloque (o que no lo es); el resto se ignora a proposito. Sin clienteId, el
+   * cliente dado de alta con el NIF leido; si no hay ninguno, 400
+   * TERCERO_NO_DADO_DE_ALTA (ya no se crea solo), salvo que la rectificativa
+   * tenga su original en la app: entonces, el cliente de la original.
    */
   confirmar: asyncHandler(async (req: Request, res: Response) => {
     const documentId = (req.body ?? {}).documentId;
@@ -38,9 +42,20 @@ export const ingresosExtractorController = {
     if (clienteId !== undefined && clienteId !== null && (typeof clienteId !== 'string' || !clienteId.trim())) {
       throw badRequest('El cliente elegido no es válido: vuelve a elegirlo.', { campo: 'clienteId' });
     }
+    const { rectificativa, noEsRectificativa } = req.body ?? {};
+    if (noEsRectificativa !== undefined && noEsRectificativa !== null && typeof noEsRectificativa !== 'boolean') {
+      throw badRequest('Indica si no es una rectificativa (sí o no).', { campo: 'noEsRectificativa' });
+    }
     sendOk(
       res,
-      await ingresosExtractorService.confirmar(req.companyId!, documentId, { revisado, userId: req.user?.userId, lineas, clienteId: clienteId ? clienteId.trim() : undefined }),
+      await ingresosExtractorService.confirmar(req.companyId!, documentId, {
+        revisado,
+        userId: req.user?.userId,
+        lineas,
+        clienteId: clienteId ? clienteId.trim() : undefined,
+        rectificativa,
+        noEsRectificativa: noEsRectificativa === true,
+      }),
       undefined,
       201,
     );

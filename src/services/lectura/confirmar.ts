@@ -130,12 +130,27 @@ export async function comprobarLecturaParaConfirmar(companyId: string, lecturaId
  * `ignorar`: codigos de validacion que ya no aplican (p. ej. NIF_RECEPTOR
  * cuando se ha elegido un cliente dado de alta). Devuelve los mensajes de las
  * validaciones ignoradas, para quitarlos tambien de los errores del documento.
+ *
+ * Rectificativas (V19, codigo RECTIFICATIVA): hay que decir que rectifica (el
+ * bloque `rectificativa`) o marcar que no lo es (`noEsRectificativa`); si no,
+ * 400 FALTA_RECTIFICATIVA. Con cualquiera de las dos, la V19 guardada en
+ * error por una lectura de antes (cuando aun no se podian registrar) ya no bloquea.
  */
-export async function comprobarRevisionVenta(companyId: string, incomeReaderDocumentId: string, revisado: boolean, ignorar: string[] = []): Promise<string[]> {
+export async function comprobarRevisionVenta(
+  companyId: string,
+  incomeReaderDocumentId: string,
+  revisado: boolean,
+  ignorar: string[] = [],
+  rect: { bloque: boolean; noEsRectificativa: boolean } = { bloque: false, noEsRectificativa: false },
+): Promise<string[]> {
   const fila = await prisma.lecturaDocumento.findFirst({ where: { companyId, incomeReaderDocumentId, lector: 'VENTA' }, select: { estado: true, estadoValidacion: true, validaciones: true } });
   if (!fila) return []; // Documento del lector de siempre (/extraer-ia): como hoy.
   if (fila.estado === 'CONFIRMADA') throw conflict('Esta factura ya se registró.', { codigo: 'LECTURA_YA_CONFIRMADA' });
   if (necesitaRevision(fila) && !revisado) throw badRequest(MENSAJE_FALTA_REVISION, { codigo: 'FALTA_REVISION' });
+  if (esLecturaRectificativa(fila)) {
+    if (!rect.bloque && !rect.noEsRectificativa) throw badRequest(MENSAJE_FALTA_RECTIFICATIVA, { codigo: 'FALTA_RECTIFICATIVA', campo: 'rectificativa' });
+    ignorar = [...ignorar, 'RECTIFICATIVA'];
+  }
   const ignoradas = validacionesGuardadas(fila).filter((v) => ignorar.includes(v.codigo));
   const errores = validacionesGuardadas(fila).filter((v) => v.nivel === 'error' && !ignorar.includes(v.codigo));
   if (errores.length) {

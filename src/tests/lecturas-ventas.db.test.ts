@@ -174,7 +174,7 @@ describe('lecturas del lector de ventas', () => {
     expect(porCuenta).toEqual({ [cliente.subcuenta430!]: [297, 0], '700': [0, 200], '705': [0, 50], '477': [0, 47] });
   });
 
-  it('con recargo o rectificativa, confirmar da 400 con el mensaje de V05 o de V19', async () => {
+  it('con recargo, confirmar da 400 con el mensaje de V05; una rectificativa sin decir qué rectifica, 400 FALTA_RECTIFICATIVA', async () => {
     crear.mockResolvedValueOnce(fixtureClaude('complemento-recargo'));
     const recargo = await leer('resultado-recargo');
     const r1 = await request(app()).post('/ingresos-extractor/confirmar').send({ documentId: recargo.ingreso.documentId, revisado: true });
@@ -184,9 +184,11 @@ describe('lecturas del lector de ventas', () => {
     crear.mockResolvedValueOnce(fixtureClaude('complemento-rectificativa'));
     const rect = await leer('resultado-rectificativa');
     expect(rect.lectura.origen).toBe('AZURE_CLAUDE');
+    expect(rect.ingreso.errores.join(' ')).not.toMatch(/no se puede registrar/);
     const r2 = await request(app()).post('/ingresos-extractor/confirmar').send({ documentId: rect.ingreso.documentId, revisado: true });
     expect(r2.status).toBe(400);
-    expect(r2.body.message).toContain('Es una factura rectificativa (rectifica a la A-12). Todavía no se puede registrar con el lector.');
+    expect(r2.body.message).toBe('Indica qué factura rectifica, o marca que no es una rectificativa.');
+    expect(r2.body.details).toMatchObject({ codigo: 'FALTA_RECTIFICATIVA', campo: 'rectificativa' });
   });
 
   it('lo que la lectura dejo en error bloquea aunque el documento se corrija despues', async () => {
