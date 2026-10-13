@@ -9,6 +9,7 @@ import { desgloseIvaPorTipo } from './accounting-engine.service';
 import { perfilDesdeConfig } from './perfilEmpresa.service';
 import { cuentaParaFactura, leerAjustesFacturacion } from './ajustesFacturacion.service';
 import { enlacesDeVentas } from './rectificativasVenta.service';
+import { diferenciaSustitucion, type LineaImportes } from '../domain/rectificativa-venta.model';
 import { importesDoc, nombreMoneda, textoTipo } from '../domain/divisas';
 import {
   esPaisEspana,
@@ -142,6 +143,12 @@ export interface DatosFacturaPdf {
   rectificadas?: Array<{ numero: string; fecha: string | null }>;
   periodoRectificado?: { desde: string; hasta: string } | null;
   causaRectificacion?: string | null;
+  /**
+   * Por sustitucion: el importe de la rectificacion (la factura corregida menos
+   * la original), en la moneda de la factura. Art. 15.5 RD 1619/2012: con los
+   * importes ya corregidos, tambien consta lo que se rectifica.
+   */
+  importeRectificacion?: { base: number; cuota: number; retencion: number; total: number } | null;
   /** Cuenta donde se cobra (solo se imprime si la forma de pago es transferencia). */
   cuenta: { iban: string; bic: string | null } | null;
   /** Texto legal al pie (Configuración > Facturación), en letra pequeña al final. */
@@ -231,6 +238,8 @@ interface TextosPdf {
   rectificacion: string;
   /** Que corrige: una o varias facturas (numero y fecha ya formateada) o un periodo, la forma y el tipo. */
   rectifica: (refs: Array<{ numero: string; fecha: string }>, periodo: { desde: string; hasta: string } | null, sustitucion: boolean, tipoFactura: string) => string;
+  /** Importe de la rectificacion de una sustitucion (cifras ya formateadas; retencion vacia si no hay). */
+  importeRectificacion: (i: { base: string; cuota: string; retencion: string; total: string }) => string;
   motivo: string;
   /** Causa de la rectificativa por su codigo (domain/rectificativa-venta.model.ts). */
   causas: Record<string, string>;
@@ -311,6 +320,8 @@ const TEXTOS: Record<Idioma, TextosPdf> = {
             : `las facturas ${refs.slice(0, -1).map(una).join('; ')} y ${una(refs[refs.length - 1])}`;
       return `Rectifica ${que}, ${sustitucion ? 'por sustitución' : 'por diferencias'} (${tipoFactura}).`;
     },
+    importeRectificacion: (i) =>
+      `Importe de la rectificación: base ${i.base}, IVA ${i.cuota}${i.retencion ? `, retención ${i.retencion}` : ''} y total ${i.total}.`,
     motivo: 'Motivo',
     causas: {
       DEVOLUCION: 'Devolución de mercancías o envases',
@@ -397,6 +408,7 @@ const TEXTOS: Record<Idioma, TextosPdf> = {
             : `invoices ${refs.slice(0, -1).map(una).join('; ')} and ${una(refs[refs.length - 1])}`;
       return `${sustitucion ? 'Replaces' : 'Corrects'} ${que}.`;
     },
+    importeRectificacion: (i) => `Amount of the correction: tax base ${i.base}, VAT ${i.cuota}${i.retencion ? `, withholding ${i.retencion}` : ''}, total ${i.total}.`,
     motivo: 'Reason',
     causas: {
       DEVOLUCION: 'Return of goods or packaging',
@@ -669,6 +681,11 @@ export function textoRectificacionPdf(f: DatosFacturaPdf, idioma: Idioma): strin
       : [];
   const periodo = f.periodoRectificado ? { desde: F.fecha(f.periodoRectificado.desde), hasta: F.fecha(f.periodoRectificado.hasta) } : null;
   const out = [T.rectifica(refs, periodo, f.tipoRectificativa === 'S', f.tipoFactura)];
+  // Por sustitucion, ademas, lo que se rectifica (art. 15.5 RD 1619/2012).
+  const ir = f.tipoRectificativa === 'S' ? f.importeRectificacion : null;
+  if (ir) {
+    out.push(T.importeRectificacion({ base: F.importe(ir.base), cuota: F.importe(ir.cuota), retencion: ir.retencion ? F.importe(ir.retencion) : '', total: F.importe(ir.total) }));
+  }
   const causa = f.causaRectificacion ? T.causas[f.causaRectificacion] : null;
   const explicacion = f.motivoRectificacion?.trim() ?? '';
   if (causa) out.push(`${T.motivo}: ${causa}.${explicacion ? ` ${explicacion}` : ''}`);
@@ -1240,7 +1257,7 @@ export async function datosPdfFactura(companyId: string, id: string): Promise<{ 
   const [empresa, original, todasCuentas, compania, ajustes] = await Promise.all([
     prisma.legalConfig.findUnique({ where: { companyId } }).catch(() => null),
     factura.facturaOriginalId
-      ? prisma.incomeInvoice.findFirst({ where: { id: factura.facturaOriginalId, companyId } })
+      ? prisma.incomeInvoice.findFirst({ where: { id: factura.facturaOriginalId, companyId }, include: { lineas: true } })
       : Promise.resolve(null),
     prisma.bankAccount.findMany({ where: { companyId }, orderBy: { createdAt: 'asc' } }).catch(() => []),
     prisma.company.findUnique({ where: { id: companyId }, select: { name: true } }).catch(() => null),
@@ -1297,6 +1314,17 @@ export async function datosPdfFactura(companyId: string, id: string): Promise<{ 
         ),
       }
     : null;
+
+  // Por sustitucion: la factura corregida menos la original, en la moneda de la factura (la misma que la original).
+  const lineasDoc = (ls: typeof factura.lineas): LineaImportes[] =>
+    ls.map((l) => ({
+      tipoIva: Number(l.tipoIva),
+      cuenta: l.accountCode ?? null,
+      baseLine: Number(l.baseLineDoc ?? l.baseLine),
+      ivaImporte: Number(l.ivaImporteDoc ?? l.ivaImporte),
+      retencionImporte: Number(l.retencionImporteDoc ?? l.retencionImporte),
+    }));
+  const dif = factura.esRectificativa && factura.tipoRectificativa === 'S' && original ? diferenciaSustitucion(lineasDoc(factura.lineas), lineasDoc(original.lineas)) : null;
 
   const c = factura.customer;
   const datos: DatosFacturaPdf = {
@@ -1362,6 +1390,7 @@ export async function datosPdfFactura(companyId: string, id: string): Promise<{ 
           rectificadas: rect.originales.map((o) => ({ numero: o.numeroCompleto, fecha: o.fecha })),
           periodoRectificado: rect.periodo,
           causaRectificacion: factura.causaRectificacion ?? null,
+          importeRectificacion: dif ? { base: dif.base, cuota: dif.cuota, retencion: dif.retencion, total: dif.total } : null,
         }
       : {}),
     cuenta,
