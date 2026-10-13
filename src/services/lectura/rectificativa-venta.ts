@@ -42,7 +42,11 @@ export interface RectificativaVentaLeida {
   };
   /** Cobros de 2026 pendientes del cliente resuelto por el NIF leido (sin factura en la app). */
   partidasFuera: PartidaFueraVenta[];
-  /** El cliente de la original propuesta, con el pais de su ficha (manda sobre lo elegido en «¿De donde es el cliente?»). */
+  /**
+   * El cliente de la original propuesta, con el pais de su ficha. Si la
+   * rectificativa va a ese cliente, su pais manda y la pantalla no pregunta
+   * «¿De donde es el cliente?». lectura.tercero no lo usa: va con lo leido.
+   */
   clienteDeLaOriginal: { id: string; nombreFiscal: string; nifCif: string | null; pais: string } | null;
   /** El NIF leido no es el del cliente de la original propuesta. */
   clienteDistinto: boolean;

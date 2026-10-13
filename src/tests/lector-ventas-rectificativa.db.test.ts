@@ -336,7 +336,7 @@ describe('lector de ventas: la original es de otro cliente', () => {
 });
 
 describe('lector de ventas: el cliente de la original es de otro país', () => {
-  it('su ficha manda en «¿De dónde es el cliente?», no la del cliente del NIF leído', async () => {
+  it('su país va aparte (clienteDeLaOriginal); «¿De dónde es el cliente?» sigue con el cliente del NIF leído', async () => {
     const original = await prisma.incomeInvoice.findUniqueOrThrow({ where: { id: originales[EXT] } });
     await prisma.customer.update({ where: { id: original.customerId }, data: { pais: 'PT' } });
     const data = await leer('resultado-rectificativa-venta', EXT);
@@ -345,9 +345,21 @@ describe('lector de ventas: el cliente de la original es de otro país', () => {
       clienteDeLaOriginal: { id: original.customerId, pais: 'PT' },
       clienteDistinto: true,
     });
-    // El NIF leído es el de un cliente de España dado de alta; la rectificativa va al de la original.
+    // El NIF leído es el de un cliente de España dado de alta. Si la rectificativa va al de la
+    // original, la pantalla usa clienteDeLaOriginal.pais; si no, lo que dice la ficha del leído.
     expect(data.ingreso.clienteExistente).toMatchObject({ id: clientes[EXT], pais: 'ES' });
-    expect(data.lectura.tercero).toMatchObject({ origen: 'UE', pais: 'PT', por: 'ficha' });
+    expect(data.lectura.tercero).toMatchObject({ origen: 'ES', pais: 'ES', por: 'ficha' });
+  });
+
+  it('con el cliente leído sin dar de alta, el origen sale de lo leído y no del cliente de la original', async () => {
+    // Que el NIF leído ya no sea el de ningún cliente de la app.
+    await prisma.customer.update({ where: { id: clientes[EXT] }, data: { nifCif: 'B99999999' } });
+    const data = await leer('resultado-rectificativa-venta', EXT);
+    expect(data.ingreso.clienteExistente).toBeNull();
+    expect(data.ingreso.rectificativa).toMatchObject({ clienteDeLaOriginal: { pais: 'PT' }, clienteDistinto: true });
+    // Un NIF español leído: de España (antes salía Portugal «de su ficha», con el alta propuesta en PT).
+    expect(data.lectura.tercero).toMatchObject({ origen: 'ES', pais: 'ES' });
+    expect(data.lectura.tercero.por).not.toBe('ficha');
   });
 });
 
