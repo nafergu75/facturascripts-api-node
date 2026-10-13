@@ -10,7 +10,7 @@
  */
 
 import { badRequest, conflict, notFound, notImplemented } from '../utils/http-errors';
-import { errorFalloBD } from '../utils/errores-bd';
+import { errorFalloBD, type QueHacerFalloBD } from '../utils/errores-bd';
 import { registrarAuditoria } from '../services/auditoria.service';
 import { accountingEngineService, desgloseIvaPorTipo } from '../services/accounting-engine.service';
 import { prisma, type ClienteBD, type TransaccionBD } from '../config/database';
@@ -50,7 +50,16 @@ import { esSubcuentaGenerica } from '../services/terceros/numeracion';
 import { ESTADO_SUSTITUIDO, TEXTO_SUSTITUIDO } from '../domain/asientosCierre';
 
 /** Que hacer si la base de datos falla al contabilizar una factura (boton «Contabilizar»). */
-export const QUE_HACER_CONTABILIZAR = 'El asiento no se ha creado: vuelve a pulsar «Contabilizar» dentro de un momento.';
+export const QUE_HACER_CONTABILIZAR: QueHacerFalloBD = {
+  resultado: 'El asiento no se ha creado',
+  repetir: 'vuelve a pulsar «Contabilizar» dentro de un momento',
+};
+
+/** Que hacer si la base de datos falla al aprobar un asiento. */
+const QUE_HACER_APROBAR: QueHacerFalloBD = {
+  resultado: 'El asiento sigue en borrador',
+  repetir: 'vuelve a aprobarlo dentro de un momento',
+};
 
 /** Mismo cliente o proveedor. */
 const mismaFicha = (a: { tipo: string; id: string } | null | undefined, b: { tipo: string; id: string } | null | undefined) =>
@@ -594,7 +603,7 @@ export class AccountingEngineController {
         throw err;
       }
       throw (
-        errorFalloBD(err, 'El asiento sigue en borrador: vuelve a aprobarlo dentro de un momento.', `aprobar el asiento ${journalEntryId}`) ??
+        errorFalloBD(err, QUE_HACER_APROBAR, `aprobar el asiento ${journalEntryId}`) ??
         badRequest(`Error aprobando asiento: ${err instanceof Error ? err.message : ''}`)
       );
     }
