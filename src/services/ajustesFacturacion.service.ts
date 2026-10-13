@@ -167,6 +167,28 @@ export function cuentaParaFactura<C extends { id: string; moneda?: string | null
   return cuentas.find((c) => (c.moneda ?? 'EUR') === moneda) ?? cuentas[0] ?? null;
 }
 
+const sinEspacios = (iban: string | null | undefined) => (iban ?? '').replace(/\s+/g, '').toUpperCase();
+
+/**
+ * Cuenta bancaria en la que el cliente debería pagar una factura emitida, para
+ * proponerla al registrar el cobro: la del IBAN que se imprimió al emitirla
+ * (`ibanCobro`) si sigue activa; si no (factura anterior a esa copia, emitida
+ * sin IBAN o con la cuenta ya desactivada), la que saldría hoy en una factura
+ * de su moneda (la elegida en los ajustes o la primera activa en esa moneda).
+ * null si la empresa no tiene cuentas bancarias activas. Solo lee.
+ */
+export async function cuentaBancariaDeCobro(
+  companyId: string,
+  factura: { ibanCobro: string | null; moneda: string },
+  db: Db = prisma,
+): Promise<string | null> {
+  const [ajustes, cuentas] = await Promise.all([leerAjustesFacturacion(companyId, db), cuentasActivas(companyId, db)]);
+  const iban = sinEspacios(factura.ibanCobro);
+  const impresa = iban ? cuentas.find((c) => sinEspacios(c.iban) === iban) : undefined;
+  if (impresa) return impresa.id;
+  return cuentaParaFactura(cuentas, { cuentaBancariaId: ajustes.cuentaBancariaId, mostrarIban: true }, factura.moneda)?.id ?? null;
+}
+
 /**
  * Lo que se copia en la factura al emitirla: el IBAN que sale ('' = ninguno) y
  * el texto al pie ('' = ninguno). Nunca null, para distinguirla de una factura
