@@ -242,6 +242,11 @@ describe('periodo, factura de fuera y partida de 2026', () => {
     expect((await enlaces(r.id))[0]).toMatchObject({ partidaPendienteId: p.id, numeroOriginal: 'F-2025/77' });
     const e = await error(rect({ originales: [{ partidaId: p.id }] }, { customer: { id: otroCliente } }));
     expect(e.details).toMatchObject({ codigo: 'ORIGINAL_DE_OTRO_CLIENTE' });
+    // Con un cliente nuevo tampoco: rebajaría la partida de uno e iría a la 430 de otro.
+    const antes = await prisma.customer.count({ where: { companyId: E } });
+    const nuevo = await error(rect({ originales: [{ partidaId: p.id }] }, { customer: { nuevo: true, nombreFiscal: 'Cliente Nuevo SL', nifCif: 'B50000013' } }));
+    expect(nuevo.details).toMatchObject({ codigo: 'ORIGINAL_DE_OTRO_CLIENTE', campo: 'customer' });
+    expect(await prisma.customer.count({ where: { companyId: E } })).toBe(antes);
     // El buscador las ofrece con el cliente.
     const busca = await buscarOriginalesVenta(E, { customerId: cliente, numero: 'F-2025/77' });
     expect(busca.partidasFuera).toEqual([expect.objectContaining({ partidaId: p.id, numero: 'F-2025/77', exacta: true })]);
