@@ -19,6 +19,7 @@ import { badRequest, conflict, notFound } from '../../utils/http-errors';
 import { deleteObject, getObject } from '../../utils/storage';
 import { archivarGastoSinRomper } from '../archivoFacturas.service';
 import { perfilEmpresa } from '../perfilEmpresa.service';
+import { datosEmpresaValidacion } from './datosEmpresa';
 import { lecturaVacia, type Lector, type LecturaNormalizada, type OrigenLectura, type ResultadoValidacion } from './tipos';
 import { validacionesSincronas } from './validaciones';
 
@@ -59,11 +60,19 @@ const REVALIDAR_GASTO = new Set(['TIPO_IVA', 'NIF_EMISOR', 'EMPRESA', 'FECHA']);
 /** El cuerpo del alta de un gasto, como lectura, para volver a validarlo. */
 async function lecturaDelCuerpo(companyId: string, cuerpo: Record<string, unknown>, guardada: LecturaNormalizada | null): Promise<LecturaNormalizada> {
   const l = lecturaVacia('claude');
-  const prov = (cuerpo.proveedor ?? {}) as { id?: unknown; nuevo?: { nifCif?: unknown } };
+  const prov = (cuerpo.proveedor ?? {}) as { id?: unknown; nuevo?: { nifCif?: unknown; nombreFiscal?: unknown } };
   let nif: string | null = typeof prov.nuevo?.nifCif === 'string' ? prov.nuevo.nifCif : null;
-  if (!nif && typeof prov.id === 'string') nif = (await prisma.supplier.findFirst({ where: { id: prov.id, companyId }, select: { nifCif: true } }))?.nifCif ?? null;
+  let nombre: string | null = typeof prov.nuevo?.nombreFiscal === 'string' ? prov.nuevo.nombreFiscal : null;
+  if (!nif && typeof prov.id === 'string') {
+    const elegido = await prisma.supplier.findFirst({ where: { id: prov.id, companyId }, select: { nifCif: true, nombreFiscal: true } });
+    nif = elegido?.nifCif ?? null;
+    nombre = elegido?.nombreFiscal ?? null;
+  }
   l.emisor.nif = { valor: nif, confianza: null, fuente: 'claude' };
+  // El nombre sirve a V09 cuando la empresa no tiene NIF (se compara por nombre).
+  l.emisor.nombre = { valor: nombre, confianza: null, fuente: 'claude' };
   l.receptor.nif = guardada?.receptor.nif ?? l.receptor.nif;
+  l.receptor.nombre = guardada?.receptor.nombre ?? l.receptor.nombre;
   l.numero = { valor: typeof cuerpo.numeroFacturaProveedor === 'string' ? cuerpo.numeroFacturaProveedor : null, confianza: null, fuente: 'claude' };
   l.fechaEmision = { valor: typeof cuerpo.fechaEmision === 'string' ? cuerpo.fechaEmision : null, confianza: null, fuente: 'claude' };
   const tipos = new Set<number>();
@@ -92,10 +101,11 @@ export async function comprobarLecturaParaConfirmar(companyId: string, lecturaId
 
   const guardada = ((fila.resultado as { lectura?: LecturaNormalizada } | null)?.lectura ?? null) as LecturaNormalizada | null;
   const l = await lecturaDelCuerpo(companyId, cuerpo, guardada);
-  const [legal, perfil] = await Promise.all([prisma.legalConfig.findUnique({ where: { companyId }, select: { nif: true } }), perfilEmpresa(companyId)]);
+  const [empresa, perfil] = await Promise.all([datosEmpresaValidacion(companyId), perfilEmpresa(companyId)]);
   const errores = validacionesSincronas(l, {
     lector,
-    nifEmpresa: legal?.nif ?? null,
+    nifEmpresa: empresa.nifEmpresa,
+    nombresEmpresa: empresa.nombresEmpresa,
     empresaEspanola: perfil.espanola,
     monedaCuenta: perfil.monedaCuenta,
     hoy: hoyEspana(),
