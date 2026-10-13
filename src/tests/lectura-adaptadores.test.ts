@@ -259,6 +259,27 @@ describe('respaldo con Claude con vision', () => {
     expect(v.estado).toBe('ok');
   });
 
+  it('gastos: el cliente que lee Claude llega como receptor; sin él, vacío', async () => {
+    const conCliente = fixtureClaude<{ content: Array<{ input: Record<string, unknown> }> }>('vision-gasto');
+    conCliente.content[0].input.cliente = 'COMERCIAL DEMO SL';
+    crear.mockResolvedValueOnce(conCliente);
+    const r = await claudeVisionExtractor('GASTO').iniciar(archivo, { companyId: 'e', lector: 'GASTO', empresaEspanola: true });
+    if (r.tipo !== 'hecho') throw new Error(r.tipo);
+    expect(r.lectura.receptor.nombre).toEqual({ valor: 'COMERCIAL DEMO SL', confianza: null, fuente: 'claude' });
+    // Se le pide a Claude en la herramienta.
+    expect(crear.mock.calls[0][0].tools[0].input_schema.properties).toHaveProperty('cliente');
+    // Con el cliente leído y una empresa sin NIF que se llama como el proveedor, V09 ya puede dar error.
+    const v = await validarLectura(r.lectura, ctx({ nifEmpresa: null, nombresEmpresa: ['Imprenta Levante SL'] }));
+    expect(v.validaciones.find((x) => x.codigo === 'EMPRESA')?.nivel).toBe('error');
+
+    crear.mockResolvedValueOnce(fixtureClaude('vision-gasto'));
+    const sin = await claudeVisionExtractor('GASTO').iniciar(archivo, { companyId: 'e', lector: 'GASTO', empresaEspanola: true });
+    if (sin.tipo !== 'hecho') throw new Error(sin.tipo);
+    expect(sin.lectura.receptor.nombre.valor).toBeNull();
+    const vSin = await validarLectura(sin.lectura, ctx({ nifEmpresa: null, nombresEmpresa: ['Imprenta Levante SL'] }));
+    expect(vSin.validaciones.find((x) => x.codigo === 'EMPRESA')?.nivel).toBe('revisar');
+  });
+
   it('ventas: serie y numero, cliente y desglose', async () => {
     crear.mockResolvedValueOnce(fixtureClaude('vision-venta'));
     const r = await claudeVisionExtractor('VENTA').iniciar(archivo, { companyId: 'e', lector: 'VENTA', empresaEspanola: true });
