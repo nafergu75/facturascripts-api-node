@@ -301,6 +301,10 @@ interface Encontrada {
   /** Solo emitidas: la factura que rectifica y cómo (S por sustitución, I por diferencias). */
   facturaOriginalId?: string | null;
   tipoRectificativa?: string | null;
+  /** Solo emitidas: es una rectificativa (con varias facturas, un periodo o una de fuera, facturaOriginalId va vacío). */
+  esRectificativa?: boolean;
+  /** Solo emitidas: la factura de fuera de la app que rectifica (con los campos de antes). */
+  rectificaFueraNumero?: string | null;
   /** Solo recibidas: el numero que puso el proveedor. */
   numeroProveedor?: string | null;
 }
@@ -337,6 +341,8 @@ export const buscarFactura: Ejecutor = async (ctx, h) => {
             totalFactura: true,
             facturaOriginalId: true,
             tipoRectificativa: true,
+            esRectificativa: true,
+            rectificaFueraNumero: true,
             customer: { select: { nombreFiscal: true } },
           },
           take: 50,
@@ -364,6 +370,8 @@ export const buscarFactura: Ejecutor = async (ctx, h) => {
         proforma: f.estadoDocumento === 'PROFORMA',
         facturaOriginalId: f.facturaOriginalId,
         tipoRectificativa: f.tipoRectificativa,
+        esRectificativa: f.esRectificativa,
+        rectificaFueraNumero: f.rectificaFueraNumero,
       })),
     ...recibidas
       .filter((f) => coincide(f.numeroCompleto))
@@ -434,27 +442,76 @@ export const buscarFactura: Ejecutor = async (ctx, h) => {
   // Emitidas: sus rectificativas cuentan como en el panel de cobros (cobrosClientes).
   const numeroDe = async (id: string) =>
     (await prisma.incomeInvoice.findFirst({ where: { id, companyId: ctx.companyId }, select: { numeroCompleto: true } }))?.numeroCompleto ?? 'sin número';
-  if (emitida && f.total < 0 && f.facturaOriginalId) {
-    // Rectificativa en negativo: no se cobra, abona la original.
-    const original = await numeroDe(f.facturaOriginalId);
-    return {
-      entendido,
-      texto: `La factura ${f.numero} es una rectificativa en negativo (un abono) de la factura ${original}, del ${fechaES(f.fecha)}, por ${eur(f.total)}. No se cobra: resta de lo pendiente de la ${original} y, si esa ya estaba cobrada, es un importe que le debes devolver a ${f.tercero}.`,
-      permisoRequerido,
-      kpis: [{ etiqueta: 'Importe del abono', valor: eur(f.total) }],
-      enlaces: [...enlaces, { texto: `Abrir la factura ${original}`, href: `/dashboard/facturas/${f.facturaOriginalId}` }],
-    };
+  if (emitida && f.total < 0 && (f.esRectificativa || f.facturaOriginalId)) {
+    // Rectificativa en negativo: no se cobra, abona lo que rectifica. Por sus
+    // enlaces (varias facturas, un periodo o una de fuera) o, en las de antes,
+    // por facturaOriginalId o la factura de fuera escrita.
+    const filas =
+      (await prisma.incomeInvoiceRectificada.findMany({
+        where: { companyId: ctx.companyId, rectificativaId: f.id },
+        include: { original: { select: { numeroCompleto: true } } },
+        orderBy: { createdAt: 'asc' },
+      })) ?? [];
+    const periodo = filas.find((x) => x.periodoDesde && x.periodoHasta);
+    const refs: Array<{ numero: string; id: string | null }> = filas.length
+      ? filas.filter((x) => !x.periodoDesde).map((x) => ({ numero: x.original?.numeroCompleto ?? x.numeroOriginal ?? 'sin número', id: x.originalId }))
+      : f.facturaOriginalId
+        ? [{ numero: await numeroDe(f.facturaOriginalId), id: f.facturaOriginalId }]
+        : f.rectificaFueraNumero
+          ? [{ numero: f.rectificaFueraNumero, id: null }]
+          : [];
+    if (refs.length || periodo) {
+      const lista = (xs: string[]) => (xs.length === 1 ? xs[0] : `${xs.slice(0, -1).join(', ')} y ${xs[xs.length - 1]}`);
+      const que = periodo
+        ? `las ventas del ${fechaES(periodo.periodoDesde!)} al ${fechaES(periodo.periodoHasta!)} (un rappel)`
+        : `${refs.length === 1 ? 'la factura' : 'las facturas'} ${lista(refs.map((r) => r.numero))}`;
+      const deLaApp = refs.filter((r) => r.id);
+      const efecto = deLaApp.length
+        ? `No se cobra: resta de lo pendiente de ${deLaApp.length === 1 ? 'la' : 'las'} ${lista(deLaApp.map((r) => r.numero))} y, si ya estaba cobrada, es un importe que le debes devolver a ${f.tercero}.`
+        : `No se cobra ni resta de ninguna factura de la app: si lo que rectifica estaba pendiente de cobro, lo rebaja; si no, es un importe a favor de ${f.tercero}, que le puedes devolver.`;
+      return {
+        entendido,
+        texto: `La factura ${f.numero} es una rectificativa en negativo (un abono) de ${que}, del ${fechaES(f.fecha)}, por ${eur(f.total)}. ${efecto}`,
+        permisoRequerido,
+        kpis: [{ etiqueta: 'Importe del abono', valor: eur(f.total) }],
+        enlaces: [...enlaces, ...deLaApp.slice(0, 3).map((r) => ({ texto: `Abrir la factura ${r.numero}`, href: `/dashboard/facturas/${r.id}` }))],
+      };
+    }
   }
   // Recibidas: un abono del proveedor (total en negativo) dice qué rectifica, lo que ha restado y lo que queda a tu favor.
   if (!emitida && f.total < 0) return explicarAbono(ctx, f, entendido);
 
-  const rectificativas = emitida
+  // Las que la rectifican: por facturaOriginalId (una sola original) y por los
+  // enlaces (también un abono de varias facturas, con la parte de esta).
+  const directas = emitida
     ? await prisma.incomeInvoice.findMany({
         where: { companyId: ctx.companyId, facturaOriginalId: f.id, ...VENTA_EMITIDA },
         select: { id: true, numeroCompleto: true, tipoRectificativa: true, totalFactura: true, fechaEmision: true },
         orderBy: { fechaEmision: 'desc' },
       })
     : [];
+  const porEnlaces = emitida
+    ? ((await prisma.incomeInvoiceRectificada.findMany({
+        where: { companyId: ctx.companyId, originalId: f.id, rectificativa: VENTA_EMITIDA },
+        select: {
+          baseRectificada: true,
+          cuotaRectificada: true,
+          retencionRectificada: true,
+          rectificativa: { select: { id: true, numeroCompleto: true, tipoRectificativa: true, totalFactura: true, fechaEmision: true } },
+        },
+      })) ?? [])
+    : [];
+  const rectificativas = [
+    ...directas.filter((d) => !porEnlaces.some((e) => e.rectificativa.id === d.id)),
+    ...porEnlaces.map((e) => ({
+      ...e.rectificativa,
+      // Por diferencias, la parte de esta factura; por sustitución, la factura corregida.
+      totalFactura:
+        e.rectificativa.tipoRectificativa !== 'S' && e.baseRectificada !== null
+          ? sumar([Number(e.baseRectificada), Number(e.cuotaRectificada ?? 0), -Number(e.retencionRectificada ?? 0)])
+          : e.rectificativa.totalFactura,
+    })),
+  ].sort((a, b) => b.fechaEmision.localeCompare(a.fechaEmision));
   const sustituta = rectificativas.find((x) => x.tipoRectificativa === 'S' && x.id !== f.id);
   if (sustituta) {
     return {
