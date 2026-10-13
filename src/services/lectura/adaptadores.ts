@@ -11,7 +11,7 @@ import { redondear2 } from '../../utils/money';
 import { AVISO_NO_FACTURA, sugerirCuentaConRetencion, type GastoExtraido, type TipoDocumentoGasto } from '../gastos-extractor.service';
 import type { InvoiceExtraction } from '../invoice-extractor.service';
 import type { LecturaNormalizada, ResultadoValidacion } from './tipos';
-import { estadoPorConfianza } from './validaciones';
+import { direccionParaFicha } from './direccion';
 
 const sumar = (xs: Array<number | null | undefined>) => redondear2(xs.reduce<number>((s, x) => s + (x ?? 0), 0));
 
@@ -57,12 +57,9 @@ export function aGastoExtraido(l: LecturaNormalizada, validaciones: ResultadoVal
   };
 }
 
-/** Dirección leída del emisor, separada como la ficha del proveedor (calle, CP, municipio y provincia). */
+/** Dirección leída del emisor, separada como la ficha del proveedor (calle, CP, municipio, provincia y país ISO-2). */
 function direccionProveedor(l: LecturaNormalizada): GastoExtraido['direccionProveedor'] {
-  const d = l.emisor.direccion.valor;
-  if (!d || !(d.calle || d.cp || d.municipio || d.provincia)) return null;
-  const t = (v: string | undefined) => (v ?? '').trim() || null;
-  return { calle: t(d.calle), cp: t(d.cp), municipio: t(d.municipio), provincia: t(d.provincia), revisar: estadoPorConfianza(l.emisor.direccion).nivel !== 'ok' };
+  return direccionParaFicha(l.emisor.direccion);
 }
 
 export interface TramoGasto {
@@ -161,7 +158,8 @@ export function aInvoiceExtraction(
     direction: 'income',
     confidence: opciones.confianza ?? 0,
     vendor: { name: l.emisor.nombre.valor, tax_id: l.emisor.nif.valor, address: l.emisor.direccion.valor?.calle ?? null, country: 'ES' },
-    customer: { name: l.receptor.nombre.valor, tax_id: l.receptor.nif.valor, address: null, country: 'ES' },
+    // La calle del cliente (las lecturas guardadas antes no traen su direccion).
+    customer: { name: l.receptor.nombre.valor, tax_id: l.receptor.nif.valor, address: l.receptor.direccion?.valor?.calle ?? null, country: 'ES' },
     invoice: {
       number: l.numero.valor,
       series: null,
