@@ -83,12 +83,13 @@ afterEach(() => {
   delete process.env.AZURE_DOCUMENT_INTELLIGENCE_KEY;
 });
 
-async function leer(fixture: string, companyId = E): Promise<Record<string, any>> {
+/** fixture: el nombre de uno de los de Azure, o su contenido ya cambiado. */
+async function leer(fixture: string | Record<string, unknown>, companyId = E): Promise<Record<string, any>> {
   const p = await request(app(companyId)).post('/ingresos-extractor/lecturas').attach('archivo', PDF, 'emitida.pdf');
   expect(p.status).toBe(202);
   const id = p.body.data.lecturaId;
   await prisma.lecturaDocumento.update({ where: { id }, data: { azureProximaConsulta: new Date(Date.now() - 1000) } });
-  colaGet.push(() => resultado(fixture));
+  colaGet.push(() => (typeof fixture === 'string' ? resultado(fixture) : respuesta(fixture, 200)));
   const r = await request(app(companyId)).get(`/ingresos-extractor/lecturas/${id}`);
   expect(r.status).toBe(200);
   expect(r.body.data.estado).toBe('LISTA');
@@ -112,6 +113,31 @@ describe('lecturas del lector de ventas', () => {
     const fila = await prisma.lecturaDocumento.findUniqueOrThrow({ where: { id: data.lecturaId } });
     expect(fila.incomeReaderDocumentId).toBe(doc.id);
     expect(doc.storagePath).toBe(fila.archivoRef);
+  });
+
+  it('el ingreso trae la direccion del cliente separada (direccionCliente) para darlo de alta con la ficha rellena', async () => {
+    // Sin direccion del cliente en la factura: null.
+    expect((await leer('resultado-simple')).ingreso.direccionCliente).toBeNull();
+
+    const conDireccion = fixtureAzure<{ analyzeResult: { documents: Array<{ fields: Record<string, unknown> }> } }>('resultado-simple');
+    conDireccion.analyzeResult.documents[0].fields.CustomerAddress = {
+      type: 'address',
+      valueAddress: { road: 'Avenida del Puerto', houseNumber: '3', postalCode: '46021', city: 'Valencia', state: 'Valencia', countryRegion: 'ESP' },
+      content: 'Avenida del Puerto 3, 46021 Valencia',
+      confidence: 0.9,
+      boundingRegions: [{ pageNumber: 1 }],
+    };
+    const data = await leer(conDireccion);
+    const esperada = { calle: 'Avenida del Puerto 3', cp: '46021', municipio: 'Valencia', provincia: 'Valencia', pais: 'ES', revisar: false };
+    expect(data.ingreso.direccionCliente).toEqual(esperada);
+    // Junto a lo de siempre: el cliente, su NIF y si ya esta dado de alta.
+    expect(data.ingreso).toMatchObject({ cliente: 'COMERCIAL DEMO SL', nifCliente: 'B87654323', clienteExistente: expect.objectContaining({ nifCif: 'B87654323' }) });
+    // Y al volver a pedir la lectura (GET /lecturas/:id), igual.
+    const otra = await request(app()).get(`/ingresos-extractor/lecturas/${data.lecturaId}`);
+    expect(otra.body.data.ingreso.direccionCliente).toEqual(esperada);
+    // El documento del lector guarda la calle del cliente.
+    const doc = await prisma.incomeReaderDocument.findUniqueOrThrow({ where: { id: data.ingreso.documentId } });
+    expect((doc.parsedData as { customer: { address: string | null } }).customer.address).toBe('Avenida del Puerto 3');
   });
 
   it('/ingresos-extractor/confirmar crea la factura y deja la lectura CONFIRMADA con incomeInvoiceId', async () => {
