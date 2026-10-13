@@ -3,16 +3,18 @@
 // y rechaza conciliaciones que el backend aun no sabe contabilizar.
 //
 // Prisma y el modulo de bancos se mockean para no depender de la BD.
-jest.mock('../config/database', () => ({
-  prisma: {
+jest.mock('../config/database', () => {
+  const prisma: Record<string, unknown> = {
     bankAccount: { findFirst: jest.fn(), findMany: jest.fn(), create: jest.fn() },
     bankMovement: { findMany: jest.fn(), count: jest.fn(), groupBy: jest.fn() },
+    // La subcuenta indicada ya esta en el plan: no se da de alta.
+    chartOfAccounts: { findFirst: jest.fn(async () => ({ id: 'plan572000' })), create: jest.fn() },
     // Empresa de EE. UU.: sus cuentas van en USD (la moneda de su contabilidad).
     legalConfig: { findUnique: jest.fn(async () => ({ pais: 'US', monedaCuenta: 'USD' })) },
-  },
-  connectDatabase: jest.fn(),
-  disconnectDatabase: jest.fn(),
-}));
+  };
+  prisma.$transaction = jest.fn((fn: (tx: unknown) => unknown) => fn(prisma));
+  return { prisma, connectDatabase: jest.fn(), disconnectDatabase: jest.fn() };
+});
 jest.mock('../services/bancos.service', () => ({ importarMovimientosDesdeCSV: jest.fn() }));
 jest.mock('../services/conciliacionConfirmar.service', () => ({ conciliarMovimientoConFactura: jest.fn() }));
 
@@ -98,11 +100,22 @@ describe('tesoreria', () => {
     expect(res.moneda).toBe('USD');
   });
 
+  it('en una empresa de EE. UU. vale un numero de cuenta sin IBAN; lo que parece un IBAN se comprueba', async () => {
+    db.bankAccount.findFirst.mockResolvedValue(null);
+    db.bankAccount.create.mockImplementation(({ data }) => Promise.resolve({ ...cuenta, ...data }));
+    const res = await treasuryService.crearCuentaBancaria('c1', { iban: '0001 2345-6789', subcuentaCodigo: '572000' });
+    expect(res.iban).toBe('000123456789');
+    await expect(treasuryService.crearCuentaBancaria('c1', { iban: 'ES9121000418450200051333', subcuentaCodigo: '572000' })).rejects.toMatchObject({
+      statusCode: 400,
+      details: { campo: 'iban' },
+    });
+  });
+
   it('no crea dos cuentas con el mismo IBAN', async () => {
     db.bankAccount.findFirst.mockResolvedValue(cuenta);
     await expect(
       treasuryService.crearCuentaBancaria('c1', { iban: cuenta.iban, subcuentaCodigo: '572000' }),
-    ).rejects.toThrow(/Ya existe/);
+    ).rejects.toThrow(/Ya tienes dada de alta una cuenta con el IBAN/);
   });
 
   it('resumen: saldo actual = saldo inicial + movimientos, redondeado a centimos', async () => {

@@ -1,8 +1,11 @@
 import { prisma } from '../config/database';
 import { badRequest, notFound } from '../utils/http-errors';
+import { conReintento } from '../utils/reintento';
+import { isValidIban } from '../utils/validateIban';
 import { importarMovimientosDesdeCSV } from './bancos.service';
 import { conciliarMovimientoConFactura } from './conciliacionConfirmar.service';
-import { monedaDeCuenta } from './perfilEmpresa.service';
+import { perfilEmpresa } from './perfilEmpresa.service';
+import { asignarSubcuentaBanco, INDICE_SUBCUENTA_BANCO, nombreSubcuentaBanco, subcuentasBanco, usarSubcuentaBanco } from './subcuentaBanco.service';
 
 /**
  * Tesoreria: la API que usa la pantalla de tesoreria del frontend.
@@ -67,33 +70,73 @@ async function cuentaDeEmpresa(companyId: string, accountId: string) {
   return cuenta;
 }
 
+/**
+ * Alta de una cuenta bancaria.
+ *
+ * - Sin `subcuentaCodigo` (el alta rapida de la ventana de cobro o de pago, que
+ *   solo pide IBAN y banco): se le asigna la siguiente 572 libre y se da de alta
+ *   en el plan.
+ * - Con `subcuentaCodigo` (Tesoreria > Cuentas bancarias): tiene que ser una 572
+ *   que no use otra cuenta; si no esta en el plan, se da de alta en el.
+ *
+ * El IBAN se comprueba (digitos de control) siempre que lo parezca, y en una
+ * empresa espanola siempre. En una de EE. UU. o Hong Kong, que no usan IBAN,
+ * vale el numero de cuenta. Los errores llevan `campo` para la pantalla.
+ */
 export async function crearCuentaBancaria(
   companyId: string,
   datos: { iban?: string; bic?: string; bancoNombre?: string; subcuentaCodigo?: string; saldoInicial?: number },
 ) {
-  const iban = String(datos.iban ?? '').replace(/\s+/g, '').toUpperCase();
-  if (!iban) throw badRequest('El IBAN es obligatorio.');
-  if (!datos.subcuentaCodigo) throw badRequest('La subcuenta contable (572xxx) es obligatoria.');
+  const iban = String(datos.iban ?? '').replace(/[\s-]+/g, '').toUpperCase();
+  if (!iban) throw badRequest('Escribe el IBAN de la cuenta.', { campo: 'iban' });
+  const perfil = await perfilEmpresa(companyId);
+  const pareceIban = /^[A-Z]{2}\d{2}/.test(iban);
+  if ((pareceIban || perfil.espanola) && !isValidIban(iban)) {
+    throw badRequest(
+      pareceIban
+        ? 'El IBAN no es válido: revisa que esté completo y sin cifras cambiadas.'
+        : 'Escribe el IBAN completo, empezando por las letras del país (por ejemplo ES91 2100…).',
+      { campo: 'iban' },
+    );
+  }
 
   const saldoInicial = Number(datos.saldoInicial ?? 0);
-  if (!Number.isFinite(saldoInicial)) throw badRequest('El saldo inicial no es un numero valido.');
+  if (!Number.isFinite(saldoInicial)) throw badRequest('El saldo inicial no es un importe válido.', { campo: 'saldoInicial' });
 
   const existe = await prisma.bankAccount.findFirst({ where: { companyId, iban } });
-  if (existe) throw badRequest(`Ya existe una cuenta con IBAN ${iban} en esta empresa.`);
+  if (existe) throw badRequest(`Ya tienes dada de alta una cuenta con el IBAN ${iban}.`, { campo: 'iban' });
 
-  const cuenta = await prisma.bankAccount.create({
-    data: {
-      companyId,
-      iban,
-      bic: datos.bic || null,
-      bancoNombre: datos.bancoNombre || null,
-      subcuentaCodigo: datos.subcuentaCodigo,
-      saldoInicial,
-      // Las cuentas van en la moneda de la contabilidad (cuentas en otra moneda: fuera de alcance).
-      moneda: await monedaDeCuenta(companyId),
-    },
-  });
+  const bancoNombre = datos.bancoNombre?.trim() || null;
+  const datosCuenta = {
+    companyId,
+    iban,
+    bic: datos.bic?.trim() || null,
+    bancoNombre,
+    saldoInicial: Math.round(saldoInicial * 100) / 100,
+    // Las cuentas van en la moneda de la contabilidad (cuentas en otra moneda: fuera de alcance).
+    moneda: perfil.monedaCuenta,
+  };
+  const escrita = String(datos.subcuentaCodigo ?? '').trim();
+  const nombre = nombreSubcuentaBanco(bancoNombre, iban);
+  const cuenta = await conReintento(
+    () =>
+      prisma.$transaction(async (tx) => {
+        const subcuentaCodigo = escrita ? await usarSubcuentaBanco(tx, companyId, escrita, nombre) : await asignarSubcuentaBanco(tx, companyId, nombre);
+        return tx.bankAccount.create({ data: { ...datosCuenta, subcuentaCodigo } });
+      }),
+    { indices: [INDICE_SUBCUENTA_BANCO], intentos: 5 },
+  );
   return aCuenta(cuenta);
+}
+
+/**
+ * Subcuenta que se propone al dar de alta una cuenta en Tesoreria (la misma
+ * que pondria el alta rapida) y las 572 del plan que aun no son de ninguna
+ * cuenta, por si la nueva es una de ellas. Solo lee.
+ */
+export async function subcuentaPropuesta(companyId: string) {
+  const s = await subcuentasBanco(companyId);
+  return { subcuentaCodigo: s.siguiente, longitud: s.longitud, sinCuenta: s.sinCuenta };
 }
 
 /** Cuentas de la empresa, cada una con sus ultimos 5 movimientos pendientes. */
@@ -187,6 +230,7 @@ export async function obtenerResumen(companyId: string) {
 
 export const treasuryService = {
   crearCuentaBancaria,
+  subcuentaPropuesta,
   listarCuentasBancarias,
   listarMovimientos,
   subirExtracto,
