@@ -7,10 +7,12 @@
  *
  * Necesita MySQL (en GitHub Actions lo levanta el workflow de tests).
  */
-import { describe, it, expect, beforeAll } from '@jest/globals';
+import { describe, it, expect, beforeAll, jest } from '@jest/globals';
 import express from 'express';
 import request from 'supertest';
+import { Prisma } from '@prisma/client';
 import { prisma } from '../config/database';
+import * as supplierAudit from '../services/suppliers/supplierAudit.service';
 import { exigirPlanAnteriorAntesDeAlta } from '../services/terceros/planAnteriorAlta';
 import expenseInvoicesRoutes from '../routes/expense-invoices.routes';
 import { errorMiddleware } from '../middleware/error.middleware';
@@ -176,6 +178,20 @@ describe('proveedor nuevo con la factura', () => {
     expect(s).toMatchObject({ nombreFiscal: 'Gestoría Nueva SL', pais: 'ES', cp: '46001' });
     expect(r.body.data.supplier).toMatchObject({ id: s.id, nifCif: nif });
     expect(await prisma.supplierAudit.count({ where: { supplierId: s.id, tipoAccion: 'create' } })).toBe(1);
+  });
+
+  it('si la base de datos falla al anotar el alta en el historial del proveedor, la factura se registra igual', async () => {
+    const espia = jest
+      .spyOn(supplierAudit, 'logCreate')
+      .mockRejectedValueOnce(new Prisma.PrismaClientKnownRequestError('Timed out fetching a new connection from the connection pool.', { code: 'P2024', clientVersion: Prisma.prismaVersion.client }));
+    const nif = cifValido();
+    const r = await request(app(E))
+      .post('/expense-invoices')
+      .send({ ...profesional('x'), numeroFacturaProveedor: 'HIST-1', proveedor: { nuevo: { nombreFiscal: 'Historial Caído SL', nifCif: nif } } });
+    espia.mockRestore();
+    expect(r.status).toBe(201);
+    const s = await prisma.supplier.findFirstOrThrow({ where: { companyId: E, nifCif: nif } });
+    expect(await prisma.expenseInvoice.count({ where: { companyId: E, supplierId: s.id, numeroFacturaProveedor: 'HIST-1' } })).toBe(1);
   });
 
   it('si el NIF ya existe: 409 con el proveedor, y no se crea nada', async () => {
