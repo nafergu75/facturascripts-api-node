@@ -200,3 +200,45 @@ describe('rectificativa total: lineas espejo', () => {
     }
   });
 });
+
+describe('redondeo simétrico (solo en las rectificativas)', () => {
+  // Solo lineas en positivo: las facturaAleatoria pueden traer alguna con cantidad -1.
+  const enPositivo = (ls: LineaEntrada[]) => ls.map((l) => ({ ...l, cantidad: Math.abs(l.cantidad) }));
+
+  it('en positivo da exactamente lo mismo que el cálculo de siempre (1.000 facturas aleatorias)', () => {
+    const r = aleatorio(20261013);
+    for (let k = 0; k < 1000; k++) {
+      const lineas = enPositivo(facturaAleatoria(r));
+      expect(calcularImportesFactura(lineas, { tipoCambio: 1, mismaMoneda: true, simetrico: true })).toEqual(
+        calcularImportesFactura(lineas, { tipoCambio: 1, mismaMoneda: true }),
+      );
+    }
+  });
+
+  it('-2,50 € al 21 % da -0,53 de IVA (el de siempre daba -0,52)', () => {
+    const l = [linea(-2.5)];
+    expect(calcularImportesFactura(l, { tipoCambio: 1, mismaMoneda: true }).doc.ivaTotal).toBe(-0.52);
+    expect(calcularImportesFactura(l, { tipoCambio: 1, mismaMoneda: true, simetrico: true }).doc).toEqual({ baseTotal: -2.5, ivaTotal: -0.53, retencionTotal: 0, totalFactura: -3.03 });
+  });
+
+  it('la rectificativa recalculada de 1 × 1,005 € es el espejo exacto de la original', () => {
+    const original = calcularImportesFactura([linea(1.005)], { tipoCambio: 1, mismaMoneda: true });
+    const rect = calcularImportesFactura([{ ...linea(1.005), cantidad: -1 }], { tipoCambio: 1, mismaMoneda: true, simetrico: true });
+    expect(rect.doc.totalFactura).toBe(-original.doc.totalFactura);
+    expect(rect.lineas[0].doc.baseLine).toBe(-original.lineas[0].doc.baseLine);
+    expect(rect.lineas[0].doc.ivaImporte).toBe(-original.lineas[0].doc.ivaImporte);
+    // Igual que las líneas espejo que se copian de la original.
+    expect(rect.doc).toEqual(lineasEspejo(original).doc);
+  });
+
+  it('cientos de líneas en negativo: la rectificativa y su original suman cero', () => {
+    const r = aleatorio(13102026);
+    for (let k = 0; k < 300; k++) {
+      const lineas = enPositivo(facturaAleatoria(r));
+      const original = calcularImportesFactura(lineas, { tipoCambio: 1, mismaMoneda: true });
+      const rect = calcularImportesFactura(lineas.map((l) => ({ ...l, cantidad: -l.cantidad })), { tipoCambio: 1, mismaMoneda: true, simetrico: true });
+      expect(redondear2(original.doc.totalFactura + rect.doc.totalFactura)).toBe(0);
+      expect(redondear2(original.doc.ivaTotal + rect.doc.ivaTotal)).toBe(0);
+    }
+  });
+});
