@@ -503,7 +503,12 @@ export interface TotalesRectificativa {
 export const lineasImportesDe = (f: { lineas: Array<{ tipoIva: number; accountCode: string | null; baseLine: number; ivaImporte: number; retencionImporte: number }> }): LineaImportes[] =>
   f.lineas.map((l) => ({ tipoIva: l.tipoIva, cuenta: l.accountCode ?? null, baseLine: Number(l.baseLine), ivaImporte: Number(l.ivaImporte), retencionImporte: Number(l.retencionImporte) }));
 
-const periodoTexto = (fecha: string) => `${Math.ceil(Number(fecha.slice(5, 7)) / 3)}T de ${fecha.slice(0, 4)}`;
+const MESES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
+/** Periodo del 303 de una fecha: el mes si la empresa declara cada mes; si no, el trimestre. */
+const periodo303De = (fecha: string, mensual: boolean) => (mensual ? fecha.slice(0, 7) : `${fecha.slice(0, 4)}-${Math.ceil(Number(fecha.slice(5, 7)) / 3)}T`);
+/** «del 3T de 2026» o «de julio de 2026». */
+const periodoTexto = (fecha: string, mensual = false) =>
+  mensual ? `de ${MESES[Number(fecha.slice(5, 7)) - 1]} de ${fecha.slice(0, 4)}` : `del ${Math.ceil(Number(fecha.slice(5, 7)) / 3)}T de ${fecha.slice(0, 4)}`;
 
 /**
  * Cierra el plan con los importes ya calculados: la parte de cada fila (con
@@ -515,7 +520,8 @@ const periodoTexto = (fecha: string) => `${Math.ceil(Number(fecha.slice(5, 7)) /
 export function cerrarPlan(
   plan: PlanVenta,
   t: TotalesRectificativa,
-  d: { fechaEmision: string; clienteConNif: boolean },
+  // mensual: la empresa presenta el 303 cada mes en la fecha de la rectificativa (si no, cada trimestre).
+  d: { fechaEmision: string; clienteConNif: boolean; mensual?: boolean },
 ): { enlaces: EnlaceVenta[]; fechaOperacion: string | null; avisos: AvisoFiscal[]; rectificacion: { base: number; cuota: number; retencion: number; total: number } } {
   const b = plan.bloque;
   const avisos = [...plan.avisos];
@@ -601,14 +607,26 @@ export function cerrarPlan(
       });
     });
     // R4 que sube el IVA: se declara en el periodo de la original (art. 89.Cinco LIVA).
+    // Solo si es otro periodo del 303; con originales de periodos distintos, una
+    // rectificativa para cada uno (cada subida va al 303 de su factura).
     if (exigeImputarAlPeriodoOriginal({ motivo, ticket: b.ticket, cuota: rect.cuota })) {
+      const mensual = !!d.mensual;
       const conDevengo = plan.filas.filter((f) => !!f.devengo).sort((x, y) => x.devengo!.localeCompare(y.devengo!));
+      const periodos = new Map<string, FilaPlan>();
+      for (const f of conDevengo) if (!periodos.has(periodo303De(f.devengo!, mensual))) periodos.set(periodo303De(f.devengo!, mensual), f);
+      if (periodos.size > 1) {
+        const lista = [...periodos.values()].map((f) => `la ${f.numeroOriginal ?? 'factura'}, ${periodoTexto(f.devengo!, mensual)}`);
+        throw badRequest(
+          `Esta rectificativa sube el IVA por un error y cada subida va en el 303 del periodo de su factura: ${lista.slice(0, -1).join(', ')} y ${lista[lista.length - 1]}. Haz una rectificativa para cada periodo.`,
+          { codigo: 'R4_VARIOS_PERIODOS', campo: 'rectificativa.originales' },
+        );
+      }
       const primera = conDevengo[0];
-      if (primera && primera.devengo! < d.fechaEmision) {
+      if (primera && primera.devengo! < d.fechaEmision && periodo303De(primera.devengo!, mensual) !== periodo303De(d.fechaEmision, mensual)) {
         fechaOperacion = primera.devengo;
         avisos.push({
           codigo: 'IVA_PERIODO_ORIGINAL',
-          mensaje: `Esta rectificativa sube el IVA por un error: no va en el 303 de hoy, sino en el del ${periodoTexto(primera.devengo!)}, el de la factura ${primera.numeroOriginal ?? ''} (art. 89.Cinco LIVA). Si ese 303 ya está presentado, hay que presentar una complementaria.`,
+          mensaje: `Esta rectificativa sube el IVA por un error: no va en el 303 de hoy, sino en el ${periodoTexto(primera.devengo!, mensual)}, el de la factura ${primera.numeroOriginal ?? ''} (art. 89.Cinco LIVA). Si ese 303 ya está presentado, hay que presentar una complementaria.`,
         });
       }
     }
