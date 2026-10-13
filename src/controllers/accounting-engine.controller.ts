@@ -10,6 +10,7 @@
  */
 
 import { badRequest, conflict, notFound, notImplemented } from '../utils/http-errors';
+import { errorFalloBD } from '../utils/errores-bd';
 import { registrarAuditoria } from '../services/auditoria.service';
 import { accountingEngineService, desgloseIvaPorTipo } from '../services/accounting-engine.service';
 import { prisma, type ClienteBD, type TransaccionBD } from '../config/database';
@@ -47,6 +48,9 @@ import {
 } from '../services/terceros/subcuentas';
 import { esSubcuentaGenerica } from '../services/terceros/numeracion';
 import { ESTADO_SUSTITUIDO, TEXTO_SUSTITUIDO } from '../domain/asientosCierre';
+
+/** Que hacer si la base de datos falla al contabilizar una factura (boton «Contabilizar»). */
+export const QUE_HACER_CONTABILIZAR = 'El asiento no se ha creado: vuelve a pulsar «Contabilizar» dentro de un momento.';
 
 /** Mismo cliente o proveedor. */
 const mismaFicha = (a: { tipo: string; id: string } | null | undefined, b: { tipo: string; id: string } | null | undefined) =>
@@ -264,8 +268,11 @@ export class AccountingEngineController {
       if (err instanceof Error && 'statusCode' in err) {
         throw err;
       }
-      throw badRequest(
-        `Error contabilizando factura: ${err instanceof Error ? err.message : 'desconocido'}`
+      // Un fallo de la base de datos (transaccion caducada, conexion...) no se
+      // ensena tal cual: la causa en castellano y el detalle, al log.
+      throw (
+        errorFalloBD(err, QUE_HACER_CONTABILIZAR, `contabilizar la factura de venta ${invoiceId}`) ??
+        badRequest(`Error contabilizando factura: ${err instanceof Error ? err.message : 'desconocido'}`)
       );
     }
   }
@@ -389,7 +396,10 @@ export class AccountingEngineController {
       };
     } catch (err) {
       if (err instanceof Error && 'statusCode' in err) throw err;
-      throw badRequest(`Error contabilizando gasto: ${err instanceof Error ? err.message : 'desconocido'}`);
+      throw (
+        errorFalloBD(err, QUE_HACER_CONTABILIZAR, `contabilizar la factura de gasto ${invoiceId}`) ??
+        badRequest(`Error contabilizando gasto: ${err instanceof Error ? err.message : 'desconocido'}`)
+      );
     }
   }
 
@@ -583,7 +593,10 @@ export class AccountingEngineController {
       if (err instanceof Error && 'statusCode' in err) {
         throw err;
       }
-      throw badRequest(`Error aprobando asiento: ${err instanceof Error ? err.message : ''}`);
+      throw (
+        errorFalloBD(err, 'El asiento sigue en borrador: vuelve a aprobarlo dentro de un momento.', `aprobar el asiento ${journalEntryId}`) ??
+        badRequest(`Error aprobando asiento: ${err instanceof Error ? err.message : ''}`)
+      );
     }
   }
 
