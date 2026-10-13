@@ -1,7 +1,7 @@
 import { asyncHandler } from '../utils/async-handler';
+import { HttpError } from '../utils/http-errors';
 import { sendOk } from '../utils/response';
 import { prisma } from '../config/database';
-import { Decimal } from '@prisma/client/runtime/library';
 import { perfilEmpresa } from '../services/perfilEmpresa.service';
 import { resumenFiscalPeriodo } from '../services/resumenFiscal.service';
 import {
@@ -28,32 +28,21 @@ const opcionesPanel = (req: Request, companyId: string): OpcionesPanel => ({
   incluirNominas: !!req.user && autorizado(req.user, companyId, ['nominas:read', 'contabilidad:read']),
 });
 
+export const MENSAJE_MOVIMIENTOS_RETIRADOS = 'Los movimientos ya no se anotan ni se cambian a mano: registra la factura de venta o de gasto.';
+
 export const movementsController = {
-  // POST /companies/:companyId/movements
-  create: asyncHandler(async (req, res) => {
-    const { companyId } = req.params;
-    const { type, amount, category, description, date, referenceDocument, fiscalYear, status } =
-      req.body;
-
-    const movement = await prisma.movement.create({
-      data: {
-        companyId,
-        type,
-        amount: new Decimal(amount),
-        category,
-        description,
-        date: new Date(date),
-        referenceDocument,
-        // El año de la fecha tal como llega (AAAA-MM-DD...), sin pasar por el huso del servidor.
-        fiscalYear: fiscalYear || (/^\d{4}-/.test(String(date)) ? Number(String(date).slice(0, 4)) : new Date(date).getFullYear()),
-        status: status || 'draft',
-      },
-    });
-
-    sendOk(res, movement);
+  /**
+   * POST /, PATCH /:id y DELETE /:id: retirados (decisión del usuario,
+   * 13-10-2026). «Nuevo movimiento» ya no existe: el panel sale de las
+   * facturas y la pantalla Movimientos queda solo para consultar los que se
+   * anotaron antes. 410 MOVIMIENTOS_RETIRADOS. Las rutas mantienen su
+   * authorize (sin permiso, 403 como antes).
+   */
+  retirado: asyncHandler(async () => {
+    throw new HttpError(410, MENSAJE_MOVIMIENTOS_RETIRADOS, { codigo: 'MOVIMIENTOS_RETIRADOS' });
   }),
 
-  // GET /companies/:companyId/movements
+  // GET /companies/:companyId/movements: los movimientos anotados a mano antes (solo consulta).
   list: asyncHandler(async (req, res) => {
     const { companyId } = req.params;
     const { limit = 50, page = 1, type, category } = req.query;
@@ -79,8 +68,8 @@ export const movementsController = {
    * Resumen del panel sacado de las FACTURAS y las NOMINAS (panel.service), no
    * de la tabla Movement: ingresos (base de las ventas), gastos (base de las
    * facturas de gasto y coste de las nominas), resultado y numero de facturas.
-   * Sin anio, el año en curso en España. `movimientosManuales` cuenta los de
-   * «Nuevo movimiento», que ya no entran aqui.
+   * Sin anio, el año en curso en España. `movimientosManuales` cuenta los
+   * movimientos anotados a mano antes (ya no se crean), que no entran aqui.
    */
   getSummary: asyncHandler(async (req, res) => {
     const companyId = req.companyId ?? req.params.companyId;
@@ -168,38 +157,5 @@ export const movementsController = {
     const companyId = req.companyId ?? req.params.companyId;
     const anio = req.query.anio === undefined || String(req.query.anio).trim() === '' ? null : ejercicioOActual(req.query.anio, { campo: 'anio' });
     sendOk(res, await ultimasFacturasPanel(companyId, limiteUltimas(req.query.limit), anio));
-  }),
-
-  // PATCH /companies/:companyId/movements/:id
-  update: asyncHandler(async (req, res) => {
-    const { companyId, id } = req.params;
-    const { type, amount, category, description, date, referenceDocument, status } = req.body;
-
-    const updateData: any = {};
-    if (type) updateData.type = type;
-    if (amount) updateData.amount = new Decimal(amount);
-    if (category) updateData.category = category;
-    if (description) updateData.description = description;
-    if (date) updateData.date = new Date(date);
-    if (referenceDocument !== undefined) updateData.referenceDocument = referenceDocument;
-    if (status) updateData.status = status;
-
-    const movement = await prisma.movement.update({
-      where: { id },
-      data: updateData,
-    });
-
-    sendOk(res, movement);
-  }),
-
-  // DELETE /companies/:companyId/movements/:id
-  delete: asyncHandler(async (req, res) => {
-    const { id } = req.params;
-
-    await prisma.movement.delete({
-      where: { id },
-    });
-
-    sendOk(res, { success: true });
   }),
 };

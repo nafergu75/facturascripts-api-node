@@ -4,10 +4,12 @@ import { authorize } from '../middleware/authorize.middleware';
 
 const router = Router({ mergeParams: true });
 
+// «Nuevo movimiento» está retirado (13-10-2026): crear, cambiar y borrar dan 410
+// MOVIMIENTOS_RETIRADOS. Conservan su authorize (lo vigila permisos-rutas.test.ts).
 // POST /companies/:companyId/movements
-router.post('/', authorize('contabilidad:write'), movementsController.create);
+router.post('/', authorize('contabilidad:write'), movementsController.retirado);
 
-// GET /companies/:companyId/movements
+// GET /companies/:companyId/movements: los anotados a mano antes, solo para consultarlos.
 router.get('/', authorize('contabilidad:read', 'tesoreria:read'), movementsController.list);
 
 // ⚠️ IMPORTANT: Specific routes MUST come BEFORE dynamic routes like /:id
@@ -40,10 +42,10 @@ router.get('/stats/gastos-por-proveedor', authorize('contabilidad:read', 'tesore
 // GET /companies/:companyId/movements/stats/ultimas-facturas?limit=15[&anio=2026]
 router.get('/stats/ultimas-facturas', authorize('contabilidad:read', 'tesoreria:read'), movementsController.getUltimasFacturas);
 
-// PATCH /companies/:companyId/movements/:id
-router.patch('/:id', authorize('contabilidad:write'), movementsController.update);
+// PATCH /companies/:companyId/movements/:id (retirado: 410)
+router.patch('/:id', authorize('contabilidad:write'), movementsController.retirado);
 
-// DELETE /companies/:companyId/movements/:id
-router.delete('/:id', authorize('contabilidad:write'), movementsController.delete);
+// DELETE /companies/:companyId/movements/:id (retirado: 410)
+router.delete('/:id', authorize('contabilidad:write'), movementsController.retirado);
 
 export default router;
