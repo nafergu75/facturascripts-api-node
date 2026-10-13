@@ -148,7 +148,8 @@ describe('lector de ventas: clienteExistente', () => {
     const E = await empresa(NIF_EMISOR);
     const c = await prisma.customer.create({ data: { companyId: E, nombreFiscal: 'Comercial Demo, S.L.', nifCif: `ES${NIF_CLIENTE}` } });
     const data = await leer(E, 'ingresos-extractor');
-    expect(data.ingreso.clienteExistente).toEqual({ id: c.id, nombreFiscal: 'Comercial Demo, S.L.', nifCif: `ES${NIF_CLIENTE}` });
+    // Con su pais: dice de donde es el cliente y como se llama su numero fiscal.
+    expect(data.ingreso.clienteExistente).toEqual({ id: c.id, nombreFiscal: 'Comercial Demo, S.L.', nifCif: `ES${NIF_CLIENTE}`, pais: 'ES' });
   });
 
   it('/lecturas: el cliente de otra empresa no cuenta', async () => {
@@ -177,7 +178,7 @@ describe('lector de ventas: clienteExistente', () => {
     mockExtraerVenta.mockResolvedValueOnce({ documentId: 'doc-1', extraccion: extraccion(`ES-${cif('2222222')}`) });
     const r = await request(app(E)).post('/ingresos-extractor/extraer-ia').attach('archivo', PDF, 'f.pdf');
     expect(r.status).toBe(201);
-    expect(r.body.data.clienteExistente).toEqual({ id: c.id, nombreFiscal: 'Cliente SL', nifCif: cif('2222222') });
+    expect(r.body.data.clienteExistente).toEqual({ id: c.id, nombreFiscal: 'Cliente SL', nifCif: cif('2222222'), pais: 'ES' });
     mockExtraerVenta.mockResolvedValueOnce({ documentId: 'doc-2', extraccion: extraccion(null) });
     const sinNif = await request(app(E)).post('/ingresos-extractor/extraer-ia').attach('archivo', PDF, 'f.pdf');
     expect(sinNif.status).toBe(201);
