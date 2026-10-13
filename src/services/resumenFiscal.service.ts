@@ -87,53 +87,6 @@ export function whereGastosResumen(companyId: string, rango?: RangoFechas, suppl
   };
 }
 
-/** Factura original sustituida por una rectificativa por sustitucion (S) del rango. */
-export interface Sustituida {
-  /** Id de la original. */
-  id: string;
-  /** Fecha de la rectificativa S (AAAA-MM-DD): la original se resta en ese periodo. */
-  fecha: string;
-  /** Cliente de la original. */
-  customerId: string;
-  /** Importes de la original, en la moneda de cuenta. */
-  base: number;
-  iva: number;
-  retencion: number;
-  total: number;
-}
-
-/**
- * Originales de las rectificativas por sustitucion (S) que cuentan en el rango.
- *
- * Una S lleva la factura corregida ENTERA y la original sigue contando en su
- * fecha: sumadas las dos, la venta contaria dos veces. Por eso, en el periodo
- * de la S se resta la original y queda solo la diferencia (la S de 1.200 que
- * sustituye a una de 1.000 suma 200). Es el criterio que aplican al 303 y al
- * asiento las rectificativas de venta (diferenciaSustitucion, rama
- * rectificativas-venta); hasta que se publique, el 303 aun suma la S entera.
- * Solo las originales de la app que el resumen cuenta (emitidas, no en
- * borrador); con `customerId`, las de ese cliente. Pocas filas: las S son raras.
- */
-export async function sustituidasEnRango(companyId: string, rango?: RangoFechas, customerId?: string): Promise<Sustituida[]> {
-  const sustituciones = await prisma.incomeInvoice.findMany({
-    where: { ...whereVentasResumen(companyId, rango), esRectificativa: true, tipoRectificativa: 'S', facturaOriginalId: { not: null } },
-    select: { fechaEmision: true, facturaOriginalId: true },
-  });
-  if (!sustituciones.length) return [];
-  const originales = await prisma.incomeInvoice.findMany({
-    where: { ...whereVentasResumen(companyId, undefined, customerId), id: { in: [...new Set(sustituciones.map((s) => s.facturaOriginalId as string))] } },
-    select: { id: true, customerId: true, baseTotal: true, ivaTotal: true, retencionTotal: true, totalFactura: true },
-  });
-  const porId = new Map(originales.map((o) => [o.id, o]));
-  const out: Sustituida[] = [];
-  for (const s of sustituciones) {
-    const o = porId.get(s.facturaOriginalId as string);
-    if (!o) continue;
-    out.push({ id: o.id, fecha: s.fechaEmision, customerId: o.customerId, base: n(o.baseTotal), iva: n(o.ivaTotal), retencion: n(o.retencionTotal), total: n(o.totalFactura) });
-  }
-  return out;
-}
-
 /** Una venta tal como cuenta en el resumen y en el panel. Importes de cuenta. */
 export interface VentaResumen {
   id: string;
