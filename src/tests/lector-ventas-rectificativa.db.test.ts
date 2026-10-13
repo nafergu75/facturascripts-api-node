@@ -312,6 +312,25 @@ describe('lector de ventas: la original es de otro cliente', () => {
     const f = await prisma.incomeInvoice.findUniqueOrThrow({ where: { id: ok.body.data.facturaId } });
     expect(f.customerId).not.toBe(clientes[OTRO]);
   });
+
+  it('sin el NIF del cliente leído y sin elegir cliente: con la original de la app no bloquea', async () => {
+    const data = await leer('resultado-rectificativa-venta', OTRO);
+    const documentId = data.ingreso.documentId;
+    await conNumero(documentId, 'RV-10');
+    const doc = await prisma.incomeReaderDocument.findUniqueOrThrow({ where: { id: documentId } });
+    const parsed = doc.parsedData as Record<string, any>;
+    await prisma.incomeReaderDocument.update({
+      where: { id: documentId },
+      data: { parsedData: { ...parsed, customer: { ...parsed.customer, tax_id: null }, validation: { ...parsed.validation, errors: [] } } },
+    });
+    const fila = await prisma.lecturaDocumento.findUniqueOrThrow({ where: { id: data.lecturaId } });
+    const sinNif = { codigo: 'NIF_RECEPTOR', nivel: 'error', campos: ['nifCliente'], mensaje: 'Falta el NIF del cliente.' };
+    // La lectura guardó el número leído (RV-4) como repetido: con el número cambiado, ya no.
+    const guardadas = ((fila.validaciones as Array<{ codigo: string }>) ?? []).filter((v) => v.codigo !== 'DUPLICADA');
+    await prisma.lecturaDocumento.update({ where: { id: data.lecturaId }, data: { validaciones: [...guardadas, sinNif] as never, estadoValidacion: 'error' } });
+    const r = await confirmar(OTRO, { documentId, rectificativa: { forma: 'I', motivo: 'DEVOLUCION', originales: [{ id: originales[OTRO] }] } });
+    expect({ status: r.status, body: r.body }).toMatchObject({ status: 201, body: { data: { esRectificativa: true, numeroCompleto: 'RV-10' } } });
+  });
 });
 
 describe('lecturas de antes (V19 guardada en error)', () => {
