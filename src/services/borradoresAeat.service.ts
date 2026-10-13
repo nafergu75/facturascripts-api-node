@@ -211,7 +211,9 @@ export function entrada390Desde(
   // «Modificación de bases y cuotas» [29]/[30], como [14]/[15] del 303; las
   // compras deducibles anuladas, a «Rectificación de deducciones» [639]/[62],
   // como [40]/[41] del 303.
-  const ventasRectificativas = delAno.filter((f) => devengaIva(f) && f.rectificativa);
+  // Las del concurso del cliente (R2) van aparte, a [31]/[32].
+  const ventasRectificativas = delAno.filter((f) => devengaIva(f) && f.rectificativa && !f.concurso);
+  const ventasConcurso = delAno.filter((f) => devengaIva(f) && f.rectificativa && f.concurso);
   const todasCompras = delAno.filter((f) => f.tipo === 'compra');
   const comprasRectificativas = todasCompras.filter((f) => f.rectificativa);
   const compras = todasCompras.filter((f) => !f.rectificativa);
@@ -220,6 +222,7 @@ export function entrada390Desde(
   const modVentas = totalLineas(ventasRectificativas, (_f, l) => aCentimos(l.cuota));
   const modIntra = totalLineas(comprasRectificativas.filter((f) => f.operacion === 'intracomunitaria'), cuotaCompra);
   const modificaciones = { base: (aCentimos(modVentas.base) + aCentimos(modIntra.base)) / 100, cuota: (aCentimos(modVentas.cuota) + aCentimos(modIntra.cuota)) / 100 };
+  const modificacionesConcurso = totalLineas(ventasConcurso, (_f, l) => aCentimos(l.cuota));
   const rectificacionDeducciones = totalLineas(comprasRectificativas.filter((f) => f.deducible !== false), cuotaCompra);
   // Autoliquidadas: todas al devengado (también las de IVA no deducible, como en
   // el 303 [10]/[11]); al deducible, solo las deducibles.
@@ -248,6 +251,7 @@ export function entrada390Desde(
       identificacion,
       devengado: agruparPorTipoIva(delAno.filter((f) => devengaIva(f) && !f.rectificativa)),
       ...(aCentimos(modificaciones.base) !== 0 || aCentimos(modificaciones.cuota) !== 0 ? { modificaciones } : {}),
+      ...(aCentimos(modificacionesConcurso.base) !== 0 || aCentimos(modificacionesConcurso.cuota) !== 0 ? { modificacionesConcurso } : {}),
       ...(aCentimos(rectificacionDeducciones.base) !== 0 || aCentimos(rectificacionDeducciones.cuota) !== 0 ? { rectificacionDeducciones } : {}),
       adquisicionesIntraBienes: autoliquidadas(intraTodas.filter((f) => !esServicio(f))),
       adquisicionesIntraServicios: autoliquidadas(intraTodas.filter(esServicio)),
