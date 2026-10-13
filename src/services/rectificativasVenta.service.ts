@@ -489,6 +489,20 @@ export function cerrarPlan(
 ): { enlaces: EnlaceVenta[]; fechaOperacion: string | null; avisos: AvisoFiscal[]; rectificacion: { base: number; cuota: number; retencion: number; total: number } } {
   const b = plan.bloque;
   const avisos = [...plan.avisos];
+  // Por sustitucion las lineas son la factura corregida entera: con el signo de
+  // la original (en positivo) o a cero, nunca al reves. Una S en negativo
+  // restaba dos veces la venta y el IVA, y una a cero dejaba sin limite las
+  // rectificativas siguientes.
+  if (b.forma === 'S' && plan.herencia) {
+    const o = plan.herencia;
+    const signo = Math.sign(aCentimos(Number(o.totalFactura))) || Math.sign(aCentimos(Number(o.baseTotal))) || 1;
+    if (aCentimos(t.base) * signo < 0 || aCentimos(t.total) * signo < 0) {
+      throw badRequest(
+        `Por sustitución, las líneas son la factura ${numeroDe(o)} ya corregida y entera, con sus importes en positivo, como la original. Para restar (un abono), rectifica por diferencias.`,
+        { codigo: 'SIGNO_NO_CUADRA', campo: 'lineas' },
+      );
+    }
+  }
   // Lo que se rectifica: la diferencia en una sustitucion, los importes de la rectificativa en el resto.
   const rect =
     b.forma === 'S' && plan.herencia
@@ -729,8 +743,13 @@ export async function exigirLimites(
     const o = originales.find((x) => x.id === p.originalId);
     const r = restantes.get(p.originalId);
     if (!o || !r) continue;
-    const signo = Math.sign(aCentimos(r.referencia.total)) || Math.sign(aCentimos(r.referencia.base));
-    if (!signo) continue;
+    // Referencia a cero (una sustitucion a 0 €): manda el signo de la original, no queda sin limite.
+    const signo =
+      Math.sign(aCentimos(r.referencia.total)) ||
+      Math.sign(aCentimos(r.referencia.base)) ||
+      Math.sign(aCentimos(Number(o.totalFactura))) ||
+      Math.sign(aCentimos(Number(o.baseTotal))) ||
+      1;
     const sumaTotal = aCentimos(r.total) + aCentimos(p.total);
     const sumaBase = aCentimos(r.base) + aCentimos(p.base);
     if (sumaTotal * signo >= 0 && sumaBase * signo >= 0) continue;
@@ -738,7 +757,9 @@ export async function exigirLimites(
     const lista = r.previas.map((x) => x.numeroCompleto).filter(Boolean).join(', ');
     throw conflict(
       !r.previas.length
-        ? `La rectificativa (${importeTexto(p.total)}) es mayor que la factura ${numero} (${importeTexto(r.referencia.total)}).`
+        ? r.sustituta
+          ? `La rectificativa (${importeTexto(p.total)}) es mayor que lo que queda de la factura ${numero}: ${importeTexto(r.referencia.total)}, el total de la ${r.sustituta.numeroCompleto ?? 'rectificativa'} que la sustituyó.`
+          : `La rectificativa (${importeTexto(p.total)}) es mayor que la factura ${numero} (${importeTexto(r.referencia.total)}).`
         : aCentimos(r.total) === 0
           ? `La factura ${numero} ya está anulada por completo con la ${lista}. No se puede rectificar otra vez.`
           : `La rectificativa deja la factura ${numero} por debajo de cero: después de la ${lista} solo quedan ${importeTexto(r.total)} por rectificar.`,
