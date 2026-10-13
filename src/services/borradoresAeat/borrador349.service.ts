@@ -20,6 +20,7 @@
  *    rectificada = anterior + la diferencia.
  */
 import { prisma } from '../../config/database';
+import { repartirCentimos } from '../../domain/importesFactura';
 import { estadosEnRectificacion } from '../declaracionesAeat/declaraciones.service';
 import { importeTexto } from '../../utils/money';
 import { badRequest } from '../../utils/http-errors';
@@ -115,6 +116,44 @@ function periodoDeFecha(fecha: string, tipo: PeriodoFiscal['tipo']): { ejercicio
   return { ejercicio: Number(fecha.slice(0, 4)), periodo: tipo === 'mensual' ? fecha.slice(5, 7) : `${Math.ceil(mes / 3)}T` };
 }
 
+/** Primer dia de un periodo del 349 («2026», «3T» o «07»). */
+const inicioDePeriodo = (x: { ejercicio: number; periodo: string }) =>
+  /^\dT$/.test(x.periodo) ? `${x.ejercicio}-${String((Number(x.periodo[0]) - 1) * 3 + 1).padStart(2, '0')}-01` : `${x.ejercicio}-${x.periodo}-01`;
+
+/**
+ * Rappel de venta de un periodo que abarca varios periodos del 349: su base se
+ * reparte entre ellos en proporcion a las ventas de ese periodo al mismo
+ * operador y con la misma clave (sin rectificativas), como propone compras.
+ * Al centimo: las partes suman la base. null si no hay ventas con que repartir
+ * (entonces va entera al periodo de su inicio, con aviso).
+ */
+async function repartoRappelVenta(
+  companyId: string,
+  r: { cifnif: string; pais: string | null; clave: Clave349 },
+  desde: string,
+  hasta: string,
+  base: number,
+  tipo: PeriodoFiscal['tipo'],
+): Promise<Array<{ periodo: { ejercicio: number; periodo: string }; base: number }> | null> {
+  const operador = claveOperador({ nifIva: r.cifnif, pais: r.pais, clave: r.clave });
+  const ventas = (await obtenerFacturasFiscales(companyId, desde, hasta)).filter(
+    (x) => x.tipo === 'venta' && !x.rectificativa && x.fecha >= desde && x.fecha <= hasta && clave349De(x) === r.clave && claveOperador({ nifIva: x.cifnif, pais: x.paisTercero ?? null, clave: r.clave }) === operador,
+  );
+  const porPeriodo = new Map<string, { periodo: { ejercicio: number; periodo: string }; cent: number }>();
+  for (const x of ventas) {
+    const per = periodoDeFecha(x.fecha, tipo);
+    const k = `${per.ejercicio}|${per.periodo}`;
+    const a = porPeriodo.get(k) ?? { periodo: per, cent: 0 };
+    a.cent += x.lineas.reduce((s, l) => s + cent(l.base), 0);
+    porPeriodo.set(k, a);
+  }
+  const filas = [...porPeriodo.values()].filter((a) => a.cent > 0).sort((a, b) => inicioDePeriodo(a.periodo).localeCompare(inicioDePeriodo(b.periodo)));
+  const total = filas.reduce((s, a) => s + a.cent, 0);
+  if (!total || filas.length < 2) return null;
+  const partes = repartirCentimos(base, filas.map((a) => (base * a.cent) / total));
+  return filas.map((a, i) => ({ periodo: a.periodo, base: partes[i] })).filter((x) => cent(x.base) !== 0);
+}
+
 /** Clave de agrupacion de un operador: pais + numero del NIF-IVA (o el NIF limpio) y clave. */
 export function claveOperador(m: { nifIva: string; pais?: string | null; clave: string }): string {
   const s = separarNifIva(m.nifIva, m.pais);
@@ -149,6 +188,7 @@ export async function movimientos349(companyId: string, p: PeriodoFiscal): Promi
               originalId: true,
               fechaOriginal: true,
               periodoDesde: true,
+              periodoHasta: true,
               baseRectificada: true,
               original: { select: { fechaEmision: true, fechaOperacion: true, tipoOperacion: true } },
             },
@@ -165,7 +205,7 @@ export async function movimientos349(companyId: string, p: PeriodoFiscal): Promi
       })
     : [];
   /** Filas de cada rectificativa: fecha de origen, parte de la base (null = toda) y si es de fuera de la app. */
-  const filasDe = new Map<string, Array<{ origen: string | null; base: number | null; fuera: boolean }>>();
+  const filasDe = new Map<string, Array<{ origen: string | null; base: number | null; fuera: boolean; periodo?: { desde: string; hasta: string } }>>();
   for (const r of rectificativas) {
     if (!r.numeroCompleto) continue;
     if (r.enlacesRectifica.length) {
@@ -176,6 +216,7 @@ export async function movimientos349(companyId: string, p: PeriodoFiscal): Promi
           origen: e.original ? fechaDevengoVenta(e.original) : (e.fechaOriginal ?? e.periodoDesde),
           base: varias && e.baseRectificada !== null ? Number(e.baseRectificada) : null,
           fuera: !e.originalId && !e.periodoDesde,
+          ...(e.periodoDesde && e.periodoHasta ? { periodo: { desde: e.periodoDesde, hasta: e.periodoHasta } } : {}),
         })),
       );
     } else {
@@ -193,6 +234,25 @@ export async function movimientos349(companyId: string, p: PeriodoFiscal): Promi
       continue;
     }
     for (const e of filas) {
+      // Rappel de varios periodos del 349: cada periodo, su parte (rectificacion de los anteriores).
+      const varios = e.periodo && periodoDeFecha(e.periodo.desde, p.tipo).periodo !== periodoDeFecha(e.periodo.hasta, p.tipo).periodo;
+      if (e.periodo && (varios || e.periodo.desde.slice(0, 4) !== e.periodo.hasta.slice(0, 4))) {
+        const reparto = await repartoRappelVenta(companyId, { cifnif: f.cifnif, pais: f.paisTercero ?? null, clave }, e.periodo.desde, e.periodo.hasta, e.base ?? base, p.tipo);
+        if (reparto) {
+          for (const r of reparto) {
+            const inicio = inicioDePeriodo(r.periodo);
+            out.push({ ...comun, base: r.base, ...(inicio < p.fechaInicio ? { rectifica: r.periodo } : {}) });
+          }
+          continue;
+        }
+        out.push({
+          ...comun,
+          base: e.base ?? base,
+          ...(e.origen && e.origen < p.fechaInicio ? { rectifica: periodoDeFecha(e.origen, p.tipo) } : {}),
+          aviso: `El rappel ${f.idFactura} abarca varios periodos del 349 (del ${ddmm(e.periodo.desde)} al ${ddmm(e.periodo.hasta)}) y no hay ventas a ese cliente con las que repartirlo: se rectifica entero en el periodo de su inicio. Si hay que repartirlo, hazlo a mano.`,
+        });
+        continue;
+      }
       out.push({
         ...comun,
         base: e.base ?? base,
