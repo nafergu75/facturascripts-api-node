@@ -18,6 +18,7 @@ import {
   subcuentasEnPlan,
 } from './terceros/subcuentas';
 import { normalizarPais, prefijoNifIvaUe } from '../domain/tipo-operacion.model';
+import { numeroFiscalEnFrase } from '../domain/numero-fiscal';
 import { MONEDAS_FACTURA_ACTIVAS, normalizarMoneda } from '../domain/divisas';
 import { esCodigoPais } from '../utils/geografia';
 import { esClaveRepetida } from '../utils/reintento';
@@ -30,6 +31,8 @@ export interface ClienteResumen {
   nif: string;
   email: string;
   telefono: string;
+  /** Pais (ISO-2): como se llama su numero fiscal y de donde es al elegirlo desde un lector. */
+  pais: string;
 }
 
 type CustomerRow = {
@@ -220,7 +223,7 @@ export async function buscarClientes(companyId: ID, query: string, limit = 20): 
     ];
   }
   const items = (await prisma.customer.findMany({ where, take: limit, orderBy: { nombreFiscal: 'asc' } })) as CustomerRow[];
-  return items.map((c) => ({ id: c.id, nombre: c.nombreFiscal, nif: c.nifCif, email: c.email ?? '', telefono: c.telefono ?? '' }));
+  return items.map((c) => ({ id: c.id, nombre: c.nombreFiscal, nif: c.nifCif, email: c.email ?? '', telefono: c.telefono ?? '', pais: c.pais || 'ES' }));
 }
 
 export const clientesService: CompanyScopedService<Cliente> = {
@@ -243,7 +246,8 @@ export const clientesService: CompanyScopedService<Cliente> = {
   async create(companyId: ID, data: Record<string, unknown>): Promise<Cliente> {
     const d = leerDatos(data);
     if (!d.nombreFiscal?.trim()) throw badRequest('Falta el nombre fiscal del cliente.', { campo: 'nombreFiscal' });
-    if (!d.nifCif) throw badRequest('Falta el NIF del cliente.', { campo: 'nifCif' });
+    // Con el nombre que tiene en su pais: «Falta el RNC del cliente.». Una identificacion extranjera se guarda tal cual.
+    if (!d.nifCif) throw badRequest(`Falta el ${numeroFiscalEnFrase(textoONull(data.pais))} del cliente.`, { campo: 'nifCif' });
     // El mismo NIF escrito de otra forma (con ES, puntos o guiones) es el mismo cliente: 409 con su id.
     const ya = await clienteConNif(String(companyId), d.nifCif);
     if (ya) throw errorClienteRepetido(ya);
