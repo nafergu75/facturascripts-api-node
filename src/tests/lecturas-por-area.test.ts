@@ -97,7 +97,7 @@ const LECTURAS_POR_AREA: Record<string, string[]> = {
   'movements.routes.ts GET /stats/fiscal': M,
   'movements.routes.ts GET /stats/by-category': M,
   'movements.routes.ts GET /stats/by-month': M,
-  'movements.routes.ts GET /stats/ingresos-por-cliente': M,
+  'movements.routes.ts GET /stats/ingresos-por-cliente': [...M, 'ventas:read'],
   'movements.routes.ts GET /stats/gastos-por-proveedor': M,
   'movements.routes.ts GET /stats/ultimas-facturas': M,
   'reports.routes.ts GET /income': V,

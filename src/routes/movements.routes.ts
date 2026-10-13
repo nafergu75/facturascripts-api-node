@@ -31,7 +31,8 @@ router.get('/stats/by-category', authorize('contabilidad:read', 'tesoreria:read'
 router.get('/stats/by-month', authorize('contabilidad:read', 'tesoreria:read'), movementsController.getByMonth);
 
 // GET /companies/:companyId/movements/stats/ingresos-por-cliente
-router.get('/stats/ingresos-por-cliente', authorize('contabilidad:read', 'tesoreria:read'), movementsController.getIngresosPorCliente);
+// Tambien con solo Ventas: son las mismas ventas que ya ve en su listado.
+router.get('/stats/ingresos-por-cliente', authorize('contabilidad:read', 'tesoreria:read', 'ventas:read'), movementsController.getIngresosPorCliente);
 
 // GET /companies/:companyId/movements/stats/gastos-por-proveedor
 router.get('/stats/gastos-por-proveedor', authorize('contabilidad:read', 'tesoreria:read'), movementsController.getGastosPorProveedor);

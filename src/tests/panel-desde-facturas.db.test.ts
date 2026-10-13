@@ -469,9 +469,9 @@ describe('permisos', () => {
     expect(datos(await get('/stats/summary?anio=2026', ['tesoreria:read', 'nominas:read']))).toMatchObject({ gastoPersonal: 6650, nominasIncluidas: true });
   });
 
-  it('sin Contabilidad ni Tesorería, 403 (como hasta ahora)', async () => {
+  it('sin Contabilidad ni Tesorería, 403 (como hasta ahora); con solo Ventas, solo las ventas por cliente', async () => {
     for (const ruta of ['/stats/summary', '/stats/by-month', '/stats/by-category', '/stats/ingresos-por-cliente', '/stats/gastos-por-proveedor', '/stats/ultimas-facturas']) {
-      expect((await get(ruta, ['ventas:read'])).status).toBe(403);
+      expect((await get(ruta, ['ventas:read'])).status).toBe(ruta === '/stats/ingresos-por-cliente' ? 200 : 403);
       expect((await get(ruta, ['nominas:read'])).status).toBe(403);
     }
   });
