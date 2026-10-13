@@ -1,3 +1,4 @@
+import type { Prisma } from '@prisma/client';
 import { prisma } from '../config/database';
 import { badRequest, notFound } from '../utils/http-errors';
 import { aCentimos, importeTexto } from '../utils/money';
@@ -6,7 +7,9 @@ import { incomeInvoicesService, type CrearLineaIngresoDTO } from './income-invoi
 import { invoiceExtractorService, type InvoiceExtraction } from './invoice-extractor.service';
 import { archivarVentaSinRomper } from './archivoFacturas.service';
 import { accountingHooksService } from './accounting-hooks.service';
-import { comprobarRevisionVenta, MENSAJE_FALTA_RECTIFICATIVA, vincularLectura } from './lectura/confirmar';
+import { comprobarCorreccionVenta, comprobarRevisionVenta, MENSAJE_FALTA_RECTIFICATIVA, vincularLectura } from './lectura/confirmar';
+import { aInvoiceExtraction } from './lectura/adaptadores';
+import { cambiosCorregidos, cuotasFijasPorTipo, textoCorregidos, type CorreccionesVenta } from './lectura/correcciones-venta';
 import { MENSAJE_FALTA_NIF_CLIENTE } from './lectura/validaciones';
 import { cuentaPorTipoIva, esMotivoVenta, MOTIVO_INFO } from '../domain/rectificativa-venta.model';
 import { registrarAuditoria } from './auditoria.service';
@@ -194,28 +197,59 @@ export function lineasDesdeExtraccion(e: InvoiceExtraction, concepto: string | n
 /**
  * Comprueba ANTES de crear la factura que las lineas reproducen al centimo el
  * total leido. Si no, la factura quedaria registrada con otros importes.
+ *
+ * `cuotasFijas`: la cuota de IVA ya fijada de cada linea (las de una venta
+ * corregida a mano, repartidas por tipo), como la calculara el alta.
+ * `campo`: el del 400 (correcciones.total si el total lo escribio la persona).
  */
-export function comprobarTotales(lineas: CrearLineaIngresoDTO[], e: InvoiceExtraction, signo: 1 | -1 = 1): void {
+export function comprobarTotales(
+  lineas: CrearLineaIngresoDTO[],
+  e: InvoiceExtraction,
+  signo: 1 | -1 = 1,
+  cuotasFijas?: Array<number | undefined>,
+  campo: string | null = null,
+): void {
   // Con signo (una rectificativa en negativo): redondeo del valor absoluto, como
   // la rectificativa; en positivo, exactamente el de siempre.
   const r = (n: number) => (n < 0 ? -centimos(-n) : centimos(n));
   let base = 0;
   let iva = 0;
   let retencion = 0;
-  for (const l of lineas) {
+  lineas.forEach((l, i) => {
     const b = r(l.cantidad * l.precioUnitario);
     base += b;
-    iva += r((b * (l.tipoIva ?? 0)) / 100);
+    const fija = cuotasFijas?.[i];
+    iva += fija !== undefined && (l.tipoIva ?? 0) !== 0 ? r(fija) : r((b * (l.tipoIva ?? 0)) / 100);
     retencion += r((b * (l.tipoRetencion ?? 0)) / 100);
-  }
+  });
   const total = base + iva - retencion;
   const leido = signo * e.amounts.total_net;
   if (aCentimos(total) !== aCentimos(leido)) {
     throw badRequest(
-      `Los importes leidos no cuadran: las bases y tipos dan ${r(total).toFixed(2)} EUR y el total de la factura es ` +
-        `${leido.toFixed(2)} EUR. Revisa la factura y registrala a mano.`,
+      campo
+        ? `Los importes no cuadran: las líneas dan ${importeTexto(r(total))} y el total que has escrito es ${importeTexto(leido)}. Revisa las bases, el IVA, la retención y el total.`
+        : `Los importes leidos no cuadran: las bases y tipos dan ${r(total).toFixed(2)} EUR y el total de la factura es ` +
+            `${leido.toFixed(2)} EUR. Revisa la factura y registrala a mano.`,
+      { codigo: 'NO_CUADRA', campo },
     );
   }
+}
+
+/**
+ * Lineas de una venta con las lineas corregidas a mano: cada una con su base
+ * y su IVA, y la retencion de la factura (la corregida o la leida). Sin
+ * descripcion, el concepto de la factura (o uno generico).
+ */
+export function lineasDeCorreccion(c: CorreccionesVenta, e: InvoiceExtraction, concepto: string | null): CrearLineaIngresoDTO[] {
+  const tipoRetencion = c.tipoRetencion ?? e.amounts.withholdings[0]?.rate ?? 0;
+  return (c.lineas ?? []).map((l) => ({
+    descripcion: l.descripcion || concepto || 'Factura digitalizada',
+    cantidad: 1,
+    precioUnitario: l.base,
+    descuentoPorcentaje: 0,
+    tipoIva: l.tipoIva,
+    tipoRetencion,
+  }));
 }
 
 /** Algun importe leido en negativo (base, total o total a pagar): un abono, aunque no diga «rectificativa». */
@@ -416,6 +450,13 @@ export const ingresosExtractorService = {
    * cliente manda (otro clienteId: 400 ORIGINAL_DE_OTRO_CLIENTE). Con importes
    * en positivo se puede marcar que no lo es (noEsRectificativa, queda en
    * AuditLog); con importes en negativo, no.
+   *
+   * Datos corregidos a mano (`correcciones`, solo lecturas de /lecturas): la
+   * venta sale de lo leido mas lo corregido, vuelto a validar
+   * (comprobarCorreccionVenta). Sigue siendo una venta leida: su numero, origen
+   * lector, sin VERI*FACTU y el asiento en borrador. Una lectura rellenada a
+   * mano solo se registra con ellas. Queda en AuditLog (LECTOR_VENTA_CORREGIDA)
+   * lo leido y lo puesto.
    */
   async confirmar(
     companyId: string,
@@ -429,8 +470,12 @@ export const ingresosExtractorService = {
       noEsRectificativa?: boolean;
       /** Tras el 409 DEVENGO_FUERA_APP (una R4 que sube el IVA de un periodo de la gestoria o de un 303 presentado). */
       confirmaDevengoFuera?: boolean;
+      /** Datos corregidos a mano (lectura/correcciones-venta.ts). */
+      correcciones?: unknown;
     } = {},
-  ): Promise<{ facturaId: string; numeroCompleto: string; total: number; esRectificativa: boolean; avisos?: string[] } & ContabilidadVentaLeida> {
+  ): Promise<
+    { facturaId: string; numeroCompleto: string; total: number; esRectificativa: boolean; avisos?: string[]; corregida: boolean; aMano: boolean } & ContabilidadVentaLeida
+  > {
     const doc = await prisma.incomeReaderDocument.findFirst({
       where: { id: documentId, companyId, sourceType: 'EXTRACTOR_IA' },
     });
@@ -448,7 +493,13 @@ export const ingresosExtractorService = {
     if (conBloque && noEsRectificativa) {
       throw badRequest('Indica qué factura rectifica o marca que no es una rectificativa, pero no las dos cosas.', { codigo: 'RECTIFICATIVA_NO_VALIDA', campo: 'noEsRectificativa' });
     }
-    if (noEsRectificativa && importesLeidosNegativos(e)) {
+    // Con las lineas corregidas, la cuenta va dentro de cada una: no a la vez que `lineas`.
+    const pideCorreccion = opciones.correcciones !== undefined && opciones.correcciones !== null;
+    const lineasCorregidas = pideCorreccion && typeof opciones.correcciones === 'object' && (opciones.correcciones as { lineas?: unknown }).lineas !== undefined;
+    if (lineasCorregidas && opciones.lineas !== undefined && opciones.lineas !== null) {
+      throw badRequest('Con las líneas corregidas, la cuenta va dentro de cada línea: no mandes también las cuentas aparte.', { codigo: 'CORRECCION_NO_VALIDA', campo: 'lineas' });
+    }
+    if (!pideCorreccion && noEsRectificativa && importesLeidosNegativos(e)) {
       throw badRequest('Los importes son negativos: es un abono. Indica qué factura rectifica.', { codigo: 'NO_ES_RECTIFICATIVA_CON_NEGATIVOS', campo: 'noEsRectificativa' });
     }
     // Leido con /lecturas: si algo estaba marcado, hace falta "He revisado". Con un
@@ -459,23 +510,43 @@ export const ingresosExtractorService = {
       ? (r0!.originales as unknown[]).map((o) => (o && typeof o === 'object' ? (o as { id?: unknown }).id : null)).filter((x): x is string => typeof x === 'string' && !!x)
       : [];
     const conOriginalApp = idsOriginales.length > 0 && (await prisma.incomeInvoice.count({ where: { companyId, id: { in: idsOriginales } } })) > 0;
-    const { ignoradas: ignorados, deLectura } = await comprobarRevisionVenta(
-      companyId,
-      documentId,
-      opciones.revisado === true,
-      elegido || conOriginalApp ? ['NIF_RECEPTOR'] : [],
-      { bloque: conBloque, noEsRectificativa },
-    );
+    const ignorarNif = elegido || conOriginalApp ? ['NIF_RECEPTOR'] : [];
+    const rectRevision = { bloque: conBloque, noEsRectificativa };
+
+    // Datos corregidos a mano: la lectura corregida, ya validada, pasa a ser la extraccion.
+    const corr = pideCorreccion
+      ? await comprobarCorreccionVenta(companyId, documentId, opciones.correcciones, {
+          revisado: opciones.revisado === true,
+          ignorar: ignorarNif,
+          rect: rectRevision,
+          negativosLeidos: importesLeidosNegativos(e),
+        })
+      : null;
+    const c = corr?.correcciones ?? null;
+    const ec = corr ? aInvoiceExtraction(corr.lectura, corr.validaciones, { confianza: corr.confianza, nombreArchivo: doc.originalFileName, mime: doc.mimeType }) : e;
+    if (c?.numero !== undefined) {
+      try {
+        separarNumero(null, c.numero, ec.invoice.issue_date);
+      } catch {
+        throw badRequest(`No se entiende el número «${c.numero}»: tiene que acabar en cifras, como F2026/0012.`, { codigo: 'NUMERO_NO_VALIDO', campo: 'correcciones.numero' });
+      }
+    }
+    if (pideCorreccion && noEsRectificativa && importesLeidosNegativos(ec)) {
+      throw badRequest('Los importes son negativos: es un abono. Indica qué factura rectifica.', { codigo: 'NO_ES_RECTIFICATIVA_CON_NEGATIVOS', campo: 'noEsRectificativa' });
+    }
+    const { ignoradas: ignorados, deLectura } = corr
+      ? { ignoradas: corr.ignoradas, deLectura: true }
+      : await comprobarRevisionVenta(companyId, documentId, opciones.revisado === true, ignorarNif, rectRevision);
     // Documento del lector de siempre con importes en negativo: tambien hace falta decir que rectifica.
-    if (!conBloque && !noEsRectificativa && importesLeidosNegativos(e)) throw badRequest(MENSAJE_FALTA_RECTIFICATIVA, { codigo: 'FALTA_RECTIFICATIVA', campo: 'rectificativa' });
+    if (!conBloque && !noEsRectificativa && importesLeidosNegativos(ec)) throw badRequest(MENSAJE_FALTA_RECTIFICATIVA, { codigo: 'FALTA_RECTIFICATIVA', campo: 'rectificativa' });
 
     // Leida con /lecturas: que falte el NIF del cliente ya lo han dicho sus validaciones (un
     // cliente de fuera de la UE puede no tenerlo); sin cliente, el 400 TERCERO_NO_DADO_DE_ALTA de abajo.
-    const resumen = aIngresoExtraido(documentId, e, undefined, { nifYaValidado: deLectura });
-    // La cuenta de cada linea, si se cambio en la pantalla (no cambia importes).
-    const cuentas = cuentasElegidas(opciones.lineas, e.amounts.bases.length);
-    const leidas = lineasDesdeExtraccion(e, resumen.concepto);
-    const rect = conBloque ? await rectificativaDelLector(companyId, documentId, opciones.rectificativa, e, leidas, cuentas) : null;
+    const resumen = aIngresoExtraido(documentId, ec, undefined, { nifYaValidado: deLectura });
+    // La cuenta de cada linea: la de cada linea corregida o, si no, la elegida con «Cambiar cuenta» (no cambia importes).
+    const cuentas = c?.lineas ? c.lineas.map((l) => l.cuenta ?? undefined) : cuentasElegidas(opciones.lineas, ec.amounts.bases.length);
+    const leidas = c?.lineas ? lineasDeCorreccion(c, ec, resumen.concepto) : lineasDesdeExtraccion(ec, resumen.concepto);
+    const rect = conBloque ? await rectificativaDelLector(companyId, documentId, opciones.rectificativa, ec, leidas, cuentas) : null;
     if (rect?.clienteOriginal && elegido && elegido.id !== rect.clienteOriginal) {
       throw badRequest('La factura que rectifica es de otro cliente: la rectificativa va a su nombre.', { codigo: 'ORIGINAL_DE_OTRO_CLIENTE', campo: 'clienteId' });
     }
@@ -485,14 +556,24 @@ export const ingresosExtractorService = {
     if (errores.length > 0) throw badRequest(`No se puede registrar: ${errores.join(' ')}`);
 
     const existente = rect?.clienteOriginal ? { id: rect.clienteOriginal } : (elegido ?? (await clientePorNif(companyId, resumen.nifCliente)));
-    if (!existente) throw errorTerceroNoDadoDeAlta('cliente', { nombre: e.customer.name, nif: resumen.nifCliente });
+    if (!existente) throw errorTerceroNoDadoDeAlta('cliente', { nombre: ec.customer.name, nif: resumen.nifCliente });
 
-    const { serie, numero } = separarNumero(e.invoice.series, e.invoice.number, e.invoice.issue_date);
+    const { serie, numero } = separarNumero(ec.invoice.series, ec.invoice.number, ec.invoice.issue_date);
     const lineas = rect ? rect.lineas : leidas.map((l, i) => (cuentas[i] ? { ...l, cuenta: cuentas[i] } : l));
-    // Lo leido (con su signo) tiene que cuadrar al centimo con el total de la factura.
-    comprobarTotales(rect ? rect.lineas.slice(0, leidas.length) : lineas, e, rect?.signo ?? 1);
+    // Lo leido (o corregido), con su signo, tiene que cuadrar al centimo con el total de la factura.
+    // Con las lineas corregidas, la cuota de cada tipo sale de la suma de sus bases (cuotasFijasPorTipo).
+    const propias = rect ? rect.lineas.slice(0, leidas.length) : lineas;
+    const cuotasCorregidas = c?.lineas ? cuotasFijasPorTipo(propias.map((l) => ({ base: l.cantidad * l.precioUnitario, tipoIva: l.tipoIva ?? 21 }))) : null;
+    comprobarTotales(propias, ec, rect?.signo ?? 1, cuotasCorregidas ?? undefined, corr ? 'correcciones.total' : null);
+    const cuotasFijas = cuotasCorregidas ? [...cuotasCorregidas, ...(rect?.cuotasFijas.slice(leidas.length) ?? [])] : rect?.cuotasFijas;
 
     const customer = { id: existente.id };
+    const concepto = c?.concepto ? ` Concepto: ${c.concepto.replace(/[.\s]+$/, '')}.` : '';
+    const observaciones = !corr
+      ? `Digitalizada desde ${doc.originalFileName}`
+      : corr.manual
+        ? `Registrada a mano desde ${doc.originalFileName}.${concepto}`
+        : `Digitalizada desde ${doc.originalFileName}. Corregida a mano: ${textoCorregidos(corr.correcciones)}.${concepto}`;
 
     // Origen lector: la fiscalidad avisa en vez de rechazar (y en una empresa no
     // espanola quita el IVA que el OCR pone por defecto).
@@ -503,20 +584,28 @@ export const ingresosExtractorService = {
           customer,
           serie,
           numero,
-          fechaEmision: e.invoice.issue_date ?? undefined,
-          fechaVencimiento: e.invoice.due_date ?? undefined,
+          fechaEmision: ec.invoice.issue_date ?? undefined,
+          fechaVencimiento: ec.invoice.due_date ?? undefined,
           lineas,
-          observaciones: `Digitalizada desde ${doc.originalFileName}`,
+          observaciones,
           ...(rect ? { rectificativa: rect.bloque } : {}),
           ...(opciones.confirmaDevengoFuera === true ? { confirmaDevengoFuera: true } : {}),
         },
         // El numero se guarda tal como se leyo (con sus ceros y su separador), el que ve la pantalla.
-        { origen: 'lector', numeroLeido: resumen.numeroFactura, ...(rect?.cuotasFijas.some((c) => c !== undefined) ? { cuotasFijas: rect.cuotasFijas } : {}) },
+        { origen: 'lector', numeroLeido: resumen.numeroFactura, ...(cuotasFijas?.some((x) => x !== undefined) ? { cuotasFijas } : {}) },
       )
       // Si la base de datos falla, la factura no queda registrada: se dice asi, en castellano.
       .catch((err: unknown) => {
         throw errorFalloBD(err, QUE_HACER_REGISTRAR, 'registrar la factura de venta leída') ?? err;
       });
+
+    // Con datos corregidos, el documento del lector pasa a llevarlos: con los de la lectura
+    // (y sus errores) no se archivaria, y el archivo se nombra con el numero y la fecha buenos.
+    if (corr) {
+      const cliente = ec.customer.name ? null : await prisma.customer.findFirst({ where: { id: existente.id, companyId }, select: { nombreFiscal: true, nifCif: true } });
+      const corregida: InvoiceExtraction = cliente ? { ...ec, customer: { ...ec.customer, name: cliente.nombreFiscal, tax_id: ec.customer.tax_id ?? cliente.nifCif } } : ec;
+      await prisma.incomeReaderDocument.update({ where: { id: documentId }, data: { parsedData: corregida as unknown as Prisma.InputJsonValue } });
+    }
 
     // Archivar el PDF en su carpeta definitiva. No es critico: si falla, la
     // factura ya esta creada y el documento queda enlazado igualmente.
@@ -538,6 +627,16 @@ export const ingresosExtractorService = {
 
     // Despues de enlazar el documento: asi el asiento sale en borrador, como el de las compras leidas.
     const contable = await contabilizarVentaLeida(companyId, factura.id);
+    if (corr) {
+      await registrarAuditoria({
+        userId: opciones.userId ?? 'unknown',
+        companyId,
+        action: 'LECTOR_VENTA_CORREGIDA',
+        resourceType: 'INCOME_INVOICE',
+        resourceId: factura.id,
+        meta: { documentId, lecturaId: corr.lecturaId, manual: corr.manual, numeroCompleto: factura.numeroCompleto, cambios: cambiosCorregidos(corr.leida, corr.correcciones) },
+      });
+    }
     if (noEsRectificativa) {
       await registrarAuditoria({
         userId: opciones.userId ?? 'unknown',
@@ -567,6 +666,8 @@ export const ingresosExtractorService = {
       total: factura.totalFactura,
       esRectificativa: factura.esRectificativa,
       ...(avisos.length ? { avisos } : {}),
+      corregida: !!corr,
+      aMano: !!corr?.manual,
       ...contable,
     };
   },
