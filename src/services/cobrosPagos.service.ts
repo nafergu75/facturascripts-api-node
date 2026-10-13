@@ -168,6 +168,8 @@ const TXT_DEVOLUCION = { cobro: 'devolución', Cobro: 'Devolución recibida', pr
 const TXT_DEVOLUCION_CLIENTE = { cobro: 'devolución', Cobro: 'Devolución al cliente', prefijo: 'DEVOL', cobrado: 'devuelta' } as const;
 /** Textos de un abono (total < 0) segun el tipo. */
 const textosAbono = (tipo: TipoDocumento) => (tipo === 'GASTO' ? TXT_DEVOLUCION : TXT_DEVOLUCION_CLIENTE);
+/** «el cobro», «el pago» o «la devolución», para meterlo en una frase. */
+const conArticulo = (t: { cobro: string }) => (t.cobro === 'devolución' ? `la ${t.cobro}` : `el ${t.cobro}`);
 
 interface FacturaBase {
   id: string;
@@ -459,11 +461,14 @@ export { comprobarFechaAbierta };
  * otra cosa (por ejemplo «0001») y el asiento iria a una cuenta que no es de
  * bancos. Si es una 572 que aun no esta en el plan, se da de alta al apuntar
  * (`altaEnPlan`, con el nombre del banco).
+ *
+ * `t`: los textos de lo que se apunta (en un abono, la devolucion), para los avisos.
  */
 async function resolverTesoreria(
   companyId: string,
   datos: DatosCobro,
   tipo: TipoDocumento,
+  t: { cobro: string } = TXT[tipo],
 ): Promise<{ cuenta: string; bankAccountId: string | null; nombre: string; moneda: string | null; altaEnPlan: string | null }> {
   if (datos.caja) return { cuenta: CUENTA_CAJA, bankAccountId: null, nombre: 'Caja', moneda: null, altaEnPlan: null };
   let c;
@@ -475,11 +480,11 @@ async function resolverTesoreria(
     c = await prisma.bankAccount.findFirst({ where: { companyId, activa: true }, orderBy: { createdAt: 'asc' } });
     if (!c) {
       throw badRequest(
-        `No hay ninguna cuenta bancaria activa para apuntar el ${TXT[tipo].cobro}. Créala en Tesorería > Cuentas bancarias (con su subcuenta 572), o indica que es en efectivo (caja).`,
+        `No hay ninguna cuenta bancaria activa para apuntar ${conArticulo(t)}. Créala en Tesorería > Cuentas bancarias (con su subcuenta 572), o indica que es en efectivo (caja).`,
       );
     }
   }
-  exigirSubcuentaDeBanco(c, `registrar el ${TXT[tipo].cobro}`);
+  exigirSubcuentaDeBanco(c, `registrar ${conArticulo(t)}`);
   return { cuenta: c.subcuentaCodigo, bankAccountId: c.id, nombre: c.bancoNombre || c.iban, moneda: c.moneda, altaEnPlan: nombreSubcuentaBanco(c.bancoNombre, c.iban) };
 }
 
@@ -737,7 +742,7 @@ export async function registrarCobroFactura(
   const solicitado = hay(datos.importeDoc) ? Number(datos.importeDoc) : hay(datos.importe) ? Number(datos.importe) : undefined;
 
   await comprobarFechaAbierta(companyId, fecha);
-  const tesoreria = await resolverTesoreria(companyId, datos, tipo);
+  const tesoreria = await resolverTesoreria(companyId, datos, tipo, t);
   const nota = datos.nota?.trim() ? datos.nota.trim().slice(0, 1000) : null;
   const numero = f.numeroCompleto ?? f.id;
 
