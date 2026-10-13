@@ -4,8 +4,10 @@
  * Mismo criterio que el 303: ventas FINAL y ni ventas ni gastos en borrador.
  *
  * Es la fuente única del resumen: lo usan GET /stats/fiscal
- * (movements.controller) y Carmen (INT-09). Solo lee.
+ * (movements.controller), Carmen (INT-09) y el panel (panel.service, con los
+ * mismos filtros: whereVentasResumen y whereGastosResumen). Solo lee.
  */
+import type { Prisma } from '@prisma/client';
 import { prisma } from '../config/database';
 import { GASTO_VIGENTE } from '../domain/factura-gasto.model';
 
@@ -36,13 +38,47 @@ export interface FiltroTercero {
   supplierId?: string;
 }
 
+/** Fechas AAAA-MM-DD incluidas. Sin ellas, de cualquier fecha. */
+export interface RangoFechas {
+  desde: string;
+  hasta: string;
+}
+
+/**
+ * Ventas que cuentan en el resumen: emitidas (FINAL: ni borradores ni
+ * proformas) y no en DRAFT, de la app o registradas con el lector, por su
+ * fecha de factura. Las rectificativas van con su signo.
+ */
+export function whereVentasResumen(companyId: string, rango?: RangoFechas, customerId?: string): Prisma.IncomeInvoiceWhereInput {
+  return {
+    companyId,
+    estadoDocumento: 'FINAL',
+    estado: { not: 'DRAFT' },
+    ...(rango ? { fechaEmision: { gte: rango.desde, lte: rango.hasta } } : {}),
+    ...(customerId ? { customerId } : {}),
+  };
+}
+
+/**
+ * Gastos que cuentan en el resumen: facturas de gasto vigentes (sin borradores
+ * del lector ni anuladas), por su fecha de factura. Los abonos van en negativo.
+ */
+export function whereGastosResumen(companyId: string, rango?: RangoFechas, supplierId?: string): Prisma.ExpenseInvoiceWhereInput {
+  return {
+    companyId,
+    ...GASTO_VIGENTE,
+    ...(rango ? { fechaEmision: { gte: rango.desde, lte: rango.hasta } } : {}),
+    ...(supplierId ? { supplierId } : {}),
+  };
+}
+
 /**
  * Fechas AAAA-MM-DD incluidas (las de factura son texto, se comparan como tal).
  * Con `filtro`, las ventas son solo las del cliente y los gastos solo los del
  * proveedor (si se filtra por uno solo, el otro lado sale a cero).
  */
 export async function resumenFiscalPeriodo(companyId: string, desde: string, hasta: string, filtro?: FiltroTercero): Promise<ResumenFiscalPeriodo> {
-  const fechas = { gte: desde, lte: hasta };
+  const rango = { desde, hasta };
   const suma = { baseTotal: true, ivaTotal: true, retencionTotal: true, totalFactura: true } as const;
   // Con un filtro por cliente no hay gastos que mirar (ni ventas con uno por proveedor).
   const sinVentas = !!filtro && !filtro.customerId;
@@ -52,14 +88,14 @@ export async function resumenFiscalPeriodo(companyId: string, desde: string, has
     sinVentas
       ? Promise.resolve(vacio)
       : prisma.incomeInvoice.aggregate({
-          where: { companyId, estadoDocumento: 'FINAL', estado: { not: 'DRAFT' }, fechaEmision: fechas, ...(filtro?.customerId ? { customerId: filtro.customerId } : {}) },
+          where: whereVentasResumen(companyId, rango, filtro?.customerId),
           _sum: suma,
           _count: true,
         }),
     sinGastos
       ? Promise.resolve(vacio)
       : prisma.expenseInvoice.aggregate({
-          where: { companyId, ...GASTO_VIGENTE, fechaEmision: fechas, ...(filtro?.supplierId ? { supplierId: filtro.supplierId } : {}) },
+          where: whereGastosResumen(companyId, rango, filtro?.supplierId),
           _sum: suma,
           _count: true,
         }),
