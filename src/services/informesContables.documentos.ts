@@ -3,25 +3,40 @@
  *
  * Cada informe se describe una sola vez como TablaInforme (columnas y filas con
  * su estilo) y de ahi salen la vista en pantalla, el PDF y el Excel: las cifras
- * son las mismas en los tres.
+ * son las mismas en los tres, y cada una va en la columna que le corresponde.
  *
  * El PDF sigue el diseno de la factura (facturaPdf.service): tinta slate,
  * filetes finos, cifras en Geist Mono alineadas a la derecha y un unico acento
- * verde (#047857) bajo la cabecera. En Excel los importes son numeros (con
- * formato #,##0.00), no texto, para poder sumar y filtrar.
+ * verde (#047857) bajo la cabecera. Las columnas de importes, fechas y codigos
+ * miden lo que necesita su contenido (un importe cabe siempre, hasta
+ * −9.999.999,99); el concepto se queda con el resto y es el que se recorta.
+ *
+ * En Excel los importes son numeros (formato #,##0.00, sumables) y las fechas
+ * son fechas; cada columna es tan ancha como su texto mas largo, la cabecera y
+ * los totales van destacados, la fila de titulos se queda fija y al imprimir
+ * sale ajustado a una pagina de ancho (utils/hojaExcel).
  */
 import { rgb, type PDFFont, type PDFPage, type RGB } from 'pdf-lib';
-import * as XLSX from 'xlsx';
 import { crearDocumentoPdfA, guardarPdfA } from '../utils/pdf-a';
 import { hoyEspana } from '../utils/fechas';
+import { escribirHojaExcel, type FilaHoja, type CeldaHoja } from '../utils/hojaExcel';
 
 export type TipoColumna = 'texto' | 'codigo' | 'fecha' | 'importe';
 
 export interface ColumnaInforme {
   titulo: string;
   tipo: TipoColumna;
-  /** Peso relativo del ancho (en el PDF se reparte el ancho util; en Excel, caracteres). */
+  /**
+   * Peso relativo del ancho. En el PDF reparte el sitio que dejan las columnas
+   * de importes, fechas y codigos (que miden lo que su contenido) entre las de texto.
+   */
   ancho: number;
+  /**
+   * Columna de saldo (acumulado, inicial o final): su 0,00 se escribe siempre,
+   * porque un saldo a cero es un dato. En Debe, Haber y el resto de importes, un
+   * cero de una fila normal se deja en blanco.
+   */
+  saldo?: boolean;
 }
 
 export type EstiloFila = 'normal' | 'seccion' | 'subtotal' | 'total' | 'nota';
@@ -50,8 +65,16 @@ export interface TablaInforme {
 
 // ---------- Formatos ----------
 
-export const num = (n: number): string =>
-  `${n < 0 ? '−' : ''}${Math.abs(n).toLocaleString('es-ES', { minimumFractionDigits: 2, maximumFractionDigits: 2, useGrouping: true })}`;
+/**
+ * 1234.5 -> "1.234,50"; los negativos con el signo menos (−). Se agrupan los
+ * miles a mano: Intl en es-ES no separa los de 4 cifras ("1234,50") en todas
+ * las versiones de Node.
+ */
+export const num = (n: number): string => {
+  const [ent, dec] = Math.abs(n).toFixed(2).split('.');
+  const negativo = n < 0 && `${ent}${dec}` !== '000';
+  return `${negativo ? '−' : ''}${ent.replace(/\B(?=(\d{3})+(?!\d))/g, '.')},${dec}`;
+};
 export const fechaES = (iso: string): string =>
   /^\d{4}-\d{2}-\d{2}/.test(iso) ? `${iso.slice(8, 10)}/${iso.slice(5, 7)}/${iso.slice(0, 4)}` : iso;
 
@@ -61,10 +84,29 @@ export function textoPeriodo(desde: string, hasta: string): string {
   return `Del ${fechaES(desde)} al ${fechaES(hasta)}`;
 }
 
-function textoCelda(v: string | number | null, tipo: TipoColumna): string {
+/** Un importe como numero, llegue como numero, como texto ("1234.50") o como Decimal de Prisma. */
+export function aImporte(v: unknown): number | null {
+  if (typeof v === 'number') return Number.isFinite(v) ? v : null;
+  if (typeof v === 'string' && /^\s*-?\d+(\.\d+)?\s*$/.test(v)) return Number(v);
+  if (v && typeof v === 'object' && typeof (v as { toNumber?: unknown }).toNumber === 'function') {
+    const n = (v as { toNumber(): number }).toNumber();
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
+}
+
+/** El cero que se deja en blanco: el de un importe que no es saldo, en una fila normal. */
+const ceroEnBlanco = (col: Pick<ColumnaInforme, 'tipo' | 'saldo'>, estilo: EstiloFila) => col.tipo === 'importe' && !col.saldo && estilo === 'normal';
+
+/** Lo que se lee en una celda (PDF y pantalla). */
+export function textoCelda(v: unknown, col: Pick<ColumnaInforme, 'tipo' | 'saldo'>, estilo: EstiloFila = 'normal'): string {
   if (v === null || v === undefined || v === '') return '';
-  if (tipo === 'importe' && typeof v === 'number') return num(v);
-  if (tipo === 'fecha' && typeof v === 'string') return fechaES(v);
+  if (col.tipo === 'importe') {
+    const n = aImporte(v);
+    if (n === null) return String(v);
+    return n === 0 && ceroEnBlanco(col, estilo) ? '' : num(n);
+  }
+  if (col.tipo === 'fecha' && typeof v === 'string') return fechaES(v);
   return String(v);
 }
 
@@ -92,7 +134,104 @@ const MARGEN = 40;
 const PIE_Y = 24;
 const SUELO = 48;
 const TAM = 8;
+const TAM_CAB = 6.5;
+const LINEA_CAB = 8;
 const ALTO_FILA = 13;
+/** Margen interior de cada celda, a cada lado. */
+const PAD = 5;
+/** La cifra mas ancha que tiene que caber siempre en una columna de importes. */
+const MUESTRA_IMPORTE = '−9.999.999,99';
+const MUESTRA_FECHA = '00/00/0000';
+/** Ancho maximo de una columna de codigos (asiento, NIF, subcuenta); lo que pase, se recorta. */
+const MAX_CODIGO = 130;
+/** Ancho minimo de una columna de texto (concepto, nombre). */
+const MIN_TEXTO = 70;
+
+interface Fuentes {
+  normal: PDFFont;
+  negrita: PDFFont;
+  mono: PDFFont;
+  monoNegrita: PDFFont;
+}
+
+/** Recorta un texto con «…» para que quepa en `max` puntos. */
+function recortar(s: string, fuente: PDFFont, tam: number, max: number): string {
+  if (fuente.widthOfTextAtSize(s, tam) <= max) return s;
+  let r = s;
+  while (r.length > 1 && fuente.widthOfTextAtSize(`${r}…`, tam) > max) r = r.slice(0, -1);
+  return `${r.trimEnd()}…`;
+}
+
+/** Titulo de columna en una o dos lineas que quepan en `max` (en mayusculas). */
+function partirTitulo(titulo: string, fuente: PDFFont, max: number): string[] {
+  const palabras = titulo.toUpperCase().split(/\s+/).filter(Boolean);
+  const lineas: string[] = [];
+  for (const p of palabras) {
+    const ultima = lineas[lineas.length - 1];
+    if (ultima !== undefined && fuente.widthOfTextAtSize(`${ultima} ${p}`, TAM_CAB) <= max) lineas[lineas.length - 1] = `${ultima} ${p}`;
+    else lineas.push(p);
+  }
+  if (lineas.length <= 2) return lineas.map((l) => recortar(l, fuente, TAM_CAB, max));
+  return [lineas[0], recortar(lineas.slice(1).join(' '), fuente, TAM_CAB, max)];
+}
+
+const palabraMasAncha = (titulo: string, fuente: PDFFont) =>
+  Math.max(0, ...titulo.toUpperCase().split(/\s+/).map((p) => fuente.widthOfTextAtSize(p, TAM_CAB)));
+
+/**
+ * Ancho de cada columna del PDF. Importes, fechas y codigos miden lo que su
+ * contenido (un importe, al menos −9.999.999,99) mas el margen; las de texto se
+ * reparten el resto segun su peso. Si no hay sitio, ceden primero los codigos y
+ * despues el texto, nunca los importes.
+ */
+export function anchosColumnasPdf(t: Pick<TablaInforme, 'columnas' | 'filas'>, f: Fuentes, anchoUtil: number): number[] {
+  const cols = t.columnas;
+  const contenido = cols.map((c, k) => {
+    let max = 0;
+    for (const fila of t.filas) {
+      const estilo = fila.estilo ?? 'normal';
+      if (estilo === 'seccion') continue; // ocupa toda la fila
+      const s = textoCelda(fila.celdas[k] ?? null, c, estilo);
+      if (!s) continue;
+      const fuente = c.tipo === 'texto' ? f.negrita : f.monoNegrita;
+      max = Math.max(max, fuente.widthOfTextAtSize(s, TAM));
+    }
+    return max;
+  });
+  const minTitulo = cols.map((c) => palabraMasAncha(c.titulo, f.negrita) + 2 * PAD);
+  const natural = cols.map((c, k) => {
+    if (c.tipo === 'importe') return Math.max(f.monoNegrita.widthOfTextAtSize(MUESTRA_IMPORTE, TAM), contenido[k]) + 2 * PAD;
+    if (c.tipo === 'fecha') return Math.max(f.monoNegrita.widthOfTextAtSize(MUESTRA_FECHA, TAM), contenido[k]) + 2 * PAD;
+    if (c.tipo === 'codigo') return Math.min(MAX_CODIGO, contenido[k] + 2 * PAD);
+    return 0;
+  });
+  const anchos = cols.map((c, k) => (c.tipo === 'texto' ? 0 : Math.max(natural[k], minTitulo[k])));
+  const textos = cols.map((c, k) => (c.tipo === 'texto' ? k : -1)).filter((k) => k >= 0);
+  const minTexto = (k: number) => Math.max(MIN_TEXTO, minTitulo[k]);
+  let resto = anchoUtil - anchos.reduce((s, w) => s + w, 0);
+
+  if (!textos.length) {
+    // Sin columnas de texto: lo que sobre, segun el peso.
+    const peso = cols.reduce((s, c) => s + c.ancho, 0) || 1;
+    if (resto > 0) cols.forEach((c, k) => (anchos[k] += (resto * c.ancho) / peso));
+    return anchos;
+  }
+  const necesitaTexto = textos.reduce((s, k) => s + minTexto(k), 0);
+  if (resto < necesitaTexto) {
+    // Ceden los codigos, como mucho hasta el ancho de su titulo.
+    const codigos = cols.map((c, k) => (c.tipo === 'codigo' ? k : -1)).filter((k) => k >= 0);
+    const cedible = codigos.reduce((s, k) => s + Math.max(0, anchos[k] - minTitulo[k]), 0);
+    const cede = Math.min(necesitaTexto - resto, cedible);
+    if (cede > 0) {
+      for (const k of codigos) anchos[k] -= (Math.max(0, anchos[k] - minTitulo[k]) * cede) / cedible;
+      resto += cede;
+    }
+  }
+  const pesoTexto = textos.reduce((s, k) => s + cols[k].ancho, 0) || 1;
+  const paraTexto = Math.max(resto, necesitaTexto);
+  for (const k of textos) anchos[k] = Math.max(minTexto(k), (paraTexto * cols[k].ancho) / pesoTexto);
+  return anchos;
+}
 
 export async function tablaAPdf(t: TablaInforme): Promise<Buffer> {
   const tituloDoc = `${t.titulo} · ${t.periodo}`;
@@ -101,18 +240,18 @@ export async function tablaAPdf(t: TablaInforme): Promise<Buffer> {
   const derecha = ancho - MARGEN;
   const anchoUtil = derecha - MARGEN;
 
-  // Columnas: el ancho util se reparte segun el peso de cada una.
-  const pesoTotal = t.columnas.reduce((s, c) => s + c.ancho, 0);
-  const cols: Array<ColumnaInforme & { x: number; w: number }> = [];
+  const anchos = anchosColumnasPdf(t, { normal, negrita, mono, monoNegrita }, anchoUtil);
+  const cols: Array<ColumnaInforme & { x: number; w: number; cab: string[] }> = [];
   {
     let x = MARGEN;
-    for (const c of t.columnas) {
-      const w = (anchoUtil * c.ancho) / pesoTotal;
-      cols.push({ ...c, x, w });
+    t.columnas.forEach((c, k) => {
+      const w = anchos[k];
+      cols.push({ ...c, x, w, cab: partirTitulo(c.titulo, negrita, w - 2 * PAD) });
       x += w;
-    }
+    });
   }
-  const PAD = 4;
+  const lineasCab = Math.max(1, ...cols.map((c) => c.cab.length));
+  const finTabla = Math.max(derecha, cols.length ? cols[cols.length - 1].x + cols[cols.length - 1].w : derecha);
 
   type Estilo = { tam?: number; fuente?: PDFFont; color?: RGB; alinear?: 'izq' | 'der' };
   const texto = (pg: PDFPage, s: string, x: number, y: number, o: Estilo = {}) => {
@@ -122,25 +261,25 @@ export async function tablaAPdf(t: TablaInforme): Promise<Buffer> {
     const xx = o.alinear === 'der' ? x - fuente.widthOfTextAtSize(s, tam) : x;
     pg.drawText(s, { x: xx, y, size: tam, font: fuente, color: o.color ?? TINTA });
   };
-  const recortar = (s: string, fuente: PDFFont, tam: number, max: number): string => {
-    if (fuente.widthOfTextAtSize(s, tam) <= max) return s;
-    let r = s;
-    while (r.length > 1 && fuente.widthOfTextAtSize(`${r}…`, tam) > max) r = r.slice(0, -1);
-    return `${r.trimEnd()}…`;
-  };
-  const filete = (pg: PDFPage, y: number, grueso = 0.5, color = LINEA, x1 = MARGEN, x2 = derecha) =>
+  const filete = (pg: PDFPage, y: number, grueso = 0.5, color = LINEA, x1 = MARGEN, x2 = finTabla) =>
     pg.drawLine({ start: { x: x1, y }, end: { x: x2, y }, thickness: grueso, color });
 
   const paginas: PDFPage[] = [];
   let p!: PDFPage;
   let y = 0;
 
+  // Titulos de columna (se repiten en cada pagina), pegados al filete: los de
+  // una linea a la altura de la ultima de los de dos. Los de importes, a la
+  // derecha, encima de sus cifras.
   const cabeceraColumnas = () => {
     for (const c of cols) {
       const der = c.tipo === 'importe';
-      texto(p, c.titulo.toUpperCase(), der ? c.x + c.w - PAD : c.x + PAD, y - 10, { tam: 6.5, fuente: negrita, color: GRIS, alinear: der ? 'der' : 'izq' });
+      c.cab.forEach((l, i) => {
+        const yl = y - 10 - (lineasCab - c.cab.length + i) * LINEA_CAB;
+        texto(p, l, der ? c.x + c.w - PAD : c.x + PAD, yl, { tam: TAM_CAB, fuente: negrita, color: GRIS, alinear: der ? 'der' : 'izq' });
+      });
     }
-    y -= 15;
+    y -= 15 + (lineasCab - 1) * LINEA_CAB;
     filete(p, y, 0.75, TINTA);
   };
 
@@ -152,15 +291,17 @@ export async function tablaAPdf(t: TablaInforme): Promise<Buffer> {
       texto(p, t.empresa.nombre || 'Empresa', MARGEN, y, { tam: 9, fuente: negrita });
       if (t.empresa.nif) texto(p, `NIF ${t.empresa.nif}`, derecha, y, { tam: 8.5, fuente: mono, color: GRIS, alinear: 'der' });
       y -= 26;
-      texto(p, t.titulo, MARGEN, y, { tam: 18, fuente: negrita });
+      texto(p, recortar(t.titulo, negrita, 18, anchoUtil), MARGEN, y, { tam: 18, fuente: negrita });
       y -= 18;
-      texto(p, t.periodo, MARGEN, y, { tam: 10, color: GRIS });
+      texto(p, recortar(t.periodo, normal, 10, anchoUtil), MARGEN, y, { tam: 10, color: GRIS });
       y -= 12;
-      filete(p, y, 1.25, ACENTO);
+      filete(p, y, 1.25, ACENTO, MARGEN, derecha);
       y -= 14;
     } else {
       texto(p, t.empresa.nombre || 'Empresa', MARGEN, y, { tam: 8.5, fuente: negrita });
-      texto(p, `${t.titulo} · ${t.periodo} (continuación)`, derecha, y, { tam: 8.5, color: GRIS, alinear: 'der' });
+      const cont = `${t.titulo} · ${t.periodo} (continuación)`;
+      const libre = anchoUtil - negrita.widthOfTextAtSize(t.empresa.nombre || 'Empresa', 8.5) - 20;
+      texto(p, recortar(cont, normal, 8.5, libre), derecha, y, { tam: 8.5, color: GRIS, alinear: 'der' });
       y -= 18;
     }
     cabeceraColumnas();
@@ -176,18 +317,18 @@ export async function tablaAPdf(t: TablaInforme): Promise<Buffer> {
     if (y - altoFila - (estilo === 'seccion' ? ALTO_FILA * 2 : 0) < SUELO) nuevaPagina(false);
 
     if (estilo === 'seccion') {
-      // Una seccion (p. ej. una cuenta del mayor) ocupa toda la fila.
+      // Una seccion (p. ej. una cuenta del mayor o un asiento del diario) ocupa toda la fila.
       y -= 6;
-      p.drawRectangle({ x: MARGEN, y: y - ALTO_FILA + 3, width: anchoUtil, height: ALTO_FILA, color: FONDO_SECCION });
-      const s = fila.celdas.map((c, k) => textoCelda(c, cols[k]?.tipo ?? 'texto')).filter(Boolean).join('  ·  ');
-      texto(p, recortar(s, negrita, TAM + 0.5, anchoUtil - 2 * PAD), MARGEN + PAD, y - 7, { tam: TAM + 0.5, fuente: negrita });
+      p.drawRectangle({ x: MARGEN, y: y - ALTO_FILA + 3, width: finTabla - MARGEN, height: ALTO_FILA, color: FONDO_SECCION });
+      const s = fila.celdas.map((c, k) => textoCelda(c, cols[k] ?? { tipo: 'texto' }, estilo)).filter(Boolean).join('  ·  ');
+      texto(p, recortar(s, negrita, TAM + 0.5, finTabla - MARGEN - 2 * PAD), MARGEN + PAD, y - 7, { tam: TAM + 0.5, fuente: negrita });
       y -= ALTO_FILA + 2;
       continue;
     }
 
     if (estilo === 'total') {
       y -= 3;
-      p.drawRectangle({ x: MARGEN, y: y - ALTO_FILA + 2, width: anchoUtil, height: ALTO_FILA + 2, color: ACENTO_SUAVE });
+      p.drawRectangle({ x: MARGEN, y: y - ALTO_FILA + 2, width: finTabla - MARGEN, height: ALTO_FILA + 2, color: ACENTO_SUAVE });
       filete(p, y + 2, 0.75, ACENTO);
     } else if (estilo === 'subtotal') {
       filete(p, y, 0.5, GRIS);
@@ -196,13 +337,11 @@ export async function tablaAPdf(t: TablaInforme): Promise<Buffer> {
     const fuerte = estilo === 'total' || estilo === 'subtotal';
     const yt = y - 9;
     cols.forEach((c, k) => {
-      const bruto = fila.celdas[k] ?? null;
-      // Los ceros de las filas normales se dejan en blanco: se leen mejor las cifras.
-      if (estilo === 'normal' && c.tipo === 'importe' && bruto === 0) return;
-      const v = textoCelda(bruto, c.tipo);
+      const v = textoCelda(fila.celdas[k] ?? null, c, estilo);
       if (!v) return;
       if (c.tipo === 'importe') {
-        texto(p, v, c.x + c.w - PAD, yt, { fuente: fuerte ? monoNegrita : mono, alinear: 'der', color: estilo === 'nota' ? GRIS : TINTA });
+        // Las cifras nunca se recortan: su columna mide lo que necesitan.
+        texto(p, v, c.x + c.w - PAD, yt, { fuente: fuerte ? monoNegrita : mono, alinear: 'der' });
       } else {
         const sangria = k === primeraTexto ? (fila.sangria ?? 0) * 10 : 0;
         const fuente = c.tipo === 'codigo' || c.tipo === 'fecha' ? (fuerte ? monoNegrita : mono) : fuerte ? negrita : normal;
@@ -226,8 +365,9 @@ export async function tablaAPdf(t: TablaInforme): Promise<Buffer> {
   const generado = `Generado el ${fechaES(hoyEspana())}`;
   const pie = [t.empresa.nombre, t.titulo, t.periodo].filter(Boolean).join(' · ');
   paginas.forEach((pg, i) => {
-    texto(pg, `${pie} · ${generado}`, MARGEN, PIE_Y, { tam: 7, color: GRIS });
-    texto(pg, `Página ${i + 1} de ${paginas.length}`, derecha, PIE_Y, { tam: 7, color: GRIS, alinear: 'der' });
+    const pagina = `Página ${i + 1} de ${paginas.length}`;
+    texto(pg, recortar(`${pie} · ${generado}`, normal, 7, anchoUtil - normal.widthOfTextAtSize(pagina, 7) - 20), MARGEN, PIE_Y, { tam: 7, color: GRIS });
+    texto(pg, pagina, derecha, PIE_Y, { tam: 7, color: GRIS, alinear: 'der' });
   });
 
   return guardarPdfA(doc, tituloDoc);
@@ -235,50 +375,91 @@ export async function tablaAPdf(t: TablaInforme): Promise<Buffer> {
 
 // ---------- Excel ----------
 
-const FORMATO_IMPORTE = '#,##0.00;-#,##0.00;""';
+/** Anchos minimo y maximo (en caracteres) de cada tipo de columna. */
+const EXCEL_MIN: Record<TipoColumna, number> = { fecha: 11, importe: 14, codigo: 8, texto: 12 };
+const EXCEL_MAX: Record<TipoColumna, number> = { fecha: 14, importe: 22, codigo: 40, texto: 60 };
+/** Lo que ocupa el boton del autofiltro junto al titulo de la columna. */
+const BOTON_FILTRO = 3;
+
+/** Nombre de la hoja: el titulo, cortado por una palabra si pasa de 31 caracteres. */
+function nombreDeHoja(titulo: string): string {
+  if (titulo.length <= 31) return titulo;
+  const corte = titulo.charAt(31) === ' ' ? 31 : titulo.slice(0, 31).lastIndexOf(' ');
+  return corte > 10 ? titulo.slice(0, corte) : titulo.slice(0, 31);
+}
+
+/** Celda de Excel de un valor de la tabla: importes como numero, fechas como fecha. */
+function celdaExcel(v: string | number | null | undefined, col: ColumnaInforme, estilo: EstiloFila): CeldaHoja {
+  if (v === null || v === undefined || v === '') return { v: null };
+  if (col.tipo === 'importe') {
+    const n = aImporte(v);
+    if (n === null) return { v: String(v) };
+    return { v: n, formato: ceroEnBlanco(col, estilo) ? 'importe' : 'importeConCero' };
+  }
+  if (col.tipo === 'fecha' && typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v)) return { v: new Date(`${v}T00:00:00Z`) };
+  return { v: String(v) };
+}
+
+/** Largo (en caracteres) con el que se ve una celda, para calcular el ancho de su columna. */
+function largoVisible(v: string | number | null | undefined, col: ColumnaInforme, estilo: EstiloFila, sangria: number): number {
+  if (v === null || v === undefined || v === '') return 0;
+  const s = col.tipo === 'importe' ? textoCelda(v, col, estilo) : col.tipo === 'fecha' ? fechaES(String(v)) : String(v);
+  const fuerte = estilo === 'total' || estilo === 'subtotal' || estilo === 'seccion';
+  // La negrita ocupa algo mas; la sangria, unos dos caracteres por nivel.
+  return Math.ceil(s.length * (fuerte ? 1.1 : 1)) + sangria * 2;
+}
 
 export function tablaAXlsx(t: TablaInforme): Buffer {
-  const cabecera: Array<Array<string | number | Date | null>> = [
-    [t.empresa.nombre + (t.empresa.nif ? ` (NIF ${t.empresa.nif})` : '')],
-    [t.titulo],
-    [t.periodo],
-    [],
-    t.columnas.map((c) => c.titulo),
-  ];
-  const filaCabecera = cabecera.length - 1;
-  const cuerpo = t.filas.map((f) =>
-    t.columnas.map((c, k) => {
-      const v = f.celdas[k] ?? null;
-      if (v === null || v === '') return null;
-      if (c.tipo === 'importe') return typeof v === 'number' ? v : Number(v);
-      if (c.tipo === 'fecha' && typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v)) {
-        return new Date(`${v}T00:00:00Z`);
-      }
-      // La sangria se ve tambien en Excel (espacios delante).
-      const s = String(v);
-      return k === 0 && f.sangria ? `${'   '.repeat(f.sangria)}${s}` : s;
-    }),
-  );
-  const notas = t.notas?.length ? [[], ...t.notas.map((n) => [n])] : [];
-  const ws = XLSX.utils.aoa_to_sheet([...cabecera, ...cuerpo, ...notas], { dateNF: 'dd/mm/yyyy', UTC: true } as XLSX.AOA2SheetOpts);
+  const cols = t.columnas;
+  const primeraTexto = cols.findIndex((c) => c.tipo === 'texto');
 
-  // Formato de los importes y de las fechas.
-  t.columnas.forEach((c, k) => {
-    if (c.tipo !== 'importe' && c.tipo !== 'fecha') return;
-    for (let r = filaCabecera + 1; r <= filaCabecera + cuerpo.length; r++) {
-      const celda = ws[XLSX.utils.encode_cell({ r, c: k })];
-      if (!celda) continue;
-      if (c.tipo === 'importe' && celda.t === 'n') celda.z = FORMATO_IMPORTE;
-      if (c.tipo === 'fecha' && (celda.t === 'n' || celda.t === 'd')) celda.z = 'dd/mm/yyyy';
+  // Ancho de cada columna: el texto mas largo que va a enseñar, con su minimo y su maximo.
+  const anchos = cols.map((c, k) => {
+    let largo = 0;
+    for (const f of t.filas) {
+      const estilo = f.estilo ?? 'normal';
+      largo = Math.max(largo, largoVisible(f.celdas[k], c, estilo, k === primeraTexto ? (f.sangria ?? 0) : 0));
     }
+    const necesario = Math.max(EXCEL_MIN[c.tipo], c.titulo.length + BOTON_FILTRO, largo + 2);
+    return { ancho: Math.min(EXCEL_MAX[c.tipo], necesario), ajustar: c.tipo === 'texto' && necesario > EXCEL_MAX[c.tipo] };
   });
-  ws['!cols'] = t.columnas.map((c) => ({ wch: Math.max(c.titulo.length + 2, Math.round(c.ancho * (c.tipo === 'texto' ? 4 : 1.6))) }));
-  ws['!autofilter'] = {
-    ref: XLSX.utils.encode_range({ s: { r: filaCabecera, c: 0 }, e: { r: filaCabecera + Math.max(cuerpo.length, 1), c: t.columnas.length - 1 } }),
-  };
+  const anchoTabla = anchos.reduce((s, a) => s + a.ancho, 0);
+  /** Lineas que ocupa un texto en una celda (o en la fila combinada) de ese ancho. */
+  const lineas = (texto: string, ancho: number, letra = 1.1) => Math.max(1, Math.ceil((texto.length * letra) / Math.max(1, ancho)));
 
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, t.titulo.slice(0, 31).replace(/[\\/?*[\]:]/g, ' '));
-  wb.Props = { Title: `${t.titulo} · ${t.periodo}`, Company: t.empresa.nombre };
-  return XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
+  const filas: FilaHoja[] = [];
+  const combinada = (v: string, estilo: FilaHoja['estilo'], letra: number): FilaHoja => ({ celdas: [{ v }], estilo, combinar: true, lineas: lineas(v, anchoTabla, letra) });
+  filas.push(combinada(t.empresa.nombre + (t.empresa.nif ? ` (NIF ${t.empresa.nif})` : ''), 'subtitulo', 1.1));
+  filas.push(combinada(t.titulo, 'titulo', 1.5));
+  filas.push(combinada(t.periodo, 'subtitulo', 1.1));
+  filas.push({ celdas: [] });
+  const filaCabecera = filas.length;
+  filas.push({ celdas: cols.map((c) => ({ v: c.titulo })), estilo: 'cabecera' });
+  // Una fila de la hoja por fila de la tabla y una celda por columna, en su
+  // sitio aunque este vacia: nada se corre de columna. El alto lo ajusta Excel.
+  for (const f of t.filas) {
+    const estilo = f.estilo ?? 'normal';
+    filas.push({ celdas: cols.map((c, k) => celdaExcel(f.celdas[k], c, estilo)), estilo, sangria: f.sangria, colSangria: primeraTexto });
+  }
+  const ultimaFilaDatos = filas.length - 1;
+  if (t.notas?.length) {
+    filas.push({ celdas: [] });
+    for (const n of t.notas) filas.push(combinada(n, 'pie', 0.95));
+  }
+
+  const generado = `Generado el ${fechaES(hoyEspana())}`;
+  return escribirHojaExcel({
+    nombre: nombreDeHoja(t.titulo),
+    columnas: cols.map((c, k) => ({
+      ancho: anchos[k].ancho,
+      ajustar: anchos[k].ajustar,
+      alinear: c.tipo === 'importe' ? ('derecha' as const) : c.tipo === 'fecha' ? ('izquierda' as const) : undefined,
+    })),
+    filas,
+    filaCabecera,
+    ultimaFilaDatos,
+    // Horizontal como el PDF, y tambien el diario; el balance y la PyG (3 columnas), en vertical.
+    imprimir: { apaisado: !!t.apaisado || cols.length >= 5, pie: [t.empresa.nombre, t.titulo, t.periodo, generado].filter(Boolean).join(' · ') },
+    propiedades: { titulo: `${t.titulo} · ${t.periodo}`, empresa: t.empresa.nombre },
+  });
 }
