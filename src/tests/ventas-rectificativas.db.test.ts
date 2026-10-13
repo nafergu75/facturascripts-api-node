@@ -305,6 +305,13 @@ describe('límites de la ley', () => {
     expect(r.avisosFiscales).toEqual(expect.arrayContaining([expect.objectContaining({ codigo: 'PLAZO_ART80' })]));
   });
 
+  it('«Otra causa» a más de cuatro años también da 400 PLAZO_RECTIFICACION', async () => {
+    const vieja = await emitir(100, { fechaEmision: '2021-03-12', serie: 'B' });
+    const e = await error(rect({ motivo: 'OTROS', originales: [{ id: vieja.id }] }, { lineas: [linea(-10)] }));
+    expect(e.details).toMatchObject({ codigo: 'PLAZO_RECTIFICACION' });
+    expect(e.message).toMatch(/salvo por una devolución/);
+  });
+
   it('una R4 que sube el IVA se declara en el periodo de la original: fecha de la operación y aviso', async () => {
     const a = await emitir(100, { fechaEmision: '2026-07-15', serie: 'B' });
     const r = await rect({ motivo: 'ERROR', originales: [{ id: a.id }] }, { lineas: [linea(10)] });
@@ -313,6 +320,38 @@ describe('límites de la ley', () => {
     expect(r.avisosFiscales).toEqual(expect.arrayContaining([expect.objectContaining({ codigo: 'IVA_PERIODO_ORIGINAL' })]));
     // Si baja el IVA, en su propio periodo.
     expect((await rect({ motivo: 'ERROR', originales: [{ id: a.id }] }, { lineas: [linea(-10)] })).fechaOperacion).toBeUndefined();
+  });
+});
+
+describe('camino antiguo (campos de antes y /credit-note)', () => {
+  it('R2 y R3 no se pueden hacer: 400 MOTIVO_NO_DISPONIBLE, sin crear nada', async () => {
+    const a = await emitir(100);
+    const porCampos = await error(
+      incomeInvoicesService.crearIngreso({ companyId: E, customer: { id: cliente }, facturaOriginalId: a.id, tipoFactura: 'R2', motivoRectificacion: 'Concurso', lineas: [linea(-100)] }),
+    );
+    expect(porCampos.statusCode).toBe(400);
+    expect(porCampos.details).toMatchObject({ codigo: 'MOTIVO_NO_DISPONIBLE', campo: 'tipoFactura' });
+    const porRuta = await error(incomeInvoicesService.crearRectificativa(E, a.id, { motivo: 'Impago', tipoFactura: 'R3' }));
+    expect(porRuta.details).toMatchObject({ codigo: 'MOTIVO_NO_DISPONIBLE' });
+    expect(await prisma.incomeInvoice.count({ where: { companyId: E, facturaOriginalId: a.id } })).toBe(0);
+    // R1 y R4 siguen como antes.
+    expect((await incomeInvoicesService.crearRectificativa(E, a.id, { motivo: 'Anulación' })).tipoFactura).toBe('R1');
+  });
+
+  it('las reglas de la ley también valen: art. 89.Tres, plazo y periodo de la original en la R4 que sube el IVA', async () => {
+    const particular = await emitir(100, {}, E, sinNif);
+    const sube = await error(incomeInvoicesService.crearRectificativa(E, particular.id, { motivo: 'Error de precio', tipoFactura: 'R4', lineas: [linea(10)] }));
+    expect(sube.details).toMatchObject({ codigo: 'SUBE_IVA_CONSUMIDOR_FINAL' });
+    // Serie propia: la B ya lleva fechas posteriores y la numeración va en orden de fechas.
+    await prisma.invoiceSeries.create({ data: { companyId: E, codigo: 'V', descripcion: 'Serie V', tipoDocumento: 'FACTURA', activa: true } });
+    const vieja = await emitir(100, { fechaEmision: '2021-03-15', serie: 'V' });
+    const plazo = await error(incomeInvoicesService.crearRectificativa(E, vieja.id, { motivo: 'Error', tipoFactura: 'R4', lineas: [linea(-10)] }));
+    expect(plazo.details).toMatchObject({ codigo: 'PLAZO_RECTIFICACION' });
+    const julio = await emitir(100, { fechaEmision: '2026-07-16', serie: 'V' });
+    const r4 = await incomeInvoicesService.crearRectificativa(E, julio.id, { motivo: 'Error de precio', tipoFactura: 'R4', lineas: [linea(10)] });
+    expect(r4.fechaOperacion).toBe('2026-07-16');
+    // Sin motivo propio: causaRectificacion no se rellena (un borrador antiguo sigue siendo del camino antiguo).
+    expect((await prisma.incomeInvoice.findUnique({ where: { id: r4.id }, select: { causaRectificacion: true } }))?.causaRectificacion).toBeNull();
   });
 });
 
