@@ -9,7 +9,7 @@ import { desgloseIvaPorTipo } from './accounting-engine.service';
 import { perfilDesdeConfig } from './perfilEmpresa.service';
 import { cuentaParaFactura, leerAjustesFacturacion } from './ajustesFacturacion.service';
 import { importesDoc, nombreMoneda, textoTipo } from '../domain/divisas';
-import { nombreNumeroFiscal } from '../domain/numero-fiscal';
+import { nombreNumeroFiscal, NUMERO_FISCAL_GENERICO } from '../domain/numero-fiscal';
 import {
   esPaisEspana,
   formatearFecha,
@@ -593,10 +593,15 @@ export function facturaConIva(
 /**
  * Etiqueta del numero fiscal del cliente en el PDF: la de su pais («NIF»,
  * «NIF-IVA (VAT)», «RNC», «EIN»...; en ingles, «VAT No.» o «Tax ID» si no hay
- * una propia). La de la empresa no pasa por aqui: es su NIF.
+ * una propia). Un cliente de otro pais de la UE sin NIF-IVA (un particular)
+ * lleva otro documento: «Número fiscal (Tax ID)». La de la empresa no pasa por
+ * aqui: es su NIF.
  */
 export function etiquetaNifCliente(cliente: DatosFacturaPdf['cliente'], idioma: Idioma): string {
-  return nombreNumeroFiscal(paisDelCliente({ pais: cliente.pais, nifCif: cliente.nifCif, cp: cliente.cp }), idioma);
+  const fiscal = { pais: cliente.pais, nifCif: cliente.nifCif, cp: cliente.cp };
+  const pais = paisDelCliente(fiscal);
+  if (pais !== 'ES' && esPaisUe(pais) && !tieneNifIvaUe(fiscal)) return idioma === 'en' ? 'Tax ID' : NUMERO_FISCAL_GENERICO;
+  return nombreNumeroFiscal(pais, idioma);
 }
 
 export function mencionDocumento(f: DatosFacturaPdf): { es: string; en: string | null } | null {

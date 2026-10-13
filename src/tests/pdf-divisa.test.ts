@@ -244,6 +244,9 @@ describe('el numero fiscal del cliente lleva el nombre de su pais (peticion del 
     // En ingles (empresas de fuera): VAT No. en la UE y Tax ID si el pais no tiene uno propio.
     expect(etiquetaNifCliente(cli({ nombreFiscal: 'A', nifCif: 'FR40303265045', pais: 'FR' }), 'en')).toBe('VAT No.');
     expect(etiquetaNifCliente(cli({ nombreFiscal: 'A', nifCif: '123', pais: 'JP' }), 'en')).toBe('Tax ID');
+    // Un particular de otro pais de la UE no tiene NIF-IVA: su documento no se llama asi.
+    expect(etiquetaNifCliente(cli({ nombreFiscal: 'A', nifCif: '1850375123456', pais: 'FR' }), 'es')).toBe('Número fiscal (Tax ID)');
+    expect(etiquetaNifCliente(cli({ nombreFiscal: 'A', nifCif: '1850375123456', pais: 'FR' }), 'en')).toBe('Tax ID');
   });
 
   it('y el PDF se dibuja con un cliente dominicano', async () => {
