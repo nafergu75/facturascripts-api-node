@@ -455,24 +455,23 @@ export function importesNegativos(l: LecturaNormalizada): boolean {
 export const mensajeRectificativaGasto = (n: string | null | undefined) =>
   `Es una rectificativa o un abono${n ? ` (rectifica a la ${n})` : ''}: se registrará como abono. Comprueba la factura que rectifica.`;
 
+/** V19 en el lector de ventas: una rectificativa o un abono se registra como rectificativa, con la factura que rectifica. */
+export const mensajeRectificativaVenta = (n: string | null | undefined) =>
+  `Es una rectificativa o un abono${n ? ` (rectifica a la ${n})` : ''}: se registrará como rectificativa. Comprueba la factura que rectifica.`;
+
 /**
- * V19 y V20. Una rectificativa o importes en negativo: en gastos, para
- * revisar (el formulario se abre como abono, con la original propuesta); en
- * ventas sigue siendo un error (las rectificativas de venta se hacen desde la
- * factura original).
+ * V19 y V20. Una rectificativa o importes en negativo: para revisar en los
+ * dos lectores. En gastos el formulario se abre como abono; en ventas, como
+ * rectificativa, con la factura que rectifica propuesta por el numero leido.
  */
 function v19v20TipoDocumento(l: LecturaNormalizada, ctx: Pick<ContextoValidacion, 'lector'>): ResultadoValidacion[] {
   const tipo = l.tipoDocumento.valor;
-  const gasto = ctx.lector === 'GASTO';
+  const mensaje = ctx.lector === 'GASTO' ? mensajeRectificativaGasto : mensajeRectificativaVenta;
   if (tipo === 'rectificativa') {
     const n = l.rectificativa?.numeroRectificada.valor;
-    if (gasto) return [v('RECTIFICATIVA', 'revisar', ['tipoDocumento'], mensajeRectificativaGasto(n))];
-    return [v('RECTIFICATIVA', 'error', ['tipoDocumento'], `Es una factura rectificativa${n ? ` (rectifica a la ${n})` : ''}. Todavía no se puede registrar con el lector.`)];
+    return [v('RECTIFICATIVA', 'revisar', ['tipoDocumento'], mensaje(n))];
   }
-  if (importesNegativos(l)) {
-    if (gasto) return [v('RECTIFICATIVA', 'revisar', ['tipoDocumento', 'totales.totalAPagar'], mensajeRectificativaGasto(null))];
-    return [v('RECTIFICATIVA', 'error', ['tipoDocumento', 'totales.totalAPagar'], MENSAJE_IMPORTES_NEGATIVOS)];
-  }
+  if (importesNegativos(l)) return [v('RECTIFICATIVA', 'revisar', ['tipoDocumento', 'totales.totalAPagar'], mensaje(null))];
   if (tipo === 'nomina' || tipo === 'seguros_sociales') return [v('NO_FACTURA', 'revisar', ['tipoDocumento'], AVISO_NO_FACTURA[tipo])];
   return [];
 }

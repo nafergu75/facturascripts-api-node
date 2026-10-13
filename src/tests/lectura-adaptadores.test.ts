@@ -134,7 +134,8 @@ describe('aInvoiceExtraction', () => {
     rect.tipoDocumento = { valor: 'rectificativa', confianza: null, fuente: 'claude' };
     const r = aInvoiceExtraction(rect, (await validarLectura(rect, venta)).validaciones, { confianza: 1, nombreArchivo: null, mime: null });
     expect(r.document_type).toBe('credit_note');
-    expect(r.validation.errors).toEqual(['Es una factura rectificativa. Todavía no se puede registrar con el lector.']);
+    // Una rectificativa de venta ya se registra (V19 para revisar): no bloquea.
+    expect(r.validation.errors).toEqual([]);
   });
 
   it('gastos con dos tipos de IVA: un tramo por tipo, se pide revisar y el panel sabe el tipo de cada base', async () => {

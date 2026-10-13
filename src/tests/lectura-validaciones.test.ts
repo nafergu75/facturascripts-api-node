@@ -409,7 +409,7 @@ describe('V14-V22', () => {
     expect(pruebas.estado).toBe('revisar');
   });
 
-  it('V19 rectificativa (en gastos, para revisar; en ventas, error) y V20 nomina', async () => {
+  it('V19 rectificativa (para revisar en los dos lectores) y V20 nomina', async () => {
     const rect = con((l) => {
       l.tipoDocumento = { valor: 'rectificativa', confianza: null, fuente: 'claude' };
       l.rectificativa = { numeroRectificada: { valor: 'A-12', confianza: null, fuente: 'claude' }, motivo: { valor: null, confianza: null, fuente: 'claude' } };
@@ -420,15 +420,15 @@ describe('V14-V22', () => {
       mensaje: 'Es una rectificativa o un abono (rectifica a la A-12): se registrará como abono. Comprueba la factura que rectifica.',
     });
     expect(de(await codigos(rect, ctx({ lector: 'VENTA', nifEmpresa: 'B12345674' })), 'RECTIFICATIVA')[0]).toMatchObject({
-      nivel: 'error',
-      mensaje: 'Es una factura rectificativa (rectifica a la A-12). Todavía no se puede registrar con el lector.',
+      nivel: 'revisar',
+      mensaje: 'Es una rectificativa o un abono (rectifica a la A-12): se registrará como rectificativa. Comprueba la factura que rectifica.',
     });
     const nomina = de(await codigos(con((l) => (l.tipoDocumento = { valor: 'nomina', confianza: null, fuente: 'claude' }))), 'NO_FACTURA');
     expect(nomina[0].nivel).toBe('revisar');
     expect(nomina[0].mensaje).toMatch(/Es una nómina/);
   });
 
-  it('V19 importes negativos sin la palabra rectificativa: error en ventas, para revisar en gastos', async () => {
+  it('V19 importes negativos sin la palabra rectificativa: para revisar en ventas y en gastos', async () => {
     const abono = con((l) => {
       l.desglose[0].base.valor = -200;
       l.desglose[0].cuota.valor = -42;
@@ -437,7 +437,7 @@ describe('V14-V22', () => {
     });
     expect(abono.tipoDocumento.valor).toBe('factura');
     const venta = de(await codigos(abono, ctx({ lector: 'VENTA', nifEmpresa: 'B12345674' })), 'RECTIFICATIVA');
-    expect(venta[0]).toMatchObject({ nivel: 'error', mensaje: 'Los importes son negativos: parece una rectificativa o un abono y aún no se puede registrar con el lector.' });
+    expect(venta[0]).toMatchObject({ nivel: 'revisar', mensaje: 'Es una rectificativa o un abono: se registrará como rectificativa. Comprueba la factura que rectifica.' });
     expect(de(await codigos(abono), 'RECTIFICATIVA')[0]).toMatchObject({
       nivel: 'revisar',
       mensaje: 'Es una rectificativa o un abono: se registrará como abono. Comprueba la factura que rectifica.',
