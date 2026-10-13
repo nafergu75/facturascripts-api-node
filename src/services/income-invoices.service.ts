@@ -1481,10 +1481,14 @@ async function prepararAlta(
   // Cliente y serie despues de las fechas: una factura rechazada no deja nada creado.
   // Con una original de la app (o una partida de 2026), el cliente es el suyo.
   const cliente = await resolverCliente(dto.companyId, plan?.customerId ? { id: plan.customerId } : dto.customer);
-  const serie = dto.proforma
-    ? { codigo: await resolverSerieProforma(dto.companyId, dto.serie) }
-    : await resolverSerie(dto.companyId, dto.serie, { esRectificativa, tipoFactura, origen });
-  if (emiteLaApp) exigirSerieValidaAeat(serie.codigo);
+  // La serie de rectificativas de tickets (RT) se crea con la primera R5: esa se
+  // resuelve al final de las comprobaciones, para que una R5 rechazada (signo,
+  // limites...) no la deje creada. Las demas, aqui, como siempre.
+  const serieDeTickets = !dto.proforma && esRectificativa && tipoFactura === 'R5' && !dto.serie;
+  const resolverLaSerie = async () =>
+    dto.proforma ? { codigo: await resolverSerieProforma(dto.companyId, dto.serie) } : await resolverSerie(dto.companyId, dto.serie, { esRectificativa, tipoFactura, origen });
+  const serieAntes = serieDeTickets ? null : await resolverLaSerie();
+  if (serieAntes && emiteLaApp) exigirSerieValidaAeat(serieAntes.codigo);
 
   // Quien revisa la fiscalidad lo decide el servidor, nunca el cuerpo.
   const modo: ModoFiscal = original
@@ -1566,6 +1570,8 @@ async function prepararAlta(
   // Rectificativa por diferencias: no por encima de lo que queda de cada original (se repite dentro de la transaccion).
   if (cierre && bloque!.forma === 'I') await exigirLimites(prisma, dto.companyId, plan!.originalesApp, partesDe(cierre.enlaces), interno.excluirId);
   if (emiteLaApp) exigirLimiteSimplificada(tipoFactura, perfil, importes.cuenta);
+  const serie = serieAntes ?? (await resolverLaSerie());
+  if (!serieAntes && emiteLaApp) exigirSerieValidaAeat(serie.codigo);
 
   const comunes: Prisma.IncomeInvoiceUncheckedCreateInput = {
     companyId: dto.companyId,
