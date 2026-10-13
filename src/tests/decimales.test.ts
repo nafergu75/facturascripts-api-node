@@ -77,3 +77,33 @@ describe('abonos de proveedor: importes de las tablas nuevas', () => {
     expect(CAMPOS_DECIMALES.has('retencion')).toBe(false);
   });
 });
+
+describe('rectificativas de venta: la tabla de enlaces', () => {
+  it('la parte de cada original (base, cuota y retencion) se lee como number, tambien anidada en la factura', () => {
+    const factura = decimalesANumero({
+      totalFactura: D('-181.50'),
+      enlacesRectifica: [
+        { originalId: 'a', baseRectificada: D('-100.00'), cuotaRectificada: D('-21.00'), retencionRectificada: D('0.00') },
+        { originalId: null, numeroOriginal: 'A-2026-7', baseRectificada: D('-50.00'), cuotaRectificada: D('-10.50'), retencionRectificada: null },
+      ],
+    });
+    expect(factura).toEqual({
+      totalFactura: -181.5,
+      enlacesRectifica: [
+        { originalId: 'a', baseRectificada: -100, cuotaRectificada: -21, retencionRectificada: 0 },
+        { originalId: null, numeroOriginal: 'A-2026-7', baseRectificada: -50, cuotaRectificada: -10.5, retencionRectificada: null },
+      ],
+    });
+  });
+
+  it('el tipo del cliente de Prisma ya los da como number (bloque result de importesComoNumero)', () => {
+    type Fila = Awaited<ReturnType<typeof import('../config/database').prisma.incomeInvoiceRectificada.findFirstOrThrow>>;
+    const comprobar = (f: Fila): Array<number | null> => [f.baseRectificada, f.cuotaRectificada, f.retencionRectificada];
+    expect(comprobar({ baseRectificada: -1, cuotaRectificada: -0.21, retencionRectificada: null } as Fila)).toEqual([-1, -0.21, null]);
+  });
+
+  it('DocumentoArchivo sigue llegando como Decimal: los nombres propios no lo tocan', () => {
+    const doc = decimalesANumero({ base: D('80.00'), iva: D('16.80'), retencion: D('12.00'), total: D('84.80') }) as Record<string, unknown>;
+    for (const campo of ['base', 'iva', 'retencion', 'total']) expect(doc[campo]).toBeInstanceOf(Prisma.Decimal);
+  });
+});
