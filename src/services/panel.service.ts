@@ -16,13 +16,18 @@
  *    indemnizaciones y Seguridad Social a cargo de la empresa: el coste que
  *    calcula el módulo de nóminas), por su mes de devengo. La app no guarda
  *    aparte el IVA no deducible de un gasto: cuenta la base.
+ *  - Sin las compras de inmovilizado (lineas de la cuenta 2xx, todo el grupo
+ *    2): no son un gasto del año (decisión del usuario, 13-10-2026). Van
+ *    aparte en `inmovilizado`; una factura que es solo inmovilizado no cuenta
+ *    como factura de gasto, pero sigue en «Últimas facturas».
  *  - Nada en borrador: ni ventas en borrador ni proformas, ni gastos sin
  *    revisar del lector ni anulados, ni nóminas sin contabilizar.
  *  - Importes en la moneda de cuenta de la empresa (las columnas de siempre).
  *
  * Ventas y gastos salen con los mismos filtros que el bloque «IVA y retenciones
  * del año» (resumenFiscal.service): las cifras del resumen, de los meses y de
- * los clientes cuadran. Los gastos son sumas o agrupaciones en la BD; las
+ * los clientes cuadran, salvo el inmovilizado, que ese bloque sí lleva (su IVA
+ * es soportado). Los gastos son sumas o agrupaciones en la BD; las
  * ventas se leen una a una (sin sus lineas, salvo las de las S) para fecharlas
  * por su devengo. Solo lee.
  */
@@ -32,12 +37,12 @@ import { badRequest } from '../utils/http-errors';
 import { aCentimos } from '../utils/money';
 import { ejercicioOActual } from '../utils/anios';
 import { hoyEspana } from '../utils/fechas';
-import { esTipoGasto, esVencida, textoEstadoPago, TIPO_GASTO_INFO, type TipoGasto } from '../domain/factura-gasto.model';
+import { esTipoGasto, esVencida, PREFIJO_INMOVILIZADO, textoEstadoPago, TIPO_GASTO_INFO, type TipoGasto } from '../domain/factura-gasto.model';
 import { ESTADOS_CONTABILIZADOS } from '../domain/nominas.model';
 import { cuadreNomina } from './nominas/calculo';
 import { nombresDeCuentas } from './cuentasLinea.service';
 import { perfilEmpresa } from './perfilEmpresa.service';
-import { resumenFiscalPeriodo, ventasDelResumen, whereGastosResumen, whereVentasResumen } from './resumenFiscal.service';
+import { inmovilizadoDeGastos, resumenFiscalPeriodo, ventasDelResumen, whereGastosResumen, whereVentasResumen } from './resumenFiscal.service';
 
 // ---------------------------------------------------------------------------
 // Periodo
@@ -155,9 +160,14 @@ export interface ResumenPanel {
   periodo: PeriodoPanel;
   monedaCuenta: string;
   facturasVenta: number;
+  /** Facturas de gasto que cuentan (sin las que son solo inmovilizado). */
   facturasGasto: number;
-  /** Base de las facturas de gasto (sin nóminas). */
+  /** Base de las facturas de gasto (sin nóminas ni compras de inmovilizado). */
   gastoFacturas: number;
+  /** Compras de inmovilizado (base de las líneas 2xx): no cuentan como gasto. Su IVA sí está en el IVA soportado. */
+  inmovilizado: number;
+  /** Facturas de gasto con alguna línea de inmovilizado. */
+  facturasInmovilizado: number;
   /** Coste de las nóminas para la empresa (0 si no se incluyen). */
   gastoPersonal: number;
   nominas: number;
@@ -177,18 +187,23 @@ export async function resumenPanel(companyId: string, p: PeriodoPanel, op: Opcio
   ]);
   const personal = sumaMapa(nominas);
   const ingresos = aCentimos(fiscal.ventas.base);
-  const gastoFacturas = aCentimos(fiscal.gastos.base);
+  // Sin las compras de inmovilizado: no son un gasto del año.
+  const inmovilizado = aCentimos(fiscal.gastos.baseInmovilizado);
+  const gastoFacturas = aCentimos(fiscal.gastos.base) - inmovilizado;
+  const facturasGasto = fiscal.gastos.facturas - fiscal.gastos.facturasSoloInmovilizado;
   const gastos = gastoFacturas + personal.centimos;
   return {
     totalIncome: euros(ingresos),
     totalExpense: euros(gastos),
     balance: euros(ingresos - gastos),
-    totalMovements: fiscal.ventas.facturas + fiscal.gastos.facturas,
+    totalMovements: fiscal.ventas.facturas + facturasGasto,
     periodo: p,
     monedaCuenta: perfil.monedaCuenta,
     facturasVenta: fiscal.ventas.facturas,
-    facturasGasto: fiscal.gastos.facturas,
+    facturasGasto,
     gastoFacturas: euros(gastoFacturas),
+    inmovilizado: euros(inmovilizado),
+    facturasInmovilizado: fiscal.gastos.facturasConInmovilizado,
     gastoPersonal: euros(personal.centimos),
     nominas: personal.nominas,
     nominasIncluidas: op.incluirNominas,
@@ -220,9 +235,10 @@ export async function porMesPanel(companyId: string, p: PeriodoPanel, op: Opcion
   const rango = { desde: p.desde, hasta: p.hasta };
   // Las ventas, cada una con su devengo; los gastos, agrupados por fecha (como
   // mucho una fila por día). Se suman después por mes.
-  const [ventas, gastos, nominas] = await Promise.all([
+  const [ventas, gastos, inmovilizado, nominas] = await Promise.all([
     ventasDelResumen(companyId, rango),
     prisma.expenseInvoice.groupBy({ by: ['fechaEmision'], where: whereGastosResumen(companyId, rango), _sum: { baseTotal: true }, _count: { _all: true } }),
+    inmovilizadoDeGastos(companyId, rango),
     op.incluirNominas ? nominasPorMes(companyId, p) : Promise.resolve(new Map<number, { centimos: number; nominas: number }>()),
   ]);
   const filas = new Map<number, { venta: number; nVenta: number; gasto: number; nGasto: number }>();
@@ -240,6 +256,13 @@ export async function porMesPanel(companyId: string, p: PeriodoPanel, op: Opcion
     if (!f) continue;
     f.gasto += centimosDe(g._sum.baseTotal);
     f.nGasto += g._count._all;
+  }
+  // Sin las compras de inmovilizado: ni su base ni las facturas que son solo eso.
+  for (const i of inmovilizado.porFactura) {
+    const f = filas.get(mesDe(i.fecha));
+    if (!f) continue;
+    f.gasto -= aCentimos(i.base);
+    if (i.solo) f.nGasto -= 1;
   }
   return [...filas].map(([mes, f]) => {
     const personal = nominas.get(mes) ?? { centimos: 0, nominas: 0 };
@@ -282,16 +305,19 @@ const SIN_CUENTA: Prisma.ExpenseInvoiceLineWhereInput[] = [{ accountCode: null }
  * o la parte de la cabecera que no está en líneas (facturas antiguas sin
  * líneas), a la cuenta de su tipo de gasto (600, 621, 623 o 628), como hace el
  * asiento. Se agrupan por la cuenta de 3 cifras (6280001 y 628 van juntas).
- * Las nóminas, en «Personal». El total cuadra con el del resumen.
+ * Las líneas de inmovilizado (2xx) no salen: no son un gasto. Las nóminas, en
+ * «Personal». El total cuadra con el del resumen.
  */
 export async function porCategoriaPanel(companyId: string, p: PeriodoPanel, op: OpcionesPanel): Promise<FilaCategoriaPanel[]> {
   const whereG = whereGastosResumen(companyId, { desde: p.desde, hasta: p.hasta });
   const [cabeceras, conCuenta, nominas] = await Promise.all([
     prisma.expenseInvoice.groupBy({ by: ['tipoGasto'], where: whereG, _sum: { baseTotal: true } }),
-    prisma.expenseInvoiceLine.groupBy({ by: ['accountCode'], where: { NOT: SIN_CUENTA, invoice: { is: whereG } }, _sum: { baseLine: true } }),
+    // Sin las de inmovilizado: no son un gasto.
+    prisma.expenseInvoiceLine.groupBy({ by: ['accountCode'], where: { NOT: [...SIN_CUENTA, { accountCode: { startsWith: PREFIJO_INMOVILIZADO } }], invoice: { is: whereG } }, _sum: { baseLine: true } }),
     op.incluirNominas ? nominasPorMes(companyId, p) : Promise.resolve(new Map<number, { centimos: number; nominas: number }>()),
   ]);
-  // Lo que cada tipo de gasto tiene en líneas con cuenta: el resto de su cabecera va a la cuenta del tipo.
+  // Lo que cada tipo de gasto tiene en líneas con cuenta (también las de inmovilizado, para
+  // que no caigan en la cuenta del tipo): el resto de su cabecera va a la cuenta del tipo.
   const enLineasPorTipo = await Promise.all(
     cabeceras.map((c) =>
       prisma.expenseInvoiceLine.aggregate({ where: { NOT: SIN_CUENTA, invoice: { is: { ...whereG, tipoGasto: c.tipoGasto } } }, _sum: { baseLine: true } }),
@@ -369,17 +395,31 @@ export async function ingresosPorClientePanel(companyId: string, p: PeriodoPanel
     .sort(ordenar);
 }
 
-/** Gastos del periodo por proveedor, más «Personal (nóminas)», de mayor a menor. */
+/** Gastos del periodo por proveedor (sin las compras de inmovilizado), más «Personal (nóminas)», de mayor a menor. */
 export async function gastosPorProveedorPanel(companyId: string, p: PeriodoPanel, op: OpcionesPanel): Promise<FilaTerceroPanel[]> {
-  const [grupos, nominas] = await Promise.all([
+  const rango = { desde: p.desde, hasta: p.hasta };
+  const [todos, inmovilizado, nominas] = await Promise.all([
     prisma.expenseInvoice.groupBy({
       by: ['supplierId'],
-      where: whereGastosResumen(companyId, { desde: p.desde, hasta: p.hasta }),
+      where: whereGastosResumen(companyId, rango),
       _sum: { baseTotal: true },
       _count: { _all: true },
     }),
+    inmovilizadoDeGastos(companyId, rango),
     op.incluirNominas ? nominasPorMes(companyId, p) : Promise.resolve(new Map<number, { centimos: number; nominas: number }>()),
   ]);
+  // Sin las compras de inmovilizado; fuera el proveedor que solo tiene eso.
+  const quitar = new Map<string, { centimos: number; facturas: number }>();
+  for (const i of inmovilizado.porFactura) {
+    const q = quitar.get(i.supplierId) ?? { centimos: 0, facturas: 0 };
+    quitar.set(i.supplierId, { centimos: q.centimos + aCentimos(i.base), facturas: q.facturas + (i.solo ? 1 : 0) });
+  }
+  const grupos = todos
+    .map((g) => {
+      const q = quitar.get(g.supplierId) ?? { centimos: 0, facturas: 0 };
+      return { supplierId: g.supplierId, centimos: centimosDe(g._sum.baseTotal) - q.centimos, facturas: g._count._all - q.facturas };
+    })
+    .filter((g) => g.centimos !== 0 || g.facturas > 0);
   const proveedores = grupos.length
     ? await prisma.supplier.findMany({ where: { companyId, id: { in: grupos.map((g) => g.supplierId) } }, select: { id: true, nombreFiscal: true, nifCif: true } })
     : [];
@@ -387,7 +427,7 @@ export async function gastosPorProveedorPanel(companyId: string, p: PeriodoPanel
   const filas: FilaTerceroPanel[] = grupos.map((g) => {
     const s = porId.get(g.supplierId);
     const name = s?.nombreFiscal ?? 'Proveedor sin ficha';
-    return { id: g.supplierId, name, nif: s?.nifCif ?? null, total: euros(centimosDe(g._sum.baseTotal)), facturas: g._count._all, letter: inicial(name) };
+    return { id: g.supplierId, name, nif: s?.nifCif ?? null, total: euros(g.centimos), facturas: g.facturas, letter: inicial(name) };
   });
   const personal = sumaMapa(nominas);
   if (personal.nominas > 0) filas.push({ id: null, name: 'Personal (nóminas)', nif: null, total: euros(personal.centimos), facturas: personal.nominas, letter: 'P' });
