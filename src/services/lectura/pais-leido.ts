@@ -14,6 +14,8 @@ const sinAcentos = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '');
 /** Nombres de pais frecuentes (en castellano, ingles y su idioma), ya sin acentos y en minusculas. */
 const NOMBRES_PAIS: Readonly<Record<string, string>> = {
   espana: 'ES', spain: 'ES', espanya: 'ES', espainia: 'ES', 'reino de espana': 'ES',
+  // Canarias, Ceuta y Melilla son España (NIF español), aunque fuera del territorio del IVA.
+  canarias: 'ES', 'islas canarias': 'ES', 'canary islands': 'ES', ceuta: 'ES', melilla: 'ES',
   francia: 'FR', france: 'FR',
   portugal: 'PT',
   alemania: 'DE', germany: 'DE', deutschland: 'DE',
