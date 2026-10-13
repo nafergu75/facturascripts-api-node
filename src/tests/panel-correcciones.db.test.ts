@@ -193,13 +193,18 @@ describe('rectificativa por sustitución (S): cuenta solo su diferencia', () => 
 });
 
 describe('estados de «Últimas facturas»', () => {
-  it('venta cobrada en parte, cobrada con sus cobros, vencida y rectificativas que no bajan', async () => {
+  it('venta cobrada en parte, cobrada con sus cobros, vencida, sustituida y rectificativas que no bajan', async () => {
+    // Una pendiente sin cobros (cliente que ya tiene ventas: no cambia el número de clientes).
+    await venta('pendiente', { cliente: 'gamma', fecha: '2026-06-01', base: 30 });
     const filas = datos(await get('/stats/ultimas-facturas?limit=50&anio=2026')) as Array<{ facturaId: string; estado: string }>;
     const estado = (clave: string) => filas.find((f) => f.facturaId === ids[clave])?.estado;
     expect(estado('parte')).toBe('Cobrada en parte');
     expect(estado('entera')).toBe('Cobrada');
     expect(estado('vencida')).toBe('Vencida');
-    expect(estado('o1')).toBe('Pendiente de cobro');
+    expect(estado('pendiente')).toBe('Pendiente de cobro');
+    // Las originales de una S: la sustituta ocupa su lugar.
+    expect(estado('o1')).toBe('Sustituida');
+    expect(estado('o2')).toBe('Sustituida');
     // Rectificativas de venta con total positivo: por sustitución y al alza.
     expect(estado('s1')).toBe('Rectificativa');
     expect(estado('alza')).toBe('Rectificativa');
