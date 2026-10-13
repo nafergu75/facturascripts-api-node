@@ -751,7 +751,7 @@ function operacionDeTipo(tipo: TipoOperacionVenta, ctx: ContextoOperacion): Fact
  * por facturaOriginalId), con sus lineas. Importes de cuenta: los mismos que
  * lee el modelo.
  */
-async function originalesDeSustituciones(
+export async function originalesDeSustituciones(
   companyId: string,
   ventas: Array<{ id: string; esRectificativa: boolean; tipoRectificativa: string | null; facturaOriginalId: string | null }>,
 ) {
