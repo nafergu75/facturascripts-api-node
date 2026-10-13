@@ -394,6 +394,13 @@ export async function prepararRectificativaVenta(b: BloqueVenta, ctx: ContextoPl
       if (p.customerId && delCliente && p.customerId !== delCliente) {
         throw badRequest(`La factura ${p.numeroDocumento} de 2026 es de otro cliente.`, { codigo: 'ORIGINAL_DE_OTRO_CLIENTE', campo });
       }
+      // Con un cliente nuevo, el abono rebajaria la partida de un cliente e iria a la 430 de otro.
+      if (p.customerId && !delCliente && ctx.customerNuevo) {
+        throw badRequest(`La factura ${p.numeroDocumento} de 2026 es de un cliente que ya tienes dado de alta: elígelo en vez de crear uno nuevo. La rectificativa va a su nombre.`, {
+          codigo: 'ORIGINAL_DE_OTRO_CLIENTE',
+          campo: 'customer',
+        });
+      }
       if (!herencia && !ctx.customerId && !ctx.customerNuevo && p.customerId) customerId = p.customerId;
       numero = numero || p.numeroDocumento;
       fecha = fecha || p.fechaDocumento || '';
