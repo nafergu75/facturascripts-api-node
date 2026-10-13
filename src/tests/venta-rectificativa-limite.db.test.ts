@@ -62,7 +62,7 @@ describe('límite de las rectificativas de venta', () => {
     const ficha = await incomeInvoicesService.obtenerPorId(COMPANY_ID, a.id);
     expect(ficha.anuladaPorCompleto).toBe(true);
     expect(ficha.rectificadaPor).toEqual([
-      { id: r1.id, numeroCompleto: r1.numeroCompleto, fechaEmision: r1.fechaEmision, totalFactura: -726, tipoRectificativa: 'I', tipoFactura: 'R1' },
+      { id: r1.id, numeroCompleto: r1.numeroCompleto, fechaEmision: r1.fechaEmision, totalFactura: -726, parte: -726, tipoRectificativa: 'I', tipoFactura: 'R1' },
     ]);
   });
 

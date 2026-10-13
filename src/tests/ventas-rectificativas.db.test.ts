@@ -93,7 +93,7 @@ describe('una original', () => {
     expect(filas[0]).toMatchObject({ originalId: a.id, numeroOriginal: a.numeroCompleto, fechaOriginal: '2026-09-01', baseRectificada: -100, cuotaRectificada: -21 });
     // La ficha de la original la lista, con fecha y tipo.
     const ficha = await incomeInvoicesService.obtenerPorId(E, a.id);
-    expect(ficha.rectificadaPor).toEqual([{ id: r.id, numeroCompleto: r.numeroCompleto, fechaEmision: r.fechaEmision, totalFactura: -121, tipoRectificativa: 'I', tipoFactura: 'R1' }]);
+    expect(ficha.rectificadaPor).toEqual([{ id: r.id, numeroCompleto: r.numeroCompleto, fechaEmision: r.fechaEmision, totalFactura: -121, parte: -121, tipoRectificativa: 'I', tipoFactura: 'R1' }]);
     // GET /:id/rectificar: lo que queda y que ya no admite sustitución.
     const datos = await datosParaRectificarVenta(E, a.id);
     expect(datos.restante).toEqual({ base: 900, cuota: 189, total: 1089 });
@@ -190,6 +190,8 @@ describe('varias originales', () => {
       [b.id, -50, -10.5],
     ]);
     expect((await datosParaRectificarVenta(E, b.id)).restante.total).toBe(544.5);
+    // La ficha de cada una enseña su parte, no el total de la rectificativa.
+    expect((await incomeInvoicesService.obtenerPorId(E, b.id)).rectificadaPor).toEqual([expect.objectContaining({ id: r.id, totalFactura: -181.5, parte: -60.5 })]);
   });
 
   it('sin la parte de alguna, o si no cuadra: 400 REPARTO_NO_CUADRA', async () => {
@@ -267,6 +269,11 @@ describe('por sustitución', () => {
     expect(otra.details).toMatchObject({ codigo: 'SUSTITUCION_CON_RECTIFICATIVAS' });
     const demasiado = await error(rect({ originales: [{ id: a.id }] }, { lineas: [linea(-90)] }));
     expect(demasiado.statusCode).toBe(409);
+    // «Hacer rectificativa» de la original propone las líneas de la sustituta (las que valen ahora).
+    const datos = await datosParaRectificarVenta(E, a.id);
+    expect(datos.sustituta).toMatchObject({ id: s.id, numeroCompleto: s.numeroCompleto });
+    expect(datos.lineas.map((l) => [l.cantidad, l.precioUnitario])).toEqual([[1, 80]]);
+    expect(datos.restante).toEqual({ base: 80, cuota: 16.8, total: 96.8 });
     expect((await rect({ originales: [{ id: a.id }] }, { lineas: [linea(-80)] })).totalFactura).toBe(-96.8);
   });
 
