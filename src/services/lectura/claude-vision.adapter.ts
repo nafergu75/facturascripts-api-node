@@ -43,6 +43,8 @@ export function normalizarGastoClaude(g: LecturaClaudeGasto): LecturaNormalizada
   const l = lecturaVacia('claude');
   l.emisor.nombre = deClaude(g.proveedor);
   l.emisor.nif = deClaude(nifLeido(g.nif_proveedor));
+  // A quien va la factura: V09 lo usa si la empresa no tiene NIF (sin el, no puede dar error por nombre).
+  l.receptor.nombre = deClaude(g.cliente);
   l.numero = deClaude(g.numero);
   l.fechaEmision = deClaude(fechaValida(g.fecha));
   l.concepto = deClaude(g.concepto);
