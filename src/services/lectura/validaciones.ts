@@ -32,6 +32,11 @@ export interface ContextoValidacion {
   lector: Lector;
   /** NIF de la empresa (LegalConfig.nif), o null si no lo tiene. */
   nifEmpresa: string | null;
+  /**
+   * Nombres de la empresa (denominacion de LegalConfig y nombre de Company).
+   * Solo se usan si no tiene NIF, para saber de que lado de la factura esta.
+   */
+  nombresEmpresa?: Array<string | null>;
   empresaEspanola: boolean;
   monedaCuenta: string;
   /** AAAA-MM-DD, hora de Madrid. */
@@ -209,20 +214,106 @@ function v08NifReceptor(l: LecturaNormalizada, ctx: ContextoValidacion): Resulta
   return motivo ? [v('NIF_RECEPTOR', 'error', ['receptor.nif'], motivo)] : [];
 }
 
+/** Formas societarias que no cuentan al comparar nombres (ya sin puntos ni espacios). */
+const FORMAS_SOCIETARIAS = new Set(['SL', 'SA', 'SLU', 'SAU', 'SLL', 'SAL', 'SLP', 'SLNE', 'SC', 'SCP', 'SCOOP', 'SCL', 'CB', 'SRL', 'LTD', 'LIMITED', 'LLC', 'INC', 'CORP', 'GMBH']);
+
+/**
+ * Nombre de una sociedad listo para comparar: en mayusculas, sin tildes, sin
+ * puntuacion y sin la forma societaria («Cerámicas Núñez, S.L.» -> «CERAMICAS NUNEZ»).
+ */
+export function normalizarNombreSociedad(nombre: string | null | undefined): string {
+  if (!nombre) return '';
+  const texto = nombre
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toUpperCase()
+    .replace(/\bSOCIEDAD\s+(LIMITADA|ANONIMA)(\s+(UNIPERSONAL|LABORAL|PROFESIONAL|NUEVA EMPRESA))?\b/g, ' ')
+    .replace(/\./g, '')
+    .replace(/[^A-Z0-9]+/g, ' ');
+  // Las letras sueltas seguidas van juntas: «S L U» (de «S. L. U.») es «SLU».
+  const palabras: string[] = [];
+  let letras = '';
+  for (const p of texto.split(' ').filter(Boolean)) {
+    if (p.length === 1) {
+      letras += p;
+      continue;
+    }
+    if (letras) palabras.push(letras);
+    letras = '';
+    palabras.push(p);
+  }
+  if (letras) palabras.push(letras);
+  return palabras.filter((p) => !FORMAS_SOCIETARIAS.has(p)).join(' ');
+}
+
+/**
+ * Si dos nombres de sociedad son claramente el mismo: iguales una vez
+ * normalizados, o uno contiene al otro por palabras completas (con al menos
+ * dos palabras o cinco letras, para no casar nombres demasiado cortos).
+ */
+export function nombresParecidos(a: string | null | undefined, b: string | null | undefined): boolean {
+  const x = normalizarNombreSociedad(a);
+  const y = normalizarNombreSociedad(b);
+  if (!x || !y) return false;
+  if (x === y) return true;
+  const [corto, largo] = x.length <= y.length ? [x, y] : [y, x];
+  if (!corto.includes(' ') && corto.length < 5) return false;
+  return ` ${largo} `.includes(` ${corto} `);
+}
+
+const MENSAJE_EMITIDA_POR_EMPRESA = 'Parece una factura emitida por la empresa: léela en el lector de ventas.';
+const MENSAJE_RECIBIDA_POR_EMPRESA = 'Parece una factura recibida por la empresa: léela en el lector de gastos.';
+const MENSAJE_SIN_NIF: Record<Lector, string> = {
+  VENTA: 'Tu empresa no tiene el NIF en Más > Datos de la empresa: no se puede comprobar que esta factura la haya emitido ella. Ponlo para que el lector lo compruebe.',
+  GASTO: 'Tu empresa no tiene el NIF en Más > Datos de la empresa: no se puede comprobar que esta factura vaya a su nombre. Ponlo para que el lector lo compruebe.',
+};
+
 function v09Empresa(l: LecturaNormalizada, ctx: ContextoValidacion): ResultadoValidacion[] {
-  if (!ctx.nifEmpresa) return [];
+  if (!ctx.nifEmpresa) return v09EmpresaSinNif(l, ctx);
   const empresa = normalizarNif(ctx.nifEmpresa);
   const emisor = l.emisor.nif.valor ? normalizarNif(l.emisor.nif.valor) : null;
   const receptor = l.receptor.nif.valor ? normalizarNif(l.receptor.nif.valor) : null;
   const r: ResultadoValidacion[] = [];
   if (ctx.lector === 'GASTO') {
-    if (emisor === empresa) r.push(v('EMPRESA', 'error', ['emisor.nif'], 'Parece una factura emitida por la empresa: léela en el lector de ventas.'));
+    if (emisor === empresa) r.push(v('EMPRESA', 'error', ['emisor.nif'], MENSAJE_EMITIDA_POR_EMPRESA));
     else if (receptor && receptor !== empresa) r.push(v('EMPRESA', 'revisar', ['receptor.nif'], `La factura no va a nombre de la empresa (NIF del cliente: ${receptor}).`));
   } else {
-    if (receptor === empresa) r.push(v('EMPRESA', 'error', ['receptor.nif'], 'Parece una factura recibida por la empresa: léela en el lector de gastos.'));
+    if (receptor === empresa) r.push(v('EMPRESA', 'error', ['receptor.nif'], MENSAJE_RECIBIDA_POR_EMPRESA));
     else if (emisor && emisor !== empresa) r.push(v('EMPRESA', 'revisar', ['emisor.nif'], `La factura no la ha emitido la empresa (NIF del emisor: ${emisor}).`));
   }
   return r;
+}
+
+/**
+ * La empresa no tiene NIF: no se puede comprobar del todo, asi que nunca queda
+ * en 'ok'. Se compara su nombre con el del emisor y el del cliente leidos:
+ * - si se parece al de la otra parte (el cliente en ventas, el emisor en
+ *   gastos), es una factura del otro lector: error, como con el NIF;
+ * - si no, 'revisar' pidiendo el NIF y, si su nombre no se parece al de su
+ *   lado, diciendo que nombre se ha leido.
+ */
+function v09EmpresaSinNif(l: LecturaNormalizada, ctx: ContextoValidacion): ResultadoValidacion[] {
+  const nombres = (ctx.nombresEmpresa ?? []).filter((n): n is string => !!n && !!normalizarNombreSociedad(n));
+  const venta = ctx.lector === 'VENTA';
+  const propio = venta ? l.emisor : l.receptor;
+  const otro = venta ? l.receptor : l.emisor;
+  const ladoPropio: CampoId = venta ? 'emisor.nif' : 'receptor.nif';
+  const esPropio = nombres.some((n) => nombresParecidos(n, propio.nombre.valor));
+  const esOtro = nombres.some((n) => nombresParecidos(n, otro.nombre.valor));
+  if (esOtro && !esPropio) {
+    return [v('EMPRESA', 'error', [venta ? 'receptor.nombre' : 'emisor.nombre'], venta ? MENSAJE_RECIBIDA_POR_EMPRESA : MENSAJE_EMITIDA_POR_EMPRESA)];
+  }
+  const leido = propio.nombre.valor?.trim();
+  if (esPropio || !leido || !nombres.length) return [v('EMPRESA', 'revisar', [ladoPropio], MENSAJE_SIN_NIF[ctx.lector])];
+  const quien = venta ? 'El emisor' : 'El cliente';
+  return [
+    v(
+      'EMPRESA',
+      'revisar',
+      [ladoPropio, venta ? 'emisor.nombre' : 'receptor.nombre'],
+      `${MENSAJE_SIN_NIF[ctx.lector]} ${quien} que se ha leído es «${leido}», que no se parece al nombre de tu empresa.`,
+    ),
+  ];
 }
 
 // ---------------------------------------------------------------------------
