@@ -50,6 +50,15 @@ export const esVencida = (f: { estado: string; estadoPago: string; fechaVencimie
 /** Filtro de "vigentes" para resumenes no fiscales: ni borradores del lector ni anuladas. */
 export const GASTO_VIGENTE: { estado: { notIn: string[] } } = { estado: { notIn: ['DRAFT', 'ANULADA'] } };
 
+/**
+ * Cuenta de inmovilizado: todo el grupo 2 del PGC (20 a 29). Una compra de
+ * inmovilizado no es un gasto del año (se amortiza): el panel la deja fuera
+ * de los gastos (decision del usuario, 13-10-2026). Su IVA si es soportado
+ * (casillas de bienes de inversion del 303).
+ */
+export const PREFIJO_INMOVILIZADO = '2';
+export const esCuentaInmovilizado = (cuenta: string | null | undefined): boolean => String(cuenta ?? '').trim().startsWith(PREFIJO_INMOVILIZADO);
+
 /** Fecha del asiento, del libro de IVA y de los modelos: la de registro si la hay. */
 export const fechaContableGasto = (f: { fechaEmision: string; fechaRegistro?: string | null }): string => f.fechaRegistro || f.fechaEmision;
 
