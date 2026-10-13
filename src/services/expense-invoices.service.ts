@@ -1,5 +1,5 @@
 import { Prisma } from '@prisma/client';
-import { prisma, type TransaccionBD } from '../config/database';
+import { prisma, type ClienteBD, type TransaccionBD } from '../config/database';
 import { badRequest, conflict, HttpError, notFound } from '../utils/http-errors';
 import { aCentimos } from '../utils/money';
 import { hoyEspana, vencimientoPorDefecto } from '../utils/fechas';
@@ -45,7 +45,15 @@ import { perfilEmpresa } from './perfilEmpresa.service';
 import { registrarAuditoria } from './auditoria.service';
 import { datosProveedor, type DatosProveedor } from './proveedores.service';
 import { logCreate } from './suppliers/supplierAudit.service';
-import { asignarSubcuentasProveedor, conReintentoSubcuenta, crearProveedorConSubcuenta, INDICES_SUBCUENTA, subcuentaProveedorParaApunte } from './terceros/subcuentas';
+import {
+  aplicarSubcuentaPreparada,
+  asignarSubcuentasProveedor,
+  conReintentoSubcuenta,
+  crearProveedorConSubcuenta,
+  INDICES_SUBCUENTA,
+  subcuentaProveedorParaApunte,
+  type SubcuentaPreparada,
+} from './terceros/subcuentas';
 import { esSubcuentaGenerica } from './terceros/numeracion';
 import { nombresDeCuentas, problemaCuentasLinea } from './cuentasLinea.service';
 import { logger } from '../config/logger';
@@ -946,10 +954,15 @@ export async function datosContablesGastoConSubcuenta(
   f: FacturaConLineas,
   s: { id: string; nifCif: string; nombreFiscal: string; pais?: string | null },
   extraSinNombres: { estadoAsiento: 'POSTED' | 'DRAFT'; numeroAsiento?: string; cuentaAcreedor?: string | null } & DatosRectificativaAsiento,
+  /**
+   * Lo ya leido antes de la transaccion (contabilizar desde la ficha): los
+   * nombres de las cuentas de gasto y la subcuenta del proveedor preparada.
+   * Asi dentro no se vuelve a leer (cada consulta alarga la transaccion).
+   */
+  previo: { nombresCuentas?: Map<string, string>; subcuenta?: SubcuentaPreparada | null } = {},
 ): Promise<Parameters<typeof contabilizarFacturaGasto>[2]> {
   // Cuentas de gasto con el nombre del plan (las subcuentas propias llevan el suyo).
-  const tipo: TipoGasto = esTipoGasto(f.tipoGasto) ? f.tipoGasto : 'COMPRA';
-  const nombresCuentas = await nombresDeCuentas(tx, companyId, f.lineas.map((l) => l.accountCode ?? TIPO_GASTO_INFO[tipo].cuenta));
+  const nombresCuentas = previo.nombresCuentas ?? (await nombresCuentasGasto(tx, companyId, f));
   // Compra intracomunitaria con el IVA en un periodo de la gestoria (ivaIntracomunitarioFuera): el libro de IVA, con esa fecha.
   const ivaFuera = !f.esRectificativa && f.fechaImputacionIva ? { fechaLibroIva: f.fechaImputacionIva, observacionesLibroIva: 'IVA en el 303 de la gestoría.' } : {};
   const extra = { ...ivaFuera, ...extraSinNombres, nombresCuentas };
@@ -961,8 +974,14 @@ export async function datosContablesGastoConSubcuenta(
     const enPlan = await tx.chartOfAccounts.findFirst({ where: { companyId, codigo: extra.cuentaAcreedor }, select: { nombre: true } });
     return datosContablesGasto(f, s, { ...extra, nombreCuentaAcreedor: enPlan?.nombre ?? s.nombreFiscal });
   }
-  const sub = await subcuentaProveedorParaApunte(tx, companyId, s.id, f.tipoGasto);
+  const sub = previo.subcuenta ? await aplicarSubcuentaPreparada(tx, companyId, previo.subcuenta) : await subcuentaProveedorParaApunte(tx, companyId, s.id, f.tipoGasto);
   return datosContablesGasto(f, s, { ...extra, cuentaAcreedor: sub.codigo, nombreCuentaAcreedor: sub.nombre });
+}
+
+/** Nombres en el plan de las cuentas de gasto de la factura (la de cada linea o la de su tipo). Solo lee. */
+export function nombresCuentasGasto(db: ClienteBD | TransaccionBD, companyId: string, f: Pick<FacturaConLineas, 'tipoGasto' | 'lineas'>): Promise<Map<string, string>> {
+  const tipo: TipoGasto = esTipoGasto(f.tipoGasto) ? f.tipoGasto : 'COMPRA';
+  return nombresDeCuentas(db, companyId, f.lineas.map((l) => l.accountCode ?? TIPO_GASTO_INFO[tipo].cuenta));
 }
 
 /**
