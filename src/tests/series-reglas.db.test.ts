@@ -15,7 +15,7 @@ import { prisma } from '../config/database';
 import seriesRoutes from '../routes/series.routes';
 import { errorMiddleware } from '../middleware/error.middleware';
 import { incomeInvoicesService } from '../services/income-invoices.service';
-import { listarSeries, normalizarCodigoSerie } from '../services/series.service';
+import { codigoSerieTickets, listarSeries, normalizarCodigoSerie, obtenerOCrearSerieHistorica, obtenerOCrearSerieTickets } from '../services/series.service';
 
 const COMPANY_ID = `series-test-${Date.now()}`;
 let customerId: string;
@@ -189,5 +189,59 @@ describe('alta de facturas y series', () => {
     expect(normalizarCodigoSerie('FACTURAS-EMITIDAS')).toBe('FACTURAS-E');
     expect(normalizarCodigoSerie('ABCDEFGHI/J')).toBe('ABCDEFGHI');
     expect(normalizarCodigoSerie('///')).toBe('');
+  });
+});
+
+describe('rectificativas de tickets (RECTIFICATIVA_SIMPLIFICADA)', () => {
+  const OTRA = `${COMPANY_ID}-rt`;
+  beforeAll(async () => {
+    await prisma.company.create({ data: { id: OTRA, name: 'Series Tickets SL', fsBaseUrl: 'http://localhost:8080', fsApiKeyEnc: 'k' } });
+  });
+
+  it('no se siembra en todas las empresas: solo A, R y P', async () => {
+    const series = await listarSeries(OTRA);
+    expect(series.map((s) => s.tipoDocumento).sort()).toEqual(['FACTURA', 'PROFORMA', 'RECTIFICATIVA']);
+  });
+
+  it('la primera R5 crea la RT activa y predeterminada; la siguiente usa la misma', async () => {
+    expect(await codigoSerieTickets(OTRA)).toEqual({ codigo: 'RT', existe: false });
+    const rt = await obtenerOCrearSerieTickets(OTRA);
+    expect(rt).toMatchObject({ codigo: 'RT', tipoDocumento: 'RECTIFICATIVA_SIMPLIFICADA', activa: true, porDefecto: true });
+    expect((await obtenerOCrearSerieTickets(OTRA)).id).toBe(rt.id);
+    expect(await codigoSerieTickets(OTRA)).toEqual({ codigo: 'RT', existe: true });
+  });
+
+  it('si RT es otra serie, crea la RTK', async () => {
+    const empresa = `${COMPANY_ID}-rtk`;
+    await prisma.company.create({ data: { id: empresa, name: 'Series RTK SL', fsBaseUrl: 'http://localhost:8080', fsApiKeyEnc: 'k' } });
+    await prisma.invoiceSeries.create({ data: { companyId: empresa, codigo: 'RT', descripcion: 'Otra cosa', tipoDocumento: 'FACTURA', activa: true } });
+    expect(await codigoSerieTickets(empresa)).toEqual({ codigo: 'RTK', existe: false });
+    expect((await obtenerOCrearSerieTickets(empresa)).codigo).toBe('RTK');
+  });
+
+  it('con series de tickets pero todas desactivadas: 400 SERIE_TICKETS_DESACTIVADA', async () => {
+    const empresa = `${COMPANY_ID}-rtoff`;
+    await prisma.company.create({ data: { id: empresa, name: 'Series RT off SL', fsBaseUrl: 'http://localhost:8080', fsApiKeyEnc: 'k' } });
+    await prisma.invoiceSeries.create({ data: { companyId: empresa, codigo: 'TK', descripcion: 'Tickets', tipoDocumento: 'RECTIFICATIVA_SIMPLIFICADA', activa: false } });
+    await expect(obtenerOCrearSerieTickets(empresa)).rejects.toMatchObject({ statusCode: 400, details: { codigo: 'SERIE_TICKETS_DESACTIVADA', campo: 'serie' } });
+  });
+
+  it('se puede crear desde Configuración > Series y listar por su tipo', async () => {
+    const res = await request(admin).post(ruta).send({ codigo: 'RTX', tipoDocumento: 'RECTIFICATIVA_SIMPLIFICADA', descripcion: 'Tickets' });
+    expect(res.status).toBe(201);
+    const lista = await request(admin).get(`${ruta}?tipoDocumento=RECTIFICATIVA_SIMPLIFICADA`);
+    expect(lista.status).toBe(200);
+    expect(lista.body.data.map((s: { codigo: string }) => s.codigo)).toEqual(['RTX']);
+  });
+});
+
+describe('series históricas del lector que mezclan facturas y rectificativas', () => {
+  it('una histórica de facturas sirve para una rectificativa leída solo si se acepta (con aviso); una de la app, nunca', async () => {
+    const fv = await obtenerOCrearSerieHistorica(COMPANY_ID, 'FV');
+    expect(fv).toMatchObject({ codigo: 'FV', tipoDocumento: 'FACTURA', activa: false });
+    await expect(obtenerOCrearSerieHistorica(COMPANY_ID, 'FV', 'RECTIFICATIVA')).rejects.toMatchObject({ statusCode: 409 });
+    expect(await obtenerOCrearSerieHistorica(COMPANY_ID, 'FV', 'RECTIFICATIVA', { aceptarOtroTipo: true })).toMatchObject({ codigo: 'FV', mixta: true });
+    // A es una serie de la app: 409 aunque se acepte otro tipo.
+    await expect(obtenerOCrearSerieHistorica(COMPANY_ID, 'A', 'RECTIFICATIVA', { aceptarOtroTipo: true })).rejects.toMatchObject({ statusCode: 409 });
   });
 });
