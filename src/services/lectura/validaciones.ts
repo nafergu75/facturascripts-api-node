@@ -247,26 +247,49 @@ export function normalizarNombreSociedad(nombre: string | null | undefined): str
 }
 
 /**
- * Si dos nombres de sociedad son claramente el mismo: iguales una vez
- * normalizados, o uno contiene al otro por palabras completas (con al menos
- * dos palabras o cinco letras, para no casar nombres demasiado cortos).
+ * Como se parecen dos nombres de sociedad, una vez normalizados:
+ * - 'igual': son el mismo nombre («Ifeval Inversiones, S.L.» e «IFEVAL INVERSIONES SL»);
+ * - 'contiene': uno contiene al otro por palabras completas, con al menos dos
+ *   palabras o cinco letras («Ifeval» e «IFEVAL SPORT SL»). Puede ser otra
+ *   sociedad con un nombre parecido, asi que esto solo no bloquea nada;
+ * - null: no se parecen, o falta alguno.
  */
-export function nombresParecidos(a: string | null | undefined, b: string | null | undefined): boolean {
+export function compararNombresSociedad(a: string | null | undefined, b: string | null | undefined): 'igual' | 'contiene' | null {
   const x = normalizarNombreSociedad(a);
   const y = normalizarNombreSociedad(b);
-  if (!x || !y) return false;
-  if (x === y) return true;
+  if (!x || !y) return null;
+  if (x === y) return 'igual';
   const [corto, largo] = x.length <= y.length ? [x, y] : [y, x];
-  if (!corto.includes(' ') && corto.length < 5) return false;
-  return ` ${largo} `.includes(` ${corto} `);
+  if (!corto.includes(' ') && corto.length < 5) return null;
+  return ` ${largo} `.includes(` ${corto} `) ? 'contiene' : null;
+}
+
+/** Si dos nombres de sociedad se parecen: iguales o uno dentro del otro (ver compararNombresSociedad). */
+export function nombresParecidos(a: string | null | undefined, b: string | null | undefined): boolean {
+  return compararNombresSociedad(a, b) !== null;
 }
 
 const MENSAJE_EMITIDA_POR_EMPRESA = 'Parece una factura emitida por la empresa: léela en el lector de ventas.';
 const MENSAJE_RECIBIDA_POR_EMPRESA = 'Parece una factura recibida por la empresa: léela en el lector de gastos.';
-const MENSAJE_SIN_NIF: Record<Lector, string> = {
-  VENTA: 'Tu empresa no tiene el NIF en Más > Datos de la empresa: no se puede comprobar que esta factura la haya emitido ella. Ponlo para que el lector lo compruebe.',
-  GASTO: 'Tu empresa no tiene el NIF en Más > Datos de la empresa: no se puede comprobar que esta factura vaya a su nombre. Ponlo para que el lector lo compruebe.',
-};
+
+/**
+ * Textos de V09 cuando la empresa no tiene NIF. En las empresas de fuera de
+ * Espana el campo se llama «Identificación fiscal» en Más > Datos de la
+ * empresa (legalConfig.service), y asi se le llama aqui.
+ */
+function textosSinNif(lector: Lector, espanola: boolean): { pideNif: string; deducido: string } {
+  const queComprobar = lector === 'VENTA' ? 'la haya emitido ella' : 'vaya a su nombre';
+  return espanola
+    ? {
+        pideNif: `Tu empresa no tiene el NIF en Más > Datos de la empresa: no se puede comprobar que esta factura ${queComprobar}. Ponlo para que el lector lo compruebe.`,
+        deducido: 'Lo hemos deducido por el nombre porque tu empresa no tiene el NIF puesto; si no es así, ponlo en Más > Datos de la empresa y vuelve a leerla.',
+      }
+    : {
+        pideNif: `Tu empresa no tiene la identificación fiscal en Más > Datos de la empresa: no se puede comprobar que esta factura ${queComprobar}. Ponla para que el lector la compruebe.`,
+        deducido:
+          'Lo hemos deducido por el nombre porque tu empresa no tiene la identificación fiscal puesta; si no es así, ponla en Más > Datos de la empresa y vuelve a leerla.',
+      };
+}
 
 function v09Empresa(l: LecturaNormalizada, ctx: ContextoValidacion): ResultadoValidacion[] {
   if (!ctx.nifEmpresa) return v09EmpresaSinNif(l, ctx);
@@ -284,36 +307,57 @@ function v09Empresa(l: LecturaNormalizada, ctx: ContextoValidacion): ResultadoVa
   return r;
 }
 
+/** El mayor parecido entre los nombres de la empresa y un nombre leido. */
+function parecidoConEmpresa(nombres: string[], leido: string | null): 'igual' | 'contiene' | null {
+  const parecidos = nombres.map((n) => compararNombresSociedad(n, leido));
+  return parecidos.includes('igual') ? 'igual' : parecidos.includes('contiene') ? 'contiene' : null;
+}
+
 /**
  * La empresa no tiene NIF: no se puede comprobar del todo, asi que nunca queda
- * en 'ok'. Se compara su nombre con el del emisor y el del cliente leidos:
- * - si se parece al de la otra parte (el cliente en ventas, el emisor en
- *   gastos), es una factura del otro lector: error, como con el NIF;
- * - si no, 'revisar' pidiendo el NIF y, si su nombre no se parece al de su
- *   lado, diciendo que nombre se ha leido.
+ * en 'ok'. Se compara su nombre con el del emisor y el del cliente leidos. Su
+ * lado es el emisor en ventas y el cliente en gastos; la otra parte, al reves.
+ * - error (es una factura del otro lector) solo si su nombre es el MISMO que
+ *   el de la otra parte y el de su lado se ha leido y no se parece en nada.
+ *   Si no se ha leido el de su lado (gastos leidos con Claude sin el cliente),
+ *   no hay con que confirmarlo;
+ * - 'revisar' diciendo a que se parece si se parece a la otra parte sin llegar
+ *   a eso (uno contiene al otro: «Ifeval» e «IFEVAL SPORT SL»);
+ * - si no, 'revisar' pidiendo el NIF y, si el nombre de su lado no se parece,
+ *   diciendo que nombre se ha leido.
  */
 function v09EmpresaSinNif(l: LecturaNormalizada, ctx: ContextoValidacion): ResultadoValidacion[] {
   const nombres = (ctx.nombresEmpresa ?? []).filter((n): n is string => !!n && !!normalizarNombreSociedad(n));
   const venta = ctx.lector === 'VENTA';
   const propio = venta ? l.emisor : l.receptor;
   const otro = venta ? l.receptor : l.emisor;
-  const ladoPropio: CampoId = venta ? 'emisor.nif' : 'receptor.nif';
-  const esPropio = nombres.some((n) => nombresParecidos(n, propio.nombre.valor));
-  const esOtro = nombres.some((n) => nombresParecidos(n, otro.nombre.valor));
-  if (esOtro && !esPropio) {
-    return [v('EMPRESA', 'error', [venta ? 'receptor.nombre' : 'emisor.nombre'], venta ? MENSAJE_RECIBIDA_POR_EMPRESA : MENSAJE_EMITIDA_POR_EMPRESA)];
+  const nifPropio: CampoId = venta ? 'emisor.nif' : 'receptor.nif';
+  const nombrePropio: CampoId = venta ? 'emisor.nombre' : 'receptor.nombre';
+  const nombreOtro: CampoId = venta ? 'receptor.nombre' : 'emisor.nombre';
+  const textos = textosSinNif(ctx.lector, ctx.empresaEspanola);
+  const leidoPropio = propio.nombre.valor?.trim() || null;
+  const leidoOtro = otro.nombre.valor?.trim() || null;
+  const conPropio = parecidoConEmpresa(nombres, leidoPropio);
+  const conOtro = parecidoConEmpresa(nombres, leidoOtro);
+
+  if (conOtro === 'igual' && conPropio === null && normalizarNombreSociedad(leidoPropio)) {
+    return [v('EMPRESA', 'error', [nombreOtro], `${venta ? MENSAJE_RECIBIDA_POR_EMPRESA : MENSAJE_EMITIDA_POR_EMPRESA} ${textos.deducido}`)];
   }
-  const leido = propio.nombre.valor?.trim();
-  if (esPropio || !leido || !nombres.length) return [v('EMPRESA', 'revisar', [ladoPropio], MENSAJE_SIN_NIF[ctx.lector])];
+  if (conOtro && conPropio !== 'igual') {
+    const quien = venta ? 'el cliente' : 'el proveedor';
+    const lectorBueno = venta ? 'gastos' : 'ventas';
+    return [
+      v(
+        'EMPRESA',
+        'revisar',
+        [nifPropio, nombreOtro],
+        `Puede que sea una factura ${venta ? 'recibida' : 'emitida'} por tu empresa: ${quien} que se ha leído, «${leidoOtro}», se parece al nombre de tu empresa. Si es así, léela en el lector de ${lectorBueno}. ${textos.deducido}`,
+      ),
+    ];
+  }
+  if (conPropio || !leidoPropio || !nombres.length) return [v('EMPRESA', 'revisar', [nifPropio], textos.pideNif)];
   const quien = venta ? 'El emisor' : 'El cliente';
-  return [
-    v(
-      'EMPRESA',
-      'revisar',
-      [ladoPropio, venta ? 'emisor.nombre' : 'receptor.nombre'],
-      `${MENSAJE_SIN_NIF[ctx.lector]} ${quien} que se ha leído es «${leido}», que no se parece al nombre de tu empresa.`,
-    ),
-  ];
+  return [v('EMPRESA', 'revisar', [nifPropio, nombrePropio], `${textos.pideNif} ${quien} que se ha leído es «${leidoPropio}», que no se parece al nombre de tu empresa.`)];
 }
 
 // ---------------------------------------------------------------------------
