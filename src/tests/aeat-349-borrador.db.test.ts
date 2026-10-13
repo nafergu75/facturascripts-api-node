@@ -357,3 +357,42 @@ describe('349 con abonos de venta de varias facturas y de una de fuera de la app
     expect(b.entrada.rectificaciones).toContainEqual(expect.objectContaining({ ejercicio: 2026, periodo: '4T', baseAnterior: 3000, baseRectificada: 2800 }));
   });
 });
+
+describe('349 con un rappel de venta que abarca dos trimestres', () => {
+  const E = `aeat349r-${SUFIJO}`;
+
+  beforeAll(async () => {
+    jest.useFakeTimers({
+      now: new Date('2027-09-15T10:00:00Z'),
+      doNotFake: ['hrtime', 'nextTick', 'performance', 'queueMicrotask', 'setImmediate', 'clearImmediate', 'setInterval', 'clearInterval', 'setTimeout', 'clearTimeout'],
+    });
+    try {
+      await prisma.company.create({ data: { id: E, name: 'Exportadora Rappel SL', fsBaseUrl: 'http://localhost:8080', fsApiKeyEnc: 'k' } });
+      await prisma.legalConfig.create({ data: { companyId: E, denominacion: 'Exportadora Rappel, S.L.', nif: NIF, telefono: '963 12 34 56', personaContacto: 'García Muñoz Ana' } });
+      const de = (await prisma.customer.create({ data: { companyId: E, nombreFiscal: 'Müller Handels GmbH', nifCif: 'DE123456789', pais: 'DE' } })).id;
+      await venta(E, de, '2027-02-10', 3000);
+      await venta(E, de, '2027-04-15', 1000);
+      // Rappel del primer semestre: 400 € sobre 4.000 de ventas (3.000 en el 1T y 1.000 en el 2T).
+      const b = await incomeInvoicesService.crearIngreso({
+        companyId: E,
+        customer: { id: de },
+        fechaEmision: '2027-08-05',
+        borrador: true,
+        lineas: [linea(-400)],
+        rectificativa: { forma: 'I', motivo: 'RAPPEL', explicacion: 'Rappel del primer semestre', periodo: { desde: '2027-01-01', hasta: '2027-06-30' } },
+      } as unknown as Parameters<typeof incomeInvoicesService.crearIngreso>[0]);
+      await incomeInvoicesService.finalizar(E, b.id, { fechaEmision: '2027-08-05' });
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('se reparte entre los dos trimestres en proporción a las ventas de cada uno', async () => {
+    const b = await calcularBorrador349(E, 2027, '3T');
+    expect(b.entrada.rectificaciones!.map((r) => [r.clave, r.ejercicio, r.periodo, r.baseAnterior, r.baseRectificada])).toEqual([
+      ['E', 2027, '1T', 3000, 2700],
+      ['E', 2027, '2T', 1000, 900],
+    ]);
+    expect(b.avisos.some((a) => a.includes('abarca varios periodos'))).toBe(false);
+  });
+});
