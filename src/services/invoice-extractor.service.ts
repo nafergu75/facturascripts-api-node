@@ -30,6 +30,8 @@ import { prisma } from '../config/database';
 import { config } from '../config/env';
 import { putObject, getObject } from '../utils/storage';
 import { badRequest, notFound } from '../utils/http-errors';
+import { direccionDeIa, PROPIEDADES_DIRECCION } from './lectura/direccion-ia';
+import type { DireccionLeida } from './lectura/tipos';
 
 // ---------------------------------------------------------------------------
 // Esquema de salida (contrato con los consumidores)
@@ -134,6 +136,9 @@ const PROMPT_EXTRACCION =
   '7. RETENCIÓN (IRPF/otra): Si aparecen palabras clave (retención, IRPF, descuento practicado), extrae ' +
   'el porcentaje Y el importe. Crítica para contabilización.\n' +
   '8. TOTAL: El "total a pagar" (neto de retención si la hay).\n' +
+  '9. DIRECCIONES: copia la del cliente (customer_address_detail) y la del emisor (vendor_address_detail) tal como ' +
+  'aparecen, separadas en calle (con número, piso y puerta), código postal, municipio, provincia y país. Si una parte ' +
+  'no aparece, omítela: no la deduzcas.\n' +
   '\nFormatos: fechas YYYY-MM-DD; importes como números sin símbolo; NIF/CIF sin "ES" ' +
   'ni separadores. Si no aparece o es ilegible, OMITE (no inventes). ' +
   'Los tickets/facturas simplificadas sin cliente se marcan doc_kind "factura_simplificada" o "ticket".';
@@ -159,6 +164,16 @@ const HERRAMIENTA_EXTRACCION: Anthropic.Tool = {
       customer_name: { type: 'string', description: 'Razón social del receptor/cliente' },
       customer_tax_id: { type: 'string', description: 'NIF/CIF del receptor, sin prefijo ES' },
       customer_address: { type: 'string', description: 'Dirección del receptor (opcional)' },
+      vendor_address_detail: {
+        type: 'object',
+        description: 'Dirección del emisor separada en sus partes (opcional)',
+        properties: PROPIEDADES_DIRECCION,
+      },
+      customer_address_detail: {
+        type: 'object',
+        description: 'Dirección del cliente (receptor) separada en sus partes (opcional)',
+        properties: PROPIEDADES_DIRECCION,
+      },
       base_amounts: {
         type: 'array',
         description: 'Desglose completo de bases imponibles con su IVA',
@@ -304,6 +319,9 @@ export interface LecturaClaude {
   customer_name: string | null;
   customer_tax_id: string | null;
   customer_address: string | null;
+  /** Direcciones separadas (calle, CP, municipio, provincia y pais). Las lecturas guardadas antes no las traen. */
+  vendor_address_detail?: DireccionLeida | null;
+  customer_address_detail?: DireccionLeida | null;
   base_amounts: Array<{ base: number; vat_rate: number; vat_amount: number }>;
   retention_type: string | null;
   retention_rate: number | null;
@@ -385,6 +403,8 @@ export async function leerDocumentoConClaude(buffer: Buffer, mimeType: string, p
     customer_name: cadena(input.customer_name),
     customer_tax_id: limpiarNif(input.customer_tax_id),
     customer_address: cadena(input.customer_address),
+    vendor_address_detail: direccionDeIa(input.vendor_address_detail),
+    customer_address_detail: direccionDeIa(input.customer_address_detail),
     base_amounts,
     retention_type: cadena(input.retention_type),
     retention_rate: numero(input.retention_rate),
