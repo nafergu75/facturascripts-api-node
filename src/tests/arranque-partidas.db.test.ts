@@ -218,4 +218,17 @@ describe('cobrar y pagar las facturas pendientes de 2026', () => {
   it('resumen de lo pendiente de 2026', async () => {
     expect(await resumenPendiente(E)).toEqual({ cobros: { abiertas: 2, pendiente: 12100 }, pagos: { abiertas: 2, pendiente: 3025 } });
   });
+
+  it('no apunta en una cuenta bancaria cuya subcuenta no es de bancos («0001»)', async () => {
+    const carga = await prisma.cargaArranque.findFirstOrThrow({ where: { companyId: E, estado: 'CONFIRMADA' } });
+    const mala = await prisma.bankAccount.create({ data: { companyId: E, iban: 'ES9121000418450200051332', bancoNombre: 'BBVA', subcuentaCodigo: '0001' } });
+    const p = await prisma.partidaPendiente.create({ data: { companyId: E, cargaId: carga.id, tipo: 'COBRO', subcuenta: '4300000001', numeroDocumento: 'SUB-0001', importePendiente: 50 } });
+    const e = await error(liquidarPartida(E, p.id, { fecha: '2027-01-12', cuentaBancariaId: mala.id }, U));
+    expect(e.statusCode).toBe(400);
+    expect(e.details).toMatchObject({ codigo: 'SUBCUENTA_BANCO_NO_VALIDA', cuentaBancariaId: mala.id, subcuenta: '0001' });
+    expect(e.message).toMatch(/BBVA tiene como subcuenta «0001», que no es de bancos.*vuelve a apuntar el cobro/);
+    expect(await prisma.journalEntryLine.count({ where: { companyId: E, accountCode: '0001' } })).toBe(0);
+    await prisma.bankAccount.update({ where: { id: mala.id }, data: { activa: false } });
+    await prisma.partidaPendiente.update({ where: { id: p.id }, data: { estado: 'ANULADA' } });
+  });
 });
