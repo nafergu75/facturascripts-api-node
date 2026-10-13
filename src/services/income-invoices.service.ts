@@ -47,6 +47,7 @@ import { recalcularEstadoPartidas } from './arranque/partidas.service';
 import { ahoraRedSeguridad, exigirPuedeEmitirFinal } from './verifactu/redSeguridad';
 import {
   aFavorDeAbonos,
+  AISLAMIENTO_RECTIFICATIVAS,
   cerrarPlan,
   enlacesDeVentas,
   exigirLimites,
@@ -1071,8 +1072,8 @@ function exigirR5SobreSimplificada(tipoFactura: string, original: { tipoFactura:
 }
 
 /** Transaccion de facturas: el tipo de cambio ya esta resuelto; dentro no se consulta la red. */
-function transaccion<T>(fn: (tx: Tx) => Promise<T>): Promise<T> {
-  return prisma.$transaction((tx) => marcarTransaccion(() => fn(tx)));
+function transaccion<T>(fn: (tx: Tx) => Promise<T>, opciones?: { isolationLevel?: Prisma.TransactionIsolationLevel }): Promise<T> {
+  return prisma.$transaction((tx) => marcarTransaccion(() => fn(tx)), opciones);
 }
 
 /** Carga una factura de la empresa con sus lineas, o 404. */
@@ -1702,11 +1703,13 @@ async function crear(dto: CrearFacturaIngresoDTO, opciones: OpcionesAlta, intern
         data: { ultimoNumero: numero },
       });
       return creada;
-    });
+    }, rect ? AISLAMIENTO_RECTIFICATIVAS : undefined);
     return respuesta(factura, ctx);
   }
 
-  // Emision directa: numero de la serie en la misma transaccion.
+  // Emision directa: numero de la serie en la misma transaccion. Con una
+  // rectificativa, sus previas se leen tras bloquear las originales con READ
+  // COMMITTED (AISLAMIENTO_RECTIFICATIVAS), tambien en el lector y al emitir un borrador.
   const factura = await transaccion(async (tx) => {
     if (rect) await exigirRectificablesEnTx(tx, dto.companyId, rect);
     const numero = await asignarNumero(tx, dto.companyId, serie, fechaEmision);
@@ -1724,7 +1727,7 @@ async function crear(dto: CrearFacturaIngresoDTO, opciones: OpcionesAlta, intern
     });
     await enlazar(tx, creada.id, true);
     return creada;
-  });
+  }, rect ? AISLAMIENTO_RECTIFICATIVAS : undefined);
   return respuesta(factura, ctx);
 }
 
@@ -2285,7 +2288,7 @@ export const incomeInvoicesService = {
         await recalcularEstadoPartidas(tx, companyId, partidasDe(rect.enlaces));
       }
       return tx.incomeInvoice.findUniqueOrThrow({ where: { id }, include: INCLUIR });
-    });
+    }, rect ? AISLAMIENTO_RECTIFICATIVAS : undefined);
     const avisosFiscales = [
       ...(fiscal.avisos ?? []),
       ...(fuera && !avisoR4 ? [{ codigo: 'DEVENGO_FUERA_APP', mensaje: textoDevengoFuera(devengo, fuera) }] : []),
