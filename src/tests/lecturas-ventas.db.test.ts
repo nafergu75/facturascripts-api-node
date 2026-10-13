@@ -293,7 +293,9 @@ describe('empresa sin NIF (fallo del 13-10)', () => {
   it('con el nombre del cliente: error («léela en el lector de gastos») y no se puede registrar', async () => {
     const data = await leer('resultado-simple', RECEPTORA);
     expect(data.lectura.estado).toBe('error');
-    expect(data.ingreso.errores).toContain('Parece una factura recibida por la empresa: léela en el lector de gastos.');
+    expect(data.ingreso.errores).toContain(
+      'Parece una factura recibida por la empresa: léela en el lector de gastos. Lo hemos deducido por el nombre porque tu empresa no tiene el NIF puesto; si no es así, ponlo en Más > Datos de la empresa y vuelve a leerla.',
+    );
     const r = await request(app(RECEPTORA)).post('/ingresos-extractor/confirmar').send({ documentId: data.ingreso.documentId, revisado: true });
     expect(r.status).toBe(400);
     expect(r.body.message).toContain('Parece una factura recibida por la empresa: léela en el lector de gastos.');
