@@ -14,11 +14,13 @@
  * Es la fuente única del resumen: lo usan GET /stats/fiscal
  * (movements.controller), Carmen (INT-09) y el panel (panel.service, con las
  * mismas ventas, ventasDelResumen, y los mismos gastos, whereGastosResumen).
- * Solo lee.
+ * Las compras de inmovilizado (lineas de la cuenta 2xx) van en los gastos, con
+ * su IVA soportado, y aparte en gastos.baseInmovilizado: el panel y Carmen las
+ * restan de lo gastado (inmovilizadoDeGastos). Solo lee.
  */
 import type { Prisma } from '@prisma/client';
 import { prisma } from '../config/database';
-import { GASTO_VIGENTE } from '../domain/factura-gasto.model';
+import { GASTO_VIGENTE, PREFIJO_INMOVILIZADO } from '../domain/factura-gasto.model';
 import { fechaDevengoVenta } from '../domain/tipo-operacion.model';
 import { diferenciaSustitucion, type DiferenciaSustitucion } from '../domain/rectificativa-venta.model';
 import { aCentimos } from '../utils/money';
@@ -33,11 +35,21 @@ export interface TotalesFacturas {
   total: number;
 }
 
+/** Los gastos del resumen: todas las facturas (base e IVA con el inmovilizado) y, aparte, lo que es inmovilizado. */
+export interface TotalesGastos extends TotalesFacturas {
+  /** Base de las lineas de inmovilizado (cuenta 2xx); los abonos restan. Va dentro de `base`. */
+  baseInmovilizado: number;
+  /** Facturas cuya base es toda de inmovilizado (no cuentan como facturas de gasto en el panel). */
+  facturasSoloInmovilizado: number;
+  /** Facturas con alguna linea de inmovilizado. */
+  facturasConInmovilizado: number;
+}
+
 export interface ResumenFiscalPeriodo {
   desde: string;
   hasta: string;
   ventas: TotalesFacturas;
-  gastos: TotalesFacturas;
+  gastos: TotalesGastos;
   /** Orientativo: el 303 real puede ajustar IVA no deducible, prorrata o compensaciones. */
   ivaResultado: number;
   /** Retenciones que la empresa practica en sus gastos (modelo 111/115). */
@@ -166,6 +178,53 @@ export async function ventasDelResumen(companyId: string, rango: RangoFechas, cu
   });
 }
 
+/** Lo que una factura de gasto tiene de inmovilizado. */
+export interface InmovilizadoFactura {
+  invoiceId: string;
+  /** Fecha de la factura (AAAA-MM-DD), la misma con que cuenta en el resumen. */
+  fecha: string;
+  supplierId: string;
+  /** Base de sus lineas 2xx, con su signo (un abono resta). */
+  base: number;
+  /** Toda su base es de inmovilizado. */
+  solo: boolean;
+}
+
+/**
+ * Compras de inmovilizado entre los gastos del resumen (los mismos,
+ * whereGastosResumen): las lineas de la cuenta 2xx, por factura, con una sola
+ * consulta. `base` es la suma (en euros) y `facturasSolo` cuantas facturas son
+ * solo de inmovilizado. El panel y Carmen las restan de los gastos; el IVA
+ * soportado las sigue llevando.
+ */
+export async function inmovilizadoDeGastos(
+  companyId: string,
+  rango?: RangoFechas,
+  supplierId?: string,
+): Promise<{ porFactura: InmovilizadoFactura[]; base: number; facturasSolo: number }> {
+  const lineas = await prisma.expenseInvoiceLine.findMany({
+    where: { accountCode: { startsWith: PREFIJO_INMOVILIZADO }, invoice: { is: whereGastosResumen(companyId, rango, supplierId) } },
+    select: { invoiceId: true, baseLine: true, invoice: { select: { fechaEmision: true, supplierId: true, baseTotal: true } } },
+  });
+  const porId = new Map<string, InmovilizadoFactura & { centimos: number; total: number }>();
+  for (const l of lineas) {
+    const f = porId.get(l.invoiceId) ?? {
+      invoiceId: l.invoiceId,
+      fecha: l.invoice.fechaEmision,
+      supplierId: l.invoice.supplierId,
+      base: 0,
+      solo: false,
+      centimos: 0,
+      total: aCentimos(Number(l.invoice.baseTotal ?? 0)),
+    };
+    f.centimos += aCentimos(Number(l.baseLine ?? 0));
+    porId.set(l.invoiceId, f);
+  }
+  const porFactura = [...porId.values()].map(({ centimos, total, ...f }) => ({ ...f, base: centimos / 100, solo: centimos === total }));
+  const centimos = [...porId.values()].reduce((a, f) => a + f.centimos, 0);
+  return { porFactura, base: centimos / 100, facturasSolo: porFactura.filter((f) => f.solo).length };
+}
+
 /** Las ventas del periodo sumadas, con la misma forma que el aggregate de los gastos. */
 async function ventasDelPeriodo(companyId: string, desde: string, hasta: string, customerId?: string) {
   const ventas = await ventasDelResumen(companyId, { desde, hasta }, customerId);
@@ -191,7 +250,7 @@ export async function resumenFiscalPeriodo(companyId: string, desde: string, has
   const sinVentas = !!filtro && !filtro.customerId;
   const sinGastos = !!filtro && !filtro.supplierId;
   const vacio = { _sum: { baseTotal: 0, ivaTotal: 0, retencionTotal: 0, totalFactura: 0 }, _count: 0 };
-  const [ventas, gastos] = await Promise.all([
+  const [ventas, gastos, inmovilizado] = await Promise.all([
     sinVentas ? Promise.resolve(vacio) : ventasDelPeriodo(companyId, desde, hasta, filtro?.customerId),
     sinGastos
       ? Promise.resolve(vacio)
@@ -200,6 +259,7 @@ export async function resumenFiscalPeriodo(companyId: string, desde: string, has
           _sum: suma,
           _count: true,
         }),
+    sinGastos ? Promise.resolve({ porFactura: [], base: 0, facturasSolo: 0 }) : inmovilizadoDeGastos(companyId, rango, filtro?.supplierId),
   ]);
   type Suma = { _sum: { baseTotal: number | null; ivaTotal: number | null; retencionTotal: number | null; totalFactura: number | null }; _count: number };
   const totales = (a: Suma): TotalesFacturas => ({
@@ -210,6 +270,11 @@ export async function resumenFiscalPeriodo(companyId: string, desde: string, has
     total: n(a._sum.totalFactura),
   });
   const v = totales(ventas);
-  const g = totales(gastos);
+  const g: TotalesGastos = {
+    ...totales(gastos),
+    baseInmovilizado: n(inmovilizado.base),
+    facturasSoloInmovilizado: inmovilizado.facturasSolo,
+    facturasConInmovilizado: inmovilizado.porFactura.length,
+  };
   return { desde, hasta, ventas: v, gastos: g, ivaResultado: n(v.iva - g.iva), retencionesAIngresar: g.retencion };
 }
