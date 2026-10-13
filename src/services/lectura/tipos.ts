@@ -53,7 +53,11 @@ export interface LineaLeida {
 export interface LecturaNormalizada {
   tipoDocumento: Campo<TipoDocumentoLeido>;
   emisor: { nombre: Campo<string>; nif: Campo<string>; direccion: Campo<DireccionLeida> };
-  receptor: { nombre: Campo<string>; nif: Campo<string> };
+  /**
+   * A quien va la factura. La direccion (el cliente en ventas) sirve para darlo
+   * de alta desde el lector; las lecturas guardadas antes del 13-10-2026 no la traen.
+   */
+  receptor: { nombre: Campo<string>; nif: Campo<string>; direccion: Campo<DireccionLeida> };
   numero: Campo<string>;
   fechaEmision: Campo<string>;
   fechaVencimiento: Campo<string>;
@@ -239,7 +243,7 @@ export function lecturaVacia(fuente: FuenteCampo = 'azure'): LecturaNormalizada 
   return {
     tipoDocumento: { valor: 'factura', confianza: null, fuente: 'calculado' },
     emisor: { nombre: v(), nif: v(), direccion: v() },
-    receptor: { nombre: v(), nif: v() },
+    receptor: { nombre: v(), nif: v(), direccion: v() },
     numero: v(),
     fechaEmision: v(),
     fechaVencimiento: v(),
