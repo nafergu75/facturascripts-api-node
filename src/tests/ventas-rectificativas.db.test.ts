@@ -249,6 +249,21 @@ describe('por sustitución', () => {
     expect((await rect({ originales: [{ id: a.id }] }, { lineas: [linea(-80)] })).totalFactura).toBe(-96.8);
   });
 
+  it('la factura corregida va en positivo: en negativo, 400 SIGNO_NO_CUADRA; a cero, las siguientes no bajan de cero', async () => {
+    const a = await emitir(100); // 121
+    const negativa = await error(rect({ forma: 'S', motivo: 'CAMBIO_PRECIO', originales: [{ id: a.id }] }, { lineas: [linea(-100)] }));
+    expect(negativa.statusCode).toBe(400);
+    expect(negativa.details).toMatchObject({ codigo: 'SIGNO_NO_CUADRA', campo: 'lineas' });
+    expect(await prisma.incomeInvoice.count({ where: { companyId: E, facturaOriginalId: a.id } })).toBe(0);
+    // A cero (se anula por sustitución): una rectificativa por diferencias que resta ya no cabe, y el texto nombra la sustituta.
+    const cero = await rect({ forma: 'S', motivo: 'CAMBIO_PRECIO', originales: [{ id: a.id }] }, { lineas: [linea(0)] });
+    expect(cero.totalFactura).toBe(0);
+    const mas = await error(rect({ originales: [{ id: a.id }] }, { lineas: [linea(-10)] }));
+    expect(mas.statusCode).toBe(409);
+    expect(mas.details).toMatchObject({ codigo: 'RECTIFICATIVA_EXCEDE_ORIGINAL' });
+    expect(mas.message).toContain(`el total de la ${cero.numeroCompleto} que la sustituyó`);
+  });
+
   it('cambiar el tipo de operación por sustitución: 400 con la forma de hacerlo', async () => {
     const a = await emitir(100);
     const e = await error(rect({ forma: 'S', motivo: 'ERROR_DERECHO', originales: [{ id: a.id }] }, { lineas: [linea(100, { tipoIva: 0 })], tipoOperacion: 'EXENTA' }));
