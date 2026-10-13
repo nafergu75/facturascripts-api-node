@@ -4,11 +4,12 @@
  *
  * La persona lo dice antes de subir la factura («¿De dónde es el cliente?»:
  * de España, de otro país de la UE o de fuera de la UE, con el pais si lo
- * sabe) y esa eleccion manda en las validaciones. Sin eleccion, se deduce,
- * por este orden:
+ * sabe) y esa eleccion manda en las validaciones, salvo con un tercero ya dado
+ * de alta: entonces manda su ficha (ver detectarOrigenTercero). Sin eleccion,
+ * se deduce, por este orden:
  *   1. el pais del tercero ya dado de alta con ese NIF (su ficha);
  *   2. el prefijo de NIF-IVA de la UE, si el numero tiene la forma de los de
- *      ese Estado (FR + 11 caracteres...);
+ *      ese Estado (FR + 11 caracteres...; ES con un NIF espanol valido);
  *   3. el pais leido en su direccion;
  *   4. el prefijo de NIF-IVA aunque el numero no tenga la forma de su Estado
  *      (un RFC mexicano puede empezar por DE...: por eso va detras de la direccion);
@@ -94,7 +95,12 @@ export function leerEleccionOrigen(origen: unknown, pais: unknown): EleccionOrig
   const lado = origenDePais(p);
   if (!lado) throw badRequest(`El país «${crudo}» no existe: usa su código de dos letras (FR, US...).`, { codigo: 'ORIGEN_TERCERO_NO_VALIDO', campo: 'paisTercero' });
   if (lado !== o) {
-    const texto = o === 'UE' ? `${nombrePaisEs(p)} no es un país de la UE (o es España).` : `${nombrePaisEs(p)} es de la UE: elige «De otro país de la UE».`;
+    const texto =
+      lado === 'ES'
+        ? 'España: elige «De España».'
+        : lado === 'UE'
+          ? `${nombrePaisEs(p)} es de la UE: elige «De otro país de la UE».`
+          : `${nombrePaisEs(p)} no es de la UE: elige «De fuera de la UE».`;
     throw badRequest(texto, { codigo: 'ORIGEN_TERCERO_NO_VALIDO', campo: 'paisTercero' });
   }
   return { origen: o as OrigenTercero, pais: p };
@@ -107,6 +113,18 @@ export function eleccionGuardada(resultado: unknown): EleccionOrigenTercero | nu
   return { origen: e.origen as OrigenTercero, pais: typeof e.pais === 'string' && e.pais ? e.pais : null };
 }
 
+/**
+ * El prefijo de NIF-IVA del numero, si el numero tiene la forma de los de ese
+ * Estado (FR + 11 caracteres...). Con ES, si detras va un NIF espanol valido
+ * (ESB12345674). null si no lleva prefijo o no tiene esa forma.
+ */
+function prefijoConSuForma(nif: string): { prefijo: string; pais: string } | null {
+  const pref = nif ? prefijoNifIvaUe(nif) : null;
+  if (!pref) return null;
+  const conForma = pref.prefijo === 'ES' ? validarNifEspanol(nif).valido : tieneFormaNifIvaUe(pref.prefijo, nif.slice(2));
+  return conForma ? pref : null;
+}
+
 /** Lo que se deduce sin la eleccion (ver el orden arriba). */
 export function origenAutomatico(d: DatosOrigenTercero): OrigenDetectado {
   const ficha = normalizarPais(d.paisFicha);
@@ -114,7 +132,7 @@ export function origenAutomatico(d: DatosOrigenTercero): OrigenDetectado {
   if (deFicha) return { origen: deFicha, pais: ficha, por: 'ficha' };
   const nif = limpiarNif(d.nif);
   const pref = nif ? prefijoNifIvaUe(nif) : null;
-  if (pref && tieneFormaNifIvaUe(pref.prefijo, nif.slice(2))) return { origen: origenDePais(pref.pais) ?? 'UE', pais: pref.pais, por: 'prefijo' };
+  if (pref && prefijoConSuForma(nif)) return { origen: origenDePais(pref.pais) ?? 'UE', pais: pref.pais, por: 'prefijo' };
   const dir = paisIsoLeido(d.paisDireccion);
   const deDireccion = origenDePais(dir);
   if (dir && deDireccion) return { origen: deDireccion, pais: dir, por: 'direccion' };
@@ -127,11 +145,16 @@ export function origenAutomatico(d: DatosOrigenTercero): OrigenDetectado {
  * De donde es el tercero para las validaciones: lo elegido, si hay eleccion
  * (con el pais elegido o, si no se eligio, el que se deduce si es del mismo
  * lado); si no, lo que se deduce.
+ *
+ * Salvo un tercero ya dado de alta: su ficha dice de donde es, y su numero ya
+ * se acepto al darlo de alta. Lo elegido suele ser lo de la factura anterior o
+ * lo de por defecto (De España) y no la pisa: si no casan, lo avisa
+ * contradiccionOrigen, con el boton para cambiarlo.
  */
 export function detectarOrigenTercero(d: DatosOrigenTercero): OrigenDetectado {
   const auto = origenAutomatico(d);
   const e = d.eleccion;
-  if (!e) return auto;
+  if (!e || auto.por === 'ficha') return auto;
   if (e.origen === 'ES') return { origen: 'ES', pais: 'ES', por: 'eleccion' };
   return { origen: e.origen, pais: e.pais ?? (auto.origen === e.origen ? auto.pais : null), por: 'eleccion' };
 }
@@ -181,7 +204,9 @@ export interface Contradiccion {
  * Lo leido contradice la eleccion: se eligio «De España» y la factura trae un
  * NIF-IVA FR o una direccion en Francia, o al reves; o el mismo lado con otro
  * pais. La forma de NIF espanol solo cuenta si su control es bueno (un numero
- * extranjero se le puede parecer). null si no hay eleccion o no se contradice.
+ * extranjero se le puede parecer). Con «De fuera de la UE», un prefijo de la UE
+ * sin la forma de ese Estado tampoco cuenta: un RFC mexicano puede empezar por
+ * DE. null si no hay eleccion o no se contradice.
  */
 export function contradiccionOrigen(d: DatosOrigenTercero, tipo: TipoTercero): Contradiccion | null {
   const e = d.eleccion;
@@ -190,6 +215,7 @@ export function contradiccionOrigen(d: DatosOrigenTercero, tipo: TipoTercero): C
   if (!auto.origen) return null;
   const nif = limpiarNif(d.nif) || null;
   if (auto.por === 'forma' && !validarNifEspanol(nif).valido) return null;
+  if (auto.por === 'prefijo' && e.origen === 'FUERA' && !prefijoConSuForma(nif ?? '')) return null;
   const otroLado = auto.origen !== e.origen;
   const otroPais = !otroLado && !!e.pais && !!auto.pais && normalizarPais(e.pais) !== normalizarPais(auto.pais);
   if (!otroLado && !otroPais) return null;
@@ -220,7 +246,10 @@ export interface InfoTercero {
   contradiccion: Contradiccion | null;
   /** Como se llama su numero fiscal: «NIF», «NIF-IVA (VAT)», «RNC»... */
   numeroFiscal: string;
-  /** El NIF-IVA leido sin prefijo, ya con el de su pais (para la ficha del alta); null si no hace falta. */
+  /**
+   * El NIF-IVA leido sin prefijo, ya con el de su pais (para la ficha del alta); null si no hace falta.
+   * Si lo leido contradice la eleccion, con el pais que dice la factura (la ficha del alta se rellena con el).
+   */
   nifPropuesto: string | null;
 }
 
@@ -236,6 +265,9 @@ export function datosTerceroDeLectura(
 
 export function infoTercero(lector: Lector, d: DatosOrigenTercero): InfoTercero {
   const efectivo = detectarOrigenTercero(d);
+  const contradiccion = contradiccionOrigen(d, tipoTercero(lector));
+  // Para la ficha del alta: lo que dice la factura si contradice lo elegido (la pantalla rellena el pais con ello).
+  const paraFicha = contradiccion ?? efectivo;
   return {
     tipo: tipoTercero(lector),
     eleccion: d.eleccion ?? null,
@@ -243,8 +275,8 @@ export function infoTercero(lector: Lector, d: DatosOrigenTercero): InfoTercero 
     pais: efectivo.pais,
     por: efectivo.por,
     detectado: origenAutomatico(d),
-    contradiccion: contradiccionOrigen(d, tipoTercero(lector)),
+    contradiccion,
     numeroFiscal: numeroFiscalDe(efectivo),
-    nifPropuesto: efectivo.origen === 'UE' ? nifIvaConPrefijo(d.nif, efectivo.pais) : null,
+    nifPropuesto: paraFicha.origen === 'UE' ? nifIvaConPrefijo(d.nif, paraFicha.pais) : null,
   };
 }
