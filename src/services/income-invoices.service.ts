@@ -34,6 +34,7 @@ import {
 import { perfilDesdeConfig, perfilEmpresa, type PerfilEmpresa } from './perfilEmpresa.service';
 import { marcarTransaccion, mensajeSinTipo, resolverTipoCambio, type TipoResuelto } from './tiposCambio.service';
 import { resolverFiscalidad } from './fiscalidad-venta.service';
+import { diferenciasDeSustituciones } from './resumenFiscal.service';
 import { fechaTexto, hoyEspana, sumarDiasISO } from '../utils/fechas';
 import { inicioLlevanzaApp, periodo303FueraDeLaApp, regimenFiscalEn } from '../utils/anios';
 import { aCentimos, importeTexto } from '../utils/money';
@@ -2584,7 +2585,9 @@ export const incomeInvoicesService = {
   /**
    * Obtener resumen de ingresos por período (para el dashboard).
    * Solo facturas emitidas: los borradores no son ventas todavía.
-   * Importes en la moneda de cuenta.
+   * Importes en la moneda de cuenta. Una rectificativa por sustitucion (S) con
+   * la original en la app lleva la factura corregida entera: cuenta solo su
+   * diferencia con la original, como en el 303 y en el resumen fiscal.
    */
   async resumenPorPeriodo(companyId: string, desde?: string, hasta?: string) {
     const where: Prisma.IncomeInvoiceWhereInput = { companyId, estadoDocumento: ESTADO_FINAL };
@@ -2592,15 +2595,24 @@ export const incomeInvoicesService = {
       where.fechaEmision = { ...(desde ? { gte: desde } : {}), ...(hasta ? { lte: hasta } : {}) };
     }
 
-    const facturas = await prisma.incomeInvoice.findMany({
+    const filas = await prisma.incomeInvoice.findMany({
       where,
       select: {
+        id: true,
         estado: true,
+        esRectificativa: true,
+        tipoRectificativa: true,
+        facturaOriginalId: true,
         baseTotal: true,
         ivaTotal: true,
         retencionTotal: true,
         totalFactura: true,
       },
+    });
+    const diferencias = await diferenciasDeSustituciones(companyId, filas);
+    const facturas = filas.map((f) => {
+      const d = diferencias.get(f.id);
+      return d ? { ...f, baseTotal: d.base, ivaTotal: d.cuota, retencionTotal: d.retencion, totalFactura: d.total } : f;
     });
 
     let baseCobrada = 0;
