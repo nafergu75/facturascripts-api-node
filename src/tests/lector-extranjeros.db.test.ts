@@ -377,7 +377,7 @@ describe('lector de gastos con proveedores de fuera de España', () => {
     expect(de(await validaciones(data.lecturaId), 'ORIGEN_TERCERO')).toEqual([]);
   });
 
-  it('al registrar se vuelve a validar con lo elegido: De España con un proveedor de EE. UU. dado de alta da error hasta cambiarla', async () => {
+  it('al registrar se vuelve a validar con lo elegido; un proveedor ya dado de alta lo decide su ficha (De España por defecto no lo bloquea)', async () => {
     const E = await empresa(NIF_EMPRESA);
     const data = await leer(
       E,
@@ -388,14 +388,31 @@ describe('lector de gastos con proveedores de fuera de España', () => {
       }),
       { origenTercero: 'ES' },
     );
+    // Sin dar de alta: lo elegido manda y un EIN no es un NIF español.
     expect(de(await validaciones(data.lecturaId), 'NIF_EMISOR')[0].nivel).toBe('error');
+    // Elegido un proveedor dado de alta (de EE. UU.): su ficha manda al registrar.
     const prov = await prisma.supplier.create({ data: { companyId: E, nombreFiscal: 'Rocky Paper Co', nifCif: '987654321', pais: 'US' } });
-    const mal = await request(app(E)).post('/gastos-extractor/confirmar').send(cuerpoFuera({ lecturaId: data.lecturaId, revisado: true, proveedor: { id: prov.id } }));
-    expect(mal.status).toBe(400);
-    expect(mal.body.details).toMatchObject({ codigo: 'VALIDACION_LECTURA', campo: 'emisor.nif' });
-    const c = await request(app(E)).post(`/gastos-extractor/lecturas/${data.lecturaId}/origen-tercero`).send({ origen: 'FUERA', pais: 'US' });
+    const r = await request(app(E)).post('/gastos-extractor/confirmar').send(cuerpoFuera({ lecturaId: data.lecturaId, revisado: true, proveedor: { id: prov.id } }));
+    expect(r.status).toBe(201);
+
+    // Otra factura suya, otra vez con De España: sin error en su numero, con el aviso para cambiarlo.
+    const otra = await leer(
+      E,
+      'gastos-extractor',
+      fixture((c) => {
+        c.VendorTaxId = texto('98-7654321');
+        c.VendorAddress = direccion('USA', 'Denver');
+        c.InvoiceId = texto('F2026/0013');
+      }),
+      { origenTercero: 'ES' },
+    );
+    const vs = await validaciones(otra.lecturaId);
+    expect(de(vs, 'NIF_EMISOR')).toEqual([]);
+    expect(de(vs, 'ORIGEN_TERCERO')).toEqual([expect.objectContaining({ nivel: 'revisar', mensaje: expect.stringMatching(/^Lo tienes dado de alta como proveedor de Estados Unidos/) })]);
+    expect(otra.lectura.tercero).toMatchObject({ origen: 'FUERA', pais: 'US', por: 'ficha', numeroFiscal: 'EIN', contradiccion: { origen: 'FUERA', pais: 'US' } });
+    // Cambiada a De fuera de la UE: ya sin aviso.
+    const c = await request(app(E)).post(`/gastos-extractor/lecturas/${otra.lecturaId}/origen-tercero`).send({ origen: 'FUERA', pais: 'US' });
     expect(c.body.data.lectura.tercero).toMatchObject({ origen: 'FUERA', pais: 'US', numeroFiscal: 'EIN', contradiccion: null });
-    const bien = await request(app(E)).post('/gastos-extractor/confirmar').send(cuerpoFuera({ lecturaId: data.lecturaId, revisado: true, proveedor: { id: prov.id } }));
-    expect(bien.status).toBe(201);
+    expect(de(await validaciones(otra.lecturaId), 'ORIGEN_TERCERO')).toEqual([]);
   });
 });
