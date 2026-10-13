@@ -45,6 +45,8 @@ export function normalizarGastoClaude(g: LecturaClaudeGasto): LecturaNormalizada
   l.emisor.nif = deClaude(nifLeido(g.nif_proveedor));
   // A quien va la factura: V09 lo usa si la empresa no tiene NIF (sin el, no puede dar error por nombre).
   l.receptor.nombre = deClaude(g.cliente);
+  // La direccion del proveedor, separada, para darlo de alta con la ficha rellena.
+  l.emisor.direccion = deClaude(g.direccion_proveedor ?? null);
   l.numero = deClaude(g.numero);
   l.fechaEmision = deClaude(fechaValida(g.fecha));
   l.concepto = deClaude(g.concepto);
@@ -87,9 +89,11 @@ export function normalizarVentaClaude(v: LecturaClaudeVenta, monedaCuenta = 'EUR
   l.tipoDocumento = deClaude(TIPO_VENTA[v.doc_kind ?? 'factura'] ?? 'factura');
   l.emisor.nombre = deClaude(v.vendor_name);
   l.emisor.nif = deClaude(nifLeido(v.vendor_tax_id));
-  l.emisor.direccion = deClaude(v.vendor_address ? { calle: v.vendor_address } : null);
+  // Las direcciones separadas; sin ellas, la que venga en una sola cadena, en la calle.
+  l.emisor.direccion = deClaude(v.vendor_address_detail ?? (v.vendor_address ? { calle: v.vendor_address } : null));
   l.receptor.nombre = deClaude(v.customer_name);
   l.receptor.nif = deClaude(nifLeido(v.customer_tax_id));
+  l.receptor.direccion = deClaude(v.customer_address_detail ?? (v.customer_address ? { calle: v.customer_address } : null));
   l.numero = deClaude([v.series, v.number].filter(Boolean).join('-') || null);
   l.fechaEmision = deClaude(fechaValida(v.issue_date));
   l.fechaVencimiento = deClaude(fechaValida(v.due_date));

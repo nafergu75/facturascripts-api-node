@@ -1,5 +1,5 @@
 import { Prisma } from '@prisma/client';
-import { prisma, type TransaccionBD } from '../config/database';
+import { prisma, type ClienteBD, type TransaccionBD } from '../config/database';
 import { badRequest, conflict, HttpError, notFound } from '../utils/http-errors';
 import { aCentimos } from '../utils/money';
 import { hoyEspana, vencimientoPorDefecto } from '../utils/fechas';
@@ -45,10 +45,19 @@ import { perfilEmpresa } from './perfilEmpresa.service';
 import { registrarAuditoria } from './auditoria.service';
 import { datosProveedor, type DatosProveedor } from './proveedores.service';
 import { logCreate } from './suppliers/supplierAudit.service';
-import { asignarSubcuentasProveedor, conReintentoSubcuenta, crearProveedorConSubcuenta, INDICES_SUBCUENTA, subcuentaProveedorParaApunte } from './terceros/subcuentas';
+import {
+  aplicarSubcuentaPreparada,
+  asignarSubcuentasProveedor,
+  conReintentoSubcuenta,
+  crearProveedorConSubcuenta,
+  INDICES_SUBCUENTA,
+  subcuentaProveedorParaApunte,
+  type SubcuentaPreparada,
+} from './terceros/subcuentas';
 import { esSubcuentaGenerica } from './terceros/numeracion';
 import { nombresDeCuentas, problemaCuentasLinea } from './cuentasLinea.service';
 import { logger } from '../config/logger';
+import { errorFalloBD, QUE_HACER_GASTO_YA_REGISTRADO } from '../utils/errores-bd';
 
 /**
  * DTOs para creación y manipulación de facturas de gasto
@@ -946,10 +955,15 @@ export async function datosContablesGastoConSubcuenta(
   f: FacturaConLineas,
   s: { id: string; nifCif: string; nombreFiscal: string; pais?: string | null },
   extraSinNombres: { estadoAsiento: 'POSTED' | 'DRAFT'; numeroAsiento?: string; cuentaAcreedor?: string | null } & DatosRectificativaAsiento,
+  /**
+   * Lo ya leido antes de la transaccion (contabilizar desde la ficha): los
+   * nombres de las cuentas de gasto y la subcuenta del proveedor preparada.
+   * Asi dentro no se vuelve a leer (cada consulta alarga la transaccion).
+   */
+  previo: { nombresCuentas?: Map<string, string>; subcuenta?: SubcuentaPreparada | null } = {},
 ): Promise<Parameters<typeof contabilizarFacturaGasto>[2]> {
   // Cuentas de gasto con el nombre del plan (las subcuentas propias llevan el suyo).
-  const tipo: TipoGasto = esTipoGasto(f.tipoGasto) ? f.tipoGasto : 'COMPRA';
-  const nombresCuentas = await nombresDeCuentas(tx, companyId, f.lineas.map((l) => l.accountCode ?? TIPO_GASTO_INFO[tipo].cuenta));
+  const nombresCuentas = previo.nombresCuentas ?? (await nombresCuentasGasto(tx, companyId, f));
   // Compra intracomunitaria con el IVA en un periodo de la gestoria (ivaIntracomunitarioFuera): el libro de IVA, con esa fecha.
   const ivaFuera = !f.esRectificativa && f.fechaImputacionIva ? { fechaLibroIva: f.fechaImputacionIva, observacionesLibroIva: 'IVA en el 303 de la gestoría.' } : {};
   const extra = { ...ivaFuera, ...extraSinNombres, nombresCuentas };
@@ -961,8 +975,14 @@ export async function datosContablesGastoConSubcuenta(
     const enPlan = await tx.chartOfAccounts.findFirst({ where: { companyId, codigo: extra.cuentaAcreedor }, select: { nombre: true } });
     return datosContablesGasto(f, s, { ...extra, nombreCuentaAcreedor: enPlan?.nombre ?? s.nombreFiscal });
   }
-  const sub = await subcuentaProveedorParaApunte(tx, companyId, s.id, f.tipoGasto);
+  const sub = previo.subcuenta ? await aplicarSubcuentaPreparada(tx, companyId, previo.subcuenta) : await subcuentaProveedorParaApunte(tx, companyId, s.id, f.tipoGasto);
   return datosContablesGasto(f, s, { ...extra, cuentaAcreedor: sub.codigo, nombreCuentaAcreedor: sub.nombre });
+}
+
+/** Nombres en el plan de las cuentas de gasto de la factura (la de cada linea o la de su tipo). Solo lee. */
+export function nombresCuentasGasto(db: ClienteBD | TransaccionBD, companyId: string, f: Pick<FacturaConLineas, 'tipoGasto' | 'lineas'>): Promise<Map<string, string>> {
+  const tipo: TipoGasto = esTipoGasto(f.tipoGasto) ? f.tipoGasto : 'COMPRA';
+  return nombresDeCuentas(db, companyId, f.lineas.map((l) => l.accountCode ?? TIPO_GASTO_INFO[tipo].cuenta));
 }
 
 /**
@@ -1209,8 +1229,16 @@ export async function registrarGasto(companyId: string, cuerpo: unknown, opcione
     }
   }
 
+  // Desde aqui la factura y su asiento ya estan grabados. Lo que falle no rompe
+  // el alta, y si la base de datos falla al leer la ficha, se dice que si esta
+  // registrada (con su id en details), no que no se ha registrado.
+  const grabada = resultado;
   const proveedorCreado = !prov.existente;
-  if (proveedorCreado) await logCreate(resultado.supplierId, opciones.usuarioEmail, 'Proveedor creado al registrar una factura de gasto');
+  if (proveedorCreado) {
+    await logCreate(grabada.supplierId, opciones.usuarioEmail, 'Proveedor creado al registrar una factura de gasto').catch((e: unknown) => {
+      logger.warn('No se ha podido anotar el alta del proveedor en su historial', { supplierId: grabada.supplierId, error: e instanceof Error ? e.message : String(e) });
+    });
+  }
   // Queda registrada en el archivo de su trimestre (sin original). No bloqueante.
   await archivarGastoSinRomper(companyId, resultado.id);
   await registrarAuditoria({
@@ -1222,7 +1250,9 @@ export async function registrarGasto(companyId: string, cuerpo: unknown, opcione
     meta: { asientoId: resultado.asientoId, proveedorCreado, ...(rect ? { rectificativa: { tipo: rect.tipo, causa: rect.causa, rectifica: rect.rectifica } } : {}) },
   });
   if (confirmado303) await marcarRectificar303(companyId, resultado.id, confirmado303, ivaTotal, opciones.userId);
-  const factura = await obtenerDetalle(companyId, resultado.id);
+  const factura = await obtenerDetalle(companyId, grabada.id).catch((e: unknown) => {
+    throw errorFalloBD(e, QUE_HACER_GASTO_YA_REGISTRADO, `leer la factura de gasto ${grabada.id} recién registrada`, { facturaYaRegistradaId: grabada.id }) ?? e;
+  });
   const avisos = [...(rect?.avisos ?? v.avisos ?? []), ...(confirmado303 ? [avisoRectificar303(confirmado303)] : [])];
   return { factura: avisos.length ? { ...factura, avisos } : factura, asientoId: resultado.asientoId, proveedorCreado };
 }

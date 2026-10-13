@@ -10,6 +10,8 @@ import { comprobarRevisionVenta, MENSAJE_FALTA_RECTIFICATIVA, vincularLectura } 
 import { cuentaPorTipoIva, esMotivoVenta, MOTIVO_INFO } from '../domain/rectificativa-venta.model';
 import { registrarAuditoria } from './auditoria.service';
 import { clientePorNif, errorTerceroNoDadoDeAlta } from './lectura/terceros-lector';
+import type { DireccionFicha } from './lectura/direccion';
+import { detalleFalloBD, errorFalloBD, motivoSinAsiento, QUE_HACER_REGISTRAR } from '../utils/errores-bd';
 
 /**
  * Lector de facturas de INGRESO (pantalla "Lector de ingresos").
@@ -46,6 +48,12 @@ export interface IngresoExtraido {
    * que en el confirmar: la pantalla deja elegir la cuenta de cada una.
    */
   lineas: Array<{ descripcion: string; base: number; tipoIva: number }>;
+  /**
+   * Direccion leida del cliente, para darlo de alta desde el lector con la
+   * ficha rellena: { calle, cp, municipio, provincia, pais (ISO-2 o null),
+   * revisar }. null si no se ha leido nada de la direccion.
+   */
+  direccionCliente: DireccionFicha | null;
 }
 
 /** Cuenta de ventas por defecto del PGC (700 Ventas de mercaderias / prestacion de servicios). */
@@ -60,7 +68,12 @@ const limpiarNif = (v: string | null | undefined): string | null => {
   return limpio || null;
 };
 
-export function aIngresoExtraido(documentId: string, e: InvoiceExtraction): IngresoExtraido {
+/**
+ * Lo que muestra la pantalla. `direccion`: la del cliente leida con la lectura
+ * nueva (lectura/direccion.ts); sin ella (extractor de siempre), la direccion
+ * que trae la extraccion, entera en la calle.
+ */
+export function aIngresoExtraido(documentId: string, e: InvoiceExtraction, direccion?: DireccionFicha | null): IngresoExtraido {
   const errores = [...e.validation.errors];
   if (!limpiarNif(e.customer.tax_id)) errores.push(MENSAJE_FALTA_NIF_CLIENTE);
   if (!e.invoice.number) errores.push('No se ha podido leer el numero de la factura.');
@@ -83,7 +96,14 @@ export function aIngresoExtraido(documentId: string, e: InvoiceExtraction): Ingr
     confianza: e.confidence,
     errores,
     lineas: e.amounts.bases.map((b) => ({ descripcion: descripcionLinea(e, b, concepto), base: b.base_amount, tipoIva: b.tax_rate })),
+    direccionCliente: direccion !== undefined ? direccion : direccionDeTexto(e.customer.address),
   };
+}
+
+/** Una direccion en una sola cadena (extractor de siempre): toda en la calle. */
+function direccionDeTexto(texto: string | null | undefined): DireccionFicha | null {
+  const calle = (texto ?? '').replace(/\s+/g, ' ').trim();
+  return calle ? { calle, cp: null, municipio: null, provincia: null, pais: null, revisar: false } : null;
 }
 
 /** Texto de relleno de las lineas sin descripcion (aInvoiceExtraction pone «Item 2»...). */
@@ -361,10 +381,10 @@ export async function contabilizarVentaLeida(companyId: string, facturaId: strin
     const asiento = await prisma.journalEntry.findFirst({ where: { id: r.journalEntryId, companyId }, select: { estado: true } });
     return { contabilizada: true, asientoId: r.journalEntryId, asientoEnBorrador: asiento?.estado !== 'POSTED' };
   } catch (err) {
-    const motivo = err instanceof Error ? err.message : String(err);
     // eslint-disable-next-line no-console
-    console.error(`Aviso: no se pudo contabilizar la factura ${facturaId} del lector:`, motivo);
-    return { contabilizada: false, motivoSinAsiento: motivo };
+    console.error(`Aviso: no se pudo contabilizar la factura ${facturaId} del lector:`, detalleFalloBD(err) ?? (err instanceof Error ? err.message : String(err)));
+    // Un fallo de la base de datos, en castellano (no el texto de Prisma).
+    return { contabilizada: false, motivoSinAsiento: motivoSinAsiento(err) };
   }
 }
 
@@ -465,22 +485,27 @@ export const ingresosExtractorService = {
 
     // Origen lector: la fiscalidad avisa en vez de rechazar (y en una empresa no
     // espanola quita el IVA que el OCR pone por defecto).
-    const factura = await incomeInvoicesService.crearIngreso(
-      {
-        companyId,
-        customer,
-        serie,
-        numero,
-        fechaEmision: e.invoice.issue_date ?? undefined,
-        fechaVencimiento: e.invoice.due_date ?? undefined,
-        lineas,
-        observaciones: `Digitalizada desde ${doc.originalFileName}`,
-        ...(rect ? { rectificativa: rect.bloque } : {}),
-        ...(opciones.confirmaDevengoFuera === true ? { confirmaDevengoFuera: true } : {}),
-      },
-      // El numero se guarda tal como se leyo (con sus ceros y su separador), el que ve la pantalla.
-      { origen: 'lector', numeroLeido: resumen.numeroFactura, ...(rect?.cuotasFijas.some((c) => c !== undefined) ? { cuotasFijas: rect.cuotasFijas } : {}) },
-    );
+    const factura = await incomeInvoicesService
+      .crearIngreso(
+        {
+          companyId,
+          customer,
+          serie,
+          numero,
+          fechaEmision: e.invoice.issue_date ?? undefined,
+          fechaVencimiento: e.invoice.due_date ?? undefined,
+          lineas,
+          observaciones: `Digitalizada desde ${doc.originalFileName}`,
+          ...(rect ? { rectificativa: rect.bloque } : {}),
+          ...(opciones.confirmaDevengoFuera === true ? { confirmaDevengoFuera: true } : {}),
+        },
+        // El numero se guarda tal como se leyo (con sus ceros y su separador), el que ve la pantalla.
+        { origen: 'lector', numeroLeido: resumen.numeroFactura, ...(rect?.cuotasFijas.some((c) => c !== undefined) ? { cuotasFijas: rect.cuotasFijas } : {}) },
+      )
+      // Si la base de datos falla, la factura no queda registrada: se dice asi, en castellano.
+      .catch((err: unknown) => {
+        throw errorFalloBD(err, QUE_HACER_REGISTRAR, 'registrar la factura de venta leída') ?? err;
+      });
 
     // Archivar el PDF en su carpeta definitiva. No es critico: si falla, la
     // factura ya esta creada y el documento queda enlazado igualmente.

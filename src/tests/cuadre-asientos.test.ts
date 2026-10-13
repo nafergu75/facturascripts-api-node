@@ -32,8 +32,7 @@ describe('contabilizar una factura descuadrada en un centimo', () => {
   it('se rechaza en vez de crear un asiento descuadrado', async () => {
     const db = {
       journalEntry: { create: jest.fn(async () => ({ id: 'a1' })) },
-      journalEntryLine: { create: jest.fn(async ({ data }: { data: unknown }) => data) },
-      vATBook: { create: jest.fn() },
+      vATBook: { createMany: jest.fn() },
     };
     await expect(
       accountingEngineService.contabilizarFacturaIngreso(
@@ -55,6 +54,8 @@ describe('contabilizar una factura descuadrada en un centimo', () => {
         db as never,
       ),
     ).rejects.toThrow(/desequilibrado/);
-    expect(db.vATBook.create).not.toHaveBeenCalled();
+    // Las lineas se cuadran antes de escribir: no se crea ni el asiento.
+    expect(db.journalEntry.create).not.toHaveBeenCalled();
+    expect(db.vATBook.createMany).not.toHaveBeenCalled();
   });
 });

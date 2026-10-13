@@ -37,6 +37,7 @@ jest.mock('../utils/storage', () => ({
 import { createHash } from 'crypto';
 import express from 'express';
 import request from 'supertest';
+import { Prisma } from '@prisma/client';
 import { prisma } from '../config/database';
 import { errorMiddleware } from '../middleware/error.middleware';
 import gastosRoutes from '../routes/gastos-extractor.routes';
@@ -565,6 +566,44 @@ describe('confirmar con lecturaId', () => {
     const sin = await request(app()).post('/gastos-extractor/confirmar').send(cuerpo(id, { revisado: true, numeroFacturaProveedor: 'R-3C' }));
     expect(sin.body.details).toMatchObject({ codigo: 'FALTA_RECTIFICATIVA' });
     expect(await prisma.expenseInvoice.count({ where: { companyId: E, numeroFacturaProveedor: 'R-3C' } })).toBe(0);
+  });
+
+  it('si la base de datos falla justo después de grabarla: dice que sí está registrada (no lo contrario) y la lectura queda enlazada con su original', async () => {
+    const { id } = await leerConAzure('resultado-simple');
+    // La ficha que se lee al final, ya grabadas la factura y su asiento (con sus líneas y el proveedor): la base de datos no responde.
+    const real = prisma.expenseInvoice.findFirst.bind(prisma.expenseInvoice);
+    let caidas = 0;
+    const espia = jest.spyOn(prisma.expenseInvoice, 'findFirst').mockImplementation(((args: { include?: { lineas?: unknown; supplier?: unknown } }) => {
+      if (args?.include?.lineas && args.include.supplier && caidas++ === 0) {
+        return Promise.reject(
+          new Prisma.PrismaClientKnownRequestError('Timed out fetching a new connection from the connection pool.', { code: 'P2024', clientVersion: Prisma.prismaVersion.client }),
+        );
+      }
+      return real(args as never);
+    }) as never);
+    const r = await request(app()).post('/gastos-extractor/confirmar').send(cuerpo(id, { revisado: true, numeroFacturaProveedor: 'TRAS-GRABAR-1' }));
+    espia.mockRestore();
+    expect(caidas).toBe(1);
+    expect(r.status).toBe(503);
+    expect(r.body.message).toBe('La base de datos ha tardado demasiado en responder. La factura sí está registrada: búscala en Compras antes de volver a registrarla.');
+    expect(JSON.stringify(r.body)).not.toMatch(/prisma|connection pool|no se ha registrado/i);
+    const facturaId = r.body.details.facturaYaRegistradaId as string;
+    expect(await prisma.expenseInvoice.findFirstOrThrow({ where: { id: facturaId, companyId: E } })).toMatchObject({ numeroFacturaProveedor: 'TRAS-GRABAR-1', estado: 'DRAFT' });
+    expect(await prisma.journalEntry.count({ where: { companyId: E, invoiceId: facturaId } })).toBe(1);
+    // La lectura, enlazada igual: el original queda con la factura.
+    const fila = await prisma.lecturaDocumento.findUniqueOrThrow({ where: { id } });
+    expect(fila).toMatchObject({ estado: 'CONFIRMADA', expenseInvoiceId: facturaId, archivoRef: null });
+    expect((await prisma.documentoArchivo.findFirstOrThrow({ where: { companyId: E, expenseInvoiceId: facturaId } })).archivoHash).toBe(fila.archivoHash);
+    // Volver a registrarla no la duplica.
+    const otra = await request(app()).post('/gastos-extractor/confirmar').send(cuerpo(id, { revisado: true, numeroFacturaProveedor: 'TRAS-GRABAR-1' }));
+    expect(otra.status).toBe(409);
+    expect(await prisma.expenseInvoice.count({ where: { companyId: E, numeroFacturaProveedor: 'TRAS-GRABAR-1' } })).toBe(1);
+    // Otra lectura de la misma factura: el 409 de duplicada (que lleva el id de la que ya está) no la enlaza con ella.
+    const { id: otraLectura } = await leerConAzure('resultado-simple');
+    const dup = await request(app()).post('/gastos-extractor/confirmar').send(cuerpo(otraLectura, { revisado: true, numeroFacturaProveedor: 'TRAS-GRABAR-1' }));
+    expect(dup.status).toBe(409);
+    expect(dup.body.details.facturaId).toBe(facturaId);
+    expect(await prisma.lecturaDocumento.findUniqueOrThrow({ where: { id: otraLectura } })).toMatchObject({ estado: 'LISTA', expenseInvoiceId: null });
   });
 
   it('una lectura que no existe: 404', async () => {

@@ -48,6 +48,26 @@ export function desgloseIvaPorTipo(
   return [...porTipo.values()].map((d) => ({ tipoIva: d.tipoIva, base: centimos(d.base), cuota: centimos(d.cuota) }));
 }
 
+/** Apunte de un asiento antes de escribirlo. */
+interface LineaAsiento {
+  accountCode: string;
+  accountName: string;
+  debe: number;
+  haber: number;
+  referencia: string;
+  companyId: string;
+}
+
+/**
+ * Las lineas con su hora de alta una tras otra (1 ms entre cada una): escritas
+ * de una vez llevarian todas la misma, y el libro diario, que las ordena por
+ * ella, podria mostrarlas en otro orden.
+ */
+function conOrden<T extends object>(lineas: T[]): Array<T & { createdAt: Date }> {
+  const ahora = Date.now();
+  return lineas.map((l, i) => ({ ...l, createdAt: new Date(ahora + i) }));
+}
+
 /** Apuntes del libro de IVA: el desglose si viene, o los totales al tipo de la factura. */
 function apuntesLibroIva(d: { desgloseIva?: DesgloseIva[]; ivaRate: number; baseTotal: number; ivaTotal: number }): DesgloseIva[] {
   if (d.desgloseIva && d.desgloseIva.length > 0) return d.desgloseIva;
@@ -231,6 +251,11 @@ export async function contabilizarFacturaIngreso(
     observacionesLibro?: string;
     /** POSTED (por defecto): la factura emitida es definitiva. DRAFT: pendiente de revisar (OCR). */
     estadoAsiento?: 'POSTED' | 'DRAFT';
+    /**
+     * Quien llama ya ha comprobado la fecha (comprobarFechaAbierta, antes de la
+     * transaccion): no se vuelve a leer dentro, donde cada consulta cuenta.
+     */
+    fechaComprobada?: boolean;
   },
   tx?: TransaccionBD,
 ): Promise<{ asientoId: string; lineas: any[] }> {
@@ -253,8 +278,51 @@ export async function contabilizarFacturaIngreso(
   const descripcion = `Factura de ingreso #${invoiceData.numeroFactura} - ${invoiceData.clienteNombre}`.slice(0, 190 - nota.length) + nota;
 
   // Un año llevado por la gestoria es de solo lectura (red de seguridad de comprobarFechaAbierta).
-  await exigirFechaContabilizable(companyId, invoiceData.fechaEmision);
-  // Crear asiento
+  if (!invoiceData.fechaComprobada) await exigirFechaContabilizable(companyId, invoiceData.fechaEmision);
+
+  // Las lineas se preparan antes y se escriben con el asiento en una sola
+  // operacion (antes, una sentencia por linea: en TiDB cada una es un viaje de
+  // red dentro de la transaccion). Si no cuadra, no se escribe nada.
+  const lineas: LineaAsiento[] = [];
+  let totalDebe = 0;
+  let totalHaber = 0;
+  const apunte = (accountCode: string, accountName: string, debe: number, haber: number) => {
+    lineas.push({ accountCode, accountName: accountName.slice(0, 190), debe, haber, referencia: invoiceData.numeroFactura, companyId });
+    totalDebe += debe;
+    totalHaber += haber;
+  };
+
+  // Línea 1: Deudor cliente (DEBE), en su subcuenta propia.
+  if (!invoiceData.cuentaCliente) {
+    logger.warn('venta contabilizada contra la 430 generica', { companyId, invoiceId, factura: invoiceData.numeroFactura });
+  }
+  apunte(invoiceData.cuentaCliente ?? regla.clienteDeudor, invoiceData.nombreCuentaCliente ?? 'Clientes', invoiceData.totalFactura, 0);
+
+  // Línea 2: Ingresos (HABER), una por cuenta. Si el reparto por lineas no
+  // suma la base de la factura (datos antiguos), todo a la 700.
+  const porCuenta = invoiceData.ingresoPorCuenta?.filter((g) => aCentimos(g.base) !== 0) ?? [];
+  const repartoCuadra = porCuenta.length > 0 && porCuenta.reduce((a, g) => a + aCentimos(g.base), 0) === aCentimos(invoiceData.baseTotal);
+  // Base a cero sin reparto (una rectificativa que solo cambia el tipo de IVA): sin linea de ingresos vacia.
+  const ingresos = repartoCuadra ? porCuenta : aCentimos(invoiceData.baseTotal) === 0 ? [] : [{ cuenta: regla.ingreso, nombre: 'Ventas', base: invoiceData.baseTotal }];
+  for (const g of ingresos) apunte(g.cuenta, g.nombre ?? 'Ventas', 0, g.base);
+
+  // Línea 3: IVA repercutido (HABER), si hay cuota. Una rectificativa la lleva
+  // negativa, como la 430 y la 700 (antes no se apuntaba y el asiento no cuadraba).
+  if (aCentimos(invoiceData.ivaTotal) !== 0) apunte(regla.ivaRepercutido, 'IVA repercutido', 0, invoiceData.ivaTotal);
+
+  // Línea 4: Retención IRPF (DEBE, cuenta 473 HP retenciones — ACTIVO).
+  // El cliente nos retiene parte del pago y lo ingresa a Hacienda en nuestro nombre.
+  // 473 = crédito frente a AEAT (nos lo devolverán o compensarán con el IS).
+  if (aCentimos(invoiceData.retencionTotal) !== 0) apunte(regla.irpfRetenido, 'HP retenciones y pagos a cuenta', invoiceData.retencionTotal, 0);
+
+  // Validar que debe = haber (asiento equilibrado)
+  if (!cuadraEnCentimos(totalDebe, totalHaber)) {
+    throw badRequest(
+      `Asiento desequilibrado: debe ${totalDebe} ≠ haber ${totalHaber}`,
+    );
+  }
+
+  // Crear asiento con sus lineas
   const asiento = await db.journalEntry.create({
     data: {
       companyId,
@@ -265,97 +333,10 @@ export async function contabilizarFacturaIngreso(
       estado: invoiceData.estadoAsiento ?? 'POSTED',
       invoiceId,
       invoiceType: 'INGRESO',
+      lineas: { createMany: { data: conOrden(lineas) } },
     },
+    select: { id: true },
   });
-
-  // Crear líneas del asiento
-  const lineas: any[] = [];
-  let totalDebe = 0;
-  let totalHaber = 0;
-
-  // Línea 1: Deudor cliente (DEBE), en su subcuenta propia.
-  if (!invoiceData.cuentaCliente) {
-    logger.warn('venta contabilizada contra la 430 generica', { companyId, invoiceId, factura: invoiceData.numeroFactura });
-  }
-  const lineaCliente = await db.journalEntryLine.create({
-    data: {
-      entryId: asiento.id,
-      accountCode: invoiceData.cuentaCliente ?? regla.clienteDeudor,
-      accountName: (invoiceData.nombreCuentaCliente ?? 'Clientes').slice(0, 190),
-      debe: invoiceData.totalFactura,
-      haber: 0,
-      referencia: invoiceData.numeroFactura,
-      companyId,
-    },
-  });
-  lineas.push(lineaCliente);
-  totalDebe += invoiceData.totalFactura;
-
-  // Línea 2: Ingresos (HABER), una por cuenta. Si el reparto por lineas no
-  // suma la base de la factura (datos antiguos), todo a la 700.
-  const porCuenta = invoiceData.ingresoPorCuenta?.filter((g) => aCentimos(g.base) !== 0) ?? [];
-  const repartoCuadra = porCuenta.length > 0 && porCuenta.reduce((a, g) => a + aCentimos(g.base), 0) === aCentimos(invoiceData.baseTotal);
-  // Base a cero sin reparto (una rectificativa que solo cambia el tipo de IVA): sin linea de ingresos vacia.
-  const ingresos = repartoCuadra ? porCuenta : aCentimos(invoiceData.baseTotal) === 0 ? [] : [{ cuenta: regla.ingreso, nombre: 'Ventas', base: invoiceData.baseTotal }];
-  for (const g of ingresos) {
-    const lineaIngreso = await db.journalEntryLine.create({
-      data: {
-        entryId: asiento.id,
-        accountCode: g.cuenta,
-        accountName: (g.nombre ?? 'Ventas').slice(0, 190),
-        debe: 0,
-        haber: g.base,
-        referencia: invoiceData.numeroFactura,
-        companyId,
-      },
-    });
-    lineas.push(lineaIngreso);
-    totalHaber += g.base;
-  }
-
-  // Línea 3: IVA repercutido (HABER), si hay cuota. Una rectificativa la lleva
-  // negativa, como la 430 y la 700 (antes no se apuntaba y el asiento no cuadraba).
-  if (aCentimos(invoiceData.ivaTotal) !== 0) {
-    const lineaIva = await db.journalEntryLine.create({
-      data: {
-        entryId: asiento.id,
-        accountCode: regla.ivaRepercutido,
-        accountName: 'IVA repercutido',
-        debe: 0,
-        haber: invoiceData.ivaTotal,
-        referencia: invoiceData.numeroFactura,
-        companyId,
-      },
-    });
-    lineas.push(lineaIva);
-    totalHaber += invoiceData.ivaTotal;
-  }
-
-  // Línea 4: Retención IRPF (DEBE, cuenta 473 HP retenciones — ACTIVO).
-  // El cliente nos retiene parte del pago y lo ingresa a Hacienda en nuestro nombre.
-  // 473 = crédito frente a AEAT (nos lo devolverán o compensarán con el IS).
-  if (aCentimos(invoiceData.retencionTotal) !== 0) {
-    const lineaIrpf = await db.journalEntryLine.create({
-      data: {
-        entryId: asiento.id,
-        accountCode: regla.irpfRetenido,
-        accountName: 'HP retenciones y pagos a cuenta',
-        debe: invoiceData.retencionTotal,
-        haber: 0,
-        referencia: invoiceData.numeroFactura,
-        companyId,
-      },
-    });
-    lineas.push(lineaIrpf);
-    totalDebe += invoiceData.retencionTotal;
-  }
-
-  // Validar que debe = haber (asiento equilibrado)
-  if (!cuadraEnCentimos(totalDebe, totalHaber)) {
-    throw badRequest(
-      `Asiento desequilibrado: debe ${totalDebe} ≠ haber ${totalHaber}`,
-    );
-  }
 
   // VATBook: un apunte por tipo de IVA, vinculado al asiento. Las exentas tambien
   // se registran (libro de facturas expedidas). Los informes filtran por asientos
@@ -372,24 +353,22 @@ export async function contabilizarFacturaIngreso(
     const devengo = invoiceData.fechaDevengo && invoiceData.fechaDevengo !== invoiceData.fechaEmision ? invoiceData.fechaDevengo : null;
     const fechaExpedicion = `${invoiceData.fechaEmision.slice(8, 10)}/${invoiceData.fechaEmision.slice(5, 7)}/${invoiceData.fechaEmision.slice(0, 4)}`;
     const observaciones = [invoiceData.observacionesLibro, devengo ? `Fecha de expedición: ${fechaExpedicion}` : null].filter(Boolean).join(' ');
-    for (const apunte of apuntesLibroIva(invoiceData)) {
-      await db.vATBook.create({
-        data: {
-          companyId,
-          tipoLibro: 'EMITIDAS',
-          numeroFactura: invoiceData.numeroFactura,
-          fechaFactura: new Date(devengo ?? invoiceData.fechaEmision),
-          ...(observaciones ? { observaciones } : {}),
-          nifTercero: invoiceData.clienteNif,
-          nombreTercero: invoiceData.clienteNombre,
-          baseImponible: apunte.base,
-          tipoIva: apunte.tipoIva,
-          cuotaIva: apunte.cuota,
-          asientoId: asiento.id,
-          ...tipoLibro,
-        },
-      });
-    }
+    await db.vATBook.createMany({
+      data: apuntesLibroIva(invoiceData).map((a) => ({
+        companyId,
+        tipoLibro: 'EMITIDAS',
+        numeroFactura: invoiceData.numeroFactura,
+        fechaFactura: new Date(devengo ?? invoiceData.fechaEmision),
+        ...(observaciones ? { observaciones } : {}),
+        nifTercero: invoiceData.clienteNif,
+        nombreTercero: invoiceData.clienteNombre,
+        baseImponible: a.base,
+        tipoIva: a.tipoIva,
+        cuotaIva: a.cuota,
+        asientoId: asiento.id,
+        ...tipoLibro,
+      })),
+    });
   }
 
   return { asientoId: asiento.id, lineas };
@@ -474,6 +453,8 @@ export async function contabilizarFacturaGasto(
     fechaLibroIva?: string;
     /** Observaciones del libro de IVA (las de una rectificativa: que rectifica y por que). */
     observacionesLibroIva?: string;
+    /** Quien llama ya ha comprobado la fecha (comprobarFechaAbierta, antes de la transaccion). */
+    fechaComprobada?: boolean;
   },
   tx?: TransaccionBD,
 ): Promise<{ asientoId: string; lineas: any[] }> {
@@ -515,29 +496,15 @@ export async function contabilizarFacturaGasto(
     : `${clase} #${invoiceData.numeroFactura} - ${invoiceData.proveedorNombre}${deQue}`.slice(0, 190);
 
   // Un año llevado por la gestoria es de solo lectura (red de seguridad de comprobarFechaAbierta).
-  await exigirFechaContabilizable(companyId, invoiceData.fechaEmision);
-  // Crear asiento
-  const asiento = await db.journalEntry.create({
-    data: {
-      companyId,
-      fecha: new Date(invoiceData.fechaEmision),
-      numeroAsiento: invoiceData.numeroAsiento ?? `FAC-GAST-${invoiceData.numeroFactura}`,
-      descripcion,
-      origen: 'FACTURA_GASTO',
-      estado: invoiceData.estadoAsiento ?? 'POSTED',
-      invoiceId,
-      invoiceType: 'GASTO',
-    },
-  });
+  if (!invoiceData.fechaComprobada) await exigirFechaContabilizable(companyId, invoiceData.fechaEmision);
 
-  const lineas: any[] = [];
+  // Las lineas se preparan y se escriben con el asiento de una vez (antes, una
+  // sentencia por linea dentro de la transaccion). Si no cuadra, nada.
+  const lineas: LineaAsiento[] = [];
   let totalDebe = 0;
   let totalHaber = 0;
-  const apunte = async (accountCode: string, accountName: string, debe: number, haber: number) => {
-    const l = await db.journalEntryLine.create({
-      data: { entryId: asiento.id, accountCode, accountName, debe, haber, referencia: invoiceData.numeroFactura, companyId },
-    });
-    lineas.push(l);
+  const apunte = (accountCode: string, accountName: string, debe: number, haber: number) => {
+    lineas.push({ accountCode, accountName, debe, haber, referencia: invoiceData.numeroFactura, companyId });
     totalDebe += debe;
     totalHaber += haber;
   };
@@ -546,11 +513,11 @@ export async function contabilizarFacturaGasto(
    * el contrario y en valor absoluto (un abono carga la 400 y abona el gasto y
    * la 472, como el contraasiento de una anulacion). Cero: no hay apunte.
    */
-  const apunteConSigno = async (accountCode: string, accountName: string, lado: 'DEBE' | 'HABER', importe: number) => {
+  const apunteConSigno = (accountCode: string, accountName: string, lado: 'DEBE' | 'HABER', importe: number) => {
     if (aCentimos(importe) === 0) return;
     const enDebe = (lado === 'DEBE') === importe > 0;
     const valor = Math.abs(importe);
-    await apunte(accountCode, accountName, enDebe ? valor : 0, enDebe ? 0 : valor);
+    apunte(accountCode, accountName, enDebe ? valor : 0, enDebe ? 0 : valor);
   };
   const sinLibroIva = invoiceData.sinLibroIva ?? !(await esEmpresaEspanola(companyId, db));
 
@@ -562,9 +529,9 @@ export async function contabilizarFacturaGasto(
   const porCuenta = invoiceData.gastoPorCuenta?.filter((g) => aCentimos(g.base) !== 0) ?? [];
   const repartoCuadra = porCuenta.reduce((a, g) => a + aCentimos(g.base), 0) === aCentimos(invoiceData.baseTotal);
   if (repartoCuadra) {
-    for (const g of porCuenta) await apunteConSigno(g.cuenta, g.nombre ?? 'Gastos', 'DEBE', g.base);
+    for (const g of porCuenta) apunteConSigno(g.cuenta, g.nombre ?? 'Gastos', 'DEBE', g.base);
   } else {
-    await apunteConSigno(regla.gasto, 'Gastos', 'DEBE', invoiceData.baseTotal);
+    apunteConSigno(regla.gasto, 'Gastos', 'DEBE', invoiceData.baseTotal);
   }
 
   // IVA soportado (DEBE): una linea por tipo con cuota. Si el desglose no cuadra
@@ -573,21 +540,21 @@ export async function contabilizarFacturaGasto(
   const conCuota = apuntesIva.filter((a) => aCentimos(a.cuota) !== 0);
   const ivaCuadra = conCuota.reduce((a, x) => a + aCentimos(x.cuota), 0) === aCentimos(invoiceData.ivaTotal);
   if (ivaCuadra) {
-    for (const a of conCuota) await apunteConSigno(regla.ivaSoportado!, `IVA soportado ${a.tipoIva} %`, 'DEBE', a.cuota);
+    for (const a of conCuota) apunteConSigno(regla.ivaSoportado!, `IVA soportado ${a.tipoIva} %`, 'DEBE', a.cuota);
   } else {
-    await apunteConSigno(regla.ivaSoportado!, 'IVA soportado', 'DEBE', invoiceData.ivaTotal);
+    apunteConSigno(regla.ivaSoportado!, 'IVA soportado', 'DEBE', invoiceData.ivaTotal);
   }
 
   // IVA autoliquidado (adquisicion intracomunitaria): soportado y repercutido
   // por la misma cuota. Una empresa sin IVA español no autoliquida nada.
   for (const a of sinLibroIva ? [] : (invoiceData.autoliquidacion ?? [])) {
-    await apunteConSigno(regla.ivaSoportado!, `IVA soportado autoliquidado ${a.tipoIva} %`, 'DEBE', a.cuota);
-    await apunteConSigno('477', `IVA repercutido autoliquidado ${a.tipoIva} %`, 'HABER', a.cuota);
+    apunteConSigno(regla.ivaSoportado!, `IVA soportado autoliquidado ${a.tipoIva} %`, 'DEBE', a.cuota);
+    apunteConSigno('477', `IVA repercutido autoliquidado ${a.tipoIva} %`, 'HABER', a.cuota);
   }
 
   // IRPF retenido al proveedor (HABER, 4751 — PASIVO con Hacienda): lo
   // retenemos del pago y lo ingresamos nosotros (111 o 115). La de un abono, al debe.
-  await apunteConSigno(regla.irpfAsumido!, 'HP acreedora por retenciones practicadas', 'HABER', invoiceData.retencionTotal);
+  apunteConSigno(regla.irpfAsumido!, 'HP acreedora por retenciones practicadas', 'HABER', invoiceData.retencionTotal);
 
   // Acreedor (HABER): la subcuenta del proveedor en la 400 (compras) o la 410 (servicios).
   if (!invoiceData.cuentaAcreedor) {
@@ -595,7 +562,7 @@ export async function contabilizarFacturaGasto(
   }
   const acreedor = invoiceData.cuentaAcreedor ?? regla.proveedorAcreedor!;
   const nombreAcreedor = invoiceData.nombreCuentaAcreedor ?? NOMBRE_ACREEDOR[acreedor] ?? NOMBRE_ACREEDOR[acreedor.slice(0, 3)] ?? 'Proveedores';
-  await apunteConSigno(acreedor, nombreAcreedor.slice(0, 190), 'HABER', invoiceData.totalFactura);
+  apunteConSigno(acreedor, nombreAcreedor.slice(0, 190), 'HABER', invoiceData.totalFactura);
 
   // Validar equilibrio: DEBE (base+IVA) = HABER (retención+totalFactura)
   if (!cuadraEnCentimos(totalDebe, totalHaber)) {
@@ -604,6 +571,22 @@ export async function contabilizarFacturaGasto(
     );
   }
 
+  // Crear asiento con sus lineas
+  const asiento = await db.journalEntry.create({
+    data: {
+      companyId,
+      fecha: new Date(invoiceData.fechaEmision),
+      numeroAsiento: invoiceData.numeroAsiento ?? `FAC-GAST-${invoiceData.numeroFactura}`,
+      descripcion,
+      origen: 'FACTURA_GASTO',
+      estado: invoiceData.estadoAsiento ?? 'POSTED',
+      invoiceId,
+      invoiceType: 'GASTO',
+      lineas: { createMany: { data: conOrden(lineas) } },
+    },
+    select: { id: true },
+  });
+
   // VATBook: un apunte por tipo de IVA, vinculado al asiento. Informes filtran por asientos POSTED.
   const expedicion =
     invoiceData.fechaExpedicion && invoiceData.fechaExpedicion !== invoiceData.fechaEmision ? invoiceData.fechaExpedicion : null;
@@ -611,9 +594,9 @@ export async function contabilizarFacturaGasto(
     .filter(Boolean)
     .join(' ')
     .slice(0, 500);
-  for (const a of sinLibroIva ? [] : apuntesIva) {
-    await db.vATBook.create({
-      data: {
+  if (!sinLibroIva && apuntesIva.length) {
+    await db.vATBook.createMany({
+      data: apuntesIva.map((a) => ({
         companyId,
         tipoLibro: 'RECIBIDAS',
         numeroFactura: invoiceData.numeroFactura,
@@ -626,7 +609,7 @@ export async function contabilizarFacturaGasto(
         tipoIva: a.tipoIva,
         cuotaIva: a.cuota,
         asientoId: asiento.id,
-      },
+      })),
     });
   }
 
@@ -646,22 +629,20 @@ export async function contabilizarFacturaGasto(
             cuota: invoiceData.retencionTotal,
           },
         ];
-    for (const r of filas) {
-      await db.retentionBook.create({
-        data: {
-          companyId,
-          ano: Number(invoiceData.fechaEmision.slice(0, 4)),
-          mes: Number(invoiceData.fechaEmision.slice(5, 7)),
-          tipoRetencionNombre: tipoRetencionLibro(tipoGasto),
-          nifTercero: invoiceData.proveedorNif,
-          nombreTercero: invoiceData.proveedorNombre,
-          baseImponible: r.base,
-          porcentajeRetencion: r.porcentaje,
-          cuotaRetencion: r.cuota,
-          asientoId: asiento.id,
-        },
-      });
-    }
+    await db.retentionBook.createMany({
+      data: filas.map((r) => ({
+        companyId,
+        ano: Number(invoiceData.fechaEmision.slice(0, 4)),
+        mes: Number(invoiceData.fechaEmision.slice(5, 7)),
+        tipoRetencionNombre: tipoRetencionLibro(tipoGasto),
+        nifTercero: invoiceData.proveedorNif,
+        nombreTercero: invoiceData.proveedorNombre,
+        baseImponible: r.base,
+        porcentajeRetencion: r.porcentaje,
+        cuotaRetencion: r.cuota,
+        asientoId: asiento.id,
+      })),
+    });
   }
 
   return { asientoId: asiento.id, lineas };

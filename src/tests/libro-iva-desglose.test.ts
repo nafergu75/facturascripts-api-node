@@ -14,10 +14,10 @@ import { accountingEngineService, desgloseIvaPorTipo } from '../services/account
 function dbFalsa() {
   const libroIva: Array<Record<string, unknown>> = [];
   const db = {
+    // El asiento se escribe con sus lineas, y los libros de una vez (createMany).
     journalEntry: { create: jest.fn(async () => ({ id: 'asiento-1' })) },
-    journalEntryLine: { create: jest.fn(async ({ data }: { data: unknown }) => data) },
-    vATBook: { create: jest.fn(async ({ data }: { data: Record<string, unknown> }) => libroIva.push(data)) },
-    retentionBook: { create: jest.fn(async () => ({})) },
+    vATBook: { createMany: jest.fn(async ({ data }: { data: Array<Record<string, unknown>> }) => ({ count: libroIva.push(...data) })) },
+    retentionBook: { createMany: jest.fn(async ({ data }: { data: unknown[] }) => ({ count: data.length })) },
     // Sin configuracion legal: empresa española (el gasto lleva libro de IVA).
     legalConfig: { findUnique: jest.fn(async () => null) },
   };

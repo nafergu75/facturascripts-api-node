@@ -219,6 +219,67 @@ export async function asignarSubcuentasProveedor(
 
 const TEXTO_FICHA: Record<TipoFicha, string> = { cliente: 'del cliente', proveedor: 'del proveedor' };
 
+/** La subcuenta en el plan (si ya esta) y, si no, la cuenta de la que colgara. */
+export interface SubcuentaEnPlan {
+  existe: { id: string; nombre: string } | null;
+  padre: { id: string; codigo: string; nivel: number; naturaleza: string; tipoUso: string } | null;
+}
+
+/** Lee como esta la subcuenta en el plan. Solo lee: se puede hacer fuera de la transaccion. */
+export async function leerSubcuentaEnPlan(db: Db, companyId: string, codigo: string): Promise<SubcuentaEnPlan> {
+  const existe = await db.chartOfAccounts.findFirst({ where: { companyId, codigo }, select: { id: true, nombre: true } });
+  if (existe) return { existe, padre: null };
+  const prefijo = codigo.slice(0, 3);
+  const columnas = { id: true, codigo: true, nivel: true, naturaleza: true, tipoUso: true } as const;
+  const padre =
+    (await db.chartOfAccounts.findFirst({ where: { companyId, codigo: prefijo }, select: columnas })) ??
+    (await db.chartOfAccounts.findFirst({ where: { companyId, codigo: { in: [prefijo.slice(0, 2), '4'] } }, orderBy: { codigo: 'desc' }, select: columnas }));
+  return { existe: null, padre };
+}
+
+/**
+ * Escribe en el plan lo que falte segun lo leido: la da de alta (colgando de
+ * 430/400/410, nivel del padre + 1, con su naturaleza) o le pone el nombre de
+ * la ficha. Si otro proceso la ha dado de alta entretanto, salta el indice
+ * unico del plan y conReintentoSubcuenta repite la operacion entera.
+ */
+async function escribirSubcuentaEnPlan(
+  tx: TransaccionBD,
+  companyId: string,
+  codigo: string,
+  nombreFiscal: string,
+  ficha: { tipo: TipoFicha; id: string },
+  plan: SubcuentaEnPlan,
+): Promise<void> {
+  const nombre = nombreDeSubcuenta(nombreFiscal, codigo);
+  if (plan.existe) {
+    if (plan.existe.nombre !== nombre) await tx.chartOfAccounts.update({ where: { id: plan.existe.id }, data: { nombre } });
+    return;
+  }
+  const prefijo = codigo.slice(0, 3);
+  const padre = plan.padre;
+  // createMany: una sola sentencia (create vuelve a leer la fila y no hace falta).
+  await tx.chartOfAccounts.createMany({
+    data: [
+      {
+        id: randomUUID(),
+        companyId,
+        codigo,
+        nombre,
+        grupo: 4,
+        nivel: (padre?.nivel ?? 3) + 1,
+        naturaleza: padre?.naturaleza ?? (prefijo === '430' ? 'ACTIVO' : 'PASIVO'),
+        tipoUso: padre?.tipoUso ?? 'BALANCE',
+        esBasePGC: false,
+        esPersonalizadaEmpresa: true,
+        parentId: padre?.id ?? null,
+        parentCodigo: padre?.codigo ?? prefijo,
+        notas: `Subcuenta ${TEXTO_FICHA[ficha.tipo]} ${ficha.id} (asignada automáticamente).`,
+      },
+    ],
+  });
+}
+
 /**
  * Da de alta la subcuenta en el plan si falta (colgando de 430/400/410, nivel
  * del padre + 1, con su naturaleza) con el nombre fiscal. Si ya esta con otro
@@ -231,33 +292,7 @@ export async function asegurarSubcuentaEnPlan(
   nombreFiscal: string,
   ficha: { tipo: TipoFicha; id: string },
 ): Promise<void> {
-  const nombre = nombreDeSubcuenta(nombreFiscal, codigo);
-  const existe = await tx.chartOfAccounts.findFirst({ where: { companyId, codigo }, select: { id: true, nombre: true } });
-  if (existe) {
-    if (existe.nombre !== nombre) await tx.chartOfAccounts.update({ where: { id: existe.id }, data: { nombre } });
-    return;
-  }
-  const prefijo = codigo.slice(0, 3);
-  const padre =
-    (await tx.chartOfAccounts.findFirst({ where: { companyId, codigo: prefijo } })) ??
-    (await tx.chartOfAccounts.findFirst({ where: { companyId, codigo: { in: [prefijo.slice(0, 2), '4'] } }, orderBy: { codigo: 'desc' } }));
-  await tx.chartOfAccounts.create({
-    data: {
-      id: randomUUID(),
-      companyId,
-      codigo,
-      nombre,
-      grupo: 4,
-      nivel: (padre?.nivel ?? 3) + 1,
-      naturaleza: padre?.naturaleza ?? (prefijo === '430' ? 'ACTIVO' : 'PASIVO'),
-      tipoUso: padre?.tipoUso ?? 'BALANCE',
-      esBasePGC: false,
-      esPersonalizadaEmpresa: true,
-      parentId: padre?.id ?? null,
-      parentCodigo: padre?.codigo ?? prefijo,
-      notas: `Subcuenta ${TEXTO_FICHA[ficha.tipo]} ${ficha.id} (asignada automáticamente).`,
-    },
-  });
+  await escribirSubcuentaEnPlan(tx, companyId, codigo, nombreFiscal, ficha, await leerSubcuentaEnPlan(tx, companyId, codigo));
 }
 
 // ---------------------------------------------------------------------------
@@ -276,6 +311,53 @@ export async function subcuentaClienteParaApunte(tx: TransaccionBD, companyId: s
   const codigo = await asignarSubcuentaCliente(tx, companyId, c);
   await asegurarSubcuentaEnPlan(tx, companyId, codigo, c.nombreFiscal, { tipo: 'cliente', id: c.id });
   return { codigo, nombre: nombreDeSubcuenta(c.nombreFiscal, codigo) };
+}
+
+/**
+ * La subcuenta de un tercero leida ANTES de la transaccion que contabiliza: en
+ * produccion (TiDB) cada consulta dentro alarga la transaccion, que tiene un
+ * tiempo maximo. Dentro, aplicarSubcuentaPreparada solo escribe lo que falte.
+ */
+export interface SubcuentaPreparada {
+  ficha: { tipo: TipoFicha; id: string; nombreFiscal: string };
+  codigo: string;
+  plan: SubcuentaEnPlan;
+}
+
+/**
+ * La 430N del cliente si ya la tiene asignada (todos los de alta desde las
+ * subcuentas), con su estado en el plan. null si aun no la tiene: entonces se
+ * asigna dentro de la transaccion (subcuentaClienteParaApunte), con bloqueo.
+ */
+export async function prepararSubcuentaCliente(
+  companyId: string,
+  cliente: { id: string; nombreFiscal: string; subcuenta430?: string | null },
+  db: Db = prisma,
+): Promise<SubcuentaPreparada | null> {
+  if (!cliente.subcuenta430) return null;
+  return { ficha: { tipo: 'cliente', id: cliente.id, nombreFiscal: cliente.nombreFiscal }, codigo: cliente.subcuenta430, plan: await leerSubcuentaEnPlan(db, companyId, cliente.subcuenta430) };
+}
+
+/**
+ * La 400N o la 410N del proveedor (segun el tipo de gasto) si ya tiene las
+ * dos asignadas, con su estado en el plan. null si le falta alguna: se
+ * asignan dentro de la transaccion (subcuentaProveedorParaApunte).
+ */
+export async function prepararSubcuentaProveedor(
+  companyId: string,
+  proveedor: { id: string; nombreFiscal: string; subcuenta400?: string | null; subcuenta410?: string | null },
+  tipoGastoOPrefijo: string | null | undefined,
+  db: Db = prisma,
+): Promise<SubcuentaPreparada | null> {
+  if (!proveedor.subcuenta400 || !proveedor.subcuenta410) return null;
+  const codigo = prefijoAcreedor(tipoGastoOPrefijo) === '400' ? proveedor.subcuenta400 : proveedor.subcuenta410;
+  return { ficha: { tipo: 'proveedor', id: proveedor.id, nombreFiscal: proveedor.nombreFiscal }, codigo, plan: await leerSubcuentaEnPlan(db, companyId, codigo) };
+}
+
+/** Dentro de la transaccion: da de alta en el plan (o renombra) la subcuenta preparada, sin volver a leer. */
+export async function aplicarSubcuentaPreparada(tx: TransaccionBD, companyId: string, p: SubcuentaPreparada): Promise<SubcuentaApunte> {
+  await escribirSubcuentaEnPlan(tx, companyId, p.codigo, p.ficha.nombreFiscal, { tipo: p.ficha.tipo, id: p.ficha.id }, p.plan);
+  return { codigo: p.codigo, nombre: nombreDeSubcuenta(p.ficha.nombreFiscal, p.codigo) };
 }
 
 /** 400 (compras) o 410 (servicios) segun el tipo de gasto; tambien admite el prefijo. */

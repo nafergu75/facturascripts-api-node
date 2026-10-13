@@ -31,6 +31,9 @@ import { validarNifEspanol } from '../utils/nif';
 import { prefijoNifIvaUe } from '../domain/tipo-operacion.model';
 import { TIPO_GASTO_INFO, tipoGastoDeCuenta, type TipoGasto } from '../domain/factura-gasto.model';
 import { listarCuentasBase } from './planContable.service';
+import type { DireccionFicha } from './lectura/direccion';
+import { direccionDeIa, PROPIEDADES_DIRECCION } from './lectura/direccion-ia';
+import type { DireccionLeida } from './lectura/tipos';
 
 // ---------------------------------------------------------------------------
 // Esquema de salida (contrato con los consumidores)
@@ -63,9 +66,10 @@ export interface GastoExtraido {
   tipoDocumento: TipoDocumentoGasto;
   /**
    * Dirección del proveedor leída en la factura (para la ficha de un proveedor
-   * nuevo), con `revisar` si el lector la leyó con poca seguridad. Sin ella, null.
+   * nuevo), con el país en ISO-2 si se sabe con seguridad y `revisar` si el
+   * lector la leyó con poca seguridad. Sin ella, null.
    */
-  direccionProveedor?: { calle: string | null; cp: string | null; municipio: string | null; provincia: string | null; revisar: boolean } | null;
+  direccionProveedor?: DireccionFicha | null;
 }
 
 /** Lo que el controlador anade con los datos de la empresa. */
@@ -113,6 +117,7 @@ REGLAS CLAVE:
 3. PROVEEDOR: Nombre de quien emite el comprobante.
 4. NIF/CIF PROVEEDOR: Patrón español (8 dígitos + letra, o letra + 7 dígitos + letra).
 CLIENTE: nombre de a quien va dirigida la factura (el destinatario), si aparece.
+DIRECCIÓN DEL PROVEEDOR: cópiala tal como aparece, separada en calle (con número, piso y puerta), código postal, municipio, provincia y país (direccion_proveedor). Si una parte no aparece, omítela: no la deduzcas.
 5. CONCEPTO: Tipo de gasto ("arrendamiento", "reparación", "servicios", "suministros", "nómina", "compra", etc.).
 6. BASE IMPONIBLE: Cantidad sin impuestos.
 7. IVA: Porcentaje y/o cantidad.
@@ -135,6 +140,11 @@ const HERRAMIENTA_EXTRACCION: Anthropic.Tool = {
       proveedor: { type: 'string', description: 'Razón social del proveedor' },
       nif_proveedor: { type: 'string', description: 'NIF/CIF del proveedor, sin prefijo ES' },
       cliente: { type: 'string', description: 'Razón social del cliente: a quien va dirigida la factura' },
+      direccion_proveedor: {
+        type: 'object',
+        description: 'Dirección del proveedor separada en sus partes (opcional)',
+        properties: PROPIEDADES_DIRECCION,
+      },
       concepto: {
         type: 'string',
         description: 'Tipo de gasto: arrendamiento, reparación, servicios, suministros, nómina, compra, publicidad, etc.',
@@ -353,6 +363,8 @@ interface LecturaClaude {
   nif_proveedor: string | null;
   /** A quien va la factura (opcional: las lecturas guardadas antes no lo traen). */
   cliente?: string | null;
+  /** Direccion del proveedor separada (opcional, como cliente). */
+  direccion_proveedor?: DireccionLeida | null;
   concepto: string | null;
   base: number | null;
   iva_porcentaje: number | null;
@@ -428,6 +440,7 @@ export async function leerDocumentoConClaude(buffer: Buffer, mimeType: string, p
     proveedor: cadena(input.proveedor),
     nif_proveedor: limpiarNif(input.nif_proveedor),
     cliente: cadena(input.cliente),
+    direccion_proveedor: direccionDeIa(input.direccion_proveedor),
     concepto: cadena(input.concepto),
     base: numero(input.base) ?? null,
     iva_porcentaje: numero(input.iva_porcentaje) ?? null,

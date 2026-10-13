@@ -16,6 +16,7 @@ import { AccountingEngineController } from '../controllers/accounting-engine.con
 import { invoiceArchivingService } from './invoice-archiving.service';
 import { prisma } from '../config/database';
 import { asegurarPlanContableEmpresa } from './chart-of-accounts.service';
+import { detalleFalloBD, motivoSinAsiento } from '../utils/errores-bd';
 
 /** Resultado de contabilizar una factura recien emitida (no rompe la emision si falla). */
 export interface ResultadoContabilizacion {
@@ -134,8 +135,10 @@ export class AccountingHooksService {
       }
       return { contabilizada: true, journalEntryId: resultado.journalEntryId };
     } catch (err) {
-      // FAIL-SAFE: No falla la confirmación si hay error en contabilización
-      const errorMsg = err instanceof Error ? err.message : String(err);
+      // FAIL-SAFE: No falla la confirmación si hay error en contabilización.
+      // Al log y a la auditoria, el detalle (tambien el tecnico); a la persona,
+      // el motivo: el de negocio tal cual y el de la base de datos en castellano.
+      const errorMsg = detalleFalloBD(err) ?? (err instanceof Error ? err.message : String(err));
       console.error(
         `❌ Error en contabilización automática de factura ${invoiceId}: ${errorMsg}`
       );
@@ -161,7 +164,7 @@ export class AccountingHooksService {
       // NO relanzamos el error - la confirmación de factura es exitosa. La
       // respuesta de emitir lo dice (contabilizada: false) para que la ficha
       // muestre "Emitida sin asiento".
-      return journalEntryId ? { contabilizada: true, journalEntryId } : { contabilizada: false, motivo: errorMsg };
+      return journalEntryId ? { contabilizada: true, journalEntryId } : { contabilizada: false, motivo: motivoSinAsiento(err) };
     }
   }
 
@@ -207,7 +210,8 @@ export class AccountingHooksService {
         },
       });
     } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : String(err);
+      // Como en ventas: al log y a la auditoria, el detalle tecnico (no el texto traducido).
+      const errorMsg = detalleFalloBD(err) ?? (err instanceof Error ? err.message : String(err));
       console.error(`❌ Error contabilizando gasto ${invoiceId}: ${errorMsg}`);
 
       try {

@@ -220,6 +220,37 @@ describe('retencion, moneda y otros', () => {
     expect(r.lectura.tipoDocumento).toMatchObject({ valor: 'simplificada', fuente: 'calculado' });
   });
 
+  it('direccion del cliente: CustomerAddress; si no la hay, BillingAddress; sin ninguna, vacia', () => {
+    const direccion = (valueAddress: Record<string, string>, confidence = 0.88) => ({ type: 'address', valueAddress, content: 'x', confidence, boundingRegions: [{ pageNumber: 1 }] });
+    // Sin direccion del cliente en el documento (los fixtures de siempre).
+    expect(mapear('resultado-simple').lectura.receptor.direccion).toEqual({ valor: null, confianza: null, fuente: 'azure' });
+
+    const datos = ar('resultado-simple');
+    const f = datos.documents![0].fields!;
+    f.CustomerAddress = direccion({ road: 'Avenida del Puerto', houseNumber: '3', postalCode: '46021', city: 'Valencia', state: 'Valencia', countryRegion: 'ESP' }) as never;
+    f.BillingAddress = direccion({ streetAddress: 'Calle Colon 1', postalCode: '46004', city: 'Valencia' }) as never;
+    let r = mapearFacturaAzure(datos);
+    if (r.tipo !== 'hecho') throw new Error('x');
+    expect(r.lectura.receptor.direccion).toEqual({
+      valor: { calle: 'Avenida del Puerto 3', cp: '46021', municipio: 'Valencia', provincia: 'Valencia', pais: 'ESP' },
+      confianza: 0.88,
+      fuente: 'azure',
+      pagina: 1,
+    });
+
+    // Sin CustomerAddress (o sin su valor), la de facturacion.
+    delete f.CustomerAddress;
+    r = mapearFacturaAzure(datos);
+    if (r.tipo !== 'hecho') throw new Error('x');
+    expect(r.lectura.receptor.direccion).toMatchObject({ valor: { calle: 'Calle Colon 1', cp: '46004', municipio: 'Valencia' }, confianza: 0.88 });
+    f.CustomerAddress = { type: 'address', content: '', confidence: 0.2 } as never;
+    r = mapearFacturaAzure(datos);
+    if (r.tipo !== 'hecho') throw new Error('x');
+    expect(r.lectura.receptor.direccion.valor).toMatchObject({ calle: 'Calle Colon 1' });
+    // La del proveedor no cambia.
+    expect(r.lectura.emisor.direccion.valor).toMatchObject({ calle: 'Calle Mayor 12', cp: '46001' });
+  });
+
   it('sin documents: AZURE_SIN_FACTURA', () => {
     expect(mapearFacturaAzure(ar('resultado-sin-documento'))).toEqual({ tipo: 'fallo', codigo: 'AZURE_SIN_FACTURA', reintentable: false });
   });

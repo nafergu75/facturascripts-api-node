@@ -31,6 +31,7 @@ import { azurePausado } from './azure-di.client';
 import { completarTotalAPagar, confianzaLectura, contarPaginasPdf } from './azure-factura.mapper';
 import { azureExtractor } from './azure.extractor';
 import { completarConClaude, decidirComplemento } from './claude-complemento';
+import { direccionParaFicha } from './direccion';
 import { claudeConfigurado, claudeVisionExtractor } from './claude-vision.adapter';
 import { MENSAJE_LECTURA_NO_ENCONTRADA } from './confirmar';
 import { contextoValidacion, gastoDuplicado, proveedorPorNif } from './contexto';
@@ -390,7 +391,8 @@ async function respuestaDe(fila: FilaLectura): Promise<RespuestaLectura> {
     return { lecturaId: fila.id, estado: 'LISTA', gasto: { ...g, tramos: tramosGasto(guardado.lectura), proveedorExistente, duplicada, cuentaHabitual, rectificativa }, lectura };
   }
   const extraccion = aInvoiceExtraction(guardado.lectura, validaciones, { confianza: fila.confianza, nombreArchivo: fila.archivoNombre, mime: fila.archivoTipo });
-  const ingreso = aIngresoExtraido(fila.incomeReaderDocumentId ?? '', extraccion);
+  // La direccion del cliente, separada, para darlo de alta con la ficha rellena.
+  const ingreso = aIngresoExtraido(fila.incomeReaderDocumentId ?? '', extraccion, direccionParaFicha(guardado.lectura.receptor?.direccion));
   const clienteExistente = await clientePorNif(fila.companyId, ingreso.nifCliente);
   // Rectificativa o abono de venta: la factura que rectifica y lo que se propone.
   const rectificativa = await rectificativaVentaLeida(fila.companyId, guardado.lectura);

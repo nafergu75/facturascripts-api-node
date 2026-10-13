@@ -10,14 +10,15 @@
  */
 
 import { badRequest, conflict, notFound, notImplemented } from '../utils/http-errors';
+import { errorFalloBD, type QueHacerFalloBD } from '../utils/errores-bd';
 import { registrarAuditoria } from '../services/auditoria.service';
 import { accountingEngineService, desgloseIvaPorTipo } from '../services/accounting-engine.service';
-import { prisma, type TransaccionBD } from '../config/database';
+import { prisma, type ClienteBD, type TransaccionBD } from '../config/database';
 import { basePorCuenta, nombresDeCuentas } from '../services/cuentasLinea.service';
 import { aCentimos, cuadraEnCentimos } from '../utils/money';
 import { asegurarPlanContableEmpresa } from '../services/chart-of-accounts.service';
 import { comprobarFechaAbierta, exigirFechaContabilizable, periodoNoAbierto } from '../services/periodos.service';
-import { perfilEmpresa } from '../services/perfilEmpresa.service';
+import { esEmpresaEspanola, perfilEmpresa } from '../services/perfilEmpresa.service';
 import { motivoSinTipoFijado, notaDivisa } from '../domain/divisas';
 import { esTipoOperacion, fechaDevengoVenta } from '../domain/tipo-operacion.model';
 import { fechaContableGasto } from '../domain/factura-gasto.model';
@@ -27,6 +28,7 @@ import {
   confirmacion303Vigente,
   cuentaAcreedorDePagos,
   datosContablesGastoConSubcuenta,
+  nombresCuentasGasto,
   detallesRectificar303,
   marcarRectificar303,
   retencionDe,
@@ -35,11 +37,31 @@ import {
 } from '../services/expense-invoices.service';
 import { crearCompensacionesAuto } from '../services/compensacionesGasto.service';
 import { bloquearFacturasGasto } from '../services/rectificativasGasto.service';
-import { conReintentoSubcuenta, fichaDeSubcuenta, subcuentaClienteParaApunte, type FichaDeSubcuenta } from '../services/terceros/subcuentas';
+import {
+  aplicarSubcuentaPreparada,
+  conReintentoSubcuenta,
+  fichaDeSubcuenta,
+  prepararSubcuentaCliente,
+  prepararSubcuentaProveedor,
+  subcuentaClienteParaApunte,
+  type FichaDeSubcuenta,
+} from '../services/terceros/subcuentas';
 import { esSubcuentaGenerica } from '../services/terceros/numeracion';
 import { ESTADO_SUSTITUIDO, TEXTO_SUSTITUIDO } from '../domain/asientosCierre';
 import { diferenciaSustitucion, textoRectificaVenta, type DiferenciaSustitucion, type MotivoVenta } from '../domain/rectificativa-venta.model';
 import { enlacesDeVentas, lineasImportesDe } from '../services/rectificativasVenta.service';
+
+/** Que hacer si la base de datos falla al contabilizar una factura (boton «Contabilizar»). */
+export const QUE_HACER_CONTABILIZAR: QueHacerFalloBD = {
+  resultado: 'El asiento no se ha creado',
+  repetir: 'vuelve a pulsar «Contabilizar» dentro de un momento',
+};
+
+/** Que hacer si la base de datos falla al aprobar un asiento. */
+const QUE_HACER_APROBAR: QueHacerFalloBD = {
+  resultado: 'El asiento sigue en borrador',
+  repetir: 'vuelve a aprobarlo dentro de un momento',
+};
 
 /** Mismo cliente o proveedor. */
 const mismaFicha = (a: { tipo: string; id: string } | null | undefined, b: { tipo: string; id: string } | null | undefined) =>
@@ -99,16 +121,16 @@ async function problemaCuentaTercero(
 /**
  * Base de la venta por cuenta de ingresos (la de cada linea; sin ella, la 700),
  * con el nombre del plan. undefined si ninguna linea lleva cuenta: el asiento
- * de siempre, todo a la 700 «Ventas».
+ * de siempre, todo a la 700 «Ventas». Solo lee: va antes de la transaccion.
  */
 async function ingresosPorCuenta(
-  tx: TransaccionBD,
+  db: ClienteBD | TransaccionBD,
   companyId: string,
   lineas: Array<{ accountCode: string | null; baseLine: number }>,
 ): Promise<Array<{ cuenta: string; nombre: string; base: number }> | undefined> {
   if (!lineas.some((l) => l.accountCode)) return undefined;
   const reparto = basePorCuenta(lineas.map((l) => ({ cuenta: l.accountCode, base: Number(l.baseLine) })), '700');
-  const nombres = await nombresDeCuentas(tx, companyId, reparto.map((r) => r.cuenta));
+  const nombres = await nombresDeCuentas(db, companyId, reparto.map((r) => r.cuenta));
   return reparto.map((r) => ({ ...r, nombre: nombres.get(r.cuenta) ?? 'Ventas' }));
 }
 
@@ -148,8 +170,8 @@ async function contabilidadRectificativa(
 }
 
 /** Base de la diferencia de una sustitucion por cuenta de ingresos, con el nombre del plan. */
-async function ingresosDeDiferencia(tx: TransaccionBD, companyId: string, porCuenta: Array<{ cuenta: string; base: number }>) {
-  const nombres = await nombresDeCuentas(tx, companyId, porCuenta.map((r) => r.cuenta));
+async function ingresosDeDiferencia(db: ClienteBD | TransaccionBD, companyId: string, porCuenta: Array<{ cuenta: string; base: number }>) {
+  const nombres = await nombresDeCuentas(db, companyId, porCuenta.map((r) => r.cuenta));
   return porCuenta.map((r) => ({ ...r, nombre: nombres.get(r.cuenta) ?? 'Ventas' }));
 }
 
@@ -232,46 +254,56 @@ export class AccountingEngineController {
       // Transacción atómica: subcuenta del cliente (430N, asignada y en el plan
       // si falta) + asiento + líneas + VATBook. Las rectificativas van a la del
       // cliente de la original (es el mismo customerId).
-      const result = await conReintentoSubcuenta(() => prisma.$transaction(async (tx) => {
-        const cliente = await subcuentaClienteParaApunte(tx, companyId, factura.customerId);
-        const ingresoPorCuenta = dif ? await ingresosDeDiferencia(tx, companyId, dif.porCuenta) : await ingresosPorCuenta(tx, companyId, factura.lineas);
-        const asiento = await accountingEngineService.contabilizarFacturaIngreso(
-          companyId,
-          invoiceId,
-          {
-            baseTotal: dif ? dif.base : factura.baseTotal,
-            ivaTotal: dif ? dif.cuota : factura.ivaTotal,
-            ivaRate: factura.lineas[0]?.tipoIva ?? 21,
-            retencionTotal: dif ? dif.retencion : factura.retencionTotal,
-            retencionRate: factura.lineas[0]?.tipoRetencion ?? 0,
-            desgloseIva: dif ? dif.porTipoIva : desgloseIvaPorTipo(factura.lineas),
-            totalFactura: dif ? dif.total : factura.totalFactura,
-            fechaEmision: factura.fechaEmision,
-            fechaDevengo: fechaDevengoVenta(factura),
-            numeroFactura: factura.numeroCompleto ?? '',
-            clienteId: factura.customerId,
-            clienteNif: factura.customer.nifCif,
-            clienteNombre: factura.customer.nombreFiscal,
-            cuentaCliente: cliente.codigo,
-            nombreCuentaCliente: cliente.nombre,
-            ...(ingresoPorCuenta ? { ingresoPorCuenta } : {}),
-            clientePais: factura.customer.pais,
-            // El tipo guardado; las facturas anteriores (sin tipo) se contabilizan como siempre.
-            tipoOperacion: esTipoOperacion(factura.tipoOperacion) ? factura.tipoOperacion : undefined,
-            causaExencion: factura.causaExencion,
-            notaDescripcion: `${rect?.nota ?? ''}${notaDivisa(factura, monedaCuenta)}`,
-            ...(rect ? { observacionesLibro: rect.libro } : {}),
-            estadoAsiento: desdeOcr ? 'DRAFT' : 'POSTED',
-          },
-          tx,
-        );
+      // Lo que solo se lee (nombres de las cuentas, la subcuenta del cliente y su
+      // estado en el plan) va antes: en produccion cada consulta dentro de la
+      // transaccion es un viaje de red y la transaccion tiene un tiempo maximo.
+      // Dentro solo se escribe. Si otro proceso da de alta la misma subcuenta
+      // entretanto, salta el indice unico y se repite todo, lecturas incluidas.
+      const ingresoPorCuenta = dif ? await ingresosDeDiferencia(prisma, companyId, dif.porCuenta) : await ingresosPorCuenta(prisma, companyId, factura.lineas);
+      const result = await conReintentoSubcuenta(async () => {
+        const preparada = await prepararSubcuentaCliente(companyId, factura.customer);
+        return prisma.$transaction(async (tx) => {
+          const cliente = preparada ? await aplicarSubcuentaPreparada(tx, companyId, preparada) : await subcuentaClienteParaApunte(tx, companyId, factura.customerId);
+          const asiento = await accountingEngineService.contabilizarFacturaIngreso(
+            companyId,
+            invoiceId,
+            {
+              baseTotal: dif ? dif.base : factura.baseTotal,
+              ivaTotal: dif ? dif.cuota : factura.ivaTotal,
+              ivaRate: factura.lineas[0]?.tipoIva ?? 21,
+              retencionTotal: dif ? dif.retencion : factura.retencionTotal,
+              retencionRate: factura.lineas[0]?.tipoRetencion ?? 0,
+              desgloseIva: dif ? dif.porTipoIva : desgloseIvaPorTipo(factura.lineas),
+              totalFactura: dif ? dif.total : factura.totalFactura,
+              fechaEmision: factura.fechaEmision,
+              fechaDevengo: fechaDevengoVenta(factura),
+              numeroFactura: factura.numeroCompleto ?? '',
+              clienteId: factura.customerId,
+              clienteNif: factura.customer.nifCif,
+              clienteNombre: factura.customer.nombreFiscal,
+              cuentaCliente: cliente.codigo,
+              nombreCuentaCliente: cliente.nombre,
+              ...(ingresoPorCuenta ? { ingresoPorCuenta } : {}),
+              clientePais: factura.customer.pais,
+              // El tipo guardado; las facturas anteriores (sin tipo) se contabilizan como siempre.
+              tipoOperacion: esTipoOperacion(factura.tipoOperacion) ? factura.tipoOperacion : undefined,
+              causaExencion: factura.causaExencion,
+              notaDescripcion: `${rect?.nota ?? ''}${notaDivisa(factura, monedaCuenta)}`,
+              ...(rect ? { observacionesLibro: rect.libro } : {}),
+              estadoAsiento: desdeOcr ? 'DRAFT' : 'POSTED',
+              // Ya comprobada arriba con comprobarFechaAbierta.
+              fechaComprobada: true,
+            },
+            tx,
+          );
 
-        // El `estado` de una factura de venta es su estado de COBRO (PENDING,
-        // PAID, OVERDUE): contabilizarla no lo cambia. Antes se ponia ACCOUNTED y
-        // la factura dejaba de verse como pendiente de cobro.
+          // El `estado` de una factura de venta es su estado de COBRO (PENDING,
+          // PAID, OVERDUE): contabilizarla no lo cambia. Antes se ponia ACCOUNTED y
+          // la factura dejaba de verse como pendiente de cobro.
 
-        return asiento;
-      }));
+          return asiento;
+        });
+      });
 
       // Auditoría
       await registrarAuditoria({
@@ -292,8 +324,11 @@ export class AccountingEngineController {
       if (err instanceof Error && 'statusCode' in err) {
         throw err;
       }
-      throw badRequest(
-        `Error contabilizando factura: ${err instanceof Error ? err.message : 'desconocido'}`
+      // Un fallo de la base de datos (transaccion caducada, conexion...) no se
+      // ensena tal cual: la causa en castellano y el detalle, al log.
+      throw (
+        errorFalloBD(err, QUE_HACER_CONTABILIZAR, `contabilizar la factura de venta ${invoiceId}`) ??
+        badRequest(`Error contabilizando factura: ${err instanceof Error ? err.message : 'desconocido'}`)
       );
     }
   }
@@ -376,21 +411,29 @@ export class AccountingEngineController {
       // si ya tiene pagos, la cuenta del proveedor que usaron (400 o 410).
       // Sin pagos, la subcuenta del proveedor (400N o 410N segun el tipo de gasto).
       const cuentaAcreedor = await cuentaAcreedorDePagos(companyId, invoiceId);
-      const result = await conReintentoSubcuenta(() => prisma.$transaction(async (tx) => {
-        const asiento = await accountingEngineService.contabilizarFacturaGasto(
-          companyId,
-          invoiceId,
-          await datosContablesGastoConSubcuenta(tx, companyId, factura, factura.supplier, { estadoAsiento: 'POSTED', cuentaAcreedor }),
-          tx,
-        );
+      // Lo que solo se lee va antes de la transaccion (ver contabilizarFacturaIngreso).
+      const sinLibroIva = !(await esEmpresaEspanola(companyId));
+      const nombresCuentas = await nombresCuentasGasto(prisma, companyId, factura);
+      const result = await conReintentoSubcuenta(async () => {
+        const subcuenta = cuentaAcreedor ? null : await prepararSubcuentaProveedor(companyId, factura.supplier, factura.tipoGasto);
+        return prisma.$transaction(async (tx) => {
+          const datos = await datosContablesGastoConSubcuenta(tx, companyId, factura, factura.supplier, { estadoAsiento: 'POSTED', cuentaAcreedor }, { subcuenta, nombresCuentas });
+          const asiento = await accountingEngineService.contabilizarFacturaGasto(
+            companyId,
+            invoiceId,
+            // Fecha ya comprobada arriba con comprobarFechaAbierta.
+            { ...datos, sinLibroIva, fechaComprobada: true },
+            tx,
+          );
 
-        await tx.expenseInvoice.update({
-          where: { id: invoiceId },
-          data: { estado: 'ACCOUNTED' },
+          await tx.expenseInvoice.update({
+            where: { id: invoiceId },
+            data: { estado: 'ACCOUNTED' },
+          });
+
+          return asiento;
         });
-
-        return asiento;
-      }));
+      });
 
       // Auditoría
       await registrarAuditoria({
@@ -409,7 +452,10 @@ export class AccountingEngineController {
       };
     } catch (err) {
       if (err instanceof Error && 'statusCode' in err) throw err;
-      throw badRequest(`Error contabilizando gasto: ${err instanceof Error ? err.message : 'desconocido'}`);
+      throw (
+        errorFalloBD(err, QUE_HACER_CONTABILIZAR, `contabilizar la factura de gasto ${invoiceId}`) ??
+        badRequest(`Error contabilizando gasto: ${err instanceof Error ? err.message : 'desconocido'}`)
+      );
     }
   }
 
@@ -603,7 +649,10 @@ export class AccountingEngineController {
       if (err instanceof Error && 'statusCode' in err) {
         throw err;
       }
-      throw badRequest(`Error aprobando asiento: ${err instanceof Error ? err.message : ''}`);
+      throw (
+        errorFalloBD(err, QUE_HACER_APROBAR, `aprobar el asiento ${journalEntryId}`) ??
+        badRequest(`Error aprobando asiento: ${err instanceof Error ? err.message : ''}`)
+      );
     }
   }
 

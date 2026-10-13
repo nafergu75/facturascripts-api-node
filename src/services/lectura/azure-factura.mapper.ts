@@ -233,6 +233,8 @@ export function mapearFacturaAzure(ar: AnalyzeResult, opciones: { paginasArchivo
   l.emisor.direccion = direccion(f.VendorAddress);
   l.receptor.nombre = campo(f.CustomerName ?? f.CustomerAddressRecipient, texto(f.CustomerName ?? f.CustomerAddressRecipient));
   l.receptor.nif = campo(f.CustomerTaxId, nifLeido(texto(f.CustomerTaxId)));
+  // La del cliente; si no la hay, la de facturacion (BillingAddress).
+  l.receptor.direccion = direccion([f.CustomerAddress, f.BillingAddress].find((x) => x?.valueAddress) ?? f.CustomerAddress);
   l.numero = campo(f.InvoiceId, texto(f.InvoiceId));
   l.fechaEmision = campo(f.InvoiceDate, fecha(f.InvoiceDate));
   l.fechaVencimiento = campo(f.DueDate, fecha(f.DueDate));
