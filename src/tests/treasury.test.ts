@@ -136,6 +136,13 @@ describe('tesoreria', () => {
     expect(res).toMatchObject({ id: 'acc1', subcuentaCodigo: '57200001', saldoInicial: 1000, estado: 'activa', reactivada: true });
   });
 
+  it('avisa de la cuenta cuya subcuenta no es de bancos (dada de alta antes de comprobarlo)', async () => {
+    db.bankAccount.findMany.mockResolvedValue([{ ...cuenta, subcuentaCodigo: '0001', movimientos: [] }, { ...cuenta, id: 'acc2', movimientos: [] }]);
+    const [mala, buena] = await treasuryService.listarCuentasBancarias('c1');
+    expect(mala.avisoSubcuenta).toMatch(/«0001» no es de bancos.*no se pueden apuntar cobros ni pagos/);
+    expect(buena.avisoSubcuenta).toBeUndefined();
+  });
+
   it('resumen: saldo actual = saldo inicial + movimientos, redondeado a centimos', async () => {
     db.bankAccount.findMany.mockResolvedValue([cuenta]);
     db.bankMovement.count.mockResolvedValueOnce(2).mockResolvedValueOnce(3);

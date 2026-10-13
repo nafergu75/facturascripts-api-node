@@ -1,13 +1,17 @@
 import { Prisma } from '@prisma/client';
 import { prisma, type TransaccionBD } from '../config/database';
-import { badRequest, notFound } from '../utils/http-errors';
+import { badRequest, conflict, notFound } from '../utils/http-errors';
+import { importeConMoneda } from '../domain/divisas';
+import { aCentimos } from '../utils/money';
 import { esClaveRepetida } from '../utils/reintento';
 import { isValidIban } from '../utils/validateIban';
+import { registrarAuditoria } from './auditoria.service';
 import { importarMovimientosDesdeCSV } from './bancos.service';
 import { conciliarMovimientoConFactura } from './conciliacionConfirmar.service';
 import { perfilEmpresa } from './perfilEmpresa.service';
 import {
   asignarSubcuentaBanco,
+  esSubcuentaDeBanco,
   INDICE_SUBCUENTA_BANCO,
   nombreSubcuentaBanco,
   subcuentasBanco,
@@ -66,10 +70,16 @@ const aCuenta = (c: {
   bic: c.bic ?? undefined,
   bancoNombre: c.bancoNombre ?? undefined,
   subcuentaCodigo: c.subcuentaCodigo,
+  /** Solo si la subcuenta no es de bancos: hasta cambiarla no se puede cobrar ni pagar con esta cuenta. */
+  avisoSubcuenta: esSubcuentaDeBanco(c.subcuentaCodigo) ? undefined : avisoSubcuentaMala(c.subcuentaCodigo),
   saldoInicial: c.saldoInicial,
   estado: c.activa ? 'activa' : 'inactiva',
   createdAt: c.createdAt,
 });
+
+/** Aviso de una cuenta cuya subcuenta no es de bancos (dada de alta cuando aun no se comprobaba). */
+const avisoSubcuentaMala = (codigo: string) =>
+  `Su subcuenta «${codigo}» no es de bancos (una 572, por ejemplo 57200001): hasta que la cambies no se pueden apuntar cobros ni pagos en esta cuenta.`;
 
 /** IBAN sin espacios ni guiones y en mayusculas (como se guarda). */
 const normalizarIban = (iban: string) => iban.replace(/[\s-]+/g, '').toUpperCase();
@@ -173,6 +183,51 @@ async function cuentasBloqueadas(tx: TransaccionBD, companyId: string): Promise<
 }
 
 /**
+ * Cambia la subcuenta 572 de una cuenta bancaria: la de una cuenta dada de alta
+ * con una que no es de bancos (por ejemplo «0001», cuando aun no se comprobaba)
+ * o con otra equivocada. Lo ya apuntado se queda en la subcuenta de antes, asi
+ * que solo se deja si esta no tiene saldo: si lo tuviera, el banco quedaria
+ * partido en dos subcuentas. Antes hay que anular esos cobros y pagos, o pasar
+ * el saldo a la nueva con un asiento. La nueva se comprueba como en el alta.
+ */
+export async function cambiarSubcuentaCuentaBancaria(companyId: string, accountId: string, datos: { subcuentaCodigo?: unknown }, userId = 'unknown') {
+  const cuenta = await cuentaDeEmpresa(companyId, accountId);
+  const escrita = String(datos.subcuentaCodigo ?? '').trim();
+  if (!escrita) throw badRequest('Escribe la subcuenta 572 de la cuenta.', { campo: 'subcuentaCodigo' });
+  const antes = cuenta.subcuentaCodigo;
+  if (escrita.replace(/[\s.]/g, '') === antes) return aCuenta(cuenta);
+
+  const actualizada = await conReintentoDeAltas(() =>
+    prisma.$transaction(async (tx) => {
+      await cuentasBloqueadas(tx, companyId);
+      const sumas = await tx.journalEntryLine.aggregate({
+        where: { companyId, accountCode: antes, entry: { estado: { not: 'REVERSED' } } },
+        _sum: { debe: true, haber: true },
+      });
+      const saldo = Number(sumas._sum.debe ?? 0) - Number(sumas._sum.haber ?? 0);
+      if (aCentimos(saldo) !== 0) {
+        throw conflict(
+          `La subcuenta ${antes} ya tiene apuntes de este banco con saldo (${importeConMoneda(saldo, cuenta.moneda ?? 'EUR')}). Si la cambias, el saldo del banco quedaría partido en dos subcuentas. ` +
+            'Anula antes esos cobros o pagos (o pasa el saldo a la nueva subcuenta con un asiento) y vuelve a cambiarla.',
+          { codigo: 'SUBCUENTA_BANCO_CON_SALDO', subcuenta: antes, saldo: Math.round(saldo * 100) / 100 },
+        );
+      }
+      const subcuentaCodigo = await usarSubcuentaBanco(tx, companyId, escrita, nombreSubcuentaBanco(cuenta.bancoNombre, cuenta.iban), { cuentaId: cuenta.id });
+      return tx.bankAccount.update({ where: { id: cuenta.id }, data: { subcuentaCodigo } });
+    }),
+  );
+  await registrarAuditoria({
+    userId,
+    companyId,
+    action: 'CUENTA_BANCARIA_SUBCUENTA',
+    resourceType: 'BankAccount',
+    resourceId: cuenta.id,
+    meta: { antes, despues: actualizada.subcuentaCodigo },
+  });
+  return aCuenta(actualizada);
+}
+
+/**
  * Subcuenta que se propone al dar de alta una cuenta en Tesoreria (la misma
  * que pondria el alta rapida) y las 572 del plan que aun no son de ninguna
  * cuenta, por si la nueva es una de ellas. Solo lee.
@@ -273,6 +328,7 @@ export async function obtenerResumen(companyId: string) {
 
 export const treasuryService = {
   crearCuentaBancaria,
+  cambiarSubcuentaCuentaBancaria,
   subcuentaPropuesta,
   listarCuentasBancarias,
   listarMovimientos,
