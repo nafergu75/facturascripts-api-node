@@ -304,3 +304,41 @@ describe('devolución al cliente de un abono de venta', () => {
     expect((await incomeInvoicesService.obtenerPorId(COMPANY_ID, abono.id)).aFavor).toBe(48.4);
   });
 });
+
+describe('venta rectificada por sustitución', () => {
+  const sustitucion = (originalId: string, base: number) =>
+    incomeInvoicesService.crearIngreso({
+      companyId: COMPANY_ID,
+      customer: {},
+      fechaVencimiento: '2099-12-31',
+      lineas: [linea(base)],
+      rectificativa: { ticket: false, forma: 'S', motivo: 'CAMBIO_PRECIO', explicacion: 'Nuevo precio', originales: [{ id: originalId }] },
+    } as unknown as Parameters<typeof incomeInvoicesService.crearIngreso>[0]);
+
+  it('la original ya no se cobra; la sustituta descuenta lo cobrado a la original', async () => {
+    const f = await facturaVenta(1000, '2026-07-10'); // 1.210
+    await registrarCobroFactura(COMPANY_ID, 'INGRESO', f.id, { fecha: '2026-07-11', importe: 500, cuentaBancariaId: bancoId });
+    const s = await sustitucion(f.id, 800); // 968
+    // La original: nada pendiente y dice quién la sustituye; un cobro, 409.
+    const original = await listarCobros(COMPANY_ID, 'INGRESO', f.id);
+    expect(original).toMatchObject({ importePendiente: 0, importePendienteCuenta: 0, sustituidaPor: { id: s.id, numeroCompleto: s.numeroCompleto } });
+    await expect(registrarCobroFactura(COMPANY_ID, 'INGRESO', f.id, { fecha: hoyEspana(), importe: 10, cuentaBancariaId: bancoId })).rejects.toMatchObject({
+      statusCode: 409,
+      details: { codigo: 'FACTURA_SUSTITUIDA', facturaId: s.id },
+    });
+    // La sustituta: 968 - 500 cobrados a la original.
+    const sust = await listarCobros(COMPANY_ID, 'INGRESO', s.id);
+    expect(sust).toMatchObject({ totalFactura: 968, importeCobrado: 0, importePendiente: 468, cobradoEnOriginal: { id: f.id, importe: 500 } });
+    await expect(registrarCobroFactura(COMPANY_ID, 'INGRESO', s.id, { fecha: hoyEspana(), importe: 500, cuentaBancariaId: bancoId })).rejects.toMatchObject({ statusCode: 400 });
+    const { resumen } = await registrarCobroFactura(COMPANY_ID, 'INGRESO', s.id, { fecha: hoyEspana(), cuentaBancariaId: bancoId });
+    expect(resumen).toMatchObject({ importeCobrado: 468, importePendiente: 0, estado: 'PAID' });
+  });
+
+  it('si la original ya estaba cobrada entera, la sustituta nace cobrada', async () => {
+    const f = await facturaVenta(100, '2026-07-12'); // 121
+    await registrarCobroFactura(COMPANY_ID, 'INGRESO', f.id, { fecha: '2026-07-13', cuentaBancariaId: bancoId });
+    const s = await sustitucion(f.id, 90); // 108,90
+    expect((await prisma.incomeInvoice.findUniqueOrThrow({ where: { id: s.id } })).estado).toBe('PAID');
+    expect((await listarCobros(COMPANY_ID, 'INGRESO', s.id)).importePendiente).toBe(0);
+  });
+});
