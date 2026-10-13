@@ -51,6 +51,7 @@ import {
   enlacesDeVentas,
   exigirLimites,
   exigirRectificablesEnTx,
+  exigirRetencionDeOriginales,
   exigirTipoRectificativaDisponible,
   guardarEnlacesVenta,
   leerBloque,
@@ -1493,6 +1494,8 @@ async function prepararAlta(
   let espejo = interno.importes ?? null;
   if (!espejo) {
     lineas = conFiscalidad(lineas, fiscal);
+    // Por diferencias, la retencion de la original (las lineas espejo ya la llevan).
+    if (plan) exigirRetencionDeOriginales(plan, lineas);
     if (plan && original && bloque!.forma === 'I' && plan.filas.length === 1 && esEspejoDe(lineas, original)) {
       const copia = lineasEspejo(importesGuardados(original));
       espejo = { ...copia, lineas: copia.lineas.map((l, i) => ({ ...l, descripcion: lineas[i].descripcion })) };
@@ -2133,6 +2136,7 @@ export const incomeInvoicesService = {
     );
     const normaliza = fiscal.lineas.some((l, i) => l.tipoIva !== (lineas[i].tipoIva ?? 21) || l.tipoRetencion !== (lineas[i].tipoRetencion ?? 0));
     lineas = conFiscalidad(lineas, fiscal);
+    if (planRect) exigirRetencionDeOriginales(planRect, lineas);
     const devengo = fechaDevengoVenta({ tipoOperacion: fiscal.tipoOperacion, fechaOperacion, fechaEmision });
     const devengoBorrador = fechaDevengoVenta(actual);
     // Operacion de un periodo cuyo 303 presenta la gestoria: se emite si se confirma, con el aviso.
