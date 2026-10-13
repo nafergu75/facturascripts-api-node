@@ -423,6 +423,51 @@ export async function terceroParaMayor(companyId: string, tipo: 'cliente' | 'pro
   return { tipo, id: p.id, nombre: p.nombreFiscal, nif: p.nifCif, subcuentas: [p.subcuenta400, p.subcuenta410].filter((x): x is string => !!x) };
 }
 
+/**
+ * Aviso para el mayor de un cliente: sus ventas emitidas en el periodo que no
+ * tienen asiento contabilizado y por eso no salen en el mayor (p. ej. una venta
+ * del lector cuyo asiento no llego a crearse, o que sigue en borrador sin
+ * aprobar). Sin ellas un mayor puede salir vacio sin que se sepa por que.
+ * null si no hay ninguna o si ese año lo llevo la gestoria.
+ */
+export async function avisoFacturasSinAsiento(companyId: string, tipo: TipoTercero, terceroId: string, periodo: Periodo): Promise<string | null> {
+  if (tipo !== 'clientes' || terceroId === SIN_IDENTIFICAR || terceroId.startsWith('subcuenta:')) return null;
+  const externo = await prisma.fiscalYear.findFirst({ where: { companyId, label: String(periodo.ejercicio), llevanza: 'EXTERNA' }, select: { id: true } });
+  if (externo) return null;
+  const facturas = await prisma.incomeInvoice.findMany({
+    where: { companyId, customerId: terceroId, estadoDocumento: 'FINAL', fechaEmision: { gte: periodo.desde, lte: periodo.hasta } },
+    select: { id: true, numeroCompleto: true, totalFactura: true },
+    orderBy: { fechaEmision: 'asc' },
+  });
+  if (!facturas.length) return null;
+  // El asiento de la factura (no el de su cobro), como en cobrosPagos.cuentaTerceroDeFactura.
+  const asientos = await prisma.journalEntry.findMany({
+    where: { companyId, invoiceId: { in: facturas.map((f) => f.id) }, invoiceType: 'INGRESO', origen: { not: 'TESORERIA' } },
+    select: { invoiceId: true, estado: true },
+  });
+  const estados = new Map<string, Set<string>>();
+  for (const a of asientos) {
+    const s = estados.get(a.invoiceId!) ?? new Set<string>();
+    s.add(a.estado);
+    estados.set(a.invoiceId!, s);
+  }
+  const moneda = await simboloCuenta(companyId);
+  const texto = (fs: typeof facturas) => fs.map((f) => `${f.numeroCompleto ?? 'sin número'} (${num(Number(f.totalFactura))} ${moneda})`).join(', ');
+  // Sin ningun asiento; o con el asiento sin aprobar (borrador o pendiente de revision).
+  const sinAsiento = facturas.filter((f) => !estados.has(f.id));
+  const sinAprobar = facturas.filter((f) => {
+    const s = estados.get(f.id);
+    return !!s && !s.has('POSTED') && !s.has('REVERSED');
+  });
+  const avisos: string[] = [];
+  if (sinAsiento.length === 1) avisos.push(`la venta ${texto(sinAsiento)} no tiene asiento y no sale en el mayor. Contabilízala desde la ficha de la factura.`);
+  else if (sinAsiento.length) avisos.push(`las ventas ${texto(sinAsiento)} no tienen asiento y no salen en el mayor. Contabilízalas desde la ficha de cada factura.`);
+  if (sinAprobar.length === 1) avisos.push(`la venta ${texto(sinAprobar)} tiene el asiento sin aprobar y no sale en el mayor hasta que lo apruebes en el Motor contable.`);
+  else if (sinAprobar.length) avisos.push(`las ventas ${texto(sinAprobar)} tienen el asiento sin aprobar y no salen en el mayor hasta que los apruebes en el Motor contable.`);
+  if (!avisos.length) return null;
+  return `Atención: ${avisos.map((a, i) => (i ? a.charAt(0).toUpperCase() + a.slice(1) : a)).join(' ')}`;
+}
+
 export async function informeMayor(companyId: string, periodo: Periodo, filtroCuentas: FiltroCuentas, tercero?: TerceroDelMayor) {
   // Con un cliente o proveedor: solo sus subcuentas (una ficha sin subcuenta no tiene mayor propio).
   const filtro: FiltroCuentas = tercero ? { lista: tercero.subcuentas } : filtroCuentas;
@@ -430,16 +475,27 @@ export async function informeMayor(companyId: string, periodo: Periodo, filtroCu
   const nombre = await nombrador(companyId, todos);
   const cuentas = calcularMayor(movimientosDelPeriodo(todos, periodo), filtro, nombre);
 
+  // Columnas: Fecha, Asiento, Concepto, Referencia, Debe, Haber y Saldo. Cada
+  // cifra en la suya: el saldo inicial y el final en Saldo, las sumas en Debe y Haber.
   const filas: FilaInforme[] = [];
   for (const c of cuentas) {
-    filas.push({ celdas: [c.cuenta, c.nombre, null, null, null, null, null], estilo: 'seccion' });
+    // La cuenta va como rotulo en la columna Concepto (en la de Fecha seria una celda corrida en Excel).
+    filas.push({ celdas: [null, null, `${c.cuenta} · ${c.nombre}`, null, null, null, null], estilo: 'seccion' });
     filas.push({ celdas: [null, null, 'Saldo inicial', null, null, null, c.saldoInicial], estilo: 'nota' });
     for (const m of c.movimientos) filas.push({ celdas: [m.fecha, m.asiento, m.concepto, m.referencia, m.debe, m.haber, m.saldo] });
-    filas.push({ celdas: [null, null, `Total ${c.cuenta}`, null, c.totalDebe, c.totalHaber, c.saldoFinal], estilo: 'subtotal' });
+    filas.push({ celdas: [null, null, `Totales y saldo final ${c.cuenta}`, null, c.totalDebe, c.totalHaber, c.saldoFinal], estilo: 'subtotal' });
   }
   if (cuentas.length > 1) {
     filas.push({
-      celdas: [null, null, 'Total', null, round2(cuentas.reduce((s, c) => s + c.totalDebe, 0)), round2(cuentas.reduce((s, c) => s + c.totalHaber, 0)), null],
+      celdas: [
+        null,
+        null,
+        `Totales y saldo final de las ${cuentas.length} cuentas`,
+        null,
+        round2(cuentas.reduce((s, c) => s + c.totalDebe, 0)),
+        round2(cuentas.reduce((s, c) => s + c.totalHaber, 0)),
+        round2(cuentas.reduce((s, c) => s + c.saldoFinal, 0)),
+      ],
       estilo: 'total',
     });
   }
@@ -451,6 +507,7 @@ export async function informeMayor(companyId: string, periodo: Periodo, filtroCu
   const sinMovimientos = tercero && !tercero.subcuentas.length
     ? `${tercero.nombre} aún no tiene subcuenta contable: no hay movimientos a su nombre.`
     : 'No hay movimientos en esas cuentas en el periodo.';
+  const sinAsiento = tercero?.tipo === 'cliente' ? await avisoFacturasSinAsiento(companyId, 'clientes', tercero.id, periodo) : null;
   const tabla: TablaInforme = {
     titulo: 'Libro mayor',
     periodo: `${textoPeriodo(periodo.desde, periodo.hasta)} · ${queCuentas}`,
@@ -463,12 +520,13 @@ export async function informeMayor(companyId: string, periodo: Periodo, filtroCu
       { titulo: 'Referencia', tipo: 'texto', ancho: 2.2 },
       { titulo: 'Debe', tipo: 'importe', ancho: 2 },
       { titulo: 'Haber', tipo: 'importe', ancho: 2 },
-      { titulo: 'Saldo', tipo: 'importe', ancho: 2 },
+      { titulo: 'Saldo', tipo: 'importe', ancho: 2, saldo: true },
     ],
     filas,
     notas: [
-      'Saldo: deudor en positivo y acreedor en negativo. Movimientos por fecha de asiento. Sin asientos de regularización ni de cierre.',
+      'Saldo: deudor en positivo y acreedor en negativo; en cada fila, el saldo anterior más el Debe y menos el Haber. Movimientos por fecha de asiento. Sin asientos de regularización ni de cierre.',
       ...(cuentas.length ? [] : [sinMovimientos]),
+      ...(sinAsiento ? [sinAsiento] : []),
     ],
     fichero: `libro_mayor_${tercero ? tercero.nombre : (filtro.cuenta ?? `${filtro.desde ?? ''}-${filtro.hasta ?? ''}`)}_${periodo.desde}_${periodo.hasta}`,
   };
@@ -727,11 +785,11 @@ export async function informeMayorTerceros(companyId: string, tipo: TipoTercero,
       { titulo: tipo === 'clientes' ? 'Cliente' : 'Proveedor', tipo: 'texto', ancho: 6 },
       { titulo: 'NIF', tipo: 'codigo', ancho: 2 },
       { titulo: 'Subcuenta', tipo: 'codigo', ancho: 2.4 },
-      { titulo: 'Saldo inicial', tipo: 'importe', ancho: 2 },
+      { titulo: 'Saldo inicial', tipo: 'importe', ancho: 2, saldo: true },
       { titulo: 'Debe', tipo: 'importe', ancho: 2 },
       { titulo: 'Haber', tipo: 'importe', ancho: 2 },
-      { titulo: 'Saldo final', tipo: 'importe', ancho: 2 },
-      ...(conPendiente ? [{ titulo: 'Pendiente s/ facturas', tipo: 'importe' as const, ancho: 2.2 }] : []),
+      { titulo: 'Saldo final', tipo: 'importe', ancho: 2, saldo: true },
+      ...(conPendiente ? [{ titulo: 'Pendiente s/ facturas', tipo: 'importe' as const, ancho: 2.2, saldo: true }] : []),
     ],
     filas: [
       ...filasDatos.map((t) => ({
@@ -767,14 +825,20 @@ export async function informeDetalleTercero(companyId: string, tipo: TipoTercero
   const facturasPendientes = (await pendientesSegunFacturas(companyId, tipo, periodo.hasta, { conPartidas: true })).filter((f) => f.terceroId === t!.id);
   const totalPendiente = round2(facturasPendientes.reduce((s, f) => s + f.importePendiente, 0));
 
+  // Columnas: Fecha, Asiento, Concepto, Factura, Debe, Haber y Saldo. El saldo
+  // inicial y el final van en Saldo; las sumas, en Debe y Haber.
   const filas: FilaInforme[] = [
     { celdas: [null, null, 'Saldo inicial', null, null, null, t.saldoInicial], estilo: 'nota' },
     ...t.movimientos.map((m) => ({ celdas: [m.fecha, m.asiento, m.concepto, m.factura, m.debe, m.haber, m.saldo] })),
     { celdas: [null, null, 'Totales y saldo final', null, t.debe, t.haber, t.saldoFinal], estilo: 'total' },
   ];
+  const sinAsiento = tipo === 'clientes' ? await avisoFacturasSinAsiento(companyId, tipo, t.id, periodo) : null;
   const notas = [
-    tipo === 'clientes' ? 'Saldo positivo: lo que nos debe.' : 'Saldo positivo: lo que le debemos.',
+    tipo === 'clientes'
+      ? 'Saldo positivo: lo que nos debe. En cada fila, el saldo anterior más el Debe y menos el Haber.'
+      : 'Saldo positivo: lo que le debemos. En cada fila, el saldo anterior más el Haber y menos el Debe.',
     ...(t.cuentas.length ? [`Cuentas: ${t.cuentas.join(', ')}.`] : t.subcuentas.length ? [`Subcuenta: ${t.subcuentas.join(', ')} (sin movimientos).`] : []),
+    ...(sinAsiento ? [sinAsiento] : []),
   ];
   if (t.id !== SIN_IDENTIFICAR && !t.id.startsWith('subcuenta:')) {
     const de = tipo === 'clientes' ? 'cobro' : 'pago';
@@ -796,7 +860,7 @@ export async function informeDetalleTercero(companyId: string, tipo: TipoTercero
       { titulo: 'Factura', tipo: 'texto', ancho: 2.2 },
       { titulo: 'Debe', tipo: 'importe', ancho: 2 },
       { titulo: 'Haber', tipo: 'importe', ancho: 2 },
-      { titulo: 'Saldo', tipo: 'importe', ancho: 2 },
+      { titulo: 'Saldo', tipo: 'importe', ancho: 2, saldo: true },
     ],
     filas,
     notas,
