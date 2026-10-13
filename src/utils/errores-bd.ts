@@ -45,6 +45,14 @@ export const QUE_HACER_REGISTRAR: QueHacerFalloBD = {
   repetir: 'vuelve a intentarlo dentro de un momento',
 };
 
+/**
+ * Al registrar una compra, si la base de datos falla justo despues de grabarla:
+ * la factura y su asiento ya estan, asi que no se dice que no se ha registrado.
+ */
+export const QUE_HACER_GASTO_YA_REGISTRADO: QueHacerFalloBD = {
+  resultado: 'La factura sí está registrada: búscala en Compras antes de volver a registrarla',
+};
+
 /** Lo que se le dice a quien registro la factura cuando su asiento automatico no se ha podido crear. */
 export const TEXTO_FACTURA_REGISTRADA = 'La factura sí está registrada.';
 
@@ -106,11 +114,11 @@ function textoFalloBD(causa: string, queHacer: QueHacerFalloBD): string {
 /**
  * Si es un fallo tecnico, lo deja en el log y devuelve el error para la
  * persona: un 503 si es pasajero y un 500 si no, con la causa y que hacer. En
- * `details` van el codigo FALLO_BD, la causa y el codigo de Prisma, si lo hay
- * (la pista para soporte, sin el texto tecnico).
+ * `details` van el codigo FALLO_BD, la causa, el codigo de Prisma, si lo hay
+ * (la pista para soporte, sin el texto tecnico), y `extra`.
  * null si no lo es (el que llama sigue como siempre).
  */
-export function errorFalloBD(err: unknown, queHacer: QueHacerFalloBD, contexto: string): HttpError | null {
+export function errorFalloBD(err: unknown, queHacer: QueHacerFalloBD, contexto: string, extra: Record<string, unknown> = {}): HttpError | null {
   const causa = causaFalloBD(err);
   if (!causa) return null;
   if (err instanceof HttpError) return err;
@@ -120,6 +128,7 @@ export function errorFalloBD(err: unknown, queHacer: QueHacerFalloBD, contexto: 
     codigo: CODIGO_FALLO_BD,
     causa,
     ...(codigoBD ? { codigoBD } : {}),
+    ...extra,
   });
   // El original, para el log y la auditoria (no va en la respuesta: solo salen message y details).
   (e as Error & { cause?: unknown }).cause = err;

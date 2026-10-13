@@ -57,6 +57,7 @@ import {
 import { esSubcuentaGenerica } from './terceros/numeracion';
 import { nombresDeCuentas, problemaCuentasLinea } from './cuentasLinea.service';
 import { logger } from '../config/logger';
+import { errorFalloBD, QUE_HACER_GASTO_YA_REGISTRADO } from '../utils/errores-bd';
 
 /**
  * DTOs para creación y manipulación de facturas de gasto
@@ -1228,8 +1229,16 @@ export async function registrarGasto(companyId: string, cuerpo: unknown, opcione
     }
   }
 
+  // Desde aqui la factura y su asiento ya estan grabados. Lo que falle no rompe
+  // el alta, y si la base de datos falla al leer la ficha, se dice que si esta
+  // registrada (con su id en details), no que no se ha registrado.
+  const grabada = resultado;
   const proveedorCreado = !prov.existente;
-  if (proveedorCreado) await logCreate(resultado.supplierId, opciones.usuarioEmail, 'Proveedor creado al registrar una factura de gasto');
+  if (proveedorCreado) {
+    await logCreate(grabada.supplierId, opciones.usuarioEmail, 'Proveedor creado al registrar una factura de gasto').catch((e: unknown) => {
+      logger.warn('No se ha podido anotar el alta del proveedor en su historial', { supplierId: grabada.supplierId, error: e instanceof Error ? e.message : String(e) });
+    });
+  }
   // Queda registrada en el archivo de su trimestre (sin original). No bloqueante.
   await archivarGastoSinRomper(companyId, resultado.id);
   await registrarAuditoria({
@@ -1241,7 +1250,9 @@ export async function registrarGasto(companyId: string, cuerpo: unknown, opcione
     meta: { asientoId: resultado.asientoId, proveedorCreado, ...(rect ? { rectificativa: { tipo: rect.tipo, causa: rect.causa, rectifica: rect.rectifica } } : {}) },
   });
   if (confirmado303) await marcarRectificar303(companyId, resultado.id, confirmado303, ivaTotal, opciones.userId);
-  const factura = await obtenerDetalle(companyId, resultado.id);
+  const factura = await obtenerDetalle(companyId, grabada.id).catch((e: unknown) => {
+    throw errorFalloBD(e, QUE_HACER_GASTO_YA_REGISTRADO, `leer la factura de gasto ${grabada.id} recién registrada`, { facturaYaRegistradaId: grabada.id }) ?? e;
+  });
   const avisos = [...(rect?.avisos ?? v.avisos ?? []), ...(confirmado303 ? [avisoRectificar303(confirmado303)] : [])];
   return { factura: avisos.length ? { ...factura, avisos } : factura, asientoId: resultado.asientoId, proveedorCreado };
 }
