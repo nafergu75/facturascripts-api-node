@@ -297,6 +297,8 @@ model IncomeInvoice {
   /// contabilidad en ella (p. ej. una de 2026 que trajo la gestoria): su numero y su fecha.
   rectificaFueraNumero String? @db.VarChar(60)
   rectificaFueraFecha String?  @db.VarChar(10)
+  /// Causa de la rectificativa de venta (domain/rectificativa-venta.model.ts): DEVOLUCION | DESCUENTO | RAPPEL | CAMBIO_PRECIO | ERROR_DERECHO | ERROR | OTROS | CONCURSO | IMPAGO. null en facturas y en rectificativas anteriores.
+  causaRectificacion  String?               @db.VarChar(16)
   // Factura que nace de una proforma aceptada ("Pasar a factura"): id de la proforma.
   // Unico: una proforma solo se convierte una vez.
   proformaId          String?               @unique
@@ -316,6 +318,10 @@ model IncomeInvoice {
   lineas              IncomeInvoiceLine[]
   customer            Customer              @relation(fields: [customerId], references: [id], onDelete: Restrict)
   readerDocument      IncomeReaderDocument?
+  /// Que rectifica esta rectificativa: facturas de la app, de fuera o un periodo.
+  enlacesRectifica      IncomeInvoiceRectificada[] @relation("RectificativaVenta")
+  /// Rectificativas que rectifican esta factura.
+  enlacesRectificadaPor IncomeInvoiceRectificada[] @relation("OriginalVenta")
 
   @@unique([companyId, serie, numero])
   // Unico DENTRO de cada empresa: antes era unico en toda la BD, y dos empresas
@@ -326,6 +332,36 @@ model IncomeInvoice {
   @@index([customerId])
   @@index([companyId, moneda])
   @@index([companyId, tipoOperacion])
+}
+
+/// Que rectifica una rectificativa de venta: una o varias facturas (de la app
+/// o de fuera) o un periodo (rappel). Art. 15.4 RD 1619/2012. Simetrica de
+/// ExpenseInvoiceRectificada.
+model IncomeInvoiceRectificada {
+  id                   String         @id @default(cuid())
+  companyId            String
+  rectificativaId      String
+  /// Original emitida o registrada en la app. null: de fuera (2026 llevada fuera) o fila de periodo.
+  originalId           String?
+  /// Numero y fecha de la original (obligatorios sin originalId; se copian si la hay).
+  numeroOriginal       String?        @db.VarChar(60)
+  fechaOriginal        String?        @db.VarChar(10)
+  /// Rappel o descuento por volumen: periodo (excluye originalId y numeroOriginal).
+  periodoDesde         String?        @db.VarChar(10)
+  periodoHasta         String?        @db.VarChar(10)
+  /// Partida de cobro de la carga de 2026 que rebaja este abono.
+  partidaPendienteId   String?
+  /// Parte de la rectificacion que toca a esta fila, con signo, en moneda de cuenta. null = toda (una sola fila).
+  baseRectificada      Decimal?       @db.Decimal(14, 2)
+  cuotaRectificada     Decimal?       @db.Decimal(14, 2)
+  retencionRectificada Decimal?       @db.Decimal(14, 2)
+  createdAt            DateTime       @default(now())
+  rectificativa        IncomeInvoice  @relation("RectificativaVenta", fields: [rectificativaId], references: [id], onDelete: Cascade)
+  original             IncomeInvoice? @relation("OriginalVenta", fields: [originalId], references: [id], onDelete: Restrict)
+
+  @@index([companyId, originalId])
+  @@index([rectificativaId])
+  @@index([companyId, partidaPendienteId])
 }
 
 /// Serie de facturacion de una empresa (A, RECTIFICATIVA, ...). Guarda el
