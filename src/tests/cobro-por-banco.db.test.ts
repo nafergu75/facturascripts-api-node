@@ -303,6 +303,29 @@ describe('cobrar con una cuenta cuya subcuenta no es de bancos, y cambiarla', ()
     expect(await prisma.journalEntryLine.count({ where: { companyId: COBROS, accountCode: '0001' } })).toBe(0);
   });
 
+  it('en la devolucion de un abono de venta el aviso habla de la devolucion, no del cobro', async () => {
+    const abonoDe = async (companyId: string, cliente: string) => {
+      const original = await emitir(companyId, cliente);
+      return incomeInvoicesService.crearIngreso({
+        companyId,
+        customer: {},
+        fechaEmision: '2026-05-05',
+        lineas: [{ descripcion: 'Devolución', cantidad: 1, precioUnitario: -10, tipoIva: 21 }],
+        rectificativa: { ticket: false, forma: 'I', motivo: 'DEVOLUCION', explicacion: 'Devolución', originales: [{ id: original }] },
+      } as unknown as Parameters<typeof incomeInvoicesService.crearIngreso>[0]);
+    };
+    const abono = await abonoDe(COBROS, clienteCobros);
+    const e = await errorDe(registrarCobroFactura(COBROS, 'INGRESO', abono.id, { cuentaBancariaId: mala }));
+    expect(e).toMatchObject({ statusCode: 400, details: { codigo: 'SUBCUENTA_BANCO_NO_VALIDA' } });
+    expect((e as Error).message).toMatch(/vuelve a registrar la devolución\.$/);
+    // Sin ninguna cuenta bancaria.
+    const SIN_BANCO = `${COBROS}-sin-banco`;
+    await empresa(SIN_BANCO);
+    const cliente = (await prisma.customer.create({ data: { companyId: SIN_BANCO, nombreFiscal: 'Cliente Sin Banco SL', nifCif: 'B40000000' } })).id;
+    const sinBanco = await errorDe(registrarCobroFactura(SIN_BANCO, 'INGRESO', (await abonoDe(SIN_BANCO, cliente)).id, {}));
+    expect((sinBanco as Error).message).toMatch(/^No hay ninguna cuenta bancaria activa para apuntar la devolución\./);
+  });
+
   it('la lista de Tesoreria lo avisa', async () => {
     const [c] = await treasuryService.listarCuentasBancarias(COBROS);
     expect(c.avisoSubcuenta).toMatch(/«0001» no es de bancos/);
