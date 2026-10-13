@@ -8,8 +8,10 @@
  */
 
 export type Lector = 'VENTA' | 'GASTO';
-export type OrigenLectura = 'AZURE' | 'AZURE_CLAUDE' | 'CLAUDE' | 'FACTURAE';
-export type FuenteCampo = 'azure' | 'claude' | 'qr' | 'calculado' | 'facturae';
+/** MANUAL: no se ha leido; la persona la rellena a mano con el archivo ya subido («Rellenarla a mano»). */
+export type OrigenLectura = 'AZURE' | 'AZURE_CLAUDE' | 'CLAUDE' | 'FACTURAE' | 'MANUAL';
+/** manual: lo ha escrito la persona al corregir la lectura o al rellenarla a mano. */
+export type FuenteCampo = 'azure' | 'claude' | 'qr' | 'calculado' | 'facturae' | 'manual';
 export type NivelValidacion = 'ok' | 'revisar' | 'error';
 
 export type TipoDocumentoLeido = 'factura' | 'simplificada' | 'rectificativa' | 'ticket' | 'recibo' | 'nomina' | 'seguros_sociales' | 'otro';

@@ -40,6 +40,8 @@ export function prefijoObservaciones(origen: string | null, confianza: number | 
       return `Leída con Azure y completada con IA${pct(confianza)}.`;
     case 'FACTURAE':
       return 'Leída del XML Facturae.';
+    case 'MANUAL':
+      return 'Registrada a mano con el archivo subido al lector.';
     default:
       return 'Leída con IA (Claude).';
   }

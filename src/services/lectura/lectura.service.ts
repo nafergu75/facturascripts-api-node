@@ -159,6 +159,7 @@ const TEXTO_ORIGEN: Record<OrigenLectura, string> = {
   AZURE_CLAUDE: 'Leída con Azure y completada con IA',
   CLAUDE: 'Leída con IA (Claude)',
   FACTURAE: 'Leída del XML Facturae',
+  MANUAL: 'Sin leer: se rellena a mano',
 };
 
 /** Texto para el usuario segun el motivo del respaldo (null: no hay que decir nada). */
