@@ -25,6 +25,8 @@ export interface TerceroExistente {
   id: string;
   nombreFiscal: string;
   nifCif: string;
+  /** Pais de la ficha (ISO-2): dice de donde es el tercero y como se llama su numero fiscal. */
+  pais?: string | null;
 }
 
 /**
@@ -40,12 +42,16 @@ export function variantesNif(nif: string): string[] {
   return [...new Set([normal, sinSignos, conPuntos, normal ? `ES${normal}` : ''].filter(Boolean))];
 }
 
-/** Cliente de la empresa con ese NIF (con o sin prefijo ES y separadores), o null. */
+/**
+ * Cliente de la empresa con ese NIF (con o sin prefijo ES y separadores), o
+ * null. Tambien con una identificacion extranjera (RNC, EIN...): se guarda sin
+ * espacios ni guiones y aqui se busca de las mismas formas.
+ */
 export async function clientePorNif(companyId: string, nif: string | null | undefined): Promise<TerceroExistente | null> {
   if (!nif || !normalizarNif(nif)) return null;
   return prisma.customer.findFirst({
     where: { companyId, nifCif: { in: variantesNif(nif) } },
-    select: { id: true, nombreFiscal: true, nifCif: true },
+    select: { id: true, nombreFiscal: true, nifCif: true, pais: true },
     orderBy: { createdAt: 'asc' },
   });
 }

@@ -1,6 +1,8 @@
 /**
  * Lo que las validaciones necesitan de la BD, cargado antes de validar: NIF,
- * nombres y perfil de la empresa, periodos abiertos y duplicados (factura y archivo).
+ * nombres y perfil de la empresa, periodos abiertos, duplicados (factura y
+ * archivo) y el pais del tercero si ya esta dado de alta. Tambien lleva lo
+ * que ha dicho la persona de donde es el tercero (origenTercero).
  */
 import { prisma } from '../../config/database';
 import { normalizarNumeroProveedor } from '../../domain/factura-gasto.model';
@@ -12,14 +14,25 @@ import { separarNumero } from '../ingresos-extractor.service';
 import { perfilEmpresa } from '../perfilEmpresa.service';
 import { comprobarFechaAbierta } from '../periodos.service';
 import { datosEmpresaValidacion } from './datosEmpresa';
+import type { EleccionOrigenTercero } from './origen-tercero';
+import { clientePorNif } from './terceros-lector';
 import type { Lector, LecturaNormalizada } from './tipos';
 import type { ContextoValidacion } from './validaciones';
 
-/** Proveedor de la empresa con ese NIF (con o sin prefijo y separadores), o null. */
-export async function proveedorPorNif(companyId: string, nif: string | null): Promise<{ id: string; nombreFiscal: string; nifCif: string } | null> {
+/** Proveedor de la empresa con ese NIF (con o sin prefijo y separadores), o null. Con su pais (ISO-2): dice de donde es. */
+export async function proveedorPorNif(companyId: string, nif: string | null): Promise<{ id: string; nombreFiscal: string; nifCif: string; pais: string | null } | null> {
   if (!nif) return null;
   const nifs = [...new Set([normalizarNif(nif), limpiarNif(nif)].filter(Boolean))];
-  return prisma.supplier.findFirst({ where: { companyId, nifCif: { in: nifs } }, select: { id: true, nombreFiscal: true, nifCif: true } });
+  return prisma.supplier.findFirst({ where: { companyId, nifCif: { in: nifs } }, select: { id: true, nombreFiscal: true, nifCif: true, pais: true } });
+}
+
+/**
+ * Pais de la ficha del tercero de la factura ya dado de alta con el NIF leido
+ * (el proveedor en gastos, el cliente en ventas), o null si no lo hay.
+ */
+export async function paisTerceroDadoDeAlta(companyId: string, lector: Lector, l: LecturaNormalizada): Promise<string | null> {
+  const t = lector === 'GASTO' ? await proveedorPorNif(companyId, l.emisor.nif.valor) : await clientePorNif(companyId, l.receptor.nif.valor);
+  return t?.pais ?? null;
 }
 
 /** La factura de gasto ya registrada de ese proveedor con ese numero, o null (la consulta de hoy del lector). */
@@ -67,13 +80,14 @@ export async function contextoValidacion(
   companyId: string,
   lector: Lector,
   l: LecturaNormalizada,
-  opciones: { archivoHash?: string | null; lecturaId?: string | null } = {},
+  opciones: { archivoHash?: string | null; lecturaId?: string | null; origenTercero?: EleccionOrigenTercero | null } = {},
 ): Promise<ContextoValidacion> {
-  const [empresa, perfil, factura, archivo] = await Promise.all([
+  const [empresa, perfil, factura, archivo, paisTerceroFicha] = await Promise.all([
     datosEmpresaValidacion(companyId),
     perfilEmpresa(companyId),
     facturaDuplicada(companyId, lector, l),
     archivoRepetido(companyId, opciones.archivoHash ?? null, opciones.lecturaId ?? null),
+    paisTerceroDadoDeAlta(companyId, lector, l),
   ]);
   return {
     lector,
@@ -91,5 +105,7 @@ export async function contextoValidacion(
       }
     },
     duplicado: { factura, archivo },
+    origenTercero: opciones.origenTercero ?? null,
+    paisTerceroFicha,
   };
 }
