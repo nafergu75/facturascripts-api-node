@@ -9,6 +9,31 @@ import { archivarVentaSinRomper } from '../services/archivoFacturas.service';
 import { contextoFiscalEmpresa, sugerirOperacion } from '../services/fiscalidad-venta.service';
 import { resumenCobrosClientes } from '../services/cobrosClientes.service';
 import { ejercicioOActual } from '../utils/anios';
+import { buscarOriginalesVenta, datosParaRectificarVenta, opcionesRectificativa } from '../services/rectificativasVenta.service';
+import type { IncomeInvoiceResp } from '../services/income-invoices.service';
+
+/** Lo que queda en AuditLog de una rectificativa: forma, motivo, facturas que rectifica o periodo. */
+function metaRectificativa(f: IncomeInvoiceResp) {
+  const r = f.rectificativa;
+  if (!f.esRectificativa || !r) return {};
+  return {
+    rectificativa: {
+      tipoFactura: f.tipoFactura,
+      forma: r.forma,
+      motivo: r.motivo,
+      originales: r.originales.map((o) => (o.id ? { id: o.id, numero: o.numeroCompleto } : { numero: o.numeroCompleto, fecha: o.fecha, partidaId: o.partidaId })),
+      periodo: r.periodo,
+    },
+  };
+}
+
+const textoQuery = (v: unknown): string | undefined => (typeof v === 'string' && v.trim() ? v.trim().slice(0, 100) : undefined);
+const fechaQuery = (v: unknown, campo: string): string | undefined => {
+  const t = textoQuery(v);
+  if (t === undefined) return undefined;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(t)) throw badRequest(`La fecha «${campo}» no es válida (AAAA-MM-DD).`, { campo });
+  return t;
+};
 
 /** Datos de divisa para la auditoria: total en moneda de cuenta y en la de la factura. */
 function metaDivisa(f: { totalFactura: number; moneda: string; totalFacturaDoc: number; tipoCambio: number; fuenteTipoCambio: string }) {
@@ -67,6 +92,7 @@ export const incomeInvoicesController = {
         ...metaDivisa(factura),
         cliente: factura.customerId,
         tipoOperacion: factura.tipoOperacion ?? null,
+        ...metaRectificativa(factura),
       },
     });
 
@@ -145,9 +171,37 @@ export const incomeInvoicesController = {
       action: 'EMITIR_FACTURA_INGRESO',
       resourceType: 'INCOME_INVOICE',
       resourceId: factura.id,
-      meta: { numeroCompleto: factura.numeroCompleto, ...metaDivisa(factura), tipoOperacion: factura.tipoOperacion ?? null },
+      meta: { numeroCompleto: factura.numeroCompleto, ...metaDivisa(factura), tipoOperacion: factura.tipoOperacion ?? null, ...metaRectificativa(factura) },
     });
     sendOk(res, { invoice: conContabilidad(factura, await contabilizar(req.companyId!, factura.id)) });
+  }),
+
+  /** GET /rectificativas/opciones — motivos (con su tipo R1-R4) y series de rectificativas. */
+  opcionesRectificativa: asyncHandler(async (req, res) => {
+    sendOk(res, await opcionesRectificativa(req.companyId!));
+  }),
+
+  /** GET /originales — facturas emitidas que se pueden rectificar (y cobros de 2026 pendientes del cliente). */
+  originales: asyncHandler(async (req, res) => {
+    const q = req.query;
+    const ticket = q.ticket === '1' || q.ticket === 'true' ? true : q.ticket === '0' || q.ticket === 'false' ? false : undefined;
+    sendOk(
+      res,
+      await buscarOriginalesVenta(req.companyId!, {
+        q: textoQuery(q.q),
+        numero: textoQuery(q.numero),
+        customerId: textoQuery(q.customerId),
+        desde: fechaQuery(q.desde, 'desde'),
+        hasta: fechaQuery(q.hasta, 'hasta'),
+        ticket,
+        take: q.take !== undefined ? Number(q.take) : undefined,
+      }),
+    );
+  }),
+
+  /** GET /:id/rectificar — datos para prellenar una rectificativa de esta factura. */
+  paraRectificar: asyncHandler(async (req, res) => {
+    sendOk(res, await datosParaRectificarVenta(req.companyId!, req.params.id));
   }),
 
   /** POST /:id/duplicar — copia la factura en un borrador nuevo. */
@@ -263,7 +317,7 @@ export const incomeInvoicesController = {
       action: 'CREAR_FACTURA_RECTIFICATIVA',
       resourceType: 'INCOME_INVOICE',
       resourceId: factura.id,
-      meta: { original: req.params.id, numeroCompleto: factura.numeroCompleto, ...metaDivisa(factura) },
+      meta: { original: req.params.id, numeroCompleto: factura.numeroCompleto, ...metaDivisa(factura), ...metaRectificativa(factura) },
     });
 
     sendOk(res, { invoice: contable ? conContabilidad(factura, contable) : factura }, undefined, 201);
