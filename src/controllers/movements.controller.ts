@@ -44,7 +44,7 @@ export const movementsController = {
 
   // GET /companies/:companyId/movements: los movimientos anotados a mano antes (solo consulta).
   list: asyncHandler(async (req, res) => {
-    const { companyId } = req.params;
+    const companyId = req.companyId ?? req.params.companyId;
     const { limit = 50, page = 1, type, category } = req.query;
 
     const skip = (Number(page) - 1) * Number(limit);
