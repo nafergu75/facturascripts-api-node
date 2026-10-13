@@ -67,7 +67,7 @@ export interface PartidaVista {
   importeInicial: number;
   /** Cobrado o pagado en el ejercicio (liquidaciones activas y abonos del proveedor aplicados). */
   liquidado: number;
-  /** De lo liquidado, lo que se ha descontado con abonos del proveedor (sin movimiento de dinero). */
+  /** De lo liquidado, lo que se ha descontado con abonos (del proveedor o al cliente), sin movimiento de dinero. */
   compensado: number;
   /** Lo que queda. */
   pendiente: number;
@@ -177,30 +177,90 @@ async function compensadoPorPartida(db: Db, companyId: string, filas: FilaEnlace
   return out;
 }
 
-/** Lo aplicado con abonos de proveedor a cada partida (parte de lo liquidado). */
+/**
+ * Lo que rebajan los abonos de venta (rectificativas emitidas enlazadas a la
+ * partida con IncomeInvoiceRectificada.partidaPendienteId) de cada partida de
+ * cobro, en positivo y sin tope: la parte de cada abono, con fecha desde la
+ * apertura (lo de antes ya esta en lo pendiente que dio la gestoria).
+ */
+async function abonosVentaPorPartida(db: Db, companyId: string, filas: FilaEnlace[], hasta?: string): Promise<Map<string, number>> {
+  const cobros = filas.filter((f) => f.tipo === 'COBRO');
+  const out = new Map<string, number>();
+  if (!cobros.length) return out;
+  const apertura = await aperturaPorCarga(db, companyId, cobros.map((f) => f.cargaId));
+  const enlaces = await db.incomeInvoiceRectificada.findMany({
+    where: { companyId, partidaPendienteId: { in: cobros.map((f) => f.id) }, rectificativa: { estadoDocumento: 'FINAL', ...(hasta ? { fechaEmision: { lte: hasta } } : {}) } },
+    select: { partidaPendienteId: true, baseRectificada: true, cuotaRectificada: true, retencionRectificada: true, rectificativa: { select: { fechaEmision: true } } },
+  });
+  for (const f of cobros) {
+    const inicio = apertura.get(f.cargaId) ?? '0000-01-01';
+    let cent = 0;
+    for (const e of enlaces) {
+      if (e.partidaPendienteId !== f.id || e.rectificativa.fechaEmision < inicio) continue;
+      cent -= aCentimos(Number(e.baseRectificada ?? 0)) + aCentimos(Number(e.cuotaRectificada ?? 0)) - aCentimos(Number(e.retencionRectificada ?? 0));
+    }
+    if (cent > 0) out.set(f.id, cent / 100);
+  }
+  return out;
+}
+
+/**
+ * Lo aplicado con abonos a cada partida (parte de lo liquidado): de proveedor
+ * en las de pago y, en las de cobro, los abonos de venta sin topar (`ventas`).
+ */
 async function soloCompensado(db: Db, companyId: string, ids: string[], hasta?: string): Promise<Map<string, number>> {
-  if (!ids.length) return new Map();
-  const enlace = await db.partidaPendiente.findMany({ where: { companyId, id: { in: ids } }, select: { id: true, tipo: true, supplierId: true, expenseInvoiceId: true, numeroDocumento: true, cargaId: true } });
-  return compensadoPorPartida(db, companyId, enlace, hasta);
+  const { compras, ventas } = await compensadoYAbonos(db, companyId, ids, hasta);
+  const out = new Map(compras);
+  for (const [id, euros] of ventas) out.set(id, r2((out.get(id) ?? 0) + euros));
+  return out;
+}
+
+async function compensadoYAbonos(db: Db, companyId: string, ids: string[], hasta?: string) {
+  if (!ids.length) return { compras: new Map<string, number>(), ventas: new Map<string, number>(), filas: [] as Array<FilaEnlace & { importePendiente: number }> };
+  const filas = await db.partidaPendiente.findMany({
+    where: { companyId, id: { in: ids } },
+    select: { id: true, tipo: true, supplierId: true, expenseInvoiceId: true, numeroDocumento: true, cargaId: true, importePendiente: true },
+  });
+  const [compras, ventas] = await Promise.all([compensadoPorPartida(db, companyId, filas, hasta), abonosVentaPorPartida(db, companyId, filas, hasta)]);
+  return { compras, ventas, filas: filas.map((f) => ({ ...f, importePendiente: Number(f.importePendiente) })) };
 }
 
 /**
  * Cobrado o pagado de cada partida: sus liquidaciones activas mas lo aplicado
- * con abonos de proveedor. Con `hasta`, solo lo que tiene fecha hasta ese dia.
+ * con abonos (de proveedor en las de pago; de venta en las de cobro). Con
+ * `hasta`, solo lo que tiene fecha hasta ese dia. Un abono de venta rebaja lo
+ * que queda de la partida, nunca por debajo de cero: lo que no cabe queda a
+ * favor del cliente.
  */
 async function liquidadoPorPartida(db: Db, companyId: string, ids: string[], hasta?: string): Promise<Map<string, number>> {
-  if (!ids.length) return new Map();
-  const [filas, compensado] = await Promise.all([
+  return (await liquidadoYAbonos(db, companyId, ids, hasta)).liquidado;
+}
+
+/** Lo liquidado de cada partida y, de ello, lo descontado con abonos (sin movimiento de dinero). */
+async function liquidadoYAbonos(db: Db, companyId: string, ids: string[], hasta?: string): Promise<{ liquidado: Map<string, number>; abonos: Map<string, number> }> {
+  if (!ids.length) return { liquidado: new Map(), abonos: new Map() };
+  const [filas, { compras, ventas, filas: partidas }] = await Promise.all([
     db.invoicePayment.groupBy({
       by: ['invoiceId'],
       where: { companyId, invoiceType: 'PARTIDA', estado: 'ACTIVO', invoiceId: { in: ids }, ...(hasta ? { fecha: { lte: hasta } } : {}) },
       _sum: { importe: true },
     }),
-    soloCompensado(db, companyId, ids, hasta),
+    compensadoYAbonos(db, companyId, ids, hasta),
   ]);
   const out = new Map(filas.map((f) => [f.invoiceId, r2(Number(f._sum.importe ?? 0))]));
-  for (const [id, euros] of compensado) out.set(id, r2((out.get(id) ?? 0) + euros));
-  return out;
+  const abonos = new Map(compras);
+  for (const [id, euros] of compras) out.set(id, r2((out.get(id) ?? 0) + euros));
+  for (const [id, euros] of ventas) {
+    const p = partidas.find((x) => x.id === id);
+    const yaLiquidado = out.get(id) ?? 0;
+    const queda = Math.max(0, aCentimos((p?.importePendiente ?? 0) - yaLiquidado));
+    const cabe = Math.min(aCentimos(euros), queda) / 100;
+    if (cabe > 0) {
+      out.set(id, r2(yaLiquidado + cabe));
+      abonos.set(id, r2((abonos.get(id) ?? 0) + cabe));
+    }
+  }
+  return { liquidado: out, abonos };
 }
 
 /**
@@ -367,11 +427,7 @@ export async function listarPartidas(companyId: string, f: FiltrosPartidas) {
     orderBy: [{ fechaVencimiento: 'asc' }, { numeroDocumento: 'asc' }],
     take: 2000,
   });
-  const [liquidado, compensado, nombres] = await Promise.all([
-    liquidadoPorPartida(prisma, companyId, filas.map((x) => x.id)),
-    compensadoPorPartida(prisma, companyId, filas),
-    nombresTerceros(companyId, filas),
-  ]);
+  const [{ liquidado, abonos: compensado }, nombres] = await Promise.all([liquidadoYAbonos(prisma, companyId, filas.map((x) => x.id)), nombresTerceros(companyId, filas)]);
   const hoy = hoyEspana();
   const partidas = filas.map((x) => aVista(x, liquidado.get(x.id) ?? 0, nombres, hoy, compensado.get(x.id) ?? 0));
   const total = (tipo: TipoPartida) => {
@@ -447,9 +503,8 @@ export async function resumenPendiente(companyId: string): Promise<{ cobros: { a
 export async function detallePartida(companyId: string, id: string, tipos: TipoPartida[]): Promise<PartidaVista & { liquidaciones: LiquidacionVista[] }> {
   const f = await prisma.partidaPendiente.findFirst({ where: { id, companyId } });
   if (!f || !tipos.includes(f.tipo as TipoPartida)) throw notFound('Factura pendiente no encontrada.');
-  const [liquidado, compensado, nombres, pagos] = await Promise.all([
-    liquidadoPorPartida(prisma, companyId, [f.id]),
-    compensadoPorPartida(prisma, companyId, [f]),
+  const [{ liquidado, abonos: compensado }, nombres, pagos] = await Promise.all([
+    liquidadoYAbonos(prisma, companyId, [f.id]),
     nombresTerceros(companyId, [f]),
     prisma.invoicePayment.findMany({ where: { companyId, invoiceType: 'PARTIDA', invoiceId: f.id }, orderBy: [{ fecha: 'asc' }, { createdAt: 'asc' }] }),
   ]);
