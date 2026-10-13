@@ -3,6 +3,7 @@
 // documento se dibuja en cada caso. Sin BD.
 import {
   elegirCuentaCobro,
+  etiquetaNifCliente,
   facturaConIva,
   fraseDivisa,
   mencionDocumento,
@@ -230,5 +231,25 @@ describe('una factura emitida conserva su IVA y su mencion aunque cambie el pais
     expect(facturaConIva(null, true, 0, [0])).toBe(true);
     expect(facturaConIva(null, false, 0, [0])).toBe(false);
     expect(facturaConIva(null, false, 21, [21])).toBe(true);
+  });
+});
+
+describe('el numero fiscal del cliente lleva el nombre de su pais (peticion del usuario del 13-10-2026)', () => {
+  it('NIF en España, NIF-IVA (VAT) en la UE, RNC en la Republica Dominicana, EIN en EE. UU.', () => {
+    expect(etiquetaNifCliente(cli({ nombreFiscal: 'A', nifCif: 'B12345674', pais: 'ES' }), 'es')).toBe('NIF');
+    expect(etiquetaNifCliente(cli({ nombreFiscal: 'A', nifCif: 'FR40303265045', pais: null }), 'es')).toBe('NIF-IVA (VAT)');
+    expect(etiquetaNifCliente(cli({ nombreFiscal: 'A', nifCif: '131123456', pais: 'DO' }), 'es')).toBe('RNC');
+    expect(etiquetaNifCliente(cli({ nombreFiscal: 'A', nifCif: '84-1234567', pais: 'US' }), 'es')).toBe('EIN');
+    expect(etiquetaNifCliente(cli({ nombreFiscal: 'A', nifCif: '123', pais: 'JP' }), 'es')).toBe('Número fiscal (Tax ID)');
+    // En ingles (empresas de fuera): VAT No. en la UE y Tax ID si el pais no tiene uno propio.
+    expect(etiquetaNifCliente(cli({ nombreFiscal: 'A', nifCif: 'FR40303265045', pais: 'FR' }), 'en')).toBe('VAT No.');
+    expect(etiquetaNifCliente(cli({ nombreFiscal: 'A', nifCif: '123', pais: 'JP' }), 'en')).toBe('Tax ID');
+  });
+
+  it('y el PDF se dibuja con un cliente dominicano', async () => {
+    const pdf = await renderizarFactura(
+      base({ ...sinIva, tipoOperacion: 'EXPORTACION', cliente: cli({ nombreFiscal: 'Distribuidora Caribe SRL', nifCif: '1-31-12345-6', pais: 'DO', municipio: 'Santo Domingo' }) }),
+    );
+    expect(pdf.subarray(0, 5).toString()).toBe('%PDF-');
   });
 });
