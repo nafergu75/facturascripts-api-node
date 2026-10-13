@@ -129,6 +129,8 @@ describe('GET /companies/:companyId/income-invoices/stats/cobros', () => {
     expect(res.status).toBe(200);
     expect(res.body.data).toEqual(await resumenCobrosClientes(COMPANY_ID, 2026));
     expect(res.body.data.pendientes.numero).toBeGreaterThan(0);
+    // La moneda de todos los importes, para que el panel no los enseñe siempre en euros.
+    expect(res.body.data.monedaCuenta).toBe('EUR');
   });
 
   it('lo puede ver el rol contable (contabilidad:read) y no quien no tiene permiso de lectura', async () => {
