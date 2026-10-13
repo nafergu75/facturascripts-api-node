@@ -82,7 +82,10 @@ export function pareceNifEspanol(nif: string | null | undefined): boolean {
 
 /**
  * Forma del numero de un NIF-IVA de cada Estado, sin el prefijo (la que
- * publica la Comision en VIES). La clave es el prefijo: EL para Grecia.
+ * publica la Comision en VIES). La clave es el prefijo: EL para Grecia. Sirve
+ * para reconocer un numero leido sin prefijo y para avisar si no casa; si un
+ * NIF-IVA vale o no lo decide la composicion del modelo 349
+ * (aeat/common/normalizacion.ts, motivoNifIvaNoValido), que esta tabla respeta.
  */
 const FORMA_NIF_IVA_UE: Readonly<Record<string, RegExp>> = {
   AT: /^U\d{8}$/,
@@ -98,7 +101,8 @@ const FORMA_NIF_IVA_UE: Readonly<Record<string, RegExp>> = {
   FR: /^[0-9A-HJ-NP-Z]{2}\d{9}$/,
   HR: /^\d{11}$/,
   HU: /^\d{8}$/,
-  IE: /^(\d{7}[A-W][A-I]?|\d[A-Z+*]\d{5}[A-W])$/,
+  // Sin los antiguos con «+» o «*»: el 349 solo admite letras y cifras.
+  IE: /^(\d{7}[A-W][A-I]?|\d[A-Z]\d{5}[A-W])$/,
   IT: /^\d{11}$/,
   LT: /^(\d{9}|\d{12})$/,
   LU: /^\d{8}$/,
