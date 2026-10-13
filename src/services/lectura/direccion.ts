@@ -94,15 +94,3 @@ export function direccionParaFicha(campo: Campo<DireccionLeida> | null | undefin
   ficha.revisar = estadoPorConfianza(campo).nivel !== 'ok';
   return ficha;
 }
-
-/** De la ficha a la direccion leida (para rehacer una lectura guardada). */
-export function direccionLeidaDeFicha(f: DireccionFicha | null | undefined): DireccionLeida | null {
-  if (!f) return null;
-  const d: DireccionLeida = {};
-  if (f.calle) d.calle = f.calle;
-  if (f.cp) d.cp = f.cp;
-  if (f.municipio) d.municipio = f.municipio;
-  if (f.provincia) d.provincia = f.provincia;
-  if (f.pais) d.pais = f.pais;
-  return Object.keys(d).length ? d : null;
-}

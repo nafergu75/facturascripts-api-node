@@ -6,7 +6,7 @@
  * salian el nombre y el NIF; el resto habia que escribirlo a mano.
  */
 import { direccionDeIa } from '../services/lectura/direccion-ia';
-import { direccionLeidaDeFicha, direccionParaFicha, paisIsoLeido } from '../services/lectura/direccion';
+import { direccionParaFicha, paisIsoLeido } from '../services/lectura/direccion';
 import type { Campo, DireccionLeida } from '../services/lectura/tipos';
 
 const azure = (valor: DireccionLeida | null, confianza: number | null = 0.9): Campo<DireccionLeida> => ({ valor, confianza, fuente: 'azure' });
@@ -72,12 +72,6 @@ describe('direccion para la ficha', () => {
     expect(direccionParaFicha(undefined)).toBeNull();
     // Solo el pais tambien sirve para la ficha.
     expect(direccionParaFicha(azure({ pais: 'Portugal' }))).toEqual({ calle: null, cp: null, municipio: null, provincia: null, pais: 'PT', revisar: false });
-  });
-
-  it('de la ficha a la direccion leida y vuelta', () => {
-    const ficha = direccionParaFicha(azure({ calle: 'Rue de Rivoli 1', cp: '75001', municipio: 'Paris', pais: 'France' }));
-    expect(direccionLeidaDeFicha(ficha)).toEqual({ calle: 'Rue de Rivoli 1', cp: '75001', municipio: 'Paris', pais: 'FR' });
-    expect(direccionLeidaDeFicha(null)).toBeNull();
   });
 });
 
