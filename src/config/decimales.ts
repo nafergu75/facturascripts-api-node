@@ -209,6 +209,11 @@ export const importesComoNumero = Prisma.defineExtension({
     compensacionGasto: {
       importe: { needs: { importe: true }, compute: (r) => aNumero(r.importe) },
     },
+    incomeInvoiceRectificada: {
+      baseRectificada: { needs: { baseRectificada: true }, compute: (r) => aNumero(r.baseRectificada) },
+      cuotaRectificada: { needs: { cuotaRectificada: true }, compute: (r) => aNumero(r.cuotaRectificada) },
+      retencionRectificada: { needs: { retencionRectificada: true }, compute: (r) => aNumero(r.retencionRectificada) },
+    },
     liquidacionSS: {
       cuotaObrera: { needs: { cuotaObrera: true }, compute: (r) => aNumero(r.cuotaObrera) },
       cuotaPatronal: { needs: { cuotaPatronal: true }, compute: (r) => aNumero(r.cuotaPatronal) },
