@@ -295,7 +295,8 @@ export async function contabilizarFacturaIngreso(
   // suma la base de la factura (datos antiguos), todo a la 700.
   const porCuenta = invoiceData.ingresoPorCuenta?.filter((g) => aCentimos(g.base) !== 0) ?? [];
   const repartoCuadra = porCuenta.length > 0 && porCuenta.reduce((a, g) => a + aCentimos(g.base), 0) === aCentimos(invoiceData.baseTotal);
-  const ingresos = repartoCuadra ? porCuenta : [{ cuenta: regla.ingreso, nombre: 'Ventas', base: invoiceData.baseTotal }];
+  // Base a cero sin reparto (una rectificativa que solo cambia el tipo de IVA): sin linea de ingresos vacia.
+  const ingresos = repartoCuadra ? porCuenta : aCentimos(invoiceData.baseTotal) === 0 ? [] : [{ cuenta: regla.ingreso, nombre: 'Ventas', base: invoiceData.baseTotal }];
   for (const g of ingresos) {
     const lineaIngreso = await db.journalEntryLine.create({
       data: {
