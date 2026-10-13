@@ -64,10 +64,11 @@ const ultimoDia = (anio: number, mes: number) => new Date(Date.UTC(anio, mes, 0)
  */
 export function periodoPanel(q: { anio?: unknown; trimestre?: unknown; mes?: unknown }, ahora?: Date): PeriodoPanel {
   const anio = ejercicioOActual(q.anio, { campo: 'anio', ahora });
-  const trimestre = vacio(q.trimestre) ? null : Number(q.trimestre);
-  if (trimestre !== null && ![1, 2, 3, 4].includes(trimestre)) throw badRequest('El trimestre tiene que ser 1, 2, 3 o 4.', { campo: 'trimestre' });
-  const mes = vacio(q.mes) ? null : Number(q.mes);
-  if (mes !== null && !(Number.isInteger(mes) && mes >= 1 && mes <= 12)) throw badRequest('El mes tiene que ir del 1 al 12.', { campo: 'mes' });
+  // Solo cifras: «1e1», «2.0» o « 3» no valen aunque Number() los lea.
+  const trimestre = vacio(q.trimestre) ? null : /^[1-4]$/.test(String(q.trimestre)) ? Number(q.trimestre) : 0;
+  if (trimestre === 0) throw badRequest('El trimestre tiene que ser 1, 2, 3 o 4.', { campo: 'trimestre' });
+  const mes = vacio(q.mes) ? null : /^\d{1,2}$/.test(String(q.mes)) ? Number(q.mes) : 0;
+  if (mes !== null && !(mes >= 1 && mes <= 12)) throw badRequest('El mes tiene que ir del 1 al 12.', { campo: 'mes' });
   if (trimestre !== null && mes !== null) throw badRequest('Elige un trimestre o un mes, no los dos.', { campo: 'mes' });
   const mesDesde = mes ?? (trimestre ? (trimestre - 1) * 3 + 1 : 1);
   const mesHasta = mes ?? (trimestre ? trimestre * 3 : 12);
