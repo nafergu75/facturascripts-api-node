@@ -428,7 +428,12 @@ export interface UltimaFacturaPanel {
   rectificativa: boolean;
   /** Siempre «approved»: son facturas emitidas o registradas, no borradores. */
   status: 'approved';
-  /** Cobro o pago, para la persona: «Cobrada», «Pendiente de cobro», «Vencida», «Pagada», «Pagada en parte», «Pendiente de pago», «Rectificativa» o «Abono». */
+  /**
+   * Cobro o pago, para la persona. Ventas: «Cobrada», «Cobrada en parte»,
+   * «Vencida», «Pendiente de cobro» o «Rectificativa». Gastos: «Pagada»,
+   * «Pagada en parte», «Vencida», «Pendiente de pago», «Abono» (rectificativa
+   * que baja) o «Rectificativa» (la que sube o se queda igual).
+   */
   estado: string;
   /** Pantalla de la factura en la app. */
   enlace: string;
@@ -489,12 +494,32 @@ export async function ultimasFacturasPanel(companyId: string, limite: number, an
       },
     }),
   ]);
+  // Lo cobrado de cada venta de la lista (en la moneda de cuenta, como su total).
+  const cobros = ventas.length
+    ? await prisma.invoicePayment.groupBy({
+        by: ['invoiceId'],
+        where: { companyId, invoiceType: 'INGRESO', estado: 'ACTIVO', invoiceId: { in: ventas.map((f) => f.id) } },
+        _sum: { importe: true },
+      })
+    : [];
+  const cobradoDe = new Map(cobros.map((c) => [c.invoiceId, centimosDe(c._sum.importe)]));
+  /** Estado de cobro de una venta: con los cobros registrados, como el de pago de un gasto. */
+  const estadoVenta = (f: (typeof ventas)[number]): string => {
+    const total = centimosDe(f.totalFactura);
+    // Una rectificativa (también la que sube o la de sustitución) no se presenta como un cobro.
+    if (f.esRectificativa || total < 0) return 'Rectificativa';
+    const cobrado = cobradoDe.get(f.id) ?? 0;
+    // PAID sin cobros: marcada como cobrada a mano antes de que existieran los cobros.
+    if (f.estado === 'PAID' || (total > 0 && cobrado >= total)) return 'Cobrada';
+    if (f.estado === 'OVERDUE' || f.fechaVencimiento < hoy) return 'Vencida';
+    return cobrado > 0 ? 'Cobrada en parte' : 'Pendiente de cobro';
+  };
   const base = (v: unknown) => euros(centimosDe(v));
   const filas: Array<UltimaFacturaPanel & { _alta: number }> = [
     ...ventas.map((f) => {
       const total = base(f.totalFactura);
       const numero = f.numeroCompleto ?? '';
-      const estado = total < 0 ? 'Rectificativa' : f.estado === 'PAID' ? 'Cobrada' : f.estado === 'OVERDUE' || f.fechaVencimiento < hoy ? 'Vencida' : 'Pendiente de cobro';
+      const estado = estadoVenta(f);
       return {
         id: f.id,
         facturaId: f.id,
@@ -520,7 +545,9 @@ export async function ultimasFacturasPanel(companyId: string, limite: number, an
     ...gastos.map((f) => {
       const total = base(f.totalFactura);
       const numero = f.numeroFacturaProveedor || f.numeroCompleto;
-      const estado = total < 0 ? 'Abono' : textoEstadoPago(f.estadoPago, esVencida({ ...f, totalFactura: total }, hoy));
+      // Abono: la rectificativa que baja. La que sube (o solo cambia el IVA) es «Rectificativa».
+      const estado =
+        total < 0 ? 'Abono' : f.esRectificativa ? 'Rectificativa' : textoEstadoPago(f.estadoPago, esVencida({ ...f, totalFactura: total }, hoy));
       return {
         id: f.id,
         facturaId: f.id,
