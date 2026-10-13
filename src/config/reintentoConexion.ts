@@ -38,11 +38,26 @@ export async function conReintento<T>(consulta: () => Promise<T>, etiqueta: stri
   }
 }
 
+/**
+ * La consulta va dentro de una transaccion (interactiva o en lote). Prisma lo
+ * indica en los parametros internos que pasa a la extension.
+ */
+export function vaEnTransaccion(parametros: unknown): boolean {
+  return !!(parametros as { __internalParams?: { transaction?: unknown } } | null)?.__internalParams?.transaction;
+}
+
 export const reintentoConexion = Prisma.defineExtension({
   name: 'reintento-conexion',
   query: {
     $allModels: {
-      $allOperations({ model, operation, args, query }) {
+      $allOperations(parametros) {
+        const { model, operation, args, query } = parametros;
+        // Dentro de una transaccion no se repite la consulta suelta: si se ha
+        // perdido la conexion, la transaccion entera ya no vale (MySQL la deshace)
+        // y repetir solo esa consulta no la arregla: alargaria la transaccion con
+        // las esperas o, si la primera llego a ejecutarse, la duplicaria. Falla la
+        // transaccion completa y decide quien la lanzo.
+        if (vaEnTransaccion(parametros)) return query(args);
         return conReintento(() => query(args), `${model}.${operation}`);
       },
     },
