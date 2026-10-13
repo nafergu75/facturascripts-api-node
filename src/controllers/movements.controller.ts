@@ -1,5 +1,6 @@
 import { asyncHandler } from '../utils/async-handler';
 import { sendOk } from '../utils/response';
+import { notFound } from '../utils/http-errors';
 import { prisma } from '../config/database';
 import { Decimal } from '@prisma/client/runtime/library';
 import { perfilEmpresa } from '../services/perfilEmpresa.service';
@@ -171,8 +172,10 @@ export const movementsController = {
   }),
 
   // PATCH /companies/:companyId/movements/:id
+  // Solo un movimiento de la empresa de la ruta: el de otra empresa da 404.
   update: asyncHandler(async (req, res) => {
-    const { companyId, id } = req.params;
+    const companyId = req.companyId ?? req.params.companyId;
+    const { id } = req.params;
     const { type, amount, category, description, date, referenceDocument, status } = req.body;
 
     const updateData: any = {};
@@ -184,21 +187,25 @@ export const movementsController = {
     if (referenceDocument !== undefined) updateData.referenceDocument = referenceDocument;
     if (status) updateData.status = status;
 
-    const movement = await prisma.movement.update({
-      where: { id },
+    const { count } = await prisma.movement.updateMany({
+      where: { id, companyId },
       data: updateData,
     });
+    if (count === 0) throw notFound('Movimiento no encontrado.');
 
-    sendOk(res, movement);
+    sendOk(res, await prisma.movement.findFirst({ where: { id, companyId } }));
   }),
 
   // DELETE /companies/:companyId/movements/:id
+  // Solo un movimiento de la empresa de la ruta: el de otra empresa da 404.
   delete: asyncHandler(async (req, res) => {
+    const companyId = req.companyId ?? req.params.companyId;
     const { id } = req.params;
 
-    await prisma.movement.delete({
-      where: { id },
+    const { count } = await prisma.movement.deleteMany({
+      where: { id, companyId },
     });
+    if (count === 0) throw notFound('Movimiento no encontrado.');
 
     sendOk(res, { success: true });
   }),
