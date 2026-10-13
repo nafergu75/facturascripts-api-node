@@ -2,6 +2,7 @@ import { prisma } from '../config/database';
 import { aCentimos } from '../utils/money';
 import { hoyEspana } from '../utils/fechas';
 import { calcularPendiente, cobradoPorFactura, totalCobradoEntre } from './cobrosPagos.service';
+import { perfilEmpresa } from './perfilEmpresa.service';
 
 /**
  * Resumen de cobros de clientes para el panel: lo que queda por cobrar (y lo
@@ -273,18 +274,25 @@ async function facturasEmitidas(companyId: string): Promise<FacturaVentaCobro[]>
   }));
 }
 
+/** El resumen del panel, con la moneda en que van sus importes. */
+export interface ResumenCobrosPanel extends ResumenCobrosClientes {
+  /** Moneda de cuenta de la empresa: la de todos los importes (EUR, o USD en una de EE. UU.). */
+  monedaCuenta: string;
+}
+
 /** Resumen de cobros de clientes de la empresa para el año indicado, a fecha de `hoy`. */
-export async function resumenCobrosClientes(companyId: string, anio: number, hoy: string = hoyEspana()): Promise<ResumenCobrosClientes> {
+export async function resumenCobrosClientes(companyId: string, anio: number, hoy: string = hoyEspana()): Promise<ResumenCobrosPanel> {
   const finAnio = `${anio}-12-31`;
-  const [facturas, cobrado, cobradoHastaHoy, cobradoEnElAnio] = await Promise.all([
+  const [facturas, cobrado, cobradoHastaHoy, cobradoEnElAnio, perfil] = await Promise.all([
     facturasEmitidas(companyId),
     cobradoPorFactura(companyId, 'INGRESO'),
     cobradoPorFactura(companyId, 'INGRESO', hoy),
     totalCobradoEntre(companyId, 'INGRESO', `${anio}-01-01`, finAnio < hoy ? finAnio : hoy),
+    perfilEmpresa(companyId),
   ]);
   // El resumen del panel no lleva el id del cliente (su respuesta no cambia).
   const sinCliente = facturas.map(({ customerId: _customerId, ...f }) => f);
-  return resumirCobrosClientes(sinCliente, cobrado, { anio, hoy, cobradoEnElAnio, cobradoHastaHoy });
+  return { ...resumirCobrosClientes(sinCliente, cobrado, { anio, hoy, cobradoEnElAnio, cobradoHastaHoy }), monedaCuenta: perfil.monedaCuenta };
 }
 
 export interface FacturasPorCobrar {
