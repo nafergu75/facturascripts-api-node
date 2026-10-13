@@ -50,11 +50,13 @@ import { aceptado, CLAVE, ENDPOINT, fixtureClaude, NIF_EMISOR, NIF_EMPRESA, resp
 import { clientesService } from '../services/clientes.service';
 import { incomeInvoicesService, type CrearFacturaIngresoDTO } from '../services/income-invoices.service';
 import { listarSeries } from '../services/series.service';
+import * as redSeguridad from '../services/verifactu/redSeguridad';
 
 const SUFIJO = Date.now();
 const E = `lector-rect-${SUFIJO}`;
 const SIN_ORIGINAL = `lector-rect-sin-${SUFIJO}`;
 const OTRO = `lector-rect-otro-${SUFIJO}`;
+const RED = `lector-rect-red-${SUFIJO}`;
 const PDF = Buffer.from('%PDF-1.4\n1 0 obj << /Type /Page >>\nfactura rectificativa');
 const clientes: Record<string, string> = {};
 const originales: Record<string, string> = {};
@@ -142,6 +144,7 @@ beforeAll(async () => {
   await empresa(E, { original: 'del-cliente' });
   await empresa(SIN_ORIGINAL);
   await empresa(OTRO, { original: 'de-otro' });
+  await empresa(RED, { original: 'del-cliente' });
 });
 
 describe('lector de ventas: abono en negativo con la original en la app', () => {
@@ -283,5 +286,51 @@ describe('lecturas de antes (V19 guardada en error)', () => {
     const r = await confirmar(SIN_ORIGINAL, { documentId: data.ingreso.documentId, rectificativa: { forma: 'I', motivo: 'DEVOLUCION', originales: [{ numero: 'A-2025-3', fecha: '2025-10-01' }] } });
     expect(r.status).toBe(201);
     expect(r.body.data).toMatchObject({ esRectificativa: true, total: -242 });
+  });
+});
+
+describe('VERI*FACTU: con la red de seguridad activa (enero de 2027, reloj simulado)', () => {
+  const RELOJ = process.env.VERIFACTU_RED_RELOJ_PRUEBAS;
+  let espia: jest.SpyInstance;
+  beforeEach(async () => {
+    // Sin fila en AjustePlataforma la red está activa; la empresa es una sociedad (1-1-2027).
+    await prisma.ajustePlataforma.deleteMany({ where: { clave: redSeguridad.CLAVE_RED_SEGURIDAD } });
+    process.env.VERIFACTU_RED_RELOJ_PRUEBAS = '2027-01-15T10:00:00Z';
+    espia = jest.spyOn(redSeguridad, 'exigirPuedeEmitirFinal');
+  });
+  afterEach(() => {
+    espia.mockRestore();
+    if (RELOJ === undefined) delete process.env.VERIFACTU_RED_RELOJ_PRUEBAS;
+    else process.env.VERIFACTU_RED_RELOJ_PRUEBAS = RELOJ;
+  });
+
+  it('la rectificativa leída se registra con origen lector y no pasa por la red', async () => {
+    const data = await leer('resultado-rectificativa-venta', RED);
+    const r = await confirmar(RED, { documentId: data.ingreso.documentId, rectificativa: { forma: 'I', motivo: 'DEVOLUCION', originales: [{ id: originales[RED] }] } });
+    expect(r.status).toBe(201);
+    expect(r.body.data).toMatchObject({ numeroCompleto: 'RV-4', esRectificativa: true, total: -242 });
+    const f = await prisma.incomeInvoice.findUniqueOrThrow({ where: { id: r.body.data.facturaId } });
+    expect(f).toMatchObject({ origen: 'lector', estadoDocumento: 'FINAL', tipoFactura: 'R1' });
+    expect(espia).not.toHaveBeenCalled();
+  });
+
+  it('la emitida desde Nueva factura sí pasa por la red: 409 VERIFACTU_INACTIVO; como borrador se guarda y no se puede emitir', async () => {
+    const dto = {
+      companyId: RED,
+      customer: {},
+      lineas: [{ descripcion: 'Devolución', cantidad: 1, precioUnitario: -100, tipoIva: 21, cuenta: '705' }],
+      rectificativa: { ticket: false, forma: 'I', motivo: 'DEVOLUCION', explicacion: 'Devuelve parte del pedido', originales: [{ id: originales[RED] }] },
+    } as unknown as CrearFacturaIngresoDTO;
+    const antes = await prisma.incomeInvoice.count({ where: { companyId: RED } });
+    await expect(incomeInvoicesService.crearIngreso(dto)).rejects.toMatchObject({
+      statusCode: 409,
+      details: { codigo: redSeguridad.CODIGO_VERIFACTU_INACTIVO },
+      message: expect.stringMatching(/guardar la rectificativa como borrador/),
+    });
+    expect(espia).toHaveBeenCalledTimes(1);
+    expect(await prisma.incomeInvoice.count({ where: { companyId: RED } })).toBe(antes);
+    const b = await incomeInvoicesService.crearIngreso({ ...dto, borrador: true } as CrearFacturaIngresoDTO);
+    expect(b).toMatchObject({ estadoDocumento: 'BORRADOR', esRectificativa: true });
+    await expect(incomeInvoicesService.finalizar(RED, b.id)).rejects.toMatchObject({ statusCode: 409, details: { codigo: redSeguridad.CODIGO_VERIFACTU_INACTIVO } });
   });
 });
