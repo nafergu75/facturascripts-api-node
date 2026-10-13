@@ -24,6 +24,14 @@ export interface LineaEntrada {
   productoServicioId?: string;
   /** Cuenta de ingresos de la linea (700, 705, 7050001...). Sin ella, la generica. */
   cuentaContable?: string;
+  /**
+   * Cuota de IVA ya fijada (en la moneda del documento), en vez de base por
+   * tipo: solo la pone el servidor (lector, importes de la original de una
+   * sustitucion de fuera de la app, que pudo calcular su IVA linea a linea).
+   * Sin IVA (tipo 0) no cuenta. En otra moneda, la cuota de cuenta se calcula
+   * como siempre sobre la base convertida.
+   */
+  cuotaFija?: number;
 }
 
 /** Importes de una linea en una moneda. */
@@ -101,7 +109,7 @@ export function calcularLineasDoc(lineas: LineaEntrada[], { simetrico = false }:
     const pvpSinDescuento = r2(l.cantidad * l.precioUnitario);
     const descuentoImporte = r2((pvpSinDescuento * descuentoPorcentaje) / 100);
     const baseLine = r2(pvpSinDescuento - descuentoImporte);
-    const ivaImporte = r2((baseLine * tipoIva) / 100);
+    const ivaImporte = l.cuotaFija !== undefined && tipoIva !== 0 ? r2(l.cuotaFija) : r2((baseLine * tipoIva) / 100);
     const retencionImporte = r2((baseLine * tipoRetencion) / 100);
 
     baseTotal = r2(baseTotal + baseLine);
