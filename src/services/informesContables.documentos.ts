@@ -139,13 +139,20 @@ const LINEA_CAB = 8;
 const ALTO_FILA = 13;
 /** Margen interior de cada celda, a cada lado. */
 const PAD = 5;
+/** Lo que entra cada nivel de sangria (partidas del balance, lineas del diario). */
+const SANGRIA = 10;
 /** La cifra mas ancha que tiene que caber siempre en una columna de importes. */
 const MUESTRA_IMPORTE = '−9.999.999,99';
 const MUESTRA_FECHA = '00/00/0000';
-/** Ancho maximo de una columna de codigos (asiento, NIF, subcuenta); lo que pase, se recorta. */
-const MAX_CODIGO = 130;
+/** Ancho maximo de una columna de codigos (asiento, NIF, subcuenta): unos 35 caracteres; lo que pase, se recorta. */
+const MAX_CODIGO = 180;
 /** Ancho minimo de una columna de texto (concepto, nombre). */
 const MIN_TEXTO = 70;
+/**
+ * Margen de error al medir: en coma flotante 57,6 + 10 − 10 da 57,5999…, y el
+ * codigo mas largo de su columna (la que mide justo lo que el) se recortaba.
+ */
+const HOLGURA = 0.01;
 
 interface Fuentes {
   normal: PDFFont;
@@ -156,10 +163,28 @@ interface Fuentes {
 
 /** Recorta un texto con «…» para que quepa en `max` puntos. */
 function recortar(s: string, fuente: PDFFont, tam: number, max: number): string {
-  if (fuente.widthOfTextAtSize(s, tam) <= max) return s;
+  if (fuente.widthOfTextAtSize(s, tam) <= max + HOLGURA) return s;
   let r = s;
-  while (r.length > 1 && fuente.widthOfTextAtSize(`${r}…`, tam) > max) r = r.slice(0, -1);
+  while (r.length > 1 && fuente.widthOfTextAtSize(`${r}…`, tam) > max + HOLGURA) r = r.slice(0, -1);
   return `${r.trimEnd()}…`;
+}
+
+/** Parte un texto en las lineas que hagan falta para que quepa en `max` puntos (por palabras). */
+function partirEnLineas(s: string, fuente: PDFFont, tam: number, max: number): string[] {
+  const lineas: string[] = [];
+  let actual = '';
+  // Solo se parte por los espacios normales: el espacio duro ( ) une la cifra con su «€».
+  for (const p of s.split(/[ \t\r\n]+/).filter(Boolean)) {
+    const prueba = actual ? `${actual} ${p}` : p;
+    if (!actual || fuente.widthOfTextAtSize(prueba, tam) <= max + HOLGURA) actual = prueba;
+    else {
+      lineas.push(actual);
+      actual = p;
+    }
+  }
+  if (actual) lineas.push(actual);
+  // Una sola palabra mas larga que la linea (p. ej. una URL), recortada.
+  return lineas.map((l) => recortar(l, fuente, tam, max));
 }
 
 /** Titulo de columna en una o dos lineas que quepan en `max` (en mayusculas). */
@@ -168,7 +193,7 @@ function partirTitulo(titulo: string, fuente: PDFFont, max: number): string[] {
   const lineas: string[] = [];
   for (const p of palabras) {
     const ultima = lineas[lineas.length - 1];
-    if (ultima !== undefined && fuente.widthOfTextAtSize(`${ultima} ${p}`, TAM_CAB) <= max) lineas[lineas.length - 1] = `${ultima} ${p}`;
+    if (ultima !== undefined && fuente.widthOfTextAtSize(`${ultima} ${p}`, TAM_CAB) <= max + HOLGURA) lineas[lineas.length - 1] = `${ultima} ${p}`;
     else lineas.push(p);
   }
   if (lineas.length <= 2) return lineas.map((l) => recortar(l, fuente, TAM_CAB, max));
@@ -180,12 +205,16 @@ const palabraMasAncha = (titulo: string, fuente: PDFFont) =>
 
 /**
  * Ancho de cada columna del PDF. Importes, fechas y codigos miden lo que su
- * contenido (un importe, al menos −9.999.999,99) mas el margen; las de texto se
- * reparten el resto segun su peso. Si no hay sitio, ceden primero los codigos y
- * despues el texto, nunca los importes.
+ * contenido (un importe, al menos −9.999.999,99) mas el margen. Las de texto
+ * miden lo que su texto mas largo y, si sobra sitio, se lo reparten segun su
+ * peso. Si falta, cede primero el texto de mas peso (el concepto) hasta
+ * MIN_TEXTO, despues los demas textos, y solo al final, si ni con los textos al
+ * ancho de su titulo cabe la tabla, los codigos. Los importes y las fechas no
+ * ceden nunca.
  */
 export function anchosColumnasPdf(t: Pick<TablaInforme, 'columnas' | 'filas'>, f: Fuentes, anchoUtil: number): number[] {
   const cols = t.columnas;
+  const primeraTexto = cols.findIndex((c) => c.tipo === 'texto');
   const contenido = cols.map((c, k) => {
     let max = 0;
     for (const fila of t.filas) {
@@ -194,7 +223,8 @@ export function anchosColumnasPdf(t: Pick<TablaInforme, 'columnas' | 'filas'>, f
       const s = textoCelda(fila.celdas[k] ?? null, c, estilo);
       if (!s) continue;
       const fuente = c.tipo === 'texto' ? f.negrita : f.monoNegrita;
-      max = Math.max(max, fuente.widthOfTextAtSize(s, TAM));
+      const sangria = k === primeraTexto ? (fila.sangria ?? 0) * SANGRIA : 0;
+      max = Math.max(max, fuente.widthOfTextAtSize(s, TAM) + sangria);
     }
     return max;
   });
@@ -207,8 +237,7 @@ export function anchosColumnasPdf(t: Pick<TablaInforme, 'columnas' | 'filas'>, f
   });
   const anchos = cols.map((c, k) => (c.tipo === 'texto' ? 0 : Math.max(natural[k], minTitulo[k])));
   const textos = cols.map((c, k) => (c.tipo === 'texto' ? k : -1)).filter((k) => k >= 0);
-  const minTexto = (k: number) => Math.max(MIN_TEXTO, minTitulo[k]);
-  let resto = anchoUtil - anchos.reduce((s, w) => s + w, 0);
+  const resto = anchoUtil - anchos.reduce((s, w) => s + w, 0);
 
   if (!textos.length) {
     // Sin columnas de texto: lo que sobre, segun el peso.
@@ -216,20 +245,40 @@ export function anchosColumnasPdf(t: Pick<TablaInforme, 'columnas' | 'filas'>, f
     if (resto > 0) cols.forEach((c, k) => (anchos[k] += (resto * c.ancho) / peso));
     return anchos;
   }
-  const necesitaTexto = textos.reduce((s, k) => s + minTexto(k), 0);
-  if (resto < necesitaTexto) {
-    // Ceden los codigos, como mucho hasta el ancho de su titulo.
-    const codigos = cols.map((c, k) => (c.tipo === 'codigo' ? k : -1)).filter((k) => k >= 0);
-    const cedible = codigos.reduce((s, k) => s + Math.max(0, anchos[k] - minTitulo[k]), 0);
-    const cede = Math.min(necesitaTexto - resto, cedible);
-    if (cede > 0) {
-      for (const k of codigos) anchos[k] -= (Math.max(0, anchos[k] - minTitulo[k]) * cede) / cedible;
-      resto += cede;
+
+  // Lo que mide cada texto entero; su minimo comodo (MIN_TEXTO, o menos si su
+  // texto es mas corto) y el de urgencia (el ancho de su titulo).
+  const entero = (k: number) => Math.max(minTitulo[k], contenido[k] + 2 * PAD);
+  const comodo = (k: number) => Math.min(entero(k), Math.max(MIN_TEXTO, minTitulo[k]));
+  const urgencia = (k: number) => minTitulo[k];
+  for (const k of textos) anchos[k] = entero(k);
+  const necesita = textos.reduce((s, k) => s + entero(k), 0);
+
+  if (resto >= necesita) {
+    // Sobra sitio: cada texto entero y lo que sobra, segun su peso.
+    const peso = textos.reduce((s, k) => s + cols[k].ancho, 0) || 1;
+    for (const k of textos) anchos[k] += ((resto - necesita) * cols[k].ancho) / peso;
+    return anchos;
+  }
+
+  // Falta sitio: cede primero el texto de mas peso (el concepto), hasta su
+  // minimo comodo; despues los demas; y si aun falta, hasta el de urgencia.
+  let falta = necesita - resto;
+  const porPeso = [...textos].sort((a, b) => cols[b].ancho - cols[a].ancho);
+  for (const minimo of [comodo, urgencia]) {
+    for (const k of porPeso) {
+      const cede = Math.min(falta, Math.max(0, anchos[k] - minimo(k)));
+      anchos[k] -= cede;
+      falta -= cede;
     }
   }
-  const pesoTexto = textos.reduce((s, k) => s + cols[k].ancho, 0) || 1;
-  const paraTexto = Math.max(resto, necesitaTexto);
-  for (const k of textos) anchos[k] = Math.max(minTexto(k), (paraTexto * cols[k].ancho) / pesoTexto);
+  if (falta > HOLGURA) {
+    // Ni asi cabe: ceden los codigos, como mucho hasta el ancho de su titulo (y se recortan con «…»).
+    const codigos = cols.map((c, k) => (c.tipo === 'codigo' ? k : -1)).filter((k) => k >= 0);
+    const cedible = codigos.reduce((s, k) => s + Math.max(0, anchos[k] - minTitulo[k]), 0);
+    const cede = Math.min(falta, cedible);
+    if (cede > 0) for (const k of codigos) anchos[k] -= (Math.max(0, anchos[k] - minTitulo[k]) * cede) / cedible;
+  }
   return anchos;
 }
 
@@ -343,7 +392,7 @@ export async function tablaAPdf(t: TablaInforme): Promise<Buffer> {
         // Las cifras nunca se recortan: su columna mide lo que necesitan.
         texto(p, v, c.x + c.w - PAD, yt, { fuente: fuerte ? monoNegrita : mono, alinear: 'der' });
       } else {
-        const sangria = k === primeraTexto ? (fila.sangria ?? 0) * 10 : 0;
+        const sangria = k === primeraTexto ? (fila.sangria ?? 0) * SANGRIA : 0;
         const fuente = c.tipo === 'codigo' || c.tipo === 'fecha' ? (fuerte ? monoNegrita : mono) : fuerte ? negrita : normal;
         const max = c.w - 2 * PAD - sangria;
         texto(p, recortar(v, fuente, TAM, max), c.x + PAD + sangria, yt, { fuente, color: estilo === 'nota' ? GRIS : TINTA });
@@ -355,18 +404,25 @@ export async function tablaAPdf(t: TablaInforme): Promise<Buffer> {
 
   if (t.notas?.length) {
     y -= 14;
+    // Cada nota en las lineas que necesite: un aviso largo (p. ej. la lista de
+    // ventas sin asiento) se lee entero, no se corta con «…».
     for (const n of t.notas) {
-      if (y - 12 < SUELO) nuevaPagina(false);
-      texto(p, recortar(n, normal, 7.5, anchoUtil), MARGEN, y, { tam: 7.5, color: GRIS });
-      y -= 11;
+      for (const l of partirEnLineas(n, normal, 7.5, anchoUtil)) {
+        if (y - 12 < SUELO) nuevaPagina(false);
+        texto(p, l, MARGEN, y, { tam: 7.5, color: GRIS });
+        y -= 9.5;
+      }
+      y -= 1.5;
     }
   }
 
-  const generado = `Generado el ${fechaES(hoyEspana())}`;
+  // Pie: si no cabe, se recorta la empresa, el titulo o el periodo; la fecha de generacion se lee siempre entera.
+  const generado = ` · Generado el ${fechaES(hoyEspana())}`;
   const pie = [t.empresa.nombre, t.titulo, t.periodo].filter(Boolean).join(' · ');
   paginas.forEach((pg, i) => {
     const pagina = `Página ${i + 1} de ${paginas.length}`;
-    texto(pg, recortar(`${pie} · ${generado}`, normal, 7, anchoUtil - normal.widthOfTextAtSize(pagina, 7) - 20), MARGEN, PIE_Y, { tam: 7, color: GRIS });
+    const libre = anchoUtil - normal.widthOfTextAtSize(pagina, 7) - 20 - normal.widthOfTextAtSize(generado, 7);
+    texto(pg, `${recortar(pie, normal, 7, libre)}${generado}`, MARGEN, PIE_Y, { tam: 7, color: GRIS });
     texto(pg, pagina, derecha, PIE_Y, { tam: 7, color: GRIS, alinear: 'der' });
   });
 

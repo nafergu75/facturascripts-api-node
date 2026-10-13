@@ -18,7 +18,9 @@ const cerca = (a: number, b: number) => Math.abs(a - b) <= TOLERANCIA;
  * PDF: los titulos de columna en orden y alineados (importes a la derecha), y
  * cada celda de cada fila (salvo las de seccion, que ocupan toda la fila) en su
  * columna: los importes enteros y acabando donde acaba su titulo; el resto
- * empezando donde empieza el suyo. Ningun texto pisa al siguiente.
+ * empezando donde empieza el suyo, y las fechas y los codigos enteros (solo el
+ * texto puede salir recortado con «…»). Ningun texto pisa al siguiente, y la
+ * tabla no se sale del margen derecho de la pagina.
  */
 export function fallosColumnasPdf(t: TablaInforme, textos: TextoPdf[]): string[] {
   const fallos: string[] = [];
@@ -59,17 +61,23 @@ export function fallosColumnasPdf(t: TablaInforme, textos: TextoPdf[]): string[]
         }
         return;
       }
-      const sangria = k === primeraTexto ? (f.sangria ?? 0) * 10 : 0;
+      const sangria = k === primeraTexto ? (f.sangria ?? 0) * 10 : 0; // SANGRIA del PDF
       const item = linea.find((x) => cerca(x.x, titulos[k].x + sangria));
       if (!item) fallos.push(`${quien}: no hay nada donde empieza su titulo.`);
-      else if (item.texto !== esperado && !(item.texto.endsWith('…') && esperado.startsWith(item.texto.slice(0, -1).trimEnd()))) {
-        fallos.push(`${quien}: pone «${item.texto}» y deberia poner «${esperado}».`);
+      else if (item.texto !== esperado) {
+        // Solo el texto (concepto, nombre) puede salir recortado con «…»; una fecha o un codigo (asiento, NIF, subcuenta), nunca.
+        const recortado = c.tipo === 'texto' && item.texto.endsWith('…') && esperado.startsWith(item.texto.slice(0, -1).trimEnd());
+        if (!recortado) fallos.push(`${quien}: pone «${item.texto}» y deberia poner «${esperado}».`);
       }
     });
     for (let j = 1; j < linea.length; j++) {
       if (linea[j - 1].derecha > linea[j].x + 0.5) fallos.push(`Fila ${i + 1}: «${linea[j - 1].texto}» pisa a «${linea[j].texto}».`);
     }
   });
+  // El margen derecho es donde acaba «Página N de M», al pie: ninguna cifra ni titulo pasa de ahi.
+  const margen = Math.max(...textos.filter((x) => x.texto.startsWith('Página ')).map((x) => x.derecha));
+  const fuera = textos.filter((x) => (x.tam === TAM_FILA || x.tam === TAM_CABECERA) && x.derecha > margen + TOLERANCIA);
+  if (fuera.length) fallos.push(`Se sale del margen derecho (${margen.toFixed(1)}): ${fuera.slice(0, 3).map((x) => `«${x.texto}» hasta ${x.derecha.toFixed(1)}`).join(', ')}.`);
   return fallos;
 }
 
