@@ -13,10 +13,12 @@ import { incomeInvoicesService, type CrearFacturaIngresoDTO } from '../services/
 import { calcularModelo303, obtenerFacturasFiscales } from '../services/impuestosCalculo.service';
 import { periodoFiscal } from '../services/nominas/fiscal';
 import { resumenFiscalPeriodo } from '../services/resumenFiscal.service';
+import { hoyEspana } from '../utils/fechas';
 
 const E = `m303-rect-venta-${Date.now()}`;
 let cliente = '';
-const HOY = new Date().toISOString().slice(0, 10);
+// Hoy en España, como fecha el servidor las facturas (en UTC, entre las 00:00 y las 02:00 de Madrid podía caer en otro trimestre).
+const HOY = hoyEspana();
 const trimestreDe = (f: string) => `${Math.ceil(Number(f.slice(5, 7)) / 3)}T`;
 
 const linea = (precio: number) => ({ descripcion: 'Servicio', cantidad: 1, precioUnitario: precio, tipoIva: 21 });

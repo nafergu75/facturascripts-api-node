@@ -15,13 +15,15 @@ import { buscarOriginalesVenta, datosParaRectificarVenta, opcionesRectificativa 
 import { listarSeries } from '../services/series.service';
 import { datosPdfFactura } from '../services/facturaPdf.service';
 import type { HttpError } from '../utils/http-errors';
+import { hoyEspana } from '../utils/fechas';
 
 const E = `venta-rect-bloque-${Date.now()}`;
 const OTRA = `${E}-otra`;
 let cliente = '';
 let otroCliente = '';
 let sinNif = '';
-const HOY = new Date().toISOString().slice(0, 10);
+// Hoy en España, como numera el servidor (en UTC fallaba entre las 00:00 y las 02:00 de Madrid).
+const HOY = hoyEspana();
 
 const linea = (precio: number, extra: Record<string, unknown> = {}) => ({ descripcion: 'Servicio', cantidad: 1, precioUnitario: precio, tipoIva: 21, ...extra });
 
