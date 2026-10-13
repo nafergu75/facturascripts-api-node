@@ -414,7 +414,9 @@ async function respuestaDe(fila: FilaLectura): Promise<RespuestaLectura> {
   const clienteExistente = await clientePorNif(fila.companyId, ingreso.nifCliente);
   // Rectificativa o abono de venta: la factura que rectifica y lo que se propone.
   const rectificativa = await rectificativaVentaLeida(fila.companyId, guardado.lectura);
-  const lectura = infoLectura(fila, guardado, validaciones, tercero(clienteExistente?.pais));
+  // Si la rectificativa va al cliente de la original propuesta, de donde es lo dice la ficha de ese
+  // cliente, no la del cliente del NIF leido.
+  const lectura = infoLectura(fila, guardado, validaciones, tercero(rectificativa?.clienteDeLaOriginal?.pais ?? clienteExistente?.pais));
   return { lecturaId: fila.id, estado: 'LISTA', ingreso: { ...ingreso, errores: sinRepetidos(ingreso.errores), clienteExistente, rectificativa }, lectura };
 }
 

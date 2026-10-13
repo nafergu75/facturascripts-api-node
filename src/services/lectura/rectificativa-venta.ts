@@ -42,7 +42,8 @@ export interface RectificativaVentaLeida {
   };
   /** Cobros de 2026 pendientes del cliente resuelto por el NIF leido (sin factura en la app). */
   partidasFuera: PartidaFueraVenta[];
-  clienteDeLaOriginal: { id: string; nombreFiscal: string; nifCif: string | null } | null;
+  /** El cliente de la original propuesta, con el pais de su ficha (manda sobre lo elegido en «¿De donde es el cliente?»). */
+  clienteDeLaOriginal: { id: string; nombreFiscal: string; nifCif: string | null; pais: string } | null;
   /** El NIF leido no es el del cliente de la original propuesta. */
   clienteDistinto: boolean;
 }
@@ -73,7 +74,7 @@ export async function rectificativaVentaLeida(companyId: string, l: LecturaNorma
     formaPropuesta: negativos ? 'I' : null,
     propuesta: { coincidencia: busqueda?.coincidencia ?? 'NINGUNA', original, candidatas },
     partidasFuera: cliente ? await partidasFueraCobro(companyId, cliente.id, numeroRectificada) : [],
-    clienteDeLaOriginal: original ? { id: original.customerId, nombreFiscal: original.cliente, nifCif: original.nifCliente } : null,
+    clienteDeLaOriginal: original ? { id: original.customerId, nombreFiscal: original.cliente, nifCif: original.nifCliente, pais: original.paisCliente } : null,
     clienteDistinto: !!original && !!nifLeido && nifLeido !== nifOriginal,
   };
 }
