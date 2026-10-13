@@ -1,7 +1,7 @@
 /**
  * Panel del resumen (dashboard): ingresos, gastos y resultado sacados de las
- * FACTURAS y de las NÓMINAS, no de la tabla Movement («Nuevo movimiento», que
- * ya no cuenta en las gráficas).
+ * FACTURAS y de las NÓMINAS, no de la tabla Movement (los movimientos anotados a
+ * mano antes; «Nuevo movimiento» está retirado y no cuentan en las gráficas).
  *
  * Criterio (decisión del usuario, 13-10-2026):
  *  - Por el devengo, esté cobrada o pagada o no: las ventas, como en el 303
@@ -173,7 +173,7 @@ export interface ResumenPanel {
   nominas: number;
   /** false: los gastos van sin las nóminas porque quien mira no tiene permiso para verlas. */
   nominasIncluidas: boolean;
-  /** Movimientos de «Nuevo movimiento» de la empresa (de cualquier año): ya no cuentan aquí. */
+  /** Movimientos anotados a mano antes en la empresa (de cualquier año; ya no se crean): no cuentan aquí. */
   movimientosManuales: number;
 }
 

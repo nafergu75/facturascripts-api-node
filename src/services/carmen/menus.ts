@@ -22,7 +22,7 @@ export const PANTALLAS: PantallaApp[] = [
   { ruta: 'Compras → Proveedores', href: '/dashboard/proveedores', descripcion: 'Proveedores y sus datos fiscales.' },
   { ruta: 'Compras → Compras', href: '/dashboard/compras', descripcion: 'Facturas recibidas y gastos de proveedor: alta, corrección, anulación y pagos.' },
   { ruta: 'Compras → Lector de gastos', href: '/dashboard/compras/lector-gastos', descripcion: 'Lee con IA una factura en PDF o foto y la registra tras revisarla.' },
-  { ruta: 'Contabilidad → Movimientos', href: '/dashboard/movimientos', descripcion: 'Ingresos y gastos con estados y estadísticas.' },
+  { ruta: 'Contabilidad → Movimientos', href: '/dashboard/movimientos', descripcion: 'Movimientos anotados a mano antes: solo consulta (ya no se crean; se registra la factura).' },
   { ruta: 'Contabilidad → Plan contable', href: '/dashboard/plan-contable', descripcion: 'Cuentas y subcuentas del PGC de la empresa.' },
   { ruta: 'Contabilidad → Motor contable', href: '/dashboard/motor-contable', descripcion: 'Asientos generados desde las facturas; aquí se revisan y se aprueban.' },
   { ruta: 'Contabilidad → Informes contables', href: '/dashboard/informes', descripcion: 'Balance, pérdidas y ganancias, sumas y saldos, mayor y diario, en PDF o Excel.' },
