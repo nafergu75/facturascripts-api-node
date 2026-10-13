@@ -7,6 +7,7 @@ import { invoiceExtractorService, type InvoiceExtraction } from './invoice-extra
 import { archivarVentaSinRomper } from './archivoFacturas.service';
 import { accountingHooksService } from './accounting-hooks.service';
 import { comprobarRevisionVenta, vincularLectura } from './lectura/confirmar';
+import { MENSAJE_FALTA_NIF_CLIENTE } from './lectura/validaciones';
 import { clientePorNif, errorTerceroNoDadoDeAlta } from './lectura/terceros-lector';
 import type { DireccionFicha } from './lectura/direccion';
 import { detalleFalloBD, errorFalloBD, motivoSinAsiento, QUE_HACER_REGISTRAR } from '../utils/errores-bd';
@@ -57,8 +58,8 @@ export interface IngresoExtraido {
 /** Cuenta de ventas por defecto del PGC (700 Ventas de mercaderias / prestacion de servicios). */
 const CUENTA_VENTAS = '700';
 
-/** Error de la lectura sin NIF del cliente (tambien lo da la validacion NIF_RECEPTOR). */
-export const MENSAJE_FALTA_NIF_CLIENTE = 'Falta el NIF del cliente: es obligatorio en una factura de ingreso.';
+/** Error de la lectura sin NIF del cliente (tambien lo da la validacion NIF_RECEPTOR, con un cliente de España). */
+export { MENSAJE_FALTA_NIF_CLIENTE };
 
 const limpiarNif = (v: string | null | undefined): string | null => {
   if (!v) return null;
@@ -70,10 +71,15 @@ const limpiarNif = (v: string | null | undefined): string | null => {
  * Lo que muestra la pantalla. `direccion`: la del cliente leida con la lectura
  * nueva (lectura/direccion.ts); sin ella (extractor de siempre), la direccion
  * que trae la extraccion, entera en la calle.
+ *
+ * `nifYaValidado`: la extraccion viene de una lectura (/lecturas), cuyas
+ * validaciones ya dicen si falta el NIF del cliente segun de donde es (error
+ * con un cliente de España; «revisar» con uno de fuera, que puede no tenerlo).
+ * Sin ella (extractor de siempre), falta el NIF es siempre un error.
  */
-export function aIngresoExtraido(documentId: string, e: InvoiceExtraction, direccion?: DireccionFicha | null): IngresoExtraido {
+export function aIngresoExtraido(documentId: string, e: InvoiceExtraction, direccion?: DireccionFicha | null, opciones: { nifYaValidado?: boolean } = {}): IngresoExtraido {
   const errores = [...e.validation.errors];
-  if (!limpiarNif(e.customer.tax_id)) errores.push(MENSAJE_FALTA_NIF_CLIENTE);
+  if (!opciones.nifYaValidado && !limpiarNif(e.customer.tax_id)) errores.push(MENSAJE_FALTA_NIF_CLIENTE);
   if (!e.invoice.number) errores.push('No se ha podido leer el numero de la factura.');
   if (e.amounts.bases.length === 0) errores.push('No se ha podido leer ninguna base imponible.');
   if (e.amounts.withholdings.length > 1) errores.push('La factura tiene varias retenciones; registrala a mano.');
@@ -272,10 +278,12 @@ export const ingresosExtractorService = {
     if (opciones.clienteId && !elegido) throw notFound('Cliente no encontrado.');
     // Leido con /lecturas: si algo estaba marcado, hace falta "He revisado". Con un
     // cliente elegido, el NIF leido del cliente (que falte o este mal) ya no bloquea.
-    const ignorados = await comprobarRevisionVenta(companyId, documentId, opciones.revisado === true, elegido ? ['NIF_RECEPTOR'] : []);
+    const { ignoradas: ignorados, deLectura } = await comprobarRevisionVenta(companyId, documentId, opciones.revisado === true, elegido ? ['NIF_RECEPTOR'] : []);
 
     const e = doc.parsedData as unknown as InvoiceExtraction;
-    const resumen = aIngresoExtraido(documentId, e);
+    // Leida con /lecturas: que falte el NIF del cliente ya lo han dicho sus validaciones (un
+    // cliente de fuera de la UE puede no tenerlo); sin cliente, el 400 TERCERO_NO_DADO_DE_ALTA de abajo.
+    const resumen = aIngresoExtraido(documentId, e, undefined, { nifYaValidado: deLectura });
     const sinNifLeido = new Set(elegido ? [MENSAJE_FALTA_NIF_CLIENTE, ...ignorados] : []);
     const errores = resumen.errores.filter((m) => !sinNifLeido.has(m));
     if (errores.length > 0) throw badRequest(`No se puede registrar: ${errores.join(' ')}`);
