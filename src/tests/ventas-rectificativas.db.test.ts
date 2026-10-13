@@ -13,6 +13,7 @@ import { prisma } from '../config/database';
 import { incomeInvoicesService, type CrearFacturaIngresoDTO } from '../services/income-invoices.service';
 import { buscarOriginalesVenta, datosParaRectificarVenta, opcionesRectificativa } from '../services/rectificativasVenta.service';
 import { listarSeries } from '../services/series.service';
+import { datosPdfFactura } from '../services/facturaPdf.service';
 import type { HttpError } from '../utils/http-errors';
 
 const E = `venta-rect-bloque-${Date.now()}`;
@@ -253,6 +254,8 @@ describe('por sustitución', () => {
     const s = await rect({ forma: 'S', motivo: 'ERROR', originales: [{ id: a.id }] }, { lineas: [linea(80)] });
     expect(s).toMatchObject({ tipoRectificativa: 'S', tipoFactura: 'R4', totalFactura: 96.8 });
     expect((await enlaces(s.id))[0]).toMatchObject({ originalId: a.id, baseRectificada: -20, cuotaRectificada: -4.2 });
+    // El PDF dice también el importe de la rectificación (art. 15.5 RD 1619/2012).
+    expect((await datosPdfFactura(E, s.id)).datos.importeRectificacion).toEqual({ base: -20, cuota: -4.2, retencion: 0, total: -24.2 });
     // Ya tiene una rectificativa: otra sustitución no; por diferencias se mide contra la sustituta (96,80).
     const otra = await error(rect({ forma: 'S', motivo: 'ERROR', originales: [{ id: a.id }] }, { lineas: [linea(70)] }));
     expect(otra.statusCode).toBe(409);
