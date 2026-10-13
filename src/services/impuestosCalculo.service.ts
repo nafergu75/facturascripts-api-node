@@ -22,6 +22,8 @@ import {
 } from '../domain/impuestos.model';
 import { aparicionesConIva, aparicionesRetencionEntre, desgloseRetencionGasto, fechaContableGasto, whereGastosFiscales, whereGastosIva } from '../domain/factura-gasto.model';
 import { avisoExcesoRetencion, retencionesPorPerceptor, topeCero } from '../domain/rectificativa-gasto.model';
+import { diferenciaSustitucion } from '../domain/rectificativa-venta.model';
+import { lineasImportesDe } from './rectificativasVenta.service';
 import {
   esPaisEspana,
   esTipoOperacion,
@@ -744,6 +746,38 @@ function operacionDeTipo(tipo: TipoOperacionVenta, ctx: ContextoOperacion): Fact
  * Las ventas con tipo de operacion llevan su tipo; las anteriores (sin tipo),
  * la clasificacion de siempre por pais o prefijo del NIF.
  */
+/**
+ * Original de la app de cada rectificativa por sustitucion (por sus enlaces o
+ * por facturaOriginalId), con sus lineas. Importes de cuenta: los mismos que
+ * lee el modelo.
+ */
+async function originalesDeSustituciones(
+  companyId: string,
+  ventas: Array<{ id: string; esRectificativa: boolean; tipoRectificativa: string | null; facturaOriginalId: string | null }>,
+) {
+  const sust = ventas.filter((f) => f.esRectificativa && f.tipoRectificativa === 'S');
+  const out = new Map<string, { lineas: Array<{ tipoIva: number; accountCode: string | null; baseLine: number; ivaImporte: number; retencionImporte: number }> }>();
+  if (!sust.length) return out;
+  // Con una BD simulada (tests sin MySQL) puede no estar la tabla de enlaces: queda facturaOriginalId.
+  const tabla = (prisma as unknown as { incomeInvoiceRectificada?: { findMany?: unknown } }).incomeInvoiceRectificada;
+  const enlaces =
+    typeof tabla?.findMany === 'function'
+      ? await prisma.incomeInvoiceRectificada.findMany({
+          where: { companyId, rectificativaId: { in: sust.map((f) => f.id) }, originalId: { not: null } },
+          select: { rectificativaId: true, originalId: true },
+        })
+      : [];
+  const deCada = new Map(sust.map((f) => [f.id, enlaces.find((e) => e.rectificativaId === f.id)?.originalId ?? f.facturaOriginalId]));
+  const ids = [...new Set([...deCada.values()].filter((x): x is string => !!x))];
+  if (!ids.length) return out;
+  const originales = await prisma.incomeInvoice.findMany({ where: { companyId, id: { in: ids } }, include: { lineas: true } });
+  for (const [sId, oId] of deCada) {
+    const o = originales.find((x) => x.id === oId);
+    if (o) out.set(sId, o);
+  }
+  return out;
+}
+
 export async function obtenerFacturasFiscales(companyId: string, desde: string, hasta: string): Promise<FacturaFiscal[]> {
   if (!dbFacturasListo()) return [];
   const out: FacturaFiscal[] = [];
@@ -761,6 +795,11 @@ export async function obtenerFacturasFiscales(companyId: string, desde: string, 
       include: { supplier: true, lineas: true },
     }),
   ]);
+
+  // Rectificativas por sustitucion con la original en la app: cuenta la
+  // diferencia con la original, por tipo de IVA (la S lleva la factura
+  // corregida entera; antes se sumaba entera y el IVA contaba dos veces).
+  const originalesDeS = await originalesDeSustituciones(companyId, ventas);
 
   for (const f of ventas) {
     // El IVA va en el periodo del devengo (art. 75 LIVA), aunque la factura se emita despues.
@@ -793,11 +832,15 @@ export async function obtenerFacturasFiscales(companyId: string, desde: string, 
         residente: paisDelCliente(cliente) === 'ES',
         paisTercero: paisDelCliente(cliente),
       }),
-      // Una rectificativa va en las casillas de modificaciones del 303 ([14]/[15]).
+      // Una rectificativa va en las casillas de modificaciones del 303 ([14]/[15]);
+      // la del concurso del cliente (R2), en el 390 aparte ([31]/[32]).
       ...(f.esRectificativa && { rectificativa: true }),
-      lineas: f.lineas.length
-        ? f.lineas.map((l) => ({ tipoIva: l.tipoIva, base: euros(l.baseLine), cuota: euros(l.ivaImporte) }))
-        : [{ tipoIva: 0, base: euros(f.baseTotal), cuota: 0 }],
+      ...(f.esRectificativa && f.tipoFactura === 'R2' && { concurso: true }),
+      lineas: originalesDeS.has(f.id)
+        ? diferenciaSustitucion(lineasImportesDe(f), lineasImportesDe(originalesDeS.get(f.id)!)).porTipoIva.map((t) => ({ tipoIva: t.tipoIva, base: t.base, cuota: t.cuota }))
+        : f.lineas.length
+          ? f.lineas.map((l) => ({ tipoIva: l.tipoIva, base: euros(l.baseLine), cuota: euros(l.ivaImporte) }))
+          : [{ tipoIva: 0, base: euros(f.baseTotal), cuota: 0 }],
     });
   }
 
