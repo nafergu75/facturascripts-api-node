@@ -1,6 +1,5 @@
 import { asyncHandler } from '../utils/async-handler';
 import { sendOk } from '../utils/response';
-import { badRequest } from '../utils/http-errors';
 import { prisma } from '../config/database';
 import { Decimal } from '@prisma/client/runtime/library';
 import { perfilEmpresa } from '../services/perfilEmpresa.service';
@@ -95,21 +94,18 @@ export const movementsController = {
    * Mismo criterio que el 303: ventas FINAL y ni ventas ni gastos en borrador.
    * Importes SIEMPRE en la moneda de cuenta (las columnas de siempre), tambien
    * de las facturas emitidas en otra moneda; `monedaCuenta` dice cual es.
+   * GET /stats/fiscal?anio=2026[&trimestre=1-4 | &mes=1-12]: el mismo periodo
+   * que las graficas del panel, para que las cifras de los dos bloques cuadren.
    */
   getResumenFiscal: asyncHandler(async (req, res) => {
     const companyId = req.companyId ?? req.params.companyId;
-    const anio = ejercicioOActual(req.query.anio, { campo: 'anio' });
-    const trimestre = req.query.trimestre ? Number(req.query.trimestre) : null;
-    if (trimestre !== null && ![1, 2, 3, 4].includes(trimestre)) throw badRequest('Trimestre no válido (1 a 4).');
-    const mesDesde = trimestre ? (trimestre - 1) * 3 + 1 : 1;
-    const mesHasta = trimestre ? trimestre * 3 : 12;
-    const desde = `${anio}-${String(mesDesde).padStart(2, '0')}-01`;
-    const hasta = `${anio}-${String(mesHasta).padStart(2, '0')}-31`;
+    // El mismo periodo que el resto del panel: ?anio y, si se pide, ?trimestre o ?mes.
+    const { anio, trimestre, mes, desde, hasta } = periodoPanel(req.query);
     // Importes de las columnas de siempre (moneda de cuenta), via la fuente unica
     // que tambien usa Carmen (resumenFiscal.service).
     const [r, perfil] = await Promise.all([resumenFiscalPeriodo(companyId, desde, hasta), perfilEmpresa(companyId)]);
     sendOk(res, {
-      periodo: { anio, trimestre, desde, hasta },
+      periodo: { anio, trimestre, mes, desde, hasta },
       monedaCuenta: perfil.monedaCuenta,
       // Una empresa no establecida en Espana no lleva IVA ni modelos de la AEAT.
       empresaEspanola: perfil.espanola,

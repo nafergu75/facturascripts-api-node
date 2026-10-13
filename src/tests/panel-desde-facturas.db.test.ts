@@ -285,6 +285,16 @@ describe('resumen (GET /stats/summary)', () => {
     expect(datos(panel).facturasGasto).toBe(datos(fiscal).gastos.facturas);
   });
 
+  it('«IVA y retenciones» admite el mismo trimestre o mes que el panel y cuadra con él', async () => {
+    const [panel, fiscal] = await Promise.all([get('/stats/summary?anio=2026&mes=2'), get('/stats/fiscal?anio=2026&mes=2')]);
+    expect(fiscal.status).toBe(200);
+    expect(datos(fiscal).periodo).toEqual({ anio: 2026, trimestre: null, mes: 2, desde: '2026-02-01', hasta: '2026-02-28' });
+    expect(datos(fiscal).ventas).toMatchObject({ base: datos(panel).totalIncome, facturas: 2 });
+    expect(datos(fiscal).gastos).toMatchObject({ base: datos(panel).gastoFacturas, facturas: 1 });
+    expect(datos(await get('/stats/fiscal?anio=2026&trimestre=2')).periodo).toMatchObject({ trimestre: 2, desde: '2026-04-01', hasta: '2026-06-30' });
+    expect((await get('/stats/fiscal?anio=2026&trimestre=5')).status).toBe(400);
+  });
+
   it('filtra por año, trimestre y mes', async () => {
     expect(datos(await get('/stats/summary?anio=2025'))).toMatchObject({ totalIncome: 300, gastoFacturas: 70, gastoPersonal: 0, facturasVenta: 1, facturasGasto: 1 });
     expect(datos(await get('/stats/summary?anio=2026&trimestre=1'))).toMatchObject({ totalIncome: 3300, totalExpense: 7250 });
