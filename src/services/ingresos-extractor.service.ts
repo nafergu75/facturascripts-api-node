@@ -1,6 +1,6 @@
 import { prisma } from '../config/database';
 import { badRequest, notFound } from '../utils/http-errors';
-import { aCentimos } from '../utils/money';
+import { aCentimos, importeTexto } from '../utils/money';
 import { hoyEspana } from '../utils/fechas';
 import { incomeInvoicesService, type CrearLineaIngresoDTO } from './income-invoices.service';
 import { invoiceExtractorService, type InvoiceExtraction } from './invoice-extractor.service';
@@ -204,7 +204,12 @@ interface RectificativaLector {
   clienteOriginal: string | null;
   /** -1 si los importes leidos en positivo se registran en negativo. */
   signo: 1 | -1;
+  /** Cuota de IVA fijada por linea (la de la original escrita en una sustitucion de fuera); undefined: base por tipo. */
+  cuotasFijas: Array<number | undefined>;
 }
+
+/** Diferencia que se tolera entre la cuota escrita de la original y su base por el tipo: el IVA calculado linea a linea. */
+const TOLERANCIA_CUOTA = 1;
 
 const TIPOS_IVA_LECTOR = [0, 4, 5, 10, 21];
 
@@ -233,6 +238,13 @@ async function rectificativaDelLector(
   const forma = r.forma === undefined || r.forma === null || r.forma === '' ? 'I' : r.forma;
   if (forma !== 'I' && forma !== 'S') throw badRequest('Elige cómo rectifica: por diferencias o por sustitución.', { codigo: 'FORMA_NO_VALIDA', campo: 'rectificativa.forma' });
   const negativos = importesLeidosNegativos(e);
+  // Por sustitucion, lo leido es la factura corregida entera: en negativo no lo es.
+  if (forma === 'S' && negativos) {
+    throw badRequest('Por sustitución, la factura leída es la corregida entera y no puede traer importes en negativo. Si es un abono, elige «por diferencias».', {
+      codigo: 'SIGNO_NO_CUADRA',
+      campo: 'rectificativa.forma',
+    });
+  }
   const originales = Array.isArray(r.originales) ? (r.originales as Array<Record<string, unknown>>) : [];
   const ids = originales.map((o) => (o && typeof o.id === 'string' ? o.id : null)).filter((x): x is string => !!x);
   const deLaApp = ids.length
@@ -257,6 +269,7 @@ async function rectificativaDelLector(
     return { ...l, precioUnitario: signo * l.precioUnitario, ...(cuenta ? { cuenta } : {}) };
   });
   let formaBloque: 'I' | 'S' = forma;
+  const cuotasFijas: Array<number | undefined> = lineas.map(() => undefined);
   // Por sustitucion sin la original en la app: sus importes, en negativo, junto a los leidos.
   if (forma === 'S' && !deLaApp.length) {
     const io = Array.isArray(r.importesOriginales) ? (r.importesOriginales as Array<Record<string, unknown>>) : [];
@@ -266,15 +279,36 @@ async function rectificativaDelLector(
         campo: 'rectificativa.importesOriginales',
       });
     }
+    // La retencion de la original: la indicada o, si no, la de la factura leida (la corregida suele llevar la misma).
+    const retencionLeida = lineasLeidas[0]?.tipoRetencion ?? 0;
     const deOriginal = io.map((x, i) => {
+      const campo = `rectificativa.importesOriginales.${i}`;
       const tipoIva = Number(x?.tipoIva);
       const base = Number(x?.base);
       if (!TIPOS_IVA_LECTOR.includes(tipoIva) || !Number.isFinite(base)) {
-        throw badRequest('Los importes de la factura original no son válidos: un tipo de IVA y su base.', { codigo: 'FALTA_IMPORTES_ORIGINALES', campo: `rectificativa.importesOriginales.${i}` });
+        throw badRequest('Los importes de la factura original no son válidos: un tipo de IVA y su base.', { codigo: 'FALTA_IMPORTES_ORIGINALES', campo });
       }
-      return { descripcion: `Factura rectificada (IVA ${tipoIva} %)`, cantidad: -1, precioUnitario: base, descuentoPorcentaje: 0, tipoIva, tipoRetencion: 0 };
+      const conRetencion = x?.tipoRetencion !== undefined && x?.tipoRetencion !== null && x?.tipoRetencion !== '';
+      const tipoRetencion = conRetencion ? Number(x.tipoRetencion) : retencionLeida;
+      if (!Number.isFinite(tipoRetencion) || tipoRetencion < 0 || tipoRetencion > 50) {
+        throw badRequest('La retención de IRPF de la factura original no es válida: un porcentaje entre 0 y 50.', { codigo: 'FALTA_IMPORTES_ORIGINALES', campo: `${campo}.tipoRetencion` });
+      }
+      // La cuota escrita manda (pudo calcularse linea a linea), si cuadra con su base: mas de 1 € de diferencia es una errata.
+      let cuota: number | undefined;
+      if (x?.cuota !== undefined && x?.cuota !== null && x?.cuota !== '') {
+        cuota = Number(x.cuota);
+        const calculada = Math.round(((base * tipoIva) / 100) * 100) / 100;
+        if (!Number.isFinite(cuota) || (tipoIva === 0 && aCentimos(cuota) !== 0) || Math.abs(aCentimos(cuota) - aCentimos(calculada)) > TOLERANCIA_CUOTA * 100) {
+          throw badRequest(
+            `El IVA de la factura original al ${tipoIva} % no cuadra con su base: ${importeTexto(base)} al ${tipoIva} % son ${importeTexto(calculada)}, y has escrito ${Number.isFinite(cuota) ? importeTexto(cuota) : 'otra cosa'}. Revísalo.`,
+            { codigo: 'IMPORTES_ORIGINALES_NO_CUADRAN', campo: `${campo}.cuota` },
+          );
+        }
+      }
+      return { linea: { descripcion: `Factura rectificada (IVA ${tipoIva} %)`, cantidad: -1, precioUnitario: base, descuentoPorcentaje: 0, tipoIva, tipoRetencion }, cuota };
     });
-    lineas = [...lineas, ...deOriginal];
+    lineas = [...lineas, ...deOriginal.map((d) => d.linea)];
+    cuotasFijas.push(...deOriginal.map((d) => (d.cuota === undefined ? undefined : -d.cuota)));
     // Lo guardado ya es la diferencia con la original: por diferencias.
     formaBloque = 'I';
   }
@@ -298,6 +332,7 @@ async function rectificativaDelLector(
     lineas,
     clienteOriginal: clientes.length === 1 ? clientes[0] : null,
     signo,
+    cuotasFijas,
   };
 }
 
@@ -435,7 +470,7 @@ export const ingresosExtractorService = {
         ...(opciones.confirmaDevengoFuera === true ? { confirmaDevengoFuera: true } : {}),
       },
       // El numero se guarda tal como se leyo (con sus ceros y su separador), el que ve la pantalla.
-      { origen: 'lector', numeroLeido: resumen.numeroFactura },
+      { origen: 'lector', numeroLeido: resumen.numeroFactura, ...(rect?.cuotasFijas.some((c) => c !== undefined) ? { cuotasFijas: rect.cuotasFijas } : {}) },
     );
 
     // Archivar el PDF en su carpeta definitiva. No es critico: si falla, la
