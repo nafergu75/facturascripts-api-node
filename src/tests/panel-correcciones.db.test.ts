@@ -3,6 +3,8 @@
  *  - una rectificativa por sustitucion (S) lleva la factura corregida entera:
  *    en el panel, en «IVA y retenciones» y en Carmen cuenta solo su
  *    diferencia con la original (antes la venta contaba dos veces);
+ *  - las ventas van por su devengo, como en el 303: una con fecha de la
+ *    operacion cuenta en ese mes en el resumen, los meses y los clientes;
  *  - estados de «Ultimas facturas»: venta cobrada en parte y rectificativas
  *    que no bajan;
  *  - el trimestre y el mes solo admiten cifras;
@@ -50,7 +52,7 @@ let numero = 0;
 
 async function venta(
   clave: string,
-  d: { cliente: string; fecha: string; base: number; estado?: string; vence?: string; rectifica?: { original: string; tipo: 'S' | 'I' } },
+  d: { cliente: string; fecha: string; base: number; estado?: string; vence?: string; operacion?: string; rectifica?: { original: string; tipo: 'S' | 'I' } },
 ) {
   const iva = Math.round(d.base * 21) / 100;
   const n = ++numero;
@@ -65,6 +67,7 @@ async function venta(
       estadoDocumento: 'FINAL',
       estado: d.estado ?? 'PENDING',
       fechaEmision: d.fecha,
+      ...(d.operacion ? { fechaOperacion: d.operacion } : {}),
       fechaVencimiento: d.vence ?? '2099-12-31',
       baseTotal: d.base,
       ivaTotal: iva,
@@ -123,9 +126,10 @@ beforeAll(async () => {
   // Alfa: factura de 1.000 en enero sustituida en marzo por otra de 1.200 (S).
   await venta('o1', { cliente: 'alfa', fecha: '2026-01-10', base: 1000 });
   await venta('s1', { cliente: 'alfa', fecha: '2026-03-15', base: 1200, rectifica: { original: 'o1', tipo: 'S' } });
-  // Beta: 2.000 en febrero sustituida en abril (otro trimestre) por una de 1.500 a nombre de Gamma.
+  // Beta: 2.000 en febrero sustituida en abril (otro trimestre) por una de 1.500 (la S va siempre
+  // a nombre del cliente de su original: ORIGINAL_DE_OTRO_CLIENTE).
   await venta('o2', { cliente: 'beta', fecha: '2026-02-05', base: 2000 });
-  await venta('s2', { cliente: 'gamma', fecha: '2026-04-20', base: 1500, rectifica: { original: 'o2', tipo: 'S' } });
+  await venta('s2', { cliente: 'beta', fecha: '2026-04-20', base: 1500, rectifica: { original: 'o2', tipo: 'S' } });
   // Estados: cobrada en parte, cobrada entera con sus cobros, vencida en parte y rectificativa al alza (I).
   await venta('parte', { cliente: 'gamma', fecha: '2026-05-01', base: 100 });
   await cobro('parte', 50);
@@ -169,26 +173,41 @@ describe('rectificativa por sustitución (S): cuenta solo su diferencia', () => 
     const f = datos(await get('/stats/fiscal?anio=2026&trimestre=1'));
     expect(f.ventas).toMatchObject({ facturas: 3, base: 3200, iva: 672, total: 3872 });
     expect(f.ivaResultado).toBe(672);
-    // Con un cliente: la original resta al cliente de la original.
+    // Con un cliente: su original y la S, que cuenta por la diferencia.
     const alfa = await resumenFiscalPeriodo(E1, '2026-01-01', '2026-12-31', { customerId: clientes.alfa });
     expect(alfa.ventas).toMatchObject({ facturas: 2, base: 1200, iva: 252 });
     const beta = await resumenFiscalPeriodo(E1, '2026-01-01', '2026-12-31', { customerId: clientes.beta });
-    expect(beta.ventas).toMatchObject({ facturas: 1, base: 0, iva: 0 });
+    expect(beta.ventas).toMatchObject({ facturas: 2, base: 1500, iva: 315 });
   });
 
-  it('por cliente: la S resta la original al cliente de la original', async () => {
+  it('por cliente: la S cuenta su diferencia con la original, en el periodo de la S', async () => {
     const filas = datos(await get('/stats/ingresos-por-cliente?anio=2026')) as Array<{ name: string; total: number; facturas: number }>;
     expect(filas.map((f) => [f.name, f.total, f.facturas])).toEqual([
-      ['Gamma SL', 1810, 5], // 1500 (S) + 100 + 100 + 100 + 10
-      ['Alfa SL', 1200, 2],
-      ['Beta SL', 0, 1], // su factura la sustituyó la de Gamma
+      ['Beta SL', 1500, 2], // 2000 + (1500 - 2000)
+      ['Alfa SL', 1200, 2], // 1000 + (1200 - 1000)
+      ['Gamma SL', 310, 4], // 100 + 100 + 100 + 10
     ]);
     // En el trimestre de la S, sin la original en el periodo: Beta sale en negativo.
     const t2 = datos(await get('/stats/ingresos-por-cliente?anio=2026&trimestre=2')) as Array<{ name: string; total: number; facturas: number }>;
     expect(t2.map((f) => [f.name, f.total, f.facturas])).toEqual([
-      ['Gamma SL', 1810, 5],
-      ['Beta SL', -2000, 0],
+      ['Gamma SL', 310, 4],
+      ['Beta SL', -500, 1],
     ]);
+  });
+});
+
+describe('venta con fecha de la operación: cuenta en su devengo, como en el 303', () => {
+  it('el resumen, los meses, los clientes y «IVA y retenciones» la ponen en el mes de la operación', async () => {
+    // Emitida el 2 de julio por una operación del 20 de junio (otro año, para no tocar las cifras de 2026).
+    await venta('operacion', { cliente: 'alfa', fecha: '2025-07-02', base: 500, operacion: '2025-06-20' });
+    expect(datos(await get('/stats/summary?anio=2025&trimestre=2'))).toMatchObject({ totalIncome: 500, facturasVenta: 1 });
+    expect(datos(await get('/stats/summary?anio=2025&trimestre=3'))).toMatchObject({ totalIncome: 0, facturasVenta: 0 });
+    const meses = datos(await get('/stats/by-month?anio=2025')) as Array<{ month: string; income: number; facturasVenta: number }>;
+    expect(meses.find((m) => m.month === '2025-06')).toMatchObject({ income: 500, facturasVenta: 1 });
+    expect(meses.find((m) => m.month === '2025-07')).toMatchObject({ income: 0, facturasVenta: 0 });
+    const t2 = datos(await get('/stats/ingresos-por-cliente?anio=2025&trimestre=2')) as Array<{ name: string; total: number; facturas: number }>;
+    expect(t2.map((f) => [f.name, f.total, f.facturas])).toEqual([['Alfa SL', 500, 1]]);
+    expect(datos(await get('/stats/fiscal?anio=2025&trimestre=2')).ventas).toMatchObject({ facturas: 1, base: 500, iva: 105 });
   });
 });
 
