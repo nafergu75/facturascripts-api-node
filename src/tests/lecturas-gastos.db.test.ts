@@ -583,14 +583,20 @@ describe('empresa sin NIF (fallo del 13-10)', () => {
   // resultado-simple: emisor IMPRENTA LEVANTE SL y cliente COMERCIAL DEMO SL.
   const EMISORA = `${E}-sin-nif-emisora`;
   const RECEPTORA = `${E}-sin-nif-receptora`;
+  /** Se llama «Levante»: el nombre del proveedor lo contiene, pero no es el mismo. */
+  const PARECIDA = `${E}-sin-nif-parecida`;
+  const EMITIDA =
+    'Parece una factura emitida por la empresa: léela en el lector de ventas. Lo hemos deducido por el nombre porque tu empresa no tiene el NIF puesto; si no es así, ponlo en Más > Datos de la empresa y vuelve a leerla.';
   const proveedores: Record<string, string> = {};
   beforeAll(async () => {
     await prisma.company.create({ data: { id: EMISORA, name: 'Imprenta Levante SL', fsBaseUrl: 'http://localhost:8080', fsApiKeyEnc: 'k' } });
     await prisma.legalConfig.create({ data: { companyId: EMISORA } });
     await prisma.company.create({ data: { id: RECEPTORA, name: 'Otro nombre', fsBaseUrl: 'http://localhost:8080', fsApiKeyEnc: 'k' } });
     await prisma.legalConfig.create({ data: { companyId: RECEPTORA, denominacion: 'Comercial Demo, S.L.' } });
+    await prisma.company.create({ data: { id: PARECIDA, name: 'Levante', fsBaseUrl: 'http://localhost:8080', fsApiKeyEnc: 'k' } });
+    await prisma.legalConfig.create({ data: { companyId: PARECIDA } });
     // El proveedor ya dado de alta en cada una (el lector no lo crea al registrar).
-    for (const companyId of [EMISORA, RECEPTORA]) {
+    for (const companyId of [EMISORA, RECEPTORA, PARECIDA]) {
       proveedores[companyId] = (await prisma.supplier.create({ data: { companyId, nombreFiscal: 'IMPRENTA LEVANTE, S.L.', nifCif: NIF_EMISOR } })).id;
     }
   });
@@ -626,10 +632,36 @@ describe('empresa sin NIF (fallo del 13-10)', () => {
   it('con el nombre del emisor (Company.name): error al leer y al confirmar', async () => {
     const { id, body } = await leerEn(EMISORA);
     expect(body.lectura.estado).toBe('error');
-    expect(await empresa(id)).toEqual([expect.objectContaining({ nivel: 'error', mensaje: 'Parece una factura emitida por la empresa: léela en el lector de ventas.' })]);
+    expect(await empresa(id)).toEqual([expect.objectContaining({ nivel: 'error', mensaje: EMITIDA })]);
     const r = await request(app(EMISORA)).post('/gastos-extractor/confirmar').send(cuerpo(EMISORA, id));
     expect(r.status).toBe(400);
-    expect(r.body).toMatchObject({ message: 'Parece una factura emitida por la empresa: léela en el lector de ventas.', details: { codigo: 'VALIDACION_LECTURA', campo: 'emisor.nombre' } });
+    expect(r.body).toMatchObject({ message: EMITIDA, details: { codigo: 'VALIDACION_LECTURA', campo: 'emisor.nombre' } });
+  });
+
+  it.each([
+    ['razonsocial', 'cifnif'],
+    ['nombre', 'nif'],
+  ])('al confirmar con un proveedor nuevo, su nombre y NIF se leen también de «%s» y «%s» (como en su alta)', async (campoNombre, campoNif) => {
+    const { id } = await leerEn(EMISORA);
+    const r = await request(app(EMISORA))
+      .post('/gastos-extractor/confirmar')
+      .send({ ...cuerpo(EMISORA, id), proveedor: { nuevo: { [campoNombre]: 'Imprenta Levante, S.L.', [campoNif]: NIF_EMISOR } } });
+    expect(r.status).toBe(400);
+    // Con el NIF sin leer, el primer error seria «falta el NIF del proveedor»; con el nombre sin leer, no habria error.
+    expect(r.body).toMatchObject({ message: EMITIDA, details: { codigo: 'VALIDACION_LECTURA', campo: 'emisor.nombre' } });
+  });
+
+  it('con un nombre que solo está dentro del del proveedor («Levante»): revisar diciendo a qué se parece, y se registra', async () => {
+    const { id, body } = await leerEn(PARECIDA);
+    expect(body.lectura).toMatchObject({ estado: 'revisar', requiereRevision: true });
+    expect(await empresa(id)).toEqual([
+      expect.objectContaining({
+        nivel: 'revisar',
+        mensaje: expect.stringContaining('Puede que sea una factura emitida por tu empresa: el proveedor que se ha leído, «IMPRENTA LEVANTE SL», se parece al nombre de tu empresa.'),
+      }),
+    ]);
+    const r = await request(app(PARECIDA)).post('/gastos-extractor/confirmar').send(cuerpo(PARECIDA, id));
+    expect(r.status).toBe(201);
   });
 
   it('con el nombre del cliente (denominación): revisar pidiendo el NIF, y se registra marcando «He revisado»', async () => {
