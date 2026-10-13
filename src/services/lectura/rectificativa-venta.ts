@@ -30,6 +30,12 @@ export interface RectificativaVentaLeida {
   /** Motivo que sale del texto leido; null: hay que elegirlo. */
   motivoPropuesto: MotivoVenta | null;
   importesNegativos: boolean;
+  /**
+   * La factura leida dice que es una rectificativa (tipo de documento). Con
+   * los importes corregidos a mano, la pantalla vuelve a decidir con esto si
+   * hay que preguntar el signo (pideSigno solo mira lo leido).
+   */
+  esRectificativaLeida: boolean;
   /** Es una rectificativa y trae los importes en positivo: hay que decir si restan, suman o es una sustitucion. */
   pideSigno: boolean;
   /** I con importes en negativo; con importes en positivo no se propone. */
@@ -70,6 +76,7 @@ export async function rectificativaVentaLeida(companyId: string, l: LecturaNorma
     motivoLeido,
     motivoPropuesto: motivoDeTexto(motivoLeido),
     importesNegativos: negativos,
+    esRectificativaLeida: esRectificativa,
     pideSigno: esRectificativa && !negativos,
     formaPropuesta: negativos ? 'I' : null,
     propuesta: { coincidencia: busqueda?.coincidencia ?? 'NINGUNA', original, candidatas },
