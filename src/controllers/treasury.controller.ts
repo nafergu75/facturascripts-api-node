@@ -22,6 +22,11 @@ export const treasuryController = {
     sendOk(res, await treasuryService.crearCuentaBancaria(req.companyId!, req.body ?? {}), undefined, 201);
   }),
 
+  // Cambia la subcuenta 572 de una cuenta (solo si la de antes no tiene saldo).
+  cambiarSubcuenta: asyncHandler(async (req, res) => {
+    sendOk(res, await treasuryService.cambiarSubcuentaCuentaBancaria(req.companyId!, req.params.accountId, req.body ?? {}, req.user?.userId || 'unknown'));
+  }),
+
   listarMovimientos: asyncHandler(async (req, res) => {
     const estado = req.query.estado ? String(req.query.estado) : undefined;
     sendOk(res, await treasuryService.listarMovimientos(req.companyId!, req.params.accountId, estado));
