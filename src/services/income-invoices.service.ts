@@ -30,7 +30,7 @@ import { resolverFiscalidad } from './fiscalidad-venta.service';
 import { fechaTexto, hoyEspana, sumarDiasISO } from '../utils/fechas';
 import { inicioLlevanzaApp, periodo303FueraDeLaApp } from '../utils/anios';
 import { aCentimos, importeTexto } from '../utils/money';
-import { copiaAlEmitir, leerAjustesFacturacion } from './ajustesFacturacion.service';
+import { copiaAlEmitir, cuentaBancariaDeCobro, leerAjustesFacturacion } from './ajustesFacturacion.service';
 import { FORMAS_PAGO, type FormaPago } from '../domain/ajustes.model';
 import { leerPais } from './clientes.service';
 import { crearClienteConSubcuenta } from './terceros/subcuentas';
@@ -271,6 +271,10 @@ export interface IncomeInvoiceResp {
   anuladaPorCompleto?: boolean;
   /** Solo en la ficha: el asiento de la factura (no el de sus cobros), o null si no tiene. */
   asiento?: { id: string; numero: string | null; estado: string } | null;
+  /** Solo en la ficha de una emitida: IBAN impreso al emitirla ('' = sin IBAN; null = anterior a esa copia). */
+  ibanCobro?: string | null;
+  /** Solo en la ficha de una emitida: cuenta bancaria activa que se propone al cobrarla (null si no hay ninguna). */
+  cuentaBancariaCobroId?: string | null;
   esRecurrente: boolean;
   createdAt: Date;
   updatedAt: Date;
@@ -1957,7 +1961,7 @@ export const incomeInvoicesService = {
       if (generada) resp.facturaGeneradaId = generada.id;
     }
     if (f.estadoDocumento === ESTADO_FINAL) {
-      const [rects, asiento] = await Promise.all([
+      const [rects, asiento, cuentaCobro] = await Promise.all([
         prisma.incomeInvoice.findMany({
           where: { companyId, facturaOriginalId: f.id, estadoDocumento: ESTADO_FINAL },
           select: { id: true, numeroCompleto: true, totalFactura: true, tipoRectificativa: true },
@@ -1968,7 +1972,11 @@ export const incomeInvoicesService = {
           where: { companyId, invoiceId: f.id, origen: { not: 'TESORERIA' }, estado: { in: ['POSTED', 'PENDING_REVIEW', 'DRAFT'] } },
           select: { id: true, numeroAsiento: true, estado: true },
         }),
+        // Para la ventana de cobro: la cuenta del banco que sale en la factura.
+        cuentaBancariaDeCobro(companyId, { ibanCobro: f.ibanCobro ?? null, moneda: f.moneda }),
       ]);
+      resp.ibanCobro = f.ibanCobro ?? null;
+      resp.cuentaBancariaCobroId = cuentaCobro;
       resp.rectificadaPor = rects.map((r) => ({ id: r.id, numeroCompleto: r.numeroCompleto, totalFactura: Number(r.totalFactura), tipoRectificativa: r.tipoRectificativa }));
       const total = aCentimos(Number(f.totalFactura));
       const neto = total + rects.filter((r) => r.tipoRectificativa !== 'S').reduce((a, r) => a + aCentimos(Number(r.totalFactura)), 0);
