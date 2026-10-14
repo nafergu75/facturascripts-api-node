@@ -14,10 +14,14 @@
  *    va DENTRO de baseLine, que es la base imponible; y con `cuotaPorTipo` la
  *    cuota de IVA se calcula sobre la suma de bases de cada tipo y se reparte
  *    entre sus lineas (sin la opcion, como siempre: redondeo por linea).
+ * 4. Plantilla B (ceramica): sus datos de linea (palets, cajas, m2, piezas...)
+ *    son informativos y pasan tal cual; el importe es cantidad × precio, como
+ *    siempre, y tambien lleva `cuotaPorTipo`.
  */
 import { redondear2, redondear4 } from '../utils/money';
+import { datosCeramica, negarMedidas, type DatosCeramicaLinea } from './ceramica';
 
-export interface LineaEntrada {
+export interface LineaEntrada extends DatosCeramicaLinea {
   descripcion: string;
   cantidad: number;
   /** En la moneda del documento. */
@@ -73,7 +77,7 @@ export interface Totales {
   totalFactura: number;
 }
 
-export interface LineaCalculada {
+export interface LineaCalculada extends DatosCeramicaLinea {
   descripcion: string;
   cantidad: number;
   descuentoPorcentaje: number;
@@ -182,6 +186,7 @@ export function calcularLineasDoc(lineas: LineaEntrada[], { simetrico = false, c
       productoServicioId: l.productoServicioId,
       ...(l.cuentaContable ? { cuentaContable: l.cuentaContable } : {}),
       ...datosEnvase(l),
+      ...datosCeramica(l),
       importes: { precioUnitario: l.precioUnitario, baseLine, descuentoImporte, ivaImporte, retencionImporte },
     };
   });
@@ -355,7 +360,8 @@ const negarTotales = (t: Totales): Totales => ({
  * importes (documento y cuenta) y en la cabecera, sin recalcular. Asi original
  * + rectificativa = 0 exacto en 430, 700, 477, libro de IVA y 303, en las dos
  * monedas. El precio unitario se conserva y la cantidad cambia de signo, como
- * los packs, los kg de plastico y el IEEPNR (plantilla A).
+ * los packs, los kg de plastico y el IEEPNR (plantilla A), y los palets, las
+ * cajas, los m2, las piezas y el peso (plantilla B).
  */
 export function lineasEspejo(original: { doc: Totales; cuenta: Totales; lineas: LineaCalculada[] }): ImportesFactura {
   return {
@@ -367,6 +373,7 @@ export function lineasEspejo(original: { doc: Totales; cuenta: Totales; lineas: 
       ...(l.packs !== undefined ? { packs: negarOpcional(l.packs) } : {}),
       ...(l.kgPlastico !== undefined ? { kgPlastico: negarOpcional(l.kgPlastico) } : {}),
       ...(l.ieepnrImporte !== undefined ? { ieepnrImporte: negarOpcional(l.ieepnrImporte) } : {}),
+      ...negarMedidas(l),
       doc: negarImportes(l.doc),
       cuenta: negarImportes(l.cuenta),
     })),

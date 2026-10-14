@@ -1,11 +1,16 @@
 // Plantillas de las facturas de venta: catalogo, plantilla de cada serie y lo
-// que cambia cada una (envases, IVA por tipo, diseno del PDF).
+// que cambia cada una (envases, ceramica, descuento, IVA por tipo, diseno del PDF).
 import {
+  admiteCeramica,
+  admiteDescuento,
   admiteEnvases,
+  admitePesoBruto,
+  admiteTextoAdicional,
   catalogoPlantillas,
   dibujoDe,
   ivaPorTipo,
   normalizarPlantillaId,
+  plantillaAutomatica,
   plantillaAutomaticaSerieA,
   plantillaDisenada,
   plantillaDisponible,
@@ -19,16 +24,24 @@ const SIN_IEEPNR = { espanola: true, repercuteIeepnr: false };
 const FUERA = { espanola: false, repercuteIeepnr: false };
 
 describe('plantillas de factura de venta', () => {
-  it('catalogo: default, A, B y C; la A no esta disponible en una empresa extranjera y la B, sin diseno, en ninguna', () => {
+  it('catalogo: default, A, B y C, todas con diseno; la A y la B no estan disponibles en una empresa extranjera', () => {
     expect(PLANTILLAS_VENTA).toEqual(['default', 'A', 'B', 'C']);
     const es = catalogoPlantillas(SIN_IEEPNR);
-    expect(es.map((p) => [p.id, p.disponible])).toEqual([['default', true], ['A', true], ['B', false], ['C', true]]);
+    expect(es.map((p) => [p.id, p.disponible])).toEqual([['default', true], ['A', true], ['B', true], ['C', true]]);
     const fuera = catalogoPlantillas(FUERA);
     expect(fuera.find((p) => p.id === 'A')).toMatchObject({ disponible: false, soloEmpresaEspanola: true, envases: true, calculoIva: 'tipo' });
     expect(fuera.find((p) => p.id === 'default')).toMatchObject({ nombre: 'Estándar', descripcion: 'La de siempre', envases: false, calculoIva: 'linea', disponible: true });
-    expect(fuera.find((p) => p.id === 'B')).toMatchObject({ disenada: false, disponible: false, envases: false, calculoIva: 'linea' });
-    expect(fuera.find((p) => p.id === 'C')).toMatchObject({ disenada: true, disponible: true, envases: false, calculoIva: 'linea' });
-    expect(['default', 'A', 'B', 'C'].map(plantillaDisenada)).toEqual([true, true, false, true]);
+    expect(fuera.find((p) => p.id === 'B')).toMatchObject({ disenada: true, disponible: false, soloEmpresaEspanola: true, envases: false, ceramica: true, descuento: false, calculoIva: 'tipo' });
+    expect(fuera.find((p) => p.id === 'C')).toMatchObject({ disenada: true, disponible: true, envases: false, ceramica: false, descuento: true, calculoIva: 'linea' });
+    expect(['default', 'A', 'B', 'C'].map(plantillaDisenada)).toEqual([true, true, true, true]);
+  });
+
+  it('catalogo: seriesAutomaticas dice que serie A, B o C usa cada plantilla sin elegirla', () => {
+    const series = (ctx: typeof CON_IEEPNR) => Object.fromEntries(catalogoPlantillas(ctx).map((p) => [p.id, p.seriesAutomaticas]));
+    expect(series(CON_IEEPNR)).toEqual({ default: [], A: ['A'], B: ['B'], C: ['C'] });
+    expect(series(SIN_IEEPNR)).toEqual({ default: ['A'], A: [], B: ['B'], C: ['C'] });
+    // Fuera de Espana la A y la B no estan: sus series usan la estandar.
+    expect(series(FUERA)).toEqual({ default: ['A', 'B'], A: [], B: [], C: ['C'] });
   });
 
   it('catalogo: automaticaSerieA marca la A solo si la empresa es espanola y repercute el IEEPNR', () => {
@@ -52,7 +65,13 @@ describe('plantillas de factura de venta', () => {
     // Una empresa que no repercute el IEEPNR (no vende envases) sigue con la de siempre en su serie A.
     expect(plantillaEfectivaSerie({ codigo: 'A', plantilla: null }, SIN_IEEPNR)).toBe('default');
     expect(plantillaEfectivaSerie({ codigo: 'A', plantilla: null }, FUERA)).toBe('default');
-    for (const codigo of ['B', 'R', 'P', 'RT', 'C']) expect(plantillaEfectivaSerie({ codigo, plantilla: null }, CON_IEEPNR)).toBe('default');
+    for (const codigo of ['R', 'P', 'RT', 'D', 'BB']) expect(plantillaEfectivaSerie({ codigo, plantilla: null }, CON_IEEPNR)).toBe('default');
+    // La serie B usa sola la B (ceramica) y la C, la C (servicios); la B, solo en Espana.
+    expect(plantillaEfectivaSerie({ codigo: 'B', plantilla: null }, SIN_IEEPNR)).toBe('B');
+    expect(plantillaEfectivaSerie({ codigo: 'B', plantilla: null }, FUERA)).toBe('default');
+    expect(plantillaEfectivaSerie({ codigo: 'C', plantilla: null }, FUERA)).toBe('C');
+    expect(plantillaEfectivaSerie({ codigo: 'B', plantilla: 'default' }, SIN_IEEPNR)).toBe('default');
+    expect(plantillaAutomatica(' b ', SIN_IEEPNR)).toBe('B');
     expect(plantillaEfectivaSerie({ codigo: 'A', plantilla: 'default' }, CON_IEEPNR)).toBe('default');
     // Elegida a mano, la A vale aunque no se repercuta (el IEEPNR sale a 0).
     expect(plantillaEfectivaSerie({ codigo: 'B', plantilla: 'A' }, SIN_IEEPNR)).toBe('A');
@@ -61,11 +80,17 @@ describe('plantillas de factura de venta', () => {
     expect(plantillaEfectivaSerie({ codigo: 'A', plantilla: 'A' }, FUERA)).toBe('default');
   });
 
-  it('solo la A lleva envases e IVA por tipo y tiene su propio diseno', () => {
-    expect(['default', 'A', 'B', 'C'].map(admiteEnvases)).toEqual([false, true, false, false]);
-    expect(['default', 'A', 'B', 'C'].map(ivaPorTipo)).toEqual([false, true, false, false]);
-    expect(['default', 'A', 'B', 'C', 'otra'].map(dibujoDe)).toEqual(['estandar', 'A', 'estandar', 'estandar', 'estandar']);
+  it('la A lleva envases y la B ceramica; las dos, texto adicional, peso bruto, IVA por tipo, sin descuento y su propio diseno', () => {
+    const todas = ['default', 'A', 'B', 'C'];
+    expect(todas.map(admiteEnvases)).toEqual([false, true, false, false]);
+    expect(todas.map(admiteCeramica)).toEqual([false, false, true, false]);
+    expect(todas.map(admiteTextoAdicional)).toEqual([false, true, true, false]);
+    expect(todas.map(admitePesoBruto)).toEqual([false, true, true, false]);
+    expect(todas.map(admiteDescuento)).toEqual([true, false, false, true]);
+    expect(todas.map(ivaPorTipo)).toEqual([false, true, true, false]);
+    expect([...todas, 'otra'].map(dibujoDe)).toEqual(['estandar', 'A', 'B', 'estandar', 'estandar']);
     expect(plantillaDisponible('A', false)).toBe(false);
+    expect(plantillaDisponible('B', false)).toBe(false);
     expect(plantillaDisponible('C', false)).toBe(true);
   });
 });
