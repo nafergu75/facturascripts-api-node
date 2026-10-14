@@ -332,7 +332,8 @@ export async function tablaAPdf(t: TablaInforme): Promise<Buffer> {
     filete(p, y, 0.75, TINTA);
   };
 
-  const nuevaPagina = (primera: boolean) => {
+  /** Pagina nueva; sin los titulos de columna cuando solo quedan las notas. */
+  const nuevaPagina = (primera: boolean, conCabecera = true) => {
     p = doc.addPage([ancho, alto]);
     paginas.push(p);
     y = alto - 44;
@@ -353,7 +354,7 @@ export async function tablaAPdf(t: TablaInforme): Promise<Buffer> {
       texto(p, recortar(cont, normal, 8.5, libre), derecha, y, { tam: 8.5, color: GRIS, alinear: 'der' });
       y -= 18;
     }
-    cabeceraColumnas();
+    if (conCabecera) cabeceraColumnas();
   };
   nuevaPagina(true);
 
@@ -408,7 +409,8 @@ export async function tablaAPdf(t: TablaInforme): Promise<Buffer> {
     // ventas sin asiento) se lee entero, no se corta con «…».
     for (const n of t.notas) {
       for (const l of partirEnLineas(n, normal, 7.5, anchoUtil)) {
-        if (y - 12 < SUELO) nuevaPagina(false);
+        // Las notas que pasan de pagina no llevan los titulos de columna (antes se escribian encima de ellos).
+        if (y - 12 < SUELO) nuevaPagina(false, false);
         texto(p, l, MARGEN, y, { tam: 7.5, color: GRIS });
         y -= 9.5;
       }

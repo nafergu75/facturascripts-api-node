@@ -12,6 +12,7 @@
  *   GET /diario?incluirCierre=1
  *   GET /terceros/:tipo?soloConSaldo=1&q=   tipo = clientes | proveedores
  *   GET /terceros/:tipo/:terceroId
+ *   GET /apuntes                           apuntes de los asientos, paginados, con filtros y totales
  */
 import { Router, type Request, type Response } from 'express';
 import { authorize } from '../middleware/authorize.middleware';
@@ -33,6 +34,7 @@ import {
   informeSumasYSaldos,
   terceroParaMayor,
 } from '../services/informesContables.service';
+import { filtroApuntesDeConsulta, informeApuntes, listarApuntes, paginaDeConsulta } from '../services/apuntesContables.service';
 
 export const informesContablesRoutes = Router({ mergeParams: true });
 
@@ -189,5 +191,32 @@ informesContablesRoutes.get(
   asyncHandler(async (req, res) => {
     const informe = await informeDetalleTercero(req.companyId!, tipoTercero(req.params.tipo), periodo(req.query), req.params.terceroId);
     await responder(res, req.query.formato, informe, req);
+  }),
+);
+
+/**
+ * Apuntes de los asientos (Contabilidad > Movimientos): cada cargo y abono, de
+ * los asientos aprobados y de los borradores (marcados), paginados y con los
+ * totales del filtro. Mismo permiso que el libro diario.
+ *
+ *   ?ejercicio=2026[&trimestre=1-4 | &mes=1-12] y/o ?desde=&hasta=
+ *   &cuenta=43 &tercero=<id>&tipoTercero=cliente|proveedor &texto=luz
+ *   &estado=todos|aprobados|borradores &importeMin=&importeMax=
+ *   &pagina=1&porPagina=50 (hasta 200)
+ *   &formato=pdf|xlsx: todos los apuntes del filtro (hasta MAX_DESCARGA: 5.000 en PDF y 20.000 en Excel).
+ */
+informesContablesRoutes.get(
+  '/apuntes',
+  authorize('contabilidad:read'),
+  asyncHandler(async (req, res) => {
+    const consulta = req.query as Record<string, unknown>;
+    const formato = req.query.formato;
+    const descarga = formato === 'pdf' || formato === 'xlsx' || formato === 'excel';
+    if (formato && formato !== 'json' && !descarga) throw badRequest('Formato no válido. Usa json, pdf o xlsx.');
+    // La pagina se comprueba antes de consultar nada.
+    const pagina = descarga ? undefined : paginaDeConsulta(consulta);
+    const filtro = await filtroApuntesDeConsulta(req.companyId!, consulta);
+    if (descarga) return responder(res, formato, await informeApuntes(req.companyId!, filtro, formato === 'pdf' ? 'pdf' : 'xlsx'), req);
+    sendOk(res, await listarApuntes(req.companyId!, filtro, pagina));
   }),
 );
