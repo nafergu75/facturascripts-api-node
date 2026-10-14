@@ -13,8 +13,8 @@
  *    y tiene marcada «Vendo cerámica y materiales de construcción»
  *    (Configuración > Facturación). Activa, no predeterminada y sin plantilla
  *    elegida, así usa sola la plantilla B. Si el código B ya lo usa otra serie
- *    (desactivada, de otro tipo o con otra plantilla), no se toca: se avisa.
- *    Desmarcar la casilla no borra ni desactiva nada.
+ *    (desactivada, histórica del lector, de otro tipo o con otra plantilla),
+ *    no se toca: se avisa. Desmarcar la casilla no borra ni desactiva nada.
  *
  * Todo por (empresa, código) con upsert. En MySQL, el upsert de Prisma lee y
  * después inserta, así que dos peticiones a la vez pueden chocar con el único
@@ -23,6 +23,9 @@
  * A si no hay ninguna serie de facturas, y así la A sigue siendo la
  * predeterminada aunque lo primero que se haga sea marcar la casilla. Cada
  * serie lleva su propia numeración desde 1: la B no cambia la de la A.
+ *
+ * Aquí está también saber si una serie es histórica (esSerieHistorica), que
+ * usan la B y series.service.
  */
 import type { InvoiceSeries, Prisma } from '@prisma/client';
 import { prisma } from '../config/database';
@@ -99,17 +102,47 @@ export async function sembrarSeries(companyId: string, conSerieB: () => Promise<
   return { serieBCreada: false };
 }
 
+/** ¿Hay en la serie alguna factura que no llegara del lector (la emitio la app)? */
+export async function tieneFacturasDeLaApp(companyId: string, serie: string): Promise<boolean> {
+  const n = await prisma.incomeInvoice.count({
+    where: {
+      companyId,
+      serie,
+      // Las antiguas del lector no tienen origen, pero si su documento leido.
+      readerDocument: { is: null },
+      OR: [{ origen: null }, { origen: { not: 'lector' } }],
+    },
+  });
+  return n > 0;
+}
+
+/**
+ * Serie historica: desactivada, con facturas del lector y ninguna emitida por
+ * la app. Guarda la numeracion de otro programa (obtenerOCrearSerieHistorica):
+ * no cuenta como una serie de la empresa que se haya desactivado.
+ */
+export async function esSerieHistorica(companyId: string, s: { codigo: string; activa: boolean }): Promise<boolean> {
+  if (s.activa) return false;
+  if (await tieneFacturasDeLaApp(companyId, s.codigo)) return false;
+  return (await prisma.incomeInvoice.count({ where: { companyId, serie: s.codigo } })) > 0;
+}
+
 /**
  * Cómo está la serie B de una empresa que vende cerámica:
  *  - 'creada': se acaba de crear al guardar Configuración > Facturación;
  *  - 'activa': ya existía, activa y con la plantilla B;
  *  - 'pendiente': aún no existe (se crea al guardar la casilla o al abrir las series);
  *  - 'desactivada': existe pero está desactivada (no se activa sola);
+ *  - 'historica': está desactivada y guarda facturas de otro programa leídas
+ *    con el lector (esSerieHistorica). No hay que activarla: la app seguiría
+ *    esa numeración y, si el otro programa sigue con la B, saldrían dos
+ *    facturas con el mismo número (art. 6.1.a RD 1619/2012). El aviso dice que
+ *    se cree otra serie con la plantilla B;
  *  - 'otroTipo': el código B lo usa una serie de rectificativas o de proformas;
  *  - 'otraPlantilla': es de facturas y activa, pero tiene elegida otra plantilla.
  * `aviso`: lo que la persona tiene que hacer (null si nada).
  */
-export type EstadoSerieCeramica = 'creada' | 'activa' | 'pendiente' | 'desactivada' | 'otroTipo' | 'otraPlantilla';
+export type EstadoSerieCeramica = 'creada' | 'activa' | 'pendiente' | 'desactivada' | 'historica' | 'otroTipo' | 'otraPlantilla';
 
 export interface SerieCeramica {
   codigo: string;
@@ -127,7 +160,10 @@ const NOMBRE_PLANTILLA: Record<string, string> = { default: 'Estándar', A: 'Pla
 
 type FilaSerieB = { tipoDocumento: string; activa: boolean; plantilla: string | null } | null;
 
-function describir(fila: FilaSerieB, creada: boolean): SerieCeramica {
+/** Lo que hay que hacer cuando el código B no sirve para la serie de cerámica. */
+const CREA_OTRA_SERIE = 'Para facturar cerámica, crea en Configuración > Series una serie de facturas con otro código y elige en ella la «Plantilla B (cerámica)».';
+
+function describir(fila: FilaSerieB, creada: boolean, historica: boolean): SerieCeramica {
   const codigo = SERIE_B.codigo;
   if (!fila) return { codigo, estado: 'pendiente', aviso: null };
   if (fila.tipoDocumento !== SERIE_B.tipoDocumento) {
@@ -135,9 +171,16 @@ function describir(fila: FilaSerieB, creada: boolean): SerieCeramica {
     return {
       codigo,
       estado: 'otroTipo',
+      aviso: `El código B ya lo usa tu serie de ${tipo}, así que no se ha creado la serie B de facturas. ${CREA_OTRA_SERIE}`,
+    };
+  }
+  if (historica) {
+    return {
+      codigo,
+      estado: 'historica',
       aviso:
-        `El código B ya lo usa tu serie de ${tipo}, así que no se ha creado la serie B de facturas. ` +
-        'Para facturar cerámica, crea en Configuración > Series una serie de facturas con otro código y elige en ella la «Plantilla B (cerámica)».',
+        'La serie B guarda facturas de otro programa que has registrado con el lector, así que no se ha creado la serie B de cerámica. ' +
+        `No la actives: si ese programa sigue numerando en la B, saldrían dos facturas con el mismo número. ${CREA_OTRA_SERIE}`,
     };
   }
   if (!fila.activa) {
@@ -160,17 +203,21 @@ function describir(fila: FilaSerieB, creada: boolean): SerieCeramica {
   return { codigo, estado: creada ? 'creada' : 'activa', aviso: null };
 }
 
-async function leerSerieB(companyId: string): Promise<FilaSerieB> {
-  return prisma.invoiceSeries.findUnique({
+/** Lee la serie B y dice cómo está (solo lee). */
+async function describirSerieB(companyId: string, creada: boolean): Promise<SerieCeramica> {
+  const fila: FilaSerieB = await prisma.invoiceSeries.findUnique({
     where: { companyId_codigo: { companyId, codigo: SERIE_B.codigo } },
     select: { tipoDocumento: true, activa: true, plantilla: true },
   });
+  // Solo se mira si es historica cuando es de facturas y esta desactivada (esSerieHistorica no consulta nada si esta activa).
+  const historica = !!fila && fila.tipoDocumento === SERIE_B.tipoDocumento && (await esSerieHistorica(companyId, { codigo: SERIE_B.codigo, activa: fila.activa }));
+  return describir(fila, creada, historica);
 }
 
 /** Cómo está la serie B, sin crear nada (GET de Configuración > Facturación). Sin la tabla (prisma simulado), null. */
 export async function estadoSerieCeramica(companyId: string): Promise<SerieCeramica | null> {
   if (typeof (prisma as unknown as { invoiceSeries?: { findUnique?: unknown } }).invoiceSeries?.findUnique !== 'function') return null;
-  return describir(await leerSerieB(companyId), false);
+  return describirSerieB(companyId, false);
 }
 
 /**
@@ -181,5 +228,5 @@ export async function estadoSerieCeramica(companyId: string): Promise<SerieCeram
  */
 export async function prepararSerieCeramica(companyId: string): Promise<SerieCeramica> {
   const { serieBCreada } = await sembrarSeries(companyId, async () => true);
-  return describir(await leerSerieB(companyId), serieBCreada);
+  return describirSerieB(companyId, serieBCreada);
 }
