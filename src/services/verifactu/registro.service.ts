@@ -138,16 +138,22 @@ async function rectificadasDe(
     facturaOriginalId: string | null;
     rectificaFueraNumero: string | null;
     rectificaFueraFecha: string | null;
-    enlacesRectifica: Array<{ originalId: string | null; numeroOriginal: string | null; fechaOriginal: string | null; periodoDesde: string | null }>;
+    enlacesRectifica: Array<{
+      originalId: string | null;
+      numeroOriginal: string | null;
+      fechaOriginal: string | null;
+      periodoDesde: string | null;
+      periodoHasta: string | null;
+    }>;
   },
 ): Promise<RectificadaAlta[]> {
   if (!f.esRectificativa) return [];
   const enlaces = f.enlacesRectifica.length
     ? f.enlacesRectifica
     : f.facturaOriginalId
-      ? [{ originalId: f.facturaOriginalId, numeroOriginal: null, fechaOriginal: null, periodoDesde: null }]
+      ? [{ originalId: f.facturaOriginalId, numeroOriginal: null, fechaOriginal: null, periodoDesde: null, periodoHasta: null }]
       : f.rectificaFueraNumero
-        ? [{ originalId: null, numeroOriginal: f.rectificaFueraNumero, fechaOriginal: f.rectificaFueraFecha, periodoDesde: null }]
+        ? [{ originalId: null, numeroOriginal: f.rectificaFueraNumero, fechaOriginal: f.rectificaFueraFecha, periodoDesde: null, periodoHasta: null }]
         : [];
   const ids = [...new Set(enlaces.map((e) => e.originalId).filter((x): x is string => !!x))];
   const originales = ids.length
@@ -168,12 +174,13 @@ async function rectificadasDe(
         tipo: 'APP',
         numeroCompleto: o.numeroCompleto,
         fechaEmision: o.fechaEmision,
+        fechaOperacion: o.fechaOperacion,
         tipoOperacion: operacionEfectiva(o, o.customer),
         lineas: lineasAlta(o.lineas),
         desgloseRegistro: desgloseDeContenido(o.verifactuRegistros[0]?.contenido ?? null),
       };
     }
-    if (e.periodoDesde) return { tipo: 'PERIODO' };
+    if (e.periodoDesde) return { tipo: 'PERIODO', periodoHasta: e.periodoHasta };
     return { tipo: 'FUERA', numero: e.numeroOriginal, fecha: e.fechaOriginal };
   });
 }

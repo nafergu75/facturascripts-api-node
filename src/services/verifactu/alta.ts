@@ -61,6 +61,8 @@ export type RectificadaAlta =
       tipo: 'APP';
       numeroCompleto: string | null;
       fechaEmision: string;
+      /** Su fecha de operacion (AAAA-MM-DD), si la tiene distinta de la de expedicion. */
+      fechaOperacion: string | null;
       /** Tipo de operacion con el que se trata la original. */
       tipoOperacion: TipoOperacionVenta | null;
       lineas: LineaAlta[];
@@ -68,7 +70,8 @@ export type RectificadaAlta =
       desgloseRegistro: DetalleDesglose[] | null;
     }
   | { tipo: 'FUERA'; numero: string | null; fecha: string | null }
-  | { tipo: 'PERIODO' };
+  /** Rappel o descuento por volumen de un periodo: periodoHasta es su ultimo dia (AAAA-MM-DD). */
+  | { tipo: 'PERIODO'; periodoHasta: string | null };
 
 /** La factura emitida, ya numerada, y lo que hace falta para su registro. */
 export interface EntradaAlta {
@@ -327,6 +330,26 @@ function rectificadasDe(e: EntradaAlta, avisos: string[]): FacturaRectificadaRef
 }
 
 /**
+ * FechaOperacion del registro (AAAA-MM-DD), o null. En una rectificativa es la
+ * de la operacion de la factura que rectifica y, si rectifica varias, la mas
+ * reciente (FAQ de la sede de VERI*FACTU «Procedimientos de facturacion»,
+ * preguntas 6 y 7): de una original de la app, su fecha de operacion o, si no
+ * la tiene, la de expedicion; de una de fuera, su fecha; de un periodo (rappel),
+ * el ultimo dia del periodo. La fecha de operacion de la propia rectificativa
+ * es el devengo de la rectificacion para el 303 y no cuenta aqui. Con esa fecha
+ * se comprueba tambien el tipo de IVA (Validaciones 15.1): una rectificativa de
+ * una factura al 5 % de 2024 lleva el 5 %.
+ */
+export function fechaOperacionDelRegistro(e: Pick<EntradaAlta, 'tipoFactura' | 'fechaOperacion' | 'rectificadas'>): string | null {
+  if (!TIPOS_RECTIFICATIVA.includes(e.tipoFactura)) return e.fechaOperacion;
+  const fechas = e.rectificadas
+    .map((r) => (r.tipo === 'APP' ? r.fechaOperacion || r.fechaEmision : r.tipo === 'FUERA' ? r.fecha : r.periodoHasta))
+    .filter((f): f is string => !!f && esFechaIso(f))
+    .sort();
+  return fechas.length ? fechas[fechas.length - 1] : null;
+}
+
+/**
  * Construye el alta (textos exactos) de una factura emitida. Comprueba que el
  * desglose cuadra con los totales de la factura: si no, error interno (500) y
  * la transaccion se deshace.
@@ -370,8 +393,10 @@ export function construirAlta(e: EntradaAlta): AltaConstruida {
     const io = importesDeOriginal(original);
     cuerpo.importeRectificacion = { base: importe(io.base), cuota: importe(io.cuota) };
   }
-  if (e.fechaOperacion && e.fechaOperacion !== e.fechaEmision) {
-    cuerpo.fechaOperacion = esFechaIso(e.fechaOperacion) ? fechaAeat(e.fechaOperacion) : e.fechaOperacion;
+  const fechaOperacion = fechaOperacionDelRegistro(e);
+  const fechaOperacionDistinta = fechaOperacion && fechaOperacion !== e.fechaEmision ? fechaOperacion : null;
+  if (fechaOperacionDistinta) {
+    cuerpo.fechaOperacion = esFechaIso(fechaOperacionDistinta) ? fechaAeat(fechaOperacionDistinta) : fechaOperacionDistinta;
   }
   if (Math.abs(importeTotal) >= MACRODATO_CENTIMOS) cuerpo.macrodato = 'S';
 
@@ -396,7 +421,7 @@ export function construirAlta(e: EntradaAlta): AltaConstruida {
     cuerpo,
     control: {
       fechaExpedicionIso: e.fechaEmision,
-      fechaOperacionIso: e.fechaOperacion && e.fechaOperacion !== e.fechaEmision ? e.fechaOperacion : null,
+      fechaOperacionIso: fechaOperacionDistinta,
       cuotaTotalCentimos: cuotaDesglose,
       importeTotalCentimos: importeTotal,
       tipos: grupos.map((g) => g.tipoIva),
@@ -465,7 +490,12 @@ export function validarAlta(a: AltaConstruida, d: { nifObligado: string; ahora?:
   const fo = a.control.fechaOperacionIso;
   if (fo) {
     if (!esFechaIso(fo) || fo > fx) {
-      throw error422('VERIFACTU_FECHA_OPERACION', 'La fecha de la operación no puede ser posterior a la de la factura.');
+      throw error422(
+        'VERIFACTU_FECHA_OPERACION',
+        rectificativa
+          ? 'La fecha de la operación de la factura que se rectifica es posterior a la de esta rectificativa. Revisa las fechas.'
+          : 'La fecha de la operación no puede ser posterior a la de la factura.',
+      );
     }
     if (fo < haceAnios(hoy, 20)) {
       throw error422('VERIFACTU_FECHA_OPERACION', 'La fecha de la operación es de hace más de 20 años y la AEAT no la admite.');

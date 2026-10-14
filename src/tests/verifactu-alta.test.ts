@@ -167,7 +167,7 @@ describe('construirAlta: un caso por tipo de operación', () => {
       numeroCompleto: 'R-1',
       motivoRectificacion: 'Devolución de la mitad',
       lineas: [l(-100, 21, -21)],
-      rectificadas: [{ tipo: 'APP', numeroCompleto: 'A-1', fechaEmision: '2027-01-02', tipoOperacion: 'NACIONAL', lineas: [l(200, 21)], desgloseRegistro: null }],
+      rectificadas: [{ tipo: 'APP', numeroCompleto: 'A-1', fechaEmision: '2027-01-02', fechaOperacion: null, tipoOperacion: 'NACIONAL', lineas: [l(200, 21)], desgloseRegistro: null }],
     });
     expect(a.importeTotal).toBe('-121.00');
     expect(a.cuotaTotal).toBe('-21.00');
@@ -192,14 +192,14 @@ describe('construirAlta: un caso por tipo de operación', () => {
     // Con registro de alta: la suma de su desglose.
     const conRegistro = ok({
       ...base,
-      rectificadas: [{ tipo: 'APP', numeroCompleto: 'A-2', fechaEmision: '2027-01-02', tipoOperacion: 'NACIONAL', lineas: [l(999, 21)], desgloseRegistro }],
+      rectificadas: [{ tipo: 'APP', numeroCompleto: 'A-2', fechaEmision: '2027-01-02', fechaOperacion: null, tipoOperacion: 'NACIONAL', lineas: [l(999, 21)], desgloseRegistro }],
     });
     expect(conRegistro.cuerpo.importeRectificacion).toEqual({ base: '1000.00', cuota: '210.00' });
     expect(conRegistro.importeTotal).toBe('968.00');
     // Sin registro (anterior a la activación): con la misma regla, sin suplidos.
     const sinRegistro = ok({
       ...base,
-      rectificadas: [{ tipo: 'APP', numeroCompleto: 'A-2', fechaEmision: '2027-01-02', tipoOperacion: 'NACIONAL', lineas: [l(1000, 21), l(30, 0, 0)], desgloseRegistro: null }],
+      rectificadas: [{ tipo: 'APP', numeroCompleto: 'A-2', fechaEmision: '2027-01-02', fechaOperacion: null, tipoOperacion: 'NACIONAL', lineas: [l(1000, 21), l(30, 0, 0)], desgloseRegistro: null }],
     });
     expect(sinRegistro.cuerpo.importeRectificacion).toEqual({ base: '1000.00', cuota: '210.00' });
   });
@@ -210,7 +210,7 @@ describe('construirAlta: un caso por tipo de operación', () => {
       tipoRectificativa: 'I',
       numeroCompleto: 'RT-1',
       lineas: [l(-10, 21, -2.1)],
-      rectificadas: [{ tipo: 'APP', numeroCompleto: 'A-3', fechaEmision: '2027-01-02', tipoOperacion: 'NACIONAL', lineas: [l(10, 21)], desgloseRegistro: null }],
+      rectificadas: [{ tipo: 'APP', numeroCompleto: 'A-3', fechaEmision: '2027-01-02', fechaOperacion: null, tipoOperacion: 'NACIONAL', lineas: [l(10, 21)], desgloseRegistro: null }],
     });
     expect(a.cuerpo.destinatarios).toBeUndefined();
     expect(a.cuerpo.tipoRectificativa).toBe('I');
@@ -224,7 +224,7 @@ describe('construirAlta: un caso por tipo de operación', () => {
       lineas: [l(-10, 21)],
       rectificadas: [
         { tipo: 'FUERA', numero: 'F2026/0012', fecha: '2026-11-30' },
-        { tipo: 'PERIODO' },
+        { tipo: 'PERIODO', periodoHasta: '2026-12-31' },
         { tipo: 'FUERA', numero: 'F<12>', fecha: '2026-11-30' },
       ],
     });
@@ -241,6 +241,30 @@ describe('construirAlta: un caso por tipo de operación', () => {
   it('FechaOperacion solo si es distinta de la de expedición', () => {
     expect(ok({ fechaOperacion: '2026-12-20' }).cuerpo.fechaOperacion).toBe('20-12-2026');
     expect(ok({ fechaOperacion: '2027-01-04' }).cuerpo.fechaOperacion).toBeUndefined();
+  });
+
+  it('rectificativa: FechaOperacion de la original (la más reciente si son varias), no la suya', () => {
+    const app = (numero: string, fechaEmision: string, fechaOperacion: string | null = null): EntradaAlta['rectificadas'][number] => ({
+      tipo: 'APP',
+      numeroCompleto: numero,
+      fechaEmision,
+      fechaOperacion,
+      tipoOperacion: 'NACIONAL',
+      lineas: [l(100, 21)],
+      desgloseRegistro: null,
+    });
+    const r = (rectificadas: EntradaAlta['rectificadas'], extra: Partial<EntradaAlta> = {}) =>
+      ok({ tipoFactura: 'R1', tipoRectificativa: 'I', numeroCompleto: 'R-9', lineas: [l(-10, 21)], rectificadas, ...extra });
+    // Original de la app: su fecha de operacion o, si no la tiene, la de expedicion.
+    expect(r([app('A-1', '2026-12-10')]).cuerpo.fechaOperacion).toBe('10-12-2026');
+    expect(r([app('A-1', '2026-12-10', '2026-11-30')]).cuerpo.fechaOperacion).toBe('30-11-2026');
+    // Varias: la mas reciente; de fuera, su fecha; de un periodo, su ultimo dia.
+    expect(r([app('A-1', '2026-10-01'), { tipo: 'FUERA', numero: 'F-7', fecha: '2026-12-15' }, app('A-2', '2026-11-03')]).cuerpo.fechaOperacion).toBe('15-12-2026');
+    expect(r([{ tipo: 'PERIODO', periodoHasta: '2026-12-31' }]).cuerpo.fechaOperacion).toBe('31-12-2026');
+    // La fecha de operacion propia de la rectificativa (devengo para el 303) no cuenta.
+    expect(r([app('A-1', '2026-12-10')], { fechaOperacion: '2027-01-02' }).cuerpo.fechaOperacion).toBe('10-12-2026');
+    // Original del mismo dia que la rectificativa: no se informa.
+    expect(r([app('A-1', '2027-01-04')]).cuerpo.fechaOperacion).toBeUndefined();
   });
 
   it('DescripcionOperacion: la de la factura; si no, las líneas unidas, recortadas a 500', () => {
@@ -320,7 +344,7 @@ describe('validarAlta: lo que la AEAT rechazaría', () => {
       tipoFactura: 'R1',
       tipoRectificativa: 'S',
       lineas: [l(10, 21)],
-      rectificadas: [{ tipo: 'APP', numeroCompleto: 'A-1', fechaEmision: '2027-01-02', tipoOperacion: 'NACIONAL', lineas: [l(20, 21)], desgloseRegistro: null }],
+      rectificadas: [{ tipo: 'APP', numeroCompleto: 'A-1', fechaEmision: '2027-01-02', fechaOperacion: null, tipoOperacion: 'NACIONAL', lineas: [l(20, 21)], desgloseRegistro: null }],
     });
     delete s.cuerpo.importeRectificacion;
     rechaza(() => valida(s), 'VERIFACTU_IMPORTE_RECTIFICACION');
@@ -375,6 +399,26 @@ describe('validarAlta: lo que la AEAT rechazaría', () => {
 
   it('E5 sin IDOtro (intracomunitaria a un cliente con NIF español)', () => {
     rechaza(() => valida(alta({ tipoOperacion: 'INTRACOMUNITARIA', cliente: ES, lineas: [l(10, 0, 0)] })), 'VERIFACTU_E5_SIN_IDOTRO');
+  });
+
+  it('una rectificativa de una factura al 5 % (sept. 2024) o al 7,5 % (4T 2024) lleva ese tipo: la fecha que cuenta es la de la original', () => {
+    const original = (fechaEmision: string, tipo: number) => ({
+      tipo: 'APP' as const,
+      numeroCompleto: 'A-1',
+      fechaEmision,
+      fechaOperacion: null,
+      tipoOperacion: 'NACIONAL' as const,
+      lineas: [l(100, tipo)],
+      desgloseRegistro: null,
+    });
+    const rect = (fechaEmision: string, tipo: number) =>
+      alta({ tipoFactura: 'R1', tipoRectificativa: 'I', numeroCompleto: 'R-1', lineas: [l(-50, tipo)], rectificadas: [original(fechaEmision, tipo)] });
+    const r5 = rect('2024-09-30', 5);
+    expect(r5.cuerpo.fechaOperacion).toBe('30-09-2024');
+    valida(r5);
+    valida(rect('2024-11-15', 7.5));
+    // Con la original fuera de la ventana, la AEAT no lo admite.
+    rechaza(() => valida(rect('2024-10-15', 5)), 'VERIFACTU_TIPO_IMPOSITIVO');
   });
 
   it('S1 con un tipo que la AEAT no admite; el 5 % solo en su ventana de 2022-2024', () => {

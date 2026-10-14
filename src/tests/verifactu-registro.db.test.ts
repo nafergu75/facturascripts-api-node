@@ -198,6 +198,14 @@ describe('rectificativas', () => {
     expect(c.destinatarios).toHaveLength(1);
   });
 
+  it('FechaOperacion de la rectificativa: la de la operación de la original (FAQ de la sede, preguntas 6 y 7)', async () => {
+    // Original de hoy con la operacion hecha el dia 1 del mes (si hoy es dia 1, el mismo dia: no se informa).
+    const dia1 = `${HOY.slice(0, 8)}01`;
+    const o = await emitir({ lineas: [linea(400)], fechaOperacion: dia1 });
+    const r = await rect({ originales: [{ id: o.id }] });
+    expect(contenido(await unico(r.id)).fechaOperacion).toBe(dia1 === HOY ? undefined : fechaAeat(dia1));
+  });
+
   it('por sustitución: ImporteRectificacion con la base y la cuota de la original (de su registro)', async () => {
     const o = await emitir({ lineas: [linea(1000)] });
     const r = await rect({ forma: 'S', motivo: 'CAMBIO_PRECIO', explicacion: 'Precio pactado de 800 €', originales: [{ id: o.id }] }, { lineas: [linea(800)] });
