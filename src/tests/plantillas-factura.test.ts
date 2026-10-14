@@ -116,9 +116,10 @@ describe('plantillas de factura de venta', () => {
     expect(motivo('B', SIN_IEEPNR, 'B')).toBe('elegida');
     expect(motivo('P', FUERA, 'C')).toBe('elegida');
     expect(motivo('A', FUERA, 'A')).toBe('soloEspana');
-    // Fuera de Espana, la A y la B automaticas pasan a la estandar aunque las casillas digan que si.
-    expect(motivo('A', { ...FUERA, repercuteIeepnr: true })).toBe('soloEspana');
-    expect(motivo('B', { ...FUERA, vendeCeramica: true })).toBe('soloEspana');
+    // Fuera de Espana, la A y la B automaticas usan la estandar, como cualquier otra serie, aunque las casillas digan que si.
+    expect(motivo('A', { ...FUERA, repercuteIeepnr: true })).toBe('estandar');
+    expect(motivo('B', { ...FUERA, vendeCeramica: true })).toBe('estandar');
+    expect(motivo('A', FUERA)).toBe('estandar');
     // El motivo cuadra con la plantilla que usa la serie.
     const usaEstandar = ['sinIeepnr', 'sinCeramica', 'soloEspana', 'estandar'];
     for (const ctx of [CON_IEEPNR, SIN_IEEPNR, CERAMICA, FUERA, { ...CERAMICA, repercuteIeepnr: true }]) {
