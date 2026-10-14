@@ -42,7 +42,7 @@ beforeAll(async () => {
   await prisma.company.create({ data: { id: COMPANY_ID, name: 'Series Test SL', fsBaseUrl: 'http://localhost:8080', fsApiKeyEnc: 'k' } });
   await prisma.legalConfig.create({ data: { companyId: COMPANY_ID, denominacion: 'Series Test SL', nif: 'B11000000' } });
   customerId = (await prisma.customer.create({ data: { companyId: COMPANY_ID, nombreFiscal: 'Cliente Series SL', nifCif: 'B12000000' } })).id;
-  await listarSeries(COMPANY_ID); // semilla: A (facturas), R (rectificativas), P (proformas)
+  await listarSeries(COMPANY_ID); // semilla: A y C (facturas), R (rectificativas), P (proformas)
 });
 
 describe('permisos', () => {
@@ -117,8 +117,9 @@ describe('cambiar una serie (PUT)', () => {
   });
 
   it('(c) no deja las facturas sin ninguna serie activa', async () => {
-    // Estado de antes de estas reglas: la predeterminada (B) desactivada y A, la unica activa.
+    // Estado de antes de estas reglas: la predeterminada (B) desactivada y A, la unica activa (la C de servicios, tambien desactivada).
     await prisma.invoiceSeries.update({ where: { id: (await serie('B')).id }, data: { activa: false } });
+    await prisma.invoiceSeries.update({ where: { id: (await serie('C')).id }, data: { activa: false } });
     const res = await put('A', { activa: false });
     expect(res.status).toBe(409);
     expect(res.body.message).toMatch(/No puede quedar ninguna serie de facturas activa/);
@@ -198,9 +199,10 @@ describe('rectificativas de tickets (RECTIFICATIVA_SIMPLIFICADA)', () => {
     await prisma.company.create({ data: { id: OTRA, name: 'Series Tickets SL', fsBaseUrl: 'http://localhost:8080', fsApiKeyEnc: 'k' } });
   });
 
-  it('no se siembra en todas las empresas: solo A, R y P', async () => {
+  it('no se siembra en todas las empresas: solo A, C, R y P', async () => {
     const series = await listarSeries(OTRA);
-    expect(series.map((s) => s.tipoDocumento).sort()).toEqual(['FACTURA', 'PROFORMA', 'RECTIFICATIVA']);
+    expect(series.map((s) => s.codigo).sort()).toEqual(['A', 'C', 'P', 'R']);
+    expect(series.map((s) => s.tipoDocumento).sort()).toEqual(['FACTURA', 'FACTURA', 'PROFORMA', 'RECTIFICATIVA']);
   });
 
   it('la primera R5 crea la RT activa y predeterminada; la siguiente usa la misma', async () => {

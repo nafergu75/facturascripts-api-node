@@ -14,7 +14,7 @@ export const seriesController = {
     sendOk(res, await listarSeriesConUso(req.companyId!, tipo));
   }),
 
-  /** Catalogo de plantillas de factura de venta (la A, solo en empresas espanolas; la automatica de la serie A, la A si se repercute el IEEPNR). */
+  /** Catalogo de plantillas de factura de venta (la A y la B, solo en empresas espanolas; en seriesAutomaticas, las series A, B o C que usan cada una sin elegirla). */
   plantillas: asyncHandler(async (req, res) => {
     sendOk(res, catalogoPlantillas(await contextoPlantillas(req.companyId!)));
   }),
@@ -31,6 +31,7 @@ export const seriesController = {
       porDefecto: b.porDefecto ?? false,
       numeroInicial: b.numeroInicial,
       plantilla: b.plantilla,
+      observacionesDefecto: b.observacionesDefecto,
     });
     sendOk(res, serie, undefined, 201);
   }),
@@ -47,6 +48,7 @@ export const seriesController = {
         porDefecto: b.porDefecto,
         numeroInicial: b.numeroInicial,
         plantilla: b.plantilla,
+        observacionesDefecto: b.observacionesDefecto,
       }),
     );
   }),

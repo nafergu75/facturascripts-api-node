@@ -42,6 +42,8 @@ export interface SerieDocumento {
   plantilla: PlantillaVentaId;
   /** Plantilla elegida en Configuracion > Series; null = automatica. */
   plantillaElegida: string | null;
+  /** Observaciones que se proponen en cada factura nueva de la serie (editables en cada una); null = ninguna. */
+  observacionesDefecto: string | null;
   creadoEn: string;
   actualizadoEn: string;
 }
