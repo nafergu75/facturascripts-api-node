@@ -24,7 +24,7 @@ import { hoyEspana } from '../../utils/fechas';
 import { conReintento } from '../../utils/reintento';
 import { registrarAuditoria } from '../auditoria.service';
 import { asegurarPlanContableEmpresa } from '../chart-of-accounts.service';
-import { comprobarFechaAbierta, exigirFechaContabilizable } from '../periodos.service';
+import { comprobarFechaAbierta, exigirFechaContabilizable, fechaAbierta } from '../periodos.service';
 import { exigirSubcuentaDeBanco } from '../subcuentaBanco.service';
 
 const r2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100;
@@ -724,12 +724,8 @@ export async function anularLiquidacion(
   const t = TXT[f.tipo as TipoPartida];
   if (pago.estado !== 'ACTIVO') throw conflict(`El ${t.cobro} ya está anulado.`);
 
-  let abierto = true;
-  try {
-    await comprobarFechaAbierta(companyId, pago.fecha);
-  } catch {
-    abierto = false;
-  }
+  // Un fallo de la base de datos no es «mes cerrado»: se relanza y no se anula nada.
+  const abierto = await fechaAbierta(companyId, pago.fecha);
   const fechaRaw = typeof opciones.fecha === 'string' && opciones.fecha ? opciones.fecha.slice(0, 10) : hoyEspana();
   if (!abierto && !FECHA_RE.test(fechaRaw)) throw badRequest('La fecha no es válida (AAAA-MM-DD).', { campo: 'fecha' });
   const fechaAnulacion = abierto ? pago.fecha : fechaRaw;
