@@ -101,6 +101,7 @@ MARCAS=(
   'Kg por unidad del precio'
   'Cuenta de ingresos del cargo de palets'
   'model ImagenFactura'
+  'La empresa vende ceramica'
 )
 for marca in "${MARCAS[@]}"; do
   grep -q "$marca" prisma/schema.prisma || {

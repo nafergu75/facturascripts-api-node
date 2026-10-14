@@ -1581,6 +1581,8 @@ model AjustesFacturacion {
   ieepnrCuenta      String?  @db.VarChar(15)
   /// Cuenta de ingresos del cargo de palets (plantilla B, p. ej. 704); null = la de ventas.
   cuentaPalets      String?  @db.VarChar(15)
+  /// La empresa vende ceramica: la serie B usa sola la plantilla B (sin marcar, la estandar).
+  vendeCeramica     Boolean  @default(false)
   updatedAt        DateTime @updatedAt
   updatedBy        String?
 }
