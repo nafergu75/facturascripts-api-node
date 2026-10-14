@@ -13,6 +13,8 @@
  *    de cuando se emitio (instantanea), aunque despues cambien los datos.
  *  - Una simplificada registrada con la A o la B sale solo con el nombre del
  *    cliente, como con la plantilla de siempre.
+ *  - Una B emitida se descarga con el PDF archivado al emitirla: el sello y
+ *    los logos que se cambien despues no la cambian.
  *
  * Pasa tambien con connection_limit=1 (como en produccion).
  */
@@ -25,7 +27,13 @@ import { asegurarPlanContableEmpresa } from '../services/chart-of-accounts.servi
 import { comprobarCadena } from '../services/verifactu/cadena';
 import { cadenaAlta, huella } from '../services/verifactu/huella';
 import type { RegistroContenido } from '../services/verifactu/tipos';
-import { datosPdfFactura, generarPdfFactura } from '../services/facturaPdf.service';
+import { datosPdfFactura, generarPdfFactura, pdfParaDescargar } from '../services/facturaPdf.service';
+import { archivarFacturaVenta } from '../services/archivoFacturas.service';
+import { crearDocumentoArchivo } from '../services/documentoArchivo.service';
+import { borrarImagenFactura, guardarImagenFactura } from '../services/imagenesFactura.service';
+import { getObject } from '../utils/storage';
+import { promises as fsp } from 'fs';
+import * as path from 'path';
 import { textoRegistroA } from '../services/facturaPdfPlantillaA';
 import { LINEAS_NZ004, TOTALES_NZ004 } from './muestra-nz004';
 import { LINEAS_NZ013, TOTALES_NZ013 } from './muestra-nz013';
@@ -233,6 +241,72 @@ describe('PDF de una A o una B emitida', () => {
       const textosF1 = (await textosDePdf((await generarPdfFactura(E, f1.id)).contenido)).map((t) => t.texto).join('\n');
       expect(textosF1).toContain(NIF_CLIENTE);
       expect(textosF1).toContain('CALLE FALSA');
+    }
+  });
+
+  it('una B emitida se descarga con el PDF archivado al emitirla: cambiar el sello, el logo de la marca o el de la empresa no la cambia', async () => {
+    // 1x1 gris y 2x1 rojo y azul: dos imagenes distintas.
+    const ANTES = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64');
+    const DESPUES = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAIAAAB7QOjdAAAAD0lEQVR4nGM4IScnJ3cCAAcjAgnukg5ZAAAAAElFTkSuQmCC', 'base64');
+    const ponerImagenes = async (png: Buffer) => {
+      await guardarImagenFactura(E, 'MARCA', png);
+      await guardarImagenFactura(E, 'SELLO', png);
+      await prisma.legalConfig.update({ where: { companyId: E }, data: { logo: png, logoMime: 'image/png' } });
+    };
+    await ponerImagenes(ANTES);
+    try {
+      const b = await emitir({ serie: 'B', lineas: lineasB() });
+      // Lo que hace la API al emitir: contabilizar y archivar el PDF en su trimestre.
+      await archivarFacturaVenta(E, b.id);
+      const doc = await prisma.documentoArchivo.findFirstOrThrow({ where: { companyId: E, incomeInvoiceId: b.id, estado: 'activo' } });
+      expect(doc).toMatchObject({ origen: 'emitida', uploadedBy: null, archivoTipo: 'application/pdf' });
+      const archivado = await getObject(doc.archivoPath);
+
+      await ponerImagenes(DESPUES);
+      // Generado ahora llevaria las imagenes nuevas...
+      const ahora = (await datosPdfFactura(E, b.id)).datos;
+      expect([ahora.sello?.bytes, ahora.logoMarca?.bytes, ahora.logo?.bytes].map((x) => Buffer.from(x ?? []).equals(DESPUES))).toEqual([true, true, true]);
+      // ...pero la descarga es la factura tal como se emitio.
+      const descarga = await pdfParaDescargar(E, b.id);
+      expect(descarga.nombre).toBe(`factura_${b.numeroCompleto}.pdf`.replace(/[^\w.-]/g, '_'));
+      expect(descarga.contenido.equals(archivado)).toBe(true);
+
+      // Un fichero adjuntado a mano a la factura no cuenta: sigue la copia de la emision.
+      await crearDocumentoArchivo(E, {
+        tipo: 'ingreso',
+        fecha: b.fechaEmision,
+        numeroFactura: `${b.numeroCompleto}-escaneada`,
+        receptor: 'CLIENTE FICTICIO BEBIDAS SL',
+        archivoNombre: 'escaneada.pdf',
+        archivoTipo: 'application/pdf',
+        archivoBuffer: Buffer.from('%PDF-1.4 escaneada a mano'),
+        incomeInvoiceId: b.id,
+        uploadedBy: 'u-test',
+      });
+      expect((await pdfParaDescargar(E, b.id)).contenido.equals(archivado)).toBe(true);
+
+      // Si la copia ya no cuadra con su huella, o se quito del archivo, se genera de nuevo (con las imagenes de ahora).
+      const ruta = path.join(process.cwd(), doc.archivoPath);
+      await fsp.writeFile(ruta, Buffer.from('%PDF-1.4 pisada'));
+      try {
+        const nueva = (await pdfParaDescargar(E, b.id)).contenido;
+        expect(nueva.subarray(0, 5).toString()).toBe('%PDF-');
+        expect(nueva.equals(archivado) || nueva.toString().includes('pisada')).toBe(false);
+      } finally {
+        await fsp.writeFile(ruta, archivado);
+      }
+      await prisma.documentoArchivo.update({ where: { id: doc.id }, data: { estado: 'anulado' } });
+      expect((await pdfParaDescargar(E, b.id)).contenido.equals(archivado)).toBe(false);
+
+      // Un borrador no tiene copia: siempre el de ahora.
+      const borrador = await emitir({ serie: 'B', lineas: lineasB(), borrador: true });
+      await archivarFacturaVenta(E, borrador.id);
+      expect(await prisma.documentoArchivo.count({ where: { incomeInvoiceId: borrador.id } })).toBe(0);
+      expect((await pdfParaDescargar(E, borrador.id)).nombre).toMatch(/^borrador_factura_/);
+    } finally {
+      await borrarImagenFactura(E, 'MARCA');
+      await borrarImagenFactura(E, 'SELLO');
+      await prisma.legalConfig.update({ where: { companyId: E }, data: { logo: null, logoMime: null } });
     }
   });
 });

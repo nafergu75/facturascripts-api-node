@@ -7,8 +7,10 @@
  *
  * PNG o JPG de 1 MB como mucho (por su cabecera, no por la extension), una de
  * cada por empresa, en la BD (tabla ImagenFactura), como el logo de la empresa:
- * son pequenas y asi no dependen de Vercel Blob. Valen para las facturas que se
- * descarguen despues, tambien las ya emitidas (como el logo de la empresa).
+ * son pequenas y asi no dependen de Vercel Blob. Valen para los PDF que se
+ * generen despues. Una factura ya emitida se descarga con la copia que se
+ * archivo al emitirla (facturaPdf.service, pdfParaDescargar), con las imagenes
+ * de entonces; solo si esa copia falta se genera con las de ahora.
  */
 import { prisma } from '../config/database';
 import { badRequest } from '../utils/http-errors';

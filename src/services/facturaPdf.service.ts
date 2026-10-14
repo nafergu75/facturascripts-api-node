@@ -1,3 +1,4 @@
+import { createHash } from 'crypto';
 import { degrees, rgb, type PDFFont, type PDFPage, type RGB } from 'pdf-lib';
 import { prisma } from '../config/database';
 import { notFound } from '../utils/http-errors';
@@ -1292,24 +1293,80 @@ export async function generarPdfFactura(companyId: string, id: string): Promise<
 }
 
 /**
+ * El PDF que se archivo al emitir la factura (archivoFacturas.service,
+ * archivarFacturaVenta: origen 'emitida' y sin usuario que lo subiera; un
+ * fichero adjuntado a mano no cuenta). null si no lo hay, no se puede leer o no
+ * cuadra con su huella.
+ */
+async function copiaDeLaEmision(companyId: string, id: string): Promise<Buffer | null> {
+  const d = await prisma.documentoArchivo.findFirst({
+    where: {
+      companyId,
+      incomeInvoiceId: id,
+      tipo: 'ingreso',
+      origen: 'emitida',
+      uploadedBy: null,
+      archivoTipo: 'application/pdf',
+      archivoPath: { not: '' },
+      estado: { not: 'anulado' },
+    },
+    orderBy: { uploadedAt: 'asc' },
+    select: { archivoPath: true, archivoHash: true },
+  });
+  if (!d) return null;
+  try {
+    const contenido = await getObject(d.archivoPath);
+    if (d.archivoHash && createHash('sha256').update(contenido).digest('hex') !== d.archivoHash) {
+      logger.warn(`[pdf] La copia archivada de la factura ${id} no cuadra con su huella; se genera de nuevo.`);
+      return null;
+    }
+    return contenido;
+  } catch (err) {
+    logger.warn(`[pdf] Copia archivada de la factura ${id} ilegible; se genera de nuevo: ${err instanceof Error ? err.message : String(err)}`);
+    return null;
+  }
+}
+
+/**
  * Lo que descarga el boton «PDF» de una factura. Si la registro el lector (la
  * expidio otro programa), su PDF original tal cual; si el original no es un PDF
  * o no se puede leer, la copia de registro marcada (nunca la plantilla de
- * factura de la app). El resto, el PDF de la app.
+ * factura de la app).
+ *
+ * Emitida desde la app con instantanea: el PDF que se archivo al emitirla, el
+ * mismo que da el archivo del trimestre. Asi no cambia aunque despues se
+ * cambien el logo de la empresa, el de la marca o el sello (la instantanea solo
+ * guarda textos). Sin esa copia (no se pudo guardar al emitir), se genera de
+ * nuevo, con las imagenes de ahora.
+ *
+ * El resto (borradores, proformas, emitidas antes de la instantanea), el PDF de
+ * la app generado ahora.
  */
 export async function pdfParaDescargar(companyId: string, id: string): Promise<{ nombre: string; contenido: Buffer }> {
   const f = await prisma.incomeInvoice.findFirst({
     where: { id, companyId },
-    select: { origen: true, numeroCompleto: true, readerDocument: { select: { storagePath: true, mimeType: true } } },
+    select: {
+      origen: true,
+      numeroCompleto: true,
+      estadoDocumento: true,
+      instantaneaEmision: true,
+      readerDocument: { select: { storagePath: true, mimeType: true } },
+    },
   });
   if (!f) throw notFound('Factura no encontrada.');
   const doc = f.readerDocument;
-  if ((f.origen === 'lector' || doc) && doc?.storagePath && doc.mimeType === 'application/pdf') {
+  const registroLector = f.origen === 'lector' || !!doc;
+  if (registroLector && doc?.storagePath && doc.mimeType === 'application/pdf') {
     try {
       return { nombre: `factura_${f.numeroCompleto ?? id}_original.pdf`.replace(/[^\w.-]/g, '_'), contenido: await getObject(doc.storagePath) };
     } catch (err) {
       logger.warn(`[pdf] Original de la factura ${id} ilegible; se da la copia de registro: ${err instanceof Error ? err.message : String(err)}`);
     }
+  }
+  if (!registroLector && f.estadoDocumento === 'FINAL' && leerInstantanea(f.instantaneaEmision)) {
+    const copia = await copiaDeLaEmision(companyId, id);
+    // El mismo nombre que el generado (datosPdfFactura).
+    if (copia) return { nombre: `factura_${f.numeroCompleto}.pdf`.replace(/[^\w.-]/g, '_'), contenido: copia };
   }
   return generarPdfFactura(companyId, id);
 }
@@ -1403,7 +1460,8 @@ export async function datosPdfFactura(companyId: string, id: string): Promise<{ 
   // Factura emitida con instantanea (VERI*FACTU, spec 5.3): el cliente y el
   // emisor de cuando se emitio, aunque despues cambien la ficha del cliente o
   // los datos de la empresa. El logo, la cuenta y el pie siguen como siempre
-  // (la cuenta y el pie ya tienen su copia: ibanCobro y textoPie).
+  // (la cuenta y el pie ya tienen su copia: ibanCobro y textoPie; el logo, el de
+  // la marca y el sello, la copia archivada al emitir que da pdfParaDescargar).
   const inst = factura.estadoDocumento === 'FINAL' ? leerInstantanea(factura.instantaneaEmision) : null;
   const c = inst
     ? { ...inst.cliente }
