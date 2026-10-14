@@ -110,6 +110,7 @@ function exportToCSV(data: SupplierExportData, supplier: any): string {
   lines.push(`NIF/CIF: ${supplier.nifCif}`);
   lines.push(`Email: ${supplier.email || '-'}`);
   lines.push(`Teléfono: ${supplier.telefono || '-'}`);
+  lines.push(`Web: ${supplier.web || '-'}`);
   lines.push(`Dirección: ${supplier.direccion || '-'}`);
   lines.push(`Provincia: ${supplier.provincia || '-'}`);
   lines.push(`País: ${supplier.pais}`);
