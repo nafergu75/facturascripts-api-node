@@ -116,6 +116,15 @@ MARCAS=(
   'descripcionOperacion'
   'instantaneaEmision'
   'verifactuEstado'
+  'pruebasVerifactuDe'
+  'nifRepresentante'
+  'tipoCertificado'
+  'actuaComo'
+  'pruebaConexionFecha'
+  'pruebaConexionEntorno'
+  'pruebaConexionOk'
+  'pruebaConexionTipo'
+  'pruebaConexionMensaje'
 )
 for marca in "${MARCAS[@]}"; do
   grep -q "$marca" prisma/schema.prisma || {
