@@ -451,6 +451,8 @@ export async function informeMayor(companyId: string, periodo: Periodo, filtroCu
   const sinMovimientos = tercero && !tercero.subcuentas.length
     ? `${tercero.nombre} aún no tiene subcuenta contable: no hay movimientos a su nombre.`
     : 'No hay movimientos en esas cuentas en el periodo.';
+  // El mayor de un cliente o proveedor: sus facturas sin asiento o con él en borrador, que no salen aquí.
+  const fueraDelMayor = tercero ? await facturasFueraDelMayor(companyId, tercero.tipo === 'cliente' ? 'clientes' : 'proveedores', tercero.id, periodo.hasta) : [];
   const tabla: TablaInforme = {
     titulo: 'Libro mayor',
     periodo: `${textoPeriodo(periodo.desde, periodo.hasta)} · ${queCuentas}`,
@@ -469,10 +471,11 @@ export async function informeMayor(companyId: string, periodo: Periodo, filtroCu
     notas: [
       'Saldo: deudor en positivo y acreedor en negativo. Movimientos por fecha de asiento. Sin asientos de regularización ni de cierre.',
       ...(cuentas.length ? [] : [sinMovimientos]),
+      ...(fueraDelMayor.length ? [notaFueraDelMayor(fueraDelMayor, await simboloCuenta(companyId))] : []),
     ],
     fichero: `libro_mayor_${tercero ? tercero.nombre : (filtro.cuenta ?? `${filtro.desde ?? ''}-${filtro.hasta ?? ''}`)}_${periodo.desde}_${periodo.hasta}`,
   };
-  return { periodo, filtro, tercero: tercero ?? null, cuentas, tabla };
+  return { periodo, filtro, tercero: tercero ?? null, cuentas, ...(tercero ? { facturasFueraDelMayor: fueraDelMayor } : {}), tabla };
 }
 
 const NOMBRE_TIPO: Record<string, string> = { APERTURA: 'Apertura', REGULARIZACION: 'Regularización', CIERRE: 'Cierre' };
@@ -802,7 +805,8 @@ export async function facturasFueraDelMayor(companyId: string, tipo: TipoTercero
           orderBy: [{ fechaEmision: 'asc' }, { createdAt: 'asc' }],
         })
       )
-        .filter((f) => !finExterna || fechaContableGasto(f) > finExterna)
+        // Un gasto cuenta en el mayor por su fecha de registro (la del asiento), no por la de la factura.
+        .filter((f) => fechaContableGasto(f) <= hasta && (!finExterna || fechaContableGasto(f) > finExterna))
         .map((f) => ({ id: f.id, numeroCompleto: f.numeroFacturaProveedor || f.numeroCompleto, fechaEmision: f.fechaEmision, totalFactura: f.totalFactura }));
   if (!facturas.length) return [];
   // El asiento de la factura (no los de sus cobros o pagos), sin los anulados.
