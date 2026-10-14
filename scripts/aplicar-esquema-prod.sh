@@ -78,6 +78,18 @@ MARCAS=(
   'Telefono de contacto del usuario'
   'model IncomeInvoiceRectificada'
   'Causa de la rectificativa de venta'
+  'model VerifactuCadena'
+  'model VerifactuRegistro'
+  'model VerifactuLote'
+  'model VerifactuCertificado'
+  'model VerifactuBitacora'
+  'nifObligado'
+  'numeroInstalacion'
+  'declaracionVersion'
+  'anuladaPor'
+  'descripcionOperacion'
+  'instantaneaEmision'
+  'verifactuEstado'
 )
 for marca in "${MARCAS[@]}"; do
   grep -q "$marca" prisma/schema.prisma || {
