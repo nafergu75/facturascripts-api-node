@@ -436,7 +436,7 @@ export interface LineaIngresoResp {
   cargoPalets: boolean;
 }
 
-const round2 =(n: number): number => Math.round((n + Number.EPSILON) * 100) / 100;
+const round2 = (n: number): number => Math.round((n + Number.EPSILON) * 100) / 100;
 /** Hoy en hora peninsular: el vencimiento y la fecha de emisión por defecto no dependen de la zona del servidor. */
 const hoyISO = (): string => hoyEspana();
 const FECHA_RE = /^\d{4}-\d{2}-\d{2}$/;
