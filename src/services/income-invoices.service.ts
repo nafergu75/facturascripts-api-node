@@ -936,13 +936,29 @@ export function aplicarEnvases(lineas: LineaEntrada[], o: OpcionesEnvases): { li
 }
 
 /**
- * Cuenta de los ajustes para el cargo de palets (plantilla B) si alguna linea
- * del cargo va sin cuenta y la de los ajustes sigue valiendo (70x activa en el
- * plan): si no, null y la linea va a la de ventas de siempre. Solo lee.
+ * Cuenta de los ajustes para el cargo de palets (plantilla B), si alguna linea
+ * del cargo va sin cuenta: la de los ajustes si sigue valiendo (70x activa en
+ * el plan). Si ya no vale (desactivada o fuera del plan), la linea va a la de
+ * ventas de siempre, como con la cuenta de un producto que ya no vale, pero con
+ * un aviso que no bloquea (CUENTA_PALETS_NO_VALIDA) para que se cambie: asi el
+ * cargo no va a otra cuenta sin que nadie lo sepa. Solo lee.
  */
-async function cuentaPaletsValida(companyId: string, plantilla: PlantillaVentaId, lineas: LineaEntrada[], cuenta: string | null): Promise<string | null> {
-  if (!cuenta || !admiteCeramica(plantilla) || !lineas.some((l) => l.cargoPalets && !l.cuentaContable)) return null;
-  return (await problemaCuentasLinea(companyId, 'venta', [cuenta])) ? null : cuenta;
+async function cuentaPaletsDeAjustes(
+  companyId: string,
+  plantilla: PlantillaVentaId,
+  lineas: LineaEntrada[],
+  cuenta: string | null,
+): Promise<{ cuenta: string | null; aviso: AvisoFiscal | null }> {
+  if (!cuenta || !admiteCeramica(plantilla) || !lineas.some((l) => l.cargoPalets && !l.cuentaContable)) return { cuenta: null, aviso: null };
+  const problema = await problemaCuentasLinea(companyId, 'venta', [cuenta]);
+  if (!problema) return { cuenta, aviso: null };
+  return {
+    cuenta: null,
+    aviso: {
+      codigo: 'CUENTA_PALETS_NO_VALIDA',
+      mensaje: `${problema.mensaje} Es la del cargo de palets (Configuración > Facturación), así que el cargo va a la cuenta de ventas de siempre. Cámbiala allí o elige otra cuenta en la línea del cargo.`,
+    },
+  };
 }
 
 /** Observaciones por defecto de la serie (Configuracion > Series), o undefined. */
@@ -1941,7 +1957,8 @@ async function prepararAlta(
   // que no lleva ceramica, no que no lleva texto adicional).
   const cabeceraB = leerCabeceraCeramica(dto);
   exigirCabeceraCeramica(cabeceraB, plantilla);
-  lineas = aplicarCeramica(lineas, { plantilla, cuentaPalets: await cuentaPaletsValida(dto.companyId, plantilla, lineas, ajustes.cuentaPalets) });
+  const palets = await cuentaPaletsDeAjustes(dto.companyId, plantilla, lineas, ajustes.cuentaPalets);
+  lineas = aplicarCeramica(lineas, { plantilla, cuentaPalets: palets.cuenta });
   const envases = aplicarEnvases(lineas, {
     plantilla,
     repercute: deOriginal ? deOriginal.repercute : perfil.espanola && ajustes.ieepnrRepercute,
@@ -2095,6 +2112,7 @@ async function prepararAlta(
   const avisosFiscales: AvisoFiscal[] = [
     ...(fiscal.avisos ?? []),
     ...(avisoIeepnr ? [avisoIeepnr] : []),
+    ...(palets.aviso ? [palets.aviso] : []),
     ...(fuera ? [{ codigo: 'DEVENGO_FUERA_APP', mensaje: textoDevengoFuera(devengo, fuera) }] : []),
     ...(avisoR4 ? [avisoR4] : []),
     ...(serie.aviso ? [serie.aviso] : []),
@@ -2441,7 +2459,8 @@ export const incomeInvoicesService = {
         : normalizarPlantillaId(actual.plantillaId);
     const ajustes = await leerAjustesFacturacion(companyId);
     // Plantilla B: los datos de ceramica de las lineas (tambien las guardadas, como los envases), antes que los envases.
-    lineas = aplicarCeramica(lineas, { plantilla, cuentaPalets: await cuentaPaletsValida(companyId, plantilla, lineas, ajustes.cuentaPalets) });
+    const palets = await cuentaPaletsDeAjustes(companyId, plantilla, lineas, ajustes.cuentaPalets);
+    lineas = aplicarCeramica(lineas, { plantilla, cuentaPalets: palets.cuenta });
     const envases = aplicarEnvases(lineas, {
       plantilla,
       repercute: deOriginal ? deOriginal.repercute : dto.lineas ? perfil.espanola && ajustes.ieepnrRepercute : actual.ieepnrPorKg !== null,
@@ -2522,7 +2541,7 @@ export const incomeInvoicesService = {
     const avisoIeepnr = avisoIeepnrFueraDeEspana(fiscal.tipoOperacion, lineas);
     return aRespuesta(factura, {
       monedaCuenta: perfil.monedaCuenta,
-      avisosFiscales: [...(fiscal.avisos ?? []), ...(avisoIeepnr ? [avisoIeepnr] : [])],
+      avisosFiscales: [...(fiscal.avisos ?? []), ...(avisoIeepnr ? [avisoIeepnr] : []), ...(palets.aviso ? [palets.aviso] : [])],
       avisoTipoCambio: tipo?.aviso,
     });
   },
@@ -2597,7 +2616,8 @@ export const incomeInvoicesService = {
     lineas = conFiscalidad(lineas, fiscal);
     // Las lineas pasan como cuerpo: el IEEPNR se recalcula con el tipo de hoy.
     const ajustes = await leerAjustesFacturacion(companyId);
-    lineas = aplicarCeramica(lineas, { plantilla, cuentaPalets: await cuentaPaletsValida(companyId, plantilla, lineas, ajustes.cuentaPalets) });
+    const palets = await cuentaPaletsDeAjustes(companyId, plantilla, lineas, ajustes.cuentaPalets);
+    lineas = aplicarCeramica(lineas, { plantilla, cuentaPalets: palets.cuenta });
     const envases = aplicarEnvases(lineas, { plantilla, repercute: perfil.espanola && ajustes.ieepnrRepercute, tipo: ajustes.ieepnrPorKg, moneda: p.moneda, simetrico: false });
     lineas = envases.lineas;
     const tipo = await resolverTipoCambio({ monedaCuenta: perfil.monedaCuenta, moneda: p.moneda, devengo: hoy, definitivo: false });
@@ -2646,7 +2666,7 @@ export const incomeInvoicesService = {
     const avisoIeepnr = avisoIeepnrFueraDeEspana(fiscal.tipoOperacion, lineas);
     return aRespuesta(factura, {
       monedaCuenta: perfil.monedaCuenta,
-      avisosFiscales: [...(fiscal.avisos ?? []), ...(avisoIeepnr ? [avisoIeepnr] : [])],
+      avisosFiscales: [...(fiscal.avisos ?? []), ...(avisoIeepnr ? [avisoIeepnr] : []), ...(palets.aviso ? [palets.aviso] : [])],
       avisoTipoCambio: tipo.aviso,
     });
   },

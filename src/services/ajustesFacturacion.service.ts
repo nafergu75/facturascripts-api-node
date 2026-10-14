@@ -25,7 +25,9 @@
  * la plantilla B (series.service, contextoPlantillas); si no, la estandar.
  * cuentaPalets (plantilla B): la cuenta de ingresos (70x) que se pone en la
  * línea del cargo de palets de madera que no lleve otra, al guardar la factura;
- * queda en la línea, así que cambiarla aquí no cambia las ya guardadas.
+ * queda en la línea, así que cambiarla aquí no cambia las ya guardadas. Si deja
+ * de valer (se desactiva en el plan), el GET lo dice (cuentaPaletsProblema) y
+ * al guardar una factura sale el aviso CUENTA_PALETS_NO_VALIDA.
  * El logo de la marca y el sello de la plantilla B van aparte
  * (imagenesFactura.service): aquí solo se dice si los hay.
  */
@@ -67,6 +69,8 @@ export interface AjustesFacturacionResp extends AjustesFacturacion {
   cuentasBancarias: CuentaParaFactura[];
   /** Plantilla B: si ya hay logo de la marca y sello de la empresa (GET /ajustes-facturacion/imagenes/marca|sello). */
   imagenesPlantillaB: { marca: boolean; sello: boolean };
+  /** Plantilla B: por qué la cuenta del cargo de palets ya no vale (desactivada o fuera del plan); null si vale o no hay. */
+  cuentaPaletsProblema: string | null;
   actualizadoEn: string | null;
   actualizadoPor: string | null;
 }
@@ -120,8 +124,11 @@ export async function obtenerAjustesFacturacion(companyId: string): Promise<Ajus
     cuentasActivas(companyId),
     imagenesPlantillaB(companyId),
   ]);
+  // La del cargo de palets se valida al guardarla, pero despues se puede desactivar en el plan.
+  const problemaPalets = ajustes.cuentaPalets ? await problemaCuentasLinea(companyId, 'venta', [ajustes.cuentaPalets]) : null;
   return {
     imagenesPlantillaB: imagenes,
+    cuentaPaletsProblema: problemaPalets?.mensaje ?? null,
     ...ajustes,
     irpfDefecto: perfil.espanola ? ajustes.irpfDefecto : 0,
     // El IEEPNR es un impuesto español: fuera de España, nunca.

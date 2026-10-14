@@ -220,7 +220,7 @@ describe('plantilla B: cuenta del cargo de palets, logo de la marca y sello', ()
     request(app).put(`/companies/${ES}/ajustes-facturacion/imagenes/${tipo}`).attach('imagen', fichero, nombre);
 
   it('por defecto: no vende ceramica, sin cuenta propia del cargo de palets y sin imagenes', async () => {
-    expect((await leer()).body.data).toMatchObject({ vendeCeramica: false, cuentaPalets: null, imagenesPlantillaB: { marca: false, sello: false } });
+    expect((await leer()).body.data).toMatchObject({ vendeCeramica: false, cuentaPalets: null, cuentaPaletsProblema: null, imagenesPlantillaB: { marca: false, sello: false } });
   });
 
   it('vendeCeramica: se guarda (si o no); otro valor, 400 en su campo; en una empresa extranjera, siempre false', async () => {
@@ -235,7 +235,7 @@ describe('plantilla B: cuenta del cargo de palets, logo de la marca y sello', ()
   });
 
   it('la cuenta del cargo de palets es una de ventas (70x) del plan; vacia vuelve a la de ventas', async () => {
-    expect((await guardar({ cuentaPalets: '704' })).body.data).toMatchObject({ cuentaPalets: '704' });
+    expect((await guardar({ cuentaPalets: '704' })).body.data).toMatchObject({ cuentaPalets: '704', cuentaPaletsProblema: null });
     for (const [cuentaPalets, campo] of [
       ['abc', 'cuentaPalets'],
       ['600', 'cuentaPalets'],

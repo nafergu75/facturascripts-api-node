@@ -18,7 +18,7 @@ import { prisma } from '../config/database';
 import { incomeInvoicesService, type CrearLineaIngresoDTO } from '../services/income-invoices.service';
 import { AccountingEngineController } from '../controllers/accounting-engine.controller';
 import { asegurarPlanContableEmpresa } from '../services/chart-of-accounts.service';
-import { guardarAjustesFacturacion } from '../services/ajustesFacturacion.service';
+import { guardarAjustesFacturacion, obtenerAjustesFacturacion } from '../services/ajustesFacturacion.service';
 import { actualizarSerie, crearSerie, listarSeries } from '../services/series.service';
 import { calcularModelo303, calcularModelo347 } from '../services/impuestosCalculo.service';
 import { periodoFiscal } from '../services/nominas/fiscal';
@@ -191,6 +191,33 @@ describe('NZ013_2026 con la plantilla B', () => {
       ['UNIDAD', 1],
     ]);
     expect(f.resumenCeramica).toMatchObject({ cajas: 3, metros2: 5.04, piezas: 18 });
+  });
+
+  it('si la cuenta de palets de los ajustes deja de valer, el cargo va a la de ventas con el aviso CUENTA_PALETS_NO_VALIDA, y Configuración > Facturación lo dice', async () => {
+    const fila = await prisma.chartOfAccounts.findFirst({ where: { companyId: ES, codigo: '704' } });
+    if (fila) await prisma.chartOfAccounts.update({ where: { id: fila.id }, data: { activo: false } });
+    else await prisma.chartOfAccounts.create({ data: { companyId: ES, codigo: '704', nombre: 'Ventas de envases y embalajes', grupo: 7, nivel: 3, naturaleza: 'INGRESO', tipoUso: 'PYG', activo: false } });
+    try {
+      const f = await alta({ borrador: true });
+      expect(f.lineas[2]).toMatchObject({ cargoPalets: true, cuenta: null });
+      const aviso = f.avisosFiscales?.find((a) => a.codigo === 'CUENTA_PALETS_NO_VALIDA');
+      expect(aviso?.mensaje).toBe(
+        'La cuenta 704 está desactivada en tu plan contable. Es la del cargo de palets (Configuración > Facturación), así que el cargo va a la cuenta de ventas de siempre. Cámbiala allí o elige otra cuenta en la línea del cargo.',
+      );
+      // Al retocar el borrador sin lineas, el aviso sigue mientras no se arregle.
+      const otra = await incomeInvoicesService.actualizarBorrador(ES, f.id, { obra: 'Otra obra' });
+      expect(otra.avisosFiscales?.map((a) => a.codigo)).toContain('CUENTA_PALETS_NO_VALIDA');
+      // Con otra cuenta en la linea, ni aviso ni cambio.
+      const conCuenta = await alta({ borrador: true, lineas: lineasNz().map((l) => (l.cargoPalets ? { ...l, cuenta: '705' } : l)) });
+      expect([conCuenta.lineas[2].cuenta, conCuenta.avisosFiscales?.some((a) => a.codigo === 'CUENTA_PALETS_NO_VALIDA') ?? false]).toEqual(['705', false]);
+      expect((await obtenerAjustesFacturacion(ES)).cuentaPaletsProblema).toBe('La cuenta 704 está desactivada en tu plan contable.');
+    } finally {
+      if (fila) await prisma.chartOfAccounts.update({ where: { id: fila.id }, data: { activo: true } });
+      else await prisma.chartOfAccounts.deleteMany({ where: { companyId: ES, codigo: '704' } });
+    }
+    expect((await obtenerAjustesFacturacion(ES)).cuentaPaletsProblema).toBeNull();
+    const bien = await alta({ borrador: true });
+    expect([bien.lineas[2].cuenta, bien.avisosFiscales?.some((a) => a.codigo === 'CUENTA_PALETS_NO_VALIDA') ?? false]).toEqual(['704', false]);
   });
 });
 
