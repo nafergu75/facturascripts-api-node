@@ -35,6 +35,8 @@ export interface AsientoInforme {
   tipo: TipoAsiento;
   invoiceId: string | null;
   invoiceType: string | null;
+  /** Origen del asiento (FACTURA_INGRESO, TESORERIA...): solo cuenta para el orden dentro del dia. */
+  origen?: string | null;
   lineas: LineaInforme[];
 }
 
@@ -59,6 +61,7 @@ export function aAsientoInforme(a: AsientoPrisma): AsientoInforme {
     tipo: tipoAsiento(a.origen, a.descripcion),
     invoiceId: a.invoiceId,
     invoiceType: a.invoiceType,
+    origen: a.origen,
     lineas: a.lineas.map((l) => ({
       cuenta: l.accountCode,
       nombre: l.accountName,
@@ -69,10 +72,21 @@ export function aAsientoInforme(a: AsientoPrisma): AsientoInforme {
   };
 }
 
-/** Orden del diario y del mayor: fecha, y en el mismo dia, numero de asiento. */
-export function ordenarAsientos<T extends { fecha: string; numero: string }>(asientos: T[]): T[] {
+/** Cobros y pagos: en el mismo dia van detras del resto de asientos. */
+const ORIGENES_COBRO_PAGO = new Set(['TESORERIA', 'NOMINA_PAGO']);
+const turnoEnElDia = (a: { origen?: string | null }) => (ORIGENES_COBRO_PAGO.has(a.origen ?? '') ? 1 : 0);
+
+/**
+ * Orden del diario y del mayor: fecha; en el mismo dia, los cobros y pagos
+ * detras de los demas asientos, y despues el numero de asiento. Asi, una venta
+ * cobrada el mismo dia sale antes que su cobro (por el numero, «COBRO-00012»
+ * iria antes que «FAC-ING-A-10» y el saldo acumulado pasaria por un negativo).
+ */
+export function ordenarAsientos<T extends { fecha: string; numero: string; origen?: string | null }>(asientos: T[]): T[] {
   return [...asientos].sort((a, b) =>
-    a.fecha === b.fecha ? a.numero.localeCompare(b.numero, 'es', { numeric: true }) : a.fecha.localeCompare(b.fecha),
+    a.fecha !== b.fecha
+      ? a.fecha.localeCompare(b.fecha)
+      : turnoEnElDia(a) - turnoEnElDia(b) || a.numero.localeCompare(b.numero, 'es', { numeric: true }),
   );
 }
 

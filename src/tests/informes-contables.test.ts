@@ -155,6 +155,29 @@ describe('libro mayor', () => {
     expect(c430).toMatchObject({ saldoInicial: 0, totalDebe: 373, totalHaber: 121, saldoFinal: 252, nombre: 'Clientes' });
   });
 
+  it('en el mismo dia, la venta sale antes que su cobro aunque el numero del cobro vaya antes', () => {
+    // Por el numero, «COBRO-00012» iria antes que «FAC-ING-A-10» y el saldo pasaria por −121.
+    const datos = [
+      asiento('2026-05-03', [['572', 121, 0], ['430', 0, 121, 'A-10']], { numero: 'COBRO-00012', origen: 'TESORERIA', concepto: 'Cobro factura A-10' }),
+      asiento('2026-05-03', [['430', 121, 0, 'A-10'], ['700', 0, 100], ['477', 0, 21]], { numero: 'FAC-ING-A-10', origen: 'FACTURA_INGRESO', invoiceId: 'fA10', invoiceType: 'INGRESO' }),
+      asiento('2026-05-03', [['430', 50, 0, 'A-10'], ['700', 0, 50]], { numero: 'AJ-0001', origen: 'AJUSTE_MANUAL' }),
+    ];
+    const [c430] = calcularMayor(movimientosDelPeriodo(datos, p({ ejercicio: 2026 })), { cuenta: '430' }, nombre);
+    expect(c430.movimientos.map((m) => [m.asiento, m.saldo])).toEqual([
+      ['AJ-0001', 50],
+      ['FAC-ING-A-10', 171],
+      ['COBRO-00012', 50],
+    ]);
+    const ctx: ContextoTerceros = { ...ctxClientes, facturas: [{ id: 'fA10', numero: 'A-10', terceroId: 'cliA' }] };
+    const [t] = calcularMayorTerceros(datos, p({ ejercicio: 2026 }), ctx, nombre);
+    expect(t.movimientos.map((m) => [m.asiento, m.saldo])).toEqual([
+      ['AJ-0001', 50],
+      ['FAC-ING-A-10', 171],
+      ['COBRO-00012', 50],
+    ]);
+    expect(calcularDiario(datos, nombre).asientos.map((a) => a.numero)).toEqual(['AJ-0001', 'FAC-ING-A-10', 'COBRO-00012']);
+  });
+
   it('parte del saldo inicial cuando el periodo empieza a mitad de año', () => {
     const [c572] = calcularMayor(movimientosDelPeriodo(libro(), p({ desde: '2026-02-01', hasta: '2026-12-31' })), { cuenta: '572' }, nombre);
     expect(c572.saldoInicial).toBe(121);

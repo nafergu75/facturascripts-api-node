@@ -165,7 +165,7 @@ describe('facturas que no salen en el mayor del tercero', () => {
     expect(r.tercero.saldoFinal).toBe(0);
     expect(r.facturasFueraDelMayor).toHaveLength(4);
     const nota = r.tabla.notas?.find((x) => x.includes('no salen en este mayor'));
-    expect(nota).toMatch(/^4 facturas no salen en este mayor, que solo cuenta los asientos aprobados\. Sin asiento: .*NZ004_26 \(8\.654,68 €\).*; contabilízalas desde la factura\. Con el asiento en borrador: .*; apruébalo en el Motor contable\.$/);
+    expect(nota).toMatch(/^4 facturas no salen en este mayor, que solo cuenta los asientos aprobados\. Sin asiento: .*NZ004_26 \(8\.654,68\u00a0€\).*; contabilízalas desde la factura\. Con el asiento en borrador: .*; apruébalo en el Motor contable\.$/);
     // Sin facturas fuera, ni la lista ni la nota.
     const otro = await prisma.customer.create({ data: { companyId: E, nombreFiscal: 'Sin Facturas SL', nifCif: 'B70000005' } });
     const vacio = await informeDetalleTercero(E, 'clientes', ANIO, otro.id);

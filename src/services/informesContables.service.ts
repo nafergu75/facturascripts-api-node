@@ -381,7 +381,7 @@ export async function informeSumasYSaldos(companyId: string, periodo: Periodo, n
     columnas: [
       { titulo: 'Cuenta', tipo: 'codigo', ancho: 2.2 },
       { titulo: 'Nombre', tipo: 'texto', ancho: 6 },
-      { titulo: 'Saldo inicial', tipo: 'importe', ancho: 2 },
+      { titulo: 'Saldo inicial', tipo: 'importe', ancho: 2, saldo: true },
       { titulo: 'Debe', tipo: 'importe', ancho: 2 },
       { titulo: 'Haber', tipo: 'importe', ancho: 2 },
       { titulo: 'Saldo deudor', tipo: 'importe', ancho: 2 },
@@ -430,16 +430,27 @@ export async function informeMayor(companyId: string, periodo: Periodo, filtroCu
   const nombre = await nombrador(companyId, todos);
   const cuentas = calcularMayor(movimientosDelPeriodo(todos, periodo), filtro, nombre);
 
+  // Columnas: Fecha, Asiento, Concepto, Referencia, Debe, Haber y Saldo. Cada
+  // cifra en la suya: el saldo inicial y el final en Saldo, las sumas en Debe y Haber.
   const filas: FilaInforme[] = [];
   for (const c of cuentas) {
-    filas.push({ celdas: [c.cuenta, c.nombre, null, null, null, null, null], estilo: 'seccion' });
+    // La cuenta va como rotulo en la columna Concepto (en la de Fecha seria una celda corrida en Excel).
+    filas.push({ celdas: [null, null, `${c.cuenta} · ${c.nombre}`, null, null, null, null], estilo: 'seccion' });
     filas.push({ celdas: [null, null, 'Saldo inicial', null, null, null, c.saldoInicial], estilo: 'nota' });
     for (const m of c.movimientos) filas.push({ celdas: [m.fecha, m.asiento, m.concepto, m.referencia, m.debe, m.haber, m.saldo] });
-    filas.push({ celdas: [null, null, `Total ${c.cuenta}`, null, c.totalDebe, c.totalHaber, c.saldoFinal], estilo: 'subtotal' });
+    filas.push({ celdas: [null, null, `Totales y saldo final ${c.cuenta}`, null, c.totalDebe, c.totalHaber, c.saldoFinal], estilo: 'subtotal' });
   }
   if (cuentas.length > 1) {
     filas.push({
-      celdas: [null, null, 'Total', null, round2(cuentas.reduce((s, c) => s + c.totalDebe, 0)), round2(cuentas.reduce((s, c) => s + c.totalHaber, 0)), null],
+      celdas: [
+        null,
+        null,
+        `Totales y saldo final de las ${cuentas.length} cuentas`,
+        null,
+        round2(cuentas.reduce((s, c) => s + c.totalDebe, 0)),
+        round2(cuentas.reduce((s, c) => s + c.totalHaber, 0)),
+        round2(cuentas.reduce((s, c) => s + c.saldoFinal, 0)),
+      ],
       estilo: 'total',
     });
   }
@@ -465,11 +476,11 @@ export async function informeMayor(companyId: string, periodo: Periodo, filtroCu
       { titulo: 'Referencia', tipo: 'texto', ancho: 2.2 },
       { titulo: 'Debe', tipo: 'importe', ancho: 2 },
       { titulo: 'Haber', tipo: 'importe', ancho: 2 },
-      { titulo: 'Saldo', tipo: 'importe', ancho: 2 },
+      { titulo: 'Saldo', tipo: 'importe', ancho: 2, saldo: true },
     ],
     filas,
     notas: [
-      'Saldo: deudor en positivo y acreedor en negativo. Movimientos por fecha de asiento. Sin asientos de regularización ni de cierre.',
+      'Saldo: deudor en positivo y acreedor en negativo; en cada fila, el saldo anterior más el Debe y menos el Haber. Movimientos por fecha de asiento. Sin asientos de regularización ni de cierre.',
       ...(cuentas.length ? [] : [sinMovimientos]),
       ...(fueraDelMayor.length ? [notaFueraDelMayor(fueraDelMayor, await simboloCuenta(companyId))] : []),
     ],
@@ -730,11 +741,11 @@ export async function informeMayorTerceros(companyId: string, tipo: TipoTercero,
       { titulo: tipo === 'clientes' ? 'Cliente' : 'Proveedor', tipo: 'texto', ancho: 6 },
       { titulo: 'NIF', tipo: 'codigo', ancho: 2 },
       { titulo: 'Subcuenta', tipo: 'codigo', ancho: 2.4 },
-      { titulo: 'Saldo inicial', tipo: 'importe', ancho: 2 },
+      { titulo: 'Saldo inicial', tipo: 'importe', ancho: 2, saldo: true },
       { titulo: 'Debe', tipo: 'importe', ancho: 2 },
       { titulo: 'Haber', tipo: 'importe', ancho: 2 },
-      { titulo: 'Saldo final', tipo: 'importe', ancho: 2 },
-      ...(conPendiente ? [{ titulo: 'Pendiente s/ facturas', tipo: 'importe' as const, ancho: 2.2 }] : []),
+      { titulo: 'Saldo final', tipo: 'importe', ancho: 2, saldo: true },
+      ...(conPendiente ? [{ titulo: 'Pendiente s/ facturas', tipo: 'importe' as const, ancho: 2.2, saldo: true }] : []),
     ],
     filas: [
       ...filasDatos.map((t) => ({
@@ -844,7 +855,8 @@ export async function facturasFueraDelMayor(companyId: string, tipo: TipoTercero
 function notaFueraDelMayor(fuera: FacturaFueraDelMayor[], simbolo: string): string {
   const sin = fuera.filter((f) => f.estadoContable === 'SIN_ASIENTO');
   const borrador = fuera.filter((f) => f.estadoContable === 'BORRADOR');
-  const lista = (xs: FacturaFueraDelMayor[]) => xs.map((f) => `${f.numeroCompleto ?? 'sin número'} (${num(f.totalFactura)} ${simbolo})`).join(', ');
+  // Importe y moneda con un espacio duro: en el PDF la nota pasa a otra línea, pero nunca entre la cifra y el «€».
+  const lista = (xs: FacturaFueraDelMayor[]) => xs.map((f) => `${f.numeroCompleto ?? 'sin número'} (${num(f.totalFactura)}\u00a0${simbolo})`).join(', ');
   const partes = [
     ...(sin.length ? [`sin asiento: ${lista(sin)}; contabilízala${sin.length > 1 ? 's' : ''} desde la factura`] : []),
     ...(borrador.length ? [`con el asiento en borrador: ${lista(borrador)}; apruéba${borrador.length > 1 ? 'los' : 'lo'} en el Motor contable`] : []),
@@ -866,20 +878,24 @@ export async function informeDetalleTercero(companyId: string, tipo: TipoTercero
   // Las facturas que el mayor no cuenta (sin asiento o con él en borrador), con su enlace para arreglarlo.
   const fueraDelMayor = await facturasFueraDelMayor(companyId, tipo, t.id, periodo.hasta);
 
+  // Columnas: Fecha, Asiento, Concepto, Factura, Debe, Haber y Saldo. El saldo
+  // inicial y el final van en Saldo; las sumas, en Debe y Haber.
   const filas: FilaInforme[] = [
     { celdas: [null, null, 'Saldo inicial', null, null, null, t.saldoInicial], estilo: 'nota' },
     ...t.movimientos.map((m) => ({ celdas: [m.fecha, m.asiento, m.concepto, m.factura, m.debe, m.haber, m.saldo] })),
     { celdas: [null, null, 'Totales y saldo final', null, t.debe, t.haber, t.saldoFinal], estilo: 'total' },
   ];
   const notas = [
-    tipo === 'clientes' ? 'Saldo positivo: lo que nos debe.' : 'Saldo positivo: lo que le debemos.',
+    tipo === 'clientes'
+      ? 'Saldo positivo: lo que nos debe. En cada fila, el saldo anterior más el Debe y menos el Haber.'
+      : 'Saldo positivo: lo que le debemos. En cada fila, el saldo anterior más el Haber y menos el Debe.',
     ...(t.cuentas.length ? [`Cuentas: ${t.cuentas.join(', ')}.`] : t.subcuentas.length ? [`Subcuenta: ${t.subcuentas.join(', ')} (sin movimientos).`] : []),
   ];
   if (t.id !== SIN_IDENTIFICAR && !t.id.startsWith('subcuenta:')) {
     const de = tipo === 'clientes' ? 'cobro' : 'pago';
     notas.push(
       facturasPendientes.length
-        ? `Según facturación, ${facturasPendientes.length} factura(s) pendiente(s) de ${de} por ${num(totalPendiente)} ${await simboloCuenta(companyId)}: ${facturasPendientes.map((f) => f.numeroCompleto ?? '').filter(Boolean).join(', ')}.`
+        ? `Según facturación, ${facturasPendientes.length} factura(s) pendiente(s) de ${de} por ${num(totalPendiente)}\u00a0${await simboloCuenta(companyId)}: ${facturasPendientes.map((f) => f.numeroCompleto ?? '').filter(Boolean).join(', ')}.`
         : `Según facturación, no tiene facturas pendientes de ${de}.`,
     );
     if (fueraDelMayor.length) notas.push(notaFueraDelMayor(fueraDelMayor, await simboloCuenta(companyId)));
@@ -896,7 +912,7 @@ export async function informeDetalleTercero(companyId: string, tipo: TipoTercero
       { titulo: 'Factura', tipo: 'texto', ancho: 2.2 },
       { titulo: 'Debe', tipo: 'importe', ancho: 2 },
       { titulo: 'Haber', tipo: 'importe', ancho: 2 },
-      { titulo: 'Saldo', tipo: 'importe', ancho: 2 },
+      { titulo: 'Saldo', tipo: 'importe', ancho: 2, saldo: true },
     ],
     filas,
     notas,
