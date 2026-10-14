@@ -1054,7 +1054,13 @@ function exigirSerieValidaAeat(serie: string): void {
   if (problema) throw badRequest(problema, { campo: 'serie' });
 }
 
-/** Tope de una factura simplificada (F2): 3.000 € con el IVA incluido (art. 4.1 RD 1619/2012). */
+/**
+ * Tope de una factura simplificada (F2): 3.000 € con el IVA incluido. Es el de
+ * las actividades del art. 4.2 del RD 1619/2012 (comercio al por menor,
+ * hosteleria, transporte de viajeros...) y el que comprueba la AEAT
+ * (Validaciones de VERI*FACTU v1.2.2, 15.8). El limite general es de 400 € (art.
+ * 4.1.a); la app no sabe la actividad de la empresa, asi que lo dice el texto.
+ */
 export const LIMITE_SIMPLIFICADA = 3000;
 
 /**
@@ -1071,7 +1077,8 @@ function exigirLimiteSimplificada(
   if (total > LIMITE_SIMPLIFICADA * 100) {
     throw badRequest(
       `Una factura simplificada no puede pasar de 3.000 € (base más IVA) y esta suma ${(total / 100).toFixed(2).replace('.', ',')} €. ` +
-        'Emítela como factura completa (F1).',
+        'Emítela como factura completa (F1). Recuerda que, en general, el límite es de 400 €: los 3.000 € solo valen en algunas actividades ' +
+        '(comercio al por menor, hostelería, transporte de viajeros…).',
       { campo: 'tipoFactura' },
     );
   }

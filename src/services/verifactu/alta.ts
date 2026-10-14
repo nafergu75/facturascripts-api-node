@@ -147,7 +147,8 @@ export function problemaDestinatario(tipoFactura: string, cliente: ClienteFiscal
       codigo: 'VERIFACTU_CLIENTE_SIN_NIF',
       mensaje:
         tipoFactura === 'F1'
-          ? 'El cliente necesita un NIF válido para una factura completa. Corrígelo en su ficha o, si no pasa de 3.000 €, emítela como simplificada.'
+          ? 'El cliente necesita un NIF válido para una factura completa. Corrígelo en su ficha o, si el importe lo permite, emítela como simplificada: ' +
+            'en general hasta 400 € con IVA, y hasta 3.000 € solo en algunas actividades (comercio al por menor, hostelería, transporte de viajeros…).'
           : 'El cliente necesita un NIF válido para emitir la rectificativa. Corrígelo en su ficha y vuelve a emitirla.',
     };
   }

@@ -334,6 +334,8 @@ describe('validarAlta: lo que la AEAT rechazaría', () => {
     } catch (e) {
       expect(e).toMatchObject({ statusCode: 422, details: { codigo: 'VERIFACTU_CLIENTE_SIN_NIF' } });
       expect((e as Error).message).toMatch(/simplificada/);
+      // El limite general de la simplificada es de 400 € (art. 4.1.a RD 1619/2012); 3.000 € solo en las actividades del art. 4.2.
+      expect((e as Error).message).toMatch(/en general hasta 400 €/);
     }
     rechaza(() => valida(alta({ tipoFactura: 'R4', tipoRectificativa: 'I', cliente: sinNif, lineas: [l(-10, 21)] })), 'VERIFACTU_CLIENTE_SIN_NIF');
     // En una F2 no hace falta.
