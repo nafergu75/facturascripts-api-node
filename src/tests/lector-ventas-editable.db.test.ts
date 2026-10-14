@@ -179,9 +179,10 @@ describe('corregir el número, la fecha y el concepto', () => {
     });
     const lectura = await prisma.lecturaDocumento.findUniqueOrThrow({ where: { id: data.lecturaId } });
     expect(lectura).toMatchObject({ estado: 'CONFIRMADA', incomeInvoiceId: f.id });
-    // Otra vez: el documento ya está registrado.
+    // Otra vez (un doble clic): ya está registrada, 409.
     const otra = await confirmar(E, { documentId: data.ingreso.documentId, correcciones: { numero: 'F2026/0100' } });
-    expect(otra.status).toBe(400);
+    expect(otra.status).toBe(409);
+    expect(otra.body.details).toMatchObject({ codigo: 'LECTURA_YA_CONFIRMADA' });
     expect(await prisma.incomeInvoice.count({ where: { companyId: E, numeroCompleto: 'F2026/0100' } })).toBe(0);
   });
 
