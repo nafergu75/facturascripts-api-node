@@ -105,6 +105,24 @@ export interface RegistroContenido extends CuerpoAlta {
   sistemaInformatico: SistemaInformatico;
 }
 
+/**
+ * Contenido de un registro de anulacion (VerifactuRegistro.contenido con
+ * tipo ANULACION). Los campos de la huella van en las columnas del registro.
+ * Orden del XSD: RegistroFacturacionAnulacionType. Lo genera la fase F4; en F2
+ * solo se monta su XML (xmlRegistroAnulacion).
+ */
+export interface RegistroContenidoAnulacion {
+  version: 1;
+  idVersion: '1.0';
+  tipoHuella: '01';
+  /** IncomeInvoice.id (RefExterna, como mucho 60). */
+  refExterna?: string;
+  /** L16: E expedidor, D destinatario, T tercero. La app no lo informa (lo genera el expedidor). */
+  generadoPor?: 'E' | 'D' | 'T';
+  encadenamiento: Encadenamiento;
+  sistemaInformatico: SistemaInformatico;
+}
+
 /** El alta lista para la huella y para validarla: los campos de la huella y el cuerpo. */
 export interface AltaConstruida {
   /** IDFactura/IDEmisorFactura (= nifObligado de la configuracion). */
