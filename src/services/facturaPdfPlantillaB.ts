@@ -50,9 +50,13 @@ import {
   nombrePais,
   partir,
   textoRectificacionPdf,
+  llevaMarcaPruebas,
+  llevaQrVerifactu,
+  tamMarcaAgua,
   type DatosFacturaPdf,
   type LineaFacturaPdf,
 } from './facturaPdf.service';
+import { dibujarBloqueQr, MARCA_PRUEBAS, medirBloqueQr } from './verifactu/qrPdf';
 
 // ---------- Colores y medidas de la muestra ----------
 
@@ -134,6 +138,19 @@ const SUELO_VARIAS = 818;
 const SUELO_TABLA = 812;
 const Y_PAGINA = 830;
 
+/**
+ * QR de VERI*FACTU (opcion B1): una franja nueva arriba, del alto del bloque
+ * del QR, con el QR centrado, el logo de la empresa a la izquierda y el de la
+ * marca a la derecha, cada uno en su caja de 150 pt. Toda la cabecera de antes
+ * (empresa, FACTURA/FECHA, CLIENTE y OBRA) baja lo que mide la franja y la
+ * columna central de los logos queda libre. Sin QR, la plantilla es la de siempre.
+ * La letra de sus textos es la mayor de los datos (CLIENTE y su nombre, 10,8 pt).
+ */
+export const FRANJA_QR_B = { arriba: 15, hueco: 6, anchoLogo: 150 } as const;
+export const TAM_QR_B = T_CLIENTE;
+/** Borde de arriba de la cabecera de siempre (puntos desde arriba). */
+const TOP_CABECERA = 28.3;
+
 /** NIF de una persona fisica (DNI, NIE o K, L, M): «NIF»; el de una sociedad, «CIF», como el emisor de la muestra. */
 const etiquetaNifEmisor = (nif: string) => (/^[0-9XYZKLM]/i.test(nif.trim()) ? 'NIF' : 'CIF');
 
@@ -212,7 +229,9 @@ export async function renderizarFacturaPlantillaB(f: DatosFacturaPdf): Promise<B
   const tituloDoc = esBorrador ? `Borrador de ${titulo.toLowerCase()}` : `${titulo} ${f.numeroCompleto ?? ''}`.trim();
 
   const { doc, normal, negrita, ancho, alto } = await crearDocumentoPdfA(tituloDoc);
-  const Y = (top: number) => alto - top;
+  /** Lo que baja la cabecera de la primera pagina para dejar sitio a la franja del QR (solo mientras se dibuja). */
+  let desplaza = 0;
+  const Y = (top: number) => alto - top - desplaza;
 
   type Estilo = { tam?: number; fuente?: PDFFont; color?: RGB; alinear?: 'izq' | 'der' | 'centro'; cursiva?: boolean };
   /** Texto con su linea base a `base` puntos de arriba. */
@@ -371,9 +390,9 @@ export async function renderizarFacturaPlantillaB(f: DatosFacturaPdf): Promise<B
   const nuevaPagina = (): PDFPage => {
     const pg = doc.addPage([ancho, alto]);
     paginas.push(pg);
-    if (esBorrador) {
-      const marca = 'BORRADOR';
-      const tam = 100;
+    const marca = esBorrador ? 'BORRADOR' : llevaMarcaPruebas(f) ? MARCA_PRUEBAS : null;
+    if (marca) {
+      const tam = tamMarcaAgua(marca, negrita, ancho, alto);
       const w = negrita.widthOfTextAtSize(marca, tam);
       const a = (35 * Math.PI) / 180;
       pg.drawText(marca, {
@@ -388,6 +407,20 @@ export async function renderizarFacturaPlantillaB(f: DatosFacturaPdf): Promise<B
     return pg;
   };
   let p = nuevaPagina();
+
+  // ---------- Franja del QR de VERI*FACTU (opcion B1, solo en la primera pagina) ----------
+  const conQr = llevaQrVerifactu(f);
+  /** Lo que baja la cabecera de siempre. */
+  let dB = 0;
+  if (conQr) {
+    const medida = medirBloqueQr({ normal, negrita, tam: TAM_QR_B });
+    const fondoFranja = FRANJA_QR_B.arriba + medida.alto;
+    dibujarBloqueQr(p, { xCentro: ancho / 2, yArriba: Y(FRANJA_QR_B.arriba), url: f.verifactu!.url, tam: TAM_QR_B, normal, negrita });
+    await imagen(p, f.logo, X_IZQ, FRANJA_QR_B.arriba, X_IZQ + FRANJA_QR_B.anchoLogo, fondoFranja);
+    await imagen(p, f.logoMarca, X_DER - FRANJA_QR_B.anchoLogo, FRANJA_QR_B.arriba, X_DER, fondoFranja);
+    dB = fondoFranja + FRANJA_QR_B.hueco - TOP_CABECERA;
+  }
+  desplaza = dB;
 
   // ---------- Recuadro de la empresa (centrado y en cursiva) ----------
   {
@@ -423,9 +456,11 @@ export async function renderizarFacturaPlantillaB(f: DatosFacturaPdf): Promise<B
     texto(p, F.fecha(f.fechaEmision), 79.0, 145.8, { tam: T_PIE });
   }
 
-  // ---------- Logos: el de la empresa y, debajo, el de la marca ----------
-  await imagen(p, f.logo, 210.2, 30.4, 308.2, 85.2);
-  await imagen(p, f.logoMarca, 206.6, 88.0, 318.1, 145.6);
+  // ---------- Logos: el de la empresa y, debajo, el de la marca (con el QR van en su franja) ----------
+  if (!conQr) {
+    await imagen(p, f.logo, 210.2, 30.4, 308.2, 85.2);
+    await imagen(p, f.logoMarca, 206.6, 88.0, 318.1, 145.6);
+  }
 
   // ---------- CLIENTE ----------
   {
@@ -460,7 +495,7 @@ export async function renderizarFacturaPlantillaB(f: DatosFacturaPdf): Promise<B
 
   // ---------- OBRA y cabecera de la tabla ----------
   /** Lo alto del recuadro de la tabla en la pagina actual (para sus laterales). */
-  let topTabla = 156.1;
+  let topTabla = 156.1 + dB;
   /** Dibuja la cabecera de las columnas con su fondo; devuelve donde empieza el cuerpo. */
   const cabeceraColumnas = (top: number) => {
     caja(p, 47.0, top + 0.9, 562.1, top + 14.7, BEIGE);
@@ -499,7 +534,9 @@ export async function renderizarFacturaPlantillaB(f: DatosFacturaPdf): Promise<B
     const o = f.obra.trim();
     texto(p, o, xObra, 168.6, { tam: tamQueCabe(o, negrita, 11, X_DER_IN - xObra - 4), fuente: negrita });
   }
-  let cuerpo = cabeceraColumnas(171.1);
+  // Lo que sigue va ya con su posicion real (la franja del QR solo baja la cabecera).
+  desplaza = 0;
+  let cuerpo = cabeceraColumnas(171.1 + dB);
   let y = cuerpo;
 
   /** Cierra la tabla de una pagina que no es la ultima: columnas, laterales y raya de abajo. */
