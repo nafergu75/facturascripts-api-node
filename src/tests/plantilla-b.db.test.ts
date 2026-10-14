@@ -26,6 +26,7 @@ import { aCentimos } from '../utils/money';
 import { datosPdfFactura, generarPdfFactura } from '../services/facturaPdf.service';
 import { borrarImagenFactura, guardarImagenFactura } from '../services/imagenesFactura.service';
 import { LINEAS_NZ013, TOTALES_NZ013 } from './muestra-nz013';
+import { textosDePdf } from './texto-pdf';
 
 const SUFIJO = Date.now();
 const ES = `plantilla-b-${SUFIJO}`;
@@ -375,6 +376,10 @@ describe('borradores, copias y rectificativas', () => {
     ]);
     expect(r.resumenCeramica).toMatchObject({ palets: -1, cajas: -13, metros2: -12.94, piezas: -38, cargoPalets: { cantidad: -1, importe: -9 } });
     expect(await asiento(ES, r.id)).toEqual({ '430N': [-72690, 0], '700': [0, -59174], '704': [0, -900], '477': [0, -12616] });
+    // Su PDF no repite el «Rectifica la factura…» que «Rectificar» pone en las observaciones: ya lo dice el texto de la rectificacion.
+    expect(r.observaciones).toBe(`Rectifica la factura ${o.numeroCompleto} de 2026-07-10. Motivo: Anulación`);
+    const textosR = (await textosDePdf((await generarPdfFactura(ES, r.id)).contenido)).map((t) => t.texto);
+    expect(textosR.filter((t) => t.includes('Rectifica la factura'))).toHaveLength(1);
   });
 
   it('rectificativa por diferencias de una B: devuelve 2 piezas del peldaño', async () => {

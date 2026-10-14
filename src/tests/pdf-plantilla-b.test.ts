@@ -256,3 +256,121 @@ describe('PDF de la plantilla B con NZ013_2026', () => {
     expect(buscar(lector, 'OBRA:')).toBeUndefined();
   });
 });
+
+describe('pie alto: nada se sale de la hoja', () => {
+  const frase = 'EL TRANSPORTE SE FACTURARA APARTE EN FUNCION DE LAS NECESIDADES DE SUMINISTRO. ';
+  /** Observaciones de `n` caracteres. */
+  const largas = (n: number) => frase.repeat(Math.ceil(n / frase.length)).slice(0, n).trim();
+  /** Linea base desde arriba. */
+  const arriba = (t: TextoPdf) => ALTO - t.y;
+  /** Lo que (salvo «Página n de m») baja de `limite` puntos desde arriba o se sale por abajo. */
+  const fuera = (ts: TextoPdf[], limite: number) => ts.filter((t) => !t.texto.startsWith('Página') && (arriba(t) > limite || t.y < 0)).map((t) => [t.pagina, Math.round(arriba(t)), t.texto]);
+  /** Las lineas de las observaciones `texto`, en su orden y unidas: tienen que salir enteras. */
+  const observacionesDe = (ts: TextoPdf[], texto: string) =>
+    ts
+      .filter((t) => t.x > 229 && t.x < 231.5 && t.texto.trim() && texto.includes(t.texto.trim()))
+      .sort((a, b) => a.pagina - b.pagina || b.y - a.y)
+      .map((t) => t.texto.trim())
+      .join(' ');
+  /** El orden de arriba abajo (pagina y altura) de unos textos. */
+  const enOrden = (...ts: TextoPdf[]) => ts.every((t, i) => i === 0 || ts[i - 1].pagina < t.pagina || (ts[i - 1].pagina === t.pagina && ts[i - 1].y > t.y));
+
+  it('900 caracteres de observaciones: una pagina; el pie sube lo justo y la forma de pago, el IBAN y el registro caben', async () => {
+    const obs = largas(900);
+    const ts = await textos(datosNz({ observaciones: obs }));
+    expect(Math.max(...ts.map((t) => t.pagina))).toBe(1);
+    expect(fuera(ts, 832)).toEqual([]);
+    expect(observacionesDe(ts, obs)).toBe(obs);
+    expect(buscar(ts, 'ES91 2100 0418 4502 0005 1332')).toBeDefined();
+    const [total, pago, banco, registro] = [buscar(ts, 'TOTAL FACTURA:')!, buscar(ts, 'FORMA DE PAGO')!, buscar(ts, 'BANCO DE PRUEBAS: CAIXESBBXXX')!, buscar(ts, 'Inscrita', true)!];
+    expect(enOrden(total, pago, banco, registro)).toBe(true);
+    // La fila de totales ya no va donde la muestra (PESO NETO a 630,9): sube.
+    expect(arriba(buscar(ts, 'PESO NETO (kg)')!)).toBeLessThan(630);
+    // Y nunca por encima de la ultima linea de la tabla.
+    expect(arriba(buscar(ts, 'PALETS', false)!)).toBeLessThan(arriba(buscar(ts, 'PESO NETO (kg)')!));
+  });
+
+  it('4.000 caracteres: las que no caben siguen en «OBSERVACIONES (continuación)», y detras la forma de pago y el registro; nada pisa «Página n de m»', async () => {
+    const obs = largas(4000);
+    const ts = await textos(datosNz({ observaciones: obs }));
+    expect(Math.max(...ts.map((t) => t.pagina))).toBe(2);
+    expect(fuera(ts, 820)).toEqual([]);
+    expect(observacionesDe(ts, obs)).toBe(obs);
+    const [total, sigue, pago, registro] = [buscar(ts, 'TOTAL FACTURA:')!, buscar(ts, 'OBSERVACIONES (continuación)')!, buscar(ts, 'FORMA DE PAGO')!, buscar(ts, 'Inscrita', true)!];
+    expect([total.pagina, sigue.pagina, pago.pagina, registro.pagina]).toEqual([1, 2, 2, 2]);
+    expect(enOrden(total, sigue, pago, registro)).toBe(true);
+    expect(buscar(ts, 'Página 2 de 2')).toBeDefined();
+  });
+
+  it('2.000 caracteres (el maximo de las de la serie), texto al pie de 480 y 45 lineas: todo dentro de la hoja y en su orden', async () => {
+    const obs = largas(2000);
+    const base = datosNz().lineas;
+    const muchas = Array.from({ length: 45 }, (_, i) => ({ ...base[i % 2], descripcion: `${base[i % 2].descripcion} ${i + 1}` }));
+    const pie = 'Texto al pie largo. '.repeat(24).trim();
+    const ts = await textos(datosNz({ observaciones: obs, textoPie: pie, lineas: [...muchas, base[2]] }));
+    const paginas = Math.max(...ts.map((t) => t.pagina));
+    expect(paginas).toBeGreaterThanOrEqual(2);
+    expect(fuera(ts, 820)).toEqual([]);
+    expect(observacionesDe(ts, obs)).toBe(obs);
+    const ultimaPie = ts.filter((t) => t.texto.startsWith('Texto al pie')).pop()!;
+    expect(enOrden(buscar(ts, 'MOGAN NATURAL 45')!, buscar(ts, 'TOTAL FACTURA:')!, buscar(ts, 'FORMA DE PAGO')!, buscar(ts, 'Inscrita', true)!, ultimaPie)).toBe(true);
+    expect(buscar(ts, `Página ${paginas} de ${paginas}`)).toBeDefined();
+  });
+
+  it('rectificativa por sustitucion con IVA al 21, 10 y 4 %, las observaciones de la muestra y texto al pie: una pagina con todo', async () => {
+    const linea = (descripcion: string, tipoIva: number, base: number, cuota: number) => ({
+      descripcion,
+      cantidad: 1,
+      precioUnitario: base,
+      descuentoPorcentaje: 0,
+      tipoIva,
+      ivaImporte: cuota,
+      baseLine: base,
+      tipoRetencion: 0,
+      unidadPrecio: 'UNIDAD',
+      piezas: 1,
+    });
+    const pie = 'Protección de datos: sus datos se tratan para la gestión de la relación comercial. Puede ejercer sus derechos escribiendo a la empresa.';
+    const ts = await textos(
+      datosNz({
+        numeroCompleto: 'R-7',
+        tipoFactura: 'R1',
+        tipoRectificativa: 'S',
+        causaRectificacion: 'ERROR_DATOS',
+        motivoRectificacion: 'Se facturó el peldaño con el formato equivocado y el precio de la tarifa anterior.',
+        esRectificativa: true,
+        rectificadas: [
+          { numero: 'B-13', fecha: '2026-07-10' },
+          { numero: 'B-14', fecha: '2026-07-11' },
+        ],
+        importeRectificacion: { base: -50, cuota: -10.5, retencion: 0, total: -60.5 },
+        baseTotal: 309,
+        ivaTotal: 36.89,
+        totalFactura: 345.89,
+        lineas: [linea('AZULEJO', 21, 100, 21), linea('PELDAÑO', 10, 100, 10), linea('LIBRO TÉCNICO', 4, 100, 4), { ...linea('PALETS DE MADERA TRATADA', 21, 9, 1.89), piezas: undefined, cargoPalets: true }],
+        textoPie: pie,
+      }),
+    );
+    expect(Math.max(...ts.map((t) => t.pagina))).toBe(1);
+    expect(fuera(ts, 832)).toEqual([]);
+    const ultimaPie = ts.filter((t) => pie.includes(t.texto.trim()) && t.texto.trim()).pop()!;
+    expect(enOrden(buscar(ts, 'TOTAL FACTURA:')!, buscar(ts, 'ESTE PRESUPUESTO NO INCLUYE EL TRANSPORTE')!, buscar(ts, 'FORMA DE PAGO')!, buscar(ts, 'BANCO DE PRUEBAS: CAIXESBBXXX')!, buscar(ts, 'Inscrita', true)!, ultimaPie)).toBe(true);
+  });
+
+  it('la rectificativa no repite en las observaciones el «Rectifica la factura…» que escribe «Rectificar»; las que se cambian, si salen', async () => {
+    const rect = (observaciones: string) =>
+      datosNz({
+        esRectificativa: true,
+        tipoFactura: 'R1',
+        tipoRectificativa: 'I',
+        motivoRectificacion: 'Anulación',
+        numeroCompleto: 'R-1',
+        original: { numeroCompleto: 'B-13', fechaEmision: '2026-07-10' },
+        observaciones,
+      });
+    const auto = await textos(rect('Rectifica la factura B-13 de 2026-07-10. Motivo: Anulación'));
+    expect(auto.filter((t) => t.texto.includes('Rectifica la factura')).map((t) => t.texto)).toEqual(['Rectifica la factura B-13, de 10/07/2026, por diferencias (R1).']);
+    const cambiadas = await textos(rect('Rectifica la factura B-13 de 2026-07-10. Motivo: Anulación. Portes a cargo del cliente'));
+    expect(cambiadas.filter((t) => t.texto.includes('Rectifica la factura'))).toHaveLength(2);
+  });
+});

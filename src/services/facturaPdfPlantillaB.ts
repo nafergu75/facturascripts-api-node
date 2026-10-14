@@ -22,10 +22,16 @@
  * las pasa al origen de abajo de pdf-lib. Fuentes Geist (las de la app: Arial
  * no se puede incrustar); la cursiva se imita inclinando el texto.
  *
+ * Pie alto (observaciones largas, varios tipos de IVA, texto al pie): en una
+ * factura de una pagina sube lo justo para caber entero. Si no cabe, los
+ * totales de la tabla, los pesos, el cargo de palets, TOTAL FACTURA y las
+ * primeras observaciones (con el sello) van detras de la ultima linea, y el
+ * resto de las observaciones («OBSERVACIONES (continuación)»), la forma de
+ * pago, el Registro Mercantil y el texto al pie siguen en las paginas
+ * siguientes. Nada baja del margen.
+ *
  * Varias paginas: con muchas lineas, la tabla sigue en la pagina siguiente con
- * una cabecera breve y la de la tabla; el pie (totales, observaciones, forma de
- * pago y registro) va entero en la ultima, detras de la ultima linea, y nada
- * pisa «Página n de m».
+ * una cabecera breve y la de la tabla; nada pisa «Página n de m».
  */
 import { degrees, rgb, type PDFFont, type PDFImage, type PDFPage, type RGB } from 'pdf-lib';
 import { crearDocumentoPdfA, guardarPdfA } from '../utils/pdf-a';
@@ -322,8 +328,15 @@ export async function renderizarFacturaPlantillaB(f: DatosFacturaPdf): Promise<B
     cv ? `Contravalor en ${monedaCuenta}: base ${cifra(cv.base, 2, 2, true)}, IVA ${cifra(cv.iva, 2, 2, true)} y total ${cifra(cv.total, 2, 2, true)} ${monedaCuenta}.` : null,
   ].filter((s): s is string => !!s);
   const obs: LineaObs[] = previos.flatMap((t) => partir(t, normal, T_OBS, anchoObs).map((l) => ({ texto: l, negrita: false })));
-  if (f.observaciones?.trim()) {
-    partir(f.observaciones.trim(), negrita, T_OBS, anchoObs).forEach((l, i) => obs.push({ texto: l, negrita: i === 0 }));
+  // La rectificativa hecha con «Rectificar» lleva en las observaciones «Rectifica la factura X de
+  // AAAA-MM-DD. Motivo: …», que ya dice el texto de la rectificacion de arriba: no se repite.
+  const obsAutomaticas =
+    f.esRectificativa && f.original?.numeroCompleto
+      ? `Rectifica la factura ${f.original.numeroCompleto} de ${f.original.fechaEmision}. Motivo: ${f.motivoRectificacion?.trim() ?? ''}`
+      : null;
+  const observaciones = f.observaciones?.trim() ?? '';
+  if (observaciones && observaciones !== obsAutomaticas) {
+    partir(observaciones, negrita, T_OBS, anchoObs).forEach((l, i) => obs.push({ texto: l, negrita: i === 0 }));
   }
 
   // Forma de pago.
@@ -340,11 +353,18 @@ export async function renderizarFacturaPlantillaB(f: DatosFacturaPdf): Promise<B
   const filasResumen = Math.max(3, 2 + cargos.length);
   const altoResumen = GRUESO + 10.1 + GRUESO + filasResumen * FILA_PIE; // 609,6 -> 655,4
   const altoTotales = GRUESO + (filasTotales.length - 1) * 10.9 + 10.4 + 1.6 + 10.1; // 655,4 -> 690,1
-  const filasObs = Math.max(3, obs.length);
-  const altoObs = GRUESO + filasObs * FILA_OBS - 0.8; // 690,1 -> 724,2
+  /** El recuadro azul con `n` filas de observaciones (3 como poco: es tambien el hueco del sello). */
+  const altoObsDe = (n: number) => GRUESO + Math.max(3, n) * FILA_OBS - 0.8; // 690,1 -> 724,2
   const altoPago = GRUESO + 23.1 + GRUESO; // 724,2 -> 750,7
   const altoTras = (lineasRegistro.length ? 7.8 + (lineasRegistro.length - 1) * 10 : 0) + (lineasPie.length ? (lineasRegistro.length ? 9 : 7.8) + (lineasPie.length - 1) * 8 : 0) + 3;
-  const altoPie = altoResumen + altoTotales + altoObs + altoPago + altoTras;
+  /** El pie entero, con todas las observaciones en su recuadro. */
+  const altoPie = altoResumen + altoTotales + altoObsDe(obs.length) + altoPago + altoTras;
+  /**
+   * Lo que va siempre con la ultima linea: los totales de la tabla, los pesos,
+   * el cargo de palets, TOTAL FACTURA y el recuadro azul con sus primeras filas
+   * (y el sello). Lo demas puede seguir en otra pagina.
+   */
+  const altoCabeza = altoResumen + altoTotales + altoObsDe(Math.min(obs.length, 3)) + GRUESO;
 
   // ---------- Paginas ----------
   const paginas: PDFPage[] = [];
@@ -523,8 +543,10 @@ export async function renderizarFacturaPlantillaB(f: DatosFacturaPdf): Promise<B
 
   /** La pagina actual aun no tiene filas (acaba de empezar la tabla). */
   const sinFilas = () => Math.abs(y - cuerpo) < 0.01;
-  /** El pie entero cabe tras una tabla que acaba en `fin`. */
+  /** El pie entero cabe tras una tabla que acaba en `fin` (en una pagina sola, hasta SUELO_UNA). */
   const cabePie = (fin: number) => fin + 4 + altoPie <= (paginas.length === 1 ? SUELO_UNA : SUELO_VARIAS);
+  /** Al menos la cabeza del pie cabe tras `fin` (lo demas seguira en otra pagina, asi que hasta SUELO_VARIAS). */
+  const cabeCabeza = (fin: number) => fin + 4 + altoCabeza <= SUELO_VARIAS;
   bloques.forEach((filas) => {
     // El bloque entero va en la pagina siguiente si aqui no cabe (el pie, si no cabe detras del ultimo, va aparte).
     const fin = y + filas.length * FILA;
@@ -542,38 +564,48 @@ export async function renderizarFacturaPlantillaB(f: DatosFacturaPdf): Promise<B
       y += FILA;
     }
   });
-  // Sin sitio para el pie: la tabla se cierra aqui y el pie va en la pagina siguiente, bajo la cabecera de las columnas.
-  if (!cabePie(y)) {
+  // Sin sitio ni para la cabeza del pie: la tabla se cierra aqui y el pie va en la pagina siguiente, bajo la cabecera de las columnas.
+  if (!cabePie(y) && !cabeCabeza(y)) {
     cerrarTabla(y + 1);
     y = continuar();
   }
+  /** Todo el pie va detras de la ultima linea, en esta pagina; si no, lo que no quepa sigue en las siguientes. */
+  const entero = cabePie(y);
+  /**
+   * Hasta donde llega lo demas: una factura de una pagina baja hasta SUELO_UNA;
+   * con varias, nada pisa «Página n de m». Con 0,01 de holgura: el redondeo de
+   * las sumas no manda a otra pagina lo que cabe justo.
+   */
+  const suelo = (entero && paginas.length === 1 ? SUELO_UNA : SUELO_VARIAS) + 0.01;
 
   // ---------- Pie: totales de la tabla, pesos, cargo de palets, totales, observaciones y forma de pago ----------
   // Como en la muestra, las columnas llegan hasta el pie (609,6) si sobra sitio;
-  // si no, justo detras de la ultima linea. Primero los fondos y despues las
-  // rayas y los textos (asi ningun fondo tapa media raya).
-  const T = paginas.length === 1 ? Math.max(y + 4, PIE_MUESTRA) : y + 4;
+  // si el pie es mas alto, este sube lo justo para caber entero (nunca por
+  // encima de la ultima linea); con varias paginas, justo detras de la ultima
+  // linea. Primero los fondos y despues las rayas y los textos (asi ningun
+  // fondo tapa media raya).
+  const T = entero && paginas.length === 1 ? Math.max(y + 4, Math.min(PIE_MUESTRA, SUELO_UNA - altoPie)) : y + 4;
   const S0 = T + 11.8 + GRUESO; // 623,0: filas de los pesos y el cargo de palets
   const E = S0 + filasResumen * FILA_PIE; // 655,4
   const E2 = E + GRUESO; // 657,1: TOTAL BRUTO
   const sepTotal = E2 + (filasTotales.length - 1) * 10.9 + 10.4; // 678,4
   const finTotal = sepTotal + 1.6 + 10.1; // 690,1
   const O = finTotal + GRUESO; // 691,8: observaciones
-  const finObs = O + filasObs * FILA_OBS - 0.8; // 724,2
-  const P = finObs + GRUESO; // 725,9: forma de pago
-  const finPago = P + 23.1 + GRUESO; // 750,7
+  // Las observaciones que caben en el recuadro azul (todas si el pie va entero; las 3 primeras como poco).
+  let enRecuadro = obs.length;
+  if (!entero) while (enRecuadro > Math.min(obs.length, 3) && finTotal + altoObsDe(enRecuadro) + GRUESO > suelo) enRecuadro--;
+  const finObs = finTotal + altoObsDe(enRecuadro); // 724,2
 
   // Fondos.
   caja(p, 47.0, T + 0.8, 562.1, T + 12.7, BEIGE_OSCURO);
   caja(p, 228.4, E2 - 0.8, 500.3, finTotal + 1.0, BEIGE);
   caja(p, 228.4, O - 0.8, 562.1, finObs + 1.0, AZUL);
-  caja(p, 47.0, P - 0.9, 144.0, P + 24.1, BEIGE);
 
   // Rayas: las columnas del cuerpo y del pie, y las horizontales.
   columnas(cuerpo, T);
   columnas(T + GRUESO, T + 11.8);
   columnas(S0, E);
-  for (const top of [T, T + 11.8, E, finObs, P + 23.1]) raya(p, X_IZQ_IN, X_DER, top);
+  for (const top of [T, T + 11.8, E, finObs]) raya(p, X_IZQ_IN, X_DER, top);
   filasTotales.forEach((_, i) => {
     if (i < filasTotales.length - 1) raya(p, 229.2, X_DER_IN, E2 + i * 10.9 + 10.0, FINO);
   });
@@ -582,10 +614,9 @@ export async function renderizarFacturaPlantillaB(f: DatosFacturaPdf): Promise<B
   vertical(p, 499.8, E2, sepTotal);
   vertical(p, 499.3, sepTotal + 1.6, finTotal, GRUESO);
   vertical(p, 227.5, E2, finObs, GRUESO);
-  vertical(p, 143.0, P, P + 23.1, GRUESO);
-  // Laterales del recuadro grande, desde la tabla hasta la forma de pago.
-  vertical(p, X_IZQ, topTabla, finPago, GRUESO);
-  vertical(p, X_DER_IN, topTabla, finPago, GRUESO);
+  // Laterales del recuadro grande, desde la tabla hasta el recuadro azul (la forma de pago pone los suyos).
+  vertical(p, X_IZQ, topTabla, finObs + GRUESO, GRUESO);
+  vertical(p, X_DER_IN, topTabla, finObs + GRUESO, GRUESO);
 
   // Cabecera de la fila de totales.
   const bCab = T + 9.2;
@@ -626,12 +657,49 @@ export async function renderizarFacturaPlantillaB(f: DatosFacturaPdf): Promise<B
   const totalTxt = F.importe(f.totalFactura);
   texto(p, totalTxt, DERECHA_PIE, bTotal, { tam: tamQueCabe(totalTxt, negrita, T_PIE, DERECHA_PIE - COL.precio - 2), fuente: negrita, alinear: 'der' });
 
-  // Observaciones, en cursiva (la primera linea de las observaciones, en negrita).
-  obs.forEach((l, i) => texto(p, l.texto, 230.0, O + 7.8 + i * FILA_OBS, { tam: T_OBS, fuente: l.negrita ? negrita : normal, cursiva: true }));
+  /** Una linea de las observaciones, en cursiva (la primera de las observaciones, en negrita). */
+  const lineaObs = (l: LineaObs, base: number) => texto(p, l.texto, 230.0, base, { tam: T_OBS, fuente: l.negrita ? negrita : normal, cursiva: true });
+  obs.slice(0, enRecuadro).forEach((l, i) => lineaObs(l, O + 7.8 + i * FILA_OBS));
   // El sello, en el hueco de la izquierda (70,9-216,4 por 53 de alto en la muestra).
   await imagen(p, f.sello, 70.9, E2 + 0.3, 216.4, Math.min(E2 + 53.5, finObs - 1));
 
-  // FORMA DE PAGO.
+  // ---------- Observaciones que no caben: «OBSERVACIONES (continuación)» en las paginas siguientes ----------
+  /** Recuadro con su raya de arriba en `top` y las lineas `trozo`; devuelve su fondo (la raya de abajo). */
+  const recuadroContinuacion = (top: number, trozo: LineaObs[]) => {
+    const Oc = top + GRUESO;
+    const fin = Oc + Math.max(1, trozo.length) * FILA_OBS - 0.8;
+    caja(p, 47.0, Oc - 0.8, 227.5, fin + 1.0, BEIGE);
+    caja(p, 228.4, Oc - 0.8, 562.1, fin + 1.0, AZUL);
+    raya(p, X_IZQ_IN, X_DER, top);
+    raya(p, X_IZQ_IN, X_DER, fin);
+    vertical(p, X_IZQ, top, fin + GRUESO, GRUESO);
+    vertical(p, 227.5, top, fin + GRUESO, GRUESO);
+    vertical(p, X_DER_IN, top, fin + GRUESO, GRUESO);
+    const etq = 'OBSERVACIONES (continuación)';
+    texto(p, etq, 48.4, Oc + 7.8, { tam: tamQueCabe(etq, negrita, T_PIE, 227.5 - 48.4 - 3), fuente: negrita });
+    trozo.forEach((l, i) => lineaObs(l, Oc + 7.8 + i * FILA_OBS));
+    return fin;
+  };
+  /** Donde acaba lo ultimo dibujado del recuadro grande (la raya de abajo de las observaciones). */
+  let fondo = finObs;
+  for (let hechas = enRecuadro; hechas < obs.length; ) {
+    const top = cabeceraBreve();
+    let n = obs.length - hechas;
+    while (n > 1 && top + GRUESO + n * FILA_OBS - 0.8 + GRUESO > suelo) n--;
+    fondo = recuadroContinuacion(top, obs.slice(hechas, hechas + n));
+    hechas += n;
+  }
+
+  // ---------- FORMA DE PAGO: detras de las observaciones o, si no cabe, en la pagina siguiente ----------
+  const topPago = fondo + altoPago <= suelo ? fondo : cabeceraBreve();
+  const P = topPago + GRUESO; // 725,9
+  const finPago = P + 23.1 + GRUESO; // 750,7
+  caja(p, 47.0, P - 0.9, 144.0, P + 24.1, BEIGE);
+  raya(p, X_IZQ_IN, X_DER, topPago);
+  raya(p, X_IZQ_IN, X_DER, P + 23.1);
+  vertical(p, 143.0, P, P + 23.1, GRUESO);
+  vertical(p, X_IZQ, topPago, finPago, GRUESO);
+  vertical(p, X_DER_IN, topPago, finPago, GRUESO);
   texto(p, 'FORMA DE PAGO', 48.4, P + 9.0, { tam: T_PIE, fuente: negrita });
   {
     let x = 145.8;
@@ -643,17 +711,16 @@ export async function renderizarFacturaPlantillaB(f: DatosFacturaPdf): Promise<B
     if (banco) texto(p, banco, 145.7, P + 20.6, { tam: tamQueCabe(banco, normal, T_PIE, X_DER_IN - 145.7 - 3) });
   }
 
-  // ---------- Registro Mercantil y texto al pie ----------
+  // ---------- Registro Mercantil y texto al pie (siguen en otra pagina si no caben) ----------
   let yPie = finPago + 7.8;
-  for (const l of lineasRegistro) {
-    texto(p, l, 48.2, yPie, { tam: T_NUM });
-    yPie += 10;
-  }
+  const lineaPie = (s: string, salto: number, o: Estilo) => {
+    if (yPie + 3 > suelo) yPie = cabeceraBreve() + 8;
+    texto(p, s, 48.2, yPie, o);
+    yPie += salto;
+  };
+  for (const l of lineasRegistro) lineaPie(l, 10, { tam: T_NUM });
   if (lineasPie.length && lineasRegistro.length) yPie -= 1;
-  for (const l of lineasPie) {
-    texto(p, l, 48.2, yPie, { tam: 6.5, color: GRIS });
-    yPie += 8;
-  }
+  for (const l of lineasPie) lineaPie(l, 8, { tam: 6.5, color: GRIS });
 
   // ---------- Numero de pagina (con mas de una) ----------
   if (paginas.length > 1) paginas.forEach((pg, i) => texto(pg, `Página ${i + 1} de ${paginas.length}`, X_DER, Y_PAGINA, { tam: 7.5, color: GRIS, alinear: 'der' }));
