@@ -240,6 +240,7 @@ d('vaciado de producción (base local de usar y tirar)', () => {
     const { codigo, salida } = lanzar(['--comprobar'], '\n');
     expect(salida).toContain('COMPROBACIÓN CORRECTA: la base está a cero.');
     expect(salida).toContain('su primera factura será la A-1');
+    expect(salida).toContain('su primera factura será la B-1');
     expect(salida).toContain('Prueba de acceso saltada.');
     expect(codigo).toBe(0);
   }, 10 * MINUTOS);
@@ -370,6 +371,14 @@ d('vaciado de producción (base local de usar y tirar)', () => {
       .set(auth)
       .send({ customer: { id: cliente.body.data.id }, fechaEmision: hoy, lineas: [{ descripcion: 'Segunda venta', cantidad: 1, precioUnitario: 100, tipoIva: 21 }] });
     expect(segunda.body.data.invoice.numeroCompleto).toBe('A-2');
+    // Marcar «Vendo cerámica» crea la serie B, desde 1 y sin tocar la numeración de la A.
+    const ceramica = await request(app).put(`/companies/${empresa}/ajustes-facturacion`).set(auth).send({ vendeCeramica: true });
+    expect([ceramica.status, ceramica.body.data.serieCeramica]).toEqual([200, { codigo: 'B', estado: 'creada', aviso: null }]);
+    const series = await request(app).get(`/companies/${empresa}/series?tipoDocumento=FACTURA`).set(auth);
+    const porCodigo = Object.fromEntries(
+      (series.body.data as Array<{ codigo: string; numeroSiguiente: number; porDefecto: boolean; plantilla: string }>).map((s) => [s.codigo, [s.numeroSiguiente, s.porDefecto, s.plantilla]]),
+    );
+    expect(porCodigo).toEqual({ A: [3, true, 'default'], B: [1, false, 'B'], C: [1, false, 'C'] });
   }, 20 * MINUTOS);
 
   it('la copia no se restaura sobre una base que ya tiene empresas', async () => {

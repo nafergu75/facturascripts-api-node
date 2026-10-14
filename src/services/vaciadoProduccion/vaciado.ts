@@ -554,6 +554,8 @@ export async function comprobar(ctx: Contexto, manifiesto?: Manifiesto | null): 
     lineas.push(
       'Series de facturación: no queda ninguna. Cada empresa nueva crea las suyas (A, C, R y P) al primer uso, empezando',
       'en 0, así que su primera factura será la A-1, la primera rectificativa la R-1 y la primera proforma la P-1.',
+      'La serie B (cerámica) se crea cuando la empresa marca «Vendo cerámica y materiales de construcción» en',
+      'Configuración > Facturación, también desde 0: su primera factura será la B-1.',
     );
   }
 
