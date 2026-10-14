@@ -20,7 +20,7 @@ import {
   OperacionTercero,
   PeriodoFiscal,
 } from '../domain/impuestos.model';
-import { aparicionesConIva, aparicionesRetencionEntre, desgloseRetencionGasto, fechaContableGasto, whereGastosFiscales, whereGastosIva } from '../domain/factura-gasto.model';
+import { aparicionesConIva, aparicionesRetencionEntre, desgloseRetencionGasto, esCuentaInmovilizado, fechaContableGasto, whereGastosFiscales, whereGastosIva } from '../domain/factura-gasto.model';
 import { avisoExcesoRetencion, retencionesPorPerceptor, topeCero } from '../domain/rectificativa-gasto.model';
 import { diferenciaSustitucion } from '../domain/rectificativa-venta.model';
 import { lineasImportesDe } from './rectificativasVenta.service';
@@ -881,8 +881,8 @@ export async function obtenerFacturasFiscales(companyId: string, desde: string, 
               base: signo * round2(l.baseLine),
               cuota: signo * round2(l.ivaImporte),
               ...(Number(l.tipoRetencion) > 0 ? { conRetencion: true } : {}),
-              // Bien de inversion: cuenta 2xx del PGC (casillas de bienes de inversion del 303).
-              ...(String(l.accountCode ?? '').startsWith('2') ? { inversion: true } : {}),
+              // Bien de inversion: cuenta del grupo 2 del PGC (casillas de bienes de inversion del 303), la misma que el panel deja fuera de los gastos.
+              ...(esCuentaInmovilizado(l.accountCode) ? { inversion: true } : {}),
             }))
           : [{ tipoIva: 0, base: signo * round2(f.baseTotal), cuota: 0, ...(aCentimos(Number(f.retencionTotal)) !== 0 ? { conRetencion: true } : {}) }],
       });
