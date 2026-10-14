@@ -2,6 +2,7 @@ import { PrismaClient } from '@prisma/client';
 import { logger } from './logger';
 import { importesComoNumero } from './decimales';
 import { reintentoConexion } from './reintentoConexion';
+import { inmutabilidadVerifactu } from './inmutabilidadVerifactu';
 
 /**
  * Tiempo de las transacciones interactivas (prisma.$transaction(async (tx) => ...)).
@@ -17,9 +18,12 @@ import { reintentoConexion } from './reintentoConexion';
  */
 export const OPCIONES_TRANSACCION = { maxWait: 10_000, timeout: 30_000 } as const;
 
-/** Cliente Prisma con las extensiones de la app (reintento de conexion e importes como number). */
+/**
+ * Cliente Prisma con las extensiones de la app: reintento de conexion, importes
+ * como number e inmutabilidad de VERI*FACTU (registros y facturas registradas).
+ */
 export function crearClienteBD(transactionOptions: { maxWait: number; timeout: number } = OPCIONES_TRANSACCION) {
-  return new PrismaClient({ transactionOptions }).$extends(reintentoConexion).$extends(importesComoNumero);
+  return new PrismaClient({ transactionOptions }).$extends(reintentoConexion).$extends(importesComoNumero).$extends(inmutabilidadVerifactu);
 }
 
 /**
