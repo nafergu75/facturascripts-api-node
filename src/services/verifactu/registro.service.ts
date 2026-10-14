@@ -30,6 +30,7 @@ import { cadenaAlta, huella } from './huella';
 import { leerInstantanea, type Instantanea } from './instantanea';
 import { numeroInstalacionDe, sistemaInformatico } from './sistema';
 import type { DetalleDesglose, Encadenamiento, RegistroContenido } from './tipos';
+import { xmlRegistroAlta } from './xml';
 
 /** Origenes de una factura que expide la app (el lector registra facturas de otro programa). */
 export const ORIGENES_CON_REGISTRO: readonly string[] = ['pantalla', 'api', 'copia'];
@@ -379,6 +380,20 @@ export async function generarRegistroAlta(tx: TransaccionBD, o: OpcionesRegistro
     sistemaInformatico: sistemaInformatico({ numeroInstalacion, multiplesOT }),
   };
   const numeroEnCadena = cabeza.numRegistros + 1;
+  // XML del <sf:RegistroAlta>, en el mismo create: la inmutabilidad no deja rellenarlo despues.
+  const xml = xmlRegistroAlta(
+    {
+      idEmisor: alta.idEmisor,
+      numSerie: alta.numSerie,
+      fechaExpedicion: alta.fechaExpedicion,
+      tipoFactura: alta.tipoFactura,
+      cuotaTotal: alta.cuotaTotal,
+      importeTotal: alta.importeTotal,
+      fechaHoraHuso,
+      huella: h,
+    },
+    contenido,
+  );
   const registro = await tx.verifactuRegistro.create({
     data: {
       companyId,
@@ -397,7 +412,7 @@ export async function generarRegistroAlta(tx: TransaccionBD, o: OpcionesRegistro
       huellaAnterior: cabeza.ultimaHuella,
       huella: h,
       contenido: contenido as unknown as Prisma.InputJsonValue,
-      xml: null,
+      xml,
       generadoPor: o.usuarioId ?? null,
     },
   });

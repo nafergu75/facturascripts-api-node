@@ -12,6 +12,7 @@ import { describe, it, expect, beforeAll } from '@jest/globals';
 import axios from 'axios';
 import { randomBytes } from 'crypto';
 import { prisma } from '../config/database';
+import { marcarEmpresaPruebas } from './ayuda-empresa-pruebas';
 import { incomeInvoicesService, type CrearFacturaIngresoDTO } from '../services/income-invoices.service';
 import { listarSeries } from '../services/series.service';
 import { limpiarMemoTiposCambio } from '../services/tiposCambio.service';
@@ -22,6 +23,9 @@ import { fechaAeat, instanteDeHuso } from '../services/verifactu/formato';
 import { hoyEspana } from '../utils/fechas';
 import { datosPdfFactura, renderizarFactura } from '../services/facturaPdf.service';
 import { planRegistro } from '../services/verifactu/registro.service';
+import { xmlRegistroAlta } from '../services/verifactu/xml';
+import { XMLParser } from 'fast-xml-parser';
+import { validarXsd } from './ayuda-xsd';
 
 const get = (axios as unknown as { get: jest.Mock }).get;
 const CABECERA = 'KEY,FREQ,CURRENCY,CURRENCY_DENOM,EXR_TYPE,EXR_SUFFIX,TIME_PERIOD,OBS_VALUE,OBS_STATUS';
@@ -88,6 +92,7 @@ beforeAll(async () => {
   clientes[E].sinNif = (await prisma.customer.create({ data: { companyId: E, nombreFiscal: 'Particular sin NIF', nifCif: '', pais: 'ES' } })).id;
 
   await prisma.verifactuConfig.create({ data: { companyId: E, estado: 'PRUEBAS', entorno: 'PRUEBAS' } });
+  await marcarEmpresaPruebas(prisma, E);
   await prisma.verifactuConfig.create({ data: { companyId: DESACT, estado: 'DESACTIVADO' } });
   await prisma.verifactuConfig.create({ data: { companyId: FUTURA, estado: 'ACTIVO', entorno: 'PRUEBAS', activaDesde: new Date(Date.now() + 30 * 86_400_000) } });
   await prisma.verifactuConfig.create({ data: { companyId: FORAL, estado: 'PRUEBAS', entorno: 'PRUEBAS', motivoExclusion: 'FORAL' } });
@@ -112,7 +117,6 @@ describe('emisión directa y encadenamiento', () => {
       cuotaTotal: '230.00',
       importeTotal: '1430.00',
       estadoEnvio: 'PENDIENTE',
-      xml: null,
     });
     const c = contenido(r);
     expect(c.encadenamiento).toEqual({ primerRegistro: true });
@@ -125,6 +129,30 @@ describe('emisión directa y encadenamiento', () => {
       huella(cadenaAlta({ idEmisor: r.idEmisor, numSerie: r.numSerie, fecha: r.fechaExpedicion, tipoFactura: 'F1', cuotaTotal: r.cuotaTotal!, importeTotal: r.importeTotal!, huellaAnterior: '', fechaHoraHuso: r.fechaHoraHuso })),
     );
     expect(r.fechaHoraHuso).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\+0[12]:00$/);
+    // F2: el XML del alta se guarda con el registro; es valido y su huella, recalculada con lo que dice el XML, es la de la columna.
+    expect(r.xml).toBe(
+      xmlRegistroAlta(
+        { idEmisor: r.idEmisor, numSerie: r.numSerie, fechaExpedicion: r.fechaExpedicion, tipoFactura: r.tipoFactura!, cuotaTotal: r.cuotaTotal!, importeTotal: r.importeTotal!, fechaHoraHuso: r.fechaHoraHuso, huella: r.huella },
+        c,
+      ),
+    );
+    const v = await validarXsd(r.xml!, 'SuministroInformacion.xsd');
+    expect(v.errores).toEqual([]);
+    const leido = new XMLParser({ removeNSPrefix: true, parseTagValue: false, ignoreAttributes: true }).parse(r.xml!).RegistroAlta;
+    expect(
+      huella(
+        cadenaAlta({
+          idEmisor: leido.IDFactura.IDEmisorFactura,
+          numSerie: leido.IDFactura.NumSerieFactura,
+          fecha: leido.IDFactura.FechaExpedicionFactura,
+          tipoFactura: leido.TipoFactura,
+          cuotaTotal: leido.CuotaTotal,
+          importeTotal: leido.ImporteTotal,
+          huellaAnterior: '',
+          fechaHoraHuso: leido.FechaHoraHusoGenRegistro,
+        }),
+      ),
+    ).toBe(r.huella);
     expect((await prisma.incomeInvoice.findUniqueOrThrow({ where: { id: f.id } })).verifactuEstado).toBe('PENDIENTE');
     // Con el primer registro se congelan el NIF, el nombre y el numero de instalacion.
     expect(await prisma.verifactuConfig.findUniqueOrThrow({ where: { companyId: E } })).toMatchObject({
@@ -319,6 +347,7 @@ describe('activación programada que está al caer', () => {
       await prisma.company.create({ data: { id, name: `Empresa ${id}`, fsBaseUrl: 'http://localhost:8080', fsApiKeyEnc: 'k' } });
       await prisma.legalConfig.create({ data: { companyId: id, tipoSociedad: 'SL', denominacion: 'Activación SL', nif: cifSl() } });
       await prisma.verifactuConfig.create({ data: { companyId: id, estado: 'ACTIVO', entorno: 'PRUEBAS', activaDesde: new Date(Date.now() + ms) } });
+      await marcarEmpresaPruebas(prisma, id);
     }
     // La emision que coincide con la activacion encuentra su cadena (sin 409 VERIFACTU_CONFIG_CAMBIADA).
     expect(await planRegistro(pronto)).toEqual({ entorno: 'PRUEBAS' });
@@ -405,5 +434,29 @@ describe('PDF de una factura emitida: los datos de la emisión (instantánea)', 
       sinIdentificar: false,
     });
     expect((await incomeInvoicesService.obtenerPorId(empresa, b.id)).clienteEmision).toBeUndefined();
+  });
+});
+
+describe('entorno de pruebas solo en empresas de pruebas (F2)', () => {
+  it('una empresa real con VERI*FACTU en PRUEBAS no emite: 409 y nada guardado (ni numero, ni registro, ni cadena)', async () => {
+    const real = `vfreg-real-${SUFIJO}`;
+    await prisma.company.create({ data: { id: real, name: `Empresa ${real}`, fsBaseUrl: 'http://localhost:8080', fsApiKeyEnc: 'k' } });
+    await prisma.legalConfig.create({ data: { companyId: real, tipoSociedad: 'SL', denominacion: 'Real SL', nif: cifSl() } });
+    await listarSeries(real);
+    const cliente = (await prisma.customer.create({ data: { companyId: real, nombreFiscal: 'Cliente SL', nifCif: 'B12345674', pais: 'ES' } })).id;
+    await prisma.verifactuConfig.create({ data: { companyId: real, estado: 'PRUEBAS', entorno: 'PRUEBAS' } });
+    await expect(emitir({}, real, cliente)).rejects.toMatchObject({ statusCode: 409, details: expect.objectContaining({ codigo: 'VERIFACTU_ENTORNO_NO_PERMITIDO' }) });
+    expect(await prisma.incomeInvoice.count({ where: { companyId: real, estadoDocumento: 'FINAL' } })).toBe(0);
+    expect(await prisma.verifactuRegistro.count({ where: { companyId: real } })).toBe(0);
+    expect((await prisma.invoiceSeries.findUniqueOrThrow({ where: { companyId_codigo: { companyId: real, codigo: 'A' } } })).ultimoNumero).toBe(0);
+    // Un borrador si se guarda (no lleva registro).
+    await expect(emitir({ borrador: true }, real, cliente)).resolves.toMatchObject({ estadoDocumento: 'BORRADOR' });
+  });
+
+  it('el XML guardado no se puede cambiar despues (inmutabilidad)', async () => {
+    const f = await emitir();
+    const r = await unico(f.id);
+    await expect(prisma.verifactuRegistro.update({ where: { id: r.id }, data: { xml: '<otro/>' } })).rejects.toMatchObject({ statusCode: 409 });
+    expect((await prisma.verifactuRegistro.findUniqueOrThrow({ where: { id: r.id } })).xml).toBe(r.xml);
   });
 });
