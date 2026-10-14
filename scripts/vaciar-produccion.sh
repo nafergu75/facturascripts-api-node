@@ -5,7 +5,8 @@
 # el esquema no se toca.
 #
 # Lo lanza el usuario desde Git Bash, en la carpeta del backend con la version
-# publicada y este script (a 14-10-2026: backend-ocrz, rama vaciar-produccion):
+# publicada y este script (desde integracion-6: backend-pub, con la rama que se
+# haya publicado; antes de publicarla, backend-ocrz, rama vaciar-produccion):
 #   ENV_PROD=../backend/.env.vercel-prod.local bash scripts/vaciar-produccion.sh            (simula)
 #   ENV_PROD=../backend/.env.vercel-prod.local bash scripts/vaciar-produccion.sh --borrar   (borra)
 #   ENV_PROD=... bash scripts/vaciar-produccion.sh --comprobar
@@ -43,10 +44,10 @@ Se conserva tu usuario de administrador global, con su contraseña.
 TXT
   echo "Se lanza desde Git Bash, en ESTA carpeta (la del script):"
   echo "  cd \"$CARPETA\""
-  echo "Ahora está en la rama ${RAMA:-?} (código $COMMIT). El 14-10-2026 el script estaba en la"
-  echo "carpeta backend-ocrz, rama vaciar-produccion: el código publicado más este script. Si se"
-  echo "ha publicado otra versión después, pide antes que se actualice esta rama; si no, el script"
-  echo "se parará sin tocar nada."
+  echo "Ahora está en la rama ${RAMA:-?} (código $COMMIT). La carpeta tiene que tener el código"
+  echo "publicado más este script: desde que se publica integracion-6, backend-pub con la rama"
+  echo "publicada; antes, backend-ocrz con la rama vaciar-produccion. Si se ha publicado otra"
+  echo "versión después, pide antes que se actualice; si no, el script se parará sin tocar nada."
   cat <<'TXT'
 
   0. Antes de nada: haz una copia de seguridad en TiDB Cloud (mira

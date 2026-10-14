@@ -14,8 +14,11 @@ El script lo lanzas tú desde Git Bash, igual que `aplicar-esquema-prod.sh`. Lee
 
 ## Antes de empezar
 
-- **Desde qué carpeta.** Tiene que tener a la vez la versión publicada y este script. El 14-10-2026 es `backend-ocrz`, en la rama `vaciar-produccion`: el código que está en producción (`a6ace96`) más este script. Si después se publica otra versión, pide antes que se actualice esta rama.
-  - Para comprobarlo, en Git Bash: `cd "/c/Users/NACHO PC/Desktop/conta-app/backend-ocrz"` y después `git branch --show-current`. Tiene que decir `vaciar-produccion`.
+- **Desde qué carpeta.** Tiene que tener a la vez la versión publicada y este script.
+  - Desde que se publique `integracion-6` (que ya lleva este script, VERI*FACTU F1 y las plantillas A y B, con su esquema): `backend-pub`, en la rama publicada.
+  - Mientras producción siga sin el esquema de `integracion-6` (el 14-10-2026, `41e6134`): `backend-ocrz`, en la rama `vaciar-produccion` (el esquema de `a6ace96`, que es el mismo).
+  - Para comprobarlo, en Git Bash: `cd` a esa carpeta y después `git branch --show-current`.
+  - Si después se publica otra versión, pide antes que se actualice.
   - `bash scripts/vaciar-produccion.sh --ayuda` también te dice la carpeta y la rama.
   - Si la base no tiene exactamente el esquema del código de la carpeta (le falta o le sobra una tabla o una columna), el script se para sin tocar nada.
 - Cierra la app en el navegador y no la uses mientras dura. Si algo cambia mientras se hace la copia, el script se para sin borrar.
@@ -36,9 +39,11 @@ Los nombres de los menús de TiDB Cloud pueden cambiar. Si no encuentras el apar
 ## Paso 2. Simulación (no borra nada)
 
 ```bash
-cd "/c/Users/NACHO PC/Desktop/conta-app/backend-ocrz"
+cd "/c/Users/NACHO PC/Desktop/conta-app/backend-pub"
 ENV_PROD=../backend/.env.vercel-prod.local bash scripts/vaciar-produccion.sh
 ```
+
+(o `backend-ocrz` si todavía no se ha publicado `integracion-6`; ver «Desde qué carpeta»).
 
 `ENV_PROD` es el mismo fichero que usas con `aplicar-esquema-prod.sh`. La ruta es relativa a la carpeta desde la que lo lanzas.
 
@@ -135,9 +140,10 @@ Si borras sin la clave, los ficheros se quedan en Vercel Blob. Nadie los puede v
 
 Las tablas salen del esquema de Prisma, no de una lista escrita a mano: si mañana se añade una tabla con `companyId`, o una que cuelga de otra que lo tiene, se vacía sola. Si se añade una tabla común que no es de ninguna empresa, el script se para hasta que alguien decida qué hacer con ella (`src/services/vaciadoProduccion/tablas.ts`, `REGLAS`).
 
-**Se vacían enteras (66 tablas):**
+**Se vacían enteras (71 tablas):**
 
-- todas las que tienen `companyId`: facturas de venta y gasto con sus rectificativas, cobros y pagos, series, asientos y apuntes, libros de IVA y retenciones, modelos y declaraciones de la AEAT, nóminas y trabajadores, lecturas, carga de 2026 con sus partidas, activos y dotaciones, bancos y tesorería, plan de periodos y ejercicios, ajustes de cada empresa, membresías, Carmen, VERI*FACTU...;
+- todas las que tienen `companyId`: facturas de venta y gasto con sus rectificativas, cobros y pagos, series, asientos y apuntes, libros de IVA y retenciones, modelos y declaraciones de la AEAT, nóminas y trabajadores, lecturas, carga de 2026 con sus partidas, activos y dotaciones, bancos y tesorería, plan de periodos y ejercicios, ajustes de cada empresa, membresías, Carmen, el logo de la marca y el sello de la plantilla B (`ImagenFactura`)...;
+- VERI*FACTU de cada empresa: su configuración, la cadena (`VerifactuCadena`), los registros de las facturas (`VerifactuRegistro`), los envíos (`VerifactuLote`) y el certificado (`VerifactuCertificado`). Los registros son del entorno de pruebas de la AEAT. La app no deja cambiarlos ni borrarlos, así que el script los borra con SQL, antes que sus facturas. Al dar de alta de nuevo una empresa hay que volver a subir su certificado;
 - las que cuelgan de una de ellas sin tener `companyId`: líneas de las facturas, partes de los movimientos bancarios, contactos, cuentas e historial de los proveedores;
 - `Company`: las empresas.
 
@@ -150,6 +156,7 @@ Las tablas salen del esquema de Prisma, no de una lista escrita a mano: si maña
 | `CarmenContador` | El gasto de la IA del mes en toda la plataforma (`global:`), así el tope de 5 € sigue contando bien, y los contadores del administrador. |
 | `ChartOfAccounts` | Las cuentas del plan base común (sin empresa), si las hay. Las de las empresas se borran. |
 | `AuditLog` | Los cambios de los ajustes de la plataforma que hizo el administrador. Al terminar se añade una fila `VACIADO_PRODUCCION` con el resumen y la carpeta de la copia. |
+| `VerifactuBitacora` | Los sucesos de VERI*FACTU de toda la plataforma (sin empresa) que no tienen usuario o que hizo el administrador. Los de las empresas y los de los usuarios que se borran, fuera. |
 
 **Se conservan enteras:**
 
@@ -161,7 +168,7 @@ Las tablas salen del esquema de Prisma, no de una lista escrita a mano: si maña
 
 Ninguna de estas tres es imprescindible para arrancar: la app crea la versión del PGC y los tipos de cambio cuando le hacen falta, y sin ajustes la red de seguridad está activa. Se conservan porque no son datos de prueba de ninguna empresa.
 
-Los **logos** de las empresas no están en Vercel Blob: van dentro de la base (`LegalConfig.logo`) y se borran con ella.
+Los **logos** de las empresas no están en Vercel Blob: van dentro de la base (`LegalConfig.logo`) y se borran con ella. Lo mismo el logo de la marca y el sello de la plantilla B (`ImagenFactura`): la simulación dice cuántos hay.
 
 ## Cómo está hecho (para quien lo revise)
 
@@ -171,7 +178,7 @@ Los **logos** de las empresas no están en Vercel Blob: van dentro de la base (`
   - No se exige la tabla `_prisma_migrations`: producción se creó con `prisma db push` y no la tiene, así que el script se pararía siempre.
   - La restauración hace la misma comprobación de la base y, además, mira que las columnas de cada tabla de la copia son las de esta versión, antes de meter nada.
 - **Orden y lotes.** Se borra cada tabla después de todas las que la apuntan con una clave ajena, así ni `RESTRICT` frena ni `CASCADE` o `SET NULL` tienen trabajo. Los padres e hijas de la misma tabla (plan de cuentas, familias de productos, categorías de tesorería) se sueltan antes. Cada `DELETE ... LIMIT 500` (50 en tablas con binarios) es su propia transacción, muy por debajo del límite de TiDB. No hace falta ir empresa por empresa: se borra todo y los lotes ya acotan cada transacción.
-- **VERI*FACTU.** Hoy la app no envía nada a la AEAT. `VerifactuConfig` solo guarda la exclusión, ningún código la pasa a `ACTIVO` y no hay tabla de registros. Aun así, el script se para y avisa en vez de borrar si alguna empresa tiene VERI*FACTU activo o el entorno de producción de la AEAT, o si una versión futura trae registros de la AEAT de verdad: filas con `entorno = 'PRODUCCION'` en una tabla de VERI*FACTU, o filas en una tabla que parezca de registros (huella, estado de envío o CSV) y no tenga columna `entorno`. Lo del entorno de pruebas de la AEAT no tiene efecto fiscal y se borra como lo demás.
+- **VERI*FACTU.** Hoy la app no envía nada a la AEAT. Desde la fase F1, las facturas que se emiten con VERI*FACTU en pruebas llevan su registro encadenado (`VerifactuRegistro`, con la cabeza de la cadena en `VerifactuCadena`). La app no deja cambiar ni borrar esos registros (`config/inmutabilidadVerifactu.ts`); el script los borra con SQL, como todo lo demás, y en el orden de las claves ajenas (antes que sus facturas). El script se para y avisa en vez de borrar si alguna empresa tiene VERI*FACTU activo o el entorno de producción de la AEAT, o si hay registros de la AEAT de verdad: filas con `entorno = 'PRODUCCION'` en una tabla de VERI*FACTU, o filas en una tabla que parezca de registros (huella, estado de envío o CSV) y no tenga columna `entorno`. Lo del entorno de pruebas de la AEAT no tiene efecto fiscal y se borra como lo demás.
 - **Copia local.** Una sentencia `INSERT` por línea, con los valores leídos como texto (los binarios en hexadecimal), en `tablas/`, más los ficheros en `ficheros/` y un `manifiesto.json`. Las tablas que se conservan entran con `INSERT IGNORE` al restaurar.
 - **Ficheros.** Solo se borran los de las carpetas de primer nivel que usa la app (`PREFIJOS_APP` en `almacen.ts`). Un test avisa si aparece código nuevo que guarde ficheros.
 - **Nunca se escribe la URL de la base.** Los mensajes de error pasan por un filtro que tapa la URL, el usuario, la contraseña, el servidor y la clave de Vercel Blob.
