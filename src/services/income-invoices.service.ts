@@ -8,7 +8,8 @@ import {
   obtenerSeriePorDefecto,
   problemaSerieAeat,
   resolverCodSerieFactura,
-  serieParaEnvases,
+  serieCompatible,
+  type NecesidadPlantilla,
 } from './series.service';
 import { admiteEnvases, ivaPorTipo, limpiarTextoAdicional, normalizarPlantillaId, type PlantillaVentaId } from '../domain/plantillasFactura';
 import { calcularIeepnr, redondearKg, resumenEnvases, type ResumenEnvases } from '../domain/ieepnr';
@@ -962,6 +963,16 @@ function envasesGuardados(l: { packs: number | null; kgPlastico: number | null; 
 
 /** La factura guardada lleva datos de envase (en sus lineas o el peso bruto). */
 const facturaConEnvases = (f: FacturaConLineas) => f.pesoBrutoKg !== null || f.lineas.some((l) => lineaConEnvases(l));
+
+/**
+ * Lo que una copia de la factura (duplicar, pasar una proforma a factura)
+ * necesita de la plantilla de su serie: con envases, la A; con descuento por
+ * linea, una que no sea la A (que no lo lleva); si no, nada.
+ */
+function necesidadPlantilla(f: FacturaConLineas): NecesidadPlantilla | null {
+  if (facturaConEnvases(f)) return 'envases';
+  return f.lineas.some((l) => aCentimos(Number(l.descuentoPorcentaje ?? 0)) !== 0) ? 'descuento' : null;
+}
 
 /** Importes guardados de una factura (documento y cuenta), sin recalcular. */
 function importesGuardados(f: FacturaConLineas): ImportesFactura {
@@ -2199,13 +2210,22 @@ export const incomeInvoicesService = {
     const normaliza = fiscal.lineas.some((l, i) => l.tipoIva !== (lineas[i].tipoIva ?? 21) || l.tipoRetencion !== (lineas[i].tipoRetencion ?? 0));
     lineas = conFiscalidad(lineas, fiscal);
 
-    // Plantilla: se vuelve a fijar en cada guardado. La de la serie (la nueva o la
-    // que tenia; una proforma no cambia de serie) o, en una rectificativa de una
-    // factura de la app, la de la original. Los envases se comprueban con ella,
-    // tambien las lineas guardadas: si pasa a una serie sin envases con kg, 400.
-    // El IEEPNR solo se recalcula con lineas en el cuerpo (con el tipo de hoy).
+    // Plantilla: en una rectificativa de una factura de la app, la de la
+    // original. Si no, la de la serie (la nueva o la que tenia; una proforma no
+    // cambia de serie), que se vuelve a mirar al guardar con lineas o al cambiar
+    // de serie. Sin lineas y en la misma serie se queda la guardada: un borrador
+    // de antes de que su serie cambiara de plantilla se puede retocar
+    // (observaciones, fechas...) sin cambiar de calculo, y se emite con ella.
+    // Los envases se comprueban con la plantilla, tambien las lineas guardadas:
+    // si pasa a una serie sin envases con kg, 400. El IEEPNR solo se recalcula
+    // con lineas en el cuerpo (con el tipo de hoy).
     const deOriginal = original ? envasesDeOriginal(original) : null;
-    const plantilla: PlantillaVentaId = deOriginal ? deOriginal.plantilla : await plantillaDeSerie(companyId, (data.serie as string | undefined) ?? actual.serie);
+    const cambiaSerie = data.serie !== undefined && data.serie !== actual.serie;
+    const plantilla: PlantillaVentaId = deOriginal
+      ? deOriginal.plantilla
+      : dto.lineas || cambiaSerie
+        ? await plantillaDeSerie(companyId, (data.serie as string | undefined) ?? actual.serie)
+        : normalizarPlantillaId(actual.plantillaId);
     const ajustes = await leerAjustesFacturacion(companyId);
     const envases = aplicarEnvases(lineas, {
       plantilla,
@@ -2320,11 +2340,14 @@ export const incomeInvoicesService = {
     if (p.lineas.length === 0) throw badRequest('La proforma no tiene líneas.');
 
     const perfil = await perfilEmpresa(companyId);
-    // Con envases (packs, kg, texto o peso bruto), a una serie cuya plantilla los
-    // admita: la de facturas por defecto o, si no, la primera con la A (si no hay,
-    // 400 SIN_SERIE_ENVASES). La plantilla es la de esa serie (no la de la proforma).
+    // A la serie de facturas por defecto si su plantilla admite lo que trae la
+    // proforma; si no, a la primera que lo admita (serieCompatible): con envases
+    // (packs, kg, texto o peso bruto), una con la A; con descuento por linea, una
+    // sin la A. Si no hay, 400 SIN_SERIE_ENVASES o SIN_SERIE_DESCUENTO. La
+    // plantilla es la de esa serie (no la de la proforma).
     const porDefecto = await resolverCodSerieFactura(companyId, {});
-    const serie = facturaConEnvases(p) ? await serieParaEnvases(companyId, porDefecto) : porDefecto;
+    const necesita = necesidadPlantilla(p);
+    const serie = necesita ? await serieCompatible(companyId, 'FACTURA', porDefecto, necesita) : porDefecto;
     const plantilla = await plantillaDeSerie(companyId, serie);
     const hoy = hoyISO();
     const tipoFactura = p.tipoFactura.startsWith('R') ? 'F1' : p.tipoFactura;
@@ -2635,10 +2658,15 @@ export const incomeInvoicesService = {
     // desactivada: la copia va a la serie de facturas por defecto.
     let serie: string | undefined = o.serie;
     if (!esProforma && (o.origen === 'lector' || !(await buscarSeriePorCodigo(companyId, o.serie))?.activa)) serie = undefined;
-    // Con envases, a una serie cuya plantilla los admita (la propia o la de
-    // facturas por defecto; si no, la primera con la A; si no hay, 400). Las
-    // lineas pasan como cuerpo: el IEEPNR se recalcula con el tipo de hoy.
-    if (!esProforma && facturaConEnvases(o)) serie = await serieParaEnvases(companyId, serie ?? (await resolverCodSerieFactura(companyId, {})));
+    // Con envases o con descuento por linea, a una serie cuya plantilla lo
+    // admita (la propia o la por defecto de su tipo; si no, la primera que valga;
+    // si no hay, 400): ver serieCompatible. Las lineas pasan como cuerpo: el
+    // IEEPNR se recalcula con el tipo de hoy.
+    const necesita = necesidadPlantilla(o);
+    if (necesita) {
+      const preferida = serie ?? (esProforma ? null : await resolverCodSerieFactura(companyId, {}));
+      serie = await serieCompatible(companyId, esProforma ? 'PROFORMA' : 'FACTURA', preferida, necesita);
+    }
     return crear(
       {
         companyId,

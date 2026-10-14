@@ -177,6 +177,42 @@ describe('NZ004_26 con la plantilla A', () => {
   });
 });
 
+describe('descuentos de antes cuando la serie A pasa a la plantilla A', () => {
+  const conDescuento = [{ descripcion: 'Con descuento', cantidad: 2, precioUnitario: 50, descuentoPorcentaje: 10, tipoIva: 21 }];
+
+  it('un borrador de antes con descuento: sin lineas se retoca y se emite con su plantilla; con lineas, manda la de la serie', async () => {
+    // Un borrador de cuando la serie A era la estandar.
+    await actualizarSerie(ES, serieA, { plantilla: 'default' });
+    const b = await alta({ borrador: true, lineas: conDescuento });
+    expect(b.plantillaId).toBe('default');
+    await actualizarSerie(ES, serieA, { plantilla: null });
+    const retocado = await incomeInvoicesService.actualizarBorrador(ES, b.id, { observaciones: 'Solo el texto' });
+    expect([retocado.plantillaId, retocado.baseTotal, retocado.ivaTotal, retocado.observaciones]).toEqual(['default', 90, 18.9, 'Solo el texto']);
+    // Con lineas se mira la serie: la A no lleva descuento.
+    await expect(incomeInvoicesService.actualizarBorrador(ES, b.id, { lineas: conDescuento })).rejects.toMatchObject({
+      statusCode: 400,
+      details: { codigo: 'DESCUENTO_NO_ADMITIDO' },
+    });
+    const emitida = await incomeInvoicesService.finalizar(ES, b.id, { fechaEmision: '2026-03-04' });
+    expect([emitida.serie, emitida.plantillaId, emitida.baseTotal, emitida.totalFactura]).toEqual(['A', 'default', 90, 108.9]);
+  });
+
+  it('pasar a factura una proforma estandar con descuento: a la serie B (sin la A), no a la A', async () => {
+    const p = await alta({ proforma: true, lineas: [{ descripcion: 'Azulejo', cantidad: 3, precioUnitario: 10, descuentoPorcentaje: 5, tipoIva: 21 }] });
+    expect(p.plantillaId).toBe('default');
+    const f = await incomeInvoicesService.pasarProformaAFactura(ES, p.id);
+    expect([f.serie, f.plantillaId, f.estadoDocumento, f.baseTotal]).toEqual(['B', 'default', 'BORRADOR', 28.5]);
+  });
+
+  it('duplicar una factura con descuento de la serie A, que ahora usa la A: el borrador va a la B', async () => {
+    await actualizarSerie(ES, serieA, { plantilla: 'default' });
+    const f = await alta({ lineas: [{ descripcion: 'Antigua', cantidad: 1, precioUnitario: 100, descuentoPorcentaje: 10, tipoIva: 21 }] });
+    await actualizarSerie(ES, serieA, { plantilla: null });
+    const copia = await incomeInvoicesService.duplicar(ES, f.id);
+    expect([copia.serie, copia.plantillaId, copia.estadoDocumento, copia.baseTotal]).toEqual(['B', 'default', 'BORRADOR', 90]);
+  });
+});
+
 describe('errores 400 nuevos', () => {
   const rechaza = async (extra: Record<string, unknown>, details: object) => {
     await expect(alta({ borrador: true, ...extra })).rejects.toMatchObject({ statusCode: 400, details });
