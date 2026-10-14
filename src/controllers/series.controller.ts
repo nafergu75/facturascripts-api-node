@@ -1,8 +1,7 @@
 import { asyncHandler } from '../utils/async-handler';
 import { sendOk } from '../utils/response';
 import { badRequest } from '../utils/http-errors';
-import { listarSeriesConUso, crearSerie, actualizarSerie } from '../services/series.service';
-import { esEmpresaEspanola } from '../services/perfilEmpresa.service';
+import { listarSeriesConUso, crearSerie, actualizarSerie, contextoPlantillas } from '../services/series.service';
 import { TIPOS_DOCUMENTO_SERIE as TIPOS, esTipoDocumentoSerie } from '../domain/series.model';
 import { catalogoPlantillas } from '../domain/plantillasFactura';
 
@@ -15,9 +14,9 @@ export const seriesController = {
     sendOk(res, await listarSeriesConUso(req.companyId!, tipo));
   }),
 
-  /** Catalogo de plantillas de factura de venta (la A, solo en empresas espanolas). */
+  /** Catalogo de plantillas de factura de venta (la A, solo en empresas espanolas; la automatica de la serie A, la A si se repercute el IEEPNR). */
   plantillas: asyncHandler(async (req, res) => {
-    sendOk(res, catalogoPlantillas(await esEmpresaEspanola(req.companyId!)));
+    sendOk(res, catalogoPlantillas(await contextoPlantillas(req.companyId!)));
   }),
 
   crear: asyncHandler(async (req, res) => {

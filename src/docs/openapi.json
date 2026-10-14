@@ -2065,7 +2065,7 @@
         "tags": [
           "Series"
         ],
-        "summary": "Catalogo de plantillas de factura de venta (default, A, B, C); la A no esta disponible en una empresa extranjera",
+        "summary": "Catalogo de plantillas de factura de venta (default, A, B, C). disponible: se puede elegir (la A no en una empresa extranjera; la B, sin diseno aun, en ninguna). automaticaSerieA: la que usa la serie A sin plantilla elegida (la A si la empresa repercute el IEEPNR)",
         "security": [
           {
             "bearerAuth": []
@@ -2093,7 +2093,7 @@
         "tags": [
           "Series"
         ],
-        "summary": "Actualizar serie (plantilla: un id del catalogo o null = automatica)",
+        "summary": "Actualizar serie (plantilla: un id del catalogo que se pueda elegir o null = automatica; 400 PLANTILLA_NO_VALIDA, PLANTILLA_SIN_DISENO o PLANTILLA_SOLO_ESPANA)",
         "security": [
           {
             "bearerAuth": []

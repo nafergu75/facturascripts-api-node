@@ -124,14 +124,17 @@ describe('NZ004_26 con la plantilla A', () => {
     await guardarAjustesFacturacion(ES, 'u-test', { ieepnrPorKg: 0.45 });
   });
 
-  it('sin repercutir el IEEPNR: kg sí, IEEPNR 0 y la base son solo los articulos', async () => {
+  it('sin repercutir el IEEPNR (la A elegida a mano): kg sí, IEEPNR 0 y la base son solo los articulos', async () => {
     await guardarAjustesFacturacion(ES, 'u-test', { ieepnrRepercute: false });
+    // Sin repercutirlo, la serie A ya no usa la A sola: hay que elegirla.
+    await actualizarSerie(ES, serieA, { plantilla: 'A' });
     const f = await alta({ borrador: true });
     expect(f.lineas.every((l) => l.ieepnrImporte === 0)).toBe(true);
     expect([f.baseTotal, f.ieepnrPorKg]).toEqual([TOTALES_NZ004.articulos, null]);
     expect(f.resumenEnvases).toEqual({ kgPlastico: 394.992, packs: 9826, uds: 46320, ieepnr: 0 });
     // 6.974,88 × 21 % = 1.464,7248 -> 1.464,72 (por tipo).
     expect([f.ivaTotal, f.totalFactura]).toEqual([1464.72, 8439.6]);
+    await actualizarSerie(ES, serieA, { plantilla: null });
     await guardarAjustesFacturacion(ES, 'u-test', { ieepnrRepercute: true });
   });
 
@@ -226,6 +229,38 @@ describe('errores 400 nuevos', () => {
       }),
     ).rejects.toMatchObject({ statusCode: 400, details: { codigo: 'PLANTILLA_SIN_ENVASES' } });
     expect(await prisma.customer.count({ where: { companyId: ES } })).toBe(antes);
+  });
+});
+
+describe('empresa espanola que no repercute el IEEPNR (no vende envases)', () => {
+  const SIN = `plantilla-a-sin-${SUFIJO}`;
+  let clienteSin: string;
+  beforeAll(async () => {
+    await prisma.company.create({ data: { id: SIN, name: 'Servicios Prueba SL', fsBaseUrl: 'http://localhost:8080', fsApiKeyEnc: 'k' } });
+    await prisma.legalConfig.create({ data: { companyId: SIN, denominacion: 'SERVICIOS PRUEBA SL', nif: 'B76543217' } });
+    clienteSin = (await prisma.customer.create({ data: { companyId: SIN, nombreFiscal: 'CLIENTE FICTICIO SL', nifCif: 'B00000000', municipio: 'VALENCIA' } })).id;
+  });
+
+  it('su serie A sigue con la de siempre: IVA por linea y descuento por linea', async () => {
+    const f = await incomeInvoicesService.crearIngreso({
+      companyId: SIN,
+      customer: { id: clienteSin },
+      fechaEmision: '2026-03-04',
+      lineas: [
+        { descripcion: 'Uno', cantidad: 1, precioUnitario: 1.03, tipoIva: 21 },
+        { descripcion: 'Dos', cantidad: 1, precioUnitario: 1.03, tipoIva: 21 },
+      ],
+    });
+    // Por linea: 0,22 + 0,22 = 0,44 (por tipo seria 2,06 x 21 % = 0,43).
+    expect([f.serie, f.plantillaId, f.baseTotal, f.ivaTotal, f.totalFactura, f.resumenEnvases]).toEqual(['A', 'default', 2.06, 0.44, 2.5, null]);
+    const conDescuento = await incomeInvoicesService.crearIngreso({
+      companyId: SIN,
+      customer: { id: clienteSin },
+      fechaEmision: '2026-03-04',
+      lineas: [{ descripcion: 'Con descuento', cantidad: 2, precioUnitario: 50, descuentoPorcentaje: 10, tipoIva: 21 }],
+    });
+    expect([conDescuento.serie, conDescuento.plantillaId, conDescuento.baseTotal]).toEqual(['A', 'default', 90]);
+    expect((await textosDePdf((await generarPdfFactura(SIN, conDescuento.id)).contenido)).some((t) => t.texto === 'KG.Plast')).toBe(false);
   });
 });
 

@@ -1,12 +1,15 @@
 /**
  * Plantilla de cada serie (Configuracion > Series), sobre BD real.
  *
- *  - Automatica: la serie A de una empresa espanola usa la plantilla A; B, R,
- *    P y RT, la estandar; en una empresa de EE. UU., todas la estandar.
- *  - GET /series/plantillas: el catalogo, con la A no disponible fuera de Espana.
+ *  - Automatica: la serie A de una empresa espanola que repercute el IEEPNR
+ *    usa la plantilla A; B, R, P y RT, la estandar. En una espanola que no lo
+ *    repercute (no vende envases) y en una de EE. UU., todas la estandar.
+ *  - GET /series/plantillas: el catalogo, con la A no disponible fuera de
+ *    Espana, la B (sin diseno) en ninguna y la automatica de la serie A.
  *  - POST y PUT con plantillas validas y no validas (400 con su campo).
  *  - Permisos: la lista la ve el contable; cambiarla, solo quien factura.
- *  - serieParaEnvases: a que serie van duplicar y pasar a factura con envases.
+ *  - serieCompatible: a que serie van duplicar y pasar a factura con envases
+ *    o con descuento por linea.
  */
 import { describe, it, expect, beforeAll } from '@jest/globals';
 import express from 'express';
@@ -14,11 +17,14 @@ import request from 'supertest';
 import { prisma } from '../config/database';
 import seriesRoutes from '../routes/series.routes';
 import { errorMiddleware } from '../middleware/error.middleware';
-import { crearSerie, listarSeries, serieParaEnvases } from '../services/series.service';
+import { crearSerie, listarSeries, serieCompatible, serieParaEnvases } from '../services/series.service';
+import { guardarAjustesFacturacion } from '../services/ajustesFacturacion.service';
 
 const SUFIJO = Date.now();
 const ES = `series-plant-es-${SUFIJO}`;
 const US = `series-plant-us-${SUFIJO}`;
+/** Espanola que no repercute el IEEPNR (no vende envases). */
+const ES_SIN = `series-plant-sin-${SUFIJO}`;
 
 let rol = 'admin';
 const app = express();
@@ -36,19 +42,21 @@ const listar = async (empresa = ES): Promise<SerieResp[]> => (await request(app)
 const deCodigo = async (codigo: string, empresa = ES) => (await listar(empresa)).find((s) => s.codigo === codigo)!;
 
 beforeAll(async () => {
-  for (const [id, name] of [[ES, 'Series Plantilla SL'], [US, 'Series Template Inc']]) {
+  for (const [id, name] of [[ES, 'Series Plantilla SL'], [US, 'Series Template Inc'], [ES_SIN, 'Series Sin Envases SL']]) {
     await prisma.company.create({ data: { id, name, fsBaseUrl: 'http://localhost:8080', fsApiKeyEnc: 'k' } });
   }
   await prisma.legalConfig.create({ data: { companyId: US, denominacion: 'Series Template Inc', nif: '12-3456789', pais: 'US', monedaCuenta: 'USD' } });
   // Primero las series de siempre (A, R y P): la semilla solo se crea en un tipo sin series.
+  await guardarAjustesFacturacion(ES, 'u-test', { ieepnrRepercute: true });
   await listarSeries(ES);
   await listarSeries(US);
+  await listarSeries(ES_SIN);
   await crearSerie(ES, { codigo: 'B', descripcion: 'Ceramica', tipoDocumento: 'FACTURA', activa: true, porDefecto: false });
   await crearSerie(ES, { codigo: 'RT', descripcion: 'Tickets', tipoDocumento: 'RECTIFICATIVA_SIMPLIFICADA', activa: true, porDefecto: true });
 });
 
 describe('plantilla automatica', () => {
-  it('empresa espanola: la A usa la plantilla A; B, R, P y RT la estandar', async () => {
+  it('empresa espanola que repercute el IEEPNR: la A usa la plantilla A; B, R, P y RT la estandar', async () => {
     const series = await listar();
     const por = Object.fromEntries(series.map((s) => [s.codigo, [s.plantilla, s.plantillaElegida]]));
     expect(por).toMatchObject({ A: ['A', null], B: ['default', null], R: ['default', null], P: ['default', null], RT: ['default', null] });
@@ -58,6 +66,18 @@ describe('plantilla automatica', () => {
     expect(await deCodigo('A', US)).toMatchObject({ plantilla: 'default', plantillaElegida: null });
   });
 
+  it('empresa espanola que no repercute el IEEPNR: la A sigue con la estandar; al marcarlo pasa a la A, y al quitarlo vuelve', async () => {
+    expect(await deCodigo('A', ES_SIN)).toMatchObject({ plantilla: 'default', plantillaElegida: null });
+    await guardarAjustesFacturacion(ES_SIN, 'u-test', { ieepnrRepercute: true });
+    expect(await deCodigo('A', ES_SIN)).toMatchObject({ plantilla: 'A', plantillaElegida: null });
+    await guardarAjustesFacturacion(ES_SIN, 'u-test', { ieepnrRepercute: false });
+    expect(await deCodigo('A', ES_SIN)).toMatchObject({ plantilla: 'default', plantillaElegida: null });
+    // Elegida a mano, la A se queda aunque no lo repercuta.
+    const a = await deCodigo('A', ES_SIN);
+    expect((await request(app).put(`/companies/${ES_SIN}/series/${a.id}`).send({ plantilla: 'A' })).body.data).toMatchObject({ plantilla: 'A', plantillaElegida: 'A' });
+    await request(app).put(`/companies/${ES_SIN}/series/${a.id}`).send({ plantilla: null });
+  });
+
   it('el filtro por tipo tambien la trae', async () => {
     const res = await request(app).get(`/companies/${ES}/series?tipoDocumento=PROFORMA`);
     expect(res.body.data[0]).toMatchObject({ codigo: 'P', plantilla: 'default', plantillaElegida: null });
@@ -65,9 +85,10 @@ describe('plantilla automatica', () => {
 });
 
 describe('GET /series/plantillas', () => {
-  it('catalogo completo; la A no disponible en una empresa extranjera', async () => {
+  it('catalogo completo; la A no disponible en una empresa extranjera y la B (sin diseno) en ninguna', async () => {
+    type Item = { id: string; disponible: boolean; automaticaSerieA: boolean };
     const es = (await request(app).get(`/companies/${ES}/series/plantillas`)).body.data;
-    expect(es.map((p: { id: string; disponible: boolean }) => [p.id, p.disponible])).toEqual([['default', true], ['A', true], ['B', true], ['C', true]]);
+    expect(es.map((p: Item) => [p.id, p.disponible])).toEqual([['default', true], ['A', true], ['B', false], ['C', true]]);
     expect(es[1]).toEqual({
       id: 'A',
       nombre: 'Plantilla A (envases)',
@@ -75,10 +96,16 @@ describe('GET /series/plantillas', () => {
       envases: true,
       calculoIva: 'tipo',
       soloEmpresaEspanola: true,
+      disenada: true,
       disponible: true,
+      automaticaSerieA: true,
     });
     const us = (await request(app).get(`/companies/${US}/series/plantillas`)).body.data;
-    expect(us.find((p: { id: string }) => p.id === 'A').disponible).toBe(false);
+    expect(us.find((p: Item) => p.id === 'A').disponible).toBe(false);
+    // La automatica de la serie A: la A si se repercute el IEEPNR; si no, la estandar.
+    const sin = (await request(app).get(`/companies/${ES_SIN}/series/plantillas`)).body.data;
+    expect(sin.filter((p: Item) => p.automaticaSerieA).map((p: Item) => p.id)).toEqual(['default']);
+    expect(us.filter((p: Item) => p.automaticaSerieA).map((p: Item) => p.id)).toEqual(['default']);
   });
 
   it('la ven el contable, el comercial y el de solo lectura', async () => {
@@ -129,9 +156,18 @@ describe('POST y PUT con plantilla', () => {
     const res = await request(app).put(`/companies/${US}/series/${a.id}`).send({ plantilla: 'A' });
     expect([res.status, res.body.details]).toEqual([400, { codigo: 'PLANTILLA_SOLO_ESPANA', campo: 'plantilla' }]);
     expect(res.body.message ?? res.body.error).toBeTruthy();
-    // La B si se puede.
-    const ok = await request(app).put(`/companies/${US}/series/${a.id}`).send({ plantilla: 'B' });
-    expect(ok.body.data).toMatchObject({ plantilla: 'B', plantillaElegida: 'B' });
+    // La C si se puede.
+    const ok = await request(app).put(`/companies/${US}/series/${a.id}`).send({ plantilla: 'C' });
+    expect(ok.body.data).toMatchObject({ plantilla: 'C', plantillaElegida: 'C' });
+  });
+
+  it('la B, aun sin diseno: 400 PLANTILLA_SIN_DISENO, al crear y al cambiar', async () => {
+    const b = await deCodigo('B');
+    const res = await request(app).put(`/companies/${ES}/series/${b.id}`).send({ plantilla: 'B' });
+    expect([res.status, res.body.details]).toEqual([400, { codigo: 'PLANTILLA_SIN_DISENO', campo: 'plantilla' }]);
+    const alta = await request(app).post(`/companies/${ES}/series`).send({ codigo: 'E', tipoDocumento: 'FACTURA', plantilla: 'B' });
+    expect([alta.status, alta.body.details]).toEqual([400, { codigo: 'PLANTILLA_SIN_DISENO', campo: 'plantilla' }]);
+    expect((await deCodigo('B')).plantillaElegida).toBeNull();
   });
 
   it('el contable no la cambia (403); el comercial si', async () => {
@@ -158,5 +194,25 @@ describe('serieParaEnvases', () => {
     await request(app).put(`/companies/${ES}/series/${c.id}`).send({ plantilla: 'C' });
     await expect(serieParaEnvases(ES, 'B')).rejects.toMatchObject({ statusCode: 400, details: { codigo: 'SIN_SERIE_ENVASES', campo: 'serie' } });
     await request(app).put(`/companies/${ES}/series/${a.id}`).send({ plantilla: null });
+  });
+
+  it('con descuento: la preferida o la predeterminada si no son de la A; si no, la primera sin la A; si todas son la A, 400', async () => {
+    // A (plantilla A) es la predeterminada; B y C, sin la A.
+    expect(await serieCompatible(ES, 'FACTURA', 'B', 'descuento')).toBe('B');
+    expect(await serieCompatible(ES, 'FACTURA', 'A', 'descuento')).toBe('B');
+    const b = await deCodigo('B');
+    const c = await deCodigo('C');
+    await request(app).put(`/companies/${ES}/series/${b.id}`).send({ plantilla: 'A' });
+    expect(await serieCompatible(ES, 'FACTURA', 'A', 'descuento')).toBe('C');
+    await request(app).put(`/companies/${ES}/series/${c.id}`).send({ plantilla: 'A' });
+    await expect(serieCompatible(ES, 'FACTURA', 'A', 'descuento')).rejects.toMatchObject({
+      statusCode: 400,
+      details: { codigo: 'SIN_SERIE_DESCUENTO', campo: 'serie' },
+    });
+    await request(app).put(`/companies/${ES}/series/${b.id}`).send({ plantilla: null });
+    await request(app).put(`/companies/${ES}/series/${c.id}`).send({ plantilla: 'C' });
+    // Proformas: la P es estandar.
+    expect(await serieCompatible(ES, 'PROFORMA', 'P', 'descuento')).toBe('P');
+    await expect(serieCompatible(ES, 'PROFORMA', 'P', 'envases')).rejects.toMatchObject({ details: { codigo: 'SIN_SERIE_ENVASES' } });
   });
 });
