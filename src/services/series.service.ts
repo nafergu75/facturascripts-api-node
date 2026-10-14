@@ -51,6 +51,16 @@ function contarDocumentos(db: Tx | typeof prisma, companyId: string, codigo: str
 }
 
 /**
+ * Si la empresa es espanola (decide la plantilla automatica de la serie A). Sin
+ * configuracion legal, espanola; con un prisma simulado sin LegalConfig (tests
+ * sin BD), tambien.
+ */
+async function empresaEspanola(companyId: string): Promise<boolean> {
+  if (typeof (prisma as unknown as { legalConfig?: { findUnique?: unknown } }).legalConfig?.findUnique !== 'function') return true;
+  return esEmpresaEspanola(companyId);
+}
+
+/**
  * Plantilla elegida para una serie: undefined = no se toca; null o '' = la
  * automatica; si no, un id del catalogo (400 PLANTILLA_NO_VALIDA) que la empresa
  * pueda usar (la A solo en Espana: 400 PLANTILLA_SOLO_ESPANA).
@@ -143,7 +153,7 @@ export async function listarSeries(companyId: string, tipoDocumento?: TipoDocume
     where: { companyId, ...(tipoDocumento ? { tipoDocumento } : {}) },
     orderBy: [{ tipoDocumento: 'asc' }, { codigo: 'asc' }],
   });
-  const espanola = await esEmpresaEspanola(companyId);
+  const espanola = await empresaEspanola(companyId);
   return series.map((s) => aDominio(s, espanola));
 }
 
@@ -177,7 +187,7 @@ export async function crearSerie(
   }
   // Numero inicial: el primer documento de la serie llevara ese numero.
   const numeroInicial = validarNumeroInicial(data.numeroInicial);
-  const espanola = await esEmpresaEspanola(companyId);
+  const espanola = await empresaEspanola(companyId);
   const plantilla = validarPlantilla(data.plantilla, espanola);
   const dup = await prisma.invoiceSeries.findUnique({ where: { companyId_codigo: { companyId, codigo } } });
   if (dup) throw conflict(`Ya existe la serie ${codigo}.`, { campo: 'codigo' });
@@ -229,7 +239,7 @@ export async function actualizarSerie(
     throw badRequest('La descripción admite como máximo 191 caracteres.', { campo: 'descripcion' });
   }
   const numeroInicial = validarNumeroInicial(data.numeroInicial);
-  const espanola = await esEmpresaEspanola(companyId);
+  const espanola = await empresaEspanola(companyId);
   const plantilla = validarPlantilla(data.plantilla, espanola);
   const previa = await prisma.invoiceSeries.findFirst({ where: { id: serieId, companyId } });
   if (!previa) throw notFound('Serie no encontrada.');
@@ -357,7 +367,7 @@ export async function obtenerOCrearSerieTickets(companyId: string): Promise<Seri
       update: {},
     });
     // Una historica del lector con ese codigo (desactivada) no sirve: se prueba el siguiente.
-    if (s.tipoDocumento === 'RECTIFICATIVA_SIMPLIFICADA' && s.activa) return aDominio(s, await esEmpresaEspanola(companyId));
+    if (s.tipoDocumento === 'RECTIFICATIVA_SIMPLIFICADA' && s.activa) return aDominio(s, await empresaEspanola(companyId));
   }
   throw conflict('Las series RT y RTK ya existen y son de otro tipo: crea en Configuración > Series una serie de rectificativas de tickets.', {
     codigo: 'SERIE_TICKETS_OCUPADA',
@@ -403,7 +413,7 @@ export async function buscarSeriePorCodigo(companyId: string, codigo: string): P
   const candidatos = [...new Set([limpio, limpio.toUpperCase()])];
   for (const c of candidatos) {
     const s = await prisma.invoiceSeries.findUnique({ where: { companyId_codigo: { companyId, codigo: c } } });
-    if (s) return aDominio(s, await esEmpresaEspanola(companyId));
+    if (s) return aDominio(s, await empresaEspanola(companyId));
   }
   return null;
 }
@@ -517,7 +527,7 @@ export async function obtenerOCrearSerieHistorica(
   });
   // Otra peticion pudo crearla a la vez como serie activa: no se mezcla.
   if (s.activa || s.tipoDocumento !== tipoDocumento) throw choqueConSerieDeLaApp(codigo);
-  return aDominio(s, await esEmpresaEspanola(companyId));
+  return aDominio(s, await empresaEspanola(companyId));
 }
 
 /** ¿Hay en la serie alguna factura que no llegara del lector (la emitio la app)? */
