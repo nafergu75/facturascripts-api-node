@@ -8,7 +8,11 @@ import {
   obtenerSeriePorDefecto,
   problemaSerieAeat,
   resolverCodSerieFactura,
+  serieParaEnvases,
 } from './series.service';
+import { admiteEnvases, ivaPorTipo, limpiarTextoAdicional, normalizarPlantillaId, type PlantillaVentaId } from '../domain/plantillasFactura';
+import { calcularIeepnr, redondearKg, resumenEnvases, type ResumenEnvases } from '../domain/ieepnr';
+import type { TipoDocumentoSerie } from '../domain/series.model';
 import { listarCobros, recalcularEstadoCobroVenta, registrarCobroFactura, tieneCobrosActivos, type DatosCobro } from './cobrosPagos.service';
 import { comprobarFechaAbierta } from './periodos.service';
 import {
@@ -154,7 +158,14 @@ export interface CrearFacturaIngresoDTO {
   /** Fecha de la operacion (devengo) si es distinta de la de emision: fija el tipo de cambio. */
   fechaOperacion?: string | null;
   lineas: CrearLineaIngresoDTO[];
-  plantillaId?: string; // Defecto: "default"
+  /**
+   * Se ignora: la plantilla la fija el servidor (la de la serie; en una
+   * rectificativa de una factura de la app, la de la original; del lector, la
+   * estandar). Se deja en el tipo por compatibilidad con clientes antiguos.
+   */
+  plantillaId?: string;
+  /** Plantilla A: peso bruto en kg escrito a mano (>= 0 y hasta 3 decimales). */
+  pesoBrutoKg?: number | null;
   observaciones?: string;
   /** true: se guarda como borrador, sin numero. Por defecto se emite (final). */
   borrador?: boolean;
@@ -217,6 +228,14 @@ export interface CrearLineaIngresoDTO {
   cuenta?: string | null;
   /** Moneda de la linea (la de la factura). Obligatoria al modificar un borrador en divisa. */
   moneda?: string;
+  /** Plantilla A: packs de la linea (entero). `cantidad` sigue siendo las unidades. */
+  packs?: number | null;
+  /** Plantilla A: kg de plastico no reciclado de la linea (se redondea a 3 decimales). */
+  kgPlastico?: number | null;
+  /** Plantilla A: texto bajo el concepto (500 caracteres y 6 lineas como mucho). */
+  textoAdicional?: string | null;
+  /** Se ignora: el IEEPNR lo calcula el servidor (kg x tipo). */
+  ieepnrImporte?: unknown;
 }
 
 /** Cambios admitidos en un borrador (todo opcional). */
@@ -239,6 +258,7 @@ export type ActualizarBorradorDTO = Partial<
     | 'causaExencion'
     | 'referenciaLegal'
     | 'rectificativa'
+    | 'pesoBrutoKg'
   >
 >;
 
@@ -293,7 +313,14 @@ export interface IncomeInvoiceResp {
   mencionFiscal: Mencion | null;
   /** Avisos fiscales al guardar o emitir (no bloquean). */
   avisosFiscales?: AvisoFiscal[];
-  plantillaId: string;
+  /** Plantilla de la factura: la fija el servidor (domain/plantillasFactura). */
+  plantillaId: PlantillaVentaId;
+  /** Plantilla A: peso bruto en kg escrito a mano. */
+  pesoBrutoKg: number | null;
+  /** Tipo del IEEPNR aplicado (EUR por kg); null = sin IEEPNR. */
+  ieepnrPorKg: number | null;
+  /** Totales de envases (kg, packs, uds e IEEPNR); null si la plantilla no lleva envases. */
+  resumenEnvases: ResumenEnvases | null;
   observaciones?: string;
   esRectificativa: boolean;
   facturaOriginalId?: string;
@@ -346,6 +373,18 @@ export interface LineaIngresoResp {
   productoServicioId?: string;
   /** Cuenta de ingresos de la linea; null = la generica (700). */
   cuenta: string | null;
+  /** Plantilla A: packs de la linea. */
+  packs: number | null;
+  /** Plantilla A: kg de plastico no reciclado. */
+  kgPlastico: number | null;
+  /**
+   * IEEPNR de la linea en EUR (0 si no hay). Va DENTRO de baseLine y
+   * baseLineDoc, que son la base imponible: el TOTAL del articulo es
+   * baseLineDoc - ieepnrImporte.
+   */
+  ieepnrImporte: number;
+  /** Texto adicional bajo el concepto. */
+  textoAdicional: string | null;
 }
 
 const round2 = (n: number): number => Math.round((n + Number.EPSILON) * 100) / 100;
@@ -438,7 +477,12 @@ function aRespuesta(f: FacturaConLineas, ctx: ContextoRespuesta): IncomeInvoiceR
     referenciaLegal: f.referenciaLegal ?? undefined,
     mencionFiscal: mencionDeFactura(f, efectivo),
     ...(ctx.avisosFiscales?.length ? { avisosFiscales: ctx.avisosFiscales } : {}),
-    plantillaId: f.plantillaId,
+    plantillaId: normalizarPlantillaId(f.plantillaId),
+    pesoBrutoKg: f.pesoBrutoKg ?? null,
+    ieepnrPorKg: f.ieepnrPorKg ?? null,
+    resumenEnvases: admiteEnvases(f.plantillaId)
+      ? resumenEnvases(f.lineas.map((l) => ({ cantidad: l.cantidad, packs: l.packs, kgPlastico: l.kgPlastico, ieepnrImporte: l.ieepnrImporte })))
+      : null,
     observaciones: f.observaciones ?? undefined,
     esRectificativa: f.esRectificativa,
     facturaOriginalId: f.facturaOriginalId ?? undefined,
@@ -466,6 +510,10 @@ function aRespuesta(f: FacturaConLineas, ctx: ContextoRespuesta): IncomeInvoiceR
       retencionImporteDoc: l.retencionImporteDoc ?? l.retencionImporte,
       productoServicioId: l.productoServicioId ?? undefined,
       cuenta: l.accountCode ?? null,
+      packs: l.packs ?? null,
+      kgPlastico: l.kgPlastico ?? null,
+      ieepnrImporte: l.ieepnrImporte ?? 0,
+      textoAdicional: l.textoAdicional ?? null,
     })),
   };
 }
@@ -639,7 +687,7 @@ function validarLineas(lineas: CrearLineaIngresoDTO[] | undefined): LineaEntrada
       throw badRequest(`Línea ${n}: la cuenta ${cuenta} no es de ventas; tiene que empezar por 70.`, { campo: `lineas.${i}.cuenta` });
     }
   });
-  return lineas.map((l) => ({
+  return lineas.map((l, i) => ({
     descripcion: String(l.descripcion).trim(),
     cantidad: Number(l.cantidad),
     precioUnitario: Number(l.precioUnitario),
@@ -648,7 +696,165 @@ function validarLineas(lineas: CrearLineaIngresoDTO[] | undefined): LineaEntrada
     tipoRetencion: Number(l.tipoRetencion ?? 0),
     productoServicioId: l.productoServicioId,
     ...(cuentaDeLinea(l.cuenta) ? { cuentaContable: cuentaDeLinea(l.cuenta)! } : {}),
+    // Plantilla A: solo se lee y se comprueba el formato. Si la plantilla los
+    // admite lo decide aplicarEnvases; el IEEPNR del cuerpo nunca se usa.
+    ...leerEnvasesLinea(l, i),
   }));
+}
+
+/** Mayor valor absoluto de kg o de peso que se admite (la columna es DECIMAL(14,3)). */
+const KG_MAX = 99_999_999_999;
+/** Mayor numero de packs que se admite (la columna es un entero de 32 bits). */
+const PACKS_MAX = 2_000_000_000;
+
+/** Numero del cuerpo (number o texto con punto decimal); null si no lo es. */
+function numeroDelCuerpo(v: unknown): number | null {
+  if (typeof v === 'number') return Number.isFinite(v) ? v : null;
+  if (typeof v === 'string' && /^-?\d+(\.\d+)?$/.test(v.trim())) return Number(v.trim());
+  return null;
+}
+
+/**
+ * Packs, kg de plastico y texto adicional de una linea, con el formato
+ * comprobado (400 con su campo). Solo los que llegan con valor.
+ */
+function leerEnvasesLinea(l: CrearLineaIngresoDTO, i: number): { packs?: number; kgPlastico?: number; textoAdicional?: string } {
+  const n = i + 1;
+  const out: { packs?: number; kgPlastico?: number; textoAdicional?: string } = {};
+  if (l.packs !== undefined && l.packs !== null && (l.packs as unknown) !== '') {
+    const p = numeroDelCuerpo(l.packs);
+    if (p === null || !Number.isInteger(p) || Math.abs(p) > PACKS_MAX) {
+      throw badRequest(`Línea ${n}: los packs son un número entero.`, { campo: `lineas.${i}.packs` });
+    }
+    out.packs = p;
+  }
+  if (l.kgPlastico !== undefined && l.kgPlastico !== null && (l.kgPlastico as unknown) !== '') {
+    const k = numeroDelCuerpo(l.kgPlastico);
+    if (k === null || Math.abs(k) > KG_MAX) {
+      throw badRequest(`Línea ${n}: los kg de plástico son un número (con 3 decimales como mucho).`, { campo: `lineas.${i}.kgPlastico` });
+    }
+    out.kgPlastico = redondearKg(k);
+  }
+  if (l.textoAdicional !== undefined) {
+    const t = limpiarTextoAdicional(l.textoAdicional);
+    if (!t.ok) throw badRequest(`Línea ${n}: el texto adicional admite 500 caracteres y 6 líneas como mucho.`, { campo: `lineas.${i}.textoAdicional` });
+    if (t.valor !== null) out.textoAdicional = t.valor;
+  }
+  return out;
+}
+
+/** Peso bruto del cuerpo: undefined = no llega; null = sin peso; si no, >= 0 y con 3 decimales como mucho (400 pesoBrutoKg). */
+function leerPesoBruto(v: unknown): number | null | undefined {
+  if (v === undefined) return undefined;
+  if (v === null || v === '') return null;
+  const n = numeroDelCuerpo(v);
+  if (n === null || n < 0 || n > KG_MAX || Math.abs(Math.round(n * 1000) - n * 1000) > 1e-6) {
+    throw badRequest('El peso bruto son los kg de la mercancía: un número desde 0 y con 3 decimales como mucho.', { campo: 'pesoBrutoKg' });
+  }
+  return n;
+}
+
+/** La linea lleva algun dato de envase (packs, kg o texto adicional). */
+const lineaConEnvases = (l: { packs?: number | null; kgPlastico?: number | null; textoAdicional?: string | null }) =>
+  (l.packs !== undefined && l.packs !== null) || (l.kgPlastico !== undefined && l.kgPlastico !== null) || !!l.textoAdicional;
+
+/** 400 PLANTILLA_SIN_ENVASES: la plantilla de la serie no lleva envases. */
+function errorSinEnvases(campo: string, n?: number) {
+  return badRequest(
+    `${n ? `Línea ${n}: ` : ''}la plantilla de esta serie no lleva packs, kg de plástico, texto adicional ni peso bruto. Quita esos datos o elige una serie con la plantilla A (envases).`,
+    { codigo: 'PLANTILLA_SIN_ENVASES', campo },
+  );
+}
+
+/** Opciones de aplicarEnvases. */
+export interface OpcionesEnvases {
+  plantilla: PlantillaVentaId;
+  /** La empresa repercute el IEEPNR (o lo repercutio la factura que se rectifica). */
+  repercute: boolean;
+  /** EUR por kg: el de los ajustes o, en una rectificativa de una factura de la app, el de la original. */
+  tipo: number;
+  moneda: string;
+  /** Rectificativa: redondeo simetrico del IEEPNR. */
+  simetrico: boolean;
+  /** false: el IEEPNR de las lineas ya esta calculado (lineas guardadas) y no se toca; solo se comprueba. */
+  recalcular?: boolean;
+}
+
+/**
+ * Datos de envase de las lineas segun la plantilla (puro):
+ *  - sin envases (estandar, B, C): ninguna linea puede llevar packs, kg ni
+ *    texto (400 PLANTILLA_SIN_ENVASES) y el IEEPNR queda fuera;
+ *  - con envases (A): sin descuento (400 DESCUENTO_NO_ADMITIDO), kg y packs con
+ *    el signo de la cantidad (400 SIGNO_ENVASES) y el IEEPNR = kg x tipo si la
+ *    empresa lo repercute (0 si no); con IEEPNR, solo en euros (400 IEEPNR_SOLO_EUROS).
+ * Devuelve las lineas con su ieepnrImporte y el tipo aplicado (null sin IEEPNR).
+ */
+export function aplicarEnvases(lineas: LineaEntrada[], o: OpcionesEnvases): { lineas: LineaEntrada[]; ieepnrPorKg: number | null } {
+  if (!admiteEnvases(o.plantilla)) {
+    lineas.forEach((l, i) => {
+      if (l.packs !== undefined && l.packs !== null) throw errorSinEnvases(`lineas.${i}.packs`, i + 1);
+      if (l.kgPlastico !== undefined && l.kgPlastico !== null) throw errorSinEnvases(`lineas.${i}.kgPlastico`, i + 1);
+      if (l.textoAdicional) throw errorSinEnvases(`lineas.${i}.textoAdicional`, i + 1);
+    });
+    return { lineas: lineas.map(({ ieepnrImporte: _i, packs: _p, kgPlastico: _k, textoAdicional: _t, ...resto }) => resto), ieepnrPorKg: null };
+  }
+  const recalcular = o.recalcular !== false;
+  const out = lineas.map((l, i) => {
+    if (Number(l.descuentoPorcentaje ?? 0) !== 0) {
+      throw badRequest(`Línea ${i + 1}: la plantilla A no lleva descuento por línea. Pon el precio ya rebajado.`, {
+        codigo: 'DESCUENTO_NO_ADMITIDO',
+        campo: `lineas.${i}.descuentoPorcentaje`,
+      });
+    }
+    const signo = Math.sign(l.cantidad);
+    for (const campo of ['kgPlastico', 'packs'] as const) {
+      const v = Number(l[campo] ?? 0);
+      if (v !== 0 && Math.sign(v) !== signo) {
+        throw badRequest(
+          `Línea ${i + 1}: ${campo === 'kgPlastico' ? 'los kg de plástico' : 'los packs'} van con el mismo signo que las unidades (en negativo solo si las unidades lo están).`,
+          { codigo: 'SIGNO_ENVASES', campo: `lineas.${i}.${campo}` },
+        );
+      }
+    }
+    const ieepnrImporte = recalcular ? (o.repercute ? calcularIeepnr(l.kgPlastico, o.tipo, { simetrico: o.simetrico }) : 0) : Number(l.ieepnrImporte ?? 0);
+    return { ...l, ieepnrImporte };
+  });
+  const conIeepnr = out.findIndex((l) => aCentimos(Number(l.ieepnrImporte ?? 0)) !== 0);
+  if (conIeepnr >= 0 && o.moneda !== 'EUR') {
+    throw badRequest(`El IEEPNR solo se repercute en euros y esta factura va en ${o.moneda}. Hazla en euros o quita los kg de plástico.`, {
+      codigo: 'IEEPNR_SOLO_EUROS',
+      campo: 'moneda',
+    });
+  }
+  const conTipo = recalcular ? o.repercute : out.some((l) => aCentimos(Number(l.ieepnrImporte ?? 0)) !== 0) || o.repercute;
+  return { lineas: out, ieepnrPorKg: conTipo ? o.tipo : null };
+}
+
+/** Plantilla que usa la serie de una empresa por su codigo, o la estandar si no existe. */
+async function plantillaDeSerie(companyId: string, codigo: string | null | undefined): Promise<PlantillaVentaId> {
+  if (!codigo) return 'default';
+  return (await buscarSeriePorCodigo(companyId, codigo))?.plantilla ?? 'default';
+}
+
+/**
+ * Plantilla de un alta (sin original de la app): la de la serie indicada o, sin
+ * ella, la de la serie por defecto de su tipo (facturas, rectificativas,
+ * rectificativas de tickets o proformas). Solo lee: una serie que no existe da
+ * la estandar y el error de la serie sale despues, como siempre.
+ */
+async function plantillaDelAlta(
+  companyId: string,
+  dto: { serie?: string; proforma?: boolean },
+  r: { esRectificativa: boolean; tipoFactura: string },
+): Promise<PlantillaVentaId> {
+  if (dto.serie) return plantillaDeSerie(companyId, String(dto.serie));
+  const tipo: TipoDocumentoSerie = dto.proforma ? 'PROFORMA' : !r.esRectificativa ? 'FACTURA' : r.tipoFactura === 'R5' ? 'RECTIFICATIVA_SIMPLIFICADA' : 'RECTIFICATIVA';
+  return (await obtenerSeriePorDefecto(companyId, tipo))?.plantilla ?? 'default';
+}
+
+/** Lo que una rectificativa de una factura de la app hereda para el IEEPNR: su plantilla, si lo repercutio y a que tipo. */
+function envasesDeOriginal(original: { plantillaId: string; ieepnrPorKg: number | null }) {
+  return { plantilla: normalizarPlantillaId(original.plantillaId), repercute: original.ieepnrPorKg !== null, tipo: original.ieepnrPorKg };
 }
 
 /**
@@ -736,8 +942,26 @@ function lineasDocGuardadas(f: FacturaConLineas): LineaEntrada[] {
     tipoRetencion: l.tipoRetencion,
     productoServicioId: l.productoServicioId ?? undefined,
     ...(l.accountCode ? { cuentaContable: l.accountCode } : {}),
+    ...envasesGuardados(l),
   }));
 }
+
+/**
+ * Datos de envase guardados de una linea (plantilla A), solo los que tiene. El
+ * IEEPNR guardado va tal cual: no se recalcula (una emitida no cambia aunque
+ * cambie el tipo de los ajustes).
+ */
+function envasesGuardados(l: { packs: number | null; kgPlastico: number | null; ieepnrImporte: number | null; textoAdicional: string | null }) {
+  return {
+    ...(l.packs !== null && l.packs !== undefined ? { packs: l.packs } : {}),
+    ...(l.kgPlastico !== null && l.kgPlastico !== undefined ? { kgPlastico: l.kgPlastico } : {}),
+    ...(l.ieepnrImporte !== null && l.ieepnrImporte !== undefined ? { ieepnrImporte: l.ieepnrImporte } : {}),
+    ...(l.textoAdicional ? { textoAdicional: l.textoAdicional } : {}),
+  };
+}
+
+/** La factura guardada lleva datos de envase (en sus lineas o el peso bruto). */
+const facturaConEnvases = (f: FacturaConLineas) => f.pesoBrutoKg !== null || f.lineas.some((l) => lineaConEnvases(l));
 
 /** Importes guardados de una factura (documento y cuenta), sin recalcular. */
 function importesGuardados(f: FacturaConLineas): ImportesFactura {
@@ -752,6 +976,7 @@ function importesGuardados(f: FacturaConLineas): ImportesFactura {
       tipoRetencion: l.tipoRetencion,
       productoServicioId: l.productoServicioId ?? undefined,
       ...(l.accountCode ? { cuentaContable: l.accountCode } : {}),
+      ...envasesGuardados(l),
       doc: {
         precioUnitario: l.precioUnitarioDoc ?? l.precioUnitario,
         baseLine: l.baseLineDoc ?? l.baseLine,
@@ -810,6 +1035,11 @@ function lineasACrear(imp: ImportesFactura) {
     descuentoPorcentaje: l.descuentoPorcentaje,
     productoServicioId: l.productoServicioId,
     accountCode: l.cuentaContable ?? null,
+    // Plantilla A: los datos de envase y el IEEPNR (ya dentro de baseLine).
+    packs: l.packs ?? null,
+    kgPlastico: l.kgPlastico ?? null,
+    ieepnrImporte: l.ieepnrImporte ?? null,
+    textoAdicional: l.textoAdicional ?? null,
     ...importesLinea(l),
   }));
 }
@@ -1229,7 +1459,10 @@ function esEspejoDe(lineas: LineaEntrada[], original: FacturaConLineas): boolean
       (l.tipoIva ?? 21) === (x.tipoIva ?? 21) &&
       (l.tipoRetencion ?? 0) === (x.tipoRetencion ?? 0) &&
       (l.descuentoPorcentaje ?? 0) === (x.descuentoPorcentaje ?? 0) &&
-      (l.cuentaContable ?? null) === (x.cuentaContable ?? null)
+      (l.cuentaContable ?? null) === (x.cuentaContable ?? null) &&
+      // Plantilla A: los kg y los packs, tambien con el signo cambiado.
+      Math.round(Number(l.kgPlastico ?? 0) * 1000) === -Math.round(Number(x.kgPlastico ?? 0) * 1000) &&
+      Number(l.packs ?? 0) === -Number(x.packs ?? 0)
     );
   });
 }
@@ -1485,6 +1718,24 @@ async function prepararAlta(
     : fechaEmision;
   const fueraPrevio = emitida ? await devengoEnPeriodoDeFuera(dto.companyId, devengoPrevio, fechaEmision) : null;
   if (fueraPrevio && dto.confirmaDevengoFuera !== true) throw errorDevengoFuera(devengoPrevio, fueraPrevio);
+  // Plantilla y envases ANTES del cliente (resolverCliente puede crear uno): una
+  // factura rechazada por sus envases no deja nada creado. La plantilla la fija
+  // el servidor, nunca el cuerpo: del lector, la estandar; una rectificativa de
+  // una factura de la app, la de la original (y su IEEPNR: si lo repercutio y a
+  // que tipo); el resto, la de su serie (la proforma, la de la serie P).
+  const deOriginal = original ? envasesDeOriginal(original) : null;
+  const plantilla: PlantillaVentaId =
+    origen === 'lector' ? 'default' : deOriginal ? deOriginal.plantilla : await plantillaDelAlta(dto.companyId, dto, { esRectificativa, tipoFactura });
+  const pesoBrutoKg = leerPesoBruto(dto.pesoBrutoKg) ?? null;
+  if (pesoBrutoKg !== null && !admiteEnvases(plantilla)) throw errorSinEnvases('pesoBrutoKg');
+  const envases = aplicarEnvases(lineas, {
+    plantilla,
+    repercute: deOriginal ? deOriginal.repercute : perfil.espanola && ajustes.ieepnrRepercute,
+    tipo: deOriginal?.tipo ?? ajustes.ieepnrPorKg,
+    moneda,
+    simetrico: esRectificativa,
+  });
+  lineas = envases.lineas;
   // Cliente y serie despues de las fechas: una factura rechazada no deja nada creado.
   // Con una original de la app (o una partida de 2026), el cliente es el suyo.
   const cliente = await resolverCliente(dto.companyId, plan?.customerId ? { id: plan.customerId } : dto.customer);
@@ -1528,7 +1779,14 @@ async function prepararAlta(
     if (plan) exigirRetencionDeOriginales(plan, lineas);
     if (plan && original && bloque!.forma === 'I' && plan.filas.length === 1 && esEspejoDe(lineas, original)) {
       const copia = lineasEspejo(importesGuardados(original));
-      espejo = { ...copia, lineas: copia.lineas.map((l, i) => ({ ...l, descripcion: lineas[i].descripcion })) };
+      espejo = {
+        ...copia,
+        lineas: copia.lineas.map((l, i) => {
+          const { textoAdicional: _texto, ...resto } = l;
+          void _texto;
+          return { ...resto, descripcion: lineas[i].descripcion, ...(lineas[i].textoAdicional ? { textoAdicional: lineas[i].textoAdicional } : {}) };
+        }),
+      };
     }
   }
   // Devengo (fija el tipo de cambio, art. 79.Once LIVA): el de la operacion o el de emision.
@@ -1543,7 +1801,8 @@ async function prepararAlta(
 
   // Las rectificativas redondean con signo (simetrico): -0,525 da -0,53, como la original da 0,53.
   const importes =
-    espejo ?? calcularImportesFactura(lineas, { tipoCambio: tipo.tipoCambio, mismaMoneda: moneda === perfil.monedaCuenta, simetrico: esRectificativa });
+    espejo ??
+    calcularImportesFactura(lineas, { tipoCambio: tipo.tipoCambio, mismaMoneda: moneda === perfil.monedaCuenta, simetrico: esRectificativa, cuotaPorTipo: ivaPorTipo(plantilla) });
 
   // Cierre del plan con los importes: la parte de cada original, el signo, los
   // plazos y la fecha de la operacion de una R4 que sube el IVA.
@@ -1598,7 +1857,10 @@ async function prepararAlta(
     referenciaLegal: fiscal.referenciaLegal,
     // Rectificativa de una factura sin tipo: se clasifica con el mismo pais que la original.
     ...(original && !fiscal.tipoOperacion && !esTipoOperacion(original.tipoOperacion) ? { paisClienteLegacy: paisCongelado(original) } : {}),
-    plantillaId: dto.plantillaId || 'default',
+    // La plantilla la fija el servidor (dto.plantillaId se ignora).
+    plantillaId: plantilla,
+    pesoBrutoKg: admiteEnvases(plantilla) ? pesoBrutoKg : null,
+    ieepnrPorKg: envases.ieepnrPorKg,
     observaciones: dto.observaciones,
     esRectificativa,
     // Con una sola original, tambien en los campos de antes (Carmen, la cartera y el PDF los leen).
@@ -1771,8 +2033,9 @@ async function actualizarBorradorRectificativa(actual: FacturaConLineas, dto: Ac
     serie: dto.serie ?? ((r.ticket === true) === (actual.tipoFactura === 'R5') ? actual.serie : undefined),
     fechaEmision: dto.fechaEmision ?? actual.fechaEmision,
     fechaVencimiento: dto.fechaVencimiento ?? actual.fechaVencimiento,
+    // Con sus packs, kg y texto (el IEEPNR se vuelve a calcular con el tipo que toque).
     lineas: dto.lineas ?? lineasDocGuardadas(actual).map(({ cuentaContable, ...l }) => ({ ...l, cuenta: cuentaContable ?? null })),
-    plantillaId: dto.plantillaId ?? actual.plantillaId,
+    pesoBrutoKg: dto.pesoBrutoKg !== undefined ? dto.pesoBrutoKg : actual.pesoBrutoKg,
     observaciones: dto.observaciones ?? actual.observaciones ?? undefined,
     borrador: true,
     ...(dto.tipoFactura !== undefined ? { tipoFactura: dto.tipoFactura } : {}),
@@ -1885,7 +2148,7 @@ export const incomeInvoicesService = {
     }
     if (dto.observaciones !== undefined) data.observaciones = dto.observaciones;
     if (dto.formaPago !== undefined) data.formaPago = validarFormaPago(dto.formaPago);
-    if (dto.plantillaId !== undefined) data.plantillaId = dto.plantillaId;
+    // dto.plantillaId se ignora: la plantilla sale de la serie (o de la original), mas abajo.
     const fechaEmision = dto.fechaEmision ? validarFecha(dto.fechaEmision, 'fecha de emisión') : actual.fechaEmision;
     const fechaVencimiento = dto.fechaVencimiento
       ? validarFecha(dto.fechaVencimiento, 'fecha de vencimiento')
@@ -1935,6 +2198,33 @@ export const incomeInvoicesService = {
     data.referenciaLegal = fiscal.referenciaLegal;
     const normaliza = fiscal.lineas.some((l, i) => l.tipoIva !== (lineas[i].tipoIva ?? 21) || l.tipoRetencion !== (lineas[i].tipoRetencion ?? 0));
     lineas = conFiscalidad(lineas, fiscal);
+
+    // Plantilla: se vuelve a fijar en cada guardado. La de la serie (la nueva o la
+    // que tenia; una proforma no cambia de serie) o, en una rectificativa de una
+    // factura de la app, la de la original. Los envases se comprueban con ella,
+    // tambien las lineas guardadas: si pasa a una serie sin envases con kg, 400.
+    // El IEEPNR solo se recalcula con lineas en el cuerpo (con el tipo de hoy).
+    const deOriginal = original ? envasesDeOriginal(original) : null;
+    const plantilla: PlantillaVentaId = deOriginal ? deOriginal.plantilla : await plantillaDeSerie(companyId, (data.serie as string | undefined) ?? actual.serie);
+    const ajustes = await leerAjustesFacturacion(companyId);
+    const envases = aplicarEnvases(lineas, {
+      plantilla,
+      repercute: deOriginal ? deOriginal.repercute : dto.lineas ? perfil.espanola && ajustes.ieepnrRepercute : actual.ieepnrPorKg !== null,
+      tipo: deOriginal?.tipo ?? (dto.lineas ? ajustes.ieepnrPorKg : (actual.ieepnrPorKg ?? ajustes.ieepnrPorKg)),
+      moneda,
+      simetrico: actual.esRectificativa,
+      recalcular: !!dto.lineas,
+    });
+    lineas = envases.lineas;
+    data.plantillaId = plantilla;
+    data.ieepnrPorKg = envases.ieepnrPorKg;
+    const peso = leerPesoBruto(dto.pesoBrutoKg);
+    if (peso !== undefined && peso !== null && !admiteEnvases(plantilla)) throw errorSinEnvases('pesoBrutoKg');
+    // Peso bruto: el que llegue; si la plantilla nueva no lleva envases, se quita (es solo informativo).
+    if (peso !== undefined) data.pesoBrutoKg = peso;
+    else if (!admiteEnvases(plantilla) && actual.pesoBrutoKg !== null) data.pesoBrutoKg = null;
+    const cambiaPlantilla = plantilla !== normalizarPlantillaId(actual.plantillaId);
+
     const devengo = fechaDevengoVenta({ tipoOperacion: fiscal.tipoOperacion, fechaOperacion, fechaEmision });
     const devengoAntes = fechaDevengoVenta(actual);
 
@@ -1960,7 +2250,13 @@ export const incomeInvoicesService = {
     if (tipo) Object.assign(data, datosTipo(tipo));
     if (moneda !== actual.moneda) data.moneda = moneda;
 
-    const recalcular = !!dto.lineas || normaliza || moneda !== actual.moneda || (tipo !== null && tipo.tipoCambio !== actual.tipoCambio) || (tipo !== null && tipo.fuente !== actual.fuenteTipoCambio);
+    const recalcular =
+      !!dto.lineas ||
+      normaliza ||
+      cambiaPlantilla ||
+      moneda !== actual.moneda ||
+      (tipo !== null && tipo.tipoCambio !== actual.tipoCambio) ||
+      (tipo !== null && tipo.fuente !== actual.fuenteTipoCambio);
     const factura = await transaccion(async (tx) => {
       // Bloquea la fila y comprueba que nadie la ha emitido ni cambiado desde que se leyo
       // (mientras se consultaba el tipo de cambio, otra peticion podria haberla emitido).
@@ -1973,7 +2269,7 @@ export const incomeInvoicesService = {
       }
       if (recalcular) {
         exigirNoFinal(actual);
-        const importes = calcularImportesFactura(lineas, { tipoCambio, mismaMoneda: misma, simetrico: actual.esRectificativa });
+        const importes = calcularImportesFactura(lineas, { tipoCambio, mismaMoneda: misma, simetrico: actual.esRectificativa, cuotaPorTipo: ivaPorTipo(plantilla) });
         await tx.incomeInvoiceLine.deleteMany({ where: { invoiceId: id } });
         Object.assign(data, cabecera(importes), { lineas: { create: lineasACrear(importes) } });
       }
@@ -2024,7 +2320,12 @@ export const incomeInvoicesService = {
     if (p.lineas.length === 0) throw badRequest('La proforma no tiene líneas.');
 
     const perfil = await perfilEmpresa(companyId);
-    const serie = await resolverCodSerieFactura(companyId, {});
+    // Con envases (packs, kg, texto o peso bruto), a una serie cuya plantilla los
+    // admita: la de facturas por defecto o, si no, la primera con la A (si no hay,
+    // 400 SIN_SERIE_ENVASES). La plantilla es la de esa serie (no la de la proforma).
+    const porDefecto = await resolverCodSerieFactura(companyId, {});
+    const serie = facturaConEnvases(p) ? await serieParaEnvases(companyId, porDefecto) : porDefecto;
+    const plantilla = await plantillaDeSerie(companyId, serie);
     const hoy = hoyISO();
     const tipoFactura = p.tipoFactura.startsWith('R') ? 'F1' : p.tipoFactura;
     let lineas = lineasDocGuardadas(p);
@@ -2042,8 +2343,12 @@ export const incomeInvoicesService = {
       'guardar',
     );
     lineas = conFiscalidad(lineas, fiscal);
+    // Las lineas pasan como cuerpo: el IEEPNR se recalcula con el tipo de hoy.
+    const ajustes = await leerAjustesFacturacion(companyId);
+    const envases = aplicarEnvases(lineas, { plantilla, repercute: perfil.espanola && ajustes.ieepnrRepercute, tipo: ajustes.ieepnrPorKg, moneda: p.moneda, simetrico: false });
+    lineas = envases.lineas;
     const tipo = await resolverTipoCambio({ monedaCuenta: perfil.monedaCuenta, moneda: p.moneda, devengo: hoy, definitivo: false });
-    const importes = calcularImportesFactura(lineas, { tipoCambio: tipo.tipoCambio, mismaMoneda: p.moneda === perfil.monedaCuenta });
+    const importes = calcularImportesFactura(lineas, { tipoCambio: tipo.tipoCambio, mismaMoneda: p.moneda === perfil.monedaCuenta, cuotaPorTipo: ivaPorTipo(plantilla) });
 
     const factura = await transaccion(async (tx) => {
       // Solo si sigue pendiente: dos clics a la vez no crean dos facturas.
@@ -2067,7 +2372,9 @@ export const incomeInvoicesService = {
           tipoOperacion: fiscal.tipoOperacion,
           causaExencion: fiscal.causaExencion,
           referenciaLegal: fiscal.referenciaLegal,
-          plantillaId: p.plantillaId,
+          plantillaId: plantilla,
+          pesoBrutoKg: admiteEnvases(plantilla) ? p.pesoBrutoKg : null,
+          ieepnrPorKg: envases.ieepnrPorKg,
           observaciones: p.observaciones,
           esRectificativa: false,
           proformaId: p.id,
@@ -2214,7 +2521,10 @@ export const incomeInvoicesService = {
     const heredado = !misma && (actual.fuenteTipoCambio === 'HEREDADO' || !!original);
     const recalcular = normaliza || (!misma && !heredado);
     exigirNoFinal(actual);
-    const importes = recalcular ? calcularImportesFactura(lineas, { tipoCambio: tipo.tipoCambio, mismaMoneda: misma, simetrico: actual.esRectificativa }) : null;
+    // Con las lineas guardadas: el IEEPNR guardado no se recalcula; la A, con el IVA por tipo.
+    const importes = recalcular
+      ? calcularImportesFactura(lineas, { tipoCambio: tipo.tipoCambio, mismaMoneda: misma, simetrico: actual.esRectificativa, cuotaPorTipo: ivaPorTipo(actual.plantillaId) })
+      : null;
     exigirLimiteSimplificada(actual.tipoFactura, perfil, importes ? importes.cuenta : actual);
     // IBAN y pie de ahora, copiados en la factura: su PDF ya no cambia con los ajustes.
     const copia = await copiaAlEmitir(companyId, actual.moneda);
@@ -2325,6 +2635,10 @@ export const incomeInvoicesService = {
     // desactivada: la copia va a la serie de facturas por defecto.
     let serie: string | undefined = o.serie;
     if (!esProforma && (o.origen === 'lector' || !(await buscarSeriePorCodigo(companyId, o.serie))?.activa)) serie = undefined;
+    // Con envases, a una serie cuya plantilla los admita (la propia o la de
+    // facturas por defecto; si no, la primera con la A; si no hay, 400). Las
+    // lineas pasan como cuerpo: el IEEPNR se recalcula con el tipo de hoy.
+    if (!esProforma && facturaConEnvases(o)) serie = await serieParaEnvases(companyId, serie ?? (await resolverCodSerieFactura(companyId, {})));
     return crear(
       {
         companyId,
@@ -2334,7 +2648,7 @@ export const incomeInvoicesService = {
         fechaVencimiento: sumarDias(hoy, plazo),
         tipoFactura: o.tipoFactura as TipoFactura,
         formaPago: o.formaPago as FormaPago,
-        plantillaId: o.plantillaId,
+        pesoBrutoKg: o.pesoBrutoKg,
         observaciones: o.observaciones ?? undefined,
         borrador: !esProforma,
         proforma: esProforma,
@@ -2560,6 +2874,10 @@ export const incomeInvoicesService = {
         tipoRetencion: l.tipoRetencion,
         productoServicioId: l.productoServicioId,
         cuenta: l.cuentaContable ?? null,
+        // Plantilla A: los packs y los kg en negativo (el IEEPNR va en los importes espejo).
+        packs: l.packs ?? null,
+        kgPlastico: l.kgPlastico ?? null,
+        textoAdicional: l.textoAdicional ?? null,
       }));
     }
 

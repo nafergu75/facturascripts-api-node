@@ -88,3 +88,26 @@ export function ivaPorTipo(id: unknown): boolean {
 export function dibujoDe(id: unknown): 'A' | 'estandar' {
   return normalizarPlantillaId(id) === 'A' ? 'A' : 'estandar';
 }
+
+/** Texto adicional bajo el concepto (del articulo o de la linea): 500 caracteres y 6 lineas como mucho. */
+export const TEXTO_ADICIONAL_MAX = 500;
+export const TEXTO_ADICIONAL_LINEAS_MAX = 6;
+
+/**
+ * Texto adicional de la factura (de un articulo o de una linea): saltos de
+ * linea normalizados, sin espacios al final y como mucho 500 caracteres y 6
+ * lineas. null si llega vacio; { ok: false } si no es texto o no cumple.
+ */
+export function limpiarTextoAdicional(v: unknown): { ok: true; valor: string | null } | { ok: false } {
+  if (v === undefined || v === null) return { ok: true, valor: null };
+  if (typeof v !== 'string') return { ok: false };
+  const texto = v
+    .replace(/\r\n?/g, '\n')
+    .split('\n')
+    .map((l) => l.trimEnd())
+    .join('\n')
+    .trim();
+  if (!texto) return { ok: true, valor: null };
+  if (texto.length > TEXTO_ADICIONAL_MAX || texto.split('\n').length > TEXTO_ADICIONAL_LINEAS_MAX) return { ok: false };
+  return { ok: true, valor: texto };
+}

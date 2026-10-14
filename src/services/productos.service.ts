@@ -13,6 +13,7 @@ import { parsePagination } from '../utils/pagination';
 import { badRequest, notFound } from '../utils/http-errors';
 import { leerFilasArchivo, normalizar } from './extractoBancario.service';
 import { leerImporte } from './extractoBancario.service';
+import { limpiarTextoAdicional, TEXTO_ADICIONAL_LINEAS_MAX, TEXTO_ADICIONAL_MAX } from '../domain/plantillasFactura';
 
 type ProductRow = {
   id: string;
@@ -68,9 +69,9 @@ function aProducto(p: ProductRow): Record<string, unknown> {
 export const UNIDADES_POR_PACK_MAX = 100_000;
 /** Kg de plastico no reciclado por unidad: de 0 a 1.000, hasta 6 decimales. */
 export const KG_PLASTICO_UNIDAD_MAX = 1000;
-/** Texto adicional en la factura: 500 caracteres y 6 lineas como mucho. */
-export const TEXTO_FACTURA_MAX = 500;
-export const TEXTO_FACTURA_LINEAS_MAX = 6;
+/** Texto adicional en la factura: 500 caracteres y 6 lineas como mucho (domain/plantillasFactura). */
+export const TEXTO_FACTURA_MAX = TEXTO_ADICIONAL_MAX;
+export const TEXTO_FACTURA_LINEAS_MAX = TEXTO_ADICIONAL_LINEAS_MAX;
 
 /** Numero con coma o punto decimal (sin separador de miles); null si no lo es. */
 function numeroDecimal(v: unknown): number | null {
@@ -81,20 +82,6 @@ function numeroDecimal(v: unknown): number | null {
 }
 
 const conDecimales = (n: number, decimales: number) => Math.abs(Math.round(n * 10 ** decimales) - n * 10 ** decimales) < 1e-6;
-
-/**
- * Texto adicional de la factura (de un articulo o de una linea): saltos de
- * linea normalizados, sin espacios al final y como mucho 500 caracteres y 6
- * lineas. null si llega vacio. `null` en el error si no cumple.
- */
-export function limpiarTextoAdicional(v: unknown): { ok: true; valor: string | null } | { ok: false } {
-  if (v === undefined || v === null) return { ok: true, valor: null };
-  if (typeof v !== 'string') return { ok: false };
-  const texto = v.replace(/\r\n?/g, '\n').split('\n').map((l) => l.trimEnd()).join('\n').trim();
-  if (!texto) return { ok: true, valor: null };
-  if (texto.length > TEXTO_FACTURA_MAX || texto.split('\n').length > TEXTO_FACTURA_LINEAS_MAX) return { ok: false };
-  return { ok: true, valor: texto };
-}
 
 /** Datos de envase del articulo (plantilla A), con 400 y el nombre del campo si no valen. */
 function datosEnvaseProducto(data: Record<string, unknown>): Record<string, unknown> {
