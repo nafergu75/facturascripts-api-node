@@ -12,6 +12,8 @@ import {
   quitarAcceso,
 } from '../services/admin.service';
 import { registrarAuditoria } from '../services/auditoria.service';
+import { crearEmpresaPruebas } from '../services/verifactu/empresaPruebas.service';
+import { badRequest } from '../utils/http-errors';
 import type { CambiosUsuario } from '../services/admin.service';
 import type { AccesoAsignado } from '../domain/admin.model';
 import type { Response } from 'express';
@@ -100,6 +102,18 @@ export async function auditarQuitarAcceso(
 export const adminController = {
   listarEmpresas: asyncHandler(async (_req, res) => {
     sendOk(res, await listarEmpresas());
+  }),
+
+  /**
+   * POST /admin/empresas/:id/pruebas-verifactu (solo administrador global):
+   * crea la empresa de pruebas de VERI*FACTU de la empresa real :id. Pide
+   * { confirmar: true }. La auditoria va dentro del servicio, en la misma transaccion.
+   */
+  crearEmpresaPruebasVerifactu: asyncHandler(async (req, res) => {
+    if (req.body?.confirmar !== true) {
+      throw badRequest('Confirma que quieres crear la empresa de pruebas de VERI*FACTU.', { campo: 'confirmar' });
+    }
+    sendOk(res, await crearEmpresaPruebas(String(req.params.id), req.user!.userId), undefined, 201);
   }),
 
   crearEmpresa: asyncHandler(async (req, res) => {

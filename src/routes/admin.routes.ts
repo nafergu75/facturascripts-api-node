@@ -25,6 +25,8 @@ const accesoSchema = z
 router.get('/empresas', authorize('admin:global'), adminController.listarEmpresas);
 router.post('/empresas', authorize('admin:global'), adminController.crearEmpresa);
 router.patch('/empresas/:id', authorize('admin:global'), adminController.actualizarEmpresa);
+// VERI*FACTU: empresa de pruebas (mismo NIF, solo el entorno de pruebas de la AEAT) de una empresa real.
+router.post('/empresas/:id/pruebas-verifactu', authorize('admin:global'), adminController.crearEmpresaPruebasVerifactu);
 
 // --- Usuarios ---
 router.get('/usuarios', authorize('admin:global'), adminController.listarUsuarios);

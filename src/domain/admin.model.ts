@@ -17,6 +17,8 @@ export interface EmpresaAdmin {
   /** Solo en el alta: si ya tiene todos los datos para facturar y, si no, cuales faltan. */
   completo?: boolean;
   pendientes?: string[];
+  /** Empresa de pruebas de VERI*FACTU: id de la empresa real (null en las normales). */
+  pruebasVerifactuDe?: string | null;
 }
 
 /** Acceso de un usuario a una empresa. */

@@ -285,7 +285,7 @@ const esDuplicado = (e: unknown) => e instanceof Prisma.PrismaClientKnownRequest
 export async function listarEmpresas(): Promise<EmpresaAdmin[]> {
   const empresas = await prisma.company.findMany({
     orderBy: { createdAt: 'asc' },
-    select: { id: true, codigo: true, name: true, isActive: true, createdAt: true, _count: { select: { memberships: true } } },
+    select: { id: true, codigo: true, name: true, isActive: true, createdAt: true, pruebasVerifactuDe: true, _count: { select: { memberships: true } } },
   });
   // LegalConfig no tiene relacion declarada con Company: se cruza por companyId.
   const legales = await prisma.legalConfig.findMany({
@@ -305,6 +305,7 @@ export async function listarEmpresas(): Promise<EmpresaAdmin[]> {
       nif: legal?.nif ?? null,
       pais: legal?.pais ?? null,
       usuarios: c._count.memberships,
+      pruebasVerifactuDe: c.pruebasVerifactuDe ?? null,
     };
   });
 }
