@@ -90,6 +90,17 @@ MARCAS=(
   'Plantilla del PDF de la serie'
   'Packs de la linea'
   'Cuenta del IEEPNR congelada al emitir'
+  'Obra de la factura (plantilla B)'
+  'Peso neto en kg escrito a mano (plantilla B)'
+  'Observaciones por defecto de la serie'
+  'Palets de la linea (plantilla B)'
+  'Metros cuadrados de la linea (plantilla B)'
+  'Unidad del precio (plantilla B)'
+  'Cargo de palets de madera (plantilla B)'
+  'Metros cuadrados por caja (plantilla B)'
+  'Kg por unidad del precio'
+  'Cuenta de ingresos del cargo de palets'
+  'model ImagenFactura'
 )
 for marca in "${MARCAS[@]}"; do
   grep -q "$marca" prisma/schema.prisma || {

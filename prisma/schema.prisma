@@ -320,6 +320,10 @@ model IncomeInvoice {
   /// Cuenta del IEEPNR congelada al emitir (la de los ajustes o la de la
   /// original); null = la de ingresos de cada linea. La usa el asiento.
   ieepnrCuenta      String?  @db.VarChar(15)
+  /// Obra de la factura (plantilla B): el proyecto o la obra del cliente, opcional.
+  obra              String?  @db.VarChar(200)
+  /// Peso neto en kg escrito a mano (plantilla B).
+  pesoNetoKg        Decimal? @db.Decimal(14, 3)
   createdAt           DateTime              @default(now())
   updatedAt           DateTime              @updatedAt
   lineas              IncomeInvoiceLine[]
@@ -385,6 +389,8 @@ model InvoiceSeries {
   ultimaFecha   String? // YYYY-MM-DD de la ultima factura finalizada
   /// Plantilla del PDF de la serie (default, A, B, C); null = automatica.
   plantilla         String?  @db.VarChar(16)
+  /// Observaciones por defecto de la serie: se proponen en cada factura nueva (editables).
+  observacionesDefecto String? @db.Text
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
@@ -424,6 +430,24 @@ model IncomeInvoiceLine {
   ieepnrImporte     Decimal? @db.Decimal(14, 2)
   /// Texto adicional bajo el concepto (el del articulo, editable).
   textoAdicional    String?  @db.Text
+  /// Palets de la linea (plantilla B).
+  palets            Int?
+  /// Cajas de la linea (plantilla B).
+  cajas             Int?
+  /// Metros cuadrados de la linea (plantilla B), hasta 3 decimales.
+  metros2           Decimal? @db.Decimal(14, 3)
+  /// Piezas (o unidades) de la linea (plantilla B).
+  piezas            Decimal? @db.Decimal(14, 3)
+  /// Formato de la pieza (plantilla B): 23,3x120.
+  formato           String?  @db.VarChar(40)
+  /// Calidad (plantilla B): 1, 2...
+  calidad           String?  @db.VarChar(10)
+  /// Peso de la linea en kg (plantilla B).
+  pesoKg            Decimal? @db.Decimal(14, 3)
+  /// Unidad del precio (plantilla B): M2 | PIEZA | UNIDAD. cantidad = m2, piezas o unidades.
+  unidadPrecio      String?  @db.VarChar(10)
+  /// Cargo de palets de madera (plantilla B): va en el pie del PDF, no en la tabla.
+  cargoPalets       Boolean  @default(false)
   invoice             IncomeInvoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
 
   @@index([invoiceId])
@@ -1121,6 +1145,16 @@ model Product {
   llevaIeepnr       Boolean  @default(false)
   /// Texto adicional del articulo en la factura (varias lineas).
   textoFactura      String?  @db.Text
+  /// Formato del articulo (plantilla B de ceramica): 23,3x120.
+  formato           String?  @db.VarChar(40)
+  /// Metros cuadrados por caja (plantilla B): propone m2 = cajas x m2 por caja.
+  metros2PorCaja    Decimal? @db.Decimal(14, 4)
+  /// Piezas por caja (plantilla B): propone piezas = cajas x piezas por caja.
+  piezasPorCaja     Int?
+  /// Unidad del precio por defecto (plantilla B): M2 | PIEZA | UNIDAD.
+  unidadPrecio      String?  @db.VarChar(10)
+  /// Kg por unidad del precio (por m2, por pieza o por unidad): propone el peso de la linea.
+  pesoKgPorUnidad   Decimal? @db.Decimal(14, 4)
   createdAt     DateTime       @default(now())
   updatedAt     DateTime       @updatedAt
 
@@ -1545,8 +1579,26 @@ model AjustesFacturacion {
   ieepnrPorKg       Decimal  @default(0.45) @db.Decimal(8, 4)
   /// Cuenta del IEEPNR si la empresa fuera contribuyente; null = la de ingresos de la linea.
   ieepnrCuenta      String?  @db.VarChar(15)
+  /// Cuenta de ingresos del cargo de palets (plantilla B, p. ej. 704); null = la de ventas.
+  cuentaPalets      String?  @db.VarChar(15)
   updatedAt        DateTime @updatedAt
   updatedBy        String?
+}
+
+/// Imagenes de la plantilla B de factura: el logo de la marca (MARCA) y el sello
+/// de la empresa (SELLO). PNG o JPG de 1 MB como mucho, una de cada por empresa.
+/// Aparte de LegalConfig para no leer los bytes en cada consulta de la empresa.
+model ImagenFactura {
+  id        String   @id @default(cuid())
+  companyId String
+  /// MARCA | SELLO
+  tipo      String   @db.VarChar(10)
+  datos     Bytes    @db.MediumBlob
+  mime      String   @db.VarChar(20)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([companyId, tipo])
 }
 
 /// Ajustes fiscales que cambian el calendario de modelos (solo empresas

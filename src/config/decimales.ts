@@ -36,6 +36,8 @@ export const CAMPOS_DECIMALES: ReadonlySet<string> = new Set([
   "saldoContableInicial", "importeOriginal", "importePendiente", "coste", "valorResidual", "amortAcumuladaInicial", "coeficiente",
   // Plantilla A (envases e IEEPNR): kg de plastico, IEEPNR, peso bruto y tipo por kg.
   "kgPlasticoUnidad", "kgPlastico", "ieepnrImporte", "pesoBrutoKg", "ieepnrPorKg",
+  // Plantilla B (ceramica): m2, piezas y pesos de la linea, peso neto y datos del articulo.
+  "metros2", "piezas", "pesoKg", "pesoNetoKg", "metros2PorCaja", "pesoKgPorUnidad",
 ]);
 
 /**
@@ -90,6 +92,7 @@ export const importesComoNumero = Prisma.defineExtension({
       tipoCambio: { needs: { tipoCambio: true }, compute: (r) => aNumero(r.tipoCambio) },
       pesoBrutoKg: { needs: { pesoBrutoKg: true }, compute: (r) => aNumero(r.pesoBrutoKg) },
       ieepnrPorKg: { needs: { ieepnrPorKg: true }, compute: (r) => aNumero(r.ieepnrPorKg) },
+      pesoNetoKg: { needs: { pesoNetoKg: true }, compute: (r) => aNumero(r.pesoNetoKg) },
     },
     incomeInvoiceLine: {
       precioUnitario: { needs: { precioUnitario: true }, compute: (r) => aNumero(r.precioUnitario) },
@@ -104,6 +107,9 @@ export const importesComoNumero = Prisma.defineExtension({
       retencionImporteDoc: { needs: { retencionImporteDoc: true }, compute: (r) => aNumero(r.retencionImporteDoc) },
       kgPlastico: { needs: { kgPlastico: true }, compute: (r) => aNumero(r.kgPlastico) },
       ieepnrImporte: { needs: { ieepnrImporte: true }, compute: (r) => aNumero(r.ieepnrImporte) },
+      metros2: { needs: { metros2: true }, compute: (r) => aNumero(r.metros2) },
+      piezas: { needs: { piezas: true }, compute: (r) => aNumero(r.piezas) },
+      pesoKg: { needs: { pesoKg: true }, compute: (r) => aNumero(r.pesoKg) },
     },
     declaracionAeat: {
       resultadoAnterior: { needs: { resultadoAnterior: true }, compute: (r) => aNumero(r.resultadoAnterior) },
@@ -150,6 +156,8 @@ export const importesComoNumero = Prisma.defineExtension({
       precioCompra: { needs: { precioCompra: true }, compute: (r) => aNumero(r.precioCompra) },
       ivaPorcentaje: { needs: { ivaPorcentaje: true }, compute: (r) => aNumero(r.ivaPorcentaje) },
       kgPlasticoUnidad: { needs: { kgPlasticoUnidad: true }, compute: (r) => aNumero(r.kgPlasticoUnidad) },
+      metros2PorCaja: { needs: { metros2PorCaja: true }, compute: (r) => aNumero(r.metros2PorCaja) },
+      pesoKgPorUnidad: { needs: { pesoKgPorUnidad: true }, compute: (r) => aNumero(r.pesoKgPorUnidad) },
     },
     productFamily: {
       ivaPorcentaje: { needs: { ivaPorcentaje: true }, compute: (r) => aNumero(r.ivaPorcentaje) },
