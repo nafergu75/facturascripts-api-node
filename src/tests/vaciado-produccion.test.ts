@@ -42,7 +42,42 @@ describe('clasificación de las tablas', () => {
     const conservadas = c.tablas.filter((t) => t.destino === 'CONSERVAR').map((t) => t.nombre).sort();
     expect(conservadas).toEqual(['AjustePlataforma', 'ChartOfAccountsVersion', 'TipoCambioBce']);
     const parciales = c.tablas.filter((t) => t.destino === 'PARCIAL').map((t) => t.nombre).sort();
-    expect(parciales).toEqual(['AuditLog', 'CarmenContador', 'ChartOfAccounts', 'RevokedToken', 'User']);
+    expect(parciales).toEqual(['AuditLog', 'CarmenContador', 'ChartOfAccounts', 'RevokedToken', 'User', 'VerifactuBitacora']);
+  });
+
+  it('las tablas de VERI*FACTU F1 y las imágenes de la plantilla B tienen su regla escrita', () => {
+    const t = new Map(c.tablas.map((x) => [x.nombre, x]));
+    for (const [nombre, destino] of [
+      ['VerifactuCadena', 'VACIAR'],
+      ['VerifactuRegistro', 'VACIAR'],
+      ['VerifactuLote', 'VACIAR'],
+      ['VerifactuCertificado', 'VACIAR'],
+      ['VerifactuBitacora', 'PARCIAL'],
+      ['ImagenFactura', 'VACIAR'],
+    ] as const) {
+      expect([nombre, REGLAS[nombre]?.destino, t.get(nombre)?.destino, t.get(nombre)?.columnaEmpresa]).toEqual([nombre, destino, destino, 'companyId']);
+    }
+    expect(REGLAS.VerifactuRegistro.motivo).toMatch(/con SQL/);
+  });
+
+  it('las columnas nuevas de facturas, líneas, productos, series, ajustes y terceros están en la tabla de su empresa (se copian y se vacían con ella)', () => {
+    const t = new Map(c.tablas.map((x) => [x.nombre, x]));
+    const nuevas: Record<string, string[]> = {
+      IncomeInvoice: ['pesoBrutoKg', 'ieepnrPorKg', 'ieepnrCuenta', 'obra', 'pesoNetoKg', 'anuladaEn', 'anuladaPor', 'motivoAnulacion', 'descripcionOperacion', 'instantaneaEmision', 'verifactuEstado'],
+      IncomeInvoiceLine: ['packs', 'kgPlastico', 'ieepnrImporte', 'textoAdicional', 'palets', 'cajas', 'metros2', 'piezas', 'pesoKg', 'formato', 'calidad', 'unidadPrecio', 'cargoPalets'],
+      Product: ['unidadesPorPack', 'kgPlasticoUnidad', 'llevaIeepnr', 'textoFactura', 'formato', 'metros2PorCaja', 'piezasPorCaja', 'unidadPrecio', 'pesoKgPorUnidad'],
+      InvoiceSeries: ['plantilla', 'observacionesDefecto'],
+      AjustesFacturacion: ['ieepnrRepercute', 'ieepnrPorKg', 'ieepnrCuenta', 'cuentaPalets', 'vendeCeramica'],
+      VerifactuConfig: ['nifObligado', 'nombreObligado', 'numeroInstalacion', 'declaracionVersion', 'fechaFinVerifactu', 'modoCertificado', 'pruebasSuperadasEn', 'pruebasSuperadasPor', 'representanteNif', 'representanteNombre'],
+      Customer: ['web'],
+      Supplier: ['web'],
+    };
+    for (const [tabla, columnas] of Object.entries(nuevas)) {
+      const x = t.get(tabla)!;
+      expect([tabla, x.destino]).toEqual([tabla, 'VACIAR']);
+      const tiene = new Set(x.columnas.map((col) => col.nombre));
+      expect([tabla, columnas.filter((col) => !tiene.has(col))]).toEqual([tabla, []]);
+    }
   });
 
   it('las hijas sin companyId se vacían con su padre', () => {
@@ -85,6 +120,11 @@ describe('orden de borrado', () => {
     expect(pos.get('IncomeInvoiceRectificada')! < pos.get('IncomeInvoice')!).toBe(true);
     expect(pos.get('IncomeInvoice')! < pos.get('Customer')!).toBe(true);
     expect(pos.get('DotacionAmortizacion')! < pos.get('ActivoFijo')!).toBe(true);
+    // Los registros de VERI*FACTU antes que sus facturas (clave ajena Restrict) y que sus envios.
+    expect(pos.get('VerifactuRegistro')! < pos.get('IncomeInvoice')!).toBe(true);
+    expect(pos.get('VerifactuRegistro')! < pos.get('VerifactuLote')!).toBe(true);
+    expect(pos.get('VerifactuCadena')! < pos.get('Company')!).toBe(true);
+    expect(pos.get('VerifactuBitacora')! < pos.get('Company')!).toBe(true);
   });
 
   it('la restauración va al revés y un círculo de claves ajenas se detecta', () => {
@@ -113,6 +153,11 @@ describe('condiciones de borrado', () => {
     const auditoria = condicionBorrado(t('AuditLog'), admins)!;
     expect(auditoria.sql).toContain("'AJUSTE_PLATAFORMA'");
     expect(auditoria.params).toEqual([...admins, ...MARCAS_AUDITORIA]);
+    expect(condicionBorrado(t('VerifactuBitacora'), admins)).toEqual({
+      sql: 'NOT (`companyId` IS NULL AND (`usuarioId` IS NULL OR `usuarioId` IN (?, ?)))',
+      params: admins,
+    });
+    expect(condicionBorrado(t('VerifactuRegistro'), admins)).toEqual({ sql: '1 = 1', params: [] });
   });
 
   it('sin administrador, o una parcial nueva sin condición, no se adivina: error', () => {

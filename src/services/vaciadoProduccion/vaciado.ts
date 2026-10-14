@@ -177,11 +177,14 @@ async function contarSiExiste(db: PrismaClient, tablas: readonly Tabla[], tabla:
 }
 
 /**
- * Hoy (F0) la app no envia nada a la AEAT: VerifactuConfig solo guarda la
- * exclusion y su estado nunca pasa de DESACTIVADO (no hay codigo que lo
- * active), y no existe ninguna tabla de registros. Aun asi, si una version
- * posterior trae registros de la AEAT de verdad o una empresa con VERI*FACTU
- * activo o en el entorno de produccion, el script se para en vez de borrarlos.
+ * Hoy (F1) la app no envia nada a la AEAT: las facturas que se emiten con
+ * VERI*FACTU en PRUEBAS llevan su registro encadenado (VerifactuRegistro, con
+ * su cadena en VerifactuCadena), pero el envio llega en la fase F3. Esos
+ * registros son inalterables para la app (config/inmutabilidadVerifactu.ts):
+ * aqui se borran con SQL, como todo lo demas (vaciar()), sin pasar por esa
+ * extension. Si hay registros de la AEAT de verdad o una empresa con
+ * VERI*FACTU activo o en el entorno de produccion, el script se para en vez
+ * de borrarlos.
  *
  * Lo del entorno de PRUEBAS de la AEAT no tiene efecto fiscal y se borra como
  * el resto: en una tabla de VERI*FACTU con columna `entorno` solo paran las
@@ -344,6 +347,7 @@ export function informeSimulacion(s: Simulacion, almacen: Almacen): string[] {
       l.push('  La base apunta a:');
       l.push(...envolver(partes.length ? partes : ['ningún fichero'], '    '));
       l.push(`  Logos de empresa: ${fmt(r.logos)} (van dentro de la base y se borran con ella).`);
+      if (r.imagenesPlantilla) l.push(`  Logos de marca y sellos de la plantilla B: ${fmt(r.imagenesPlantilla)} (también dentro de la base; se borran con ella).`);
     }
   }
 
@@ -577,6 +581,8 @@ async function huerfanasDe(db: PrismaClient, t: Tabla, admins: readonly string[]
       return contar(db, 'ChartOfAccounts', { sql: `${id('companyId')} IS NOT NULL`, params: [] });
     case 'AuditLog':
       return contar(db, 'AuditLog', { sql: `${id('companyId')} IS NOT NULL OR ${id('userId')} NOT IN ${usuarios}`, params: [] });
+    case 'VerifactuBitacora':
+      return contar(db, 'VerifactuBitacora', { sql: `${id('companyId')} IS NOT NULL OR ${id('usuarioId')} NOT IN ${usuarios}`, params: [] });
     default: {
       // PARCIAL nueva sin comprobacion propia: lo que su condicion borraria.
       const cond = admins.length ? condicionBorrado(t, admins) : null;

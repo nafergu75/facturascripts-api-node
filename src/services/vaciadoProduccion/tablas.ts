@@ -102,6 +102,38 @@ export const REGLAS: Record<string, { destino: Destino; motivo: string }> = {
     destino: 'CONSERVAR',
     motivo: 'Ajustes de toda la plataforma (la red de seguridad de VERI*FACTU). Los decide el administrador global y no son de ninguna empresa.',
   },
+  // VERI*FACTU (fase F1). Todavia no se envia nada a la AEAT (el envio es la
+  // fase F3): lo que hay son registros del entorno de PRUEBAS, sin efecto
+  // fiscal. Si alguna fila fuera del entorno de PRODUCCION, o alguna empresa
+  // tuviera VERI*FACTU activo, comprobarVerifactu (vaciado.ts) para el script
+  // antes de copiar ni borrar nada. Con companyId se vaciarian solas; la regla
+  // deja escrito el porque.
+  VerifactuCadena: {
+    destino: 'VACIAR',
+    motivo: 'Cabeza de la cadena de registros de VERI*FACTU de cada empresa (último registro y su huella). Se borra con sus registros: una empresa nueva empieza su cadena desde el primero.',
+  },
+  VerifactuRegistro: {
+    destino: 'VACIAR',
+    motivo:
+      'Registros de alta de VERI*FACTU de las facturas emitidas, del entorno de pruebas de la AEAT. La app no deja cambiarlos ni borrarlos, así que el script los borra con SQL, antes que sus facturas.',
+  },
+  VerifactuLote: {
+    destino: 'VACIAR',
+    motivo: 'Envíos de registros de VERI*FACTU a la AEAT de cada empresa. Hoy la app todavía no envía nada.',
+  },
+  VerifactuCertificado: {
+    destino: 'VACIAR',
+    motivo: 'Certificado electrónico de cada empresa para VERI*FACTU (cifrado). Se borra con la empresa: al darla de alta de nuevo hay que volver a subirlo.',
+  },
+  VerifactuBitacora: {
+    destino: 'PARCIAL',
+    motivo:
+      'Bitácora de VERI*FACTU. Se borran los sucesos de las empresas y los de los usuarios que se borran; se conservan los de toda la plataforma (sin empresa) sin usuario o del administrador, como los ajustes de la plataforma.',
+  },
+  ImagenFactura: {
+    destino: 'VACIAR',
+    motivo: 'Logo de la marca y sello de cada empresa para la plantilla B de las facturas. Van dentro de la base y se borran con la empresa.',
+  },
 };
 
 /** Tablas que no tienen clave ajena pero se cuentan por empresa a traves de otra. */
@@ -264,6 +296,12 @@ export function condicionBorrado(t: Pick<Tabla, 'nombre' | 'destino'>, admins: r
       return {
         sql: `NOT (${id('companyId')} IS NULL AND ${id('userId')} IN (${enAdmins}) AND (${id('resourceType')} = 'AJUSTE_PLATAFORMA' OR ${id('action')} IN (${MARCAS_AUDITORIA.map(() => '?').join(', ')})))`,
         params: [...admins, ...MARCAS_AUDITORIA],
+      };
+    case 'VerifactuBitacora':
+      // Se quedan los sucesos de la plataforma (sin empresa) sin usuario o del administrador.
+      return {
+        sql: `NOT (${id('companyId')} IS NULL AND (${id('usuarioId')} IS NULL OR ${id('usuarioId')} IN (${enAdmins})))`,
+        params: [...admins],
       };
     default:
       // Una tabla PARCIAL nueva sin su condicion: mejor parar que adivinar.

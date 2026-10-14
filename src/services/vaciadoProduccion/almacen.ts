@@ -5,7 +5,8 @@
  * Donde estan (src/utils/storage.ts): en produccion, Vercel Blob PRIVADO (con
  * la clave BLOB_READ_WRITE_TOKEN); en local, la carpeta storage/ del proyecto.
  * Los logos de las empresas no estan aqui: van dentro de la base
- * (LegalConfig.logo) y se borran con ella.
+ * (LegalConfig.logo) y se borran con ella. Igual el logo de la marca y el
+ * sello de la plantilla B (ImagenFactura.datos).
  *
  * Solo se tocan los ficheros que cuelgan de las carpetas que usa la app
  * (PREFIJOS_APP). Si el almacen tuviera otros, se ensenan y no se borran.
@@ -205,6 +206,8 @@ export interface ReferenciasBd {
   ficherosCarga: number;
   /** Logos de empresa (dentro de la base, LegalConfig.logo). */
   logos: number;
+  /** Logos de marca y sellos de la plantilla B (dentro de la base, ImagenFactura). */
+  imagenesPlantilla: number;
 }
 
 export async function contarReferencias(db: PrismaClient, tablas: readonly Pick<Tabla, 'nombre' | 'columnas'>[]): Promise<ReferenciasBd> {
@@ -234,7 +237,12 @@ export async function contarReferencias(db: PrismaClient, tablas: readonly Pick<
     const [f] = await db.$queryRawUnsafe<Array<{ n: unknown }>>(`SELECT COUNT(*) AS n FROM ${id('LegalConfig')} WHERE ${id('logo')} IS NOT NULL`);
     logos = num(f?.n);
   }
-  return { porTipo, ficherosCarga, logos };
+  let imagenesPlantilla = 0;
+  if (existe('ImagenFactura', 'datos')) {
+    const [f] = await db.$queryRawUnsafe<Array<{ n: unknown }>>(`SELECT COUNT(*) AS n FROM ${id('ImagenFactura')}`);
+    imagenesPlantilla = num(f?.n);
+  }
+  return { porTipo, ficherosCarga, logos, imagenesPlantilla };
 }
 
 /** Nombre seguro en Windows para guardar un fichero del almacen en la copia local. */
