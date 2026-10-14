@@ -160,12 +160,12 @@ async function asegurarSemilla(companyId: string): Promise<void> {
 /**
  * Configuracion > Facturacion dice que la empresa vende ceramica y es
  * espanola (la plantilla B solo vale en Espana). Solo lee; con un prisma
- * simulado sin LegalConfig (tests sin BD), espanola.
+ * simulado sin LegalConfig (tests sin BD), no: ahi no se crea la B.
  */
 async function vendeCeramicaEspanola(companyId: string): Promise<boolean> {
   if (!(await leerAjustesFacturacion(companyId)).vendeCeramica) return false;
   const conLegal = typeof (prisma as unknown as { legalConfig?: { findUnique?: unknown } }).legalConfig?.findUnique === 'function';
-  return conLegal ? esEmpresaEspanola(companyId) : true;
+  return conLegal ? esEmpresaEspanola(companyId) : false;
 }
 
 /**
