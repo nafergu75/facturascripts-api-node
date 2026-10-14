@@ -15,7 +15,7 @@ import request from 'supertest';
 import { prisma } from '../config/database';
 import { errorMiddleware } from '../middleware/error.middleware';
 import { informesContablesRoutes } from '../routes/informesContables.routes';
-import { facturasFueraDelMayor, informeDetalleTercero } from '../services/informesContables.service';
+import { facturasFueraDelMayor, informeDetalleTercero, informeMayor, terceroParaMayor } from '../services/informesContables.service';
 
 const SUF = `${Date.now()}${randomBytes(3).toString('hex')}`;
 const E = `mayor-fuera-${SUF}`;
@@ -54,7 +54,7 @@ async function venta(clave: string, d: { fecha: string; total: number; estadoDoc
   }
 }
 
-async function gasto(clave: string, d: { fecha: string; total: number; estado: string; asiento?: string }) {
+async function gasto(clave: string, d: { fecha: string; total: number; estado: string; asiento?: string; fechaRegistro?: string }) {
   const i = ++n;
   const f = await prisma.expenseInvoice.create({
     data: {
@@ -66,6 +66,7 @@ async function gasto(clave: string, d: { fecha: string; total: number; estado: s
       numeroFacturaProveedor: `PROV-${i}`,
       fechaEmision: d.fecha,
       fechaVencimiento: d.fecha,
+      ...(d.fechaRegistro ? { fechaRegistro: d.fechaRegistro } : {}),
       estado: d.estado,
       tipoGasto: 'SUMINISTROS',
       baseTotal: d.total,
@@ -103,6 +104,8 @@ beforeAll(async () => {
   await gasto('contabilizado', { fecha: '2026-05-06', total: 40, estado: 'ACCOUNTED', asiento: 'POSTED' });
   await gasto('sinAsientoGasto', { fecha: '2026-05-07', total: 45, estado: 'PENDING' });
   await gasto('anulada', { fecha: '2026-05-08', total: 50, estado: 'ANULADA' });
+  // Factura de diciembre registrada en enero: cuenta en el mayor de 2027 (fecha de registro), no en el de 2026.
+  await gasto('registradaEnEnero', { fecha: '2026-12-20', fechaRegistro: '2027-01-05', total: 55, estado: 'PENDING' });
 });
 
 describe('facturas que no salen en el mayor del tercero', () => {
@@ -139,6 +142,24 @@ describe('facturas que no salen en el mayor del tercero', () => {
     expect(fuera[1].enlace).toBe(`/dashboard/compras/${ids.sinAsientoGasto}`);
   });
 
+  it('proveedor: un gasto cuenta por su fecha de registro (el de diciembre registrado en enero sale en el mayor del año siguiente)', async () => {
+    const en2026 = await facturasFueraDelMayor(E, 'proveedores', proveedor, '2026-12-31');
+    expect(en2026.map((f) => f.id)).not.toContain(ids.registradaEnEnero);
+    const en2027 = await facturasFueraDelMayor(E, 'proveedores', proveedor, '2027-12-31');
+    expect(en2027.find((f) => f.id === ids.registradaEnEnero)).toMatchObject({ estadoContable: 'SIN_ASIENTO', accion: 'CONTABILIZAR', fechaEmision: '2026-12-20' });
+  });
+
+  it('el Libro mayor de un cliente o proveedor (con su subcuenta) también las devuelve y lo dice; el de una cuenta, no', async () => {
+    const r = await informeMayor(E, ANIO, {}, await terceroParaMayor(E, 'cliente', cliente));
+    expect(r.facturasFueraDelMayor?.map((f) => f.id).sort()).toEqual([ids.sinAsiento, ids.borrador, ids.anulado, ids.soloCobro].sort());
+    expect(r.tabla.notas?.some((x) => x.startsWith('4 facturas no salen en este mayor'))).toBe(true);
+    const p = await informeMayor(E, ANIO, {}, await terceroParaMayor(E, 'proveedor', proveedor));
+    expect(p.facturasFueraDelMayor?.map((f) => f.estadoContable)).toEqual(['BORRADOR', 'SIN_ASIENTO']);
+    const cuenta = await informeMayor(E, ANIO, { cuenta: '430' });
+    expect(cuenta).not.toHaveProperty('facturasFueraDelMayor');
+    expect(cuenta.tabla.notas?.some((x) => x.includes('no salen en este mayor'))).toBe(false);
+  });
+
   it('el detalle del tercero las devuelve y lo explica en una nota', async () => {
     const r = await informeDetalleTercero(E, 'clientes', ANIO, cliente);
     expect(r.tercero.saldoFinal).toBe(0);
@@ -164,5 +185,9 @@ describe('facturas que no salen en el mayor del tercero', () => {
     const r = await request(a).get(`/informes/terceros/clientes/${cliente}?desde=2026-01-01&hasta=2026-12-31`);
     expect(r.status).toBe(200);
     expect((r.body.data.facturasFueraDelMayor as Array<{ id: string; estadoContable: string }>).find((f) => f.id === ids.sinAsiento)).toMatchObject({ estadoContable: 'SIN_ASIENTO' });
+    // Libro mayor con el cliente (GET /mayor?tercero=&tipoTercero=cliente): lo mismo.
+    const m = await request(a).get(`/informes/mayor?tercero=${cliente}&tipoTercero=cliente&desde=2026-01-01&hasta=2026-12-31`);
+    expect(m.status).toBe(200);
+    expect((m.body.data.facturasFueraDelMayor as Array<{ id: string; accion: string }>).find((f) => f.id === ids.borrador)).toMatchObject({ accion: 'APROBAR' });
   });
 });
