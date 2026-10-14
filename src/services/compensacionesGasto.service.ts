@@ -103,7 +103,7 @@ async function asientoTraspaso(
 ): Promise<string | null> {
   const [cuentaAbono, cuentaFactura] = await Promise.all([cuentaProveedorDeFactura(tx, companyId, p.abono.id), cuentaProveedorDeFactura(tx, companyId, p.factura.id)]);
   if (!cuentaAbono || !cuentaFactura || cuentaAbono === cuentaFactura) return null;
-  await comprobarFechaAbierta(companyId, p.fecha, 'aplicar el abono');
+  await comprobarFechaAbierta(companyId, p.fecha, 'aplicar el abono', tx);
   const nombres = await tx.chartOfAccounts.findMany({ where: { companyId, codigo: { in: [cuentaAbono, cuentaFactura] } }, select: { codigo: true, nombre: true } });
   const nombre = (c: string) => nombres.find((x) => x.codigo === c)?.nombre ?? p.proveedor;
   const existentes = await tx.journalEntry.findMany({ where: { companyId, numeroAsiento: { startsWith: 'COMP-' } }, select: { numeroAsiento: true } });
@@ -205,13 +205,13 @@ async function anularEnTx(
     if (a && a.estado !== 'REVERSED') {
       let abierto = true;
       try {
-        await comprobarFechaAbierta(companyId, a.fecha.toISOString().slice(0, 10));
+        await comprobarFechaAbierta(companyId, a.fecha.toISOString().slice(0, 10), undefined, tx);
       } catch {
         abierto = false;
       }
       if (abierto) await tx.journalEntry.update({ where: { id: a.id }, data: { estado: 'REVERSED' } });
       else {
-        await comprobarFechaAbierta(companyId, fecha, 'anular la aplicación del abono');
+        await comprobarFechaAbierta(companyId, fecha, 'anular la aplicación del abono', tx);
         await tx.journalEntry.create({
           data: {
             companyId,
