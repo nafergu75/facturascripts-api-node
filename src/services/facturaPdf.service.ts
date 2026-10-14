@@ -65,7 +65,7 @@ import {
  *
  * `generarPdfFactura` carga los datos de la BD; `renderizarFactura` solo dibuja
  * (funcion pura sobre un objeto plano, se puede probar sin BD).
- * TODO (Verifactu paso 2): el QR y la leyenda "VERI*FACTU" al enviar a la AEAT.
+ * TODO (Verifactu paso 2): el QR y la leyenda "VERI*FACTU", en los tres dibujos (este, facturaPdfPlantillaA y facturaPdfPlantillaB) y ya en el PDF que se archiva al emitir (es el que se descarga despues).
  * El logo de la empresa (si lo hay) va arriba a la derecha y el numero baja debajo.
  */
 
