@@ -4,6 +4,7 @@ import { SerieDocumento, TipoDocumentoSerie, TIPOS_DOCUMENTO_SERIE, esTipoDocume
 import { badRequest, conflict, notFound } from '../utils/http-errors';
 import { esEmpresaEspanola } from './perfilEmpresa.service';
 import { leerAjustesFacturacion } from './ajustesFacturacion.service';
+import { sembrarSeries } from './seriesSemilla.service';
 import {
   admiteCeramica,
   admiteDescuento,
@@ -148,54 +149,23 @@ function aDominio(s: InvoiceSeries, ctx: ContextoPlantillas): SerieDocumento {
 }
 
 /**
- * Series que toda empresa necesita: la general de facturas, la de rectificativas
- * y la de facturas proforma (P-1, P-2...; no son facturas, no cuentan para nada fiscal).
- * Si el codigo ya lo usa otra serie de otro tipo, se prueba con el alternativo.
+ * Crea las series por defecto que le falten a la empresa (idempotente; ver
+ * seriesSemilla.service): A, R, P y C, y la B si la empresa es espanola y
+ * vende ceramica (Configuracion > Facturacion).
  */
-const SEMILLAS: Array<Pick<SerieDocumento, 'codigo' | 'descripcion' | 'tipoDocumento'> & { alternativo?: string }> = [
-  { codigo: 'A', descripcion: 'Serie general', tipoDocumento: 'FACTURA' },
-  { codigo: 'R', descripcion: 'Facturas rectificativas', tipoDocumento: 'RECTIFICATIVA' },
-  { codigo: 'P', descripcion: 'Facturas proforma', tipoDocumento: 'PROFORMA', alternativo: 'PF' },
-];
+async function asegurarSemilla(companyId: string): Promise<void> {
+  await sembrarSeries(companyId, () => vendeCeramicaEspanola(companyId));
+}
 
 /**
- * Serie C de facturas (prestaciones de servicios; usa sola la plantilla C):
- * se crea en todas las empresas, las de antes y las nuevas, activa y sin ser
- * la predeterminada, si no hay ya una serie con el codigo C (de cualquier
- * tipo). Su numeracion es la suya, independiente de la A y la B.
+ * Configuracion > Facturacion dice que la empresa vende ceramica y es
+ * espanola (la plantilla B solo vale en Espana). Solo lee; con un prisma
+ * simulado sin LegalConfig (tests sin BD), espanola.
  */
-const SERIE_C = { codigo: 'C', descripcion: 'Prestaciones de servicios', tipoDocumento: 'FACTURA' } as const;
-
-/** Crea las series por defecto que le falten a la empresa (idempotente). */
-async function asegurarSemilla(companyId: string): Promise<void> {
-  const existentes = await prisma.invoiceSeries.findMany({ where: { companyId }, select: { tipoDocumento: true, codigo: true } });
-  const tipos = new Set(existentes.map((s) => s.tipoDocumento));
-  // La C, despues de las de siempre: en una empresa nueva, la A se crea igual (y es la predeterminada).
-  const sinSerieC = !existentes.some((s) => s.codigo === SERIE_C.codigo);
-  for (const { alternativo, ...semilla } of SEMILLAS) {
-    if (tipos.has(semilla.tipoDocumento)) continue;
-    // upsert: dos peticiones a la vez no deben chocar con el unico (empresa, codigo).
-    const s = await prisma.invoiceSeries.upsert({
-      where: { companyId_codigo: { companyId, codigo: semilla.codigo } },
-      create: { companyId, ...semilla, activa: true, porDefecto: true },
-      update: {},
-    });
-    if (s.tipoDocumento !== semilla.tipoDocumento && alternativo) {
-      await prisma.invoiceSeries.upsert({
-        where: { companyId_codigo: { companyId, codigo: alternativo } },
-        create: { companyId, ...semilla, codigo: alternativo, activa: true, porDefecto: true },
-        update: {},
-      });
-    }
-  }
-  if (sinSerieC) {
-    // upsert: dos peticiones a la vez no deben chocar con el unico (empresa, codigo).
-    await prisma.invoiceSeries.upsert({
-      where: { companyId_codigo: { companyId, codigo: SERIE_C.codigo } },
-      create: { companyId, ...SERIE_C, activa: true, porDefecto: false },
-      update: {},
-    });
-  }
+async function vendeCeramicaEspanola(companyId: string): Promise<boolean> {
+  if (!(await leerAjustesFacturacion(companyId)).vendeCeramica) return false;
+  const conLegal = typeof (prisma as unknown as { legalConfig?: { findUnique?: unknown } }).legalConfig?.findUnique === 'function';
+  return conLegal ? esEmpresaEspanola(companyId) : true;
 }
 
 /**
