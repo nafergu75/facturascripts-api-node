@@ -38,9 +38,36 @@ export async function logCreate(supplierId: string, usuarioEmail?: string, descr
   return formatAuditEntry(entry);
 }
 
+/** Largo de valorAnterior y valorNuevo en la BD (String de Prisma: VARCHAR(191)). */
+export const LARGO_VALOR_HISTORIAL = 191;
+
+/**
+ * Valor de un campo para el historial: en JSON y de 191 caracteres como mucho,
+ * lo que cabe en la columna. Un texto mas largo (una web de hasta 255, un
+ * nombre fiscal de 200) se recorta con «…» y sigue siendo JSON valido. Sin el
+ * recorte, el cambio ya guardado daba un 500 (P2000) y no quedaba en el
+ * historial.
+ */
+export function valorParaHistorial(valor: unknown): string | null {
+  if (valor == null) return null;
+  const json = JSON.stringify(valor);
+  if (json === undefined) return null;
+  if (json.length <= LARGO_VALOR_HISTORIAL) return json;
+  if (typeof valor !== 'string') return `${json.slice(0, LARGO_VALOR_HISTORIAL - 1)}…`;
+  // Por letras (no parte un emoji) y quitando lo que sobre tras escapar comillas o barras.
+  const letras = Array.from(valor);
+  let n = letras.length;
+  let recortado = json;
+  while (recortado.length > LARGO_VALOR_HISTORIAL && n > 0) {
+    n = Math.max(0, n - Math.max(1, recortado.length - LARGO_VALOR_HISTORIAL + 1));
+    recortado = JSON.stringify(`${letras.slice(0, n).join('')}…`);
+  }
+  return recortado;
+}
+
 /**
  * Registrar la actualización de un proveedor o entidad relacionada.
- * Graba el campo modificado y valores anterior/nuevo.
+ * Graba el campo modificado y valores anterior/nuevo (recortados si no caben).
  */
 export async function logUpdate(
   supplierId: string,
@@ -56,8 +83,8 @@ export async function logUpdate(
       usuarioEmail: usuarioEmail || null,
       tipoAccion: 'update',
       campo,
-      valorAnterior: valorAnterior != null ? JSON.stringify(valorAnterior) : null,
-      valorNuevo: valorNuevo != null ? JSON.stringify(valorNuevo) : null,
+      valorAnterior: valorParaHistorial(valorAnterior),
+      valorNuevo: valorParaHistorial(valorNuevo),
       descripcion: descripcion || `Campo '${campo}' actualizado`,
     },
   });

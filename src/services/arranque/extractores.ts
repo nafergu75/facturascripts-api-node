@@ -35,6 +35,7 @@ import { leerPlanDeFilas } from '../puestaEnMarcha/planAnterior';
 import type { CabeceraDetectada, Campo } from './campos';
 import type { TipoHoja } from './clasificador';
 import { expandirCodigoConPunto, quitarCabecerasRepetidas } from './lectorLibros';
+import { normalizarWeb } from '../../utils/web';
 
 const round2 = (n: number): number => Math.round((n + Number.EPSILON) * 100) / 100;
 
@@ -47,6 +48,8 @@ export interface DatosFicha {
   pais?: string;
   email?: string;
   telefono?: string;
+  /** Ya normalizada (con https://). Una que no es una web se deja fuera: no para la carga. */
+  web?: string;
 }
 
 export interface CuentaLeida {
@@ -368,6 +371,11 @@ function expandirCodigos(filas: unknown[][], columnas: number[], longitud: numbe
 
 const textoCelda = (f: unknown[], c?: number) => (c === undefined ? '' : texto(f[c]));
 const opcional = (s: string) => (s ? s : undefined);
+/** Web de un listado: normalizada como en la ficha; si no es una web, nada. */
+const webDeCelda = (s: string) => {
+  const w = normalizarWeb(s);
+  return w.ok && w.web ? w.web : undefined;
+};
 
 function datosFicha(f: unknown[], m: Partial<Record<Campo, number>>): DatosFicha | undefined {
   const d: DatosFicha = {
@@ -378,6 +386,7 @@ function datosFicha(f: unknown[], m: Partial<Record<Campo, number>>): DatosFicha
     pais: opcional(textoCelda(f, m.pais).toUpperCase().slice(0, 3)),
     email: opcional(textoCelda(f, m.email).slice(0, 190)),
     telefono: opcional(textoCelda(f, m.telefono).replace(/\.0+$/, '').slice(0, 30)),
+    web: webDeCelda(textoCelda(f, m.web)),
   };
   for (const k of Object.keys(d) as Array<keyof DatosFicha>) if (d[k] === undefined) delete d[k];
   return Object.keys(d).length ? d : undefined;

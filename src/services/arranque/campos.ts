@@ -39,6 +39,7 @@ export type Campo =
   | 'pais'
   | 'email'
   | 'telefono'
+  | 'web'
   | 'coste'
   | 'amortAcumulada'
   | 'coeficiente'
@@ -90,6 +91,7 @@ export const PATRONES_CAMPOS: Array<[Campo, RegExp]> = [
   ['pais', /^(pais|cod pais|codigo pais)$/],
   ['email', /^(email|e mail|correo|correo electronico|mail)$/],
   ['telefono', /^(telefono|tel|tlf|tfno|movil|telefono 1)$/],
+  ['web', /^(web|www|url|pagina web|sitio web|website|web site|direccion web|pagina de internet)$/],
 ];
 
 /** Dato que lleva una columna por su titulo, o null. */

@@ -255,7 +255,7 @@ function puntuar(s: Senales): Record<Exclude<TipoHoja, 'DESCONOCIDO'>, number> {
   if (t('nif') && t('nombre') && !alguno(CUALQUIER_IMPORTE) && !t('fecha') && !t('documento')) {
     let base = 0.6;
     if (s.nifValidos >= 0.6) base += 0.2;
-    if (alguno(['direccion', 'cp', 'municipio', 'provincia', 'email', 'telefono'])) base += 0.1;
+    if (alguno(['direccion', 'cp', 'municipio', 'provincia', 'email', 'telefono', 'web'])) base += 0.1;
     if (t('cuenta') && s.deTerceros > 0.95) base += 0.1;
     if (t('cuenta') && s.grupos >= 3) base -= 0.4;
     const esCliente = titulo(PALABRAS.clientes);

@@ -213,6 +213,8 @@ model Customer {
   cp              String?
   email           String?
   telefono        String?
+  /// Web del cliente, ya normalizada (con http:// o https:// delante; si no lo lleva, https://): en la ficha sale como enlace.
+  web             String?         @db.VarChar(255)
   activo          Boolean         @default(true)
   /// Moneda en la que se le suele facturar (ISO 4217). Solo la propone el
   /// formulario; el backend no la aplica si la factura no indica moneda.
@@ -829,6 +831,8 @@ model Supplier {
   cp           String?
   email        String?
   telefono     String?
+  /// Web del proveedor, ya normalizada (con http:// o https:// delante; si no lo lleva, https://): en la ficha sale como enlace.
+  web          String?               @db.VarChar(255)
   activo       Boolean               @default(true)
   /// Subcuentas propias con el MISMO correlativo: 400N (compras) y 410N
   /// (servicios). Se asignan las dos al dar de alta la ficha; en el plan solo

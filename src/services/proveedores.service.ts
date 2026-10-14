@@ -4,8 +4,8 @@
  * gasto (expense-invoices). Mantiene los endpoints /companies/:companyId/proveedores.
  *
  * Alta y modificacion con los datos validados (datosProveedor): NIF español
- * con su caracter de control, pais ISO-2, direccion completa, email y
- * telefono que se pueden borrar. NIF repetido y borrar con facturas: 409.
+ * con su caracter de control, pais ISO-2, direccion completa, y email,
+ * telefono y web que se pueden borrar. NIF repetido y borrar con facturas: 409.
  * Cada alta, cambio y baja queda en el historial (SupplierAudit).
  */
 import { Prisma } from '@prisma/client';
@@ -19,6 +19,8 @@ import { limpiarNif, normalizarPais, prefijoNifIvaUe } from '../domain/tipo-oper
 import { numeroFiscalEnFrase } from '../domain/numero-fiscal';
 import { logCreate, logDelete, logUpdate } from './suppliers/supplierAudit.service';
 import { hoyEspana } from '../utils/fechas';
+import { normalizarWeb } from '../utils/web';
+import { normalizarEmail } from '../utils/email';
 import {
   apuntesEnSubcuentas,
   conReintentoSubcuenta,
@@ -35,6 +37,8 @@ export interface Proveedor {
   nifCif: string;
   email: string;
   telefono: string;
+  /** Con https:// delante; '' sin web. */
+  web: string;
   direccion: string;
   provincia: string;
   municipio: string;
@@ -65,6 +69,7 @@ type SupplierRow = {
   nifCif: string;
   email: string | null;
   telefono: string | null;
+  web?: string | null;
   direccion: string | null;
   provincia: string | null;
   municipio: string | null;
@@ -83,6 +88,7 @@ function aProveedor(s: SupplierRow, enPlan: string[] = []): Proveedor {
     nifCif: s.nifCif,
     email: s.email ?? '',
     telefono: s.telefono ?? '',
+    web: s.web ?? '',
     direccion: s.direccion ?? '',
     provincia: s.provincia ?? '',
     municipio: s.municipio ?? '',
@@ -119,7 +125,7 @@ async function buscarDeLaEmpresa(companyId: string, id: string): Promise<Supplie
   return s;
 }
 
-const CAMPOS_HISTORIAL = ['nombreFiscal', 'nifCif', 'pais', 'direccion', 'provincia', 'municipio', 'cp', 'email', 'telefono', 'activo'] as const;
+const CAMPOS_HISTORIAL = ['nombreFiscal', 'nifCif', 'pais', 'direccion', 'provincia', 'municipio', 'cp', 'email', 'telefono', 'web', 'activo'] as const;
 
 export const proveedoresService = {
   /**
@@ -269,12 +275,12 @@ export interface DatosProveedor {
   cp?: string | null;
   email?: string | null;
   telefono?: string | null;
+  web?: string | null;
   activo?: boolean;
 }
 
 const errorCampo = (mensaje: string, campo: string) => badRequest(mensaje, { campo });
 const textoONull = (v: unknown): string | null => (v === undefined || v === null || String(v).trim() === '' ? null : String(v).trim());
-const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 /**
  * Pais del proveedor en ISO-2. Sin pais (o 'ES') y con un NIF-IVA de otro
@@ -296,7 +302,8 @@ export function leerPaisProveedor(valor: unknown, nif?: string): string | undefi
  * (nombre y NIF obligatorios); con `existente`, una modificacion parcial: solo
  * se devuelven los campos que llegan. En España el NIF se valida con su
  * caracter de control y se guarda normalizado; fuera, en mayusculas y sin
- * espacios, puntos ni guiones. Una cadena vacia en email o telefono los borra.
+ * espacios, puntos ni guiones. Una cadena vacia en email, telefono o web los
+ * borra; la web se guarda sin espacios y con https:// si no lo lleva.
  */
 export function datosProveedor(
   data: Record<string, unknown>,
@@ -354,14 +361,20 @@ export function datosProveedor(
   }
 
   if (has('email')) {
-    const e = textoONull(data.email);
-    if (e && !EMAIL.test(e)) throw errorCampo('El email no es válido.', 'email');
-    d.email = e;
+    // Mal escrito o mas largo que la columna: 400 con el campo (antes, uno largo daba 500).
+    const e = normalizarEmail(data.email);
+    if (!e.ok) throw errorCampo(e.motivo, 'email');
+    d.email = e.email;
   }
   if (has('telefono', 'telefono1')) {
     const t = textoONull(data.telefono ?? data.telefono1);
     if (t && t.length > 30) throw errorCampo('El teléfono es demasiado largo.', 'telefono');
     d.telefono = t;
+  }
+  if (has('web')) {
+    const w = normalizarWeb(data.web);
+    if (!w.ok) throw errorCampo(w.motivo, 'web');
+    d.web = w.web;
   }
   if (has('activo')) {
     const a = data.activo;
