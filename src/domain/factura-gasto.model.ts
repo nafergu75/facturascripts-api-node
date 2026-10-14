@@ -53,11 +53,22 @@ export const GASTO_VIGENTE: { estado: { notIn: string[] } } = { estado: { notIn:
 /**
  * Cuenta de inmovilizado: todo el grupo 2 del PGC (20 a 29). Una compra de
  * inmovilizado no es un gasto del año (se amortiza): el panel la deja fuera
- * de los gastos (decision del usuario, 13-10-2026). Su IVA si es soportado
- * (casillas de bienes de inversion del 303).
+ * de los gastos (decision del usuario, 13-10-2026). Su IVA si es soportado.
+ * Las casillas de bienes de inversion del 303 van con su propio criterio
+ * (esCuentaBienInversionIva), que no es el mismo.
  */
 export const PREFIJO_INMOVILIZADO = '2';
 export const esCuentaInmovilizado = (cuenta: string | null | undefined): boolean => String(cuenta ?? '').trim().startsWith(PREFIJO_INMOVILIZADO);
+
+/**
+ * Linea de gasto que va a las casillas de bienes de inversion del 303: hoy,
+ * cualquier cuenta del grupo 2 (el criterio de siempre). Va aparte del panel
+ * (esCuentaInmovilizado) porque fiscalmente no es lo mismo: el art. 108 LIVA
+ * deja fuera el inmovilizado intangible (20), el financiero (24 a 26) y los
+ * bienes de menos de 3.005,06 €. Hoy no se nota (Compras solo admite cuentas
+ * del grupo 6), pero hay que afinarlo antes de abrir Compras a las 2xx.
+ */
+export const esCuentaBienInversionIva = (cuenta: string | null | undefined): boolean => String(cuenta ?? '').startsWith('2');
 
 /** Fecha del asiento, del libro de IVA y de los modelos: la de registro si la hay. */
 export const fechaContableGasto = (f: { fechaEmision: string; fechaRegistro?: string | null }): string => f.fechaRegistro || f.fechaEmision;
