@@ -212,6 +212,73 @@ describe('IEEPNR (plantilla A)', () => {
   });
 });
 
+describe('plantilla B: cuenta del cargo de palets, logo de la marca y sello', () => {
+  // PNG de 1 x 1 y JPG minimo (solo cuenta la cabecera).
+  const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64');
+  const JPG = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 0x10, 0x4a, 0x46, 0x49, 0x46, 0, 1]);
+  const subir = (tipo: string, fichero: Buffer, nombre = 'imagen.png') =>
+    request(app).put(`/companies/${ES}/ajustes-facturacion/imagenes/${tipo}`).attach('imagen', fichero, nombre);
+
+  it('por defecto: sin cuenta propia del cargo de palets y sin imagenes', async () => {
+    expect((await leer()).body.data).toMatchObject({ cuentaPalets: null, imagenesPlantillaB: { marca: false, sello: false } });
+  });
+
+  it('la cuenta del cargo de palets es una de ventas (70x) del plan; vacia vuelve a la de ventas', async () => {
+    expect((await guardar({ cuentaPalets: '704' })).body.data).toMatchObject({ cuentaPalets: '704' });
+    for (const [cuentaPalets, campo] of [
+      ['abc', 'cuentaPalets'],
+      ['600', 'cuentaPalets'],
+      ['7049999', 'cuentaPalets'],
+      [7, 'cuentaPalets'],
+    ]) {
+      const res = await guardar({ cuentaPalets });
+      expect([res.status, res.body.details?.campo]).toEqual([400, campo]);
+    }
+    expect((await leer()).body.data.cuentaPalets).toBe('704');
+    expect((await guardar({ cuentaPalets: null })).body.data.cuentaPalets).toBeNull();
+  });
+
+  it('sube, lee y quita el logo de la marca y el sello (PNG o JPG); el GET da la imagen tal cual', async () => {
+    expect((await subir('marca', PNG)).status).toBe(200);
+    expect((await subir('SELLO', JPG, 'sello.jpg')).status).toBe(200);
+    expect((await leer()).body.data.imagenesPlantillaB).toEqual({ marca: true, sello: true });
+    const marca = await request(app).get(`/companies/${ES}/ajustes-facturacion/imagenes/marca`).buffer(true);
+    expect(marca.status).toBe(200);
+    expect(marca.headers['content-type']).toBe('image/png');
+    const sello = await request(app).get(`/companies/${ES}/ajustes-facturacion/imagenes/sello`).buffer(true);
+    expect(sello.headers['content-type']).toBe('image/jpeg');
+    // Se cambia sin crear otra.
+    expect((await subir('marca', JPG, 'marca.jpg')).status).toBe(200);
+    expect(await prisma.imagenFactura.count({ where: { companyId: ES } })).toBe(2);
+    expect((await request(app).delete(`/companies/${ES}/ajustes-facturacion/imagenes/sello`)).status).toBe(200);
+    expect((await request(app).get(`/companies/${ES}/ajustes-facturacion/imagenes/sello`)).status).toBe(404);
+    expect((await leer()).body.data.imagenesPlantillaB).toEqual({ marca: true, sello: false });
+    // Cada empresa ve solo las suyas.
+    expect((await request(app).get(`/companies/${OTRA}/ajustes-facturacion/imagenes/marca`)).status).toBe(404);
+  });
+
+  it('un fichero que no es PNG ni JPG, vacio o un tipo que no existe: 400', async () => {
+    const pdf = await subir('marca', Buffer.from('%PDF-1.4 hola'), 'marca.png');
+    expect([pdf.status, pdf.body.details?.campo]).toEqual([400, 'imagen']);
+    const sinFichero = await request(app).put(`/companies/${ES}/ajustes-facturacion/imagenes/marca`);
+    expect([sinFichero.status, sinFichero.body.details?.campo]).toEqual([400, 'imagen']);
+    const tipo = await subir('logo', PNG);
+    expect([tipo.status, tipo.body.details?.campo]).toEqual([400, 'tipo']);
+  });
+
+  it('el contable las ve pero no las cambia; el comercial si', async () => {
+    rol = 'contable';
+    expect((await request(app).get(`/companies/${ES}/ajustes-facturacion/imagenes/marca`)).status).toBe(200);
+    expect((await subir('sello', PNG)).status).toBe(403);
+    expect((await request(app).delete(`/companies/${ES}/ajustes-facturacion/imagenes/marca`)).status).toBe(403);
+    rol = 'ventas';
+    expect((await subir('sello', PNG)).status).toBe(200);
+    rol = 'admin';
+    await request(app).delete(`/companies/${ES}/ajustes-facturacion/imagenes/sello`);
+    await request(app).delete(`/companies/${ES}/ajustes-facturacion/imagenes/marca`);
+  });
+});
+
 describe('uso en las facturas de venta', () => {
   const linea = { descripcion: 'Servicio', cantidad: 1, precioUnitario: 100, tipoIva: 21 };
 

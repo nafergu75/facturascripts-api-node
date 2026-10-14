@@ -20,6 +20,12 @@
  * rectificativa, la de la original): cambiarla aquí no cambia el asiento de las
  * ya emitidas. Ningún modelo cambia; el panel no cuenta como ingreso el IEEPNR
  * que va a una cuenta 47.
+ *
+ * cuentaPalets (plantilla B): la cuenta de ingresos (70x) que se pone en la
+ * línea del cargo de palets de madera que no lleve otra, al guardar la factura;
+ * queda en la línea, así que cambiarla aquí no cambia las ya guardadas.
+ * El logo de la marca y el sello de la plantilla B van aparte
+ * (imagenesFactura.service): aquí solo se dice si los hay.
  */
 import { z } from 'zod';
 import { prisma, type ClienteBD, type TransaccionBD } from '../config/database';
@@ -37,6 +43,7 @@ import { PGC_BASE } from '../domain/pgc-model';
 import { badRequest } from '../utils/http-errors';
 import { errorDeValidacion } from '../utils/zod-errores';
 import { perfilEmpresa } from './perfilEmpresa.service';
+import { problemaCuentasLinea } from './cuentasLinea.service';
 
 type Db = ClienteBD | TransaccionBD;
 
@@ -56,6 +63,8 @@ export interface AjustesFacturacionResp extends AjustesFacturacion {
   monedaCuenta: string;
   /** Cuentas activas que se pueden elegir (quien edita esto no siempre ve Tesorería). */
   cuentasBancarias: CuentaParaFactura[];
+  /** Plantilla B: si ya hay logo de la marca y sello de la empresa (GET /ajustes-facturacion/imagenes/marca|sello). */
+  imagenesPlantillaB: { marca: boolean; sello: boolean };
   actualizadoEn: string | null;
   actualizadoPor: string | null;
 }
@@ -76,6 +85,7 @@ export async function leerAjustesFacturacion(companyId: string, db: Db = prisma)
     ieepnrRepercute: fila.ieepnrRepercute ?? false,
     ieepnrPorKg: fila.ieepnrPorKg === null || fila.ieepnrPorKg === undefined ? AJUSTES_FACTURACION_POR_DEFECTO.ieepnrPorKg : Number(fila.ieepnrPorKg),
     ieepnrCuenta: fila.ieepnrCuenta ?? null,
+    cuentaPalets: fila.cuentaPalets ?? null,
     guardado: true,
     actualizadoEn: fila.updatedAt.toISOString(),
     actualizadoPor: fila.updatedBy,
@@ -92,10 +102,23 @@ async function cuentasActivas(companyId: string, db: Db = prisma): Promise<Cuent
   return cuentas.map((c) => ({ ...c, moneda: c.moneda || 'EUR' }));
 }
 
+/** Imagenes de la plantilla B que tiene la empresa (sin leer sus bytes). */
+async function imagenesPlantillaB(companyId: string): Promise<{ marca: boolean; sello: boolean }> {
+  if (typeof (prisma as unknown as { imagenFactura?: { findMany?: unknown } }).imagenFactura?.findMany !== 'function') return { marca: false, sello: false };
+  const tipos = new Set((await prisma.imagenFactura.findMany({ where: { companyId }, select: { tipo: true } })).map((i) => i.tipo));
+  return { marca: tipos.has('MARCA'), sello: tipos.has('SELLO') };
+}
+
 /** GET: los ajustes con lo que la pantalla necesita para editarlos. */
 export async function obtenerAjustesFacturacion(companyId: string): Promise<AjustesFacturacionResp> {
-  const [ajustes, perfil, cuentas] = await Promise.all([leerAjustesFacturacion(companyId), perfilEmpresa(companyId), cuentasActivas(companyId)]);
+  const [ajustes, perfil, cuentas, imagenes] = await Promise.all([
+    leerAjustesFacturacion(companyId),
+    perfilEmpresa(companyId),
+    cuentasActivas(companyId),
+    imagenesPlantillaB(companyId),
+  ]);
   return {
+    imagenesPlantillaB: imagenes,
     ...ajustes,
     irpfDefecto: perfil.espanola ? ajustes.irpfDefecto : 0,
     // El IEEPNR es un impuesto español: fuera de España, nunca.
@@ -122,6 +145,7 @@ const esquema = z
       .max(IEEPNR_POR_KG_MAX)
       .refine((v) => Math.abs(Math.round(v * 10000) - v * 10000) < 1e-6),
     ieepnrCuenta: z.string().trim().regex(/^\d{2,15}$/).nullable(),
+    cuentaPalets: z.string().trim().regex(/^\d{3,15}$/).nullable(),
   })
   .partial()
   .strict();
@@ -136,6 +160,7 @@ const MENSAJES: Record<string, string> = {
   ieepnrRepercute: 'Indica si repercutes el IEEPNR en tus facturas (sí o no).',
   ieepnrPorKg: `El IEEPNR por kg es un importe en euros mayor que 0 y de ${IEEPNR_POR_KG_MAX} como mucho, con 4 decimales como máximo (por ejemplo, 0,45).`,
   ieepnrCuenta: 'La cuenta del IEEPNR se escribe solo con números (por ejemplo, 4758) o se deja vacía.',
+  cuentaPalets: 'La cuenta del cargo de palets se escribe solo con números (por ejemplo, 704) o se deja vacía.',
 };
 
 /** Cuentas del plan base (PGC) que se copian al plan de la empresa al contabilizar. */
@@ -172,6 +197,7 @@ export async function guardarAjustesFacturacion(companyId: string, userId: strin
     ieepnrRepercute: cambios.ieepnrRepercute ?? actual.ieepnrRepercute,
     ieepnrPorKg: cambios.ieepnrPorKg ?? actual.ieepnrPorKg,
     ieepnrCuenta: cambios.ieepnrCuenta !== undefined ? cambios.ieepnrCuenta || null : actual.ieepnrCuenta,
+    cuentaPalets: cambios.cuentaPalets !== undefined ? cambios.cuentaPalets || null : actual.cuentaPalets,
   };
   // Fuera de España no hay IRPF ni IEEPNR: se guardan siempre 0 y no.
   if (!perfil.espanola) {
@@ -182,6 +208,11 @@ export async function guardarAjustesFacturacion(companyId: string, userId: strin
   if (cambios.ieepnrCuenta) {
     const problema = await problemaCuentaIeepnr(companyId, cambios.ieepnrCuenta);
     if (problema) throw badRequest(problema, { campo: 'ieepnrCuenta' });
+  }
+  // La del cargo de palets, como la de cualquier linea de venta: 70x, en el plan y activa.
+  if (cambios.cuentaPalets) {
+    const problema = await problemaCuentasLinea(companyId, 'venta', [cambios.cuentaPalets]);
+    if (problema) throw badRequest(problema.mensaje, { campo: 'cuentaPalets' });
   }
 
   if (cambios.cuentaBancariaId) {

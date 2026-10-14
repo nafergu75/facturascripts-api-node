@@ -30,6 +30,12 @@ export interface AjustesFacturacion {
   ieepnrPorKg: number;
   /** Cuenta del IEEPNR si la empresa fuera contribuyente; null = la de ingresos de cada linea. Cada factura la guarda al emitirse. */
   ieepnrCuenta: string | null;
+  /**
+   * Plantilla B: cuenta de ingresos del cargo de palets de madera (p. ej. 704,
+   * ventas de envases y embalajes); null = la de ventas de siempre. Se pone en
+   * la linea del cargo que no lleve otra.
+   */
+  cuentaPalets: string | null;
 }
 
 export const AJUSTES_FACTURACION_POR_DEFECTO: Readonly<AjustesFacturacion> = Object.freeze({
@@ -42,6 +48,7 @@ export const AJUSTES_FACTURACION_POR_DEFECTO: Readonly<AjustesFacturacion> = Obj
   ieepnrRepercute: false,
   ieepnrPorKg: 0.45,
   ieepnrCuenta: null,
+  cuentaPalets: null,
 });
 
 export const PERIODICIDADES_IVA = ['TRIMESTRAL', 'MENSUAL'] as const;
