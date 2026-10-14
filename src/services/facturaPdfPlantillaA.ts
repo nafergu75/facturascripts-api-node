@@ -36,9 +36,13 @@ import {
   nombrePais,
   partir,
   textoRectificacionPdf,
+  llevaMarcaPruebas,
+  llevaQrVerifactu,
+  tamMarcaAgua,
   type DatosFacturaPdf,
   type LineaFacturaPdf,
 } from './facturaPdf.service';
+import { ANCHO_BLOQUE_QR, dibujarBloqueQr, MARCA_PRUEBAS } from './verifactu/qrPdf';
 
 // ---------- Colores y medidas de la muestra ----------
 
@@ -81,6 +85,17 @@ const SUELO_COLA = 825;
 /** Con varias paginas: hasta donde llega cualquier cosa, para no pisar «Página n de m». */
 const SUELO_PAGINADO = 820;
 const Y_PAGINA = 830;
+/**
+ * QR de VERI*FACTU: en el hueco de arriba entre el recuadro de la empresa y el
+ * logo, con su borde de arriba a 15 pt del papel. La letra de sus textos es la
+ * mayor de los datos (el nombre de la empresa y el del cliente, 12,2 pt). Lo
+ * que va desde el recuadro del numero baja lo que haga falta.
+ */
+export const HUECO_QR_A = { izq: 238.2, der: 398.8, arriba: 15 } as const;
+export const TAM_QR_A = T_NOMBRE;
+/** Donde empieza hoy el recuadro del numero (puntos desde arriba). */
+const TOP_NUMERO = 133.8;
+
 /** NIF de una persona fisica (DNI, NIE o K, L, M): «NIF»; el de una sociedad, «CIF», como en la muestra. */
 const etiquetaNifEspanol = (nif: string) => (/^[0-9XYZKLM]/i.test(nif.trim()) ? 'NIF' : 'CIF');
 
@@ -295,10 +310,10 @@ export async function renderizarFacturaPlantillaA(f: DatosFacturaPdf): Promise<B
   const nuevaPagina = (): PDFPage => {
     const pg = doc.addPage([ancho, alto]);
     paginas.push(pg);
-    if (esBorrador) {
+    const marca = esBorrador ? 'BORRADOR' : llevaMarcaPruebas(f) ? MARCA_PRUEBAS : null;
+    if (marca) {
       // Marca de agua centrada y girada, debajo de todo.
-      const marca = 'BORRADOR';
-      const tam = 100;
+      const tam = tamMarcaAgua(marca, negrita, ancho, alto);
       const w = negrita.widthOfTextAtSize(marca, tam);
       const a = (35 * Math.PI) / 180;
       pg.drawText(marca, {
@@ -348,21 +363,41 @@ export async function renderizarFacturaPlantillaA(f: DatosFacturaPdf): Promise<B
     caja(p, X_TEXTO, 101.0, X_TEXTO + normal.widthOfTextAtSize(email, T_TABLA), 101.6, AZUL);
   }
 
+  // ---------- QR de VERI*FACTU (solo en la primera pagina) ----------
+  // dy: lo que baja todo lo que va desde el recuadro del numero para dejar sitio al bloque.
+  let dy = 0;
+  let xBloqueQr = X_DER;
+  if (llevaQrVerifactu(f)) {
+    const anchoHueco = HUECO_QR_A.der - HUECO_QR_A.izq;
+    const bloque = dibujarBloqueQr(p, {
+      xCentro: (HUECO_QR_A.izq + HUECO_QR_A.der) / 2,
+      yArriba: Y(HUECO_QR_A.arriba),
+      url: f.verifactu!.url,
+      tam: TAM_QR_A,
+      anchoMax: Math.min(ANCHO_BLOQUE_QR, anchoHueco - 4),
+      normal,
+      negrita,
+    });
+    xBloqueQr = bloque.cajaBloque.x;
+    dy = Math.max(0, alto - bloque.cajaBloque.y + 4 - TOP_NUMERO);
+  }
+
   // ---------- FACTURA y recuadro del numero y la fecha ----------
-  texto(p, titulo, 43.8, 124.5, { tam: T_TITULO, fuente: negrita });
+  // Un titulo largo (rectificativa, simplificada) se achica para no llegar al QR.
+  texto(p, titulo, 43.8, 124.5, { tam: tamQueCabe(titulo, negrita, T_TITULO, xBloqueQr - 8 - 43.8), fuente: negrita });
   if (esProforma) texto(p, AVISO_PROFORMA, X_DER_IN, 124.5, { tam: 8.5, color: GRIS, alinear: 'der' });
   if (esBorrador) texto(p, 'Borrador: sin número ni validez fiscal', X_DER_IN, 124.5, { tam: 8.5, color: GRIS, alinear: 'der' });
-  caja(p, 41.0, 134.6, 135.4, 166.8, VERDE);
-  raya(p, X_IZQ_IN, X_DER, 133.8);
-  raya(p, X_IZQ_IN, X_DER, 165.8);
-  vertical(p, X_IZQ, 133.8, 167.5);
-  vertical(p, 134.4, 135.5, 167.5);
-  vertical(p, X_DER_IN, 135.5, 167.5);
-  texto(p, esProforma ? 'Nº PROFORMA:' : 'Nº FACTURA:', 45.4, 144.7, { tam: T_ETQ, fuente: negrita });
-  texto(p, esBorrador ? 'Borrador (sin número)' : (f.numeroCompleto ?? ''), 137.2, 144.7, { tam: T_ETQ });
-  texto(p, 'FECHA:', 45.4, 162.7, { tam: T_ETQ, fuente: negrita });
+  caja(p, 41.0, 134.6 + dy, 135.4, 166.8 + dy, VERDE);
+  raya(p, X_IZQ_IN, X_DER, 133.8 + dy);
+  raya(p, X_IZQ_IN, X_DER, 165.8 + dy);
+  vertical(p, X_IZQ, 133.8 + dy, 167.5 + dy);
+  vertical(p, 134.4, 135.5 + dy, 167.5 + dy);
+  vertical(p, X_DER_IN, 135.5 + dy, 167.5 + dy);
+  texto(p, esProforma ? 'Nº PROFORMA:' : 'Nº FACTURA:', 45.4, 144.7 + dy, { tam: T_ETQ, fuente: negrita });
+  texto(p, esBorrador ? 'Borrador (sin número)' : (f.numeroCompleto ?? ''), 137.2, 144.7 + dy, { tam: T_ETQ });
+  texto(p, 'FECHA:', 45.4, 162.7 + dy, { tam: T_ETQ, fuente: negrita });
   const fechaTxt = `${F.fecha(f.fechaEmision)}${f.fechaOperacion && f.fechaOperacion !== f.fechaEmision ? `   (fecha de la operación: ${F.fecha(f.fechaOperacion)})` : ''}`;
-  texto(p, fechaTxt, 137.2, 162.7, { tam: T_ETQ });
+  texto(p, fechaTxt, 137.2, 162.7 + dy, { tam: T_ETQ });
 
   // ---------- CLIENTE ----------
   const X_CLIENTE = 199.6;
@@ -384,19 +419,19 @@ export async function renderizarFacturaPlantillaA(f: DatosFacturaPdf): Promise<B
         ]
       : [c.direccion?.trim(), lineaPoblacion(c.cp, c.municipio, c.provincia, paisCliente), c.pais ? nombrePais(c.pais, 'es').toUpperCase() : null];
   for (const r of resto.filter((s): s is string => !!s)) for (const l of partir(r, negrita, T_ETQ, anchoCliente)) datosCliente.push([l, T_ETQ]);
-  let base = 193.6;
+  let base = 193.6 + dy;
   datosCliente.forEach(([s, tam], i) => {
     if (i > 0) base += 13.2;
     texto(p, s, X_CLIENTE, base, { tam, fuente: negrita });
   });
-  const fondoCliente = Math.max(264.4, base + 18);
-  caja(p, 41.0, 174.8, 135.4, fondoCliente - 0.8, VERDE);
-  raya(p, X_IZQ_IN, X_DER, 174.0);
+  const fondoCliente = Math.max(264.4 + dy, base + 18);
+  caja(p, 41.0, 174.8 + dy, 135.4, fondoCliente - 0.8, VERDE);
+  raya(p, X_IZQ_IN, X_DER, 174.0 + dy);
   raya(p, X_IZQ_IN, X_DER, fondoCliente - GRUESO);
-  vertical(p, X_IZQ, 174.0, fondoCliente);
-  vertical(p, 134.4, 175.7, fondoCliente);
-  vertical(p, X_DER_IN, 175.7, fondoCliente);
-  texto(p, 'CLIENTE:', 42.5, 193.6, { tam: T_ETQ, fuente: negrita });
+  vertical(p, X_IZQ, 174.0 + dy, fondoCliente);
+  vertical(p, 134.4, 175.7 + dy, fondoCliente);
+  vertical(p, X_DER_IN, 175.7 + dy, fondoCliente);
+  texto(p, 'CLIENTE:', 42.5, 193.6 + dy, { tam: T_ETQ, fuente: negrita });
   let y = fondoCliente + 9.7;
 
   // ---------- Rectificativa: que corrige, como y por que (bajo el CLIENTE) ----------
