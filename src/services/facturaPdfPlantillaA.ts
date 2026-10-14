@@ -371,9 +371,12 @@ export async function renderizarFacturaPlantillaA(f: DatosFacturaPdf): Promise<B
   const etqNif = paisCliente === 'ES' ? etiquetaNifEspanol(nifCliente) : etiquetaNifCliente(c, 'es');
   const datosCliente: Array<[string, number]> = [];
   for (const l of partir(c.nombreFiscal, negrita, T_NOMBRE, anchoCliente)) datosCliente.push([l, T_NOMBRE]);
-  if (nifCliente) datosCliente.push([`${etqNif}: ${nifCliente}`, T_ETQ]);
-  const resto =
-    paisCliente === 'ES'
+  // Simplificada (F2 o R5) registrada en VERI*FACTU: solo el nombre del cliente, como la plantilla de siempre.
+  const sinIdentificar = f.clienteSinIdentificar === true;
+  if (nifCliente && !sinIdentificar) datosCliente.push([`${etqNif}: ${nifCliente}`, T_ETQ]);
+  const resto = sinIdentificar
+    ? []
+    : paisCliente === 'ES'
       ? [
           c.direccion?.trim(),
           [c.cp?.trim(), c.municipio?.trim()].filter(Boolean).join('   '),

@@ -443,13 +443,15 @@ export async function renderizarFacturaPlantillaB(f: DatosFacturaPdf): Promise<B
     const etqNif = paisCliente === 'ES' ? 'NIF' : etiquetaNifCliente(c, 'es');
     const datos: Array<[string, PDFFont, number, boolean]> = [];
     for (const l of partir(c.nombreFiscal, negrita, T_CLIENTE, anchoCli)) datos.push([l, negrita, T_CLIENTE, true]);
-    if (nifCliente) datos.push([`${etqNif}: ${nifCliente}`, normal, T_CLIENTE, false]);
+    // Simplificada (F2 o R5) registrada en VERI*FACTU: solo el nombre del cliente, como la plantilla de siempre.
+    const sinIdentificar = f.clienteSinIdentificar === true;
+    if (nifCliente && !sinIdentificar) datos.push([`${etqNif}: ${nifCliente}`, normal, T_CLIENTE, false]);
     const prov = c.provincia?.trim();
     const poblacion =
       paisCliente === 'ES'
         ? [[c.cp?.trim(), c.municipio?.trim()].filter(Boolean).join(' '), prov && prov.toUpperCase() !== c.municipio?.trim().toUpperCase() ? `(${prov})` : ''].filter(Boolean).join(' - ')
         : lineaPoblacion(c.cp, c.municipio, c.provincia, paisCliente);
-    const resto = [c.direccion?.trim(), poblacion, paisCliente !== 'ES' && c.pais ? nombrePais(c.pais, 'es').toUpperCase() : null];
+    const resto = sinIdentificar ? [] : [c.direccion?.trim(), poblacion, paisCliente !== 'ES' && c.pais ? nombrePais(c.pais, 'es').toUpperCase() : null];
     for (const r of resto.filter((s): s is string => !!s)) for (const l of partir(r, normal, T_DIRECCION, anchoCli)) datos.push([l, normal, T_DIRECCION, false]);
     // Las lineas de la muestra van de 12,5 a 13,6 puntos; si no caben, mas juntas.
     const paso = Math.min(12.9, datos.length > 1 ? (146 - 53.5) / (datos.length - 1) : 12.9);
