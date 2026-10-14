@@ -20,6 +20,10 @@ import { hoyEspana } from '../utils/fechas';
 import { legalConfigService } from '../services/legalConfig.service';
 import { incomeInvoicesService, type CrearFacturaIngresoDTO } from '../services/income-invoices.service';
 import { seriesEmpresaPruebas } from '../services/verifactu/empresaPruebas.service';
+import { archivarFacturaVenta } from '../services/archivoFacturas.service';
+import { datosPdfFactura, pdfParaDescargar } from '../services/facturaPdf.service';
+import { MARCA_PRUEBAS, TITULO_QR } from '../services/verifactu/qrPdf';
+import { textosDePdf } from './texto-pdf';
 
 function hostDeLaBd(): string {
   try {
@@ -166,8 +170,12 @@ describeBd('empresas de pruebas de VERI*FACTU (BD real)', () => {
   });
 
   it('emitir en la de pruebas genera un registro de PRUEBAS con el NIF de la real; en la real, sin VERI*FACTU, no', async () => {
+    const clientes = new Map<string, string>();
     const emitir = async (companyId: string, extra: Record<string, unknown> = {}) => {
-      const cliente = (await prisma.customer.create({ data: { companyId, nombreFiscal: 'Cliente SL', nifCif: 'B12345674', pais: 'ES', direccion: 'Calle 3', cp: '46001', municipio: 'Valencia' } })).id;
+      const cliente =
+        clientes.get(companyId) ??
+        (await prisma.customer.create({ data: { companyId, nombreFiscal: 'Cliente SL', nifCif: 'B12345674', pais: 'ES', direccion: 'Calle 3', cp: '46001', municipio: 'Valencia' } })).id;
+      clientes.set(companyId, cliente);
       return incomeInvoicesService.crearIngreso({
         companyId,
         customer: { id: cliente },
@@ -186,5 +194,43 @@ describeBd('empresas de pruebas de VERI*FACTU (BD real)', () => {
 
     const real = await emitir(REAL);
     expect(await prisma.verifactuRegistro.count({ where: { incomeInvoiceId: real.id } })).toBe(0);
+
+    // El PDF que se archiva al emitir (despues del commit) ya lleva el QR de prewww2 y la marca de pruebas.
+    await archivarFacturaVenta(pruebasId, f.id);
+    const archivado = await textosDePdf((await pdfParaDescargar(pruebasId, f.id)).contenido);
+    expect(archivado.filter((x) => x.texto === TITULO_QR).map((x) => x.pagina)).toEqual([1]);
+    expect(archivado.some((x) => x.texto === MARCA_PRUEBAS)).toBe(true);
+    const datos = (await datosPdfFactura(pruebasId, f.id)).datos;
+    expect(datos.verifactu?.url).toBe(
+      `https://prewww2.aeat.es/wlpl/TIKE-CONT/ValidarQR?nif=${NIF_REAL}&numserie=${f.numeroCompleto}&fecha=${r.fechaExpedicion}&importe=${r.importeTotal}`,
+    );
+    expect(datos).toMatchObject({ empresaPruebas: true });
+
+    // La real (sin VERI*FACTU): ni QR ni marca.
+    await archivarFacturaVenta(REAL, real.id);
+    const pdfReal = await textosDePdf((await pdfParaDescargar(REAL, real.id)).contenido);
+    expect(pdfReal.some((x) => x.texto === TITULO_QR || x.texto === MARCA_PRUEBAS)).toBe(false);
+
+    // Borrador y proforma de la de pruebas: sin QR (no tienen registro); la proforma, con la marca.
+    const borrador = await emitir(pruebasId, { borrador: true });
+    const textosBorrador = await textosDePdf((await pdfParaDescargar(pruebasId, borrador.id)).contenido);
+    expect(textosBorrador.some((x) => x.texto === TITULO_QR)).toBe(false);
+    expect(textosBorrador.some((x) => x.texto === 'BORRADOR')).toBe(true);
+    const proforma = await emitir(pruebasId, { proforma: true });
+    const textosProforma = await textosDePdf((await pdfParaDescargar(pruebasId, proforma.id)).contenido);
+    expect(textosProforma.some((x) => x.texto === TITULO_QR)).toBe(false);
+    expect(textosProforma.some((x) => x.texto === MARCA_PRUEBAS)).toBe(true);
+  });
+
+  it('un registro de PRUEBAS en una empresa real (no deberia pasar): el PDF sale sin QR y con la marca de pruebas', async () => {
+    // Se fuerza a mano: la app no deja emitir asi (409 VERIFACTU_ENTORNO_NO_PERMITIDO).
+    const f = await prisma.incomeInvoice.findFirstOrThrow({ where: { companyId: pruebasId, estadoDocumento: 'FINAL' } });
+    await prisma.company.update({ where: { id: pruebasId }, data: { pruebasVerifactuDe: null } });
+    try {
+      const datos = (await datosPdfFactura(pruebasId, f.id)).datos;
+      expect(datos).toMatchObject({ verifactu: null, empresaPruebas: false, marcaPruebas: true });
+    } finally {
+      await prisma.company.update({ where: { id: pruebasId }, data: { pruebasVerifactuDe: REAL } });
+    }
   });
 });
