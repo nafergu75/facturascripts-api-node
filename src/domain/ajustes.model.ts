@@ -36,6 +36,11 @@ export interface AjustesFacturacion {
    * la linea del cargo que no lleve otra.
    */
   cuentaPalets: string | null;
+  /**
+   * La empresa vende ceramica y materiales de construccion: su serie B usa sola
+   * la plantilla B (sin marcar, la estandar). Siempre false fuera de Espana.
+   */
+  vendeCeramica: boolean;
 }
 
 export const AJUSTES_FACTURACION_POR_DEFECTO: Readonly<AjustesFacturacion> = Object.freeze({
@@ -49,6 +54,7 @@ export const AJUSTES_FACTURACION_POR_DEFECTO: Readonly<AjustesFacturacion> = Obj
   ieepnrPorKg: 0.45,
   ieepnrCuenta: null,
   cuentaPalets: null,
+  vendeCeramica: false,
 });
 
 export const PERIODICIDADES_IVA = ['TRIMESTRAL', 'MENSUAL'] as const;

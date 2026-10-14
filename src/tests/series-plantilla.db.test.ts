@@ -27,7 +27,7 @@ import { guardarAjustesFacturacion } from '../services/ajustesFacturacion.servic
 const SUFIJO = Date.now();
 const ES = `series-plant-es-${SUFIJO}`;
 const US = `series-plant-us-${SUFIJO}`;
-/** Espanola que no repercute el IEEPNR (no vende envases). */
+/** Espanola que no repercute el IEEPNR (no vende envases) ni vende ceramica. */
 const ES_SIN = `series-plant-sin-${SUFIJO}`;
 /** Empresa de antes, con sus series y sin la C (la C llega al listar). */
 const VIEJA = `series-plant-vieja-${SUFIJO}`;
@@ -72,7 +72,7 @@ beforeAll(async () => {
   }
   await prisma.legalConfig.create({ data: { companyId: US, denominacion: 'Series Template Inc', nif: '12-3456789', pais: 'US', monedaCuenta: 'USD' } });
   // Primero las series de siempre (A, R y P) y la C: la semilla solo se crea en un tipo sin series.
-  await guardarAjustesFacturacion(ES, 'u-test', { ieepnrRepercute: true });
+  await guardarAjustesFacturacion(ES, 'u-test', { ieepnrRepercute: true, vendeCeramica: true });
   await listarSeries(ES);
   await listarSeries(US);
   await listarSeries(ES_SIN);
@@ -86,7 +86,7 @@ beforeAll(async () => {
 });
 
 describe('plantilla automatica', () => {
-  it('empresa espanola que repercute el IEEPNR: la A usa la A, la B la B y la C la C; R, P y RT, la estandar', async () => {
+  it('empresa espanola que repercute el IEEPNR y vende ceramica: la A usa la A, la B la B y la C la C; R, P y RT, la estandar', async () => {
     const series = await listar();
     const por = Object.fromEntries(series.map((s) => [s.codigo, [s.plantilla, s.plantillaElegida]]));
     expect(por).toMatchObject({
@@ -116,6 +116,24 @@ describe('plantilla automatica', () => {
     const a = await deCodigo('A', ES_SIN);
     expect((await request(app).put(`/companies/${ES_SIN}/series/${a.id}`).send({ plantilla: 'A' })).body.data).toMatchObject({ plantilla: 'A', plantillaElegida: 'A' });
     await request(app).put(`/companies/${ES_SIN}/series/${a.id}`).send({ plantilla: null });
+  });
+
+  it('empresa espanola que no vende ceramica: su serie B sigue con la estandar; al marcarlo pasa a la B, y al quitarlo vuelve', async () => {
+    const SIN_CER = `series-plant-sincer-${SUFIJO}`;
+    await prisma.company.create({ data: { id: SIN_CER, name: 'Series Sin Ceramica SL', fsBaseUrl: 'http://localhost:8080', fsApiKeyEnc: 'k' } });
+    await listarSeries(SIN_CER);
+    await crearSerie(SIN_CER, { codigo: 'B', descripcion: 'Segunda linea', tipoDocumento: 'FACTURA', activa: true, porDefecto: false });
+    expect(await deCodigo('B', SIN_CER)).toMatchObject({ plantilla: 'default', plantillaElegida: null });
+    await guardarAjustesFacturacion(SIN_CER, 'u-test', { vendeCeramica: true });
+    expect(await deCodigo('B', SIN_CER)).toMatchObject({ plantilla: 'B', plantillaElegida: null });
+    await guardarAjustesFacturacion(SIN_CER, 'u-test', { vendeCeramica: false });
+    expect(await deCodigo('B', SIN_CER)).toMatchObject({ plantilla: 'default', plantillaElegida: null });
+    // Elegida a mano, la B se queda aunque no lo diga.
+    const b = await deCodigo('B', SIN_CER);
+    expect((await request(app).put(`/companies/${SIN_CER}/series/${b.id}`).send({ plantilla: 'B' })).body.data).toMatchObject({ plantilla: 'B', plantillaElegida: 'B' });
+    // En una empresa extranjera la casilla no se guarda: su serie B sigue con la estandar.
+    await guardarAjustesFacturacion(US, 'u-test', { vendeCeramica: true });
+    expect(await deCodigo('B', US)).toMatchObject({ plantilla: 'default', plantillaElegida: null });
   });
 
   it('el filtro por tipo tambien la trae', async () => {
@@ -189,10 +207,10 @@ describe('GET /series/plantillas', () => {
     const us = (await request(app).get(`/companies/${US}/series/plantillas`)).body.data;
     expect(us.map((p: Item) => [p.id, p.disponible])).toEqual([['default', true], ['A', false], ['B', false], ['C', true]]);
     expect(us.map((p: Item) => [p.id, p.seriesAutomaticas])).toEqual([['default', ['A', 'B']], ['A', []], ['B', []], ['C', ['C']]]);
-    // La automatica de la serie A: la A si se repercute el IEEPNR; si no, la estandar.
+    // La automatica de la serie A: la A si se repercute el IEEPNR; la de la B, la B si se vende ceramica; si no, la estandar.
     const sin = (await request(app).get(`/companies/${ES_SIN}/series/plantillas`)).body.data;
     expect(sin.filter((p: Item) => p.automaticaSerieA).map((p: Item) => p.id)).toEqual(['default']);
-    expect(sin.map((p: Item) => [p.id, p.seriesAutomaticas])).toEqual([['default', ['A']], ['A', []], ['B', ['B']], ['C', ['C']]]);
+    expect(sin.map((p: Item) => [p.id, p.seriesAutomaticas])).toEqual([['default', ['A', 'B']], ['A', []], ['B', []], ['C', ['C']]]);
   });
 
   it('la ven el contable, el comercial y el de solo lectura', async () => {

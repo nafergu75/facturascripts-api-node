@@ -21,6 +21,8 @@
  * ya emitidas. Ningún modelo cambia; el panel no cuenta como ingreso el IEEPNR
  * que va a una cuenta 47.
  *
+ * vendeCeramica (plantilla B): si la empresa vende ceramica, la serie B usa sola
+ * la plantilla B (series.service, contextoPlantillas); si no, la estandar.
  * cuentaPalets (plantilla B): la cuenta de ingresos (70x) que se pone en la
  * línea del cargo de palets de madera que no lleve otra, al guardar la factura;
  * queda en la línea, así que cambiarla aquí no cambia las ya guardadas.
@@ -86,6 +88,7 @@ export async function leerAjustesFacturacion(companyId: string, db: Db = prisma)
     ieepnrPorKg: fila.ieepnrPorKg === null || fila.ieepnrPorKg === undefined ? AJUSTES_FACTURACION_POR_DEFECTO.ieepnrPorKg : Number(fila.ieepnrPorKg),
     ieepnrCuenta: fila.ieepnrCuenta ?? null,
     cuentaPalets: fila.cuentaPalets ?? null,
+    vendeCeramica: fila.vendeCeramica ?? false,
     guardado: true,
     actualizadoEn: fila.updatedAt.toISOString(),
     actualizadoPor: fila.updatedBy,
@@ -123,6 +126,8 @@ export async function obtenerAjustesFacturacion(companyId: string): Promise<Ajus
     irpfDefecto: perfil.espanola ? ajustes.irpfDefecto : 0,
     // El IEEPNR es un impuesto español: fuera de España, nunca.
     ieepnrRepercute: perfil.espanola ? ajustes.ieepnrRepercute : false,
+    // La plantilla B es solo para empresas españolas.
+    vendeCeramica: perfil.espanola ? ajustes.vendeCeramica : false,
     empresaEspanola: perfil.espanola,
     monedaCuenta: perfil.monedaCuenta,
     // Fuera de España solo se ofrecen las cuentas en la moneda de la empresa.
@@ -146,6 +151,7 @@ const esquema = z
       .refine((v) => Math.abs(Math.round(v * 10000) - v * 10000) < 1e-6),
     ieepnrCuenta: z.string().trim().regex(/^\d{2,15}$/).nullable(),
     cuentaPalets: z.string().trim().regex(/^\d{3,15}$/).nullable(),
+    vendeCeramica: z.boolean(),
   })
   .partial()
   .strict();
@@ -161,6 +167,7 @@ const MENSAJES: Record<string, string> = {
   ieepnrPorKg: `El IEEPNR por kg es un importe en euros mayor que 0 y de ${IEEPNR_POR_KG_MAX} como mucho, con 4 decimales como máximo (por ejemplo, 0,45).`,
   ieepnrCuenta: 'La cuenta del IEEPNR se escribe solo con números (por ejemplo, 4758) o se deja vacía.',
   cuentaPalets: 'La cuenta del cargo de palets se escribe solo con números (por ejemplo, 704) o se deja vacía.',
+  vendeCeramica: 'Indica si vendes cerámica y materiales de construcción (sí o no).',
 };
 
 /** Cuentas del plan base (PGC) que se copian al plan de la empresa al contabilizar. */
@@ -198,11 +205,13 @@ export async function guardarAjustesFacturacion(companyId: string, userId: strin
     ieepnrPorKg: cambios.ieepnrPorKg ?? actual.ieepnrPorKg,
     ieepnrCuenta: cambios.ieepnrCuenta !== undefined ? cambios.ieepnrCuenta || null : actual.ieepnrCuenta,
     cuentaPalets: cambios.cuentaPalets !== undefined ? cambios.cuentaPalets || null : actual.cuentaPalets,
+    vendeCeramica: cambios.vendeCeramica ?? actual.vendeCeramica,
   };
-  // Fuera de España no hay IRPF ni IEEPNR: se guardan siempre 0 y no.
+  // Fuera de España no hay IRPF, IEEPNR ni plantilla B: se guardan siempre 0 y no.
   if (!perfil.espanola) {
     nuevo.irpfDefecto = 0;
     nuevo.ieepnrRepercute = false;
+    nuevo.vendeCeramica = false;
   }
 
   if (cambios.ieepnrCuenta) {

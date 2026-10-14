@@ -219,8 +219,19 @@ describe('plantilla B: cuenta del cargo de palets, logo de la marca y sello', ()
   const subir = (tipo: string, fichero: Buffer, nombre = 'imagen.png') =>
     request(app).put(`/companies/${ES}/ajustes-facturacion/imagenes/${tipo}`).attach('imagen', fichero, nombre);
 
-  it('por defecto: sin cuenta propia del cargo de palets y sin imagenes', async () => {
-    expect((await leer()).body.data).toMatchObject({ cuentaPalets: null, imagenesPlantillaB: { marca: false, sello: false } });
+  it('por defecto: no vende ceramica, sin cuenta propia del cargo de palets y sin imagenes', async () => {
+    expect((await leer()).body.data).toMatchObject({ vendeCeramica: false, cuentaPalets: null, imagenesPlantillaB: { marca: false, sello: false } });
+  });
+
+  it('vendeCeramica: se guarda (si o no); otro valor, 400 en su campo; en una empresa extranjera, siempre false', async () => {
+    expect((await guardar({ vendeCeramica: true })).body.data.vendeCeramica).toBe(true);
+    const mal = await guardar({ vendeCeramica: 'si' });
+    expect([mal.status, mal.body.details?.campo]).toEqual([400, 'vendeCeramica']);
+    expect((await leer()).body.data.vendeCeramica).toBe(true);
+    expect((await guardar({ vendeCeramica: false })).body.data.vendeCeramica).toBe(false);
+    const us = await guardar({ vendeCeramica: true }, US);
+    expect([us.status, us.body.data.vendeCeramica]).toEqual([200, false]);
+    expect((await prisma.ajustesFacturacion.findUnique({ where: { companyId: US } }))!.vendeCeramica).toBe(false);
   });
 
   it('la cuenta del cargo de palets es una de ventas (70x) del plan; vacia vuelve a la de ventas', async () => {

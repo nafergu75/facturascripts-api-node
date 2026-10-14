@@ -2,7 +2,7 @@
  * Plantilla B (ceramica) y serie C sobre BD real, con las lineas de la factura
  * de muestra NZ013_2026 (cliente ficticio).
  *
- *  - La serie B usa sola la B: TOTAL BRUTO 600,74, IVA 126,16 y TOTAL 726,90;
+ *  - La serie B usa sola la B (la empresa vende ceramica): TOTAL BRUTO 600,74, IVA 126,16 y TOTAL 726,90;
  *    obra, peso neto y bruto, palets, cajas, m2, piezas, formato, calidad,
  *    unidad del precio y el cargo de palets (a la 704 de los ajustes).
  *  - Asiento, libro de expedidas, 303 y 347: igual que una venta normal.
@@ -107,8 +107,8 @@ beforeAll(async () => {
   ).id;
   await listarSeries(ES);
   await crearSerie(ES, { codigo: 'B', descripcion: 'Ceramica y materiales', tipoDocumento: 'FACTURA', activa: true, porDefecto: false });
-  // El cargo de palets va a la 704 (ventas de envases y embalajes).
-  await guardarAjustesFacturacion(ES, 'u-test', { cuentaPalets: '704' });
+  // Vende ceramica (la serie B usa sola la B) y el cargo de palets va a la 704 (ventas de envases y embalajes).
+  await guardarAjustesFacturacion(ES, 'u-test', { cuentaPalets: '704', vendeCeramica: true });
 
   await prisma.company.create({ data: { id: US, name: 'Tiles Inc', fsBaseUrl: 'http://localhost:8080', fsApiKeyEnc: 'k' } });
   await prisma.legalConfig.create({ data: { companyId: US, denominacion: 'TILES INC', nif: '12-3456789', pais: 'US', monedaCuenta: 'USD' } });
@@ -424,5 +424,25 @@ describe('serie C: la plantilla de siempre, con su nombre', () => {
     // Las de la A y la B siguen su numeracion.
     const b = await alta();
     expect(b.numeroCompleto).toMatch(/^B-\d+$/);
+  });
+});
+
+describe('empresa que no vende ceramica', () => {
+  it('su serie B, aunque sea la predeterminada, sigue con la de siempre: descuento e IVA por linea', async () => {
+    const OTRA = `plantilla-b-otra-${SUFIJO}`;
+    await prisma.company.create({ data: { id: OTRA, name: 'Sin Ceramica SL', fsBaseUrl: 'http://localhost:8080', fsApiKeyEnc: 'k' } });
+    await prisma.legalConfig.create({ data: { companyId: OTRA, denominacion: 'SIN CERAMICA SL', nif: 'B12345674' } });
+    await asegurarPlanContableEmpresa(OTRA);
+    const cli = (await prisma.customer.create({ data: { companyId: OTRA, nombreFiscal: 'CLIENTE FICTICIO SL', nifCif: 'B00000000' } })).id;
+    await listarSeries(OTRA);
+    await crearSerie(OTRA, { codigo: 'B', descripcion: 'Serie general', tipoDocumento: 'FACTURA', activa: true, porDefecto: true });
+    // Sin serie: la predeterminada, la B, con la de siempre (antes daba 400 DESCUENTO_NO_ADMITIDO).
+    const f = await incomeInvoicesService.crearIngreso({
+      companyId: OTRA,
+      customer: { id: cli },
+      fechaEmision: '2026-07-10',
+      lineas: [{ descripcion: 'Servicio', cantidad: 1, precioUnitario: 100, descuentoPorcentaje: 10, tipoIva: 21 }],
+    } as never);
+    expect([f.serie, f.plantillaId, f.baseTotal, f.ivaTotal, f.totalFactura, f.resumenCeramica]).toEqual(['B', 'default', 90, 18.9, 108.9, null]);
   });
 });

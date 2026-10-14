@@ -14,8 +14,10 @@
  *
  * Plantilla automatica (la serie sin plantilla elegida), por el codigo de la
  * serie: la A en la serie A si la empresa repercute el IEEPNR; la B en la
- * serie B; la C en la serie C; el resto, la estandar. La A y la B, solo en
- * empresas espanolas.
+ * serie B si la empresa dice que vende ceramica (Configuracion > Facturacion);
+ * la C en la serie C; el resto, la estandar. La A y la B, solo en empresas
+ * espanolas. Asi una empresa que usa la A o la B para otra cosa no cambia de
+ * calculo ni de PDF sin enterarse.
  */
 
 export const PLANTILLAS_VENTA = ['default', 'A', 'B', 'C'] as const;
@@ -39,11 +41,13 @@ export interface PlantillaVenta {
   disenada: boolean;
 }
 
-/** Lo que decide las plantillas de una empresa: si es espanola y si repercute el IEEPNR. */
+/** Lo que decide las plantillas de una empresa: si es espanola, si repercute el IEEPNR y si vende ceramica. */
 export interface ContextoPlantillas {
   espanola: boolean;
   /** Configuracion > Facturacion: «Repercuto el IEEPNR en mis facturas». */
   repercuteIeepnr: boolean;
+  /** Configuracion > Facturacion: «Vendo ceramica y materiales de construccion». Sin indicar, no. */
+  vendeCeramica?: boolean;
 }
 
 export const CATALOGO_PLANTILLAS: readonly PlantillaVenta[] = [
@@ -120,14 +124,24 @@ export function plantillaAutomaticaSerieA(ctx: ContextoPlantillas): PlantillaVen
 }
 
 /**
+ * Plantilla automatica de la serie de codigo «B»: la B si la empresa es
+ * espanola y dice que vende ceramica; si no, la estandar. Asi una serie B que
+ * la empresa usa para otra cosa sigue con la de siempre (IVA por linea,
+ * descuento y el PDF de siempre).
+ */
+export function plantillaAutomaticaSerieB(ctx: ContextoPlantillas): PlantillaVentaId {
+  return ctx.espanola && ctx.vendeCeramica === true ? 'B' : 'default';
+}
+
+/**
  * Plantilla automatica de una serie sin plantilla elegida, por su codigo: la A
- * en la serie A (plantillaAutomaticaSerieA); la B en la serie B y la C en la
- * serie C; el resto, la estandar. Una solo para Espana en una empresa
- * extranjera pasa a la estandar.
+ * en la serie A (plantillaAutomaticaSerieA); la B en la serie B
+ * (plantillaAutomaticaSerieB) y la C en la serie C; el resto, la estandar. Una
+ * solo para Espana en una empresa extranjera pasa a la estandar.
  */
 export function plantillaAutomatica(codigo: string, ctx: ContextoPlantillas): PlantillaVentaId {
   const c = String(codigo ?? '').trim().toUpperCase();
-  const id: PlantillaVentaId = c === 'A' ? plantillaAutomaticaSerieA(ctx) : c === 'B' ? 'B' : c === 'C' ? 'C' : 'default';
+  const id: PlantillaVentaId = c === 'A' ? plantillaAutomaticaSerieA(ctx) : c === 'B' ? plantillaAutomaticaSerieB(ctx) : c === 'C' ? 'C' : 'default';
   return plantillaDisponible(id, ctx.espanola) ? id : 'default';
 }
 

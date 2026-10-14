@@ -62,15 +62,16 @@ function contarDocumentos(db: Tx | typeof prisma, companyId: string, codigo: str
 }
 
 /**
- * Lo que decide la plantilla automatica de la serie A: si la empresa es
- * espanola y si repercute el IEEPNR (Configuracion > Facturacion). Sin
- * configuracion legal, espanola; con un prisma simulado sin LegalConfig (tests
- * sin BD), tambien (y sin ajustes, no repercute). Solo lee.
+ * Lo que decide la plantilla automatica de las series A y B: si la empresa es
+ * espanola, si repercute el IEEPNR y si vende ceramica (Configuracion >
+ * Facturacion). Sin configuracion legal, espanola; con un prisma simulado sin
+ * LegalConfig (tests sin BD), tambien (y sin ajustes, ni repercute ni vende
+ * ceramica). Solo lee.
  */
 export async function contextoPlantillas(companyId: string): Promise<ContextoPlantillas> {
   const conLegal = typeof (prisma as unknown as { legalConfig?: { findUnique?: unknown } }).legalConfig?.findUnique === 'function';
   const [espanola, ajustes] = await Promise.all([conLegal ? esEmpresaEspanola(companyId) : Promise.resolve(true), leerAjustesFacturacion(companyId)]);
-  return { espanola, repercuteIeepnr: ajustes.ieepnrRepercute };
+  return { espanola, repercuteIeepnr: ajustes.ieepnrRepercute, vendeCeramica: ajustes.vendeCeramica };
 }
 
 /**

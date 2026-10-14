@@ -2065,7 +2065,7 @@
         "tags": [
           "Series"
         ],
-        "summary": "Catalogo de plantillas de factura de venta (default, A, B, C). disponible: se puede elegir (la A y la B, no en una empresa extranjera). automaticaSerieA: la que usa la serie A sin plantilla elegida (la A si la empresa repercute el IEEPNR). seriesAutomaticas: las series A, B o C que usan cada plantilla sin elegirla (la B en la serie B y la C en la serie C)",
+        "summary": "Catalogo de plantillas de factura de venta (default, A, B, C). disponible: se puede elegir (la A y la B, no en una empresa extranjera). automaticaSerieA: la que usa la serie A sin plantilla elegida (la A si la empresa repercute el IEEPNR). seriesAutomaticas: las series A, B o C que usan cada plantilla sin elegirla (la B en la serie B si la empresa vende ceramica, vendeCeramica en ajustes-facturacion, y la C en la serie C)",
         "security": [
           {
             "bearerAuth": []

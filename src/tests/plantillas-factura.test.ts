@@ -12,15 +12,18 @@ import {
   normalizarPlantillaId,
   plantillaAutomatica,
   plantillaAutomaticaSerieA,
+  plantillaAutomaticaSerieB,
   plantillaDisenada,
   plantillaDisponible,
   plantillaEfectivaSerie,
   PLANTILLAS_VENTA,
+  type ContextoPlantillas,
 } from '../domain/plantillasFactura';
 
-/** Empresa espanola que repercute el IEEPNR, espanola que no y extranjera. */
+/** Empresa espanola que repercute el IEEPNR, espanola que no, espanola que vende ceramica y extranjera. */
 const CON_IEEPNR = { espanola: true, repercuteIeepnr: true };
 const SIN_IEEPNR = { espanola: true, repercuteIeepnr: false };
+const CERAMICA = { espanola: true, repercuteIeepnr: false, vendeCeramica: true };
 const FUERA = { espanola: false, repercuteIeepnr: false };
 
 describe('plantillas de factura de venta', () => {
@@ -37,11 +40,13 @@ describe('plantillas de factura de venta', () => {
   });
 
   it('catalogo: seriesAutomaticas dice que serie A, B o C usa cada plantilla sin elegirla', () => {
-    const series = (ctx: typeof CON_IEEPNR) => Object.fromEntries(catalogoPlantillas(ctx).map((p) => [p.id, p.seriesAutomaticas]));
-    expect(series(CON_IEEPNR)).toEqual({ default: [], A: ['A'], B: ['B'], C: ['C'] });
-    expect(series(SIN_IEEPNR)).toEqual({ default: ['A'], A: [], B: ['B'], C: ['C'] });
+    const series = (ctx: ContextoPlantillas) => Object.fromEntries(catalogoPlantillas(ctx).map((p) => [p.id, p.seriesAutomaticas]));
+    expect(series(CON_IEEPNR)).toEqual({ default: ['B'], A: ['A'], B: [], C: ['C'] });
+    expect(series(SIN_IEEPNR)).toEqual({ default: ['A', 'B'], A: [], B: [], C: ['C'] });
+    expect(series(CERAMICA)).toEqual({ default: ['A'], A: [], B: ['B'], C: ['C'] });
+    expect(series({ ...CERAMICA, repercuteIeepnr: true })).toEqual({ default: [], A: ['A'], B: ['B'], C: ['C'] });
     // Fuera de Espana la A y la B no estan: sus series usan la estandar.
-    expect(series(FUERA)).toEqual({ default: ['A', 'B'], A: [], B: [], C: ['C'] });
+    expect(series({ ...FUERA, repercuteIeepnr: true, vendeCeramica: true })).toEqual({ default: ['A', 'B'], A: [], B: [], C: ['C'] });
   });
 
   it('catalogo: automaticaSerieA marca la A solo si la empresa es espanola y repercute el IEEPNR', () => {
@@ -50,6 +55,13 @@ describe('plantillas de factura de venta', () => {
     expect(automatica(SIN_IEEPNR)).toEqual(['default']);
     expect(automatica(FUERA)).toEqual(['default']);
     expect(plantillaAutomaticaSerieA({ espanola: false, repercuteIeepnr: true })).toBe('default');
+  });
+
+  it('plantillaAutomaticaSerieB: la B solo si la empresa es espanola y vende ceramica', () => {
+    expect(plantillaAutomaticaSerieB(CERAMICA)).toBe('B');
+    expect(plantillaAutomaticaSerieB(SIN_IEEPNR)).toBe('default');
+    expect(plantillaAutomaticaSerieB({ ...CERAMICA, vendeCeramica: false })).toBe('default');
+    expect(plantillaAutomaticaSerieB({ ...CERAMICA, espanola: false })).toBe('default');
   });
 
   it('normalizarPlantillaId: lo desconocido pasa a default', () => {
@@ -66,12 +78,16 @@ describe('plantillas de factura de venta', () => {
     expect(plantillaEfectivaSerie({ codigo: 'A', plantilla: null }, SIN_IEEPNR)).toBe('default');
     expect(plantillaEfectivaSerie({ codigo: 'A', plantilla: null }, FUERA)).toBe('default');
     for (const codigo of ['R', 'P', 'RT', 'D', 'BB']) expect(plantillaEfectivaSerie({ codigo, plantilla: null }, CON_IEEPNR)).toBe('default');
-    // La serie B usa sola la B (ceramica) y la C, la C (servicios); la B, solo en Espana.
-    expect(plantillaEfectivaSerie({ codigo: 'B', plantilla: null }, SIN_IEEPNR)).toBe('B');
-    expect(plantillaEfectivaSerie({ codigo: 'B', plantilla: null }, FUERA)).toBe('default');
+    // La serie B usa sola la B (ceramica) si la empresa vende ceramica, y solo en Espana; la C, la C (servicios).
+    expect(plantillaEfectivaSerie({ codigo: 'B', plantilla: null }, CERAMICA)).toBe('B');
+    expect(plantillaEfectivaSerie({ codigo: 'B', plantilla: null }, SIN_IEEPNR)).toBe('default');
+    expect(plantillaEfectivaSerie({ codigo: 'B', plantilla: null }, { ...FUERA, vendeCeramica: true })).toBe('default');
     expect(plantillaEfectivaSerie({ codigo: 'C', plantilla: null }, FUERA)).toBe('C');
-    expect(plantillaEfectivaSerie({ codigo: 'B', plantilla: 'default' }, SIN_IEEPNR)).toBe('default');
-    expect(plantillaAutomatica(' b ', SIN_IEEPNR)).toBe('B');
+    expect(plantillaEfectivaSerie({ codigo: 'B', plantilla: 'default' }, CERAMICA)).toBe('default');
+    expect(plantillaAutomatica(' b ', CERAMICA)).toBe('B');
+    expect(plantillaAutomatica(' b ', SIN_IEEPNR)).toBe('default');
+    // Elegida a mano, la B vale aunque la empresa no diga que vende ceramica.
+    expect(plantillaEfectivaSerie({ codigo: 'B', plantilla: 'B' }, SIN_IEEPNR)).toBe('B');
     expect(plantillaEfectivaSerie({ codigo: 'A', plantilla: 'default' }, CON_IEEPNR)).toBe('default');
     // Elegida a mano, la A vale aunque no se repercuta (el IEEPNR sale a 0).
     expect(plantillaEfectivaSerie({ codigo: 'B', plantilla: 'A' }, SIN_IEEPNR)).toBe('A');
