@@ -43,7 +43,7 @@ export interface CorreccionesVenta {
   concepto?: string | null;
   /** La lista COMPLETA de lineas. */
   lineas?: LineaCorregida[];
-  /** Una sola retencion para toda la factura, como hoy (0: sin retencion). */
+  /** Una sola retencion para toda la factura, como hoy, en entero (0: sin retencion). */
   tipoRetencion?: number;
   /** Total a cobrar: obligatorio si se corrigen las lineas o la retencion. */
   total?: number;
@@ -98,7 +98,10 @@ export function leerCorrecciones(raw: unknown, opciones: { espanola: boolean; re
   if (r.lineas !== undefined) c.lineas = leerLineas(r.lineas, opciones);
   if (r.tipoRetencion !== undefined) {
     const t = r.tipoRetencion;
-    if (!esImporte(t) || t < 0 || t > 50) throw noValida('La retención tiene que ser un porcentaje entre 0 y 50.', 'correcciones.tipoRetencion');
+    // Entero: la linea de la factura guarda el porcentaje sin decimales (tipoRetencion es Int).
+    if (typeof t !== 'number' || !Number.isInteger(t) || t < 0 || t > 50) {
+      throw noValida('La retención tiene que ser un porcentaje sin decimales entre 0 y 50 (por ejemplo, 15).', 'correcciones.tipoRetencion');
+    }
     c.tipoRetencion = t;
   }
   if (r.total !== undefined) {
