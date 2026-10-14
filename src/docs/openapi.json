@@ -1987,7 +1987,7 @@
         "tags": [
           "Series"
         ],
-        "summary": "Series de numeracion, con la plantilla que usa cada una (plantilla) y la elegida (plantillaElegida)",
+        "summary": "Series de numeracion, con la plantilla que usa cada una (plantilla), la elegida (plantillaElegida) y sus observaciones por defecto. Toda empresa tiene la serie C (prestaciones de servicios, con la plantilla C), que se crea sola",
         "security": [
           {
             "bearerAuth": []
@@ -2065,7 +2065,7 @@
         "tags": [
           "Series"
         ],
-        "summary": "Catalogo de plantillas de factura de venta (default, A, B, C). disponible: se puede elegir (la A no en una empresa extranjera; la B, sin diseno aun, en ninguna). automaticaSerieA: la que usa la serie A sin plantilla elegida (la A si la empresa repercute el IEEPNR)",
+        "summary": "Catalogo de plantillas de factura de venta (default, A, B, C). disponible: se puede elegir (la A y la B, no en una empresa extranjera). automaticaSerieA: la que usa la serie A sin plantilla elegida (la A si la empresa repercute el IEEPNR). seriesAutomaticas: las series A, B o C que usan cada plantilla sin elegirla (la B en la serie B y la C en la serie C)",
         "security": [
           {
             "bearerAuth": []
@@ -2093,7 +2093,7 @@
         "tags": [
           "Series"
         ],
-        "summary": "Actualizar serie (plantilla: un id del catalogo que se pueda elegir o null = automatica; 400 PLANTILLA_NO_VALIDA, PLANTILLA_SIN_DISENO o PLANTILLA_SOLO_ESPANA)",
+        "summary": "Actualizar serie (plantilla: un id del catalogo que se pueda elegir o null = automatica, 400 PLANTILLA_NO_VALIDA, PLANTILLA_SIN_DISENO o PLANTILLA_SOLO_ESPANA; observacionesDefecto: texto de 2.000 caracteres como mucho que se propone en cada factura nueva de la serie, null = ninguno)",
         "security": [
           {
             "bearerAuth": []
@@ -2128,10 +2128,11 @@
               "schema": {
                 "type": "object",
                 "example": {
-                  "descripcion": "Bebidas",
+                  "descripcion": "Ceramica y materiales de construccion",
                   "activa": true,
-                  "porDefecto": true,
-                  "plantilla": "A"
+                  "porDefecto": false,
+                  "plantilla": "B",
+                  "observacionesDefecto": "ESTE PRESUPUESTO NO INCLUYE EL TRANSPORTE"
                 }
               }
             }
@@ -10981,6 +10982,140 @@
           },
           "401": {
             "description": "No autenticado"
+          }
+        }
+      }
+    },
+    "/companies/{companyId}/ajustes-facturacion/imagenes/{tipo}": {
+      "get": {
+        "tags": [
+          "Configuracion"
+        ],
+        "summary": "Logo de la marca (marca) o sello de la empresa (sello) de la plantilla B: la imagen PNG o JPG, o 404 si no hay",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "companyId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "tipo",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "marca",
+                "sello"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "La imagen"
+          },
+          "404": {
+            "description": "No hay imagen"
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "Configuracion"
+        ],
+        "summary": "Sube o cambia el logo de la marca o el sello (campo de formulario \"imagen\", PNG o JPG de 1 MB como mucho; 400 con campo imagen o tipo)",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "companyId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "tipo",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "marca",
+                "sello"
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "imagen": {
+                    "type": "string",
+                    "format": "binary"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Configuracion"
+        ],
+        "summary": "Quita el logo de la marca o el sello",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "companyId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "tipo",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "marca",
+                "sello"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
           }
         }
       }
