@@ -282,6 +282,8 @@ export interface ContextoOperacion {
   referenciaLegal?: string | null;
   /** Tipo de IVA (para la casilla del 303 en NACIONAL). */
   tipoIva?: number;
+  /** AjustesFiscales.criterioCaja: regimen especial del criterio de caja (clave 07 de VERI*FACTU en NACIONAL). */
+  criterioCaja?: boolean;
 }
 
 export interface Mencion {
@@ -293,8 +295,11 @@ export interface VerifactuOperacion {
   /** S1 sujeta no exenta, S2 sujeta con inversion del sujeto pasivo, N2 no sujeta por localizacion. */
   calificacion: 'S1' | 'S2' | 'N2' | null;
   operacionExenta: CausaExencionLibro | null;
-  /** 01 regimen general, 02 exportacion. */
-  claveRegimen: '01' | '02';
+  /**
+   * L8A: 01 regimen general, 02 exportacion, 07 criterio de caja, 08 operaciones
+   * sujetas al IGIC/IPSI (servicios a Canarias, Ceuta y Melilla).
+   */
+  claveRegimen: '01' | '02' | '07' | '08';
   impuesto: '01';
   /** S2: TipoImpositivo 0 y CuotaRepercutida 0. */
   tipoYCuotaCero: boolean;
@@ -350,7 +355,8 @@ export const REGLA_OPERACION: Readonly<Record<TipoOperacionVenta, ReglaOperacion
     casilla303: (ctx) => (ctx.tipoIva !== undefined ? (CASILLA_303_POR_TIPO[ctx.tipoIva] ?? null) : '01-09'),
     clave349: () => null,
     causaLibro: () => null,
-    verifactu: () => vf('S1', null),
+    // Criterio de caja: clave 07 (Validaciones v1.2.2, 15.6.5; FAQ de desarrolladores v1.3, n.º 24).
+    verifactu: (ctx) => vf('S1', null, ctx.criterioCaja ? '07' : '01'),
     mencion: () => null,
   },
   INTRACOMUNITARIA: {
@@ -401,7 +407,9 @@ export const REGLA_OPERACION: Readonly<Record<TipoOperacionVenta, ReglaOperacion
     casilla303: (ctx) => (tieneNifIvaUe(ctx.cliente) ? '59' : '120'),
     clave349: (ctx) => (tieneNifIvaUe(ctx.cliente) ? 'S' : null),
     causaLibro: () => null,
-    verifactu: () => vf('N2', null),
+    // Servicio a un empresario de Canarias, Ceuta o Melilla: clave 08 con N2 (FAQ de
+    // desarrolladores v1.3, n.º 23.2 y 24; Validaciones v1.2.2, 15.6.6). UE y fuera de la UE: 01 con N2.
+    verifactu: (ctx) => vf('N2', null, fueraDelTai(paisDelCliente(ctx.cliente), ctx.cliente.cp) ? '08' : '01'),
     mencion: (ctx) =>
       tieneNifIvaUe(ctx.cliente)
         ? {

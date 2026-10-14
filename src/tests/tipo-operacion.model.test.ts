@@ -115,6 +115,27 @@ describe('tabla de reglas', () => {
     expect(destinatarioVerifactu(ES)).toEqual({ nif: 'B12345678' });
     expect(desgloseVerifactu('EXENTA', { cliente: ES, causaExencion: 'E4' })).toMatchObject({ operacionExenta: 'E4' });
   });
+
+  it('Verifactu: criterio de caja (07) solo en NACIONAL', () => {
+    expect(desgloseVerifactu('NACIONAL', { cliente: ES, criterioCaja: true })).toMatchObject({ calificacion: 'S1', claveRegimen: '07' });
+    expect(desgloseVerifactu('NACIONAL', { cliente: ES, criterioCaja: false })).toMatchObject({ claveRegimen: '01' });
+    expect(desgloseVerifactu('NACIONAL', { cliente: ES })).toMatchObject({ claveRegimen: '01' });
+    // Las operaciones fuera del TAI, exentas o con inversion del sujeto pasivo no van con la 07 (Validaciones 15.6.5).
+    expect(desgloseVerifactu('SERVICIOS_EXTRANJERO', { cliente: US, criterioCaja: true })).toMatchObject({ calificacion: 'N2', claveRegimen: '01' });
+    expect(desgloseVerifactu('INTRACOMUNITARIA', { cliente: FR, criterioCaja: true })).toMatchObject({ claveRegimen: '01' });
+    expect(desgloseVerifactu('EXENTA', { cliente: ES, causaExencion: 'E1', criterioCaja: true })).toMatchObject({ claveRegimen: '01' });
+    expect(desgloseVerifactu('ISP_NACIONAL', { cliente: ES, criterioCaja: true })).toMatchObject({ claveRegimen: '01' });
+  });
+
+  it('Verifactu: servicios a Canarias, Ceuta o Melilla con la clave 08 y N2; UE y fuera de la UE con la 01', () => {
+    // FAQ de desarrolladores v1.3, n.º 23.2 y 24 (primera, tercera y cuarta).
+    expect(desgloseVerifactu('SERVICIOS_EXTRANJERO', { cliente: CANARIAS })).toMatchObject({ calificacion: 'N2', claveRegimen: '08' });
+    expect(desgloseVerifactu('SERVICIOS_EXTRANJERO', { cliente: { pais: 'ES', nifCif: 'B51000000', cp: '51001' } })).toMatchObject({ claveRegimen: '08' });
+    expect(desgloseVerifactu('SERVICIOS_EXTRANJERO', { cliente: DE })).toMatchObject({ calificacion: 'N2', claveRegimen: '01' });
+    expect(desgloseVerifactu('SERVICIOS_EXTRANJERO', { cliente: US })).toMatchObject({ calificacion: 'N2', claveRegimen: '01' });
+    // Las entregas de bienes alli siguen como exportacion (02/E2).
+    expect(desgloseVerifactu('EXPORTACION', { cliente: CANARIAS })).toMatchObject({ operacionExenta: 'E2', claveRegimen: '02' });
+  });
 });
 
 describe('paises y NIF-IVA', () => {
