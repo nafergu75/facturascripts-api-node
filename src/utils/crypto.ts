@@ -1,5 +1,6 @@
 import { createCipheriv, createDecipheriv, randomBytes } from 'crypto';
 import { config } from '../config/env';
+import { dentroDeTransaccion } from '../config/guardaTransaccion';
 
 /**
  * Cifrado simetrico AES-256-GCM para secretos en reposo (p.ej. las FS_API_KEY
@@ -23,6 +24,46 @@ export function decrypt(payload: string): string {
     throw new Error('Formato de secreto cifrado invalido.');
   }
   const decipher = createDecipheriv('aes-256-gcm', KEY, Buffer.from(ivHex, 'hex'));
+  decipher.setAuthTag(Buffer.from(tagHex, 'hex'));
+  return Buffer.concat([decipher.update(Buffer.from(dataHex, 'hex')), decipher.final()]).toString('utf8');
+}
+
+// ---------- Version 1 (VERI*FACTU: certificado y su contraseña) ----------
+//
+// Formato: "v1:<iv_hex>:<authTag_hex>:<ciphertext_hex>", AES-256-GCM con la
+// misma ENCRYPTION_KEY y un contexto como datos asociados (AAD): un secreto
+// copiado a otra empresa o a otro campo no se descifra. El prefijo de version
+// permite rotar la clave sin romper lo guardado.
+// Si un dia se rota ENCRYPTION_KEY, hace falta un script que vuelva a cifrar
+// los certificados (y las claves de FacturaScripts): no existe todavia.
+//
+// Ni se cifra ni se descifra dentro de una transaccion (spec verifactu, 2.5):
+// el certificado solo se abre fuera, justo antes de usarlo.
+const PREFIJO_V1 = 'v1:';
+
+function exigirFueraDeTransaccion(): void {
+  if (dentroDeTransaccion()) throw new Error('Cifrado v1: no se cifra ni se descifra dentro de una transacción.');
+}
+
+/** Cifra `plano` ligado a `contexto` (p. ej. "verifactu:<companyId>:pfx"). */
+export function cifrarV1(plano: string, contexto: string): string {
+  exigirFueraDeTransaccion();
+  if (!contexto) throw new Error('Cifrado v1: falta el contexto.');
+  const iv = randomBytes(12);
+  const cipher = createCipheriv('aes-256-gcm', KEY, iv);
+  cipher.setAAD(Buffer.from(contexto, 'utf8'));
+  const enc = Buffer.concat([cipher.update(plano, 'utf8'), cipher.final()]);
+  return `${PREFIJO_V1}${[iv.toString('hex'), cipher.getAuthTag().toString('hex'), enc.toString('hex')].join(':')}`;
+}
+
+/** Descifra lo de cifrarV1 con el mismo contexto. Error si falta el prefijo, el contexto no casa o el dato se ha tocado. */
+export function descifrarV1(texto: string, contexto: string): string {
+  exigirFueraDeTransaccion();
+  if (typeof texto !== 'string' || !texto.startsWith(PREFIJO_V1)) throw new Error('Cifrado v1: falta el prefijo de versión.');
+  const [ivHex, tagHex, dataHex] = texto.slice(PREFIJO_V1.length).split(':');
+  if (!ivHex || !tagHex || dataHex === undefined) throw new Error('Cifrado v1: formato no válido.');
+  const decipher = createDecipheriv('aes-256-gcm', KEY, Buffer.from(ivHex, 'hex'));
+  decipher.setAAD(Buffer.from(contexto, 'utf8'));
   decipher.setAuthTag(Buffer.from(tagHex, 'hex'));
   return Buffer.concat([decipher.update(Buffer.from(dataHex, 'hex')), decipher.final()]).toString('utf8');
 }
