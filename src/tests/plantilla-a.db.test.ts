@@ -17,6 +17,8 @@ import { guardarAjustesFacturacion } from '../services/ajustesFacturacion.servic
 import { actualizarSerie, crearSerie, listarSeries } from '../services/series.service';
 import { calcularLineasDoc } from '../domain/importesFactura';
 import { LINEAS_NZ004, TOTALES_NZ004 } from './muestra-nz004';
+import { datosPdfFactura, generarPdfFactura } from '../services/facturaPdf.service';
+import { textosDePdf } from './texto-pdf';
 
 const SUFIJO = Date.now();
 const ES = `plantilla-a-es-${SUFIJO}`;
@@ -252,5 +254,24 @@ describe('las otras plantillas no cambian', () => {
       { origen: 'lector', numeroLeido: 'LX-7' },
     );
     expect([f.plantillaId, f.resumenEnvases]).toEqual(['default', null]);
+  });
+});
+
+describe('PDF de la factura', () => {
+  it('la A sale con su diseno y sus datos; la de la serie B, con el de siempre', async () => {
+    await prisma.bankAccount.create({ data: { companyId: ES, iban: 'ES9121000418450200051332', bic: 'CAIXESBBXXX', bancoNombre: 'Banco de pruebas', subcuentaCodigo: '572000' } });
+    await prisma.legalConfig.update({ where: { companyId: ES }, data: { datosRegistrales: 'T 1, F 2, H CS 3', registroMercantilProvincia: 'Castellón' } });
+    const a = await alta({ pesoBrutoKg: 100 });
+    const { datos } = await datosPdfFactura(ES, a.id);
+    expect(datos).toMatchObject({ plantilla: 'A', pesoBrutoKg: 100 });
+    expect(datos.cuenta).toMatchObject({ bancoNombre: 'Banco de pruebas' });
+    expect(datos.emisor).toMatchObject({ datosRegistrales: 'T 1, F 2, H CS 3', registroMercantilProvincia: 'Castellón' });
+    expect(datos.lineas[0]).toMatchObject({ packs: 768, kgPlastico: 103.089, ieepnrImporte: 46.39, textoAdicional: 'Unidad 2,00 L Refrescos SR' });
+    const textos = (await textosDePdf((await generarPdfFactura(ES, a.id)).contenido)).map((t) => t.texto);
+    expect(textos).toEqual(expect.arrayContaining(['KG.Plast', 'PESO BRUTO(kg)', '100', '8.654,68 €', 'SWIFT BANK: CAIXESBBXXX - BANCO DE PRUEBAS']));
+    expect(textos).toContain('Inscrita en el Registro Mercantil de Castellón, T 1, F 2, H CS 3, con CIF: B12345674');
+    const b = await alta({ serie: 'B', lineas: lineasNz({ packs: null, kgPlastico: null, textoAdicional: null }) });
+    expect((await datosPdfFactura(ES, b.id)).datos.plantilla).toBe('default');
+    expect((await textosDePdf((await generarPdfFactura(ES, b.id)).contenido)).some((t) => t.texto === 'KG.Plast')).toBe(false);
   });
 });

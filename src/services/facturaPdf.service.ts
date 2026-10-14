@@ -11,6 +11,8 @@ import { cuentaParaFactura, leerAjustesFacturacion } from './ajustesFacturacion.
 import { enlacesDeVentas } from './rectificativasVenta.service';
 import { diferenciaSustitucion, type LineaImportes } from '../domain/rectificativa-venta.model';
 import { importesDoc, nombreMoneda, textoTipo } from '../domain/divisas';
+import { dibujoDe, normalizarPlantillaId } from '../domain/plantillasFactura';
+import { renderizarFacturaPlantillaA } from './facturaPdfPlantillaA';
 import { nombreNumeroFiscal, NUMERO_FISCAL_GENERICO } from '../domain/numero-fiscal';
 import {
   esPaisEspana,
@@ -75,6 +77,14 @@ export interface LineaFacturaPdf {
   ivaImporte: number;
   baseLine: number;
   tipoRetencion: number;
+  /** Plantilla A: packs de la linea. */
+  packs?: number | null;
+  /** Plantilla A: kg de plastico no reciclado. */
+  kgPlastico?: number | null;
+  /** Plantilla A: IEEPNR de la linea (va dentro de baseLine). */
+  ieepnrImporte?: number | null;
+  /** Plantilla A: texto adicional bajo el concepto. */
+  textoAdicional?: string | null;
 }
 
 /** Importes en la moneda de la contabilidad (los mismos que el libro de IVA). */
@@ -133,6 +143,9 @@ export interface DatosFacturaPdf {
     inscripcion?: string | null;
     /** Pais de la empresa (ISO-2). Decide el idioma y el formato: ES o vacio, espanol. */
     pais?: string | null;
+    /** Plantilla A: datos registrales en texto libre («T 1708, L 1269, F 3...») y provincia del registro. */
+    datosRegistrales?: string | null;
+    registroMercantilProvincia?: string | null;
   } | null;
   /** Factura que corrige una rectificativa. */
   original: { numeroCompleto: string | null; fechaEmision: string } | null;
@@ -150,8 +163,8 @@ export interface DatosFacturaPdf {
    * importes ya corregidos, tambien consta lo que se rectifica.
    */
   importeRectificacion?: { base: number; cuota: number; retencion: number; total: number } | null;
-  /** Cuenta donde se cobra (solo se imprime si la forma de pago es transferencia). */
-  cuenta: { iban: string; bic: string | null } | null;
+  /** Cuenta donde se cobra (solo se imprime si la forma de pago es transferencia). bancoNombre: plantilla A. */
+  cuenta: { iban: string; bic: string | null; bancoNombre?: string | null } | null;
   /** Texto legal al pie (Configuración > Facturación), en letra pequeña al final. */
   textoPie?: string | null;
   /** Logo de la empresa (PNG o JPG). */
@@ -176,6 +189,10 @@ export interface DatosFacturaPdf {
   referenciaLegal?: string | null;
   /** false: sin IVA (empresa no establecida en Espana). Por defecto, segun el pais del emisor. */
   conIva?: boolean;
+  /** Plantilla de la factura (domain/plantillasFactura): la A tiene su propio diseno. Sin ella, la de siempre. */
+  plantilla?: string | null;
+  /** Plantilla A: peso bruto en kg escrito a mano. */
+  pesoBrutoKg?: number | null;
 }
 
 /** Hueco del logo, arriba a la derecha (puntos). */
@@ -458,12 +475,12 @@ const nif = (s: string | null | undefined): string => (s ?? '').replace(/[\s-]/g
  * espacios ni guiones (B46123456, FR40303265045); la de otros paises, como se
  * escribio (el EIN de EE. UU. es 12-3456789).
  */
-const nifDe = (s: string | null | undefined, pais: string | null | undefined): string => {
+export const nifDe = (s: string | null | undefined, pais: string | null | undefined): string => {
   const p = normalizarPais(pais || 'ES');
   if (!p || p === 'ES' || esPaisUe(p)) return nif(s);
   return (s ?? '').trim().replace(/\s+/g, ' ').toUpperCase();
 };
-const iban = (s: string): string => s.replace(/\s/g, '').toUpperCase().replace(/(.{4})/g, '$1 ').trim();
+export const iban = (s: string): string => s.replace(/\s/g, '').toUpperCase().replace(/(.{4})/g, '$1 ').trim();
 const pctES = (n: number): string => `${n.toLocaleString('es-ES', { maximumFractionDigits: 2 })} %`;
 
 /**
@@ -473,7 +490,7 @@ const pctES = (n: number): string => `${n.toLocaleString('es-ES', { maximumFract
  * ambiguos ($ vale para varias monedas) y sin Intl currency (la fuente va en
  * subconjunto y no lleva el espacio fino U+202F).
  */
-function formatos(idioma: Idioma, formato: FormatoDocumento, moneda: string) {
+export function formatos(idioma: Idioma, formato: FormatoDocumento, moneda: string) {
   const es = idioma === 'es';
   const cifra = (n: number): string => `${n < 0 ? '−' : ''}${es ? num(Math.abs(n)) : formatearNumero(Math.abs(n), formato)}`;
   const importe = (n: number, mon = moneda): string => {
@@ -493,7 +510,7 @@ function formatos(idioma: Idioma, formato: FormatoDocumento, moneda: string) {
 }
 
 /** Nombre del pais en el idioma del documento ('US' -> 'Estados Unidos'); el codigo si no se conoce. */
-function nombrePais(codigo: string, idioma: Idioma): string {
+export function nombrePais(codigo: string, idioma: Idioma): string {
   const c = normalizarPais(codigo);
   if (!/^[A-Z]{2}$/.test(c)) return codigo;
   try {
@@ -504,7 +521,7 @@ function nombrePais(codigo: string, idioma: Idioma): string {
 }
 
 /** Parte un texto en lineas que caben en `ancho` puntos (corta tambien palabras imposibles). */
-function partir(texto: string, fuente: PDFFont, tam: number, ancho: number): string[] {
+export function partir(texto: string, fuente: PDFFont, tam: number, ancho: number): string[] {
   const out: string[] = [];
   const cabe = (s: string) => fuente.widthOfTextAtSize(s, tam) <= ancho;
   for (const parrafo of texto.split(/\r?\n/)) {
@@ -539,7 +556,7 @@ function partir(texto: string, fuente: PDFFont, tam: number, ancho: number): str
  * ('46006 València (Valencia)', '75009 Paris'); en el resto, la ciudad delante
  * ('Miami, FL 33131', 'Central, Hong Kong').
  */
-const lineaPoblacion = (
+export const lineaPoblacion = (
   cp?: string | null,
   municipio?: string | null,
   provincia?: string | null,
@@ -705,8 +722,13 @@ export function textoRectificacionPdf(f: DatosFacturaPdf, idioma: Idioma): strin
   return out;
 }
 
-/** Dibuja la factura y devuelve el PDF/A. No toca la BD. */
+/**
+ * Dibuja la factura y devuelve el PDF/A. No toca la BD. Con la plantilla A
+ * (envases e IEEPNR), su propio diseno (facturaPdfPlantillaA); con la estandar,
+ * la B, la C y en las facturas del lector, el de siempre.
+ */
 export async function renderizarFactura(f: DatosFacturaPdf): Promise<Buffer> {
+  if (dibujoDe(f.plantilla) === 'A' && !f.registroLector) return renderizarFacturaPlantillaA(f);
   const formato = formatoPorPais(f.emisor?.pais ?? 'ES');
   const idioma = formato.idioma;
   const T = TEXTOS[idioma];
@@ -1286,14 +1308,16 @@ export async function datosPdfFactura(companyId: string, id: string): Promise<{ 
   const sinEspacios = (t: string) => t.replace(/\s/g, '').toUpperCase();
   const activas = todasCuentas.filter((c) => c.activa);
   const emitidaSinCopia = factura.estadoDocumento === 'FINAL' && (factura.ibanCobro === null || factura.ibanCobro === undefined);
-  let cuenta: { iban: string; bic: string | null } | null;
+  // El nombre del banco (plantilla A: «SWIFT BANK: BIC - BANCO»), solo si lo hay.
+  const conBanco = (nombre: string | null | undefined) => (nombre?.trim() ? { bancoNombre: nombre.trim() } : {});
+  let cuenta: { iban: string; bic: string | null; bancoNombre?: string | null } | null;
   if (factura.ibanCobro !== null && factura.ibanCobro !== undefined) {
     const copiada = factura.ibanCobro;
     const deEsa = copiada ? todasCuentas.find((c) => sinEspacios(c.iban) === sinEspacios(copiada)) : undefined;
-    cuenta = copiada ? { iban: copiada, bic: deEsa?.bic ?? null } : null;
+    cuenta = copiada ? { iban: copiada, bic: deEsa?.bic ?? null, ...conBanco(deEsa?.bancoNombre) } : null;
   } else {
     const elegida = emitidaSinCopia ? elegirCuentaCobro(activas, moneda) : cuentaParaFactura(activas, ajustes, moneda);
-    cuenta = elegida?.iban ? { iban: elegida.iban, bic: elegida.bic ?? null } : null;
+    cuenta = elegida?.iban ? { iban: elegida.iban, bic: elegida.bic ?? null, ...conBanco(elegida.bancoNombre) } : null;
   }
   const textoPie =
     factura.textoPie !== null && factura.textoPie !== undefined ? factura.textoPie : emitidaSinCopia ? null : ajustes.textoPie;
@@ -1365,6 +1389,11 @@ export async function datosPdfFactura(companyId: string, id: string): Promise<{ 
       ivaImporte: Number(l.ivaImporteDoc ?? l.ivaImporte),
       baseLine: Number(l.baseLineDoc ?? l.baseLine),
       tipoRetencion: Number(l.tipoRetencion ?? 0),
+      // Plantilla A: solo los datos que tiene la linea.
+      ...(l.packs !== null && l.packs !== undefined ? { packs: l.packs } : {}),
+      ...(l.kgPlastico !== null && l.kgPlastico !== undefined ? { kgPlastico: Number(l.kgPlastico) } : {}),
+      ...(l.ieepnrImporte !== null && l.ieepnrImporte !== undefined ? { ieepnrImporte: Number(l.ieepnrImporte) } : {}),
+      ...(l.textoAdicional ? { textoAdicional: l.textoAdicional } : {}),
     })),
     cliente: {
       nombreFiscal: c.nombreFiscal,
@@ -1389,6 +1418,9 @@ export async function datosPdfFactura(companyId: string, id: string): Promise<{ 
           web: empresa?.web ?? null,
           inscripcion: textoInscripcionRegistral(empresa as unknown as Record<string, unknown> | null),
           pais: perfil.pais,
+          // Plantilla A: «Inscrita en el Registro Mercantil de {provincia}, {datos}, con CIF: ...».
+          ...(empresa?.datosRegistrales?.trim() ? { datosRegistrales: empresa.datosRegistrales.trim() } : {}),
+          ...(empresa?.registroMercantilProvincia?.trim() ? { registroMercantilProvincia: empresa.registroMercantilProvincia.trim() } : {}),
         }
       : null,
     // La que rectifica: la de la app o, si era de fuera de la app (de antes de llevarla aqui), la escrita.
@@ -1419,6 +1451,9 @@ export async function datosPdfFactura(companyId: string, id: string): Promise<{ 
     causaExencion: factura.causaExencion,
     referenciaLegal: factura.referenciaLegal,
     conIva,
+    // Las del lector salen siempre con el diseno de siempre (copia de registro).
+    plantilla: registroLector ? 'default' : normalizarPlantillaId(factura.plantillaId),
+    ...(factura.pesoBrutoKg !== null && factura.pesoBrutoKg !== undefined ? { pesoBrutoKg: Number(factura.pesoBrutoKg) } : {}),
   };
 
   const nombre =
