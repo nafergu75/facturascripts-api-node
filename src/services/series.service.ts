@@ -4,7 +4,7 @@ import { SerieDocumento, TipoDocumentoSerie, TIPOS_DOCUMENTO_SERIE, esTipoDocume
 import { badRequest, conflict, notFound } from '../utils/http-errors';
 import { esEmpresaEspanola } from './perfilEmpresa.service';
 import { leerAjustesFacturacion } from './ajustesFacturacion.service';
-import { sembrarSeries } from './seriesSemilla.service';
+import { esSerieHistorica, sembrarSeries, tieneFacturasDeLaApp } from './seriesSemilla.service';
 import {
   admiteCeramica,
   admiteDescuento,
@@ -356,17 +356,6 @@ export async function obtenerSeriePorDefecto(
 /** Codigos que se prueban, en orden, para la serie de rectificativas de tickets. */
 const CODIGOS_TICKETS = ['RT', 'RTK'];
 
-/**
- * Serie historica: desactivada, con facturas del lector y ninguna emitida por
- * la app. Guarda la numeracion de otro programa (obtenerOCrearSerieHistorica):
- * no cuenta como una serie de la empresa que se haya desactivado.
- */
-async function esSerieHistorica(companyId: string, s: { codigo: string; activa: boolean }): Promise<boolean> {
-  if (s.activa) return false;
-  if (await tieneFacturasDeLaApp(companyId, s.codigo)) return false;
-  return (await prisma.incomeInvoice.count({ where: { companyId, serie: s.codigo } })) > 0;
-}
-
 /** La primera serie de rectificativas de tickets de la empresa desactivada (sin contar las historicas del lector), o null. */
 async function serieTicketsDesactivada(companyId: string): Promise<{ codigo: string } | null> {
   const series = await prisma.invoiceSeries.findMany({ where: { companyId, tipoDocumento: 'RECTIFICATIVA_SIMPLIFICADA', activa: false }, orderBy: { codigo: 'asc' } });
@@ -617,20 +606,6 @@ export async function obtenerOCrearSerieHistorica(
   // Otra peticion pudo crearla a la vez como serie activa: no se mezcla.
   if (s.activa || s.tipoDocumento !== tipoDocumento) throw choqueConSerieDeLaApp(codigo);
   return aDominio(s, await contextoPlantillas(companyId));
-}
-
-/** ¿Hay en la serie alguna factura que no llegara del lector (la emitio la app)? */
-async function tieneFacturasDeLaApp(companyId: string, serie: string): Promise<boolean> {
-  const n = await prisma.incomeInvoice.count({
-    where: {
-      companyId,
-      serie,
-      // Las antiguas del lector no tienen origen, pero si su documento leido.
-      readerDocument: { is: null },
-      OR: [{ origen: null }, { origen: { not: 'lector' } }],
-    },
-  });
-  return n > 0;
 }
 
 function choqueConSerieDeLaApp(codigo: string, desactivable = false) {
