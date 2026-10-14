@@ -157,6 +157,17 @@ describe('emisión directa y encadenamiento', () => {
     expect(comprobarCadena(await cadenaDe(E))).toEqual([]);
   });
 
+  it('la factura devuelve su descripción de la operación (null sin ella) y guardar el borrador sin mandarla no la borra', async () => {
+    const b = await emitir({ borrador: true, descripcionOperacion: 'Venta de agua mineral' });
+    expect(b.descripcionOperacion).toBe('Venta de agua mineral');
+    expect((await incomeInvoicesService.obtenerPorId(E, b.id)).descripcionOperacion).toBe('Venta de agua mineral');
+    // Una pantalla que no la manda (no la ha tocado) la conserva.
+    expect((await incomeInvoicesService.actualizarBorrador(E, b.id, { observaciones: 'Entrega en dos veces' })).descripcionOperacion).toBe('Venta de agua mineral');
+    // Vaciarla: el registro vuelve a sacarla de las líneas.
+    expect((await incomeInvoicesService.actualizarBorrador(E, b.id, { descripcionOperacion: null })).descripcionOperacion).toBeNull();
+    expect((await emitir({ borrador: true })).descripcionOperacion).toBeNull();
+  });
+
   it('una factura en USD lleva en el registro sus importes en euros', async () => {
     const f = await emitir({ moneda: 'USD', lineas: [linea(1149, 21, { moneda: 'USD' })] });
     expect(f).toMatchObject({ moneda: 'USD', baseTotal: 1000, ivaTotal: 210 });

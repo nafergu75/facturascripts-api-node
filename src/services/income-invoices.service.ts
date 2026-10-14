@@ -370,6 +370,8 @@ export interface IncomeInvoiceResp {
   /** Plantilla B: totales del pie (palets, cajas, m2, piezas, peso y cargo de palets, en la moneda de la factura); null si no es la B. */
   resumenCeramica: ResumenCeramica | null;
   observaciones?: string;
+  /** VERI*FACTU: descripcion de la operacion del registro, escrita a mano; null = la sacan las lineas (o la explicacion de la rectificativa). */
+  descripcionOperacion: string | null;
   esRectificativa: boolean;
   facturaOriginalId?: string;
   /** Rectificativa de una factura de fuera de la app: su numero y su fecha. */
@@ -548,6 +550,7 @@ function aRespuesta(f: FacturaConLineas, ctx: ContextoRespuesta): IncomeInvoiceR
       ? resumenCeramica(f.lineas.map((l) => ({ ...ceramicaGuardada(l), cantidad: l.cantidad, baseLine: l.baseLineDoc ?? l.baseLine })))
       : null,
     observaciones: f.observaciones ?? undefined,
+    descripcionOperacion: f.descripcionOperacion ?? null,
     esRectificativa: f.esRectificativa,
     facturaOriginalId: f.facturaOriginalId ?? undefined,
     ...(f.rectificaFueraNumero ? { rectificaFuera: { numero: f.rectificaFueraNumero, fecha: f.rectificaFueraFecha ?? null } } : {}),
