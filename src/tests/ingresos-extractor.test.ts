@@ -173,9 +173,12 @@ describe('confirmar', () => {
     expect(crearIngreso).not.toHaveBeenCalled();
   });
 
-  it('no confirma dos veces', async () => {
+  it('no confirma dos veces: 409 LECTURA_YA_CONFIRMADA; descartado o caducado, 400 LECTURA_NO_LISTA', async () => {
     docs.set('d1', { id: 'd1', companyId: 'c1', status: 'VERIFIED', parsedData: extraccion() });
-    await expect(ingresosExtractorService.confirmar('c1', 'd1')).rejects.toThrow(/ya no se puede confirmar/);
+    await expect(ingresosExtractorService.confirmar('c1', 'd1')).rejects.toMatchObject({ statusCode: 409, details: { codigo: 'LECTURA_YA_CONFIRMADA' } });
+    docs.set('d1', { id: 'd1', companyId: 'c1', status: 'REJECTED', parsedData: extraccion() });
+    await expect(ingresosExtractorService.confirmar('c1', 'd1')).rejects.toMatchObject({ statusCode: 400, details: { codigo: 'LECTURA_NO_LISTA' } });
+    expect(crearIngreso).not.toHaveBeenCalled();
   });
 });
 
