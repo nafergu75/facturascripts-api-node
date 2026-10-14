@@ -9,6 +9,7 @@ import { desgloseIvaPorTipo } from './accounting-engine.service';
 import { perfilDesdeConfig } from './perfilEmpresa.service';
 import { cuentaParaFactura, leerAjustesFacturacion } from './ajustesFacturacion.service';
 import { enlacesDeVentas } from './rectificativasVenta.service';
+import { leerInstantanea } from './verifactu/instantanea';
 import { diferenciaSustitucion, type LineaImportes } from '../domain/rectificativa-venta.model';
 import { importesDoc, nombreMoneda, textoTipo } from '../domain/divisas';
 import { nombreNumeroFiscal, NUMERO_FISCAL_GENERICO } from '../domain/numero-fiscal';
@@ -1338,7 +1339,22 @@ export async function datosPdfFactura(companyId: string, id: string): Promise<{ 
     }));
   const dif = factura.esRectificativa && factura.tipoRectificativa === 'S' && original ? diferenciaSustitucion(lineasDoc(factura.lineas), lineasDoc(original.lineas)) : null;
 
-  const c = factura.customer;
+  // Factura emitida con instantanea (VERI*FACTU, spec 5.3): el cliente y el
+  // emisor de cuando se emitio, aunque despues cambien la ficha del cliente o
+  // los datos de la empresa. El logo, la cuenta y el pie siguen como siempre
+  // (la cuenta y el pie ya tienen su copia: ibanCobro y textoPie).
+  const inst = factura.estadoDocumento === 'FINAL' ? leerInstantanea(factura.instantaneaEmision) : null;
+  const c = inst
+    ? { ...inst.cliente }
+    : {
+        nombreFiscal: factura.customer.nombreFiscal,
+        nifCif: factura.customer.nifCif,
+        direccion: factura.customer.direccion,
+        cp: factura.customer.cp,
+        municipio: factura.customer.municipio,
+        provincia: factura.customer.provincia,
+        pais: factura.customer.pais,
+      };
   const datos: DatosFacturaPdf = {
     id: factura.id,
     numeroCompleto: factura.numeroCompleto,
@@ -1376,7 +1392,21 @@ export async function datosPdfFactura(companyId: string, id: string): Promise<{ 
       pais: c.pais,
     },
     // Sin denominacion en los datos de la sociedad, al menos el nombre con el que esta dada de alta.
-    emisor: empresa || compania
+    emisor: inst
+      ? {
+          denominacion: inst.emisor.denominacion || compania?.name || null,
+          nif: inst.emisor.nif,
+          domicilioSocial: inst.emisor.domicilioSocial,
+          codigoPostal: inst.emisor.codigoPostal,
+          municipio: inst.emisor.municipio,
+          provincia: inst.emisor.provincia,
+          telefono: inst.emisor.telefono,
+          email: inst.emisor.email,
+          web: inst.emisor.web,
+          inscripcion: inst.emisor.inscripcion,
+          pais: inst.emisor.pais ?? perfil.pais,
+        }
+      : empresa || compania
       ? {
           denominacion: empresa?.denominacion?.trim() || compania?.name || null,
           nif: empresa?.nif ?? null,

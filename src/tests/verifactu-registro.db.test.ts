@@ -20,6 +20,7 @@ import { comprobarCadena } from '../services/verifactu/cadena';
 import type { RegistroContenido } from '../services/verifactu/tipos';
 import { fechaAeat, instanteDeHuso } from '../services/verifactu/formato';
 import { hoyEspana } from '../utils/fechas';
+import { datosPdfFactura } from '../services/facturaPdf.service';
 
 const get = (axios as unknown as { get: jest.Mock }).get;
 const CABECERA = 'KEY,FREQ,CURRENCY,CURRENCY_DENOM,EXR_TYPE,EXR_SUFFIX,TIME_PERIOD,OBS_VALUE,OBS_STATUS';
@@ -313,5 +314,22 @@ describe('cliente sin NIF en una factura completa', () => {
 
   it('la cadena entera sigue bien', async () => {
     expect(comprobarCadena(await cadenaDe(E))).toEqual([]);
+  });
+});
+
+describe('PDF de una factura emitida: los datos de la emisión (instantánea)', () => {
+  it('aunque cambien la ficha del cliente y los datos de la empresa; un borrador usa los de ahora', async () => {
+    const empresa = DESACT;
+    const clienteId = (await prisma.customer.create({ data: { companyId: empresa, nombreFiscal: 'Cliente Antiguo SL', nifCif: cifSl(), pais: 'ES', direccion: 'Calle Vieja 1', cp: '46002' } })).id;
+    const f = await emitir({}, empresa, clienteId);
+    const b = await emitir({ borrador: true }, empresa, clienteId);
+    await prisma.customer.update({ where: { id: clienteId }, data: { nombreFiscal: 'Cliente Nuevo SL', direccion: 'Calle Nueva 2' } });
+    await prisma.legalConfig.update({ where: { companyId: empresa }, data: { denominacion: 'Empresa Renombrada SL', telefono: '960000000' } });
+    const pdf = (await datosPdfFactura(empresa, f.id)).datos;
+    expect(pdf.cliente).toMatchObject({ nombreFiscal: 'Cliente Antiguo SL', direccion: 'Calle Vieja 1' });
+    expect(pdf.emisor).toMatchObject({ denominacion: 'Registro Otra SL', telefono: null });
+    const borrador = (await datosPdfFactura(empresa, b.id)).datos;
+    expect(borrador.cliente).toMatchObject({ nombreFiscal: 'Cliente Nuevo SL', direccion: 'Calle Nueva 2' });
+    expect(borrador.emisor).toMatchObject({ denominacion: 'Empresa Renombrada SL', telefono: '960000000' });
   });
 });
