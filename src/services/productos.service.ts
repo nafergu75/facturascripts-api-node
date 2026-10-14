@@ -29,6 +29,10 @@ type ProductRow = {
   notas: string | null;
   familiaId: string | null;
   familia?: { id: string; codigo: string; nombre: string; cuentaVentas: string | null } | null;
+  unidadesPorPack: number | null;
+  kgPlasticoUnidad: number | null;
+  llevaIeepnr: boolean;
+  textoFactura: string | null;
 };
 
 /** Product (Prisma) -> respuesta del recurso productos. */
@@ -52,7 +56,85 @@ function aProducto(p: ProductRow): Record<string, unknown> {
     notas: p.notas,
     familiaId: p.familiaId,
     familia: p.familia ? { id: p.familia.id, codigo: p.familia.codigo, nombre: p.familia.nombre } : null,
+    // Plantilla A (envases): se proponen en la linea de la factura.
+    unidadesPorPack: p.unidadesPorPack ?? null,
+    kgPlasticoUnidad: p.kgPlasticoUnidad === null || p.kgPlasticoUnidad === undefined ? null : Number(p.kgPlasticoUnidad),
+    llevaIeepnr: p.llevaIeepnr ?? false,
+    textoFactura: p.textoFactura ?? null,
   };
+}
+
+/** Unidades por pack: entero de 1 a 100.000. */
+export const UNIDADES_POR_PACK_MAX = 100_000;
+/** Kg de plastico no reciclado por unidad: de 0 a 1.000, hasta 6 decimales. */
+export const KG_PLASTICO_UNIDAD_MAX = 1000;
+/** Texto adicional en la factura: 500 caracteres y 6 lineas como mucho. */
+export const TEXTO_FACTURA_MAX = 500;
+export const TEXTO_FACTURA_LINEAS_MAX = 6;
+
+/** Numero con coma o punto decimal (sin separador de miles); null si no lo es. */
+function numeroDecimal(v: unknown): number | null {
+  if (typeof v === 'number') return Number.isFinite(v) ? v : null;
+  const t = String(v).trim().replace(',', '.');
+  if (!/^-?\d+(\.\d+)?$/.test(t)) return null;
+  return Number(t);
+}
+
+const conDecimales = (n: number, decimales: number) => Math.abs(Math.round(n * 10 ** decimales) - n * 10 ** decimales) < 1e-6;
+
+/**
+ * Texto adicional de la factura (de un articulo o de una linea): saltos de
+ * linea normalizados, sin espacios al final y como mucho 500 caracteres y 6
+ * lineas. null si llega vacio. `null` en el error si no cumple.
+ */
+export function limpiarTextoAdicional(v: unknown): { ok: true; valor: string | null } | { ok: false } {
+  if (v === undefined || v === null) return { ok: true, valor: null };
+  if (typeof v !== 'string') return { ok: false };
+  const texto = v.replace(/\r\n?/g, '\n').split('\n').map((l) => l.trimEnd()).join('\n').trim();
+  if (!texto) return { ok: true, valor: null };
+  if (texto.length > TEXTO_FACTURA_MAX || texto.split('\n').length > TEXTO_FACTURA_LINEAS_MAX) return { ok: false };
+  return { ok: true, valor: texto };
+}
+
+/** Datos de envase del articulo (plantilla A), con 400 y el nombre del campo si no valen. */
+function datosEnvaseProducto(data: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  if (data.unidadesPorPack !== undefined) {
+    const v = data.unidadesPorPack;
+    if (v === null || v === '') out.unidadesPorPack = null;
+    else {
+      const n = numeroDecimal(v);
+      if (n === null || !Number.isInteger(n) || n < 1 || n > UNIDADES_POR_PACK_MAX) {
+        throw badRequest('Las unidades por pack son un número entero entre 1 y 100.000.', { campo: 'unidadesPorPack' });
+      }
+      out.unidadesPorPack = n;
+    }
+  }
+  if (data.kgPlasticoUnidad !== undefined) {
+    const v = data.kgPlasticoUnidad;
+    if (v === null || v === '') out.kgPlasticoUnidad = null;
+    else {
+      const n = numeroDecimal(v);
+      if (n === null || n < 0 || n > KG_PLASTICO_UNIDAD_MAX || !conDecimales(n, 6)) {
+        throw badRequest('Los kg de plástico no reciclado por unidad son un número entre 0 y 1.000, con 6 decimales como mucho (por ejemplo, 0,033558).', {
+          campo: 'kgPlasticoUnidad',
+        });
+      }
+      out.kgPlasticoUnidad = n;
+    }
+  }
+  if (data.llevaIeepnr !== undefined) {
+    if (typeof data.llevaIeepnr !== 'boolean') throw badRequest('Indica si el artículo lleva IEEPNR (sí o no).', { campo: 'llevaIeepnr' });
+    out.llevaIeepnr = data.llevaIeepnr;
+  }
+  if (data.textoFactura !== undefined) {
+    const r = limpiarTextoAdicional(data.textoFactura);
+    if (!r.ok) {
+      throw badRequest(`El texto adicional de la factura admite ${TEXTO_FACTURA_MAX} caracteres y ${TEXTO_FACTURA_LINEAS_MAX} líneas como mucho.`, { campo: 'textoFactura' });
+    }
+    out.textoFactura = r.valor;
+  }
+  return out;
 }
 
 const TIPOS = ['PRODUCTO', 'SERVICIO'];
@@ -104,6 +186,7 @@ async function datosProducto(companyId: string, data: Record<string, unknown>, p
   }
   if (data.cuentaVentas !== undefined) out.cuentaVentas = cuenta(data.cuentaVentas);
   if (data.notas !== undefined) out.notas = data.notas ? String(data.notas).slice(0, 2000) : null;
+  Object.assign(out, datosEnvaseProducto(data));
   if (data.familiaId !== undefined) {
     if (!data.familiaId) out.familiaId = null;
     else {
