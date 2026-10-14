@@ -8,6 +8,8 @@
  *  - Idempotente: guardar otra vez no crea otra; dos guardados a la vez, una B.
  *  - Desmarcar no borra ni desactiva la B: pasa a la estándar y dice por qué.
  *  - Una B desactivada no se activa: el PUT trae el aviso para activarla.
+ *  - Una B histórica del lector (facturas de otro programa) tampoco, y el
+ *    aviso NO pide activarla: pide otra serie con la plantilla B.
  *  - El código B de otro tipo no se toca: aviso.
  *  - Empresa que ya tenía la casilla marcada (antes de esto): el GET de los
  *    ajustes dice «pendiente» sin crear nada; la B llega al abrir las series.
@@ -34,6 +36,7 @@ const ANTES = `ser-cer-antes-${SUFIJO}`;
 const US = `ser-cer-us-${SUFIJO}`;
 const CARRERA = `ser-cer-carrera-${SUFIJO}`;
 const FACTURAS = `ser-cer-facturas-${SUFIJO}`;
+const HISTORICA = `ser-cer-hist-${SUFIJO}`;
 
 const app = express();
 app.use(express.json());
@@ -64,7 +67,7 @@ const listar = async (empresa: string): Promise<SerieResp[]> => (await request(a
 const filasB = (empresa: string) => prisma.invoiceSeries.findMany({ where: { companyId: empresa, codigo: 'B' } });
 
 beforeAll(async () => {
-  for (const id of [NUEVA, DESACT, OTRO_TIPO, ANTES, US, CARRERA, FACTURAS]) {
+  for (const id of [NUEVA, DESACT, OTRO_TIPO, ANTES, US, CARRERA, FACTURAS, HISTORICA]) {
     await prisma.company.create({ data: { id, name: `Serie ceramica ${id}`, fsBaseUrl: 'http://localhost:8080', fsApiKeyEnc: 'k' } });
   }
   await prisma.legalConfig.create({ data: { companyId: US, denominacion: 'Tiles Inc', nif: '12-3456789', pais: 'US', monedaCuenta: 'USD' } });
@@ -120,6 +123,25 @@ describe('marcar «Vendo cerámica» crea la serie B', () => {
     expect(await filasB(DESACT)).toEqual([expect.objectContaining({ activa: false, descripcion: 'Segunda línea' })]);
   });
 
+  it('la B histórica del lector no se activa y el aviso no pide activarla: pide otra serie de facturas con la plantilla B', async () => {
+    await listar(HISTORICA);
+    // Como la deja el lector: desactivada, con una factura de otro programa y ninguna de la app.
+    await prisma.invoiceSeries.create({
+      data: { companyId: HISTORICA, codigo: 'B', descripcion: 'Serie B (facturas de otro programa)', tipoDocumento: 'FACTURA', activa: false, ultimoNumero: 500 },
+    });
+    const cliente = await prisma.customer.create({ data: { companyId: HISTORICA, nombreFiscal: 'Cliente historico', nifCif: 'B13000000' } });
+    await prisma.incomeInvoice.create({
+      data: { companyId: HISTORICA, customerId: cliente.id, serie: 'B', numero: 500, numeroCompleto: 'B-500', fechaEmision: '2026-09-01', fechaVencimiento: '2026-09-01', origen: 'lector', estadoDocumento: 'FINAL', tipoFactura: 'F1' },
+    });
+    const res = await guardar(HISTORICA, { vendeCeramica: true });
+    expect(res.status).toBe(200);
+    expect(res.body.data.serieCeramica).toMatchObject({ codigo: 'B', estado: 'historica' });
+    expect(res.body.data.serieCeramica.aviso).toMatch(/No la actives.*crea en Configuración > Series una serie de facturas con otro código/);
+    expect(res.body.data.serieCeramica.aviso).not.toMatch(/actívala/);
+    expect((await leerAjustes(HISTORICA)).body.data.serieCeramica.estado).toBe('historica');
+    expect(await filasB(HISTORICA)).toEqual([expect.objectContaining({ activa: false, ultimoNumero: 500 })]);
+  });
+
   it('el código B de otro tipo no se toca: aviso para crear otra serie de facturas con la plantilla B', async () => {
     await prisma.invoiceSeries.create({ data: { companyId: OTRO_TIPO, codigo: 'B', descripcion: 'Proformas B', tipoDocumento: 'PROFORMA', activa: true, porDefecto: true } });
     const res = await guardar(OTRO_TIPO, { vendeCeramica: true });
@@ -147,11 +169,20 @@ describe('marcar «Vendo cerámica» crea la serie B', () => {
     expect(await filasB(US)).toHaveLength(0);
   });
 
-  it('dos guardados a la vez (y las series abiertas a la vez): una sola B y una sola A', async () => {
+  it('dos guardados a la vez (y las series abiertas a la vez): una sola B y una sola A, sin errores ni avisos', async () => {
     // La fila de ajustes ya existe: la carrera es solo la de las series.
     await guardar(CARRERA, { textoPie: 'Pie' });
-    const [r1, r2] = await Promise.all([guardar(CARRERA, { vendeCeramica: true }), guardar(CARRERA, { vendeCeramica: true }), listar(CARRERA)]);
-    expect([r1.status, r2.status]).toEqual([200, 200]);
+    const [r1, r2, r3] = await Promise.all([
+      guardar(CARRERA, { vendeCeramica: true }),
+      guardar(CARRERA, { vendeCeramica: true }),
+      request(app).get(`/companies/${CARRERA}/series`),
+    ]);
+    // En MySQL el upsert lee y después inserta: el que choca con el único usa la serie que creó el otro (ni 500 ni «no se ha podido crear»).
+    expect([r1.status, r2.status, r3.status]).toEqual([200, 200, 200]);
+    for (const r of [r1, r2]) {
+      expect(['creada', 'activa']).toContain(r.body.data.serieCeramica.estado);
+      expect(r.body.data.serieCeramica.aviso).toBeNull();
+    }
     expect(await filasB(CARRERA)).toHaveLength(1);
     expect(await prisma.invoiceSeries.count({ where: { companyId: CARRERA, codigo: 'A' } })).toBe(1);
   });
