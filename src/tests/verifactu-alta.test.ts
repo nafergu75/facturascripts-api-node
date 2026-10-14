@@ -291,7 +291,7 @@ describe('validarAlta: lo que la AEAT rechazaría', () => {
   });
 
   it('NumSerieFactura: 1-60 caracteres ASCII imprimibles, sin " \' < > = &', () => {
-    for (const n of ['A&1', 'A"1', "A'1", 'A<1', 'A>1', 'A=1', 'Ñ-1', 'x'.repeat(61), ' ']) {
+    for (const n of ['A&1', 'A"1', "A'1", 'A`1', 'A<1', 'A>1', 'A=1', 'Ñ-1', 'x'.repeat(61), ' ']) {
       rechaza(() => valida(alta({ numeroCompleto: n })), 'VERIFACTU_NUMERO_SERIE');
     }
     valida(alta({ numeroCompleto: '2027/A-001 (bis)' }));

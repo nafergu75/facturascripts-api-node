@@ -113,7 +113,8 @@ const largo = (texto: string): number => Array.from(texto).length;
 /**
  * Por que NumSerieFactura no vale para la AEAT, o null: 1-60 caracteres ASCII
  * imprimibles (32-126), sin " ' < > = (Validaciones 3.1.3.1). La app prohibe
- * ademas el & (spec 3.5: no se sabe si la huella usaria & o &amp;).
+ * ademas el & (spec 3.5: no se sabe si la huella usaria & o &amp;) y el acento
+ * grave (`), que es como el documento dibuja el ASCII 39 (error 1130).
  */
 export function problemaNumSerie(numSerie: string | null | undefined): string | null {
   const n = String(numSerie ?? '');
@@ -122,7 +123,7 @@ export function problemaNumSerie(numSerie: string | null | undefined): string | 
   for (const ch of n) {
     const c = ch.charCodeAt(0);
     if (ch.length > 1 || c < 32 || c > 126) return `lleva un carácter que la AEAT no admite («${ch}»)`;
-    if (`"'<>=&`.includes(ch)) return `lleva el carácter «${ch}», que la AEAT no admite`;
+    if (`"'\`<>=&`.includes(ch)) return `lleva el carácter «${ch}», que la AEAT no admite`;
   }
   return null;
 }
