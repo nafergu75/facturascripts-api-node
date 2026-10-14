@@ -454,7 +454,7 @@ export interface UltimaFacturaPanel {
   tercero: string;
   terceroId: string;
   description: string;
-  /** «Ventas» o el tipo de gasto. */
+  /** «Ventas», el tipo de gasto o «Inmovilizado» (un gasto que es solo compra de inmovilizado, que no cuenta como gasto). */
   category: string;
   /** Base en la moneda de cuenta (negativa en rectificativas y abonos). */
   base: number;
@@ -548,6 +548,20 @@ export async function ultimasFacturasPanel(companyId: string, limite: number, an
         }),
       ])
     : [[], []];
+  // Los gastos de la lista que son solo compras de inmovilizado (todas sus líneas 2xx): salen
+  // como «Inmovilizado», porque no cuentan como gasto en el resto del panel.
+  const lineasInmovilizado = gastos.length
+    ? await prisma.expenseInvoiceLine.groupBy({
+        by: ['invoiceId'],
+        where: { invoiceId: { in: gastos.map((f) => f.id) }, accountCode: { startsWith: PREFIJO_INMOVILIZADO } },
+        _sum: { baseLine: true },
+      })
+    : [];
+  const inmovilizadoDe = new Map(lineasInmovilizado.map((l) => [l.invoiceId, centimosDe(l._sum.baseLine)]));
+  const soloInmovilizado = (f: (typeof gastos)[number]) => {
+    const total = centimosDe(f.baseTotal);
+    return total !== 0 && inmovilizadoDe.get(f.id) === total;
+  };
   const cobradoDe = new Map(cobros.map((c) => [c.invoiceId, centimosDe(c._sum.importe)]));
   const sustituidas = new Set(sustituciones.map((s) => s.facturaOriginalId));
   /** Estado de cobro de una venta: con los cobros registrados, como el de pago de un gasto. */
@@ -608,7 +622,7 @@ export async function ultimasFacturasPanel(companyId: string, limite: number, an
         tercero: f.supplier.nombreFiscal,
         terceroId: f.supplier.id,
         description: f.supplier.nombreFiscal,
-        category: TIPO_GASTO_INFO[tipoDe(f.tipoGasto)].texto,
+        category: soloInmovilizado(f) ? 'Inmovilizado' : TIPO_GASTO_INFO[tipoDe(f.tipoGasto)].texto,
         base: base(f.baseTotal),
         total,
         amount: base(f.baseTotal).toFixed(2),
