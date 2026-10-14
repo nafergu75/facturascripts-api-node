@@ -2299,9 +2299,15 @@ export const incomeInvoicesService = {
     }
     const rect = cierre ? { forma: planRect!.bloque.forma, enlaces: cierre.enlaces } : null;
     if (rect && rect.forma === 'I') await exigirLimites(prisma, companyId, planRect!.originalesApp, partesDe(rect.enlaces), id);
+    // VERI*FACTU en pruebas o activo: el destinatario se comprueba antes de
+    // numerar (y deja creada la fila de la cadena). Dentro, validarAlta manda.
+    if (await planRegistro(companyId, ahora)) exigirDestinatarioVerifactu(actual.tipoFactura, clienteFiscal(actual.customer));
+    // Orden de bloqueo: originales -> serie -> cadena de VERI*FACTU. Todo con tx.
     const factura = await transaccion(async (tx) => {
       if (rect) await exigirRectificablesEnTx(tx, companyId, rect, id);
       const numero = await asignarNumero(tx, companyId, actual.serie, fechaEmision);
+      // Emisor y cliente tal como salen en la factura (el PDF y el registro los toman de aqui).
+      const instantanea = await instantaneaDeEmision(tx, companyId, actual.customerId);
       // Solo se finaliza si sigue en borrador y sin cambios desde que se leyo (otra
       // peticion podria haberla emitido o modificado: moneda, lineas, tipo...).
       const r = await tx.incomeInvoice.updateMany({
@@ -2325,6 +2331,7 @@ export const incomeInvoicesService = {
           // Rectificativa de una factura sin tipo: el pais de la original, congelado.
           ...(original && !fiscal.tipoOperacion && !actual.paisClienteLegacy ? { paisClienteLegacy: paisCongelado(original) } : {}),
           ...(importes ? cabecera(importes) : {}),
+          instantaneaEmision: instantaneaComoJson(instantanea),
         },
       });
       if (r.count !== 1) {
@@ -2349,6 +2356,8 @@ export const incomeInvoicesService = {
         await recalcularEstadoPartidas(tx, companyId, partidasDe(rect.enlaces));
         if (rect.forma === 'S') await recalcularEstadoCobroVenta(tx, companyId, id);
       }
+      // Registro de VERI*FACTU encadenado, con los importes y los enlaces ya definitivos.
+      await generarRegistroAlta(tx, { companyId, facturaId: id, instantanea });
       return tx.incomeInvoice.findUniqueOrThrow({ where: { id }, include: INCLUIR });
     }, rect ? AISLAMIENTO_RECTIFICATIVAS : undefined);
     const avisosFiscales = [
