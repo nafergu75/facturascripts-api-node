@@ -575,7 +575,7 @@ async function asientoTesoreria(
   const debe = r2(p.apuntes.reduce((s, a) => s + a.debe, 0));
   const haber = r2(p.apuntes.reduce((s, a) => s + a.haber, 0));
   if (aCentimos(debe) !== aCentimos(haber)) throw badRequest(`El asiento no cuadra: Debe ${debe} y Haber ${haber}.`);
-  await exigirFechaContabilizable(companyId, p.fecha);
+  await exigirFechaContabilizable(companyId, p.fecha, tx);
   return tx.journalEntry.create({
     data: {
       companyId,
