@@ -14,6 +14,8 @@ export interface RateLimitOpts {
    */
   soloFallos?: boolean;
   mensaje?: string;
+  /** details del 429 (p. ej. { codigo }), para que la pantalla sepa que ha pasado. */
+  detalles?: Record<string, unknown>;
 }
 
 /** Clave por cuenta, normalizada para que `A@X.com` y `a@x.com` compartan cuota. */
@@ -69,7 +71,7 @@ export function rateLimit(opts: RateLimitOpts = {}): RequestHandler {
     if (previos.length >= max) {
       hits.set(clave, previos); // persiste el filtrado: no reevaluar marcas muertas
       res.setHeader('Retry-After', Math.ceil(ventanaMs / 1000));
-      res.status(429).json({ message: mensaje, statusCode: 429 });
+      res.status(429).json({ message: mensaje, statusCode: 429, ...(opts.detalles ? { details: opts.detalles } : {}) });
       return;
     }
 

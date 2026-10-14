@@ -9,6 +9,9 @@ import {
   leerInterruptorRed,
   type EstadoInterruptor,
 } from '../services/verifactu/redSeguridad';
+import { borrarCertificado, subirCertificado } from '../services/verifactu/certificado.service';
+import { probarConexion } from '../services/verifactu/conexion.service';
+import { configuracionVerifactu } from '../services/verifactu/configuracion.service';
 
 /** Estado del interruptor con el email de quien lo cambio (no su id). */
 async function conQuien(estado: EstadoInterruptor) {
@@ -19,6 +22,36 @@ async function conQuien(estado: EstadoInterruptor) {
 }
 
 export const verifactuController = {
+  /** GET /companies/:companyId/verifactu/configuracion (administrador de la empresa): la pantalla Configuracion > VERI*FACTU. */
+  configuracion: asyncHandler(async (req, res) => {
+    sendOk(res, await configuracionVerifactu(req.companyId!));
+  }),
+
+  /**
+   * PUT /companies/:companyId/verifactu/certificado (config:write), multipart:
+   * `certificado` (el .pfx/.p12), `contrasena` y, si el titular no es la
+   * empresa, `actuaComo` (APODERADO | COLABORADOR). Nunca devuelve el
+   * certificado ni la contraseña.
+   */
+  subirCertificado: asyncHandler(async (req, res) => {
+    const b = (req.body ?? {}) as Record<string, unknown>;
+    sendOk(res, await subirCertificado(req.companyId!, req.user!.userId, { pfx: req.file?.buffer, contrasena: b.contrasena, actuaComo: b.actuaComo }));
+  }),
+
+  /** DELETE /companies/:companyId/verifactu/certificado (config:write). Con VERI*FACTU activo, 409. */
+  borrarCertificado: asyncHandler(async (req, res) => {
+    sendOk(res, await borrarCertificado(req.companyId!, req.user!.userId));
+  }),
+
+  /**
+   * POST /companies/:companyId/verifactu/certificado/probar (config:write).
+   * Siempre contra el entorno de pruebas de la AEAT en esta fase: se ignora
+   * cualquier entorno del cuerpo. Una conexion fallida tambien da 200 (ok:false).
+   */
+  probarConexion: asyncHandler(async (req, res) => {
+    sendOk(res, { resultado: await probarConexion(req.companyId!, req.user!.userId) });
+  }),
+
   /** GET /companies/:companyId/verifactu/red-seguridad: si la red bloquea la emision y el aviso previo. */
   estadoRedEmpresa: asyncHandler(async (req, res) => {
     sendOk(res, await estadoRedEmpresa(req.companyId!));
