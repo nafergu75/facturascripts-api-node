@@ -595,7 +595,11 @@ export function problemaSerieAeat(codigo: string): string | null {
  *    facturas emitidas por la app, se usa.
  *  - Si el codigo coincide con una serie de la app (activa, o desactivada pero
  *    con facturas que emitio la app, o de otro tipo), 409: el otro programa
- *    tiene que numerar en otra serie. Antes se guardaba en «<codigo>-H», pero
+ *    tiene que numerar en otra serie. Si es una serie activa en la que la app
+ *    aun no ha emitido nada y no es la predeterminada (como la C, que se crea
+ *    sola en todas las empresas), el 409 dice tambien la salida: desactivarla
+ *    en Configuracion > Series y volver a registrar la factura, que entonces se
+ *    guarda en ella como historica. Antes se guardaba en «<codigo>-H», pero
  *    asi la factura quedaba con un numero que no es el suyo (el libro de
  *    expedidas y el PDF decian «A-H-500» en vez de «A-500») y se escondia un
  *    choque real: dos facturas A-500 del mismo emisor (art. 6.1.a RD 1619/2012).
@@ -623,7 +627,14 @@ export async function obtenerOCrearSerieHistorica(
     const historica = !existente.activa && existente.tipoDocumento !== 'PROFORMA' && !(await tieneFacturasDeLaApp(companyId, existente.codigo));
     if (historica && existente.tipoDocumento === tipoDocumento) return existente;
     if (historica && opciones.aceptarOtroTipo) return { ...existente, mixta: true };
-    throw choqueConSerieDeLaApp(existente.codigo);
+    // Activa, sin facturas de la app y desactivable (no es la predeterminada): se dice como guardarla ahi.
+    const desactivable =
+      existente.activa &&
+      !existente.porDefecto &&
+      existente.tipoDocumento !== 'PROFORMA' &&
+      (existente.tipoDocumento === tipoDocumento || !!opciones.aceptarOtroTipo) &&
+      !(await tieneFacturasDeLaApp(companyId, existente.codigo));
+    throw choqueConSerieDeLaApp(existente.codigo, desactivable);
   }
 
   const s = await prisma.invoiceSeries.upsert({
@@ -650,11 +661,14 @@ async function tieneFacturasDeLaApp(companyId: string, serie: string): Promise<b
   return n > 0;
 }
 
-function choqueConSerieDeLaApp(codigo: string) {
+function choqueConSerieDeLaApp(codigo: string, desactivable = false) {
   return conflict(
     `La serie ${codigo} es una de las series con las que la app emite facturas, y dos facturas no pueden tener el mismo número. ` +
       'Si la factura es de otro programa, ese programa tiene que numerar en una serie distinta. ' +
+      (desactivable
+        ? `Como la app aún no ha emitido ninguna factura en la serie ${codigo}, también puedes desactivarla en Configuración > Series si no la vas a usar, y volver a registrar la factura: se guardará en ella con su número. `
+        : '') +
       'Si la serie se ha leído mal, corrígela antes de registrarla.',
-    { campo: 'serie' },
+    { campo: 'serie', ...(desactivable ? { codigo: 'SERIE_DE_LA_APP_SIN_USAR' } : {}) },
   );
 }

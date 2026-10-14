@@ -265,4 +265,21 @@ describe('series históricas del lector que mezclan facturas y rectificativas', 
     // A es una serie de la app: 409 aunque se acepte otro tipo.
     await expect(obtenerOCrearSerieHistorica(COMPANY_ID, 'A', 'RECTIFICATIVA', { aceptarOtroTipo: true })).rejects.toMatchObject({ statusCode: 409 });
   });
+
+  it('la C, que se crea sola: 409 que dice que se puede desactivar; desactivada (sin facturas de la app), guarda las del otro programa', async () => {
+    // Activa, como se crea (un test de arriba la desactiva).
+    expect((await put('C', { activa: true })).status).toBe(200);
+    const e = (await obtenerOCrearSerieHistorica(COMPANY_ID, 'C').catch((x) => x)) as { statusCode: number; message: string; details?: Record<string, unknown> };
+    expect([e.statusCode, e.details]).toEqual([409, { campo: 'serie', codigo: 'SERIE_DE_LA_APP_SIN_USAR' }]);
+    expect(e.message).toContain('Como la app aún no ha emitido ninguna factura en la serie C, también puedes desactivarla en Configuración > Series');
+    // La predeterminada no se puede desactivar: no se ofrece.
+    const pred = (await prisma.invoiceSeries.findFirstOrThrow({ where: { companyId: COMPANY_ID, tipoDocumento: 'FACTURA', porDefecto: true } })).codigo;
+    const a = (await obtenerOCrearSerieHistorica(COMPANY_ID, pred).catch((x) => x)) as { statusCode: number; message: string; details?: Record<string, unknown> };
+    expect([a.statusCode, a.details, a.message.includes('desactivarla')]).toEqual([409, { campo: 'serie' }, false]);
+    expect((await put('C', { activa: false })).status).toBe(200);
+    expect(await obtenerOCrearSerieHistorica(COMPANY_ID, 'C')).toMatchObject({ codigo: 'C', tipoDocumento: 'FACTURA', activa: false });
+    // Y no se vuelve a crear activa al listar.
+    expect((await listarSeries(COMPANY_ID)).filter((s) => s.codigo === 'C').map((s) => s.activa)).toEqual([false]);
+    expect((await put('C', { activa: true })).status).toBe(200);
+  });
 });
