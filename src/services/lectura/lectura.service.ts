@@ -689,6 +689,29 @@ export async function cambiarOrigenTercero(companyId: string, lector: Lector, id
 
 export const MENSAJE_ARCHIVO_YA_BORRADO = 'El archivo ya no está: vuelve a subir la factura.';
 
+/** Errores de una venta leida que no se corrigen en el lector (el emisor, la moneda): rellenarla a mano los saltaria. */
+const NO_A_MANO_VENTA = ['EMPRESA', 'MONEDA', 'NIF_EMISOR'];
+
+/**
+ * Por que una venta ya leida no se puede rellenar a mano, o null. Lo que el
+ * lector ha reconocido y no se corrige en «Corregir los datos» (que no es una
+ * venta de la empresa, que va en otra moneda, el NIF del emisor) seguiria
+ * bloqueando, y un QR VERI*FACTU con datos manda sobre lo escrito: con una
+ * lectura vacia, todo eso desapareceria. En gastos no pasa: el formulario es
+ * el mismo que el de una factura a mano.
+ */
+function motivoNoAMano(fila: FilaLectura): { codigo: string; mensaje: string } | null {
+  if (fila.lector !== 'VENTA' || fila.estado !== 'LISTA') return null;
+  const validaciones = (fila.validaciones ?? []) as unknown as ResultadoValidacion[];
+  const bloqueo = validaciones.find((v) => v.nivel === 'error' && NO_A_MANO_VENTA.includes(v.codigo));
+  if (bloqueo) return { codigo: bloqueo.codigo, mensaje: `No se puede rellenar a mano. ${bloqueo.mensaje}` };
+  const qr = (fila.resultado as Partial<ResultadoGuardado> | null)?.lectura?.qr;
+  if (qr?.datos && !qr.pruebas) {
+    return { codigo: 'QR', mensaje: 'No se puede rellenar a mano: la factura lleva un QR VERI*FACTU con sus datos. Corrige los datos leídos, que se siguen comparando con el QR.' };
+  }
+  return null;
+}
+
 /**
  * POST /lecturas/:id/manual («Rellenarla a mano»). La lectura que ha fallado
  * (ERROR), que tarda demasiado (LEYENDO) o que ha salido muy incompleta
@@ -698,6 +721,8 @@ export const MENSAJE_ARCHIVO_YA_BORRADO = 'El archivo ya no está: vuelve a subi
  * /ingresos-extractor/confirmar y sus `correcciones`. Si ya es MANUAL,
  * devuelve lo mismo. Una que siguiera leyendo ya no pisa nada al terminar
  * (guardarLista solo escribe sobre LEYENDO). Queda en AuditLog (LECTURA_A_MANO).
+ * Una venta leida con un error que no se corrige aqui (EMPRESA, MONEDA,
+ * NIF_EMISOR) o con un QR VERI*FACTU con datos: 409 NO_SE_RELLENA_A_MANO.
  */
 export async function rellenarAMano(companyId: string, lector: Lector, id: string, userId?: string | null, intento = 0): Promise<RespuestaLectura> {
   const fila = await buscar(companyId, lector, id);
@@ -705,6 +730,8 @@ export async function rellenarAMano(companyId: string, lector: Lector, id: strin
   if (fila.estado === 'DESCARTADA') throw badRequest(MENSAJE_LECTURA_NO_CAMBIABLE, { codigo: 'LECTURA_NO_LISTA' });
   if (fila.estado === 'LISTA' && fila.origen === 'MANUAL') return respuestaDe(fila);
   if (!fila.archivoRef) throw conflict(MENSAJE_ARCHIVO_YA_BORRADO, { codigo: 'ARCHIVO_YA_BORRADO' });
+  const noAMano = motivoNoAMano(fila);
+  if (noAMano) throw conflict(noAMano.mensaje, { codigo: 'NO_SE_RELLENA_A_MANO', motivo: noAMano.codigo });
 
   const anterior = (fila.resultado ?? null) as Partial<ResultadoGuardado> | null;
   const vacia = lecturaVacia('manual');
