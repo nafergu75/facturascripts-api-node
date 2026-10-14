@@ -9,6 +9,7 @@ import { desgloseIvaPorTipo } from './accounting-engine.service';
 import { perfilDesdeConfig } from './perfilEmpresa.service';
 import { cuentaParaFactura, leerAjustesFacturacion } from './ajustesFacturacion.service';
 import { enlacesDeVentas } from './rectificativasVenta.service';
+import { leerInstantanea } from './verifactu/instantanea';
 import { diferenciaSustitucion, type LineaImportes } from '../domain/rectificativa-venta.model';
 import { importesDoc, nombreMoneda, textoTipo } from '../domain/divisas';
 import { dibujoDe, normalizarPlantillaId } from '../domain/plantillasFactura';
@@ -142,6 +143,16 @@ export interface DatosFacturaPdf {
     provincia: string | null;
     pais: string | null;
   };
+  /**
+   * Simplificada (F2) o su rectificativa (R5) registrada en VERI*FACTU: el
+   * registro va SIN destinatario, asi que el PDF solo lleva el nombre del
+   * cliente, sin NIF ni domicilio. Una simplificada con el NIF y el domicilio
+   * del cliente (art. 7.2 y 7.3 RD 1619/2012) se registraria como F1 con la
+   * marca FacturaSimplificadaArt7273 (DsRegistroVeriFactu, listas L2 y L4); la
+   * app no la ofrece: para identificar al cliente se emite una factura completa
+   * (spec verifactu, 4.3).
+   */
+  clienteSinIdentificar?: boolean;
   emisor: {
     denominacion: string | null;
     nif: string | null;
@@ -886,14 +897,17 @@ export async function renderizarFactura(f: DatosFacturaPdf): Promise<Buffer> {
       texto(p, l, x, yy, { tam: 10.5, fuente: negrita, color: nombreFalta ? GRIS : TINTA });
       yy -= 13;
     }
-    texto(p, etqNif, x, yy, { color: GRIS });
-    // Un NIF real va en mono; el aviso de que falta, en texto normal y gris.
-    const nifReal = /\d/.test(nifTxt);
-    texto(p, nifTxt, x + normal.widthOfTextAtSize(etqNif, 9) + 5, yy, {
-      fuente: nifReal ? mono : normal,
-      color: nifReal ? TINTA : GRIS,
-    });
-    yy -= 12;
+    // Sin etiqueta no hay linea del NIF (simplificada registrada sin destinatario).
+    if (etqNif) {
+      texto(p, etqNif, x, yy, { color: GRIS });
+      // Un NIF real va en mono; el aviso de que falta, en texto normal y gris.
+      const nifReal = /\d/.test(nifTxt);
+      texto(p, nifTxt, x + normal.widthOfTextAtSize(etqNif, 9) + 5, yy, {
+        fuente: nifReal ? mono : normal,
+        color: nifReal ? TINTA : GRIS,
+      });
+      yy -= 12;
+    }
     for (const r of resto.filter((s): s is string => !!s && !!s.trim())) {
       for (const l of partir(r, normal, 9, anchoCol)) {
         texto(p, l, x, yy);
@@ -928,11 +942,13 @@ export async function renderizarFactura(f: DatosFacturaPdf): Promise<Buffer> {
       : !!paisCliente && normalizarPais(paisCliente) !== paisEmpresa;
   // El numero del cliente con el nombre que tiene en su pais: NIF, NIF-IVA (VAT), RNC, EIN... (domain/numero-fiscal).
   const etqNifCliente = etiquetaNifCliente(f.cliente, idioma);
-  const yCliente = bloqueParte(COL_B, anchoB, T.cliente, c.nombreFiscal, etqNifCliente, nifDe(c.nifCif, paisDelCliente(cliente)) || '—', [
-    c.direccion,
-    lineaPoblacion(c.cp, c.municipio, c.provincia, paisDelCliente(cliente)),
-    mostrarPais ? nombrePais(paisCliente, idioma) : null,
-  ]);
+  const yCliente = f.clienteSinIdentificar
+    ? bloqueParte(COL_B, anchoB, T.cliente, c.nombreFiscal, '', '', [])
+    : bloqueParte(COL_B, anchoB, T.cliente, c.nombreFiscal, etqNifCliente, nifDe(c.nifCif, paisDelCliente(cliente)) || '—', [
+        c.direccion,
+        lineaPoblacion(c.cp, c.municipio, c.provincia, paisDelCliente(cliente)),
+        mostrarPais ? nombrePais(paisCliente, idioma) : null,
+      ]);
   y = Math.min(yEmisor, yCliente) - 14;
 
   // ---------- Franja de pago (el elemento firma) ----------
@@ -1384,7 +1400,22 @@ export async function datosPdfFactura(companyId: string, id: string): Promise<{ 
     }));
   const dif = factura.esRectificativa && factura.tipoRectificativa === 'S' && original ? diferenciaSustitucion(lineasDoc(factura.lineas), lineasDoc(original.lineas)) : null;
 
-  const c = factura.customer;
+  // Factura emitida con instantanea (VERI*FACTU, spec 5.3): el cliente y el
+  // emisor de cuando se emitio, aunque despues cambien la ficha del cliente o
+  // los datos de la empresa. El logo, la cuenta y el pie siguen como siempre
+  // (la cuenta y el pie ya tienen su copia: ibanCobro y textoPie).
+  const inst = factura.estadoDocumento === 'FINAL' ? leerInstantanea(factura.instantaneaEmision) : null;
+  const c = inst
+    ? { ...inst.cliente }
+    : {
+        nombreFiscal: factura.customer.nombreFiscal,
+        nifCif: factura.customer.nifCif,
+        direccion: factura.customer.direccion,
+        cp: factura.customer.cp,
+        municipio: factura.customer.municipio,
+        provincia: factura.customer.provincia,
+        pais: factura.customer.pais,
+      };
   const datos: DatosFacturaPdf = {
     id: factura.id,
     numeroCompleto: factura.numeroCompleto,
@@ -1436,8 +1467,24 @@ export async function datosPdfFactura(companyId: string, id: string): Promise<{ 
       provincia: c.provincia,
       pais: c.pais,
     },
+    // F2 o R5 con registro de VERI*FACTU (verifactuEstado solo lo tiene una factura con registro): sin NIF ni domicilio del cliente.
+    clienteSinIdentificar: factura.estadoDocumento === 'FINAL' && ['F2', 'R5'].includes(factura.tipoFactura) && factura.verifactuEstado != null,
     // Sin denominacion en los datos de la sociedad, al menos el nombre con el que esta dada de alta.
-    emisor: empresa || compania
+    emisor: inst
+      ? {
+          denominacion: inst.emisor.denominacion || compania?.name || null,
+          nif: inst.emisor.nif,
+          domicilioSocial: inst.emisor.domicilioSocial,
+          codigoPostal: inst.emisor.codigoPostal,
+          municipio: inst.emisor.municipio,
+          provincia: inst.emisor.provincia,
+          telefono: inst.emisor.telefono,
+          email: inst.emisor.email,
+          web: inst.emisor.web,
+          inscripcion: inst.emisor.inscripcion,
+          pais: inst.emisor.pais ?? perfil.pais,
+        }
+      : empresa || compania
       ? {
           denominacion: empresa?.denominacion?.trim() || compania?.name || null,
           nif: empresa?.nif ?? null,

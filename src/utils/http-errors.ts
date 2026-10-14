@@ -18,6 +18,8 @@ export const unauthorized = (m = 'Unauthorized', d?: unknown) => new HttpError(4
 export const forbidden = (m = 'Forbidden', d?: unknown) => new HttpError(403, m, d);
 export const notFound = (m = 'Not Found', d?: unknown) => new HttpError(404, m, d);
 export const conflict = (m = 'Conflict', d?: unknown) => new HttpError(409, m, d);
+/** 422: la peticion se entiende, pero los datos no permiten hacerlo (p. ej. un registro que la AEAT rechazaria). */
+export const unprocessable = (m = 'Unprocessable Entity', d?: unknown) => new HttpError(422, m, d);
 export const notImplemented = (m = 'Not Implemented', d?: unknown) => new HttpError(501, m, d);
 export const internalError = (m = 'Internal Server Error', d?: unknown) => new HttpError(500, m, d);
 

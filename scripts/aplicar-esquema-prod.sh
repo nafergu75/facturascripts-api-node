@@ -104,6 +104,18 @@ MARCAS=(
   'La empresa vende ceramica'
   'Web del proveedor'
   'Web del cliente'
+  'model VerifactuCadena'
+  'model VerifactuRegistro'
+  'model VerifactuLote'
+  'model VerifactuCertificado'
+  'model VerifactuBitacora'
+  'nifObligado'
+  'numeroInstalacion'
+  'declaracionVersion'
+  'anuladaPor'
+  'descripcionOperacion'
+  'instantaneaEmision'
+  'verifactuEstado'
 )
 for marca in "${MARCAS[@]}"; do
   grep -q "$marca" prisma/schema.prisma || {

@@ -282,6 +282,8 @@ export interface ContextoOperacion {
   referenciaLegal?: string | null;
   /** Tipo de IVA (para la casilla del 303 en NACIONAL). */
   tipoIva?: number;
+  /** AjustesFiscales.criterioCaja: regimen especial del criterio de caja (clave 07 de VERI*FACTU en NACIONAL). */
+  criterioCaja?: boolean;
 }
 
 export interface Mencion {
@@ -293,8 +295,11 @@ export interface VerifactuOperacion {
   /** S1 sujeta no exenta, S2 sujeta con inversion del sujeto pasivo, N2 no sujeta por localizacion. */
   calificacion: 'S1' | 'S2' | 'N2' | null;
   operacionExenta: CausaExencionLibro | null;
-  /** 01 regimen general, 02 exportacion. */
-  claveRegimen: '01' | '02';
+  /**
+   * L8A: 01 regimen general, 02 exportacion, 07 criterio de caja, 08 operaciones
+   * sujetas al IGIC/IPSI (servicios a Canarias, Ceuta y Melilla).
+   */
+  claveRegimen: '01' | '02' | '07' | '08';
   impuesto: '01';
   /** S2: TipoImpositivo 0 y CuotaRepercutida 0. */
   tipoYCuotaCero: boolean;
@@ -350,7 +355,8 @@ export const REGLA_OPERACION: Readonly<Record<TipoOperacionVenta, ReglaOperacion
     casilla303: (ctx) => (ctx.tipoIva !== undefined ? (CASILLA_303_POR_TIPO[ctx.tipoIva] ?? null) : '01-09'),
     clave349: () => null,
     causaLibro: () => null,
-    verifactu: () => vf('S1', null),
+    // Criterio de caja: clave 07 (Validaciones v1.2.2, 15.6.5; FAQ de desarrolladores v1.3, n.º 24).
+    verifactu: (ctx) => vf('S1', null, ctx.criterioCaja ? '07' : '01'),
     mencion: () => null,
   },
   INTRACOMUNITARIA: {
@@ -401,7 +407,9 @@ export const REGLA_OPERACION: Readonly<Record<TipoOperacionVenta, ReglaOperacion
     casilla303: (ctx) => (tieneNifIvaUe(ctx.cliente) ? '59' : '120'),
     clave349: (ctx) => (tieneNifIvaUe(ctx.cliente) ? 'S' : null),
     causaLibro: () => null,
-    verifactu: () => vf('N2', null),
+    // Servicio a un empresario de Canarias, Ceuta o Melilla: clave 08 con N2 (FAQ de
+    // desarrolladores v1.3, n.º 23.2 y 24; Validaciones v1.2.2, 15.6.6). UE y fuera de la UE: 01 con N2.
+    verifactu: (ctx) => vf('N2', null, fueraDelTai(paisDelCliente(ctx.cliente), ctx.cliente.cp) ? '08' : '01'),
     mencion: (ctx) =>
       tieneNifIvaUe(ctx.cliente)
         ? {
@@ -473,15 +481,25 @@ export const REGLA_OPERACION: Readonly<Record<TipoOperacionVenta, ReglaOperacion
 /** Tipos que exigen cliente no residente (ni IRPF). */
 const TIPOS_NO_RESIDENTE: readonly TipoOperacionVenta[] = ['INTRACOMUNITARIA', 'EXPORTACION', 'SERVICIOS_EXTRANJERO'];
 
-/** Destinatario para Verifactu: NIF espanol, o IDOtro con su tipo de documento. */
+/**
+ * Destinatario para Verifactu: NIF espanol, o IDOtro con su tipo de documento.
+ *  - 02 = NIF-IVA (cliente UE con NIF-IVA, o XI de Irlanda del Norte), SIN
+ *    CodigoPais: con 02 no es exigible (Validaciones v1.2.2, 3.1.3.13) y, si va,
+ *    tiene que coincidir con el prefijo del numero (error 1122), que en Grecia
+ *    es EL y en Irlanda del Norte XI, dos codigos que no estan en la lista de
+ *    paises del XSD (CountryType2). Asi lo da tambien la FAQ de desarrolladores
+ *    v1.3, n.º 24, caso «Cuarta».
+ *  - 04 = documento oficial del pais de residencia, con su pais (obligatorio:
+ *    error 1111).
+ */
 export function destinatarioVerifactu(
   c: ClienteFiscal,
-): { nif: string } | { idOtro: { codigoPais: string; idType: '02' | '04'; id: string } } {
+): { nif: string } | { idOtro: { codigoPais?: string; idType: '02' | '04'; id: string } } {
   const pais = paisDelCliente(c);
   const nif = limpiarNif(c.nifCif);
   if (pais === 'ES') return { nif };
-  // 02 = NIF-IVA (cliente UE con NIF-IVA, o XI de Irlanda del Norte); 04 = documento oficial del pais de residencia.
-  return { idOtro: { codigoPais: pais, idType: tieneNifIvaUe(c) || tieneNifIvaXi(c) ? '02' : '04', id: nif } };
+  if (tieneNifIvaUe(c) || tieneNifIvaXi(c)) return { idOtro: { idType: '02', id: nif } };
+  return { idOtro: { codigoPais: pais, idType: '04', id: nif } };
 }
 
 /** Desglose de Verifactu de la factura (null si no aplica). */

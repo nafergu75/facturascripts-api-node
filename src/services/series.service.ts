@@ -568,7 +568,7 @@ export function normalizarCodigoSerie(texto: string): string {
  * imprimible (32-126) y sin « " ' < > = ». La app prohibe ademas «&», porque
  * no esta claro como entra en la huella (spec verifactu, 3.5).
  */
-const PROHIBIDOS_AEAT = /["'<>=&]/;
+const PROHIBIDOS_AEAT = /["'`<>=&]/;
 const ASCII_IMPRIMIBLE = /^[\x20-\x7E]+$/;
 
 /**

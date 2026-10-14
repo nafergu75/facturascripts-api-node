@@ -2,6 +2,7 @@ import { PrismaClient } from '@prisma/client';
 import { logger } from './logger';
 import { importesComoNumero } from './decimales';
 import { reintentoConexion } from './reintentoConexion';
+import { inmutabilidadVerifactu } from './inmutabilidadVerifactu';
 import { clienteGlobalEnTransaccion, dentroDeTransaccion, enCallbackDeTransaccion } from './guardaTransaccion';
 
 /**
@@ -19,11 +20,14 @@ import { clienteGlobalEnTransaccion, dentroDeTransaccion, enCallbackDeTransaccio
 export const OPCIONES_TRANSACCION = { maxWait: 10_000, timeout: 30_000 } as const;
 
 /**
- * Cliente Prisma con las extensiones de la app (reintento de conexion e
- * importes como number) y la guarda de las transacciones.
+ * Cliente Prisma con las extensiones de la app (reintento de conexion, importes
+ * como number e inmutabilidad de VERI*FACTU: registros y facturas registradas)
+ * y la guarda de las transacciones.
  */
 export function crearClienteBD(transactionOptions: { maxWait: number; timeout: number } = OPCIONES_TRANSACCION) {
-  return marcarTransacciones(new PrismaClient({ transactionOptions }).$extends(reintentoConexion).$extends(importesComoNumero));
+  return marcarTransacciones(
+    new PrismaClient({ transactionOptions }).$extends(reintentoConexion).$extends(importesComoNumero).$extends(inmutabilidadVerifactu),
+  );
 }
 
 /**
