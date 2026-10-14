@@ -1,6 +1,6 @@
 import type { Prisma } from '@prisma/client';
 import { prisma } from '../config/database';
-import { badRequest, notFound } from '../utils/http-errors';
+import { badRequest, conflict, notFound } from '../utils/http-errors';
 import { aCentimos, importeTexto } from '../utils/money';
 import { hoyEspana } from '../utils/fechas';
 import { incomeInvoicesService, type CrearLineaIngresoDTO } from './income-invoices.service';
@@ -480,7 +480,11 @@ export const ingresosExtractorService = {
       where: { id: documentId, companyId, sourceType: 'EXTRACTOR_IA' },
     });
     if (!doc) throw notFound('Documento no encontrado.');
-    if (doc.status !== 'READY_FOR_VERIFICATION') throw badRequest(`El documento esta en estado ${doc.status}; ya no se puede confirmar.`);
+    // Ya registrada (p. ej. un doble clic en «Registrar»): el mismo 409 que da la lectura confirmada.
+    if (doc.status === 'VERIFIED') throw conflict('Esta factura ya se registró.', { codigo: 'LECTURA_YA_CONFIRMADA' });
+    if (doc.status !== 'READY_FOR_VERIFICATION') {
+      throw badRequest('Esta lectura ya no se puede confirmar: está descartada o ha caducado. Vuelve a leer la factura.', { codigo: 'LECTURA_NO_LISTA', estado: doc.status });
+    }
     // El cliente elegido en la pantalla («Es uno que ya tengo» o el recien dado de alta), de esta empresa.
     const elegido = opciones.clienteId
       ? await prisma.customer.findFirst({ where: { id: opciones.clienteId, companyId }, select: { id: true } })
