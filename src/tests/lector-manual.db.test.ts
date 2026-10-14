@@ -336,6 +336,38 @@ describe('lo que no se puede rellenar a mano', () => {
     expect(m.body.details).toMatchObject({ codigo: 'LECTURA_NO_LISTA' });
   });
 
+  it('una venta leída con un QR VERI*FACTU o que no es de la empresa (EMPRESA): 409 NO_SE_RELLENA_A_MANO y sigue como estaba; en gastos, sí', async () => {
+    // El QR manda sobre lo escrito: con la lectura vacía ya no se cotejaría.
+    const conQr = await leida('ingresos-extractor', 'resultado-qr-ok');
+    expect(conQr.lectura.qr.estado).toBe('COINCIDE');
+    const q = await manual('ingresos-extractor', conQr.lecturaId);
+    expect(q.status).toBe(409);
+    expect(q.body.details).toMatchObject({ codigo: 'NO_SE_RELLENA_A_MANO', motivo: 'QR' });
+    expect(q.body.message).toMatch(/QR VERI\*FACTU/);
+    const sigue = await prisma.lecturaDocumento.findUniqueOrThrow({ where: { id: conQr.lecturaId } });
+    expect(sigue.estado).toBe('LISTA');
+    expect(sigue.origen).not.toBe('MANUAL');
+
+    // Una factura recibida por la empresa, leída en ventas: el error no se corrige en el lector.
+    const COMPRA = `${E}-compra`;
+    await prisma.company.create({ data: { id: COMPRA, name: 'Comercial Demo SL', fsBaseUrl: 'http://localhost:8080', fsApiKeyEnc: 'k' } });
+    await prisma.legalConfig.create({ data: { companyId: COMPRA, denominacion: 'Comercial Demo SL', nif: NIF_EMPRESA } });
+    colaPost.push(() => aceptado());
+    const id = (await subir('ingresos-extractor', COMPRA)).body.data.lecturaId as string;
+    await prisma.lecturaDocumento.update({ where: { id }, data: { azureProximaConsulta: new Date(Date.now() - 1000) } });
+    colaGet.push(() => resultado('resultado-simple'));
+    const leidaCompra = await request(app(COMPRA)).get(`/ingresos-extractor/lecturas/${id}`);
+    expect(leidaCompra.body.data.estado).toBe('LISTA');
+    const m = await manual('ingresos-extractor', id, COMPRA);
+    expect(m.status).toBe(409);
+    expect(m.body.details).toMatchObject({ codigo: 'NO_SE_RELLENA_A_MANO', motivo: 'EMPRESA' });
+    expect(m.body.message).toMatch(/^No se puede rellenar a mano\. Parece una factura recibida por la empresa/);
+
+    // En gastos el formulario es el de una factura a mano: el QR no lo impide.
+    const gasto = await leida('gastos-extractor', 'resultado-qr-ok');
+    expect((await manual('gastos-extractor', gasto.lecturaId)).status).toBe(200);
+  });
+
   it('la purga de los 7 días descarta la lectura en ERROR y borra su archivo', async () => {
     const id = await fallida('gastos-extractor');
     const fila = await prisma.lecturaDocumento.findUniqueOrThrow({ where: { id } });
