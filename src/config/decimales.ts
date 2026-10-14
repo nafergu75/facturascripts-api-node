@@ -34,6 +34,8 @@ export const CAMPOS_DECIMALES: ReadonlySet<string> = new Set([
   "baseRectificada", "cuotaRectificada", "retencionRectificada",
   // Traer la contabilidad de 2026: bancos, partidas pendientes e inmovilizado.
   "saldoContableInicial", "importeOriginal", "importePendiente", "coste", "valorResidual", "amortAcumuladaInicial", "coeficiente",
+  // Plantilla A (envases e IEEPNR): kg de plastico, IEEPNR, peso bruto y tipo por kg.
+  "kgPlasticoUnidad", "kgPlastico", "ieepnrImporte", "pesoBrutoKg", "ieepnrPorKg",
 ]);
 
 /**
@@ -86,6 +88,8 @@ export const importesComoNumero = Prisma.defineExtension({
       retencionTotalDoc: { needs: { retencionTotalDoc: true }, compute: (r) => aNumero(r.retencionTotalDoc) },
       totalFacturaDoc: { needs: { totalFacturaDoc: true }, compute: (r) => aNumero(r.totalFacturaDoc) },
       tipoCambio: { needs: { tipoCambio: true }, compute: (r) => aNumero(r.tipoCambio) },
+      pesoBrutoKg: { needs: { pesoBrutoKg: true }, compute: (r) => aNumero(r.pesoBrutoKg) },
+      ieepnrPorKg: { needs: { ieepnrPorKg: true }, compute: (r) => aNumero(r.ieepnrPorKg) },
     },
     incomeInvoiceLine: {
       precioUnitario: { needs: { precioUnitario: true }, compute: (r) => aNumero(r.precioUnitario) },
@@ -98,6 +102,8 @@ export const importesComoNumero = Prisma.defineExtension({
       descuentoImporteDoc: { needs: { descuentoImporteDoc: true }, compute: (r) => aNumero(r.descuentoImporteDoc) },
       ivaImporteDoc: { needs: { ivaImporteDoc: true }, compute: (r) => aNumero(r.ivaImporteDoc) },
       retencionImporteDoc: { needs: { retencionImporteDoc: true }, compute: (r) => aNumero(r.retencionImporteDoc) },
+      kgPlastico: { needs: { kgPlastico: true }, compute: (r) => aNumero(r.kgPlastico) },
+      ieepnrImporte: { needs: { ieepnrImporte: true }, compute: (r) => aNumero(r.ieepnrImporte) },
     },
     declaracionAeat: {
       resultadoAnterior: { needs: { resultadoAnterior: true }, compute: (r) => aNumero(r.resultadoAnterior) },
@@ -143,6 +149,7 @@ export const importesComoNumero = Prisma.defineExtension({
       precio: { needs: { precio: true }, compute: (r) => aNumero(r.precio) },
       precioCompra: { needs: { precioCompra: true }, compute: (r) => aNumero(r.precioCompra) },
       ivaPorcentaje: { needs: { ivaPorcentaje: true }, compute: (r) => aNumero(r.ivaPorcentaje) },
+      kgPlasticoUnidad: { needs: { kgPlasticoUnidad: true }, compute: (r) => aNumero(r.kgPlasticoUnidad) },
     },
     productFamily: {
       ivaPorcentaje: { needs: { ivaPorcentaje: true }, compute: (r) => aNumero(r.ivaPorcentaje) },

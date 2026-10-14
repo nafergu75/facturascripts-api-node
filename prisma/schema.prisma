@@ -313,6 +313,10 @@ model IncomeInvoice {
   /// Lo pone el servidor en todos los caminos de alta, nunca el cuerpo. null:
   /// factura anterior a esta columna (se trata como anterior a la activacion).
   origen              String?               @db.VarChar(10)
+  /// Peso bruto en kg escrito a mano (plantilla A).
+  pesoBrutoKg       Decimal? @db.Decimal(14, 3)
+  /// Tipo del IEEPNR aplicado (EUR por kg); null = sin IEEPNR.
+  ieepnrPorKg       Decimal? @db.Decimal(8, 4)
   createdAt           DateTime              @default(now())
   updatedAt           DateTime              @updatedAt
   lineas              IncomeInvoiceLine[]
@@ -376,6 +380,8 @@ model InvoiceSeries {
   porDefecto    Boolean  @default(false)
   ultimoNumero  Int      @default(0)
   ultimaFecha   String? // YYYY-MM-DD de la ultima factura finalizada
+  /// Plantilla del PDF de la serie (default, A, B, C); null = automatica.
+  plantilla         String?  @db.VarChar(16)
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
@@ -407,6 +413,14 @@ model IncomeInvoiceLine {
   retencionImporteDoc Decimal?      @db.Decimal(14, 2)
   // NUEVO: Referencia a cuenta contable (grupo 7 para ingresos)
   accountCode         String? // Código PGC (ej. "700" para ventas)
+  /// Packs de la linea (plantilla A). cantidad = unidades.
+  packs             Int?
+  /// Kg de plastico no reciclado de la linea (hasta 3 decimales).
+  kgPlastico        Decimal? @db.Decimal(14, 3)
+  /// IEEPNR repercutido de la linea, en EUR. Va DENTRO de baseLine (base del IVA).
+  ieepnrImporte     Decimal? @db.Decimal(14, 2)
+  /// Texto adicional bajo el concepto (el del articulo, editable).
+  textoAdicional    String?  @db.Text
   invoice             IncomeInvoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
 
   @@index([invoiceId])
@@ -1096,6 +1110,14 @@ model Product {
   notas         String?        @db.Text
   familiaId     String?
   familia       ProductFamily? @relation(fields: [familiaId], references: [id], onDelete: SetNull)
+  /// Unidades por pack (plantilla A): propone Uds = packs x unidades.
+  unidadesPorPack   Int?
+  /// Kg de plastico no reciclado POR UNIDAD (IEEPNR, Ley 7/2022).
+  kgPlasticoUnidad  Decimal? @db.Decimal(14, 6)
+  /// El articulo lleva IEEPNR: se proponen sus kg en la factura.
+  llevaIeepnr       Boolean  @default(false)
+  /// Texto adicional del articulo en la factura (varias lineas).
+  textoFactura      String?  @db.Text
   createdAt     DateTime       @default(now())
   updatedAt     DateTime       @updatedAt
 
@@ -1514,6 +1536,12 @@ model AjustesFacturacion {
   mostrarIban      Boolean  @default(true)
   /// Texto legal al pie de la factura (maximo 500 caracteres).
   textoPie         String?  @db.Text
+  /// La empresa repercute el IEEPNR en sus facturas.
+  ieepnrRepercute   Boolean  @default(false)
+  /// Tipo del IEEPNR en EUR por kg (Ley 7/2022: 0,45).
+  ieepnrPorKg       Decimal  @default(0.45) @db.Decimal(8, 4)
+  /// Cuenta del IEEPNR si la empresa fuera contribuyente; null = la de ingresos de la linea.
+  ieepnrCuenta      String?  @db.VarChar(15)
   updatedAt        DateTime @updatedAt
   updatedBy        String?
 }
