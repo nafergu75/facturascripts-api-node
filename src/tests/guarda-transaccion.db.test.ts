@@ -108,11 +108,19 @@ describe('guarda: cliente global dentro de una transaccion', () => {
     expect(infraccionesTransaccion()).toHaveLength(1);
   });
 
-  it('fuera de los tests (o con BD_GUARDA_TRANSACCION=aviso) solo avisa en el log y la consulta sigue', async () => {
+  it('fuera de los tests (o con BD_GUARDA_TRANSACCION=aviso) solo avisa en el log y deja seguir la consulta', async () => {
     process.env.BD_GUARDA_TRANSACCION = 'aviso';
     try {
-      const n = await prisma.$transaction(async () => prisma.company.count());
-      expect(typeof n).toBe('number');
+      // Con varias conexiones en el pool, la consulta responde. Con una sola (el
+      // CI, como produccion) espera hasta el pool_timeout y falla con P2024, una
+      // sola vez: dentro del callback no se reintenta.
+      const t0 = Date.now();
+      const r = await prisma.$transaction(async () => prisma.company.count()).catch((e: unknown) => e);
+      if (typeof r !== 'number') {
+        expect(r).toMatchObject({ code: 'P2024' });
+        const poolTimeout = Number(new URL(process.env.DATABASE_URL ?? '').searchParams.get('pool_timeout') ?? 10);
+        expect(Date.now() - t0).toBeLessThan(poolTimeout * 1000 + 2_500);
+      }
       expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('Company.count'), expect.objectContaining({ consulta: 'Company.count' }));
       expect(infraccionesTransaccion()).toHaveLength(0);
     } finally {
