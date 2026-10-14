@@ -23,6 +23,8 @@ import { actualizarSerie, crearSerie, listarSeries } from '../services/series.se
 import { calcularModelo303, calcularModelo347 } from '../services/impuestosCalculo.service';
 import { periodoFiscal } from '../services/nominas/fiscal';
 import { aCentimos } from '../utils/money';
+import { datosPdfFactura, generarPdfFactura } from '../services/facturaPdf.service';
+import { borrarImagenFactura, guardarImagenFactura } from '../services/imagenesFactura.service';
 import { LINEAS_NZ013, TOTALES_NZ013 } from './muestra-nz013';
 
 const SUFIJO = Date.now();
@@ -171,6 +173,30 @@ describe('NZ013_2026 con la plantilla B', () => {
       [null, null, '705'],
     ]);
     cifrasMuestra(f);
+  });
+});
+
+describe('PDF', () => {
+  it('lleva los datos de la B, el logo de la marca y el sello de los ajustes; el de la serie C no los carga', async () => {
+    let { datos } = await datosPdfFactura(ES, emitidaId);
+    expect([datos.plantilla, datos.pesoNetoKg, datos.pesoBrutoKg, datos.logoMarca, datos.sello]).toEqual(['B', 353, 373, null, null]);
+    expect(datos.lineas.map((l) => [l.palets ?? null, l.cajas ?? null, l.metros2 ?? null, l.piezas ?? null, l.unidadPrecio, l.cargoPalets ?? false])).toEqual([
+      [0, 3, 5.04, 18, 'M2', false],
+      [1, 10, 7.9, 20, 'PIEZA', false],
+      [null, null, null, null, 'UNIDAD', true],
+    ]);
+    const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64');
+    await guardarImagenFactura(ES, 'MARCA', PNG);
+    await guardarImagenFactura(ES, 'SELLO', PNG);
+    ({ datos } = await datosPdfFactura(ES, emitidaId));
+    expect([datos.logoMarca?.mime, datos.sello?.mime]).toEqual(['image/png', 'image/png']);
+    const { contenido } = await generarPdfFactura(ES, emitidaId);
+    expect(contenido.subarray(0, 5).toString()).toBe('%PDF-');
+    const c = await incomeInvoicesService.crearIngreso({ companyId: ES, customer: { id: cliente }, serie: 'C', fechaEmision: '2026-07-10', borrador: true, lineas: [{ descripcion: 'x', cantidad: 1, precioUnitario: 1 }] } as never);
+    ({ datos } = await datosPdfFactura(ES, c.id));
+    expect([datos.plantilla, datos.logoMarca, datos.sello]).toEqual(['C', undefined, undefined]);
+    await borrarImagenFactura(ES, 'MARCA');
+    await borrarImagenFactura(ES, 'SELLO');
   });
 });
 

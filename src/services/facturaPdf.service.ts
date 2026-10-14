@@ -13,6 +13,8 @@ import { diferenciaSustitucion, type LineaImportes } from '../domain/rectificati
 import { importesDoc, nombreMoneda, textoTipo } from '../domain/divisas';
 import { dibujoDe, normalizarPlantillaId } from '../domain/plantillasFactura';
 import { renderizarFacturaPlantillaA } from './facturaPdfPlantillaA';
+import { renderizarFacturaPlantillaB } from './facturaPdfPlantillaB';
+import { imagenesPdfPlantillaB } from './imagenesFactura.service';
 import { nombreNumeroFiscal, NUMERO_FISCAL_GENERICO } from '../domain/numero-fiscal';
 import {
   esPaisEspana,
@@ -83,8 +85,19 @@ export interface LineaFacturaPdf {
   kgPlastico?: number | null;
   /** Plantilla A: IEEPNR de la linea (va dentro de baseLine). */
   ieepnrImporte?: number | null;
-  /** Plantilla A: texto adicional bajo el concepto. */
+  /** Plantillas A y B: texto adicional bajo el concepto. */
   textoAdicional?: string | null;
+  /** Plantilla B: palets, cajas, m2, piezas, formato, calidad, peso y unidad del precio. */
+  palets?: number | null;
+  cajas?: number | null;
+  metros2?: number | null;
+  piezas?: number | null;
+  formato?: string | null;
+  calidad?: string | null;
+  pesoKg?: number | null;
+  unidadPrecio?: string | null;
+  /** Plantilla B: cargo de palets de madera (va en el pie, no en la tabla). */
+  cargoPalets?: boolean;
 }
 
 /** Importes en la moneda de la contabilidad (los mismos que el libro de IVA). */
@@ -191,8 +204,15 @@ export interface DatosFacturaPdf {
   conIva?: boolean;
   /** Plantilla de la factura (domain/plantillasFactura): la A tiene su propio diseno. Sin ella, la de siempre. */
   plantilla?: string | null;
-  /** Plantilla A: peso bruto en kg escrito a mano. */
+  /** Plantillas A y B: peso bruto en kg escrito a mano. */
   pesoBrutoKg?: number | null;
+  /** Plantilla B: peso neto en kg escrito a mano. */
+  pesoNetoKg?: number | null;
+  /** Plantilla B: obra o proyecto del cliente. */
+  obra?: string | null;
+  /** Plantilla B: logo de la marca (debajo del de la empresa) y sello de la empresa (Configuracion > Facturacion). */
+  logoMarca?: { bytes: Uint8Array; mime: string } | null;
+  sello?: { bytes: Uint8Array; mime: string } | null;
 }
 
 /** Hueco del logo, arriba a la derecha (puntos). */
@@ -724,11 +744,13 @@ export function textoRectificacionPdf(f: DatosFacturaPdf, idioma: Idioma): strin
 
 /**
  * Dibuja la factura y devuelve el PDF/A. No toca la BD. Con la plantilla A
- * (envases e IEEPNR), su propio diseno (facturaPdfPlantillaA); con la estandar,
- * la B, la C y en las facturas del lector, el de siempre.
+ * (envases e IEEPNR) y la B (ceramica), su propio diseno (facturaPdfPlantillaA
+ * y facturaPdfPlantillaB); con la estandar, la C y en las facturas del lector,
+ * el de siempre.
  */
 export async function renderizarFactura(f: DatosFacturaPdf): Promise<Buffer> {
   if (dibujoDe(f.plantilla) === 'A' && !f.registroLector) return renderizarFacturaPlantillaA(f);
+  if (dibujoDe(f.plantilla) === 'B' && !f.registroLector) return renderizarFacturaPlantillaB(f);
   const formato = formatoPorPais(f.emisor?.pais ?? 'ES');
   const idioma = formato.idioma;
   const T = TEXTOS[idioma];
@@ -1394,6 +1416,16 @@ export async function datosPdfFactura(companyId: string, id: string): Promise<{ 
       ...(l.kgPlastico !== null && l.kgPlastico !== undefined ? { kgPlastico: Number(l.kgPlastico) } : {}),
       ...(l.ieepnrImporte !== null && l.ieepnrImporte !== undefined ? { ieepnrImporte: Number(l.ieepnrImporte) } : {}),
       ...(l.textoAdicional ? { textoAdicional: l.textoAdicional } : {}),
+      // Plantilla B: solo los datos que tiene la linea.
+      ...(l.palets !== null && l.palets !== undefined ? { palets: l.palets } : {}),
+      ...(l.cajas !== null && l.cajas !== undefined ? { cajas: l.cajas } : {}),
+      ...(l.metros2 !== null && l.metros2 !== undefined ? { metros2: Number(l.metros2) } : {}),
+      ...(l.piezas !== null && l.piezas !== undefined ? { piezas: Number(l.piezas) } : {}),
+      ...(l.pesoKg !== null && l.pesoKg !== undefined ? { pesoKg: Number(l.pesoKg) } : {}),
+      ...(l.formato ? { formato: l.formato } : {}),
+      ...(l.calidad ? { calidad: l.calidad } : {}),
+      ...(l.unidadPrecio ? { unidadPrecio: l.unidadPrecio } : {}),
+      ...(l.cargoPalets ? { cargoPalets: true } : {}),
     })),
     cliente: {
       nombreFiscal: c.nombreFiscal,
@@ -1454,7 +1486,15 @@ export async function datosPdfFactura(companyId: string, id: string): Promise<{ 
     // Las del lector salen siempre con el diseno de siempre (copia de registro).
     plantilla: registroLector ? 'default' : normalizarPlantillaId(factura.plantillaId),
     ...(factura.pesoBrutoKg !== null && factura.pesoBrutoKg !== undefined ? { pesoBrutoKg: Number(factura.pesoBrutoKg) } : {}),
+    // Plantilla B: peso neto, obra, logo de la marca y sello (las imagenes, solo para su diseno).
+    ...(factura.pesoNetoKg !== null && factura.pesoNetoKg !== undefined ? { pesoNetoKg: Number(factura.pesoNetoKg) } : {}),
+    ...(factura.obra ? { obra: factura.obra } : {}),
   };
+  if (!registroLector && dibujoDe(datos.plantilla) === 'B') {
+    const imagenes = await imagenesPdfPlantillaB(companyId);
+    datos.logoMarca = imagenes.marca;
+    datos.sello = imagenes.sello;
+  }
 
   const nombre =
     factura.estadoDocumento === 'PROFORMA'
