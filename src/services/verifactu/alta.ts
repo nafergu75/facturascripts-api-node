@@ -34,6 +34,7 @@ import {
   type TipoOperacionVenta,
 } from '../../domain/tipo-operacion.model';
 import { cabeEnImporte, esFechaIso, fechaAeat, formatearImporte, formatearTipo } from './formato';
+import { PAISES_AEAT, problemaNifIvaAeat } from './paises';
 import type {
   AltaConstruida,
   CalificacionOperacion,
@@ -131,7 +132,10 @@ const error422 = (codigo: string, mensaje: string, extra: Record<string, unknown
 /**
  * Destinatario requerido y no identificable (comprobacion previa, sin BD). En
  * F2 y R5 no hay destinatario: null. Cliente de España: NIF español valido.
- * Extranjero: alguna identificacion de como mucho 20 caracteres (IDOtro).
+ * Extranjero (IDOtro): alguna identificacion de como mucho 20 caracteres; con
+ * NIF-IVA (IDType 02), con la estructura de su Estado; con otro documento (04),
+ * con un pais de la lista del XSD. Una R2 solo admite NIF, NIF-IVA o «no
+ * censado» (error 1192).
  */
 export function problemaDestinatario(tipoFactura: string, cliente: ClienteFiscal): ProblemaDestinatario | null {
   if (SIN_DESTINATARIO.includes(tipoFactura)) return null;
@@ -159,10 +163,30 @@ export function problemaDestinatario(tipoFactura: string, cliente: ClienteFiscal
       mensaje: `El número de identificación del cliente tiene ${id.length} caracteres y la AEAT admite 20 como mucho. Revísalo en la ficha del cliente.`,
     };
   }
-  if (!/^[A-Z]{2}$/.test(pais)) {
+  const d = destinatarioVerifactu(cliente);
+  const idType = 'idOtro' in d ? d.idOtro.idType : null;
+  if (idType === '02') {
+    const p = problemaNifIvaAeat(id);
+    if (p) {
+      return {
+        codigo: 'VERIFACTU_NIF_IVA',
+        mensaje: `El NIF-IVA del cliente (${id}) no tiene la forma que exige la AEAT: ${p}. Revísalo en la ficha del cliente (se puede comprobar en VIES).`,
+      };
+    }
+  } else if (!PAISES_AEAT.has(pais)) {
     return {
-      codigo: 'VERIFACTU_CLIENTE_SIN_IDENTIFICACION',
-      mensaje: 'El país del cliente no es un código de país válido (dos letras, como FR o US). Corrígelo en su ficha.',
+      codigo: 'VERIFACTU_PAIS_CLIENTE',
+      mensaje: /^[A-Z]{2}$/.test(pais)
+        ? `La AEAT no admite «${pais}» como país del cliente: no está en su lista de países. Revisa el país en la ficha del cliente.`
+        : 'El país del cliente no es un código de país válido (dos letras, como FR o US). Corrígelo en su ficha.',
+    };
+  }
+  if (tipoFactura === 'R2' && idType === '04') {
+    return {
+      codigo: 'VERIFACTU_R2_DESTINATARIO',
+      mensaje:
+        'Una rectificativa por concurso del cliente (R2) solo admite un cliente identificado con NIF español o con NIF-IVA de otro país de la UE. ' +
+        'Este cliente tiene otro documento: revisa su ficha o usa otro motivo de rectificación.',
     };
   }
   return null;
@@ -464,8 +488,25 @@ export function validarAlta(a: AltaConstruida, d: { nifObligado: string; ahora?:
     if (!c.destinatarios?.length) throw error422('VERIFACTU_CLIENTE_SIN_NIF', 'Falta el cliente de la factura.');
     for (const dst of c.destinatarios) {
       if (!dst.nombre) throw error422('VERIFACTU_CLIENTE_SIN_NOMBRE', 'Falta el nombre fiscal del cliente. Rellénalo en su ficha.');
-      if ('idOtro' in dst && (!dst.idOtro.id || dst.idOtro.id.length > MAX_ID_OTRO)) {
-        throw error422('VERIFACTU_CLIENTE_SIN_IDENTIFICACION', 'El número de identificación del cliente extranjero falta o pasa de 20 caracteres. Revísalo en su ficha.');
+      // El NIF del destinatario tiene que ser distinto del del emisor (error 1193).
+      if ('nif' in dst && dst.nif === nif) {
+        throw error422('VERIFACTU_CLIENTE_ES_EMISOR', `El cliente tiene el mismo NIF que tu empresa (${nif}) y la AEAT no admite una factura a uno mismo. Revisa el NIF en la ficha del cliente.`);
+      }
+      if ('idOtro' in dst) {
+        const o = dst.idOtro;
+        if (!o.id || o.id.length > MAX_ID_OTRO) {
+          throw error422('VERIFACTU_CLIENTE_SIN_IDENTIFICACION', 'El número de identificación del cliente extranjero falta o pasa de 20 caracteres. Revísalo en su ficha.');
+        }
+        // 02: sin CodigoPais y con la estructura de su Estado (errores 1122, 1222 y 1290). Si no: pais de la lista del XSD (error 1111).
+        if (o.idType === '02') {
+          const p = problemaNifIvaAeat(o.id);
+          if (o.codigoPais || p) throw error422('VERIFACTU_NIF_IVA', `El NIF-IVA del cliente (${o.id}) no tiene la forma que exige la AEAT${p ? `: ${p}` : ''}. Revísalo en su ficha.`);
+        } else if (!o.codigoPais || !PAISES_AEAT.has(o.codigoPais)) {
+          throw error422('VERIFACTU_PAIS_CLIENTE', 'El país del cliente no está en la lista de países de la AEAT. Revisa el país en su ficha.');
+        }
+        if (a.tipoFactura === 'R2' && o.idType !== '02' && o.idType !== '07') {
+          throw error422('VERIFACTU_R2_DESTINATARIO', 'Una rectificativa por concurso del cliente (R2) solo admite un cliente con NIF español o con NIF-IVA de otro país de la UE.');
+        }
       }
     }
   }

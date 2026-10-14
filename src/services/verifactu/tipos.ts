@@ -132,6 +132,12 @@ export interface AltaConstruida {
 
 /** Por que no se puede identificar al destinatario. */
 export interface ProblemaDestinatario {
-  codigo: 'VERIFACTU_CLIENTE_SIN_NIF' | 'VERIFACTU_CLIENTE_SIN_IDENTIFICACION' | 'VERIFACTU_ID_DESTINATARIO_LARGO';
+  codigo:
+    | 'VERIFACTU_CLIENTE_SIN_NIF'
+    | 'VERIFACTU_CLIENTE_SIN_IDENTIFICACION'
+    | 'VERIFACTU_ID_DESTINATARIO_LARGO'
+    | 'VERIFACTU_NIF_IVA'
+    | 'VERIFACTU_PAIS_CLIENTE'
+    | 'VERIFACTU_R2_DESTINATARIO';
   mensaje: string;
 }

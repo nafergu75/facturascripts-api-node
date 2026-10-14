@@ -4,6 +4,7 @@ import { describe, it, expect } from '@jest/globals';
 import { construirAlta, problemaDestinatario, validarAlta, type EntradaAlta, type LineaAlta } from '../services/verifactu/alta';
 import type { AltaConstruida, DetalleDesglose } from '../services/verifactu/tipos';
 import { numeroInstalacionDe, sistemaInformatico } from '../services/verifactu/sistema';
+import { PAISES_AEAT, problemaNifIvaAeat } from '../services/verifactu/paises';
 
 const NIF = 'A10952364';
 const AHORA = new Date('2027-01-04T10:00:00Z');
@@ -350,6 +351,26 @@ describe('validarAlta: lo que la AEAT rechazaría', () => {
     rechaza(() => valida(alta({ tipoOperacion: 'SERVICIOS_EXTRANJERO', cliente: { ...US, nifCif: '1'.repeat(21) }, lineas: [l(10, 0, 0)] })), 'VERIFACTU_ID_DESTINATARIO_LARGO');
   });
 
+  it('cliente con el mismo NIF que la empresa (error 1193)', () => {
+    rechaza(() => valida(alta({ cliente: { ...ES, nifCif: NIF } })), 'VERIFACTU_CLIENTE_ES_EMISOR');
+  });
+
+  it('IDOtro: 02 sin CodigoPais y con la estructura de su Estado; 04 con un país de la lista del XSD; R2 sin 04', () => {
+    rechaza(() => valida(alta({ tipoOperacion: 'SERVICIOS_EXTRANJERO', cliente: { ...DE, nifCif: 'DE12345678' }, lineas: [l(10, 0, 0)] })), 'VERIFACTU_NIF_IVA');
+    rechaza(() => valida(alta({ tipoOperacion: 'SERVICIOS_EXTRANJERO', cliente: { ...US, pais: 'XK' }, lineas: [l(10, 0, 0)] })), 'VERIFACTU_PAIS_CLIENTE');
+    rechaza(() => valida(alta({ tipoFactura: 'R2', tipoRectificativa: 'I', tipoOperacion: 'SERVICIOS_EXTRANJERO', cliente: US, lineas: [l(-10, 0, 0)] })), 'VERIFACTU_R2_DESTINATARIO');
+    valida(alta({ tipoFactura: 'R2', tipoRectificativa: 'I', tipoOperacion: 'SERVICIOS_EXTRANJERO', cliente: DE, lineas: [l(-10, 0, 0)] }));
+    // Defensa: un IDOtro 02 con CodigoPais no pasa (error 1122 con EL o XI).
+    const a = alta({ tipoOperacion: 'SERVICIOS_EXTRANJERO', cliente: DE, lineas: [l(10, 0, 0)] });
+    (a.cuerpo.destinatarios![0] as { idOtro: { codigoPais?: string } }).idOtro.codigoPais = 'DE';
+    rechaza(() => valida(a), 'VERIFACTU_NIF_IVA');
+    // Grecia (EL) e Irlanda del Norte (XI) con su estructura: pasan, sin CodigoPais.
+    const gr = ok({ tipoOperacion: 'SERVICIOS_EXTRANJERO', cliente: { nombre: 'Etaireia AE', pais: 'GR', nifCif: 'EL123456789', cp: '10431' }, lineas: [l(10, 0, 0)] });
+    expect(gr.cuerpo.destinatarios?.[0]).toEqual({ nombre: 'Etaireia AE', idOtro: { idType: '02', id: 'EL123456789' } });
+    const xi = ok({ tipoOperacion: 'INTRACOMUNITARIA', cliente: { nombre: 'Belfast Ltd', pais: 'GB', nifCif: 'XI123456789', cp: 'BT1' }, lineas: [l(10, 0, 0)] });
+    expect(xi.cuerpo.destinatarios?.[0]).toEqual({ nombre: 'Belfast Ltd', idOtro: { idType: '02', id: 'XI123456789' } });
+  });
+
   it('E5 sin IDOtro (intracomunitaria a un cliente con NIF español)', () => {
     rechaza(() => valida(alta({ tipoOperacion: 'INTRACOMUNITARIA', cliente: ES, lineas: [l(10, 0, 0)] })), 'VERIFACTU_E5_SIN_IDOTRO');
   });
@@ -428,6 +449,35 @@ describe('problemaDestinatario (comprobación previa)', () => {
     expect(problemaDestinatario('R1', { pais: 'ES', nifCif: '' })).toMatchObject({ codigo: 'VERIFACTU_CLIENTE_SIN_NIF', mensaje: expect.stringMatching(/rectificativa/) });
     expect(problemaDestinatario('F1', { pais: 'US', nifCif: '' })).toMatchObject({ codigo: 'VERIFACTU_CLIENTE_SIN_IDENTIFICACION' });
     expect(problemaDestinatario('F1', FR)).toBeNull();
+  });
+
+  it('NIF-IVA con la estructura de su Estado, país de la lista del XSD y R2 sin IDType 04', () => {
+    expect(problemaDestinatario('F1', { pais: 'DE', nifCif: 'DE12345678' })).toMatchObject({ codigo: 'VERIFACTU_NIF_IVA', mensaje: expect.stringMatching(/DE seguido de 9 cifras/) });
+    expect(problemaDestinatario('F1', { pais: 'FR', nifCif: 'FR1234567890' })).toMatchObject({ codigo: 'VERIFACTU_NIF_IVA' });
+    expect(problemaDestinatario('F1', { pais: 'GR', nifCif: 'EL123456789' })).toBeNull();
+    expect(problemaDestinatario('F1', { pais: 'XK', nifCif: '810123456' })).toMatchObject({ codigo: 'VERIFACTU_PAIS_CLIENTE' });
+    expect(problemaDestinatario('F1', { pais: 'XI', nifCif: '123' })).toMatchObject({ codigo: 'VERIFACTU_PAIS_CLIENTE' });
+    expect(problemaDestinatario('F1', { pais: 'US', nifCif: '12-3456789' })).toBeNull();
+    expect(problemaDestinatario('R2', { pais: 'US', nifCif: '12-3456789' })).toMatchObject({ codigo: 'VERIFACTU_R2_DESTINATARIO' });
+    expect(problemaDestinatario('R2', FR)).toBeNull();
+    expect(problemaDestinatario('R2', ES)).toBeNull();
+  });
+});
+
+describe('paises y NIF-IVA de la AEAT', () => {
+  it('la lista es la de CountryType2 del XSD (246 códigos): sin XI, EL ni XK', () => {
+    expect(PAISES_AEAT.size).toBe(246);
+    for (const p of ['ES', 'FR', 'GR', 'GB', 'US', 'XG', 'QU']) expect(PAISES_AEAT.has(p)).toBe(true);
+    for (const p of ['XI', 'EL', 'XK', 'UK']) expect(PAISES_AEAT.has(p)).toBe(false);
+  });
+
+  it('estructura del NIF-IVA por Estado (nota (1) de las Validaciones v1.2.2)', () => {
+    for (const ok of ['DE123456789', 'ATU12345678', 'BE0123456789', 'CZ12345678', 'CZ1234567890', 'FR1A345678901', 'IE1234567T', 'NL123456789B01', 'LT123456789012', 'RO12', 'XI12345', 'XI123456789012']) {
+      expect([ok, problemaNifIvaAeat(ok)]).toEqual([ok, null]);
+    }
+    for (const mal of ['DE12345678', 'BE123456789', 'FR123', 'RO0123', 'RO12345678901', 'XI1234', 'ES12345678Z', 'GB123456789']) {
+      expect(problemaNifIvaAeat(mal)).not.toBeNull();
+    }
   });
 });
 
