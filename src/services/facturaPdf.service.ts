@@ -17,6 +17,8 @@ import { dibujoDe, normalizarPlantillaId } from '../domain/plantillasFactura';
 import { renderizarFacturaPlantillaA } from './facturaPdfPlantillaA';
 import { renderizarFacturaPlantillaB } from './facturaPdfPlantillaB';
 import { imagenesPdfPlantillaB } from './imagenesFactura.service';
+import { urlCotejo } from './verifactu/qr';
+import { dibujarBloqueQr, MARCA_PRUEBAS } from './verifactu/qrPdf';
 import { nombreNumeroFiscal, NUMERO_FISCAL_GENERICO } from '../domain/numero-fiscal';
 import {
   esPaisEspana,
@@ -65,8 +67,14 @@ import {
  *
  * `generarPdfFactura` carga los datos de la BD; `renderizarFactura` solo dibuja
  * (funcion pura sobre un objeto plano, se puede probar sin BD).
- * TODO (Verifactu paso 2): el QR y la leyenda "VERI*FACTU", en los tres dibujos (este, facturaPdfPlantillaA y facturaPdfPlantillaB) y ya en el PDF que se archiva al emitir (es el que se descarga despues).
  * El logo de la empresa (si lo hay) va arriba a la derecha y el numero baja debajo.
+ *
+ * VERI*FACTU (spec 5): una factura emitida con registro de alta lleva en la
+ * primera pagina el QR de cotejo con «QR tributario:» encima y la leyenda
+ * debajo (verifactu/qrPdf.ts), centrado arriba en este dibujo; las plantillas A
+ * y B lo colocan a su manera. La URL sale del registro de alta guardado
+ * (datosPdfFactura). Con el entorno de PRUEBAS o en una empresa de pruebas, la
+ * marca de agua «PRUEBAS – SIN VALIDEZ».
  */
 
 // ---------- Datos de entrada ----------
@@ -225,7 +233,41 @@ export interface DatosFacturaPdf {
   /** Plantilla B: logo de la marca (debajo del de la empresa) y sello de la empresa (Configuracion > Facturacion). */
   logoMarca?: { bytes: Uint8Array; mime: string } | null;
   sello?: { bytes: Uint8Array; mime: string } | null;
+  /**
+   * VERI*FACTU: URL de cotejo del QR (del registro de alta guardado) y su
+   * entorno. Solo en una factura emitida por la app con registro; si no, null.
+   */
+  verifactu?: { url: string; entorno: 'PRUEBAS' | 'PRODUCCION' } | null;
+  /** Empresa de pruebas de VERI*FACTU: sus PDF llevan la marca «PRUEBAS – SIN VALIDEZ». */
+  empresaPruebas?: boolean;
+  /** Marca «PRUEBAS – SIN VALIDEZ» aunque no haya QR (registro de pruebas en una empresa real: no deberia pasar). */
+  marcaPruebas?: boolean;
 }
+
+/** El QR de VERI*FACTU va en el PDF: factura emitida por la app con su registro de alta. */
+export function llevaQrVerifactu(f: Pick<DatosFacturaPdf, 'estadoDocumento' | 'registroLector' | 'verifactu'>): boolean {
+  return f.estadoDocumento === 'FINAL' && !f.registroLector && !!f.verifactu?.url;
+}
+
+/** La factura lleva la marca de agua «PRUEBAS – SIN VALIDEZ» (si no lleva ya la de borrador o la de registro). */
+export function llevaMarcaPruebas(f: Pick<DatosFacturaPdf, 'empresaPruebas' | 'marcaPruebas' | 'verifactu'>): boolean {
+  return f.empresaPruebas === true || f.marcaPruebas === true || f.verifactu?.entorno === 'PRUEBAS';
+}
+
+/**
+ * Tamaño de la marca de agua centrada y girada 35°: 100 pt o, si con esa letra
+ * se saldria de la hoja, la que quepa (con un margen). «BORRADOR» y «REGISTRO»
+ * caben a 100 pt y salen como siempre.
+ */
+export function tamMarcaAgua(texto: string, fuente: PDFFont, ancho: number, alto: number): number {
+  const w1 = fuente.widthOfTextAtSize(texto, 1);
+  const a = (35 * Math.PI) / 180;
+  const cabe = 0.85 * Math.min(ancho / Math.cos(a), alto / Math.sin(a));
+  return w1 > 0 ? Math.min(100, cabe / w1) : 100;
+}
+
+/** Letra de «QR tributario:» y de la leyenda en el dibujo de siempre: la del numero de factura (la mayor de los datos). */
+export const TAM_QR_ESTANDAR = 13;
 
 /** Hueco del logo, arriba a la derecha (puntos). */
 const LOGO_ANCHO = 150;
@@ -778,7 +820,8 @@ export async function renderizarFactura(f: DatosFacturaPdf): Promise<Buffer> {
   const esProforma = f.estadoDocumento === 'PROFORMA';
   const esBorrador = !esProforma && f.estadoDocumento !== 'FINAL';
   const esRegistro = !esProforma && !esBorrador && f.registroLector === true;
-  const marcaAgua = esBorrador ? T.marcaAgua : esRegistro ? T.marcaRegistro : null;
+  const marcaAgua = esBorrador ? T.marcaAgua : esRegistro ? T.marcaRegistro : llevaMarcaPruebas(f) ? MARCA_PRUEBAS : null;
+  const conQr = llevaQrVerifactu(f);
   const tipoDoc = esProforma ? T.proforma : (T.titulo[f.tipoFactura] ?? T.titulo.F1);
   const tituloDoc = esBorrador ? T.borradorDe(tipoDoc) : `${tipoDoc} ${f.numeroCompleto ?? ''}`.trim();
 
@@ -810,7 +853,7 @@ export async function renderizarFactura(f: DatosFacturaPdf): Promise<Buffer> {
     paginas.push(pg);
     if (marcaAgua) {
       // Centrada en la hoja: el punto de origen se desplaza medio texto a lo largo del giro.
-      const tam = 100;
+      const tam = tamMarcaAgua(marcaAgua, negrita, ancho, alto);
       const w = negrita.widthOfTextAtSize(marcaAgua, tam);
       const a = (35 * Math.PI) / 180;
       const x = ancho / 2 - (w / 2) * Math.cos(a) + (tam * 0.35) * Math.sin(a);
@@ -855,9 +898,25 @@ export async function renderizarFactura(f: DatosFacturaPdf): Promise<Buffer> {
     }
   }
 
+  // ---------- QR de VERI*FACTU (arriba, centrado, solo en la primera pagina) ----------
+  // A la altura del logo. El titulo se parte en dos lineas si llegaria al QR.
+  let fondoQr: number | null = null;
+  let anchoTitulo = derecha - MARGEN;
+  if (conQr) {
+    const bloque = dibujarBloqueQr(p, { xCentro: ancho / 2, yArriba: alto - 36, url: f.verifactu!.url, tam: TAM_QR_ESTANDAR, normal, negrita });
+    fondoQr = bloque.cajaBloque.y;
+    anchoTitulo = bloque.cajaBloque.x - MARGEN - 8;
+  }
+
   // ---------- Cabecera: tipo de documento y numero ----------
   // El borrador es igual que la factura: solo cambian el numero (aun no lo tiene) y la marca de agua.
-  texto(p, tipoDoc, MARGEN, y, { tam: 24, fuente: negrita });
+  const lineasTitulo = negrita.widthOfTextAtSize(tipoDoc, 24) > anchoTitulo ? partir(tipoDoc, negrita, 24, anchoTitulo) : [tipoDoc];
+  lineasTitulo.forEach((l, i) => {
+    let tam = 24;
+    while (tam > 14 && negrita.widthOfTextAtSize(l, tam) > anchoTitulo) tam -= 0.5;
+    texto(p, l, MARGEN, y - i * 28, { tam, fuente: negrita });
+  });
+  y -= (lineasTitulo.length - 1) * 28;
   if (esProforma) texto(p, T.avisoProforma, MARGEN, y - 17, { tam: 8.5, color: GRIS });
   if (esRegistro) texto(p, T.avisoRegistro, MARGEN, y - 17, { tam: 8.5, color: GRIS });
   if (esBorrador) {
@@ -875,6 +934,8 @@ export async function renderizarFactura(f: DatosFacturaPdf): Promise<Buffer> {
     texto(p, etq, derecha - mono.widthOfTextAtSize(valor, 9) - 6, yy, { tam: 9, color: GRIS, alinear: 'der' });
   });
   y = Math.min(y, yNumero) - 50 - (filasFecha.length - 1) * 14;
+  // Con el QR, emisor y cliente empiezan debajo de su leyenda.
+  if (fondoQr !== null) y = Math.min(y, fondoQr - 25);
 
   // ---------- Emisor y cliente ----------
   // NIF-IVA (VAT No.) en las entregas intracomunitarias y en los servicios a un cliente de la UE.
@@ -1371,6 +1432,43 @@ export async function pdfParaDescargar(companyId: string, id: string): Promise<{
   return generarPdfFactura(companyId, id);
 }
 
+/**
+ * QR de VERI*FACTU y marca de pruebas de una factura (spec verifactu, 5.1 y
+ * 5.2). El QR sale del registro de ALTA ORIGINAL guardado (no de una
+ * subsanacion ni de la factura en el momento), solo en una factura FINAL que
+ * expidio la app y tiene registro. Como el PDF que se archiva al emitir se
+ * genera despues del commit con estos datos, ya sale con el QR.
+ *
+ * Ultima barrera de la invariante de la fase F2: un registro de PRUEBAS en una
+ * empresa que no es de pruebas no pone un QR de prewww2 en una factura real;
+ * sale sin QR, con la marca «PRUEBAS – SIN VALIDEZ», y se deja un error en el log.
+ */
+async function verifactuDelPdf(
+  companyId: string,
+  factura: { id: string; estadoDocumento: string; verifactuEstado: string | null },
+  registroLector: boolean,
+  empresaPruebas: boolean,
+): Promise<Pick<DatosFacturaPdf, 'verifactu' | 'empresaPruebas' | 'marcaPruebas'>> {
+  const salida: Pick<DatosFacturaPdf, 'verifactu' | 'empresaPruebas' | 'marcaPruebas'> = { verifactu: null, empresaPruebas };
+  if (factura.estadoDocumento !== 'FINAL' || registroLector || factura.verifactuEstado == null) return salida;
+  const r = await prisma.verifactuRegistro.findFirst({
+    where: { incomeInvoiceId: factura.id, companyId, tipo: 'ALTA', subsanacion: false },
+    orderBy: { numeroEnCadena: 'asc' },
+    select: { idEmisor: true, numSerie: true, fechaExpedicion: true, importeTotal: true, entorno: true },
+  });
+  if (!r || r.importeTotal === null || (r.entorno !== 'PRUEBAS' && r.entorno !== 'PRODUCCION')) return salida;
+  if (r.entorno === 'PRUEBAS' && !empresaPruebas) {
+    logger.error(`[verifactu] La factura ${factura.id} tiene un registro de PRUEBAS y su empresa no es de pruebas: el PDF sale sin QR y con la marca de pruebas.`);
+    return { ...salida, marcaPruebas: true };
+  }
+  try {
+    return { ...salida, verifactu: { url: urlCotejo({ ...r, importeTotal: r.importeTotal }), entorno: r.entorno } };
+  } catch (err) {
+    logger.error(`[verifactu] La factura ${factura.id} tiene un registro que no da una URL de cotejo valida: el PDF sale sin QR. ${err instanceof Error ? err.message : String(err)}`);
+    return salida;
+  }
+}
+
 /** Lo que se dibuja en el PDF de una factura (y el nombre del fichero), leido de la BD. */
 export async function datosPdfFactura(companyId: string, id: string): Promise<{ datos: DatosFacturaPdf; nombre: string }> {
   const factura = await prisma.incomeInvoice.findFirst({
@@ -1389,7 +1487,7 @@ export async function datosPdfFactura(companyId: string, id: string): Promise<{ 
       ? prisma.incomeInvoice.findFirst({ where: { id: factura.facturaOriginalId, companyId }, include: { lineas: true } })
       : Promise.resolve(null),
     prisma.bankAccount.findMany({ where: { companyId }, orderBy: { createdAt: 'asc' } }).catch(() => []),
-    prisma.company.findUnique({ where: { id: companyId }, select: { name: true } }).catch(() => null),
+    prisma.company.findUnique({ where: { id: companyId }, select: { name: true, pruebasVerifactuDe: true } }).catch(() => null),
     leerAjustesFacturacion(companyId),
   ]);
 
@@ -1603,6 +1701,7 @@ export async function datosPdfFactura(companyId: string, id: string): Promise<{ 
     datos.logoMarca = imagenes.marca;
     datos.sello = imagenes.sello;
   }
+  Object.assign(datos, await verifactuDelPdf(companyId, factura, registroLector, !!compania?.pruebasVerifactuDe));
 
   const nombre =
     factura.estadoDocumento === 'PROFORMA'
