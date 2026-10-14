@@ -24,6 +24,7 @@ import { esCodigoPais } from '../utils/geografia';
 import { esClaveRepetida } from '../utils/reintento';
 import { variantesNif } from './lectura/terceros-lector';
 import { normalizarWeb } from '../utils/web';
+import { normalizarEmail } from '../utils/email';
 
 /** Cliente en formato ligero para el selector/buscador al facturar. */
 export interface ClienteResumen {
@@ -181,6 +182,16 @@ export function leerWebCliente(valor: unknown): string | null {
   return w.web;
 }
 
+/**
+ * Email del cliente: sin espacios alrededor; vacio, sin email (null, no '').
+ * Mal escrito o demasiado largo: 400 con el campo.
+ */
+export function leerEmailCliente(valor: unknown): string | null {
+  const e = normalizarEmail(valor);
+  if (!e.ok) throw badRequest(e.motivo, { campo: 'email' });
+  return e.email;
+}
+
 /** Activo: si o no (true/false); cualquier otra cosa, 400. */
 function leerActivo(v: unknown): boolean {
   if (v === true || v === 'true') return true;
@@ -189,7 +200,7 @@ function leerActivo(v: unknown): boolean {
 }
 
 /** Lee nombre/nif/teléfono del payload aceptando alias FS y Prisma. */
-function leerDatos(data: Record<string, unknown>): { nombreFiscal?: string; nifCif?: string; email: string | null; telefono: string | null; direccion: string | null } {
+function leerDatos(data: Record<string, unknown>): { nombreFiscal?: string; nifCif?: string; telefono: string | null; direccion: string | null } {
   const nombre = (data.nombreFiscal ?? data.nombre ?? data.razonsocial) as string | undefined;
   const nif = (data.nifCif ?? data.cifnif ?? data.nif) as string | undefined;
   const tel = (data.telefono ?? data.telefono1) as string | undefined;
@@ -197,7 +208,6 @@ function leerDatos(data: Record<string, unknown>): { nombreFiscal?: string; nifC
     nombreFiscal: nombre !== undefined ? String(nombre) : undefined,
     // El NIF se guarda siempre igual: mayusculas y sin espacios ni guiones.
     nifCif: nif !== undefined ? String(nif).replace(/[\s-]/g, '').toUpperCase() : undefined,
-    email: data.email != null ? String(data.email) : null,
     telefono: tel != null && tel !== '' ? String(tel) : null,
     direccion: data.direccion != null ? String(data.direccion) : null,
   };
@@ -262,6 +272,7 @@ export const clientesService: CompanyScopedService<Cliente> = {
     if (!d.nombreFiscal?.trim()) throw badRequest('Falta el nombre fiscal del cliente.', { campo: 'nombreFiscal' });
     // Con el nombre que tiene en su pais: «Falta el RNC del cliente.». Una identificacion extranjera se guarda tal cual.
     if (!d.nifCif) throw badRequest(`Falta el ${numeroFiscalEnFrase(textoONull(data.pais))} del cliente.`, { campo: 'nifCif' });
+    const email = leerEmailCliente(data.email);
     const web = leerWebCliente(data.web);
     // El mismo NIF escrito de otra forma (con ES, puntos o guiones) es el mismo cliente: 409 con su id.
     const ya = await clienteConNif(String(companyId), d.nifCif);
@@ -273,7 +284,7 @@ export const clientesService: CompanyScopedService<Cliente> = {
         companyId: String(companyId),
         nombreFiscal: d.nombreFiscal.trim(),
         nifCif: d.nifCif,
-        email: d.email,
+        email,
         telefono: d.telefono,
         web,
         ...leerDireccion(data),
@@ -298,7 +309,7 @@ export const clientesService: CompanyScopedService<Cliente> = {
     const cambios = {
       ...(d.nombreFiscal !== undefined ? { nombreFiscal: d.nombreFiscal } : {}),
       ...(d.nifCif !== undefined ? { nifCif: d.nifCif } : {}),
-      ...(data.email !== undefined ? { email: d.email } : {}),
+      ...(data.email !== undefined ? { email: leerEmailCliente(data.email) } : {}),
       ...(data.telefono !== undefined || data.telefono1 !== undefined ? { telefono: d.telefono } : {}),
       ...(data.web !== undefined ? { web: leerWebCliente(data.web) } : {}),
       ...leerDireccion(data),

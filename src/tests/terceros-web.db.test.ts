@@ -209,6 +209,51 @@ describe('clientes', () => {
   });
 });
 
+describe('email de clientes y proveedores (lo que manda la ficha al guardar)', () => {
+  let E: string;
+  beforeAll(async () => {
+    E = await empresa();
+  });
+
+  it('cliente: guardar la ficha con el email vacío lo deja sin email (null, no «»), y con espacios se limpia', async () => {
+    const alta = await request(app(E)).post('/clientes').send({ nombreFiscal: 'Email Vacio SL', nifCif: cif('5606060'), email: '  ', telefono: '' });
+    expect(alta.status).toBe(201);
+    const id = alta.body.data.id as string;
+    expect(await prisma.customer.findUniqueOrThrow({ where: { id } })).toMatchObject({ email: null, telefono: null });
+
+    // La ficha manda todo, también el email y el teléfono vacíos, aunque solo cambie la moneda.
+    const guardar = await request(app(E)).put(`/clientes/${id}`).send({ pais: 'ES', email: '', telefono: '', web: '', monedaPreferida: 'USD' });
+    expect(guardar.status).toBe(200);
+    expect(await prisma.customer.findUniqueOrThrow({ where: { id } })).toMatchObject({ email: null, telefono: null, web: null, monedaPreferida: 'USD' });
+
+    const conEmail = await request(app(E)).put(`/clientes/${id}`).send({ email: '  pagos@emailvacio.es ' });
+    expect(conEmail.body.data.email).toBe('pagos@emailvacio.es');
+  });
+
+  it('cliente: un email mal escrito o que no cabe da 400 con el campo y no guarda nada', async () => {
+    const nif = cif('5606061');
+    const mala = await request(app(E)).post('/clientes').send({ nombreFiscal: 'Email Malo SL', nifCif: nif, email: 'pagos.emailmalo.es' });
+    expect(mala.status).toBe(400);
+    expect(mala.body.message).toBe('El email no es válido. Escríbelo como nombre@empresa.com.');
+    expect(mala.body.details).toEqual({ campo: 'email' });
+    expect(await prisma.customer.count({ where: { companyId: E, nifCif: nif } })).toBe(0);
+
+    const alta = await request(app(E)).post('/clientes').send({ nombreFiscal: 'Email Largo SL', nifCif: nif, email: 'pagos@emaillargo.es' });
+    const largo = `${'a'.repeat(180)}@emaillargo.es`;
+    const r = await request(app(E)).put(`/clientes/${alta.body.data.id}`).send({ email: largo, telefono: '960000003' });
+    expect(r.status).toBe(400);
+    expect(r.body.message).toBe('El email es demasiado largo (191 caracteres como mucho).');
+    expect(r.body.details).toEqual({ campo: 'email' });
+    expect(await prisma.customer.findUniqueOrThrow({ where: { id: alta.body.data.id } })).toMatchObject({ email: 'pagos@emaillargo.es', telefono: null });
+  });
+
+  it('proveedor: un email que no cabe da 400 con el campo (antes, 500)', async () => {
+    const r = await request(app(E)).post('/proveedores').send({ nombreFiscal: 'Email Largo Prov SL', nifCif: cif('5606062'), email: `${'b'.repeat(180)}@emaillargo.es` });
+    expect(r.status).toBe(400);
+    expect(r.body.details).toEqual({ campo: 'email' });
+  });
+});
+
 describe('alta desde los lectores (AvisoTerceroNuevo)', () => {
   // Lo que manda la ventana «Dar de alta»: lo leido corregido, mas el correo, el telefono y la web que se escriban.
   const ficha = (nif: string) => ({

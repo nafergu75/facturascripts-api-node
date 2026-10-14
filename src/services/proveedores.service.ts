@@ -20,6 +20,7 @@ import { numeroFiscalEnFrase } from '../domain/numero-fiscal';
 import { logCreate, logDelete, logUpdate } from './suppliers/supplierAudit.service';
 import { hoyEspana } from '../utils/fechas';
 import { normalizarWeb } from '../utils/web';
+import { normalizarEmail } from '../utils/email';
 import {
   apuntesEnSubcuentas,
   conReintentoSubcuenta,
@@ -280,7 +281,6 @@ export interface DatosProveedor {
 
 const errorCampo = (mensaje: string, campo: string) => badRequest(mensaje, { campo });
 const textoONull = (v: unknown): string | null => (v === undefined || v === null || String(v).trim() === '' ? null : String(v).trim());
-const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 /**
  * Pais del proveedor en ISO-2. Sin pais (o 'ES') y con un NIF-IVA de otro
@@ -361,9 +361,10 @@ export function datosProveedor(
   }
 
   if (has('email')) {
-    const e = textoONull(data.email);
-    if (e && !EMAIL.test(e)) throw errorCampo('El email no es válido.', 'email');
-    d.email = e;
+    // Mal escrito o mas largo que la columna: 400 con el campo (antes, uno largo daba 500).
+    const e = normalizarEmail(data.email);
+    if (!e.ok) throw errorCampo(e.motivo, 'email');
+    d.email = e.email;
   }
   if (has('telefono', 'telefono1')) {
     const t = textoONull(data.telefono ?? data.telefono1);
