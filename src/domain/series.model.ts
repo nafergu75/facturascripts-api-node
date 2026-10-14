@@ -9,7 +9,7 @@
  * rectificativas de facturas completas (art. 7.1.a RD 1619/2012). No se crea
  * sola en todas las empresas: la primera R5 crea la RT.
  */
-import type { PlantillaVentaId } from './plantillasFactura';
+import type { MotivoPlantilla, PlantillaVentaId } from './plantillasFactura';
 
 export type TipoDocumentoSerie = 'FACTURA' | 'RECTIFICATIVA' | 'RECTIFICATIVA_SIMPLIFICADA' | 'PROFORMA';
 
@@ -42,6 +42,12 @@ export interface SerieDocumento {
   plantilla: PlantillaVentaId;
   /** Plantilla elegida en Configuracion > Series; null = automatica. */
   plantillaElegida: string | null;
+  /**
+   * Por que usa esa plantilla (plantillasFactura.motivoPlantillaSerie): elegida,
+   * sola por su codigo o por una casilla de Configuracion > Facturacion, o la
+   * estandar porque esa casilla esta sin marcar.
+   */
+  motivoPlantilla: MotivoPlantilla;
   /** Observaciones que se proponen en cada factura nueva de la serie (editables en cada una); null = ninguna. */
   observacionesDefecto: string | null;
   creadoEn: string;
