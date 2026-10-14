@@ -288,7 +288,7 @@ export async function generarRegistroAlta(tx: TransaccionBD, o: OpcionesRegistro
   validarAlta(alta, { nifObligado, ahora });
 
   // Se congelan con el primer registro el NIF, el nombre y el numero de instalacion (si la activacion no lo hizo).
-  const numeroInstalacion = config.numeroInstalacion ?? numeroInstalacionDe(companyId);
+  const numeroInstalacion = config.numeroInstalacion ?? numeroInstalacionDe(companyId, ahora);
   if (!config.nifObligado || !config.nombreObligado || !config.numeroInstalacion) {
     await tx.verifactuConfig.update({
       where: { companyId },

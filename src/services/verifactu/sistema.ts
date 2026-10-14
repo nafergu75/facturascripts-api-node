@@ -2,9 +2,14 @@
  * Identificacion del sistema informatico de facturacion que va en cada
  * registro (bloque SistemaInformatico; spec verifactu, 11.1).
  *
- * - NumeroInstalacion: 'CONTA-' + companyId. En un SIF SaaS cada facturacion es
- *   un «SIF virtual» con su propio numero, que no se repite nunca (FAQ de
- *   desarrolladores de la AEAT v1.3, 4-12-2025, n.º 4).
+ * - NumeroInstalacion: 'CONTA-' + companyId + '-' + instante en que se fija
+ *   (AAAAMMDDhhmmss, UTC). En un SIF SaaS cada facturacion es un «SIF virtual»
+ *   con su propio numero, que no se repite nunca para ese obligado; si se
+ *   reinstala, numero nuevo, y la AEAT recomienda una marca de tiempo (FAQ de
+ *   desarrolladores v1.3, 4-12-2025, n.º 4). Con el instante, si se vacian la
+ *   configuracion y la cadena de una empresa (una restauracion, el «TODO A
+ *   CERO») y se vuelve a empezar, el nuevo PrimerRegistro lleva otro numero y
+ *   la AEAT no lo da por repetido (Validaciones 4.3.1).
  * - IndicadorMultiplesOT: «S» si el usuario del SaaS tiene mas de una
  *   facturacion, en cualquier estado (misma FAQ, n.º 4). La app no separa
  *   usuarios de la plataforma: se toma «S» si hay mas de una empresa.
@@ -12,9 +17,11 @@
  *   registros y pasa a 1.0.0 con la declaracion responsable (fase F5).
  * - El productor es la entidad desarrolladora (decision del usuario del
  *   11-10-2026: IFBIOSOLUCIONES, S.A., NIF A10952364); el nombre exacto esta
- *   pendiente de confirmar (pregunta 2 de la spec).
+ *   pendiente de confirmar (pregunta 2 de la spec). Nombre y NIF son constantes
+ *   de aqui, juntas: el Id. del sistema va ligado al NIF del productor (FAQ n.º
+ *   4). NO se lee AEAT_NIF_EMPRESA_DESARROLLO (la de los modelos de la AEAT):
+ *   cambiar esa variable cambiaria la identidad del sistema a mitad de cadena.
  */
-import { nifEmpresaDesarrollo } from '../../aeat/common/cabeceraAux';
 import type { SistemaInformatico } from './tipos';
 
 export const NOMBRE_SISTEMA = 'Conta API';
@@ -22,15 +29,19 @@ export const NOMBRE_SISTEMA = 'Conta API';
 export const ID_SISTEMA = 'CA';
 export const VERSION_SIF = '0.1.0';
 export const NOMBRE_PRODUCTOR = 'IFBIOSOLUCIONES, S.A.';
+export const NIF_PRODUCTOR = 'A10952364';
 
-/** Productor del sistema: nombre y NIF (el de la entidad desarrolladora de los modelos de la AEAT). */
+/** Productor del sistema: nombre y NIF, siempre de la misma fuente. */
 export function productor(): { nombreRazon: string; nif: string } {
-  return { nombreRazon: NOMBRE_PRODUCTOR, nif: nifEmpresaDesarrollo() };
+  return { nombreRazon: NOMBRE_PRODUCTOR, nif: NIF_PRODUCTOR };
 }
 
-/** NumeroInstalacion de la facturacion de una empresa (como mucho 100 caracteres). */
-export function numeroInstalacionDe(companyId: string): string {
-  const n = `CONTA-${companyId}`;
+/** AAAAMMDDhhmmss en UTC. */
+const marcaDeTiempo = (d: Date) => d.toISOString().slice(0, 19).replace(/\D/g, '');
+
+/** NumeroInstalacion de la facturacion de una empresa, fijado en `instante` (como mucho 100 caracteres). */
+export function numeroInstalacionDe(companyId: string, instante: Date): string {
+  const n = `CONTA-${companyId}-${marcaDeTiempo(instante)}`;
   if (n.length > 100) throw new Error(`NumeroInstalacion de mas de 100 caracteres: ${n}`);
   return n;
 }

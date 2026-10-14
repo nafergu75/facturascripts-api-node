@@ -529,7 +529,9 @@ describe('paises y NIF-IVA de la AEAT', () => {
 
 describe('Sistema informático', () => {
   it('constantes, número de instalación por empresa e IndicadorMultiplesOT', () => {
-    expect(numeroInstalacionDe('cm1abc')).toBe('CONTA-cm1abc');
+    // Con el instante en que se fija (UTC): si la cadena vuelve a empezar, el numero es otro (FAQ n.º 4).
+    expect(numeroInstalacionDe('cm1abc', new Date('2027-01-01T00:00:05.123Z'))).toBe('CONTA-cm1abc-20270101000005');
+    expect(numeroInstalacionDe('cm1abc', new Date('2027-03-02T10:00:00Z'))).not.toBe(numeroInstalacionDe('cm1abc', new Date('2027-01-01T00:00:00Z')));
     const s = sistemaInformatico({ numeroInstalacion: 'CONTA-cm1abc', multiplesOT: true });
     expect(s).toMatchObject({
       nombreSistemaInformatico: 'Conta API',
@@ -542,6 +544,15 @@ describe('Sistema informático', () => {
     });
     expect(s.idSistemaInformatico).toMatch(/^[A-Z0-9]{2}$/);
     expect(sistemaInformatico({ numeroInstalacion: 'x', multiplesOT: false }).indicadorMultiplesOT).toBe('N');
-    expect(() => numeroInstalacionDe('x'.repeat(95))).toThrow();
+    expect(() => numeroInstalacionDe('x'.repeat(80), AHORA)).toThrow();
+    // El productor no depende de la variable de los modelos de la AEAT.
+    const antes = process.env.AEAT_NIF_EMPRESA_DESARROLLO;
+    process.env.AEAT_NIF_EMPRESA_DESARROLLO = 'B12345674';
+    try {
+      expect(sistemaInformatico({ numeroInstalacion: 'x', multiplesOT: true })).toMatchObject({ nombreRazon: 'IFBIOSOLUCIONES, S.A.', nif: 'A10952364' });
+    } finally {
+      if (antes === undefined) delete process.env.AEAT_NIF_EMPRESA_DESARROLLO;
+      else process.env.AEAT_NIF_EMPRESA_DESARROLLO = antes;
+    }
   });
 });

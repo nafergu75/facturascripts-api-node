@@ -119,7 +119,8 @@ describe('emisión directa y encadenamiento', () => {
     expect(c).toMatchObject({ version: 1, idVersion: '1.0', tipoHuella: '01', refExterna: f.id, nombreEmisor: 'Registro Principal SL' });
     expect(c.destinatarios).toEqual([{ nombre: 'Cliente Nacional SL', nif: 'B12345674' }]);
     expect(c.desglose).toHaveLength(2);
-    expect(c.sistemaInformatico).toMatchObject({ idSistemaInformatico: 'CA', numeroInstalacion: `CONTA-${E}`, indicadorMultiplesOT: 'S' });
+    expect(c.sistemaInformatico).toMatchObject({ idSistemaInformatico: 'CA', indicadorMultiplesOT: 'S' });
+    expect(c.sistemaInformatico.numeroInstalacion).toMatch(new RegExp(`^CONTA-${E}-[0-9]{14}$`));
     expect(r.huella).toBe(
       huella(cadenaAlta({ idEmisor: r.idEmisor, numSerie: r.numSerie, fecha: r.fechaExpedicion, tipoFactura: 'F1', cuotaTotal: r.cuotaTotal!, importeTotal: r.importeTotal!, huellaAnterior: '', fechaHoraHuso: r.fechaHoraHuso })),
     );
@@ -129,7 +130,7 @@ describe('emisión directa y encadenamiento', () => {
     expect(await prisma.verifactuConfig.findUniqueOrThrow({ where: { companyId: E } })).toMatchObject({
       nifObligado: NIF_E,
       nombreObligado: 'Registro Principal SL',
-      numeroInstalacion: `CONTA-${E}`,
+      numeroInstalacion: c.sistemaInformatico.numeroInstalacion,
     });
     const cabeza = await prisma.verifactuCadena.findUniqueOrThrow({ where: { companyId_entorno: { companyId: E, entorno: 'PRUEBAS' } } });
     expect(cabeza).toMatchObject({ numRegistros: 1, ultimoRegistroId: r.id, ultimaHuella: r.huella, ultimoNumSerie: r.numSerie, ultimaFechaHoraHuso: r.fechaHoraHuso });
