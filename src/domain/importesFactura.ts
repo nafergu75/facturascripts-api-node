@@ -10,6 +10,10 @@
  *    - otra moneda: `convertirLineas` convierte la BASE de cada tipo de IVA y
  *      calcula la cuota sobre la base ya convertida (art. 79.Once LIVA), y
  *      reparte los centimos entre las lineas. Nunca se divide el total.
+ * 3. Plantilla A (envases): el IEEPNR de la linea (ya calculado, domain/ieepnr)
+ *    va DENTRO de baseLine, que es la base imponible; y con `cuotaPorTipo` la
+ *    cuota de IVA se calcula sobre la suma de bases de cada tipo y se reparte
+ *    entre sus lineas (sin la opcion, como siempre: redondeo por linea).
  */
 import { redondear2, redondear4 } from '../utils/money';
 
@@ -32,6 +36,25 @@ export interface LineaEntrada {
    * como siempre sobre la base convertida.
    */
   cuotaFija?: number;
+  /** Plantilla A: packs de la linea (cantidad = unidades). Informativo. */
+  packs?: number | null;
+  /** Plantilla A: kg de plastico no reciclado de la linea. Informativo. */
+  kgPlastico?: number | null;
+  /**
+   * Plantilla A: IEEPNR de la linea en EUR, YA calculado (domain/ieepnr): aqui
+   * no se recalcula. Se suma a la base de la linea.
+   */
+  ieepnrImporte?: number | null;
+  /** Plantilla A: texto adicional bajo el concepto. Informativo. */
+  textoAdicional?: string | null;
+}
+
+/** Datos de envase de una linea (plantilla A), solo los que llegan. */
+export interface DatosEnvaseLinea {
+  packs?: number | null;
+  kgPlastico?: number | null;
+  ieepnrImporte?: number | null;
+  textoAdicional?: string | null;
 }
 
 /** Importes de una linea en una moneda. */
@@ -58,6 +81,10 @@ export interface LineaCalculada {
   tipoRetencion: number;
   productoServicioId?: string;
   cuentaContable?: string;
+  packs?: number | null;
+  kgPlastico?: number | null;
+  ieepnrImporte?: number | null;
+  textoAdicional?: string | null;
   doc: ImportesLinea;
   cuenta: ImportesLinea;
 }
@@ -82,9 +109,24 @@ const sinCeroNegativo = (n: number): number => (n === 0 ? 0 : n);
  */
 const round2Simetrico = (n: number): number => sinCeroNegativo(Math.sign(n) * round2(Math.abs(n)));
 
-/** Opciones del calculo: `simetrico` solo en las rectificativas (round2Simetrico). */
+/**
+ * Opciones del calculo: `simetrico` solo en las rectificativas (round2Simetrico).
+ * `cuotaPorTipo` (plantilla A): la cuota de cada tipo de IVA sobre la suma de
+ * sus bases, repartida entre las lineas; no toca las lineas con cuotaFija.
+ */
 export interface OpcionesCalculo {
   simetrico?: boolean;
+  cuotaPorTipo?: boolean;
+}
+
+/** Los datos de envase de una linea que vienen definidos (sin claves undefined). */
+function datosEnvase(l: DatosEnvaseLinea): DatosEnvaseLinea {
+  const out: DatosEnvaseLinea = {};
+  if (l.packs !== undefined) out.packs = l.packs;
+  if (l.kgPlastico !== undefined) out.kgPlastico = l.kgPlastico;
+  if (l.ieepnrImporte !== undefined) out.ieepnrImporte = l.ieepnrImporte;
+  if (l.textoAdicional !== undefined) out.textoAdicional = l.textoAdicional;
+  return out;
 }
 
 /**
@@ -92,7 +134,7 @@ export interface OpcionesCalculo {
  * income-invoices.service.ts), sin cambios. Con `simetrico` (rectificativas),
  * cada redondeo es round2Simetrico.
  */
-export function calcularLineasDoc(lineas: LineaEntrada[], { simetrico = false }: OpcionesCalculo = {}): {
+export function calcularLineasDoc(lineas: LineaEntrada[], { simetrico = false, cuotaPorTipo = false }: OpcionesCalculo = {}): {
   totales: Totales;
   lineas: Array<Omit<LineaCalculada, 'doc' | 'cuenta'> & { importes: ImportesLinea }>;
 } {
@@ -108,7 +150,10 @@ export function calcularLineasDoc(lineas: LineaEntrada[], { simetrico = false }:
 
     const pvpSinDescuento = r2(l.cantidad * l.precioUnitario);
     const descuentoImporte = r2((pvpSinDescuento * descuentoPorcentaje) / 100);
-    const baseLine = r2(pvpSinDescuento - descuentoImporte);
+    const baseArticulo = r2(pvpSinDescuento - descuentoImporte);
+    // Plantilla A: el IEEPNR (ya calculado) forma parte de la base imponible.
+    const ieepnr = Number(l.ieepnrImporte ?? 0);
+    const baseLine = ieepnr ? r2(baseArticulo + r2(ieepnr)) : baseArticulo;
     const ivaImporte = l.cuotaFija !== undefined && tipoIva !== 0 ? r2(l.cuotaFija) : r2((baseLine * tipoIva) / 100);
     const retencionImporte = r2((baseLine * tipoRetencion) / 100);
 
@@ -124,9 +169,23 @@ export function calcularLineasDoc(lineas: LineaEntrada[], { simetrico = false }:
       tipoRetencion,
       productoServicioId: l.productoServicioId,
       ...(l.cuentaContable ? { cuentaContable: l.cuentaContable } : {}),
+      ...datosEnvase(l),
       importes: { precioUnitario: l.precioUnitario, baseLine, descuentoImporte, ivaImporte, retencionImporte },
     };
   });
+
+  if (cuotaPorTipo) {
+    // Plantilla A: por cada tipo t, cuota = r(Σ base × t / 100), repartida entre
+    // sus lineas en proporcion a base_i × t / 100. Las de cuota fija, aparte.
+    const conCalculo = out.map((l, i) => ({ l, i })).filter(({ i }) => !(lineas[i].cuotaFija !== undefined && out[i].tipoIva !== 0));
+    for (const [t, idx] of agrupar(conCalculo, (x) => x.l.tipoIva)) {
+      const grupo = idx.map((k) => conCalculo[k].l);
+      const objetivo = r2((sumar(grupo.map((l) => l.importes.baseLine)) * t) / 100);
+      const cuotas = repartirCentimos(objetivo, grupo.map((l) => (l.importes.baseLine * t) / 100));
+      grupo.forEach((l, k) => (l.importes.ivaImporte = cuotas[k]));
+    }
+    ivaTotal = sumar(out.map((l) => l.importes.ivaImporte));
+  }
 
   return {
     totales: { baseTotal, ivaTotal, retencionTotal, totalFactura: r2(baseTotal + ivaTotal - retencionTotal) },
@@ -240,12 +299,14 @@ const CEROS: ImportesLinea = { precioUnitario: 0, baseLine: 0, descuentoImporte:
  *    moneda de cuenta queda a 0 hasta que haya tipo; nada lee esos importes
  *    como si fueran de cuenta mientras no se emita.
  *  - `simetrico`: el redondeo de las rectificativas (calcularLineasDoc).
+ *  - `cuotaPorTipo`: plantilla A (calcularLineasDoc). En otra moneda la cuota
+ *    de cuenta ya se calcula por tipo (convertirLineas).
  */
 export function calcularImportesFactura(
   lineas: LineaEntrada[],
-  { tipoCambio, mismaMoneda, simetrico = false }: { tipoCambio: number | null; mismaMoneda: boolean } & OpcionesCalculo,
+  { tipoCambio, mismaMoneda, simetrico = false, cuotaPorTipo = false }: { tipoCambio: number | null; mismaMoneda: boolean } & OpcionesCalculo,
 ): ImportesFactura {
-  const { totales: doc, lineas: lineasDoc } = calcularLineasDoc(lineas, { simetrico });
+  const { totales: doc, lineas: lineasDoc } = calcularLineasDoc(lineas, { simetrico, cuotaPorTipo });
   let cuentaLineas: ImportesLinea[];
   if (mismaMoneda) cuentaLineas = lineasDoc.map((l) => ({ ...l.importes }));
   else if (tipoCambio === null) cuentaLineas = lineasDoc.map(() => ({ ...CEROS }));
@@ -262,6 +323,7 @@ export function calcularImportesFactura(
 }
 
 const negar = (n: number): number => sinCeroNegativo(-n);
+const negarOpcional = (n: number | null | undefined): number | null | undefined => (n === null || n === undefined ? n : negar(Number(n)));
 const negarImportes = (i: ImportesLinea): ImportesLinea => ({
   precioUnitario: i.precioUnitario,
   baseLine: negar(i.baseLine),
@@ -280,7 +342,8 @@ const negarTotales = (t: Totales): Totales => ({
  * Rectificativa TOTAL: copia de la original con el signo cambiado en TODOS los
  * importes (documento y cuenta) y en la cabecera, sin recalcular. Asi original
  * + rectificativa = 0 exacto en 430, 700, 477, libro de IVA y 303, en las dos
- * monedas. El precio unitario se conserva y la cantidad cambia de signo.
+ * monedas. El precio unitario se conserva y la cantidad cambia de signo, como
+ * los packs, los kg de plastico y el IEEPNR (plantilla A).
  */
 export function lineasEspejo(original: { doc: Totales; cuenta: Totales; lineas: LineaCalculada[] }): ImportesFactura {
   return {
@@ -289,6 +352,9 @@ export function lineasEspejo(original: { doc: Totales; cuenta: Totales; lineas: 
     lineas: original.lineas.map((l) => ({
       ...l,
       cantidad: negar(l.cantidad),
+      ...(l.packs !== undefined ? { packs: negarOpcional(l.packs) } : {}),
+      ...(l.kgPlastico !== undefined ? { kgPlastico: negarOpcional(l.kgPlastico) } : {}),
+      ...(l.ieepnrImporte !== undefined ? { ieepnrImporte: negarOpcional(l.ieepnrImporte) } : {}),
       doc: negarImportes(l.doc),
       cuenta: negarImportes(l.cuenta),
     })),
