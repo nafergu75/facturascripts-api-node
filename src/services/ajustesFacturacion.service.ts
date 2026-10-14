@@ -12,10 +12,14 @@
  *  - en el PDF de los borradores, las proformas y las facturas anteriores a la copia;
  *  - el IEEPNR (plantilla A): si la empresa lo repercute y a qué tipo por kg. El
  *    tipo queda guardado en cada factura (IncomeInvoice.ieepnrPorKg): cambiarlo
- *    aquí no cambia las emitidas.
+ *    aquí no cambia las emitidas. Si la empresa lo repercute, la serie A usa sola
+ *    la plantilla A (series.service, contextoPlantillas).
  * Lo único que cambia un asiento es ieepnrCuenta: con ella, el IEEPNR de las
- * ventas que se contabilicen después va a esa cuenta en vez de a la de ingresos
- * de su línea. Ningún modelo cambia.
+ * ventas que se emitan después va a esa cuenta en vez de a la de ingresos de su
+ * línea. Cada factura la guarda al emitirse (IncomeInvoice.ieepnrCuenta; su
+ * rectificativa, la de la original): cambiarla aquí no cambia el asiento de las
+ * ya emitidas. Ningún modelo cambia; el panel no cuenta como ingreso el IEEPNR
+ * que va a una cuenta 47.
  */
 import { z } from 'zod';
 import { prisma, type ClienteBD, type TransaccionBD } from '../config/database';

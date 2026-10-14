@@ -28,7 +28,7 @@ export interface AjustesFacturacion {
   ieepnrRepercute: boolean;
   /** Tipo del IEEPNR en EUR por kg (Ley 7/2022: 0,45). */
   ieepnrPorKg: number;
-  /** Cuenta del IEEPNR si la empresa fuera contribuyente; null = la de ingresos de cada linea. */
+  /** Cuenta del IEEPNR si la empresa fuera contribuyente; null = la de ingresos de cada linea. Cada factura la guarda al emitirse. */
   ieepnrCuenta: string | null;
 }
 

@@ -16,7 +16,6 @@ import { accountingEngineService, desgloseIvaPorTipo } from '../services/account
 import { prisma, type ClienteBD, type TransaccionBD } from '../config/database';
 import { nombresDeCuentas } from '../services/cuentasLinea.service';
 import { repartoIngresos } from '../domain/ieepnr';
-import { leerAjustesFacturacion } from '../services/ajustesFacturacion.service';
 import { aCentimos, cuadraEnCentimos } from '../utils/money';
 import { asegurarPlanContableEmpresa } from '../services/chart-of-accounts.service';
 import { comprobarFechaAbierta, exigirFechaContabilizable, periodoNoAbierto } from '../services/periodos.service';
@@ -177,7 +176,7 @@ async function contabilidadRectificativa(
   factura: Parameters<typeof enlacesDeVentas>[1][number] & {
     lineas: Array<{ tipoIva: number; accountCode: string | null; baseLine: number; ivaImporte: number; retencionImporte: number; ieepnrImporte?: number | null }>;
   },
-  // Cuenta del IEEPNR de los ajustes (null: el IEEPNR va a la cuenta de su linea).
+  // Cuenta del IEEPNR de la factura (null: el IEEPNR va a la cuenta de su linea).
   cuentaIeepnr: string | null = null,
 ): Promise<ContabilidadRectificativa | null> {
   if (!factura.esRectificativa) return null;
@@ -279,8 +278,10 @@ export class AccountingEngineController {
       }
       // Ni en un mes bloqueado ni en un ejercicio cerrado (tambien desde el hook AUTO).
       await comprobarFechaAbierta(companyId, factura.fechaEmision, 'contabilizar la factura');
-      // Cuenta del IEEPNR (plantilla A), leida antes de la transaccion: null = la de cada linea.
-      const { ieepnrCuenta } = await leerAjustesFacturacion(companyId);
+      // Cuenta del IEEPNR (plantilla A): la que la factura guardo al emitirse
+      // (la de los ajustes de entonces o, en una rectificativa, la de su
+      // original), no la de hoy. null = la de ingresos de cada linea.
+      const ieepnrCuenta = factura.ieepnrCuenta ?? null;
       // Rectificativa: lo que rectifica y, por sustitucion, solo la diferencia con la original.
       const rect = await contabilidadRectificativa(companyId, factura, ieepnrCuenta);
       const dif = rect?.sustitucion ?? null;

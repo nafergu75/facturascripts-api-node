@@ -897,6 +897,23 @@ export function avisoIeepnrFueraDeEspana(
   };
 }
 
+/**
+ * Cuenta del IEEPNR que se guarda en la factura (IncomeInvoice.ieepnrCuenta) y
+ * que usa su asiento: sin IEEPNR (ieepnrPorKg null), null; en una rectificativa
+ * de una factura de la app, la de la original (asi la corrige en la misma
+ * cuenta); si no, la de los ajustes (null = la de ingresos de cada linea). Se
+ * fija al guardar y otra vez al emitir: cambiar los ajustes despues no cambia
+ * el asiento de una factura ya emitida.
+ */
+function cuentaIeepnrFactura(
+  ieepnrPorKg: number | null,
+  original: { ieepnrCuenta?: string | null } | null,
+  ajustes: { ieepnrCuenta: string | null },
+): string | null {
+  if (ieepnrPorKg === null) return null;
+  return (original ? original.ieepnrCuenta : ajustes.ieepnrCuenta) ?? null;
+}
+
 /** Lo que una rectificativa de una factura de la app hereda para el IEEPNR: su plantilla, si lo repercutio y a que tipo. */
 function envasesDeOriginal(original: { plantillaId: string; ieepnrPorKg: number | null }) {
   return { plantilla: normalizarPlantillaId(original.plantillaId), repercute: original.ieepnrPorKg !== null, tipo: original.ieepnrPorKg };
@@ -1917,6 +1934,7 @@ async function prepararAlta(
     plantillaId: plantilla,
     pesoBrutoKg: admiteEnvases(plantilla) ? pesoBrutoKg : null,
     ieepnrPorKg: envases.ieepnrPorKg,
+    ieepnrCuenta: cuentaIeepnrFactura(envases.ieepnrPorKg, original, ajustes),
     observaciones: dto.observaciones,
     esRectificativa,
     // Con una sola original, tambien en los campos de antes (Carmen, la cartera y el PDF los leen).
@@ -2286,6 +2304,7 @@ export const incomeInvoicesService = {
     lineas = envases.lineas;
     data.plantillaId = plantilla;
     data.ieepnrPorKg = envases.ieepnrPorKg;
+    data.ieepnrCuenta = cuentaIeepnrFactura(envases.ieepnrPorKg, original, ajustes);
     const peso = leerPesoBruto(dto.pesoBrutoKg);
     if (peso !== undefined && peso !== null && !admiteEnvases(plantilla)) throw errorSinEnvases('pesoBrutoKg');
     // Peso bruto: el que llegue; si la plantilla nueva no lleva envases, se quita (es solo informativo).
@@ -2451,6 +2470,7 @@ export const incomeInvoicesService = {
           plantillaId: plantilla,
           pesoBrutoKg: admiteEnvases(plantilla) ? p.pesoBrutoKg : null,
           ieepnrPorKg: envases.ieepnrPorKg,
+          ieepnrCuenta: cuentaIeepnrFactura(envases.ieepnrPorKg, null, ajustes),
           observaciones: p.observaciones,
           esRectificativa: false,
           proformaId: p.id,
@@ -2609,6 +2629,8 @@ export const incomeInvoicesService = {
     exigirLimiteSimplificada(actual.tipoFactura, perfil, importes ? importes.cuenta : actual);
     // IBAN y pie de ahora, copiados en la factura: su PDF ya no cambia con los ajustes.
     const copia = await copiaAlEmitir(companyId, actual.moneda);
+    // Cuenta del IEEPNR al emitir: la de los ajustes de ahora (o la de la original).
+    const ieepnrCuenta = cuentaIeepnrFactura(actual.ieepnrPorKg, original, await leerAjustesFacturacion(companyId));
 
     // Rectificativa: la parte de cada original, ni de otra rectificativa ni por
     // encima de lo que queda de cada original (se repite en la transaccion).
@@ -2657,6 +2679,7 @@ export const incomeInvoicesService = {
           // Se conserva el del borrador (pantalla o copia); uno antiguo sin origen lo emite la pantalla.
           origen: actual.origen ?? 'pantalla',
           ...copia,
+          ieepnrCuenta,
           estado: determinarEstado(fechaVencimiento),
           ...datosTipo(tipo),
           tipoOperacion: fiscal.tipoOperacion,
