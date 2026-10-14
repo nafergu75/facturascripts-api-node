@@ -179,6 +179,20 @@ export function cuotasFijasPorTipo(lineas: Array<{ base: number; tipoIva: number
 /** Retencion de unas bases, linea a linea (como el alta de la factura). */
 const retencionDe = (bases: number[], tipo: number) => sumaCentimos(bases.map((b) => redondear2((b * tipo) / 100)));
 
+/**
+ * Porcentaje de la retencion leida. Si solo se leyo el importe (la IA puede
+ * no ver el porcentaje), el que sale de importe / bases, en entero, como hace
+ * el lector de gastos (y la pantalla del lector de ventas). 0 sin retencion.
+ * Sin esto, la retencion se perdia al registrar y no cuadraba nunca.
+ */
+export function tipoRetencionLeido(l: LecturaNormalizada): number {
+  const tipo = l.retencion?.tipo.valor;
+  if (typeof tipo === 'number' && Number.isFinite(tipo) && tipo > 0) return tipo;
+  const importe = Math.abs(l.retencion?.importe.valor ?? 0);
+  const base = Math.abs(sumaCentimos(l.desglose.map((t) => t.base.valor ?? 0)));
+  return importe > 0 && base > 0 ? Math.round((importe / base) * 100) : 0;
+}
+
 const manual = <T>(valor: T | null): Campo<T> => ({ valor, confianza: null, fuente: 'manual' });
 const calculado = <T>(valor: T | null): Campo<T> => ({ valor, confianza: null, fuente: 'calculado' });
 
@@ -224,11 +238,13 @@ export function aplicarCorrecciones(leida: LecturaNormalizada, c: CorreccionesVe
   }
 
   if (c.lineas !== undefined || c.tipoRetencion !== undefined) {
-    const tipo = c.tipoRetencion ?? l.retencion?.tipo.valor ?? 0;
+    // Sin porcentaje corregido, el leido (o el que sale del importe leido sobre las bases leidas).
+    const tipo = c.tipoRetencion ?? tipoRetencionLeido(leida);
     const bases = c.lineas ? c.lineas.map((x) => x.base) : l.desglose.map((t) => t.base.valor ?? 0);
     const importe = retencionDe(bases, tipo);
     if (aCentimos(importe) !== 0 || (c.tipoRetencion ?? 0) > 0) {
-      l.retencion = { tipo: c.tipoRetencion !== undefined ? manual(c.tipoRetencion) : (l.retencion?.tipo ?? calculado(tipo)), importe: calculado(importe) };
+      const tipoLeido = l.retencion && (l.retencion.tipo.valor ?? 0) > 0 ? l.retencion.tipo : null;
+      l.retencion = { tipo: c.tipoRetencion !== undefined ? manual(c.tipoRetencion) : (tipoLeido ?? calculado(tipo)), importe: calculado(importe) };
       l.totales.retencion = calculado(importe);
     } else {
       l.retencion = null;
