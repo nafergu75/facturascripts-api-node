@@ -125,6 +125,7 @@ const LECTURAS_POR_AREA: Record<string, string[]> = {
   'fiscalYears.routes.ts GET /': K,
   'ajustesFacturacion.routes.ts GET /': V,
   'series.routes.ts GET /': V,
+  'series.routes.ts GET /plantillas': V,
   'registroMercantil.routes.ts GET /fiscal-years/:fyId/deadlines': K,
   'registroMercantil.routes.ts GET /fiscal-years/:fyId/books': K,
   'registroMercantil.routes.ts GET /books/:bookId/download': K,

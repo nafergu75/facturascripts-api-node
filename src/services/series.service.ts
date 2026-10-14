@@ -2,6 +2,8 @@ import { Prisma, type InvoiceSeries } from '@prisma/client';
 import { prisma, type TransaccionBD as Tx } from '../config/database';
 import { SerieDocumento, TipoDocumentoSerie, TIPOS_DOCUMENTO_SERIE, esTipoDocumentoSerie } from '../domain/series.model';
 import { badRequest, conflict, notFound } from '../utils/http-errors';
+import { esEmpresaEspanola } from './perfilEmpresa.service';
+import { admiteEnvases, esPlantillaVenta, plantillaDisponible, plantillaEfectivaSerie, PLANTILLAS_VENTA } from '../domain/plantillasFactura';
 
 /**
  * Series de documentos por empresa, guardadas en la tabla InvoiceSeries.
@@ -48,7 +50,28 @@ function contarDocumentos(db: Tx | typeof prisma, companyId: string, codigo: str
   return db.incomeInvoice.count({ where: { companyId, serie: codigo, numero: { not: null } } });
 }
 
-function aDominio(s: InvoiceSeries): SerieDocumento {
+/**
+ * Plantilla elegida para una serie: undefined = no se toca; null o '' = la
+ * automatica; si no, un id del catalogo (400 PLANTILLA_NO_VALIDA) que la empresa
+ * pueda usar (la A solo en Espana: 400 PLANTILLA_SOLO_ESPANA).
+ */
+function validarPlantilla(valor: unknown, espanola: boolean): string | null | undefined {
+  if (valor === undefined) return undefined;
+  if (valor === null || valor === '') return null;
+  if (!esPlantillaVenta(valor)) {
+    throw badRequest('La plantilla no es válida. Elige una de la lista: ' + PLANTILLAS_VENTA.map((p) => (p === 'default' ? 'Estándar' : p)).join(', ') + '.', {
+      codigo: 'PLANTILLA_NO_VALIDA',
+      campo: 'plantilla',
+    });
+  }
+  if (!plantillaDisponible(valor, espanola)) {
+    throw badRequest('La plantilla A (envases e IEEPNR) solo se puede usar en empresas españolas.', { codigo: 'PLANTILLA_SOLO_ESPANA', campo: 'plantilla' });
+  }
+  return valor;
+}
+
+/** Serie de la BD -> dominio, con la plantilla que usa (depende de si la empresa es espanola). */
+function aDominio(s: InvoiceSeries, espanola: boolean): SerieDocumento {
   return {
     id: s.id,
     companyId: s.companyId,
@@ -59,6 +82,8 @@ function aDominio(s: InvoiceSeries): SerieDocumento {
     porDefecto: s.porDefecto,
     ultimoNumero: s.ultimoNumero,
     ultimaFecha: s.ultimaFecha ?? undefined,
+    plantilla: plantillaEfectivaSerie(s, espanola),
+    plantillaElegida: s.plantilla ?? null,
     creadoEn: s.createdAt.toISOString(),
     actualizadoEn: s.updatedAt.toISOString(),
   };
@@ -118,7 +143,8 @@ export async function listarSeries(companyId: string, tipoDocumento?: TipoDocume
     where: { companyId, ...(tipoDocumento ? { tipoDocumento } : {}) },
     orderBy: [{ tipoDocumento: 'asc' }, { codigo: 'asc' }],
   });
-  return series.map(aDominio);
+  const espanola = await esEmpresaEspanola(companyId);
+  return series.map((s) => aDominio(s, espanola));
 }
 
 /** Si una serie pasa a ser la por defecto, el resto del mismo tipo deja de serlo. */
@@ -133,7 +159,7 @@ const esP2002 = (e: unknown) => e instanceof Prisma.PrismaClientKnownRequestErro
 
 export async function crearSerie(
   companyId: string,
-  data: Pick<SerieDocumento, 'codigo' | 'descripcion' | 'tipoDocumento' | 'activa' | 'porDefecto'> & { numeroInicial?: unknown },
+  data: Pick<SerieDocumento, 'codigo' | 'descripcion' | 'tipoDocumento' | 'activa' | 'porDefecto'> & { numeroInicial?: unknown; plantilla?: unknown },
 ): Promise<SerieDocumento> {
   const codigo = data.codigo?.trim().toUpperCase();
   if (!codigo) throw badRequest('El código de la serie es obligatorio.', { campo: 'codigo' });
@@ -151,6 +177,8 @@ export async function crearSerie(
   }
   // Numero inicial: el primer documento de la serie llevara ese numero.
   const numeroInicial = validarNumeroInicial(data.numeroInicial);
+  const espanola = await esEmpresaEspanola(companyId);
+  const plantilla = validarPlantilla(data.plantilla, espanola);
   const dup = await prisma.invoiceSeries.findUnique({ where: { companyId_codigo: { companyId, codigo } } });
   if (dup) throw conflict(`Ya existe la serie ${codigo}.`, { campo: 'codigo' });
 
@@ -165,9 +193,10 @@ export async function crearSerie(
         activa,
         porDefecto,
         ...(numeroInicial ? { ultimoNumero: numeroInicial - 1 } : {}),
+        ...(plantilla ? { plantilla } : {}),
       },
     });
-    return aDominio(serie);
+    return aDominio(serie, espanola);
   } catch (e) {
     if (esP2002(e)) throw conflict(`Ya existe la serie ${codigo}.`, { campo: 'codigo' });
     throw e;
@@ -182,11 +211,14 @@ export async function crearSerie(
  * reglas se comprueban dentro de una transaccion, con las series del mismo
  * tipo bloqueadas: dos cambios a la vez no pueden dejar un tipo sin serie
  * activa ni sin predeterminada.
+ *
+ * La plantilla (null = automatica) solo vale para lo que se cree o se guarde
+ * despues: las facturas emitidas conservan la suya.
  */
 export async function actualizarSerie(
   companyId: string,
   serieId: string,
-  data: Partial<Pick<SerieDocumento, 'descripcion' | 'activa' | 'porDefecto'>> & { numeroInicial?: unknown },
+  data: Partial<Pick<SerieDocumento, 'descripcion' | 'activa' | 'porDefecto'>> & { numeroInicial?: unknown; plantilla?: unknown },
 ): Promise<SerieDocumento> {
   for (const campo of ['activa', 'porDefecto'] as const) {
     if (data[campo] !== undefined && typeof data[campo] !== 'boolean') {
@@ -197,6 +229,8 @@ export async function actualizarSerie(
     throw badRequest('La descripción admite como máximo 191 caracteres.', { campo: 'descripcion' });
   }
   const numeroInicial = validarNumeroInicial(data.numeroInicial);
+  const espanola = await esEmpresaEspanola(companyId);
+  const plantilla = validarPlantilla(data.plantilla, espanola);
   const previa = await prisma.invoiceSeries.findFirst({ where: { id: serieId, companyId } });
   if (!previa) throw notFound('Serie no encontrada.');
 
@@ -246,10 +280,11 @@ export async function actualizarSerie(
         ...(data.descripcion !== undefined ? { descripcion: String(data.descripcion ?? '') } : {}),
         ...(data.activa !== undefined ? { activa: data.activa } : {}),
         ...(data.porDefecto !== undefined ? { porDefecto: data.porDefecto } : {}),
+        ...(plantilla !== undefined ? { plantilla } : {}),
       },
     });
   });
-  return aDominio(serie);
+  return aDominio(serie, espanola);
 }
 
 export async function obtenerSeriePorDefecto(
@@ -322,7 +357,7 @@ export async function obtenerOCrearSerieTickets(companyId: string): Promise<Seri
       update: {},
     });
     // Una historica del lector con ese codigo (desactivada) no sirve: se prueba el siguiente.
-    if (s.tipoDocumento === 'RECTIFICATIVA_SIMPLIFICADA' && s.activa) return aDominio(s);
+    if (s.tipoDocumento === 'RECTIFICATIVA_SIMPLIFICADA' && s.activa) return aDominio(s, await esEmpresaEspanola(companyId));
   }
   throw conflict('Las series RT y RTK ya existen y son de otro tipo: crea en Configuración > Series una serie de rectificativas de tickets.', {
     codigo: 'SERIE_TICKETS_OCUPADA',
@@ -368,9 +403,31 @@ export async function buscarSeriePorCodigo(companyId: string, codigo: string): P
   const candidatos = [...new Set([limpio, limpio.toUpperCase()])];
   for (const c of candidatos) {
     const s = await prisma.invoiceSeries.findUnique({ where: { companyId_codigo: { companyId, codigo: c } } });
-    if (s) return aDominio(s);
+    if (s) return aDominio(s, await esEmpresaEspanola(companyId));
   }
   return null;
+}
+
+/**
+ * Serie de facturas para un documento con envases (duplicar o pasar una
+ * proforma a factura con packs, kg o IEEPNR): la `preferida` (la que se usaria
+ * sin envases) o la predeterminada de facturas, si su plantilla los admite; si
+ * no, la primera serie de facturas activa con la plantilla A. Sin ninguna, 400
+ * SIN_SERIE_ENVASES. Devuelve el codigo.
+ */
+export async function serieParaEnvases(companyId: string, preferida?: string | null): Promise<string> {
+  const series = (await listarSeries(companyId, 'FACTURA')).filter((s) => s.activa);
+  const candidatas = [
+    preferida ? series.find((s) => s.codigo === preferida) : undefined,
+    series.find((s) => s.porDefecto),
+    ...series,
+  ];
+  const elegida = candidatas.find((s) => s && admiteEnvases(s.plantilla));
+  if (elegida) return elegida.codigo;
+  throw badRequest(
+    'Esta factura lleva packs, kg de plástico o IEEPNR y ninguna serie de facturas activa usa la plantilla A. Elige la plantilla A en una serie (Configuración > Series) o quita esos datos.',
+    { codigo: 'SIN_SERIE_ENVASES', campo: 'serie' },
+  );
 }
 
 /**
@@ -460,7 +517,7 @@ export async function obtenerOCrearSerieHistorica(
   });
   // Otra peticion pudo crearla a la vez como serie activa: no se mezcla.
   if (s.activa || s.tipoDocumento !== tipoDocumento) throw choqueConSerieDeLaApp(codigo);
-  return aDominio(s);
+  return aDominio(s, await esEmpresaEspanola(companyId));
 }
 
 /** ¿Hay en la serie alguna factura que no llegara del lector (la emitio la app)? */

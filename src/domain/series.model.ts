@@ -9,7 +9,9 @@
  * rectificativas de facturas completas (art. 7.1.a RD 1619/2012). No se crea
  * sola en todas las empresas: la primera R5 crea la RT.
  */
-export type TipoDocumentoSerie = 'FACTURA' | 'RECTIFICATIVA' | 'RECTIFICATIVA_SIMPLIFICADA' | 'PROFORMA';
+import type { PlantillaVentaId } from './plantillasFactura';
+
+export type TipoDocumentoSerie ='FACTURA' | 'RECTIFICATIVA' | 'RECTIFICATIVA_SIMPLIFICADA' | 'PROFORMA';
 
 export const TIPOS_DOCUMENTO_SERIE: readonly TipoDocumentoSerie[] = ['FACTURA', 'RECTIFICATIVA', 'RECTIFICATIVA_SIMPLIFICADA', 'PROFORMA'];
 
@@ -32,6 +34,14 @@ export interface SerieDocumento {
   numeroSiguiente?: number;
   /** Documentos ya numerados en la serie (facturas emitidas o registradas y proformas). Solo en la lista de la API. */
   documentos?: number;
+  /**
+   * Plantilla que usa la serie (domain/plantillasFactura): la elegida o, si no
+   * hay, la automatica (la A en la serie A de una empresa espanola; si no, la
+   * estandar).
+   */
+  plantilla: PlantillaVentaId;
+  /** Plantilla elegida en Configuracion > Series; null = automatica. */
+  plantillaElegida: string | null;
   creadoEn: string;
   actualizadoEn: string;
 }

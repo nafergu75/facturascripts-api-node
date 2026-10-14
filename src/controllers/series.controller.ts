@@ -2,7 +2,9 @@ import { asyncHandler } from '../utils/async-handler';
 import { sendOk } from '../utils/response';
 import { badRequest } from '../utils/http-errors';
 import { listarSeriesConUso, crearSerie, actualizarSerie } from '../services/series.service';
+import { esEmpresaEspanola } from '../services/perfilEmpresa.service';
 import { TIPOS_DOCUMENTO_SERIE as TIPOS, esTipoDocumentoSerie } from '../domain/series.model';
+import { catalogoPlantillas } from '../domain/plantillasFactura';
 
 const tipoNoValido = () => badRequest(`Tipo de documento no válido. Usa: ${TIPOS.join(', ')}.`, { campo: 'tipoDocumento' });
 
@@ -11,6 +13,11 @@ export const seriesController = {
     const tipo = req.query.tipoDocumento;
     if (tipo !== undefined && !esTipoDocumentoSerie(tipo)) throw tipoNoValido();
     sendOk(res, await listarSeriesConUso(req.companyId!, tipo));
+  }),
+
+  /** Catalogo de plantillas de factura de venta (la A, solo en empresas espanolas). */
+  plantillas: asyncHandler(async (req, res) => {
+    sendOk(res, catalogoPlantillas(await esEmpresaEspanola(req.companyId!)));
   }),
 
   crear: asyncHandler(async (req, res) => {
@@ -24,6 +31,7 @@ export const seriesController = {
       activa: b.activa ?? true,
       porDefecto: b.porDefecto ?? false,
       numeroInicial: b.numeroInicial,
+      plantilla: b.plantilla,
     });
     sendOk(res, serie, undefined, 201);
   }),
@@ -31,6 +39,7 @@ export const seriesController = {
   actualizar: asyncHandler(async (req, res) => {
     const b = req.body ?? {};
     // Solo lo que se puede cambiar: el codigo y el tipo no; el numero inicial, solo sin documentos.
+    // La plantilla vale para lo que se cree o se guarde despues (las emitidas conservan la suya).
     sendOk(
       res,
       await actualizarSerie(req.companyId!, req.params.id, {
@@ -38,6 +47,7 @@ export const seriesController = {
         activa: b.activa,
         porDefecto: b.porDefecto,
         numeroInicial: b.numeroInicial,
+        plantilla: b.plantilla,
       }),
     );
   }),
