@@ -71,12 +71,12 @@ beforeAll(async () => {
     await prisma.company.create({ data: { id, name, fsBaseUrl: 'http://localhost:8080', fsApiKeyEnc: 'k' } });
   }
   await prisma.legalConfig.create({ data: { companyId: US, denominacion: 'Series Template Inc', nif: '12-3456789', pais: 'US', monedaCuenta: 'USD' } });
-  // Primero las series de siempre (A, R y P) y la C: la semilla solo se crea en un tipo sin series.
+  // Vende ceramica: al guardarlo se crean las series de siempre (A, R y P), la C y la B (activa,
+  // no predeterminada y sin plantilla elegida). La semilla solo crea la A en un tipo sin series.
   await guardarAjustesFacturacion(ES, 'u-test', { ieepnrRepercute: true, vendeCeramica: true });
   await listarSeries(ES);
   await listarSeries(US);
   await listarSeries(ES_SIN);
-  await crearSerie(ES, { codigo: 'B', descripcion: 'Ceramica', tipoDocumento: 'FACTURA', activa: true, porDefecto: false });
   await crearSerie(ES, { codigo: 'RT', descripcion: 'Tickets', tipoDocumento: 'RECTIFICATIVA_SIMPLIFICADA', activa: true, porDefecto: true });
   // Una empresa de antes: sus series A, R y P, sin la C.
   for (const [codigo, tipoDocumento] of [['A', 'FACTURA'], ['R', 'RECTIFICATIVA'], ['P', 'PROFORMA']]) {
@@ -88,6 +88,9 @@ beforeAll(async () => {
 describe('plantilla automatica', () => {
   it('empresa espanola que repercute el IEEPNR y vende ceramica: la A usa la A, la B la B y la C la C; R, P y RT, la estandar', async () => {
     const series = await listar();
+    // La B se creo sola al marcar «Vendo ceramica», detras de la A (que sigue siendo la predeterminada).
+    expect(series.find((s) => s.codigo === 'B')).toMatchObject({ tipoDocumento: 'FACTURA', activa: true, porDefecto: false, descripcion: 'Cerámica y materiales de construcción' });
+    expect(series.find((s) => s.codigo === 'A')).toMatchObject({ porDefecto: true });
     const por = Object.fromEntries(series.map((s) => [s.codigo, [s.plantilla, s.plantillaElegida]]));
     expect(por).toMatchObject({
       A: ['A', null],
