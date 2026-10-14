@@ -23,6 +23,7 @@ import { MONEDAS_FACTURA_ACTIVAS, normalizarMoneda } from '../domain/divisas';
 import { esCodigoPais } from '../utils/geografia';
 import { esClaveRepetida } from '../utils/reintento';
 import { variantesNif } from './lectura/terceros-lector';
+import { normalizarWeb } from '../utils/web';
 
 /** Cliente en formato ligero para el selector/buscador al facturar. */
 export interface ClienteResumen {
@@ -41,6 +42,7 @@ type CustomerRow = {
   nifCif: string;
   email: string | null;
   telefono: string | null;
+  web?: string | null;
   activo: boolean;
   direccion?: string | null;
   pais?: string | null;
@@ -62,6 +64,8 @@ function aCliente(c: CustomerRow, enPlan: string[] = []): Record<string, unknown
     nifCif: c.nifCif,
     email: c.email ?? '',
     telefono: c.telefono ?? '',
+    // Con https:// delante; '' sin web.
+    web: c.web ?? '',
     activo: c.activo,
     // Pais (ISO-2) y direccion: deciden el tipo de operacion de IVA que se sugiere y salen en la factura.
     pais: c.pais ?? 'ES',
@@ -167,6 +171,16 @@ function leerDireccion(data: Record<string, unknown>) {
   return out;
 }
 
+/**
+ * Web del cliente: sin espacios y con https:// si no lo lleva; vacia, sin web
+ * (null). Un texto que no es una web da 400 con el campo.
+ */
+export function leerWebCliente(valor: unknown): string | null {
+  const w = normalizarWeb(valor);
+  if (!w.ok) throw badRequest(w.motivo, { campo: 'web' });
+  return w.web;
+}
+
 /** Activo: si o no (true/false); cualquier otra cosa, 400. */
 function leerActivo(v: unknown): boolean {
   if (v === true || v === 'true') return true;
@@ -248,6 +262,7 @@ export const clientesService: CompanyScopedService<Cliente> = {
     if (!d.nombreFiscal?.trim()) throw badRequest('Falta el nombre fiscal del cliente.', { campo: 'nombreFiscal' });
     // Con el nombre que tiene en su pais: «Falta el RNC del cliente.». Una identificacion extranjera se guarda tal cual.
     if (!d.nifCif) throw badRequest(`Falta el ${numeroFiscalEnFrase(textoONull(data.pais))} del cliente.`, { campo: 'nifCif' });
+    const web = leerWebCliente(data.web);
     // El mismo NIF escrito de otra forma (con ES, puntos o guiones) es el mismo cliente: 409 con su id.
     const ya = await clienteConNif(String(companyId), d.nifCif);
     if (ya) throw errorClienteRepetido(ya);
@@ -260,6 +275,7 @@ export const clientesService: CompanyScopedService<Cliente> = {
         nifCif: d.nifCif,
         email: d.email,
         telefono: d.telefono,
+        web,
         ...leerDireccion(data),
         pais: leerPais(data.pais, d.nifCif) ?? 'ES',
         monedaPreferida: leerMonedaPreferida(data.monedaPreferida),
@@ -284,6 +300,7 @@ export const clientesService: CompanyScopedService<Cliente> = {
       ...(d.nifCif !== undefined ? { nifCif: d.nifCif } : {}),
       ...(data.email !== undefined ? { email: d.email } : {}),
       ...(data.telefono !== undefined || data.telefono1 !== undefined ? { telefono: d.telefono } : {}),
+      ...(data.web !== undefined ? { web: leerWebCliente(data.web) } : {}),
       ...leerDireccion(data),
       ...(pais !== undefined ? { pais } : {}),
       ...(data.monedaPreferida !== undefined ? { monedaPreferida: leerMonedaPreferida(data.monedaPreferida) } : {}),
