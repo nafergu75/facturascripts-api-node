@@ -10,7 +10,7 @@
 import { randomUUID } from 'crypto';
 import type { PrismaClient } from '@prisma/client';
 import { condicionBorrado, id, MARCAS_AUDITORIA, ordenDeBorrado, TEXTO_DESTINO, type Clasificacion, type Tabla } from './tablas';
-import { comprobarEsquema, contar, contarPorEmpresa, esquemaCorrecto, num, plural, type EstadoBase } from './bd';
+import { comprobarEsquema, contar, contarPorEmpresa, esquemaCorrecto, motivosEsquema, num, plural, type EstadoBase } from './bd';
 import { carpetaDe, contarReferencias, empresaDeClave, esDeLaApp, type Almacen, type Objeto, type ReferenciasBd } from './almacen';
 import { huella, type Manifiesto } from './copia';
 
@@ -18,6 +18,11 @@ import { huella, type Manifiesto } from './copia';
 export const LOTE_BORRADO = 500;
 /** Lotes en tablas con columnas binarias (logos). */
 export const LOTE_BORRADO_BINARIO = 50;
+
+/** Ultima linea de una parada por el esquema. */
+export const PARADA_ESQUEMA =
+  'La base no es la esperada: es otra base, o tiene una versión del esquema distinta de la de esta carpeta del código. No se sigue. ' +
+  'Si acabas de cambiar de rama en esta carpeta, ejecuta npx prisma generate y repite.';
 
 /** Marcas que el vaciado y la restauracion dejan en AuditLog. */
 export const [ACCION_VACIADO, ACCION_RESTAURADO] = MARCAS_AUDITORIA;
@@ -104,10 +109,8 @@ export async function simular(ctx: Contexto, conservar?: readonly string[]): Pro
   }
   const estado = await comprobarEsquema(db, tablas);
   if (!esquemaCorrecto(estado)) {
-    if (estado.faltanTablas.length) paradas.push(`A la base le faltan tablas de esta versión: ${estado.faltanTablas.join(', ')}.`);
-    if (estado.faltanColumnas.length) paradas.push(`A la base le faltan columnas de esta versión: ${estado.faltanColumnas.slice(0, 15).join(', ')}${estado.faltanColumnas.length > 15 ? '…' : ''}.`);
-    if (estado.sobranTablas.length) paradas.push(`La base tiene tablas que esta versión no conoce: ${estado.sobranTablas.join(', ')}.`);
-    paradas.push('La base no es la esperada (otra base, o una versión del esquema distinta de la de esta copia del código). No se sigue.');
+    paradas.push(...motivosEsquema(estado));
+    paradas.push(PARADA_ESQUEMA);
     // Sin el esquema esperado, las consultas siguientes pueden fallar: se para aqui.
     return { estado, paradas, avisos, usuarios: [], conservados: [], empresas: [], filas: [], objetos: null, referencias: null, ajustesPlataforma: [] };
   }
@@ -177,10 +180,15 @@ async function contarSiExiste(db: PrismaClient, tablas: readonly Tabla[], tabla:
  * Hoy (F0) la app no envia nada a la AEAT: VerifactuConfig solo guarda la
  * exclusion y su estado nunca pasa de DESACTIVADO (no hay codigo que lo
  * active), y no existe ninguna tabla de registros. Aun asi, si una version
- * posterior trae registros o una empresa con VERI*FACTU activo o en el entorno
- * de produccion de la AEAT, el script se para en vez de borrarlos.
+ * posterior trae registros de la AEAT de verdad o una empresa con VERI*FACTU
+ * activo o en el entorno de produccion, el script se para en vez de borrarlos.
+ *
+ * Lo del entorno de PRUEBAS de la AEAT no tiene efecto fiscal y se borra como
+ * el resto: en una tabla de VERI*FACTU con columna `entorno` solo paran las
+ * filas de PRODUCCION. Sin esa columna, para si parece de registros (huella,
+ * estado de envio o CSV) y tiene filas; si no (certificados, bitacora), no.
  */
-async function comprobarVerifactu(db: PrismaClient, tablas: readonly Tabla[]): Promise<string[]> {
+export async function comprobarVerifactu(db: Pick<PrismaClient, '$queryRawUnsafe'>, tablas: readonly Pick<Tabla, 'nombre' | 'columnas'>[]): Promise<string[]> {
   const paradas: string[] = [];
   if (tablas.some((t) => t.nombre === 'VerifactuConfig')) {
     const [f] = await db.$queryRawUnsafe<Array<{ n: unknown }>>(
@@ -194,8 +202,15 @@ async function comprobarVerifactu(db: PrismaClient, tablas: readonly Tabla[]): P
   }
   for (const t of tablas) {
     if (t.nombre === 'VerifactuConfig' || !/verifactu|registrofactur|envioaeat/i.test(t.nombre)) continue;
-    const n = await contar(db, t.nombre);
-    if (n) paradas.push(`La tabla ${t.nombre} tiene ${n} registros de VERI*FACTU. Pueden estar enviados a la AEAT: no se borran con este script.`);
+    const tiene = (c: string) => t.columnas.some((x) => x.nombre === c);
+    let n = 0;
+    if (tiene('entorno')) n = await contar(db, t.nombre, { sql: `${id('entorno')} = 'PRODUCCION'`, params: [] });
+    else if (tiene('huella') || tiene('estadoEnvio') || tiene('csv')) n = await contar(db, t.nombre);
+    if (n) {
+      paradas.push(
+        `La tabla ${t.nombre} tiene ${plural(n, 'registro', 'registros')} de VERI*FACTU de la AEAT de verdad (entorno de producción). Pueden estar enviados a Hacienda: no se borran con este script.`,
+      );
+    }
   }
   return paradas;
 }
@@ -246,7 +261,10 @@ export function informeSimulacion(s: Simulacion, almacen: Almacen): string[] {
         if (e === null && f.tabla.destino === 'PARCIAL') continue;
         const clave = e && nombres.has(e) ? e : HUERFANAS;
         if (!porEmpresa.has(clave)) porEmpresa.set(clave, []);
-        porEmpresa.get(clave)!.push([f.tabla.nombre, n]);
+        const grupo = porEmpresa.get(clave)!;
+        // Varias empresas que ya no existen van al mismo grupo: se suman por tabla.
+        if (grupo.length && grupo[grupo.length - 1][0] === f.tabla.nombre) grupo[grupo.length - 1][1] += n;
+        else grupo.push([f.tabla.nombre, n]);
       }
     }
     l.push('', s.empresas.length ? `EMPRESAS (${s.empresas.length}) · se borran todas, con todos sus datos` : 'EMPRESAS: no hay ninguna');
@@ -447,6 +465,8 @@ export async function vaciar(
 
 export interface Comprobacion {
   ok: boolean;
+  /** false: la base no tiene el esquema de esta version y no se ha comprobado nada. */
+  esquemaOk: boolean;
   lineas: string[];
 }
 
@@ -463,7 +483,9 @@ export async function comprobar(ctx: Contexto, manifiesto?: Manifiesto | null): 
   const tablas = clasificacion.tablas;
 
   const estado = await comprobarEsquema(db, tablas);
-  if (!esquemaCorrecto(estado)) return { ok: false, lineas: ['La base no tiene el esquema de esta versión: no se puede comprobar.'] };
+  if (!esquemaCorrecto(estado)) {
+    return { ok: false, esquemaOk: false, lineas: ['La base no tiene el esquema de esta versión: no se puede comprobar.', ...motivosEsquema(estado).map((m) => `  - ${m}`), PARADA_ESQUEMA] };
+  }
 
   const usuarios = await leerUsuarios(db);
   const admins = usuarios.filter((u) => u.adminGlobal);
@@ -535,7 +557,7 @@ export async function comprobar(ctx: Contexto, manifiesto?: Manifiesto | null): 
     lineas.push('', 'NO CUADRA:');
     for (const f of fallos) lineas.push(`  - ${f}`);
   }
-  return { ok: fallos.length === 0, lineas };
+  return { ok: fallos.length === 0, esquemaOk: true, lineas };
 }
 
 /** Filas de una tabla PARCIAL que no deberian quedar (de empresas o de usuarios que ya no existen). */
