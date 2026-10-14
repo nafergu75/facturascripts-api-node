@@ -77,10 +77,26 @@ describe('ajustes de facturación y la serie B', () => {
 
   it('si la serie no se puede crear ahora, los ajustes quedan guardados y se avisa', async () => {
     preparar.mockRejectedValueOnce(new Error('timeout'));
+    // Se vuelve a mirar antes de avisar: sigue sin estar.
+    estado.mockResolvedValueOnce({ codigo: 'B', estado: 'pendiente', aviso: null });
     const r = await guardarAjustesFacturacion('es-3', 'u1', { vendeCeramica: true });
     expect(r.vendeCeramica).toBe(true);
     expect(r.serieCeramica).toMatchObject({ codigo: 'B', estado: 'pendiente' });
     expect(r.serieCeramica?.aviso).toMatch(/se han guardado.*Se creará sola la próxima vez que abras Configuración > Series/);
+  });
+
+  it('si falla porque otra petición la ha creado a la vez, se dice cómo está (sin el aviso de «no se ha podido crear»)', async () => {
+    preparar.mockRejectedValueOnce(new Error('Unique constraint failed'));
+    estado.mockResolvedValueOnce({ codigo: 'B', estado: 'activa', aviso: null });
+    const r = await guardarAjustesFacturacion('es-4', 'u1', { vendeCeramica: true });
+    expect(r.serieCeramica).toEqual({ codigo: 'B', estado: 'activa', aviso: null });
+  });
+
+  it('si tampoco se puede volver a mirar, el aviso de siempre', async () => {
+    preparar.mockRejectedValueOnce(new Error('timeout'));
+    estado.mockRejectedValueOnce(new Error('timeout'));
+    const r = await guardarAjustesFacturacion('es-5', 'u1', { vendeCeramica: true });
+    expect(r.serieCeramica).toMatchObject({ codigo: 'B', estado: 'pendiente' });
   });
 
   it('leer (GET) solo consulta el estado, sin crear nada; sin la casilla, null', async () => {
