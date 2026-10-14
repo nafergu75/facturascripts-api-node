@@ -14,8 +14,11 @@
  * no se puede incrustar); la cursiva del recuadro de la empresa se imita
  * inclinando el texto.
  *
- * Varias paginas: la cabecera breve y la de la tabla se repiten; el resumen,
- * los totales y el pie van solo en la ultima, que lleva al menos un articulo.
+ * Varias paginas: la cabecera breve y la de la tabla se repiten; el resumen y
+ * los totales van detras del ultimo articulo, en su misma pagina. Si el resto
+ * (DATOS BANCARIOS, OBSERVACIONES, registro y texto al pie) no cabe ni con los
+ * huecos apretados, sigue en otra pagina: las observaciones largas se parten
+ * en varios recuadros y nada pasa del margen de abajo ni pisa «Página n de m».
  */
 import { degrees, rgb, type PDFFont, type PDFPage, type RGB } from 'pdf-lib';
 import { crearDocumentoPdfA, guardarPdfA } from '../utils/pdf-a';
@@ -73,9 +76,13 @@ const ANCHO_CONCEPTO = BORDE.concepto - X_TEXTO - 3;
 const HUECO_BLOQUE = 10.9;
 /** Hasta donde llega la tabla en una pagina que no es la ultima, y el numero de pagina. */
 const SUELO_TABLA = 812;
-/** Hasta donde puede llegar la cola (resumen, totales, pie y registro) en la ultima pagina. */
+/** Hasta donde llega la cola (resumen, totales, pie y registro) en una factura de una sola pagina (sin numero de pagina). */
 const SUELO_COLA = 825;
+/** Con varias paginas: hasta donde llega cualquier cosa, para no pisar «Página n de m». */
+const SUELO_PAGINADO = 820;
 const Y_PAGINA = 830;
+/** NIF de una persona fisica (DNI, NIE o K, L, M): «NIF»; el de una sociedad, «CIF», como en la muestra. */
+const etiquetaNifEspanol = (nif: string) => (/^[0-9XYZKLM]/i.test(nif.trim()) ? 'NIF' : 'CIF');
 
 // ---------- Formatos de la muestra ----------
 
@@ -260,9 +267,28 @@ export async function renderizarFacturaPlantillaA(f: DatosFacturaPdf): Promise<B
 
   // Alturas de la cola (resumen, totales y pie), para saber si cabe.
   const altoTotales = 13.4 + (filasTotales.length - 1) * 16.8 + 3.1 + GRUESO + 16.7 + 3.1 + GRUESO;
-  const altoPieCaja = Math.max(66.9, 18.8 + Math.max(banco.length - 1, 0) * 11.2 + 8, 18.8 + Math.max(obs.length - 1, 0) * 9.4 + 8);
-  // Del alto del resumen a la ultima linea base del pie (mas el descendente).
-  const altoCola = 34.2 + altoTotales + 9.7 + altoPieCaja + 7.6 + Math.max(lineasRegistro.length - 1, 0) * 10 + lineasPie.length * 8 + 3;
+  /** Del alto del resumen al fondo de los totales. */
+  const altoResumenTotales = 34.2 + altoTotales;
+  /**
+   * Huecos de la cola: los de la muestra o, si asi la cola entera cabe en la
+   * pagina (un texto al pie largo, por ejemplo), apretados: menos aire tras el
+   * ultimo articulo y antes del pie, y el recuadro del pie a su medida.
+   */
+  type Huecos = { finBloques: number; antesPie: number; minPie: number };
+  const HUECOS_MUESTRA: Huecos = { finBloques: 10.1, antesPie: 9.7, minPie: 66.9 };
+  const HUECOS_APRETADOS: Huecos = { finBloques: 4, antesPie: 5, minPie: 0 };
+  const altoBanco = 18.8 + Math.max(banco.length - 1, 0) * 11.2 + 8;
+  /** Alto del recuadro del pie con `n` lineas de observaciones (con DATOS BANCARIOS o, si sigue en otra pagina, sin ellos). */
+  const altoCajaPie = (n: number, conBanco: boolean, minimo: number) => Math.max(conBanco ? Math.max(minimo, altoBanco) : 0, 18.8 + Math.max(n - 1, 0) * 9.4 + 8);
+  /** Del fondo del recuadro del pie a la ultima linea base del registro y del texto al pie, mas el descendente. */
+  const altoTrasPie = (() => {
+    const r = lineasRegistro.length;
+    const t = lineasPie.length;
+    if (!r && !t) return 0;
+    return 7.6 + (r ? (r - 1) * 10 : 0) + (t ? (r ? 10 : 0) + (t - 1) * 8 : 0) + 3;
+  })();
+  /** Alto de la cola entera, del final del ultimo articulo a su ultima linea. */
+  const altoCola = (h: Huecos) => h.finBloques + altoResumenTotales + h.antesPie + altoCajaPie(obs.length, true, h.minPie) + altoTrasPie;
 
   // ---------- Paginas ----------
   const paginas: PDFPage[] = [];
@@ -298,7 +324,7 @@ export async function renderizarFacturaPlantillaA(f: DatosFacturaPdf): Promise<B
     raya(p, X_IZQ_IN, 238.2, 89.6);
     const filas: Array<[string, number, PDFFont, number]> = [
       [nombreEmpresa, T_NOMBRE, negrita, 28.5],
-      [nifEmpresa ? `CIF. ${nifEmpresa}` : '', T_ETQ, negrita, 43.8],
+      [nifEmpresa ? `${etiquetaNifEspanol(nifEmpresa)}. ${nifEmpresa}` : '', T_ETQ, negrita, 43.8],
       [e?.domicilioSocial?.trim() ?? '', T_ETQ, normal, 58.0],
       [lineaPoblacion(e?.codigoPostal, e?.municipio, e?.provincia, e?.pais), T_ETQ, normal, 71.5],
       [nombrePais(e?.pais || 'ES', 'es').toUpperCase(), T_NOMBRE, normal, 85.7],
@@ -341,8 +367,8 @@ export async function renderizarFacturaPlantillaA(f: DatosFacturaPdf): Promise<B
   // ---------- CLIENTE ----------
   const X_CLIENTE = 199.6;
   const anchoCliente = X_DER_IN - X_CLIENTE - 4;
-  const etqNif = paisCliente === 'ES' ? 'CIF' : etiquetaNifCliente(c, 'es');
   const nifCliente = nifDe(c.nifCif, paisCliente);
+  const etqNif = paisCliente === 'ES' ? etiquetaNifEspanol(nifCliente) : etiquetaNifCliente(c, 'es');
   const datosCliente: Array<[string, number]> = [];
   for (const l of partir(c.nombreFiscal, negrita, T_NOMBRE, anchoCliente)) datosCliente.push([l, T_NOMBRE]);
   if (nifCliente) datosCliente.push([`${etqNif}: ${nifCliente}`, T_ETQ]);
@@ -411,14 +437,16 @@ export async function renderizarFacturaPlantillaA(f: DatosFacturaPdf): Promise<B
     vertical(p, X_DER_IN, topTabla + GRUESO, fondo);
     raya(p, X_IZQ_IN, X_DER, fondo - GRUESO);
   };
-  /** Pagina siguiente: cabecera breve y la de la tabla. */
-  const continuar = () => {
+  /** Pagina siguiente con la cabecera breve; devuelve donde empieza lo demas. */
+  const cabeceraBreve = () => {
     p = nuevaPagina();
     texto(p, nombreEmpresa, X_IZQ_IN, 32, { tam: T_ETQ, fuente: negrita });
     texto(p, `${esBorrador ? 'Borrador de factura' : `${titulo} ${f.numeroCompleto ?? ''}`.trim()} (continuación)`, X_DER, 32, { alinear: 'der' });
     texto(p, `CLIENTE: ${c.nombreFiscal}`, X_IZQ_IN, 45, { tam: T_TABLA });
-    return cabeceraTabla(56);
+    return 56;
   };
+  /** Pagina siguiente: cabecera breve y la de la tabla. */
+  const continuar = () => cabeceraTabla(cabeceraBreve());
 
   y = cabeceraTabla(y);
   const dibujarFila = (fila: FilaBloque, top: number) => {
@@ -439,11 +467,23 @@ export async function renderizarFacturaPlantillaA(f: DatosFacturaPdf): Promise<B
 
   /** La pagina actual aun no tiene filas (acaba de empezar la tabla). */
   const sinFilas = () => Math.abs(y - (topTabla + 23.8)) < 0.01;
+  /**
+   * Huecos con los que la cola entera cabe tras un ultimo articulo que acaba en
+   * `fin` (los de la muestra o los apretados); null si no cabe ni asi. Sola en
+   * la primera pagina puede bajar mas: no lleva numero de pagina.
+   */
+  const huecosQueCaben = (fin: number): Huecos | null => {
+    const suelo = paginas.length === 1 ? SUELO_COLA : SUELO_PAGINADO;
+    return [HUECOS_MUESTRA, HUECOS_APRETADOS].find((h) => fin + altoCola(h) <= suelo) ?? null;
+  };
+  /** El resumen y los totales caben tras un ultimo articulo que acaba en `fin` (el resto de la cola sigue en otra pagina). */
+  const cabenTotales = (fin: number) => fin + HUECOS_MUESTRA.finBloques + altoResumenTotales <= SUELO_PAGINADO;
   bloques.forEach((filas, k) => {
     const ultimo = k === bloques.length - 1;
-    // El bloque entero (y, si es el ultimo, el resumen, los totales y el pie) va
-    // en la pagina siguiente si aqui no cabe: la cola nunca queda sola.
-    const cabe = ultimo ? y + filas.length * FILA + 10.1 + altoCola <= SUELO_COLA : y + filas.length * FILA + HUECO_BLOQUE <= SUELO_TABLA;
+    // El bloque entero va en la pagina siguiente si aqui no cabe. El ultimo, con
+    // el resumen y los totales detras: si no caben, tambien pasa a la siguiente.
+    const fin = y + filas.length * FILA;
+    const cabe = ultimo ? !!huecosQueCaben(fin) || cabenTotales(fin) : fin + HUECO_BLOQUE <= SUELO_TABLA;
     if (!cabe && !sinFilas()) {
       cerrarTabla(y);
       y = continuar();
@@ -464,13 +504,18 @@ export async function renderizarFacturaPlantillaA(f: DatosFacturaPdf): Promise<B
       y += HUECO_BLOQUE;
     }
   });
-  // Sin sitio para la cola (sin lineas, o un ultimo bloque partido): otra pagina.
-  if (y + 10.1 + altoCola > SUELO_COLA && !sinFilas()) {
+  // Sin sitio para el resumen y los totales (un ultimo bloque partido): otra pagina.
+  if (!huecosQueCaben(y) && !cabenTotales(y) && !sinFilas()) {
     cerrarTabla(y + GRUESO);
     y = continuar();
   }
+  // Los huecos de la muestra o, si asi la cola entera cabe, los apretados. Si
+  // no cabe, la cola se parte (con los de la muestra) y todo va hasta SUELO_PAGINADO.
+  const huecos = huecosQueCaben(y);
+  const h = huecos ?? HUECOS_MUESTRA;
+  const sueloCola = huecos && paginas.length === 1 ? SUELO_COLA : SUELO_PAGINADO;
   // Tras el ultimo bloque queda una fila vacia (como en la muestra) y despues el resumen.
-  const S = y + 10.1;
+  const S = y + h.finBloques;
 
   // ---------- Resumen: peso bruto y totales de envases ----------
   {
@@ -525,29 +570,54 @@ export async function renderizarFacturaPlantillaA(f: DatosFacturaPdf): Promise<B
   vertical(p, X_DER_IN, topTabla + GRUESO, fondoTotales);
 
   // ---------- DATOS BANCARIOS y OBSERVACIONES ----------
-  const P = fondoTotales + 9.7;
-  const fondoPie = P + altoPieCaja;
-  caja(p, 41.0, P + 0.9, 568.1, fondoPie - 0.8, VERDE);
-  raya(p, X_IZQ_IN, X_DER, P);
-  raya(p, X_IZQ_IN, X_DER, fondoPie - GRUESO);
-  vertical(p, X_IZQ, P, fondoPie);
-  vertical(p, BORDE.kg, P + GRUESO, fondoPie);
-  vertical(p, X_DER_IN, P + GRUESO, fondoPie);
+  // Un recuadro con los datos bancarios y las observaciones que quepan; las
+  // que no, en otro recuadro «OBSERVACIONES (continuación)» en la pagina
+  // siguiente (sin la tabla), y asi hasta acabar.
   const anchoBanco = BORDE.kg - 44.7 - 4;
-  banco.forEach((l, i) => texto(p, l, 44.7, P + 18.8 + i * 11.2, { tam: tamQueCabe(l, negrita, T_TABLA, anchoBanco), fuente: negrita }));
-  texto(p, 'OBSERVACIONES:', 325.4, P + 8.0, { tam: T_OBS, fuente: negrita });
-  obs.forEach((l, i) => texto(p, l, 325.4, P + 18.8 + i * 9.4, { tam: T_OBS }));
+  /** Dibuja el recuadro en `P` con las observaciones `trozo`; devuelve su fondo. */
+  const recuadroPie = (P: number, trozo: string[], conBanco: boolean, continuacion: boolean) => {
+    const fondo = P + altoCajaPie(trozo.length, conBanco, h.minPie);
+    caja(p, 41.0, P + 0.9, 568.1, fondo - 0.8, VERDE);
+    raya(p, X_IZQ_IN, X_DER, P);
+    raya(p, X_IZQ_IN, X_DER, fondo - GRUESO);
+    vertical(p, X_IZQ, P, fondo);
+    vertical(p, BORDE.kg, P + GRUESO, fondo);
+    vertical(p, X_DER_IN, P + GRUESO, fondo);
+    if (conBanco) banco.forEach((l, i) => texto(p, l, 44.7, P + 18.8 + i * 11.2, { tam: tamQueCabe(l, negrita, T_TABLA, anchoBanco), fuente: negrita }));
+    texto(p, continuacion ? 'OBSERVACIONES (continuación):' : 'OBSERVACIONES:', 325.4, P + 8.0, { tam: T_OBS, fuente: negrita });
+    trozo.forEach((l, i) => texto(p, l, 325.4, P + 18.8 + i * 9.4, { tam: T_OBS }));
+    return fondo;
+  };
+  /** Cuantas observaciones (desde la `desde`) caben en un recuadro que empieza en `P`. */
+  const caben = (P: number, desde: number, conBanco: boolean) => {
+    let n = obs.length - desde;
+    while (n > 0 && P + altoCajaPie(n, conBanco, h.minPie) > sueloCola) n--;
+    return n;
+  };
+  let P = fondoTotales + h.antesPie;
+  let fondoPie = P;
+  let hechas = 0;
+  let conBanco = true;
+  // Con los datos bancarios: si ni ellos ni (de haberlas) unas pocas observaciones caben aqui, a la pagina siguiente.
+  if (P + altoCajaPie(0, true, h.minPie) > sueloCola || (obs.length && caben(P, 0, true) < Math.min(obs.length, 3))) P = cabeceraBreve();
+  for (;;) {
+    const n = Math.max(caben(P, hechas, conBanco), conBanco ? 0 : 1);
+    fondoPie = recuadroPie(P, obs.slice(hechas, hechas + n), conBanco, hechas > 0);
+    hechas += n;
+    if (hechas >= obs.length) break;
+    P = cabeceraBreve();
+    conBanco = false;
+  }
 
-  // ---------- Registro Mercantil y texto al pie ----------
+  // ---------- Registro Mercantil y texto al pie (siguen en otra pagina si no caben) ----------
   let yPie = fondoPie + 7.6;
-  for (const l of lineasRegistro) {
-    texto(p, l, X_TEXTO, yPie);
-    yPie += 10;
-  }
-  for (const l of lineasPie) {
-    texto(p, l, X_TEXTO, yPie, { tam: 6.5, color: GRIS });
-    yPie += 8;
-  }
+  const lineaPie = (s: string, salto: number, o: Estilo = {}) => {
+    if (yPie + 3 > sueloCola) yPie = cabeceraBreve() + 8;
+    texto(p, s, X_TEXTO, yPie, o);
+    yPie += salto;
+  };
+  for (const l of lineasRegistro) lineaPie(l, 10);
+  for (const l of lineasPie) lineaPie(l, 8, { tam: 6.5, color: GRIS });
 
   // ---------- Numero de pagina (con mas de una) ----------
   if (paginas.length > 1) paginas.forEach((pg, i) => texto(pg, `Página ${i + 1} de ${paginas.length}`, X_DER, Y_PAGINA, { tam: 7.5, color: GRIS, alinear: 'der' }));

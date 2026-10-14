@@ -6,8 +6,11 @@
  *  - Una fila «KG Plástico» por articulo, el resumen y los totales.
  *  - 60 articulos en varias paginas: cabecera de la tabla repetida, totales y
  *    pie solo en la ultima, «Página i de n».
- *  - CIF para la empresa y el cliente espanol; RNC, NIF-IVA (VAT) o EIN para
- *    el de fuera.
+ *  - Con un texto al pie de hasta unos 500 caracteres, NZ004_26 sigue en una
+ *    pagina; unas observaciones muy largas siguen en otra, sin salirse de la
+ *    hoja ni pisar el numero de pagina.
+ *  - CIF para la empresa y el cliente espanol que es sociedad, NIF para el que
+ *    es persona fisica (DNI o NIE); RNC, NIF-IVA (VAT) o EIN para el de fuera.
  *  - Borrador con marca de agua, bloque de rectificativa, varios tipos de IVA,
  *    proforma y otra moneda.
  *  - renderizarFactura solo usa este diseno con la plantilla A (no en el lector).
@@ -117,7 +120,7 @@ describe('PDF de la plantilla A con NZ004_26', () => {
     expect([...posiciones].sort((a, b) => a - b)).toEqual(posiciones);
     expect(orden).toContain('A-1');
     expect(orden).toContain('04/03/2026');
-    expect(orden).toContain('CIF: 00000000T');
+    expect(orden).toContain('NIF: 00000000T');
     expect(orden).toContain('DATOS BANCARIOS:  TRANSFERENCIA BANCARIA');
     expect(orden).toContain('IBAN: ES91 2100 0418 4502 0005 1332');
     expect(orden).toContain('SWIFT BANK: CAIXESBBXXX - BANCO DE PRUEBAS');
@@ -223,11 +226,62 @@ describe('varias paginas', () => {
   });
 });
 
+/** Alto de la hoja (A4) y lo que ocupa cada texto desde arriba: su linea base mas el descendente. */
+const ALTO = 841.89;
+const fondo = (t: TextoPdf) => ALTO - t.y + 2;
+/** Un texto al pie inventado (tipo aviso de proteccion de datos) de `n` caracteres. */
+const pie = (n: number) =>
+  'Conforme al RGPD, los datos del cliente se tratan solo para gestionar la facturación y se guardan el tiempo que exige la ley. Puede ejercer sus derechos escribiendo a facturas@ejemplo.test. '
+    .repeat(5)
+    .slice(0, n)
+    .trim();
+
+describe('texto al pie y observaciones largas', () => {
+  it('NZ004_26 con un texto al pie de 120, 250 o 480 caracteres sigue en una pagina', async () => {
+    const pesoSinPie = buscar(await textos(datosNz()), 'PESO BRUTO(kg)')!.y;
+    for (const n of [120, 250, 480]) {
+      const ts = await textos(datosNz({ textoPie: pie(n) }));
+      expect([n, Math.max(...ts.map((t) => t.pagina))]).toEqual([n, 1]);
+      expect(ts.some((t) => t.texto.startsWith('Página'))).toBe(false);
+      expect(Math.max(...ts.map(fondo))).toBeLessThanOrEqual(825);
+      // Con 120 caracteres, los huecos de la muestra; con mas, la cola sube un poco (huecos apretados).
+      if (n === 120) expect(buscar(ts, 'PESO BRUTO(kg)')!.y).toBeCloseTo(pesoSinPie, 1);
+      else expect(buscar(ts, 'PESO BRUTO(kg)')!.y).toBeGreaterThan(pesoSinPie);
+      expect(ts.some((t) => t.texto.includes('facturas@ejemplo.test') && t.tam < 7)).toBe(n > 150);
+    }
+  });
+
+  it('observaciones de 4.000 caracteres: el resumen y los totales con el ultimo articulo y el resto en «OBSERVACIONES (continuación)», sin salirse ni pisar el numero de pagina', async () => {
+    const frase = 'Entrega en el muelle 3 de 8:00 a 14:00; la mercancía va paletizada y con film retráctil, y los portes son pagados hasta destino. ';
+    const observaciones = frase.repeat(40).slice(0, 4000).trim();
+    const registro = { ...datosNz().emisor!, datosRegistrales: 'Tomo 1234, Libro 567, Folio 89, Sección 8, Hoja CS-12345, Inscripción 1.ª, con todos los datos registrales escritos sin abreviar' };
+    const ts = await textos(datosNz({ observaciones, textoPie: pie(480), emisor: registro }));
+    const paginas = Math.max(...ts.map((t) => t.pagina));
+    expect(paginas).toBeGreaterThan(1);
+    const ultimoArticulo = ts.filter((t) => t.texto === LINEAS_NZ004[6].descripcion).pop()!;
+    expect(buscar(ts, 'Subtotal')!.pagina).toBe(ultimoArticulo.pagina);
+    expect(buscar(ts, 'OBSERVACIONES (continuación):')).toBeDefined();
+    expect(ts.filter((t) => t.texto.startsWith('DATOS BANCARIOS'))).toHaveLength(1);
+    // Todas las lineas de las observaciones, una vez y en orden.
+    const lineasObs = ts.filter((t) => t.x > 320 && t.tam > 7 && t.tam < 8 && !t.texto.startsWith('OBSERVACIONES') && !t.texto.startsWith('Página ')).map((t) => t.texto);
+    expect(lineasObs.join(' ').replace(/\s+/g, ' ')).toBe(observaciones.replace(/\s+/g, ' '));
+    // Registro y texto al pie, al final; numero en cada pagina, y nada lo pisa ni pasa del margen.
+    expect(ts.filter((t) => t.texto.startsWith('Inscrita en el Registro Mercantil')).map((t) => t.pagina)).toEqual([paginas]);
+    for (let p = 1; p <= paginas; p++) expect(ts.some((t) => t.pagina === p && t.texto === `Página ${p} de ${paginas}`)).toBe(true);
+    const contenido = ts.filter((t) => !t.texto.startsWith('Página '));
+    expect(Math.max(...contenido.map(fondo))).toBeLessThanOrEqual(820);
+  });
+});
+
 describe('cliente y documento', () => {
-  it('CIF para la empresa y el cliente espanol; RNC, NIF-IVA (VAT) o EIN para el de fuera', async () => {
+  it('CIF para la empresa y el cliente espanol que es sociedad; NIF para la persona fisica (DNI o NIE); RNC, NIF-IVA (VAT) o EIN para el de fuera', async () => {
     const con = async (cliente: Partial<DatosFacturaPdf['cliente']>) =>
       (await textos(datosNz({ cliente: { ...datosNz().cliente, ...cliente } }))).map((t) => t.texto);
-    expect(await con({})).toContain('CIF: 00000000T');
+    const conDni = await con({});
+    expect(conDni).toContain('NIF: 00000000T');
+    expect(conDni).toContain('CIF. B12345674');
+    expect(await con({ nifCif: 'X1234567L' })).toContain('NIF: X1234567L');
+    expect(await con({ nifCif: 'B00000000' })).toContain('CIF: B00000000');
     expect(await con({ pais: 'DO', nifCif: '101123456', cp: '10101', municipio: 'Santo Domingo', provincia: null })).toContain('RNC: 101123456');
     expect(await con({ pais: 'FR', nifCif: 'FR40303265045', cp: '75009', municipio: 'Paris', provincia: null })).toContain('NIF-IVA (VAT): FR40303265045');
     const us = await con({ pais: 'US', nifCif: '12-3456789', cp: '33131', municipio: 'Miami', provincia: 'FL' });
