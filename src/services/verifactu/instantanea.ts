@@ -25,6 +25,13 @@ export interface EmisorInstantanea {
   email: string | null;
   web: string | null;
   inscripcion: string | null;
+  /**
+   * Texto libre de los datos registrales y provincia del Registro Mercantil: las
+   * plantillas A y B escriben con ellos su linea «Inscrita en el Registro
+   * Mercantil de ...». Opcionales: una instantanea sin ellos usa `inscripcion`.
+   */
+  datosRegistrales?: string | null;
+  registroMercantilProvincia?: string | null;
 }
 
 export interface ClienteInstantanea {
@@ -67,6 +74,8 @@ export async function instantaneaDeEmision(tx: TransaccionBD, companyId: string,
       email: texto(legal?.email),
       web: texto(legal?.web),
       inscripcion: textoInscripcionRegistral(legal as unknown as Record<string, unknown> | null),
+      datosRegistrales: texto(legal?.datosRegistrales),
+      registroMercantilProvincia: texto(legal?.registroMercantilProvincia),
     },
     cliente: {
       nombreFiscal: cliente.nombreFiscal,
@@ -93,7 +102,22 @@ export function leerInstantanea(json: unknown): Instantanea | null {
   const e = j.emisor as Record<string, unknown> | null;
   const c = j.cliente as Record<string, unknown> | null;
   if (!e || typeof e !== 'object' || !c || typeof c !== 'object') return null;
-  const camposEmisor = ['denominacion', 'nif', 'domicilioSocial', 'codigoPostal', 'municipio', 'provincia', 'pais', 'telefono', 'email', 'web', 'inscripcion'];
+  // Los dos ultimos llegaron con las plantillas A y B: en una instantanea anterior faltan y quedan en null.
+  const camposEmisor = [
+    'denominacion',
+    'nif',
+    'domicilioSocial',
+    'codigoPostal',
+    'municipio',
+    'provincia',
+    'pais',
+    'telefono',
+    'email',
+    'web',
+    'inscripcion',
+    'datosRegistrales',
+    'registroMercantilProvincia',
+  ];
   const camposCliente = ['nifCif', 'direccion', 'cp', 'municipio', 'provincia', 'pais'];
   if (!camposEmisor.every((k) => esTextoONull(e[k]))) return null;
   if (typeof c.nombreFiscal !== 'string' || !camposCliente.every((k) => esTextoONull(c[k]))) return null;

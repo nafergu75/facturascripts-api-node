@@ -1483,6 +1483,9 @@ export async function datosPdfFactura(companyId: string, id: string): Promise<{ 
           web: inst.emisor.web,
           inscripcion: inst.emisor.inscripcion,
           pais: inst.emisor.pais ?? perfil.pais,
+          // Plantillas A y B: la linea del Registro Mercantil, con los datos de cuando se emitio.
+          ...(inst.emisor.datosRegistrales ? { datosRegistrales: inst.emisor.datosRegistrales } : {}),
+          ...(inst.emisor.registroMercantilProvincia ? { registroMercantilProvincia: inst.emisor.registroMercantilProvincia } : {}),
         }
       : empresa || compania
       ? {
