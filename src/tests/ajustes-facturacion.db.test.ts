@@ -275,6 +275,9 @@ describe('plantilla B: cuenta del cargo de palets, logo de la marca y sello', ()
     expect([sinFichero.status, sinFichero.body.details?.campo]).toEqual([400, 'imagen']);
     const tipo = await subir('logo', PNG);
     expect([tipo.status, tipo.body.details?.campo]).toEqual([400, 'tipo']);
+    // Mas de 1 MB: 400 en su campo, no un 500.
+    const grande = await subir('marca', Buffer.concat([PNG, Buffer.alloc(1024 * 1024)]));
+    expect([grande.status, grande.body.details?.campo, grande.body.message]).toEqual([400, 'imagen', 'La imagen no puede pasar de 1 MB.']);
   });
 
   it('el contable las ve pero no las cambia; el comercial si', async () => {
