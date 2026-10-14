@@ -261,6 +261,34 @@ describe('corregir los importes', () => {
     expect([f.baseTotal, f.ivaTotal, f.retencionTotal, f.totalFactura]).toEqual([200, 42, 6, 236]);
   });
 
+  it('la retención leída sin porcentaje (solo el importe): sin corregir, con las líneas o solo el total, se registra con el que sale del importe', async () => {
+    const casos: Array<[string, Record<string, unknown> | null]> = [
+      ['F2026/0110', { lineas: [{ descripcion: 'Diseño', base: 600, tipoIva: 21 }, { descripcion: 'Impresión', base: 400, tipoIva: 21 }], total: 1060 }],
+      ['F2026/0111', { total: 1060 }],
+      ['F2026/0112', null],
+    ];
+    // Una empresa aparte: la última se registra con el número leído (F2026/0012), que las demás pruebas también leen.
+    const RET = `lector-edit-ret-${SUFIJO}`;
+    await empresa(RET);
+    for (const [numero, importes] of casos) {
+      // 1.000 € al 21 % con 150 € de retención: la IA puede leer el importe y no el porcentaje.
+      const data = await leer('resultado-irpf', RET);
+      const fila = await prisma.lecturaDocumento.findUniqueOrThrow({ where: { id: data.lecturaId } });
+      const resultado = structuredClone(fila.resultado) as { lectura: { retencion: { tipo: unknown } } };
+      resultado.lectura.retencion.tipo = { valor: null, confianza: null, fuente: 'claude' };
+      await prisma.lecturaDocumento.update({ where: { id: fila.id }, data: { resultado: resultado as never } });
+      if (!importes) {
+        // Sin corregir nada: el documento del lector se rehace como al cambiar de dónde es el cliente.
+        await request(app(RET)).post(`/ingresos-extractor/lecturas/${data.lecturaId}/origen-tercero`).send({ origen: 'ES' });
+      }
+      const r = await confirmar(RET, { documentId: data.ingreso.documentId, revisado: true, ...(importes ? { correcciones: { numero, ...importes } } : {}) });
+      expect(r.status).toBe(201);
+      const f = await prisma.incomeInvoice.findUniqueOrThrow({ where: { id: r.body.data.facturaId }, include: { lineas: true } });
+      expect([f.baseTotal, f.ivaTotal, f.retencionTotal]).toEqual([1000, 210, 150]);
+      expect(f.lineas.every((l) => l.tipoRetencion === 15)).toBe(true);
+    }
+  });
+
   it('dos líneas al 21 % a la 700 y a la 705: la cuota del tipo repartida, cuadra y cada línea en su cuenta', async () => {
     const data = await leer('resultado-simple');
     const r = await confirmar(E, {
