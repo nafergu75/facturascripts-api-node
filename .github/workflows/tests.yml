@@ -52,5 +52,13 @@ jobs:
       - name: Compilar
         run: npx tsc --noEmit -p .
 
-      - name: Tests
+      # Con UNA conexion en el pool, como en produccion (Vercel + TiDB con
+      # connection_limit=1). Una consulta con el cliente global dentro de una
+      # transaccion se queda esperando conexion y la transaccion caduca: el
+      # 14-10-2026 «Registrar cobro» dio un 500 a los 30 s por eso. Con el pool
+      # de varias conexiones no se ve (la guarda de config/guardaTransaccion lo
+      # caza igualmente en los tests; esto lo comprueba como en produccion).
+      - name: Tests (una sola conexion, como en produccion)
+        env:
+          DATABASE_URL: mysql://root:pruebas@127.0.0.1:3306/conta_test?connection_limit=1&pool_timeout=10
         run: npx jest --runInBand
