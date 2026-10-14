@@ -54,6 +54,9 @@ model Company {
   fsApiKeyEnc String           @db.Text
   isActive    Boolean          @default(true)
   createdAt   DateTime         @default(now())
+  /// Empresa de pruebas de VERI*FACTU: id de la empresa real cuyo NIF usa (null = empresa normal).
+  /// Solo genera registros del entorno de pruebas de la AEAT (spec verifactu, 12.1).
+  pruebasVerifactuDe String?   @unique @db.VarChar(30)
   memberships Membership[]
   reglas      ReglasContables?
   movements   Movement[]       @relation("movements")
@@ -2045,9 +2048,10 @@ model LecturaDocumento {
 }
 
 /// VERI*FACTU: configuracion y activacion por empresa (spec verifactu, 2.1).
-/// Version minima de la fase F0: solo lo que lee la red de seguridad. El resto
-/// de campos (obligado, instalacion, certificado...) llega en F1 como columnas
-/// nuevas. Sin fila = VERI*FACTU no activo.
+/// La red de seguridad lee el estado, el entorno y la exclusion; el obligado y el
+/// numero de instalacion se congelan con el primer registro. El estado PRUEBAS
+/// solo vale en una empresa de pruebas (la que apunta a su empresa real). Sin fila =
+/// VERI*FACTU no activo.
 model VerifactuConfig {
   id              String    @id @default(cuid())
   companyId       String    @unique
@@ -2218,6 +2222,18 @@ model VerifactuCertificado {
   huellaSha256 String   @db.Char(64)
   subidoPor    String
   subidoEn     DateTime @default(now())
+  /// NIF de la persona en un certificado de representante (serialNumber IDCES-...).
+  nifRepresentante      String?   @db.VarChar(20)
+  /// REPRESENTANTE_PJ | PERSONA_FISICA | SELLO | OTRO
+  tipoCertificado       String?   @db.VarChar(20)
+  /// OBLIGADO | APODERADO | COLABORADOR
+  actuaComo             String?   @db.VarChar(16)
+  /// Ultima prueba de conexion con la AEAT (una consulta, sin registros).
+  pruebaConexionFecha   DateTime?
+  pruebaConexionEntorno String?   @db.VarChar(12)
+  pruebaConexionOk      Boolean?
+  pruebaConexionTipo    String?   @db.VarChar(32)
+  pruebaConexionMensaje String?   @db.Text
   company      Company  @relation(fields: [companyId], references: [id], onDelete: Restrict)
 }
 
@@ -2225,7 +2241,7 @@ model VerifactuCertificado {
 model VerifactuBitacora {
   id        String   @id @default(cuid())
   companyId String?
-  /// ACTIVACION | DESACTIVACION | CERT_SUBIDO | CERT_BORRADO | LOTE_BLOQUEADO | INCIDENCIA_INICIO | INCIDENCIA_FIN | CADENA_ROTA | BLOQUEO_EMISION | RED_SEGURIDAD_CAMBIADA | DECLARACION_ACEPTADA
+  /// ACTIVACION | DESACTIVACION | CERT_SUBIDO | CERT_BORRADO | CONEXION_PROBADA | EMPRESA_PRUEBAS_CREADA | LOTE_BLOQUEADO | INCIDENCIA_INICIO | INCIDENCIA_FIN | CADENA_ROTA | BLOQUEO_EMISION | RED_SEGURIDAD_CAMBIADA | DECLARACION_ACEPTADA
   tipo      String   @db.VarChar(32)
   usuarioId String?
   detalle   Json
