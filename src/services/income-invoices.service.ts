@@ -878,6 +878,25 @@ async function plantillaDelAlta(
   return (await obtenerSeriePorDefecto(companyId, tipo))?.plantilla ?? 'default';
 }
 
+/**
+ * Aviso (no bloquea) si una venta que sale de Espana (exportacion o entrega
+ * intracomunitaria) lleva IEEPNR: la Ley 7/2022 no grava los envases que salen
+ * de Espana (exencion, deduccion o devolucion). La factura se emite igual; que
+ * lo confirme la gestoria. null si no toca.
+ */
+export function avisoIeepnrFueraDeEspana(
+  tipoOperacion: string | null | undefined,
+  lineas: Array<{ ieepnrImporte?: number | null }>,
+): AvisoFiscal | null {
+  if (tipoOperacion !== 'EXPORTACION' && tipoOperacion !== 'INTRACOMUNITARIA') return null;
+  if (!lineas.some((l) => aCentimos(Number(l.ieepnrImporte ?? 0)) !== 0)) return null;
+  return {
+    codigo: 'IEEPNR_VENTA_FUERA',
+    mensaje:
+      'Esta venta sale de España (exportación o entrega intracomunitaria) y lleva IEEPNR. Los envases que salen de España no pagan este impuesto (Ley 7/2022): pregunta a tu gestoría si debes cobrárselo al cliente y si puedes pedir la devolución del que pagaste al comprarlos.',
+  };
+}
+
 /** Lo que una rectificativa de una factura de la app hereda para el IEEPNR: su plantilla, si lo repercutio y a que tipo. */
 function envasesDeOriginal(original: { plantillaId: string; ieepnrPorKg: number | null }) {
   return { plantilla: normalizarPlantillaId(original.plantillaId), repercute: original.ieepnrPorKg !== null, tipo: original.ieepnrPorKg };
@@ -1909,8 +1928,10 @@ async function prepararAlta(
   };
   // Confirmada la venta con la operacion en un periodo de la gestoria: el aviso queda en la respuesta.
   const fuera = !avisoR4 && fueraPrevio ? await devengoEnPeriodoDeFuera(dto.companyId, devengo, fechaEmision) : null;
+  const avisoIeepnr = avisoIeepnrFueraDeEspana(fiscal.tipoOperacion, lineas);
   const avisosFiscales: AvisoFiscal[] = [
     ...(fiscal.avisos ?? []),
+    ...(avisoIeepnr ? [avisoIeepnr] : []),
     ...(fuera ? [{ codigo: 'DEVENGO_FUERA_APP', mensaje: textoDevengoFuera(devengo, fuera) }] : []),
     ...(avisoR4 ? [avisoR4] : []),
     ...(serie.aviso ? [serie.aviso] : []),
@@ -2322,7 +2343,12 @@ export const incomeInvoicesService = {
       }
       return tx.incomeInvoice.update({ where: { id }, data, include: INCLUIR });
     });
-    return aRespuesta(factura, { monedaCuenta: perfil.monedaCuenta, avisosFiscales: fiscal.avisos, avisoTipoCambio: tipo?.aviso });
+    const avisoIeepnr = avisoIeepnrFueraDeEspana(fiscal.tipoOperacion, lineas);
+    return aRespuesta(factura, {
+      monedaCuenta: perfil.monedaCuenta,
+      avisosFiscales: [...(fiscal.avisos ?? []), ...(avisoIeepnr ? [avisoIeepnr] : [])],
+      avisoTipoCambio: tipo?.aviso,
+    });
   },
 
   /**
@@ -2437,7 +2463,12 @@ export const incomeInvoicesService = {
         include: INCLUIR,
       });
     });
-    return aRespuesta(factura, { monedaCuenta: perfil.monedaCuenta, avisosFiscales: fiscal.avisos, avisoTipoCambio: tipo.aviso });
+    const avisoIeepnr = avisoIeepnrFueraDeEspana(fiscal.tipoOperacion, lineas);
+    return aRespuesta(factura, {
+      monedaCuenta: perfil.monedaCuenta,
+      avisosFiscales: [...(fiscal.avisos ?? []), ...(avisoIeepnr ? [avisoIeepnr] : [])],
+      avisoTipoCambio: tipo.aviso,
+    });
   },
 
   /** El cliente no acepta la proforma: queda RECHAZADA (solo se puede ver, descargar o duplicar). */
@@ -2660,8 +2691,10 @@ export const incomeInvoicesService = {
       }
       return tx.incomeInvoice.findUniqueOrThrow({ where: { id }, include: INCLUIR });
     }, rect ? AISLAMIENTO_RECTIFICATIVAS : undefined);
+    const avisoIeepnr = avisoIeepnrFueraDeEspana(fiscal.tipoOperacion, lineas);
     const avisosFiscales = [
       ...(fiscal.avisos ?? []),
+      ...(avisoIeepnr ? [avisoIeepnr] : []),
       ...(fuera && !avisoR4 ? [{ codigo: 'DEVENGO_FUERA_APP', mensaje: textoDevengoFuera(devengo, fuera) }] : []),
       ...(avisoR4 ? [avisoR4] : []),
       ...(cierre?.avisos ?? []),

@@ -213,6 +213,21 @@ describe('descuentos de antes cuando la serie A pasa a la plantilla A', () => {
   });
 });
 
+describe('IEEPNR en una venta que sale de España', () => {
+  it('exportacion: el IEEPNR se cobra con un aviso que no bloquea, al guardar, al cambiar el borrador y al emitir; en una nacional, sin aviso', async () => {
+    const ma = (await prisma.customer.create({ data: { companyId: ES, nombreFiscal: 'CLIENT FICTIF SARL', nifCif: 'MA123456', pais: 'MA', municipio: 'Casablanca' } })).id;
+    const codigos = (f: { avisosFiscales?: Array<{ codigo: string }> }) => (f.avisosFiscales ?? []).map((a) => a.codigo);
+    const b = await alta({ borrador: true, customer: { id: ma }, tipoOperacion: 'EXPORTACION', lineas: lineasNz({ tipoIva: 0 }) });
+    expect([b.tipoOperacion, b.resumenEnvases?.ieepnr, b.ivaTotal]).toEqual(['EXPORTACION', 177.75, 0]);
+    expect(codigos(b)).toContain('IEEPNR_VENTA_FUERA');
+    expect(codigos(await incomeInvoicesService.actualizarBorrador(ES, b.id, { observaciones: 'Puerto de Valencia' }))).toContain('IEEPNR_VENTA_FUERA');
+    const emitida = await incomeInvoicesService.finalizar(ES, b.id, { fechaEmision: '2026-03-04' });
+    expect([emitida.estadoDocumento, emitida.baseTotal]).toEqual(['FINAL', TOTALES_NZ004.base]);
+    expect(codigos(emitida)).toContain('IEEPNR_VENTA_FUERA');
+    expect(codigos(await alta({ borrador: true }))).not.toContain('IEEPNR_VENTA_FUERA');
+  });
+});
+
 describe('errores 400 nuevos', () => {
   const rechaza = async (extra: Record<string, unknown>, details: object) => {
     await expect(alta({ borrador: true, ...extra })).rejects.toMatchObject({ statusCode: 400, details });
