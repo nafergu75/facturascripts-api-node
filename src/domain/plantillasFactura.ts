@@ -17,7 +17,9 @@
  * serie B si la empresa dice que vende ceramica (Configuracion > Facturacion);
  * la C en la serie C; el resto, la estandar. La A y la B, solo en empresas
  * espanolas. Asi una empresa que usa la A o la B para otra cosa no cambia de
- * calculo ni de PDF sin enterarse.
+ * calculo ni de PDF sin enterarse. Para que se sepa, cada serie dice por que
+ * usa la suya (motivoPlantillaSerie) y, al marcar «Vendo ceramica», se crea la
+ * serie B si no existe (seriesSemilla.service).
  */
 
 export const PLANTILLAS_VENTA = ['default', 'A', 'B', 'C'] as const;
@@ -182,6 +184,33 @@ export function plantillaEfectivaSerie(serie: { codigo: string; plantilla?: stri
   const elegida = serie.plantilla ? normalizarPlantillaId(serie.plantilla) : null;
   const id: PlantillaVentaId = elegida ?? plantillaAutomatica(serie.codigo, ctx);
   return plantillaDisponible(id, ctx.espanola) ? id : 'default';
+}
+
+/**
+ * Por que una serie usa su plantilla, para explicarlo en pantalla
+ * (Configuracion > Series y el aviso de Nueva factura):
+ *  - 'elegida': se eligio en la serie (Configuracion > Series);
+ *  - 'ieepnr': la A, sola, en la serie A, porque la empresa repercute el IEEPNR;
+ *  - 'ceramica': la B, sola, en la serie B, porque la empresa vende ceramica;
+ *  - 'serieC': la C, sola, en la serie C;
+ *  - 'sinIeepnr': la estandar en la serie A, porque la casilla «Repercuto el
+ *    IEEPNR» (Configuracion > Facturacion) esta sin marcar;
+ *  - 'sinCeramica': la estandar en la serie B, porque la casilla «Vendo
+ *    ceramica y materiales de construccion» esta sin marcar;
+ *  - 'soloEspana': la estandar porque la que tocaba (la A o la B, elegida o
+ *    automatica) solo vale en empresas espanolas;
+ *  - 'estandar': la estandar en el resto de series sin plantilla elegida.
+ */
+export type MotivoPlantilla = 'elegida' | 'ieepnr' | 'ceramica' | 'serieC' | 'sinIeepnr' | 'sinCeramica' | 'soloEspana' | 'estandar';
+
+/** Motivo de la plantilla que usa una serie (plantillaEfectivaSerie): ver MotivoPlantilla. */
+export function motivoPlantillaSerie(serie: { codigo: string; plantilla?: string | null }, ctx: ContextoPlantillas): MotivoPlantilla {
+  if (serie.plantilla) return plantillaDisponible(normalizarPlantillaId(serie.plantilla), ctx.espanola) ? 'elegida' : 'soloEspana';
+  const c = String(serie.codigo ?? '').trim().toUpperCase();
+  if (c === 'A') return !ctx.espanola ? 'soloEspana' : ctx.repercuteIeepnr ? 'ieepnr' : 'sinIeepnr';
+  if (c === 'B') return !ctx.espanola ? 'soloEspana' : ctx.vendeCeramica === true ? 'ceramica' : 'sinCeramica';
+  if (c === 'C') return 'serieC';
+  return 'estandar';
 }
 
 /** Lleva packs, kg, IEEPNR y peso bruto. Solo la A. */

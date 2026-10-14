@@ -9,6 +9,7 @@ import {
   catalogoPlantillas,
   dibujoDe,
   ivaPorTipo,
+  motivoPlantillaSerie,
   normalizarPlantillaId,
   plantillaAutomatica,
   plantillaAutomaticaSerieA,
@@ -94,6 +95,38 @@ describe('plantillas de factura de venta', () => {
     expect(plantillaEfectivaSerie({ codigo: 'P', plantilla: 'C' }, SIN_IEEPNR)).toBe('C');
     // Elegida la A y la empresa pasa a ser extranjera: la estandar.
     expect(plantillaEfectivaSerie({ codigo: 'A', plantilla: 'A' }, FUERA)).toBe('default');
+  });
+
+  it('motivoPlantillaSerie: por que cada serie usa su plantilla (la casilla, el codigo, elegida o solo en Espana)', () => {
+    const motivo = (codigo: string, ctx: ContextoPlantillas, plantilla: string | null = null) => motivoPlantillaSerie({ codigo, plantilla }, ctx);
+    // Serie A: la A si la empresa repercute el IEEPNR; si no, la estandar por la casilla sin marcar.
+    expect(motivo('A', CON_IEEPNR)).toBe('ieepnr');
+    expect(motivo('A', SIN_IEEPNR)).toBe('sinIeepnr');
+    expect(motivo(' a ', SIN_IEEPNR)).toBe('sinIeepnr');
+    // Serie B: la B si vende ceramica; si no (o sin el dato), la estandar por la casilla sin marcar.
+    expect(motivo('B', CERAMICA)).toBe('ceramica');
+    expect(motivo('B', SIN_IEEPNR)).toBe('sinCeramica');
+    expect(motivo('B', { ...CERAMICA, vendeCeramica: false })).toBe('sinCeramica');
+    // Serie C, la C; el resto, la estandar.
+    expect(motivo('C', SIN_IEEPNR)).toBe('serieC');
+    expect(motivo('C', FUERA)).toBe('serieC');
+    for (const codigo of ['R', 'P', 'RT', 'BB', 'F2027']) expect(motivo(codigo, { ...CERAMICA, repercuteIeepnr: true })).toBe('estandar');
+    // Elegida a mano: manda, salvo la A o la B en una empresa extranjera.
+    expect(motivo('A', SIN_IEEPNR, 'default')).toBe('elegida');
+    expect(motivo('B', SIN_IEEPNR, 'B')).toBe('elegida');
+    expect(motivo('P', FUERA, 'C')).toBe('elegida');
+    expect(motivo('A', FUERA, 'A')).toBe('soloEspana');
+    // Fuera de Espana, la A y la B automaticas pasan a la estandar aunque las casillas digan que si.
+    expect(motivo('A', { ...FUERA, repercuteIeepnr: true })).toBe('soloEspana');
+    expect(motivo('B', { ...FUERA, vendeCeramica: true })).toBe('soloEspana');
+    // El motivo cuadra con la plantilla que usa la serie.
+    const usaEstandar = ['sinIeepnr', 'sinCeramica', 'soloEspana', 'estandar'];
+    for (const ctx of [CON_IEEPNR, SIN_IEEPNR, CERAMICA, FUERA, { ...CERAMICA, repercuteIeepnr: true }]) {
+      for (const codigo of ['A', 'B', 'C', 'R']) {
+        const m = motivo(codigo, ctx);
+        if (m !== 'elegida') expect([m, plantillaEfectivaSerie({ codigo, plantilla: null }, ctx) === 'default']).toEqual([m, usaEstandar.includes(m)]);
+      }
+    }
   });
 
   it('la A lleva envases y la B ceramica; las dos, texto adicional, peso bruto, IVA por tipo, sin descuento y su propio diseno', () => {
