@@ -3,6 +3,7 @@ import { prisma, type ClienteBD, type TransaccionBD } from '../../config/databas
 import { perfilDesdeConfig } from '../perfilEmpresa.service';
 import { badRequest, conflict, HttpError } from '../../utils/http-errors';
 import { formatearHusoMadrid, hoyEspana } from '../../utils/fechas';
+import { textoAvisoCaducidad } from './certificado.service';
 
 /**
  * Red de seguridad de VERI*FACTU (spec verifactu, apartado 9).
@@ -53,6 +54,8 @@ export interface DatosRedSeguridad {
   /** false solo si el administrador global la ha desactivado. */
   redActiva: boolean;
   certificadoVigente: boolean;
+  /** Empresa de pruebas de VERI*FACTU (Company.pruebasVerifactuDe). Sin el dato, no lo es. */
+  empresaPruebas?: boolean;
 }
 
 export type ResultadoRed = { ok: true } | { ok: false; motivo: string };
@@ -102,6 +105,8 @@ export function evaluarRedSeguridad(d: DatosRedSeguridad, ahora: Date): Resultad
   const inicio = inicioRedSeguridad(d.tipoSociedad);
   if (hoyEspana(ahora) < inicio) return { ok: true }; // fecha por hora de Madrid
   if (!d.redActiva) return { ok: true };
+  // Empresa de pruebas en PRUEBAS: sus facturas nunca son reales (solo van al entorno de pruebas de la AEAT).
+  if (d.empresaPruebas && d.config?.estado === 'PRUEBAS') return { ok: true };
   if (d.config && verifactuActivo(d.config, ahora) && d.config.entorno === 'PRODUCCION' && d.certificadoVigente) return { ok: true };
   return { ok: false, motivo: motivoBloqueo(inicio) };
 }
@@ -210,31 +215,41 @@ export async function cambiarInterruptorRed(
 
 // --- La regla con los datos de la empresa ---
 
-async function datosRed(companyId: string, db: Db = prisma): Promise<DatosRedSeguridad> {
-  const [legal, ajustes, config, red] = await Promise.all([
-    db.legalConfig.findUnique({ where: { companyId }, select: { pais: true, monedaCuenta: true, tipoSociedad: true } }),
-    db.ajustesFiscales.findUnique({ where: { companyId }, select: { sii: true } }),
-    db.verifactuConfig.findUnique({
-      where: { companyId },
-      select: { estado: true, entorno: true, activaDesde: true, motivoExclusion: true },
-    }),
-    leerInterruptorRed(db),
-  ]);
+/** El certificado sirve en `ahora`: existe y esta entre su fecha de inicio y la de caducidad. */
+export function certificadoVigenteEn(cert: { validoDesde: Date; caducaEn: Date } | null, ahora: Date): boolean {
+  return !!cert && cert.validoDesde.getTime() <= ahora.getTime() && ahora.getTime() < cert.caducaEn.getTime();
+}
+
+type DatosConCertificado = DatosRedSeguridad & { certificado: { validoDesde: Date; caducaEn: Date } | null };
+
+/** Datos de la red, una consulta detras de otra (con `db` puede ser una transaccion). */
+async function datosRedConCertificado(companyId: string, ahora: Date, db: Db = prisma): Promise<DatosConCertificado> {
+  const legal = await db.legalConfig.findUnique({ where: { companyId }, select: { pais: true, monedaCuenta: true, tipoSociedad: true } });
+  const ajustes = await db.ajustesFiscales.findUnique({ where: { companyId }, select: { sii: true } });
+  const config = await db.verifactuConfig.findUnique({
+    where: { companyId },
+    select: { estado: true, entorno: true, activaDesde: true, motivoExclusion: true },
+  });
+  const red = await leerInterruptorRed(db);
+  const empresa = await db.company.findUnique({ where: { id: companyId }, select: { pruebasVerifactuDe: true } });
+  // Solo las fechas: el certificado no se abre aqui. La red sigue pidiendo
+  // ACTIVO + PRODUCCION, y en la fase F2 no hay ruta que active.
+  const certificado = await db.verifactuCertificado.findUnique({ where: { companyId }, select: { validoDesde: true, caducaEn: true } });
   return {
     espanola: perfilDesdeConfig(legal).espanola,
     tipoSociedad: legal?.tipoSociedad ?? null,
     sii: ajustes?.sii === true,
     config,
     redActiva: red.activa,
-    // Hasta la fase F2 la app no guarda certificados: ninguna empresa puede tener
-    // VERI*FACTU funcionando de verdad, asi que la red no se abre por esta via.
-    certificadoVigente: false,
+    certificadoVigente: certificadoVigenteEn(certificado, ahora),
+    empresaPruebas: !!empresa?.pruebasVerifactuDe,
+    certificado,
   };
 }
 
 /** ¿Se puede emitir ahora una factura FINAL de esta empresa? (spec 9.1) */
 export async function puedeEmitirFinal(companyId: string, ahora: Date = ahoraRedSeguridad()): Promise<ResultadoRed> {
-  return evaluarRedSeguridad(await datosRed(companyId), ahora);
+  return evaluarRedSeguridad(await datosRedConCertificado(companyId, ahora), ahora);
 }
 
 /** Error de la emision bloqueada: 409 con details.codigo VERIFACTU_INACTIVO. */
@@ -268,11 +283,15 @@ export interface EstadoRedEmpresa {
   motivo: string | null;
   /** Aviso previo para Ventas (desde el 1-12-2026), o null. */
   aviso: string | null;
+  /** Empresa de pruebas de VERI*FACTU (sus facturas no son reales). */
+  empresaPruebas: boolean;
+  /** Aviso de caducidad del certificado (30 y 7 dias antes, y caducado), o null. */
+  avisoCertificado: { nivel: 'aviso' | 'urgente' | 'caducado'; texto: string } | null;
 }
 
 /** Lo que necesita la pantalla de Ventas y el formulario de factura (GET /verifactu/red-seguridad). */
 export async function estadoRedEmpresa(companyId: string, ahora: Date = ahoraRedSeguridad()): Promise<EstadoRedEmpresa> {
-  const d = await datosRed(companyId);
+  const d = await datosRedConCertificado(companyId, ahora);
   const r = evaluarRedSeguridad(d, ahora);
   const exclusion = exclusionDe(d);
   const inicio = inicioRedSeguridad(d.tipoSociedad);
@@ -292,6 +311,8 @@ export async function estadoRedEmpresa(companyId: string, ahora: Date = ahoraRed
     aviso: avisar
       ? `Desde el ${fechaLarga(inicio)} no podrás emitir facturas desde aquí sin VERI*FACTU. Los borradores y las proformas se podrán seguir guardando.`
       : null,
+    empresaPruebas: d.empresaPruebas === true,
+    avisoCertificado: d.certificado && d.espanola ? textoAvisoCaducidad(d.certificado.caducaEn, ahora) : null,
   };
 }
 
@@ -334,11 +355,10 @@ export async function fijarExclusion(
   }
 
   return prisma.$transaction(async (tx) => {
-    const [legal, ajustes, config] = await Promise.all([
-      tx.legalConfig.findUnique({ where: { companyId }, select: { pais: true, monedaCuenta: true } }),
-      tx.ajustesFiscales.findUnique({ where: { companyId }, select: { sii: true } }),
-      tx.verifactuConfig.findUnique({ where: { companyId }, select: { estado: true, motivoExclusion: true } }),
-    ]);
+    // Una consulta detras de otra: con una sola conexion, nada de Promise.all dentro de una transaccion (14-10-2026).
+    const legal = await tx.legalConfig.findUnique({ where: { companyId }, select: { pais: true, monedaCuenta: true } });
+    const ajustes = await tx.ajustesFiscales.findUnique({ where: { companyId }, select: { sii: true } });
+    const config = await tx.verifactuConfig.findUnique({ where: { companyId }, select: { estado: true, motivoExclusion: true } });
     if (!perfilDesdeConfig(legal).espanola) {
       throw badRequest('VERI*FACTU solo se aplica a empresas españolas: esta empresa no necesita exclusión.');
     }

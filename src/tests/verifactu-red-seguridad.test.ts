@@ -4,6 +4,7 @@
 // verifactu-red-seguridad.db.test.ts.
 import { describe, it, expect } from '@jest/globals';
 import {
+  certificadoVigenteEn,
   evaluarRedSeguridad,
   inicioRedSeguridad,
   verifactuActivo,
@@ -140,5 +141,27 @@ describe('referencia del BOE para desactivar la red', () => {
     for (const mal of ['', 'BOE-2026-24840', 'BOE-A-26-24840', 'BOE-A-2026-', 'RD 1007/2023', 'BOE-A-2026-24840x']) {
       expect(() => validarReferenciaBoe(mal)).toThrow(/BOE-A-/);
     }
+  });
+});
+
+describe('red de seguridad: fase F2 (certificado y empresas de pruebas)', () => {
+  it('el certificado vale entre su fecha de inicio y la de caducidad', () => {
+    const cert = { validoDesde: new Date('2026-10-01T00:00:00Z'), caducaEn: new Date('2027-10-01T00:00:00Z') };
+    expect(certificadoVigenteEn(cert, PRIMER_INSTANTE_2027)).toBe(true);
+    expect(certificadoVigenteEn(cert, new Date('2026-09-30T23:59:59Z'))).toBe(false);
+    expect(certificadoVigenteEn(cert, new Date('2027-10-01T00:00:00Z'))).toBe(false);
+    expect(certificadoVigenteEn(null, PRIMER_INSTANTE_2027)).toBe(false);
+  });
+
+  it('activo en producción con certificado vigente deja emitir; sin él, no', () => {
+    expect(evaluarRedSeguridad(con({ config: activo(new Date('2026-12-31T23:00:00Z')), certificadoVigente: true }), PRIMER_INSTANTE_2027)).toEqual({ ok: true });
+    expect(evaluarRedSeguridad(con({ config: activo(new Date('2026-12-31T23:00:00Z')), certificadoVigente: false }), PRIMER_INSTANTE_2027).ok).toBe(false);
+  });
+
+  it('una empresa de pruebas en PRUEBAS emite después del 1-1-2027; una real en PRUEBAS, no', () => {
+    const pruebas = { estado: 'PRUEBAS', entorno: 'PRUEBAS', activaDesde: null, motivoExclusion: null };
+    expect(evaluarRedSeguridad(con({ config: pruebas, empresaPruebas: true }), PRIMER_INSTANTE_2027)).toEqual({ ok: true });
+    expect(evaluarRedSeguridad(con({ config: pruebas, empresaPruebas: false }), PRIMER_INSTANTE_2027).ok).toBe(false);
+    expect(evaluarRedSeguridad(con({ config: { ...pruebas, estado: 'DESACTIVADO' }, empresaPruebas: true }), PRIMER_INSTANTE_2027).ok).toBe(false);
   });
 });
