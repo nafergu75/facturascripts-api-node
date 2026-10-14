@@ -5,21 +5,31 @@
 # el esquema no se toca.
 #
 # Lo lanza el usuario desde Git Bash, en la carpeta del backend con la version
-# publicada (la misma con la que se aplico el esquema):
+# publicada y este script (a 14-10-2026: backend-ocrz, rama vaciar-produccion):
 #   ENV_PROD=../backend/.env.vercel-prod.local bash scripts/vaciar-produccion.sh            (simula)
 #   ENV_PROD=../backend/.env.vercel-prod.local bash scripts/vaciar-produccion.sh --borrar   (borra)
 #   ENV_PROD=... bash scripts/vaciar-produccion.sh --comprobar
 #   ENV_PROD=... bash scripts/vaciar-produccion.sh --restaurar <carpeta de la copia>
+#   ENV_PROD=... bash scripts/vaciar-produccion.sh --restaurar-ficheros <carpeta de la copia>
 #   bash scripts/vaciar-produccion.sh --ayuda
 # Instrucciones completas: docs/vaciar-produccion.md.
 #
 # Lee DATABASE_URL (y BLOB_READ_WRITE_TOKEN si esta) de ENV_PROD sin
 # mostrarlas. Variables opcionales: ENV_BLOB (otro fichero con la clave de
-# Vercel Blob), COPIA_DIR (donde se guarda la copia; por defecto Documentos).
+# Vercel Blob), COPIA_DIR (donde se guarda la copia; por defecto $HOME/Documents,
+# que no es la carpeta Documentos de OneDrive).
 # VACIADO_ALMACEN_DISCO es solo para las pruebas en local.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
+
+# Esta carpeta, como la ve el usuario (C:/Users/...), y su rama.
+CARPETA="$(pwd -W 2>/dev/null || pwd)"
+RAMA="$(git branch --show-current 2>/dev/null || true)"
+COMMIT="$(git rev-parse --short HEAD 2>/dev/null || true)"
+
+# Ruta de Windows (con barras invertidas) para buscarla en el Explorador.
+ruta_windows() { cygpath -w "$1" 2>/dev/null || printf '%s' "$1"; }
 
 ayuda() {
   cat <<'TXT'
@@ -30,8 +40,14 @@ nóminas, lecturas, carga de 2026, auditoría...), todos los usuarios que no son
 administradores globales y los ficheros guardados (facturas, PDF, lecturas).
 Se conserva tu usuario de administrador global, con su contraseña.
 
-Se lanza desde Git Bash, en la carpeta del backend (la misma con la que
-aplicaste el esquema), así:
+TXT
+  echo "Se lanza desde Git Bash, en ESTA carpeta (la del script):"
+  echo "  cd \"$CARPETA\""
+  echo "Ahora está en la rama ${RAMA:-?} (código $COMMIT). El 14-10-2026 el script estaba en la"
+  echo "carpeta backend-ocrz, rama vaciar-produccion: el código publicado más este script. Si se"
+  echo "ha publicado otra versión después, pide antes que se actualice esta rama; si no, el script"
+  echo "se parará sin tocar nada."
+  cat <<'TXT'
 
   0. Antes de nada: haz una copia de seguridad en TiDB Cloud (mira
      docs/vaciar-produccion.md) y cierra la app en el navegador.
@@ -42,15 +58,19 @@ aplicaste el esquema), así:
   2. Borrado de verdad:
        ENV_PROD=../backend/.env.vercel-prod.local bash scripts/vaciar-produccion.sh --borrar
      Repite la simulación, te pide qué administradores se quedan y que escribas
-     BORRAR TODO. Hace una copia completa en Documentos (conta-copia-...) y,
-     solo si la copia sale bien, borra. Al final comprueba que todo ha quedado
-     a cero y, si quieres, prueba a entrar con tu usuario.
+     BORRAR TODO. Hace una copia completa en C:\Users\<tu usuario>\Documents
+     (conta-copia-...; no es la carpeta Documentos de OneDrive, así no se sube
+     a la nube) y, solo si la copia sale bien, borra. Al final comprueba que
+     todo ha quedado a cero y, si quieres, prueba a entrar con tu usuario.
 
   3. Comprobación (se puede repetir cuando quieras):
        ENV_PROD=../backend/.env.vercel-prod.local bash scripts/vaciar-produccion.sh --comprobar
 
-  Si algo sale mal, restaura la copia de TiDB Cloud o la local:
+  Si algo sale mal, restaura la copia local (base y ficheros):
        ENV_PROD=../backend/.env.vercel-prod.local bash scripts/vaciar-produccion.sh --restaurar "<carpeta de la copia>"
+  Si en vez de eso restauras la base desde TiDB Cloud, esa copia no lleva los
+  ficheros: súbelos después desde la copia local (no toca la base):
+       ENV_PROD=../backend/.env.vercel-prod.local bash scripts/vaciar-produccion.sh --restaurar-ficheros "<carpeta de la copia>"
 
 Para ver y borrar los ficheros hace falta la clave de Vercel Blob
 (BLOB_READ_WRITE_TOKEN). Si no está en el fichero de ENV_PROD, el script la
@@ -64,10 +84,10 @@ case "${1:-}" in
   "") MODO=simular ;;
   --borrar) MODO=borrar ;;
   --comprobar) MODO=comprobar ;;
-  --restaurar)
-    MODO=restaurar
+  --restaurar | --restaurar-ficheros)
+    MODO="${1#--}"
     COPIA_RESTAURAR="${2:-}"
-    [ -n "$COPIA_RESTAURAR" ] || { echo "Indica la carpeta de la copia: --restaurar <carpeta>"; exit 2; }
+    [ -n "$COPIA_RESTAURAR" ] || { echo "Indica la carpeta de la copia: $1 <carpeta>"; exit 2; }
     [ -f "$COPIA_RESTAURAR/manifiesto.json" ] || { echo "En $COPIA_RESTAURAR no hay ninguna copia (falta manifiesto.json)."; exit 2; }
     ;;
   --ayuda | -h | --help) ayuda; exit 0 ;;
@@ -125,6 +145,8 @@ export VACIADO_COMMIT
 
 orden() { npx ts-node --transpile-only scripts/vaciar-produccion.ts "$@"; }
 
+echo "Código: $CARPETA · rama ${RAMA:-?} ($COMMIT)"
+
 ADMINS_ID=()
 ADMINS_EMAIL=()
 ADMINS_ACTIVO=()
@@ -133,6 +155,18 @@ leer_plan() {
   while IFS='|' read -r tipo a b c; do
     if [ "$tipo" = "ADMIN" ]; then ADMINS_ID+=("$a"); ADMINS_EMAIL+=("$b"); ADMINS_ACTIVO+=("$c"); fi
   done < "$PLAN"
+}
+
+# Ctrl+C durante --restaurar: la base puede haber quedado a medias.
+restauracion_interrumpida() {
+  echo
+  echo "RESTAURACIÓN INTERRUMPIDA. Si ya había empezado a meter filas, la base ha quedado a medias."
+  echo "No uses la app así. Para salir:"
+  echo "  1. Vacía lo que se ha llegado a meter (antes hará otra copia; esa no te hace falta):"
+  echo "       ENV_PROD=$FICHERO bash scripts/vaciar-produccion.sh --borrar"
+  echo "  2. Repite la restauración con la misma copia:"
+  echo "       ENV_PROD=$FICHERO bash scripts/vaciar-produccion.sh --restaurar \"$COPIA_RESTAURAR\""
+  exit 130
 }
 
 # Prueba a entrar con un administrador (opcional: hace falta su contrasena).
@@ -192,8 +226,26 @@ case "$MODO" in
     read -rp "Para seguir escribe RESTAURAR COPIA y pulsa Intro; cualquier otra cosa cancela: " FRASE || true
     FRASE="$(printf '%s' "$FRASE" | tr -d '\r' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
     [ "$FRASE" = "RESTAURAR COPIA" ] || { echo "Cancelado. No se ha cambiado nada."; exit 1; }
-    orden restaurar --copia "$COPIA_RESTAURAR"
-    exit $?
+    # Si se corta con Ctrl+C a mitad, la base puede quedar a medias: se dice como salir.
+    trap 'restauracion_interrumpida' INT
+    CODIGO=0
+    orden restaurar --copia "$COPIA_RESTAURAR" || CODIGO=$?
+    trap - INT
+    exit "$CODIGO"
+    ;;
+
+  restaurar-ficheros)
+    echo "Vas a SUBIR al almacén de ficheros de PRODUCCIÓN los ficheros de la copia:"
+    echo "  $COPIA_RESTAURAR"
+    echo "No toca la base de datos ni los ficheros que ya están (se puede repetir). Sirve después de"
+    echo "restaurar la base desde TiDB Cloud, que no lleva los ficheros."
+    FRASE=""
+    read -rp "Para seguir escribe SUBIR FICHEROS y pulsa Intro; cualquier otra cosa cancela: " FRASE || true
+    FRASE="$(printf '%s' "$FRASE" | tr -d '\r' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+    [ "$FRASE" = "SUBIR FICHEROS" ] || { echo "Cancelado. No se ha subido nada."; exit 1; }
+    CODIGO=0
+    orden restaurar-ficheros --copia "$COPIA_RESTAURAR" || CODIGO=$?
+    exit "$CODIGO"
     ;;
 esac
 
@@ -245,7 +297,7 @@ echo "ATENCIÓN: se va a BORRAR TODO lo que ha salido en la simulación,"
 echo "en la base de datos de PRODUCCIÓN y en sus ficheros."
 echo "Se quedan solo estos administradores:$SE_QUEDAN"
 echo "Antes se hará una copia completa en:"
-echo "  $COPIA"
+echo "  $(ruta_windows "$COPIA")"
 echo "Si la copia falla, no se borra nada."
 echo "================================================================"
 FRASE=""
