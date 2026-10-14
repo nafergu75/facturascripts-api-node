@@ -236,8 +236,10 @@ function leeme(m: Manifiesto): string {
     '',
     'Contiene datos personales y fiscales: guárdala en un sitio seguro y no la compartas.',
     '',
-    'Para restaurarla (solo sobre la base ya vaciada), desde Git Bash, en la carpeta del backend:',
+    `Para restaurarla (solo sobre la base ya vaciada), desde Git Bash, en la carpeta del backend con la que se hizo (${path.resolve('.')}):`,
     '  ENV_PROD=../backend/.env.vercel-prod.local bash scripts/vaciar-produccion.sh --restaurar "<esta carpeta>"',
+    'Si has restaurado la base desde TiDB Cloud, faltan los ficheros. Súbelos solos con:',
+    '  ENV_PROD=../backend/.env.vercel-prod.local bash scripts/vaciar-produccion.sh --restaurar-ficheros "<esta carpeta>"',
     'Más detalles en docs/vaciar-produccion.md.',
     '',
   ].join('\r\n');
@@ -268,10 +270,105 @@ export interface ResultadoRestaurar {
 }
 
 /**
+ * La restauracion ya habia empezado a escribir cuando ha fallado: la base (o el
+ * almacen) ha quedado a medias. Quien la lanza explica como salir.
+ */
+export class RestauracionCortada extends Error {
+  constructor(
+    mensaje: string,
+    /** 'filas': la base tiene parte de la copia. 'ficheros': las filas estan todas y faltan ficheros. */
+    readonly fase: 'filas' | 'ficheros',
+    /** Tabla o fichero en el que se ha cortado. */
+    readonly donde: string,
+  ) {
+    super(mensaje);
+    this.name = 'RestauracionCortada';
+  }
+}
+
+/** Motivo de un error en una linea: el «Message» de Prisma si lo hay; si no, la ultima linea con texto. */
+function motivoCorto(e: unknown): string {
+  const texto = e instanceof Error ? e.message : String(e);
+  const prisma = /Message: `([^`]*)`/.exec(texto);
+  if (prisma) return prisma[1];
+  return texto.split('\n').map((l) => l.trim()).filter(Boolean).pop() ?? texto;
+}
+
+/** Columnas de la cabecera INSERT de un fichero de tabla de la copia. */
+async function columnasDeFichero(fichero: string): Promise<string[]> {
+  const fh = await fsp.open(fichero, 'r');
+  try {
+    const trozo = Buffer.alloc(64 * 1024);
+    const { bytesRead } = await fh.read(trozo, 0, trozo.length, 0);
+    const cabecera = /^INSERT (?:IGNORE )?INTO `(?:[^`]|``)+` \(([^)]*)\) VALUES /.exec(trozo.subarray(0, bytesRead).toString('utf8'));
+    if (!cabecera) throw new Error(`${path.basename(fichero)} no empieza por un INSERT de la copia.`);
+    return cabecera[1].split(', ').map((c) => c.replace(/^`|`$/g, '').replace(/``/g, '`'));
+  } finally {
+    await fh.close();
+  }
+}
+
+/** Ruta en disco de un fichero de la copia. */
+const rutaEnCopia = (carpeta: string, local: string) => path.join(carpeta, ...local.split('/'));
+
+/**
+ * Todos los ficheros de la copia estan y son los que se copiaron (tamano y
+ * sha256). Se mira antes de escribir nada.
+ */
+async function comprobarFicherosDeCopia(m: Manifiesto, carpeta: string): Promise<void> {
+  for (const f of m.ficheros) {
+    const contenido = await fsp.readFile(rutaEnCopia(carpeta, f.local)).catch(() => null);
+    if (!contenido || contenido.length !== f.tamano) throw new Error(`Falta en la copia, o está incompleto, el fichero ${f.local}.`);
+    if (createHash('sha256').update(contenido).digest('hex') !== f.sha256) throw new Error(`El fichero ${f.local} de la copia no coincide con el original.`);
+  }
+}
+
+/**
+ * Sube al almacen los ficheros de la copia con su misma ruta. Los que ya estan
+ * en el almacen no se tocan (asi se puede repetir tras un corte).
+ */
+async function subirFicherosDeCopia(
+  m: Manifiesto,
+  carpeta: string,
+  almacen: Almacen,
+  avisar: (texto: string) => void,
+): Promise<{ subidos: number; yaEstaban: number; avisos: string[] }> {
+  const avisos: string[] = [];
+  let subidos = 0;
+  let yaEstaban = 0;
+  if (!m.ficheros.length) return { subidos, yaEstaban, avisos };
+  const existentes = new Set((await almacen.listar()).map((x) => x.clave));
+  for (const f of m.ficheros) {
+    if (existentes.has(f.clave)) {
+      yaEstaban++;
+      continue;
+    }
+    let ref: string;
+    try {
+      ref = await almacen.subir(f.clave, await fsp.readFile(rutaEnCopia(carpeta, f.local)), f.tipo);
+    } catch (e) {
+      throw new RestauracionCortada(
+        `No se ha podido subir ${f.clave} (${motivoCorto(e)}). Se habían subido ${subidos}.`,
+        'ficheros',
+        f.clave,
+      );
+    }
+    subidos++;
+    if (ref !== f.ref) avisos.push(`${f.clave} ha quedado en otra dirección (${almacen.tipo}): la base apunta a la antigua.`);
+  }
+  avisar(`  Ficheros: ${plural(subidos, 'subido', 'subidos')}${yaEstaban ? ` (${plural(yaEstaban, 'ya estaba', 'ya estaban')})` : ''}`);
+  return { subidos, yaEstaban, avisos };
+}
+
+/**
  * Vuelve a meter la copia en la base y los ficheros en el almacen. Solo sobre
  * la base vaciada: si alguna tabla que el vaciado deja vacia tiene filas, se
  * para sin escribir nada. Las tablas que se conservan entran con INSERT IGNORE
  * (lo que ya hay se queda como esta).
+ *
+ * Antes de escribir nada comprueba la copia entera: tablas y columnas de esta
+ * version, y ficheros completos y sin cambios. Si falla despues de haber
+ * escrito, lanza RestauracionCortada.
  */
 export async function restaurarCopia(o: OpcionesRestaurar): Promise<ResultadoRestaurar> {
   const avisar = o.progreso ?? (() => undefined);
@@ -287,20 +384,40 @@ export async function restaurarCopia(o: OpcionesRestaurar): Promise<ResultadoRes
     if (num(f?.n)) conDatos.push(`${t.nombre} (${num(f?.n)})`);
   }
   if (conDatos.length) {
-    throw new Error(`La base no está vacía: ${conDatos.join(', ')}. La copia solo se restaura sobre la base vaciada; si ya has empezado a usarla, restaura desde TiDB Cloud.`);
+    throw new Error(
+      `La base no está vacía: ${conDatos.slice(0, 10).join(', ')}${conDatos.length > 10 ? '…' : ''}. La copia solo se restaura sobre la base vaciada. ` +
+        'Si es porque una restauración anterior se cortó a medias, vacía la base con --borrar y repite --restaurar con esta misma copia. ' +
+        'Si ya has empezado a usar la app, no restaures esta copia: pregunta antes.',
+    );
   }
-  // Los ficheros de la copia tienen que estar todos antes de tocar nada.
-  for (const f of m.ficheros) {
-    const st = await fsp.stat(path.join(carpeta, ...f.local.split('/'))).catch(() => null);
-    if (!st || st.size !== f.tamano) throw new Error(`Falta en la copia, o está incompleto, el fichero ${f.local}.`);
+  // La copia entera tiene que estar bien antes de tocar nada.
+  const distintas: string[] = [];
+  for (const t of m.tablas) {
+    if (!t.filas) continue;
+    const fichero = path.join(carpeta, t.fichero);
+    const st = await fsp.stat(fichero).catch(() => null);
+    if (!st || st.size !== t.bytes) throw new Error(`Falta en la copia, o está incompleto, ${t.fichero}.`);
+    const columnas = await columnasDeFichero(fichero);
+    const delModelo = actuales.get(t.tabla)!.columnas.map((c) => c.nombre);
+    if (columnas.length !== delModelo.length || columnas.some((c) => !delModelo.includes(c))) distintas.push(t.tabla);
   }
+  if (distintas.length) {
+    throw new Error(
+      `La copia es de otra versión del esquema: las columnas de ${distintas.join(', ')} no son las de esta versión. ` +
+        `Restáurala con el código con el que se hizo${m.codigo ? ` (commit ${m.codigo})` : ''}.`,
+    );
+  }
+  await comprobarFicherosDeCopia(m, carpeta);
   if (m.ficheros.length && o.almacen.tipo === 'ninguno') {
     throw new Error('La copia tiene ficheros y no hay acceso al almacén (falta la clave de Vercel Blob): no se restaura nada.');
   }
 
   const filas = new Map<string, number>();
+  let escritas = 0;
+  let tablaActual = '';
   try {
     for (const t of m.tablas) {
+      tablaActual = t.tabla;
       let n = 0;
       if (t.filas) {
         const lector = readline.createInterface({ input: createReadStream(path.join(carpeta, t.fichero), { encoding: 'utf8' }), crlfDelay: Infinity });
@@ -310,31 +427,51 @@ export async function restaurarCopia(o: OpcionesRestaurar): Promise<ResultadoRes
           // Sin comprobar claves ajenas mientras se inserta: las referencias a la
           // propia tabla pueden venir antes que su fila padre. En la misma
           // conexion que el INSERT (transaccion).
-          n += await o.db.$transaction(
+          const insertadas = await o.db.$transaction(
             async (tx) => {
               await tx.$executeRawUnsafe('SET FOREIGN_KEY_CHECKS = 0');
               return tx.$executeRawUnsafe(linea.replace(/;\s*$/, ''));
             },
             { maxWait: 60_000, timeout: 300_000 },
           );
+          n += insertadas;
+          escritas += insertadas;
         }
       }
       filas.set(t.tabla, n);
       if (t.filas) avisar(`  ${t.tabla}: ${plural(n, 'fila', 'filas')}${n < t.filas ? ` (las otras ${t.filas - n} ya estaban)` : ''}`);
     }
+  } catch (e) {
+    // Sin ninguna fila escrita no hay nada a medias: el error tal cual.
+    if (!escritas) throw e;
+    throw new RestauracionCortada(motivoCorto(e), 'filas', tablaActual);
   } finally {
     await o.db.$executeRawUnsafe('SET FOREIGN_KEY_CHECKS = 1').catch(() => undefined);
   }
 
-  const avisos: string[] = [];
-  let ficheros = 0;
-  for (const f of m.ficheros) {
-    const contenido = await fsp.readFile(path.join(carpeta, ...f.local.split('/')));
-    if (createHash('sha256').update(contenido).digest('hex') !== f.sha256) throw new Error(`El fichero ${f.local} de la copia no coincide con el original.`);
-    const ref = await o.almacen.subir(f.clave, contenido, f.tipo);
-    ficheros++;
-    if (ref !== f.ref) avisos.push(`${f.clave} ha quedado en otra dirección (${o.almacen.tipo}): la base apunta a la antigua.`);
-  }
-  if (ficheros) avisar(`  Ficheros: ${plural(ficheros, 'fichero', 'ficheros')}`);
-  return { filas, ficheros, avisos };
+  const r = await subirFicherosDeCopia(m, carpeta, o.almacen, avisar);
+  return { filas, ficheros: r.subidos + r.yaEstaban, avisos: r.avisos };
+}
+
+export interface ResultadoFicheros {
+  total: number;
+  subidos: number;
+  yaEstaban: number;
+  avisos: string[];
+}
+
+/**
+ * Sube SOLO los ficheros de la copia, sin tocar la base: para cuando la base
+ * se ha restaurado desde TiDB Cloud (esa copia no lleva los ficheros, que el
+ * vaciado ya borro del almacen). Los que ya estan no se tocan, asi que se
+ * puede repetir.
+ */
+export async function restaurarFicheros(o: { almacen: Almacen; carpeta: string; progreso?: (texto: string) => void }): Promise<ResultadoFicheros> {
+  const carpeta = path.resolve(o.carpeta);
+  const m = await leerManifiesto(carpeta);
+  if (!m.ficheros.length) return { total: 0, subidos: 0, yaEstaban: 0, avisos: [] };
+  if (o.almacen.tipo === 'ninguno') throw new Error('Para subir los ficheros hace falta la clave de Vercel Blob (BLOB_READ_WRITE_TOKEN). No se ha subido nada.');
+  await comprobarFicherosDeCopia(m, carpeta);
+  const r = await subirFicherosDeCopia(m, carpeta, o.almacen, o.progreso ?? (() => undefined));
+  return { total: m.ficheros.length, ...r };
 }
