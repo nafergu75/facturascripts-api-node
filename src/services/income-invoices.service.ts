@@ -1,5 +1,5 @@
 import type { Prisma } from '@prisma/client';
-import { badRequest, conflict, notFound } from '../utils/http-errors';
+import { badRequest, conflict, notFound, unprocessable } from '../utils/http-errors';
 import { prisma, type TransaccionBD as Tx } from '../config/database';
 import {
   buscarSeriePorCodigo,
@@ -46,6 +46,9 @@ import { esCuentaDeTipo, problemaCuentasLinea } from './cuentasLinea.service';
 import { MOTIVOS_VENTA } from '../domain/rectificativa-venta.model';
 import { recalcularEstadoPartidas } from './arranque/partidas.service';
 import { ahoraRedSeguridad, exigirPuedeEmitirFinal } from './verifactu/redSeguridad';
+import { generarRegistroAlta, planRegistro } from './verifactu/registro.service';
+import { instantaneaComoJson, instantaneaDeEmision } from './verifactu/instantanea';
+import { leerDescripcionOperacion, problemaDestinatario } from './verifactu/alta';
 import {
   aFavorDeAbonos,
   AISLAMIENTO_RECTIFICATIVAS,
@@ -194,6 +197,12 @@ export interface CrearFacturaIngresoDTO {
   /** Precepto de la exencion (EXENTA) o letra del art. 84.Uno.2.º (ISP_NACIONAL). */
   referenciaLegal?: string | null;
   /**
+   * Descripcion de la operacion para VERI*FACTU (DescripcionOperacion, como
+   * mucho 500 caracteres). Sin ella, el registro la compone con la explicacion
+   * de la rectificativa o las descripciones de las lineas.
+   */
+  descripcionOperacion?: string | null;
+  /**
    * true: se emite aunque la operacion sea de un periodo cuyo 303 presenta la
    * gestoria (ver devengoEnPeriodoDeFuera). Sin ella, 409 DEVENGO_FUERA_APP.
    */
@@ -239,6 +248,7 @@ export type ActualizarBorradorDTO = Partial<
     | 'causaExencion'
     | 'referenciaLegal'
     | 'rectificativa'
+    | 'descripcionOperacion'
   >
 >;
 
@@ -1316,6 +1326,29 @@ const partesDe = (enlaces: EnlaceVenta[]) =>
     }));
 
 /**
+ * Datos fiscales del cliente pedido, antes de crearlo si es nuevo (para la
+ * comprobacion previa del destinatario de VERI*FACTU). null si no se puede
+ * saber: resolverCliente dara su propio error.
+ */
+async function fiscalPedido(companyId: string, customerData: CrearFacturaIngresoDTO['customer'] | undefined): Promise<ClienteFiscal | null> {
+  if (customerData?.id) {
+    const c = await prisma.customer.findFirst({ where: { id: customerData.id, companyId }, select: { pais: true, nifCif: true, cp: true } });
+    return c ? clienteFiscal(c) : null;
+  }
+  const n = customerData?.nuevo;
+  if (!n?.nifCif) return null;
+  const nifCif = n.nifCif.replace(/[\s-]/g, '').toUpperCase();
+  return { pais: paisClienteNuevo(n.pais, nifCif), nifCif, cp: n.cp ?? null };
+}
+
+/** 422 del destinatario de VERI*FACTU (cliente sin NIF en una factura completa...), o nada. */
+function exigirDestinatarioVerifactu(tipoFactura: string, cliente: ClienteFiscal | null): void {
+  if (!cliente) return;
+  const p = problemaDestinatario(tipoFactura, cliente);
+  if (p) throw unprocessable(p.mensaje, { codigo: p.codigo, code: p.codigo, campo: 'customer' });
+}
+
+/**
  * Comprueba y calcula un alta (borrador, proforma, emitida o rectificativa)
  * sin guardar nada, salvo el cliente nuevo. `opciones` lo fija el servidor;
  * `interno` solo lo usa este servicio.
@@ -1487,7 +1520,14 @@ async function prepararAlta(
   if (fueraPrevio && dto.confirmaDevengoFuera !== true) throw errorDevengoFuera(devengoPrevio, fueraPrevio);
   // Cliente y serie despues de las fechas: una factura rechazada no deja nada creado.
   // Con una original de la app (o una partida de 2026), el cliente es el suyo.
-  const cliente = await resolverCliente(dto.companyId, plan?.customerId ? { id: plan.customerId } : dto.customer);
+  const clientePedido = plan?.customerId ? { id: plan.customerId } : dto.customer;
+  // VERI*FACTU en pruebas o activo: el destinatario se comprueba antes de crear
+  // nada (tambien el cliente nuevo). Dentro de la transaccion se vuelve a
+  // comprobar (validarAlta), y esa es la que manda.
+  if (emiteLaApp && (await planRegistro(dto.companyId, ahora))) {
+    exigirDestinatarioVerifactu(tipoFactura, await fiscalPedido(dto.companyId, clientePedido));
+  }
+  const cliente = await resolverCliente(dto.companyId, clientePedido);
   // La serie de rectificativas de tickets (RT) se crea con la primera R5: esa se
   // resuelve al final de las comprobaciones, para que una R5 rechazada (signo,
   // limites...) no la deje creada. Las demas, aqui, como siempre.
@@ -1606,6 +1646,7 @@ async function prepararAlta(
     tipoRectificativa: bloque ? bloque.forma : null,
     motivoRectificacion: bloque ? bloque.explicacion || null : null,
     causaRectificacion: bloque?.motivo ?? null,
+    descripcionOperacion: leerDescripcionOperacion(dto.descripcionOperacion) ?? null,
     lineas: { create: lineasACrear(importes) },
   };
   // Confirmada la venta con la operacion en un periodo de la gestoria: el aviso queda en la respuesta.
@@ -1718,9 +1759,13 @@ async function crear(dto: CrearFacturaIngresoDTO, opciones: OpcionesAlta, intern
   // Emision directa: numero de la serie en la misma transaccion. Con una
   // rectificativa, sus previas se leen tras bloquear las originales con READ
   // COMMITTED (AISLAMIENTO_RECTIFICATIVAS), tambien en el lector y al emitir un borrador.
+  // Orden de bloqueo: originales -> serie -> cadena de VERI*FACTU. Todo con tx,
+  // una consulta detras de otra (Vercel trabaja con una sola conexion).
   const factura = await transaccion(async (tx) => {
     if (rect) await exigirRectificablesEnTx(tx, dto.companyId, rect);
     const numero = await asignarNumero(tx, dto.companyId, serie, fechaEmision);
+    // Emisor y cliente tal como salen en la factura (el PDF y el registro los toman de aqui).
+    const instantanea = await instantaneaDeEmision(tx, dto.companyId, String(comunes.customerId));
     const creada = await tx.incomeInvoice.create({
       data: {
         ...comunes,
@@ -1730,11 +1775,14 @@ async function crear(dto: CrearFacturaIngresoDTO, opciones: OpcionesAlta, intern
         estadoDocumento: ESTADO_FINAL,
         finalizadaEn: new Date(),
         estado: determinarEstado(fechaVencimiento),
+        instantaneaEmision: instantaneaComoJson(instantanea),
       },
-      include: INCLUIR,
+      select: { id: true },
     });
     await enlazar(tx, creada.id, true);
-    return creada;
+    // Registro de VERI*FACTU encadenado (si la empresa lo tiene en pruebas o activo).
+    await generarRegistroAlta(tx, { companyId: dto.companyId, facturaId: creada.id, instantanea });
+    return tx.incomeInvoice.findUniqueOrThrow({ where: { id: creada.id }, include: INCLUIR });
   }, rect ? AISLAMIENTO_RECTIFICATIVAS : undefined);
   return respuesta(factura, ctx);
 }
@@ -1783,6 +1831,7 @@ async function actualizarBorradorRectificativa(actual: FacturaConLineas, dto: Ac
     causaExencion: deActual(dto.causaExencion, actual.causaExencion),
     referenciaLegal: deActual(dto.referenciaLegal, actual.referenciaLegal),
     fechaOperacion: dto.fechaOperacion,
+    descripcionOperacion: dto.descripcionOperacion !== undefined ? dto.descripcionOperacion : actual.descripcionOperacion,
     rectificativa,
   };
   const a = await prepararAlta(merged, { origen: (actual.origen as OrigenFactura | null) ?? 'pantalla' }, { excluirId: actual.id });
@@ -1884,6 +1933,7 @@ export const incomeInvoicesService = {
       tipoFactura = t;
     }
     if (dto.observaciones !== undefined) data.observaciones = dto.observaciones;
+    if (dto.descripcionOperacion !== undefined) data.descripcionOperacion = leerDescripcionOperacion(dto.descripcionOperacion) ?? null;
     if (dto.formaPago !== undefined) data.formaPago = validarFormaPago(dto.formaPago);
     if (dto.plantillaId !== undefined) data.plantillaId = dto.plantillaId;
     const fechaEmision = dto.fechaEmision ? validarFecha(dto.fechaEmision, 'fecha de emisión') : actual.fechaEmision;
@@ -2069,6 +2119,7 @@ export const incomeInvoicesService = {
           referenciaLegal: fiscal.referenciaLegal,
           plantillaId: p.plantillaId,
           observaciones: p.observaciones,
+          descripcionOperacion: p.descripcionOperacion,
           esRectificativa: false,
           proformaId: p.id,
           // Nace de otro documento, como al duplicar (spec verifactu 2.8).
@@ -2342,6 +2393,7 @@ export const incomeInvoicesService = {
         tipoOperacion: o.tipoOperacion === 'EMPRESA_EXTRANJERA' ? null : o.tipoOperacion,
         causaExencion: o.causaExencion,
         referenciaLegal: o.referenciaLegal,
+        descripcionOperacion: o.descripcionOperacion,
         lineas: lineasDocGuardadas(o).map(({ cuentaContable, ...l }) => ({ ...l, cuenta: cuentaContable ?? null, moneda: o.moneda })),
       },
       { origen: 'copia' },

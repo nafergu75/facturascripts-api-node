@@ -180,12 +180,14 @@ export interface OpcionesRegistroAlta {
 export async function generarRegistroAlta(tx: TransaccionBD, o: OpcionesRegistroAlta) {
   const ahora = o.ahora ?? new Date();
   const { companyId, facturaId } = o;
+  // Sin VERI*FACTU en pruebas ni activo (lo normal hasta activarlo), una sola consulta.
+  const config = await tx.verifactuConfig.findUnique({ where: { companyId } });
+  if (!config || (config.estado !== 'PRUEBAS' && config.estado !== 'ACTIVO')) return null;
   const f = await tx.incomeInvoice.findFirst({
     where: { id: facturaId, companyId },
     include: { lineas: true, customer: true, enlacesRectifica: { orderBy: { createdAt: 'asc' } } },
   });
   if (!f) throw internalError('La factura emitida no está en la base de datos.', { codigo: 'VERIFACTU_FACTURA_NO_ENCONTRADA' });
-  const config = await tx.verifactuConfig.findUnique({ where: { companyId } });
   const legal = await tx.legalConfig.findUnique({ where: { companyId } });
   const ajustes = await tx.ajustesFiscales.findUnique({ where: { companyId }, select: { sii: true, criterioCaja: true } });
 
