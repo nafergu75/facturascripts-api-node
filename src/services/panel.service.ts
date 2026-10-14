@@ -188,7 +188,8 @@ export async function resumenPanel(companyId: string, p: PeriodoPanel, op: Opcio
     prisma.movement.count({ where: { companyId } }),
   ]);
   const personal = sumaMapa(nominas);
-  const ingresos = aCentimos(fiscal.ventas.base);
+  // Sin el IEEPNR que va a Hacienda (cuenta 47, si la empresa fuera contribuyente): no es un ingreso.
+  const ingresos = aCentimos(fiscal.ventas.base) - aCentimos(fiscal.ventas.ieepnrHacienda);
   // Sin las compras de inmovilizado: no son un gasto del año.
   const inmovilizado = aCentimos(fiscal.gastos.baseInmovilizado);
   const gastoFacturas = aCentimos(fiscal.gastos.base) - inmovilizado;
@@ -250,7 +251,7 @@ export async function porMesPanel(companyId: string, p: PeriodoPanel, op: Opcion
   for (const v of ventas) {
     const f = filas.get(mesDe(v.fecha));
     if (!f) continue;
-    f.venta += aCentimos(v.base);
+    f.venta += aCentimos(v.base) - aCentimos(v.ieepnrHacienda);
     f.nVenta += 1;
   }
   for (const g of gastos) {
@@ -383,7 +384,7 @@ export async function ingresosPorClientePanel(companyId: string, p: PeriodoPanel
   const porCliente = new Map<string, { centimos: number; facturas: number }>();
   for (const v of ventas) {
     const c = porCliente.get(v.customerId) ?? { centimos: 0, facturas: 0 };
-    porCliente.set(v.customerId, { centimos: c.centimos + aCentimos(v.base), facturas: c.facturas + 1 });
+    porCliente.set(v.customerId, { centimos: c.centimos + aCentimos(v.base) - aCentimos(v.ieepnrHacienda), facturas: c.facturas + 1 });
   }
   if (!porCliente.size) return [];
   const clientes = await prisma.customer.findMany({ where: { companyId, id: { in: [...porCliente.keys()] } }, select: { id: true, nombreFiscal: true, nifCif: true } });

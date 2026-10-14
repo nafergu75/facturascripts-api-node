@@ -8,7 +8,7 @@
  */
 import { prisma } from '../../../config/database';
 import { pendientesSegunFacturas } from '../../informesContables.service';
-import { resumenFiscalPeriodo, type ResumenFiscalPeriodo } from '../../resumenFiscal.service';
+import { resumenFiscalPeriodo, type ResumenFiscalPeriodo, type TotalesFacturas } from '../../resumenFiscal.service';
 import { aCentimos } from '../../../utils/money';
 import { listarCobros, type TipoDocumento } from '../../cobrosPagos.service';
 import { facturasPorCobrar } from '../../cobrosClientes.service';
@@ -169,7 +169,7 @@ export const deudaConProveedores: Ejecutor = async (ctx, h) => {
 
 const CRITERIO_FACTURADO = 'Las ventas cuentan por la fecha de la operación (si la factura no la lleva, por la de la factura) y una rectificativa por sustitución, solo por lo que cambia respecto a la original. Los gastos, por la fecha de la factura. Sin borradores ni proformas; importes sin IVA.';
 
-function fraseComparada(verbo: string, actual: ResumenFiscalPeriodo['ventas'], anterior: ResumenFiscalPeriodo['ventas'], anioAnterior: number): string {
+function fraseComparada(verbo: string, actual: TotalesFacturas, anterior: TotalesFacturas, anioAnterior: number): string {
   const v = variacion(actual.base, anterior.base);
   const comparacion = anterior.facturas
     ? `en el mismo periodo de ${anioAnterior}, ${eur(anterior.base)}${v ? ` (${v})` : ''}`

@@ -9,6 +9,9 @@
  *  - Con la cuenta del IEEPNR 4758 en los ajustes: 70x 6.974,88 y 4758 177,75.
  *  - Libro de expedidas, 303 del 1T, 390, 347, 349 (entrega intracomunitaria
  *    con IEEPNR), resumen fiscal y panel.
+ *  - La cuenta del IEEPNR se congela en la factura al emitirla: cambiar los
+ *    ajustes despues no cambia su asiento ni el de su anulacion.
+ *  - El panel no cuenta como ingreso el IEEPNR que va a una cuenta 47.
  *
  * Pasa tambien con connection_limit=1 (como en produccion).
  */
@@ -21,7 +24,7 @@ import { guardarAjustesFacturacion } from '../services/ajustesFacturacion.servic
 import { calcularModelo303, calcularModelo347, calcularModelo349, calcularModelo390 } from '../services/impuestosCalculo.service';
 import { periodoFiscal } from '../services/nominas/fiscal';
 import { resumenFiscalPeriodo } from '../services/resumenFiscal.service';
-import { periodoPanel, resumenPanel } from '../services/panel.service';
+import { ingresosPorClientePanel, periodoPanel, porMesPanel, resumenPanel } from '../services/panel.service';
 import { aCentimos } from '../utils/money';
 import { LINEAS_NZ004, TOTALES_NZ004 } from './muestra-nz004';
 
@@ -29,6 +32,8 @@ const SUFIJO = Date.now();
 const ES = `plantilla-a-conta-${SUFIJO}`;
 const EC = `plantilla-a-conta-4758-${SUFIJO}`;
 const EI = `plantilla-a-conta-intra-${SUFIJO}`;
+/** Para cambiar la cuenta del IEEPNR entre emitir y anular. */
+const EF = `plantilla-a-conta-cambio-${SUFIJO}`;
 const motor = new AccountingEngineController();
 const clientes: Record<string, string> = {};
 
@@ -78,6 +83,8 @@ beforeAll(async () => {
   // La cuenta del IEEPNR de EC (contribuyente): 4758, en su plan.
   await prisma.chartOfAccounts.create({ data: { companyId: EC, codigo: '4758', nombre: 'HP acreedora por IEEPNR', grupo: 4, nivel: 4, naturaleza: 'PASIVO', tipoUso: 'BALANCE' } });
   await guardarAjustesFacturacion(EC, 'u-test', { ieepnrCuenta: '4758' });
+  await empresa(EF, '00000000T');
+  await prisma.chartOfAccounts.create({ data: { companyId: EF, codigo: '4758', nombre: 'HP acreedora por IEEPNR', grupo: 4, nivel: 4, naturaleza: 'PASIVO', tipoUso: 'BALANCE' } });
   ventaId = (await emitir(ES)).id;
 });
 
@@ -160,8 +167,54 @@ describe('libro de expedidas e impuestos', () => {
 
   it('resumen fiscal y panel: la base lleva el IEEPNR', async () => {
     const r = await resumenFiscalPeriodo(ES, '2026-01-01', '2026-03-31');
-    expect([r.ventas.base, r.ventas.iva, r.ventas.total]).toEqual([7152.63, 1502.05, 8654.68]);
+    expect([r.ventas.base, r.ventas.iva, r.ventas.total, r.ventas.ieepnrHacienda]).toEqual([7152.63, 1502.05, 8654.68, 0]);
     const p = await resumenPanel(ES, periodoPanel({ anio: 2026 }), { incluirNominas: false });
     expect(p.totalIncome).toBe(7152.63);
+  });
+
+  it('panel con la cuenta del IEEPNR de Hacienda (4758): el IEEPNR no cuenta como ingreso; el resumen fiscal sigue con la base', async () => {
+    // EC: tres NZ004_26 y una S que baja el IEEPNR 1,39, todas con la 4758.
+    const r = await resumenFiscalPeriodo(EC, '2026-01-01', '2026-12-31');
+    expect([r.ventas.base, r.ventas.ieepnrHacienda]).toEqual([21456.5, 531.86]);
+    const periodo = periodoPanel({ anio: 2026 });
+    const p = await resumenPanel(EC, periodo, { incluirNominas: false });
+    // Lo mismo que suman las 70x de sus asientos: 3 × 6.974,88.
+    expect(p.totalIncome).toBe(20924.64);
+    const meses = await porMesPanel(EC, periodo, { incluirNominas: false });
+    expect(Math.round(meses.reduce((a, m) => a + m.income * 100, 0)) / 100).toBe(20924.64);
+    expect((await ingresosPorClientePanel(EC, periodo)).map((c) => c.total)).toEqual([20924.64]);
+  });
+});
+
+describe('la cuenta del IEEPNR se congela al emitir', () => {
+  it('emitida sin cuenta y anulada con la 4758 ya puesta: la anulacion va a las 70x, como la original', async () => {
+    const o = await emitir(EF);
+    await asiento(EF, o.id);
+    await guardarAjustesFacturacion(EF, 'u-test', { ieepnrCuenta: '4758' });
+    const r = await incomeInvoicesService.crearRectificativa(EF, o.id, { motivo: 'Anulación' });
+    expect(await asiento(EF, r.id)).toEqual({ '430N': [-865468, 0], '701': [0, -54405], '700': [0, -660858], '477': [0, -150205] });
+    const fila = await prisma.incomeInvoice.findUniqueOrThrow({ where: { id: o.id } });
+    expect(fila.ieepnrCuenta).toBeNull();
+  });
+
+  it('emitida con la 4758 y anulada sin ella: la anulacion devuelve el IEEPNR a la 4758', async () => {
+    const o = await emitir(EF);
+    expect((await prisma.incomeInvoice.findUniqueOrThrow({ where: { id: o.id } })).ieepnrCuenta).toBe('4758');
+    await guardarAjustesFacturacion(EF, 'u-test', { ieepnrCuenta: null });
+    // La original, contabilizada despues del cambio, sigue con la 4758.
+    expect(await asiento(EF, o.id)).toMatchObject({ '4758': [0, 17775] });
+    const r = await incomeInvoicesService.crearRectificativa(EF, o.id, { motivo: 'Anulación' });
+    expect((await prisma.incomeInvoice.findUniqueOrThrow({ where: { id: r.id } })).ieepnrCuenta).toBe('4758');
+    expect(await asiento(EF, r.id)).toEqual({ '430N': [-865468, 0], '701': [0, -49766], '700': [0, -647722], '4758': [0, -17775], '477': [0, -150205] });
+  });
+
+  it('un borrador toma la cuenta de los ajustes al emitirse, no la de cuando se guardo', async () => {
+    const b = await incomeInvoicesService.crearIngreso({ companyId: EF, customer: { id: clientes[EF] }, fechaEmision: '2026-03-04', borrador: true, lineas: lineasNz() } as never);
+    expect((await prisma.incomeInvoice.findUniqueOrThrow({ where: { id: b.id } })).ieepnrCuenta).toBeNull();
+    await guardarAjustesFacturacion(EF, 'u-test', { ieepnrCuenta: '4758' });
+    const f = await incomeInvoicesService.finalizar(EF, b.id, { fechaEmision: '2026-03-04' });
+    expect((await prisma.incomeInvoice.findUniqueOrThrow({ where: { id: f.id } })).ieepnrCuenta).toBe('4758');
+    expect(await asiento(EF, f.id)).toMatchObject({ '4758': [0, 17775] });
+    await guardarAjustesFacturacion(EF, 'u-test', { ieepnrCuenta: null });
   });
 });

@@ -45,10 +45,16 @@ export interface TotalesGastos extends TotalesFacturas {
   facturasConInmovilizado: number;
 }
 
+/** Las ventas del resumen, con el IEEPNR que va a Hacienda (ver VentaResumen.ieepnrHacienda). */
+export interface TotalesVentas extends TotalesFacturas {
+  /** IEEPNR de las ventas cuya cuenta del IEEPNR es de Hacienda (47). Va dentro de `base`; el panel lo resta de los ingresos. */
+  ieepnrHacienda: number;
+}
+
 export interface ResumenFiscalPeriodo {
   desde: string;
   hasta: string;
-  ventas: TotalesFacturas;
+  ventas: TotalesVentas;
   gastos: TotalesGastos;
   /** Orientativo: el 303 real puede ajustar IVA no deducible, prorrata o compensaciones. */
   ivaResultado: number;
@@ -109,6 +115,38 @@ export interface VentaResumen {
   iva: number;
   retencion: number;
   total: number;
+  /**
+   * IEEPNR de la factura (plantilla A, con su signo) cuando su cuenta del IEEPNR
+   * es de Hacienda (47: la empresa es contribuyente y lo ingresa ella); 0 en el
+   * resto. Esta dentro de `base` (es base del IVA), pero no es un ingreso: el
+   * panel lo resta. Una S con su original en la app, por su diferencia.
+   */
+  ieepnrHacienda: number;
+}
+
+/**
+ * IEEPNR que va a Hacienda (ver VentaResumen.ieepnrHacienda) de las ventas
+ * cuya cuenta del IEEPNR empieza por 47, en euros y por factura; una S con su
+ * original en la app, menos el de la original. Casi nunca hay: sin ellas, sin
+ * consultas.
+ */
+async function ieepnrAHacienda(
+  companyId: string,
+  ventas: Array<{ id: string; esRectificativa: boolean; tipoRectificativa: string | null; facturaOriginalId: string | null; ieepnrCuenta: string | null }>,
+  conDiferencia: Set<string>,
+): Promise<Map<string, number>> {
+  const out = new Map<string, number>();
+  const de47 = ventas.filter((v) => v.ieepnrCuenta?.startsWith('47'));
+  if (!de47.length) return out;
+  const sust = de47.filter((v) => conDiferencia.has(v.id));
+  const originales = sust.length ? await originalesDeSustituciones(companyId, sust) : new Map<string, { lineas: Array<{ ieepnrImporte?: unknown }> }>();
+  const lineas = await prisma.incomeInvoiceLine.findMany({ where: { invoiceId: { in: de47.map((v) => v.id) } }, select: { invoiceId: true, ieepnrImporte: true } });
+  const centimos = (ls: Array<{ ieepnrImporte?: unknown }>) => ls.reduce((a, l) => a + aCentimos(Number(l.ieepnrImporte ?? 0)), 0);
+  for (const v of de47) {
+    const o = originales.get(v.id) as { lineas: Array<{ ieepnrImporte?: unknown }> } | undefined;
+    out.set(v.id, (centimos(lineas.filter((l) => l.invoiceId === v.id)) - (o ? centimos(o.lineas) : 0)) / 100);
+  }
+  return out;
 }
 
 /**
@@ -160,10 +198,12 @@ export async function ventasDelResumen(companyId: string, rango: RangoFechas, cu
       ivaTotal: true,
       retencionTotal: true,
       totalFactura: true,
+      ieepnrCuenta: true,
     },
   });
   const delPeriodo = filas.map((f) => ({ ...f, fecha: fechaDevengoVenta(f) })).filter((f) => f.fecha >= desde && f.fecha <= hasta);
   const diferencias = await diferenciasDeSustituciones(companyId, delPeriodo);
+  const hacienda = await ieepnrAHacienda(companyId, delPeriodo, new Set(diferencias.keys()));
   return delPeriodo.map((f) => {
     const d = diferencias.get(f.id);
     return {
@@ -174,6 +214,7 @@ export async function ventasDelResumen(companyId: string, rango: RangoFechas, cu
       iva: d ? d.cuota : n(f.ivaTotal),
       retencion: d ? d.retencion : n(f.retencionTotal),
       total: d ? d.total : n(f.totalFactura),
+      ieepnrHacienda: hacienda.get(f.id) ?? 0,
     };
   });
 }
@@ -228,14 +269,19 @@ export async function inmovilizadoDeGastos(
 /** Las ventas del periodo sumadas, con la misma forma que el aggregate de los gastos. */
 async function ventasDelPeriodo(companyId: string, desde: string, hasta: string, customerId?: string) {
   const ventas = await ventasDelResumen(companyId, { desde, hasta }, customerId);
-  const c = { base: 0, iva: 0, retencion: 0, total: 0 };
+  const c = { base: 0, iva: 0, retencion: 0, total: 0, ieepnrHacienda: 0 };
   for (const v of ventas) {
     c.base += aCentimos(v.base);
     c.iva += aCentimos(v.iva);
     c.retencion += aCentimos(v.retencion);
     c.total += aCentimos(v.total);
+    c.ieepnrHacienda += aCentimos(v.ieepnrHacienda);
   }
-  return { _sum: { baseTotal: c.base / 100, ivaTotal: c.iva / 100, retencionTotal: c.retencion / 100, totalFactura: c.total / 100 }, _count: ventas.length };
+  return {
+    _sum: { baseTotal: c.base / 100, ivaTotal: c.iva / 100, retencionTotal: c.retencion / 100, totalFactura: c.total / 100 },
+    _count: ventas.length,
+    ieepnrHacienda: c.ieepnrHacienda / 100,
+  };
 }
 
 /**
@@ -249,7 +295,7 @@ export async function resumenFiscalPeriodo(companyId: string, desde: string, has
   // Con un filtro por cliente no hay gastos que mirar (ni ventas con uno por proveedor).
   const sinVentas = !!filtro && !filtro.customerId;
   const sinGastos = !!filtro && !filtro.supplierId;
-  const vacio = { _sum: { baseTotal: 0, ivaTotal: 0, retencionTotal: 0, totalFactura: 0 }, _count: 0 };
+  const vacio = { _sum: { baseTotal: 0, ivaTotal: 0, retencionTotal: 0, totalFactura: 0 }, _count: 0, ieepnrHacienda: 0 };
   const [ventas, gastos, inmovilizado] = await Promise.all([
     sinVentas ? Promise.resolve(vacio) : ventasDelPeriodo(companyId, desde, hasta, filtro?.customerId),
     sinGastos
@@ -269,7 +315,7 @@ export async function resumenFiscalPeriodo(companyId: string, desde: string, has
     retencion: n(a._sum.retencionTotal),
     total: n(a._sum.totalFactura),
   });
-  const v = totales(ventas);
+  const v: TotalesVentas = { ...totales(ventas), ieepnrHacienda: ventas.ieepnrHacienda };
   const g: TotalesGastos = {
     ...totales(gastos),
     baseInmovilizado: n(inmovilizado.base),
