@@ -273,7 +273,7 @@ describe('ventas: rellenar a mano y registrar con las correcciones', () => {
     expect(audit.meta).toMatchObject({ manual: true, lecturaId: id, cambios: expect.arrayContaining([{ campo: 'numero', leido: null, puesto: 'M-2026-1' }]) });
   });
 
-  it('LISTA → manual: guarda lo leído antes y vacía el documento del lector', async () => {
+  it('LISTA → manual: guarda lo leído antes y vacía el documento del lector; al registrarla, lo leído va al AuditLog', async () => {
     const data = await leida('ingresos-extractor');
     const m = await manual('ingresos-extractor', data.lecturaId);
     expect(m.body.data).toMatchObject({ estado: 'LISTA', ingreso: { documentId: data.ingreso.documentId, lineas: [], errores: [] }, lectura: { origen: 'MANUAL' } });
@@ -282,6 +282,24 @@ describe('ventas: rellenar a mano y registrar con las correcciones', () => {
     const doc = await prisma.incomeReaderDocument.findUniqueOrThrow({ where: { id: data.ingreso.documentId } });
     expect((doc.parsedData as { amounts: { bases: unknown[] }; invoice: { number: string | null } }).invoice.number).toBeNull();
     expect((doc.parsedData as { amounts: { bases: unknown[] } }).amounts.bases).toEqual([]);
+
+    // La purga de 90 días vacía el resultado de las confirmadas: lo leído antes queda en el AuditLog.
+    const r = await request(app())
+      .post('/ingresos-extractor/confirmar')
+      .send({
+        documentId: data.ingreso.documentId,
+        clienteId: cliente,
+        correcciones: { numero: 'M-2026-2', fechaEmision: '2026-03-04', lineas: [{ descripcion: 'Folletos', base: 200, tipoIva: 21 }], total: 242 },
+      });
+    expect(r.status).toBe(201);
+    const audit = await prisma.auditLog.findFirstOrThrow({ where: { companyId: E, action: 'LECTOR_VENTA_CORREGIDA', resourceId: r.body.data.facturaId } });
+    const cambios = (audit.meta as { manual: boolean; cambios: Array<{ campo: string }> }).cambios;
+    expect(cambios).toEqual(
+      expect.arrayContaining([{ campo: 'numero', leido: 'F2026/0012', puesto: 'M-2026-2' }, expect.objectContaining({ campo: 'lineas', leido: [{ tipoIva: 21, base: 200, cuota: 42 }] })]),
+    );
+    // La fecha y el total son los leídos: no cuentan como cambio.
+    expect(cambios.map((c) => c.campo)).not.toEqual(expect.arrayContaining(['fechaEmision']));
+    expect(cambios.map((c) => c.campo)).not.toContain('total');
   });
 
   it('«¿De dónde es el cliente?» en una rellenada a mano solo guarda la elección; un cliente de fuera de la UE sin NIF leído se registra', async () => {
