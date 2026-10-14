@@ -11,8 +11,19 @@ import {
   serieCompatible,
   type NecesidadPlantilla,
 } from './series.service';
-import { admiteEnvases, ivaPorTipo, limpiarTextoAdicional, normalizarPlantillaId, type PlantillaVentaId } from '../domain/plantillasFactura';
+import {
+  admiteCeramica,
+  admiteEnvases,
+  admitePesoBruto,
+  admiteTextoAdicional,
+  ivaPorTipo,
+  limpiarTextoAdicional,
+  normalizarPlantillaId,
+  type PlantillaVentaId,
+} from '../domain/plantillasFactura';
 import { calcularIeepnr, redondearKg, resumenEnvases, type ResumenEnvases } from '../domain/ieepnr';
+import { lineaConCeramica, resumenCeramica, type DatosCeramicaLinea, type ResumenCeramica, type UnidadPrecio } from '../domain/ceramica';
+import { aplicarCeramica, exigirCabeceraCeramica, leerCabeceraCeramica, leerCeramicaLinea } from './ventasCeramica';
 import type { TipoDocumentoSerie } from '../domain/series.model';
 import { listarCobros, recalcularEstadoCobroVenta, registrarCobroFactura, tieneCobrosActivos, type DatosCobro } from './cobrosPagos.service';
 import { comprobarFechaAbierta } from './periodos.service';
@@ -165,8 +176,13 @@ export interface CrearFacturaIngresoDTO {
    * estandar). Se deja en el tipo por compatibilidad con clientes antiguos.
    */
   plantillaId?: string;
-  /** Plantilla A: peso bruto en kg escrito a mano (>= 0 y hasta 3 decimales). */
+  /** Plantillas A y B: peso bruto en kg escrito a mano (>= 0 y hasta 3 decimales). */
   pesoBrutoKg?: number | null;
+  /** Plantilla B: obra o proyecto del cliente (200 caracteres como mucho). */
+  obra?: string | null;
+  /** Plantilla B: peso neto en kg escrito a mano (>= 0 y hasta 3 decimales). */
+  pesoNetoKg?: number | null;
+  /** Sin el campo (undefined), las observaciones por defecto de la serie, si las tiene. */
   observaciones?: string;
   /** true: se guarda como borrador, sin numero. Por defecto se emite (final). */
   borrador?: boolean;
@@ -237,6 +253,19 @@ export interface CrearLineaIngresoDTO {
   textoAdicional?: string | null;
   /** Se ignora: el IEEPNR lo calcula el servidor (kg x tipo). */
   ieepnrImporte?: unknown;
+  /** Plantilla B: palets y cajas (enteros), m2, piezas y peso (hasta 3 decimales). */
+  palets?: number | null;
+  cajas?: number | null;
+  metros2?: number | null;
+  piezas?: number | null;
+  pesoKg?: number | null;
+  /** Plantilla B: formato (23,3x120) y calidad (1). */
+  formato?: string | null;
+  calidad?: string | null;
+  /** Plantilla B: unidad del precio (M2, PIEZA o UNIDAD; UNIDAD si no llega). `cantidad` es la cantidad de esa unidad. */
+  unidadPrecio?: UnidadPrecio | string | null;
+  /** Plantilla B: la linea es el cargo de palets de madera (va en el pie del PDF). */
+  cargoPalets?: boolean;
 }
 
 /** Cambios admitidos en un borrador (todo opcional). */
@@ -260,6 +289,8 @@ export type ActualizarBorradorDTO = Partial<
     | 'referenciaLegal'
     | 'rectificativa'
     | 'pesoBrutoKg'
+    | 'obra'
+    | 'pesoNetoKg'
   >
 >;
 
@@ -322,6 +353,12 @@ export interface IncomeInvoiceResp {
   ieepnrPorKg: number | null;
   /** Totales de envases (kg, packs, uds e IEEPNR); null si la plantilla no lleva envases. */
   resumenEnvases: ResumenEnvases | null;
+  /** Plantilla B: obra o proyecto del cliente. */
+  obra: string | null;
+  /** Plantilla B: peso neto en kg escrito a mano. */
+  pesoNetoKg: number | null;
+  /** Plantilla B: totales del pie (palets, cajas, m2, piezas, peso y cargo de palets, en la moneda de la factura); null si no es la B. */
+  resumenCeramica: ResumenCeramica | null;
   observaciones?: string;
   esRectificativa: boolean;
   facturaOriginalId?: string;
@@ -384,11 +421,22 @@ export interface LineaIngresoResp {
    * baseLineDoc - ieepnrImporte.
    */
   ieepnrImporte: number;
-  /** Texto adicional bajo el concepto. */
+  /** Texto adicional bajo el concepto (plantillas A y B). */
   textoAdicional: string | null;
+  /** Plantilla B: palets, cajas, m2, piezas, formato, calidad, peso y unidad del precio (null si no los lleva). */
+  palets: number | null;
+  cajas: number | null;
+  metros2: number | null;
+  piezas: number | null;
+  formato: string | null;
+  calidad: string | null;
+  pesoKg: number | null;
+  unidadPrecio: string | null;
+  /** Plantilla B: es el cargo de palets de madera. */
+  cargoPalets: boolean;
 }
 
-const round2 = (n: number): number => Math.round((n + Number.EPSILON) * 100) / 100;
+const round2 =(n: number): number => Math.round((n + Number.EPSILON) * 100) / 100;
 /** Hoy en hora peninsular: el vencimiento y la fecha de emisión por defecto no dependen de la zona del servidor. */
 const hoyISO = (): string => hoyEspana();
 const FECHA_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -484,6 +532,11 @@ function aRespuesta(f: FacturaConLineas, ctx: ContextoRespuesta): IncomeInvoiceR
     resumenEnvases: admiteEnvases(f.plantillaId)
       ? resumenEnvases(f.lineas.map((l) => ({ cantidad: l.cantidad, packs: l.packs, kgPlastico: l.kgPlastico, ieepnrImporte: l.ieepnrImporte })))
       : null,
+    obra: f.obra ?? null,
+    pesoNetoKg: f.pesoNetoKg ?? null,
+    resumenCeramica: admiteCeramica(f.plantillaId)
+      ? resumenCeramica(f.lineas.map((l) => ({ ...ceramicaGuardada(l), cantidad: l.cantidad, baseLine: l.baseLineDoc ?? l.baseLine })))
+      : null,
     observaciones: f.observaciones ?? undefined,
     esRectificativa: f.esRectificativa,
     facturaOriginalId: f.facturaOriginalId ?? undefined,
@@ -515,6 +568,15 @@ function aRespuesta(f: FacturaConLineas, ctx: ContextoRespuesta): IncomeInvoiceR
       kgPlastico: l.kgPlastico ?? null,
       ieepnrImporte: l.ieepnrImporte ?? 0,
       textoAdicional: l.textoAdicional ?? null,
+      palets: l.palets ?? null,
+      cajas: l.cajas ?? null,
+      metros2: l.metros2 ?? null,
+      piezas: l.piezas ?? null,
+      formato: l.formato ?? null,
+      calidad: l.calidad ?? null,
+      pesoKg: l.pesoKg ?? null,
+      unidadPrecio: l.unidadPrecio ?? null,
+      cargoPalets: l.cargoPalets ?? false,
     })),
   };
 }
@@ -700,9 +762,11 @@ function validarLineas(lineas: CrearLineaIngresoDTO[] | undefined): LineaEntrada
     tipoRetencion: Number(l.tipoRetencion ?? 0),
     productoServicioId: l.productoServicioId,
     ...(cuentaDeLinea(l.cuenta) ? { cuentaContable: cuentaDeLinea(l.cuenta)! } : {}),
-    // Plantilla A: solo se lee y se comprueba el formato. Si la plantilla los
-    // admite lo decide aplicarEnvases; el IEEPNR del cuerpo nunca se usa.
+    // Plantillas A y B: solo se lee y se comprueba el formato. Si la plantilla
+    // los admite lo deciden aplicarEnvases y aplicarCeramica; el IEEPNR del
+    // cuerpo nunca se usa.
     ...leerEnvasesLinea(l, i),
+    ...leerCeramicaLinea(l as unknown as Record<string, unknown>, i),
   }));
 }
 
@@ -762,10 +826,20 @@ function leerPesoBruto(v: unknown): number | null | undefined {
 const lineaConEnvases = (l: { packs?: number | null; kgPlastico?: number | null; textoAdicional?: string | null }) =>
   (l.packs !== undefined && l.packs !== null) || (l.kgPlastico !== undefined && l.kgPlastico !== null) || !!l.textoAdicional;
 
-/** 400 PLANTILLA_SIN_ENVASES: la plantilla de la serie no lleva envases. */
+/**
+ * 400 PLANTILLA_SIN_ENVASES: la plantilla de la serie no lleva envases (packs
+ * o kg: solo la A) o no lleva texto adicional ni peso bruto (la A y la B si).
+ */
 function errorSinEnvases(campo: string, n?: number) {
+  const linea = n ? `Línea ${n}: ` : '';
+  if (campo.endsWith('textoAdicional') || campo === 'pesoBrutoKg') {
+    return badRequest(
+      `${linea}la plantilla de esta serie no lleva ${campo === 'pesoBrutoKg' ? 'peso bruto' : 'texto adicional bajo el concepto'}. Quítalo o elige una serie con la plantilla A (envases) o la B (cerámica).`,
+      { codigo: 'PLANTILLA_SIN_ENVASES', campo },
+    );
+  }
   return badRequest(
-    `${n ? `Línea ${n}: ` : ''}la plantilla de esta serie no lleva packs, kg de plástico, texto adicional ni peso bruto. Quita esos datos o elige una serie con la plantilla A (envases).`,
+    `${linea}la plantilla de esta serie no lleva packs, kg de plástico, texto adicional ni peso bruto. Quita esos datos o elige una serie con la plantilla A (envases).`,
     { codigo: 'PLANTILLA_SIN_ENVASES', campo },
   );
 }
@@ -791,8 +865,9 @@ export interface OpcionesEnvases {
 
 /**
  * Datos de envase de las lineas segun la plantilla (puro):
- *  - sin envases (estandar, B, C): ninguna linea puede llevar packs, kg ni
- *    texto (400 PLANTILLA_SIN_ENVASES) y el IEEPNR queda fuera;
+ *  - sin envases (estandar, B, C): ninguna linea puede llevar packs ni kg (400
+ *    PLANTILLA_SIN_ENVASES) y el IEEPNR queda fuera; el texto adicional solo
+ *    en la B (en la estandar y la C, 400);
  *  - con envases (A): sin descuento (400 DESCUENTO_NO_ADMITIDO), kg y packs con
  *    el signo de la cantidad (400 SIGNO_ENVASES) y el IEEPNR = kg x tipo si la
  *    empresa lo repercute (0 si no); con IEEPNR, solo en euros (400 IEEPNR_SOLO_EUROS).
@@ -805,9 +880,13 @@ export function aplicarEnvases(lineas: LineaEntrada[], o: OpcionesEnvases): { li
     lineas.forEach((l, i) => {
       if (l.packs !== undefined && l.packs !== null) throw errorSinEnvases(`lineas.${i}.packs`, i + 1);
       if (l.kgPlastico !== undefined && l.kgPlastico !== null) throw errorSinEnvases(`lineas.${i}.kgPlastico`, i + 1);
-      if (l.textoAdicional) throw errorSinEnvases(`lineas.${i}.textoAdicional`, i + 1);
+      if (l.textoAdicional && !admiteTextoAdicional(o.plantilla)) throw errorSinEnvases(`lineas.${i}.textoAdicional`, i + 1);
     });
-    return { lineas: lineas.map(({ ieepnrImporte: _i, packs: _p, kgPlastico: _k, textoAdicional: _t, ...resto }) => resto), ieepnrPorKg: null };
+    const conTexto = admiteTextoAdicional(o.plantilla);
+    return {
+      lineas: lineas.map(({ ieepnrImporte: _i, packs: _p, kgPlastico: _k, textoAdicional: t, ...resto }) => (conTexto && t ? { ...resto, textoAdicional: t } : resto)),
+      ieepnrPorKg: null,
+    };
   }
   const recalcular = o.recalcular !== false;
   const out = lineas.map((l, i) => {
@@ -854,6 +933,21 @@ export function aplicarEnvases(lineas: LineaEntrada[], o: OpcionesEnvases): { li
   }
   const conTipo = recalcular ? o.repercute : out.some((l) => aCentimos(Number(l.ieepnrImporte ?? 0)) !== 0) || o.repercute;
   return { lineas: out, ieepnrPorKg: conTipo ? o.tipo : null };
+}
+
+/**
+ * Cuenta de los ajustes para el cargo de palets (plantilla B) si alguna linea
+ * del cargo va sin cuenta y la de los ajustes sigue valiendo (70x activa en el
+ * plan): si no, null y la linea va a la de ventas de siempre. Solo lee.
+ */
+async function cuentaPaletsValida(companyId: string, plantilla: PlantillaVentaId, lineas: LineaEntrada[], cuenta: string | null): Promise<string | null> {
+  if (!cuenta || !admiteCeramica(plantilla) || !lineas.some((l) => l.cargoPalets && !l.cuentaContable)) return null;
+  return (await problemaCuentasLinea(companyId, 'venta', [cuenta])) ? null : cuenta;
+}
+
+/** Observaciones por defecto de la serie (Configuracion > Series), o undefined. */
+async function observacionesDeSerie(companyId: string, codigo: string): Promise<string | undefined> {
+  return (await buscarSeriePorCodigo(companyId, codigo))?.observacionesDefecto ?? undefined;
 }
 
 /** Plantilla que usa la serie de una empresa por su codigo, o la estandar si no existe. */
@@ -1005,7 +1099,29 @@ function lineasDocGuardadas(f: FacturaConLineas): LineaEntrada[] {
     productoServicioId: l.productoServicioId ?? undefined,
     ...(l.accountCode ? { cuentaContable: l.accountCode } : {}),
     ...envasesGuardados(l),
+    ...ceramicaGuardada(l),
   }));
+}
+
+/** Datos de ceramica guardados de una linea (plantilla B), solo los que tiene. */
+function ceramicaGuardada(l: {
+  palets: number | null;
+  cajas: number | null;
+  metros2: number | null;
+  piezas: number | null;
+  formato: string | null;
+  calidad: string | null;
+  pesoKg: number | null;
+  unidadPrecio: string | null;
+  cargoPalets: boolean;
+}): DatosCeramicaLinea {
+  const out: DatosCeramicaLinea = {};
+  for (const k of ['palets', 'cajas', 'metros2', 'piezas', 'pesoKg'] as const) if (l[k] !== null && l[k] !== undefined) out[k] = Number(l[k]);
+  if (l.formato) out.formato = l.formato;
+  if (l.calidad) out.calidad = l.calidad;
+  if (l.unidadPrecio) out.unidadPrecio = l.unidadPrecio as UnidadPrecio;
+  if (l.cargoPalets) out.cargoPalets = true;
+  return out;
 }
 
 /**
@@ -1022,16 +1138,19 @@ function envasesGuardados(l: { packs: number | null; kgPlastico: number | null; 
   };
 }
 
-/** La factura guardada lleva datos de envase (en sus lineas o el peso bruto). */
-const facturaConEnvases = (f: FacturaConLineas) => f.pesoBrutoKg !== null || f.lineas.some((l) => lineaConEnvases(l));
+/** La factura guardada lleva datos de ceramica (plantilla B: en sus lineas, la obra o el peso neto). */
+const facturaConCeramica = (f: FacturaConLineas) =>
+  !!f.obra || (f.pesoNetoKg !== null && f.pesoNetoKg !== undefined) || f.lineas.some((l) => lineaConCeramica(ceramicaGuardada(l)));
 
 /**
  * Lo que una copia de la factura (duplicar, pasar una proforma a factura)
- * necesita de la plantilla de su serie: con envases, la A; con descuento por
- * linea, una que no sea la A (que no lo lleva); si no, nada.
+ * necesita de la plantilla de su serie: con ceramica, la B; con envases (packs,
+ * kg, texto adicional o peso bruto), la A; con descuento por linea, una que lo
+ * admita (ni la A ni la B); si no, nada.
  */
 function necesidadPlantilla(f: FacturaConLineas): NecesidadPlantilla | null {
-  if (facturaConEnvases(f)) return 'envases';
+  if (facturaConCeramica(f)) return 'ceramica';
+  if (f.pesoBrutoKg !== null || f.lineas.some((l) => lineaConEnvases(l))) return 'envases';
   return f.lineas.some((l) => aCentimos(Number(l.descuentoPorcentaje ?? 0)) !== 0) ? 'descuento' : null;
 }
 
@@ -1049,6 +1168,7 @@ function importesGuardados(f: FacturaConLineas): ImportesFactura {
       productoServicioId: l.productoServicioId ?? undefined,
       ...(l.accountCode ? { cuentaContable: l.accountCode } : {}),
       ...envasesGuardados(l),
+      ...ceramicaGuardada(l),
       doc: {
         precioUnitario: l.precioUnitarioDoc ?? l.precioUnitario,
         baseLine: l.baseLineDoc ?? l.baseLine,
@@ -1112,6 +1232,16 @@ function lineasACrear(imp: ImportesFactura) {
     kgPlastico: l.kgPlastico ?? null,
     ieepnrImporte: l.ieepnrImporte ?? null,
     textoAdicional: l.textoAdicional ?? null,
+    // Plantilla B: palets, cajas, m2, piezas, formato, calidad, peso, unidad del precio y cargo de palets.
+    palets: l.palets ?? null,
+    cajas: l.cajas ?? null,
+    metros2: l.metros2 ?? null,
+    piezas: l.piezas ?? null,
+    formato: l.formato ?? null,
+    calidad: l.calidad ?? null,
+    pesoKg: l.pesoKg ?? null,
+    unidadPrecio: l.unidadPrecio ?? null,
+    cargoPalets: l.cargoPalets ?? false,
     ...importesLinea(l),
   }));
 }
@@ -1534,7 +1664,13 @@ function esEspejoDe(lineas: LineaEntrada[], original: FacturaConLineas): boolean
       (l.cuentaContable ?? null) === (x.cuentaContable ?? null) &&
       // Plantilla A: los kg y los packs, tambien con el signo cambiado.
       Math.round(Number(l.kgPlastico ?? 0) * 1000) === -Math.round(Number(x.kgPlastico ?? 0) * 1000) &&
-      Number(l.packs ?? 0) === -Number(x.packs ?? 0)
+      Number(l.packs ?? 0) === -Number(x.packs ?? 0) &&
+      // Plantilla B: las medidas con el signo cambiado; el resto, igual.
+      (['palets', 'cajas', 'metros2', 'piezas', 'pesoKg'] as const).every((k) => Math.round(Number(l[k] ?? 0) * 1000) === -Math.round(Number(x[k] ?? 0) * 1000)) &&
+      (l.formato ?? null) === (x.formato ?? null) &&
+      (l.calidad ?? null) === (x.calidad ?? null) &&
+      (l.unidadPrecio ?? null) === (x.unidadPrecio ?? null) &&
+      !!l.cargoPalets === !!x.cargoPalets
     );
   });
 }
@@ -1799,7 +1935,13 @@ async function prepararAlta(
   const plantilla: PlantillaVentaId =
     origen === 'lector' ? 'default' : deOriginal ? deOriginal.plantilla : await plantillaDelAlta(dto.companyId, dto, { esRectificativa, tipoFactura });
   const pesoBrutoKg = leerPesoBruto(dto.pesoBrutoKg) ?? null;
-  if (pesoBrutoKg !== null && !admiteEnvases(plantilla)) throw errorSinEnvases('pesoBrutoKg');
+  if (pesoBrutoKg !== null && !admitePesoBruto(plantilla)) throw errorSinEnvases('pesoBrutoKg');
+  // Plantilla B: obra y peso neto (solo con la B) y los datos de ceramica de
+  // las lineas, antes que los envases (asi una linea de la B en otra serie dice
+  // que no lleva ceramica, no que no lleva texto adicional).
+  const cabeceraB = leerCabeceraCeramica(dto);
+  exigirCabeceraCeramica(cabeceraB, plantilla);
+  lineas = aplicarCeramica(lineas, { plantilla, cuentaPalets: await cuentaPaletsValida(dto.companyId, plantilla, lineas, ajustes.cuentaPalets) });
   const envases = aplicarEnvases(lineas, {
     plantilla,
     repercute: deOriginal ? deOriginal.repercute : perfil.espanola && ajustes.ieepnrRepercute,
@@ -1932,10 +2074,13 @@ async function prepararAlta(
     ...(original && !fiscal.tipoOperacion && !esTipoOperacion(original.tipoOperacion) ? { paisClienteLegacy: paisCongelado(original) } : {}),
     // La plantilla la fija el servidor (dto.plantillaId se ignora).
     plantillaId: plantilla,
-    pesoBrutoKg: admiteEnvases(plantilla) ? pesoBrutoKg : null,
+    pesoBrutoKg: admitePesoBruto(plantilla) ? pesoBrutoKg : null,
+    obra: admiteCeramica(plantilla) ? (cabeceraB.obra ?? null) : null,
+    pesoNetoKg: admiteCeramica(plantilla) ? (cabeceraB.pesoNetoKg ?? null) : null,
     ieepnrPorKg: envases.ieepnrPorKg,
     ieepnrCuenta: cuentaIeepnrFactura(envases.ieepnrPorKg, original, ajustes),
-    observaciones: dto.observaciones,
+    // Sin observaciones en el cuerpo (ni siquiera vacias), las de la serie por defecto (no en las del lector).
+    observaciones: dto.observaciones !== undefined || origen === 'lector' ? dto.observaciones : await observacionesDeSerie(dto.companyId, serie.codigo),
     esRectificativa,
     // Con una sola original, tambien en los campos de antes (Carmen, la cartera y el PDF los leen).
     ...(cierre ? columnasCompatibles(cierre.enlaces) : { facturaOriginalId: null, rectificaFueraNumero: null, rectificaFueraFecha: null }),
@@ -2112,7 +2257,10 @@ async function actualizarBorradorRectificativa(actual: FacturaConLineas, dto: Ac
     // Con sus packs, kg y texto (el IEEPNR se vuelve a calcular con el tipo que toque).
     lineas: dto.lineas ?? lineasDocGuardadas(actual).map(({ cuentaContable, ...l }) => ({ ...l, cuenta: cuentaContable ?? null })),
     pesoBrutoKg: dto.pesoBrutoKg !== undefined ? dto.pesoBrutoKg : actual.pesoBrutoKg,
-    observaciones: dto.observaciones ?? actual.observaciones ?? undefined,
+    obra: dto.obra !== undefined ? dto.obra : actual.obra,
+    pesoNetoKg: dto.pesoNetoKg !== undefined ? dto.pesoNetoKg : actual.pesoNetoKg,
+    // Vacias y no undefined: un borrador ya guardado no toma las de la serie por defecto.
+    observaciones: dto.observaciones ?? actual.observaciones ?? '',
     borrador: true,
     ...(dto.tipoFactura !== undefined ? { tipoFactura: dto.tipoFactura } : {}),
     formaPago: (dto.formaPago ?? actual.formaPago) as FormaPago,
@@ -2292,6 +2440,8 @@ export const incomeInvoicesService = {
         ? await plantillaDeSerie(companyId, (data.serie as string | undefined) ?? actual.serie)
         : normalizarPlantillaId(actual.plantillaId);
     const ajustes = await leerAjustesFacturacion(companyId);
+    // Plantilla B: los datos de ceramica de las lineas (tambien las guardadas, como los envases), antes que los envases.
+    lineas = aplicarCeramica(lineas, { plantilla, cuentaPalets: await cuentaPaletsValida(companyId, plantilla, lineas, ajustes.cuentaPalets) });
     const envases = aplicarEnvases(lineas, {
       plantilla,
       repercute: deOriginal ? deOriginal.repercute : dto.lineas ? perfil.espanola && ajustes.ieepnrRepercute : actual.ieepnrPorKg !== null,
@@ -2306,10 +2456,17 @@ export const incomeInvoicesService = {
     data.ieepnrPorKg = envases.ieepnrPorKg;
     data.ieepnrCuenta = cuentaIeepnrFactura(envases.ieepnrPorKg, original, ajustes);
     const peso = leerPesoBruto(dto.pesoBrutoKg);
-    if (peso !== undefined && peso !== null && !admiteEnvases(plantilla)) throw errorSinEnvases('pesoBrutoKg');
-    // Peso bruto: el que llegue; si la plantilla nueva no lleva envases, se quita (es solo informativo).
+    if (peso !== undefined && peso !== null && !admitePesoBruto(plantilla)) throw errorSinEnvases('pesoBrutoKg');
+    // Peso bruto: el que llegue; si la plantilla nueva no lo lleva, se quita (es solo informativo).
     if (peso !== undefined) data.pesoBrutoKg = peso;
-    else if (!admiteEnvases(plantilla) && actual.pesoBrutoKg !== null) data.pesoBrutoKg = null;
+    else if (!admitePesoBruto(plantilla) && actual.pesoBrutoKg !== null) data.pesoBrutoKg = null;
+    // Obra y peso neto (plantilla B), igual: los que lleguen; con otra plantilla, fuera.
+    const cabeceraB = leerCabeceraCeramica(dto);
+    exigirCabeceraCeramica(cabeceraB, plantilla);
+    for (const k of ['obra', 'pesoNetoKg'] as const) {
+      if (cabeceraB[k] !== undefined) data[k] = cabeceraB[k];
+      else if (!admiteCeramica(plantilla) && actual[k] !== null) data[k] = null;
+    }
     const cambiaPlantilla = plantilla !== normalizarPlantillaId(actual.plantillaId);
 
     const devengo = fechaDevengoVenta({ tipoOperacion: fiscal.tipoOperacion, fechaOperacion, fechaEmision });
@@ -2440,6 +2597,7 @@ export const incomeInvoicesService = {
     lineas = conFiscalidad(lineas, fiscal);
     // Las lineas pasan como cuerpo: el IEEPNR se recalcula con el tipo de hoy.
     const ajustes = await leerAjustesFacturacion(companyId);
+    lineas = aplicarCeramica(lineas, { plantilla, cuentaPalets: await cuentaPaletsValida(companyId, plantilla, lineas, ajustes.cuentaPalets) });
     const envases = aplicarEnvases(lineas, { plantilla, repercute: perfil.espanola && ajustes.ieepnrRepercute, tipo: ajustes.ieepnrPorKg, moneda: p.moneda, simetrico: false });
     lineas = envases.lineas;
     const tipo = await resolverTipoCambio({ monedaCuenta: perfil.monedaCuenta, moneda: p.moneda, devengo: hoy, definitivo: false });
@@ -2468,7 +2626,9 @@ export const incomeInvoicesService = {
           causaExencion: fiscal.causaExencion,
           referenciaLegal: fiscal.referenciaLegal,
           plantillaId: plantilla,
-          pesoBrutoKg: admiteEnvases(plantilla) ? p.pesoBrutoKg : null,
+          pesoBrutoKg: admitePesoBruto(plantilla) ? p.pesoBrutoKg : null,
+          obra: admiteCeramica(plantilla) ? p.obra : null,
+          pesoNetoKg: admiteCeramica(plantilla) ? p.pesoNetoKg : null,
           ieepnrPorKg: envases.ieepnrPorKg,
           ieepnrCuenta: cuentaIeepnrFactura(envases.ieepnrPorKg, null, ajustes),
           observaciones: p.observaciones,
@@ -2760,7 +2920,10 @@ export const incomeInvoicesService = {
         tipoFactura: o.tipoFactura as TipoFactura,
         formaPago: o.formaPago as FormaPago,
         pesoBrutoKg: o.pesoBrutoKg,
-        observaciones: o.observaciones ?? undefined,
+        obra: o.obra,
+        pesoNetoKg: o.pesoNetoKg,
+        // Las de la original, aunque esten vacias (no las de la serie por defecto).
+        observaciones: o.observaciones ?? '',
         borrador: !esProforma,
         proforma: esProforma,
         moneda: o.moneda,
@@ -2989,6 +3152,16 @@ export const incomeInvoicesService = {
         packs: l.packs ?? null,
         kgPlastico: l.kgPlastico ?? null,
         textoAdicional: l.textoAdicional ?? null,
+        // Plantilla B: las medidas en negativo y el resto tal cual.
+        palets: l.palets ?? null,
+        cajas: l.cajas ?? null,
+        metros2: l.metros2 ?? null,
+        piezas: l.piezas ?? null,
+        pesoKg: l.pesoKg ?? null,
+        formato: l.formato ?? null,
+        calidad: l.calidad ?? null,
+        unidadPrecio: l.unidadPrecio ?? null,
+        ...(l.cargoPalets ? { cargoPalets: true } : {}),
       }));
     }
 
@@ -3003,6 +3176,8 @@ export const incomeInvoicesService = {
         tipoRectificativa,
         motivoRectificacion: motivo,
         observaciones: `Rectifica la factura ${original.numeroCompleto} de ${original.fechaEmision}. Motivo: ${motivo}`,
+        // Plantilla B: la misma obra que la original (los pesos van a mano).
+        ...(original.obra ? { obra: original.obra } : {}),
         facturaOriginalId: original.id,
         borrador: opciones.borrador,
       },

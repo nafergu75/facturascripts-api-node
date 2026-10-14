@@ -1404,6 +1404,8 @@ export async function datosParaRectificarVenta(companyId: string, id: string) {
       // Plantilla A: la rectificativa sale con la plantilla y el IEEPNR por kg de la original.
       plantillaId: normalizarPlantillaId(f.plantillaId),
       ieepnrPorKg: f.ieepnrPorKg === null || f.ieepnrPorKg === undefined ? null : Number(f.ieepnrPorKg),
+      // Plantilla B: la obra de la original (la rectificativa la propone).
+      obra: f.obra ?? null,
       baseTotal: Number(f.baseTotal),
       ivaTotal: Number(f.ivaTotal),
       retencionTotal: Number(f.retencionTotal),
@@ -1426,6 +1428,16 @@ export async function datosParaRectificarVenta(companyId: string, id: string) {
       kgPlastico: l.kgPlastico === null || l.kgPlastico === undefined ? null : Number(l.kgPlastico),
       ieepnrImporte: Number(l.ieepnrImporte ?? 0),
       textoAdicional: l.textoAdicional ?? null,
+      // Plantilla B: palets, cajas, m2, piezas, formato, calidad, peso, unidad del precio y cargo de palets.
+      palets: l.palets ?? null,
+      cajas: l.cajas ?? null,
+      metros2: l.metros2 === null || l.metros2 === undefined ? null : Number(l.metros2),
+      piezas: l.piezas === null || l.piezas === undefined ? null : Number(l.piezas),
+      formato: l.formato ?? null,
+      calidad: l.calidad ?? null,
+      pesoKg: l.pesoKg === null || l.pesoKg === undefined ? null : Number(l.pesoKg),
+      unidadPrecio: l.unidadPrecio ?? null,
+      cargoPalets: l.cargoPalets ?? false,
     })),
     cuentaPorTipoIva: cuentaPorTipoIva(vigente.lineas.map((l) => ({ tipoIva: l.tipoIva, cuenta: l.accountCode ?? null, baseLine: Number(l.baseLine) }))),
     /** La rectificativa por sustitucion que la reemplazo (de ella salen `lineas` y `cuentaPorTipoIva`), o null. */

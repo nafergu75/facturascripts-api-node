@@ -59,7 +59,9 @@ beforeAll(async () => {
   const series = await listarSeries(ES);
   serieA = series.find((s) => s.codigo === 'A')!.id;
   serieP = series.find((s) => s.codigo === 'P')!.id;
-  await crearSerie(ES, { codigo: 'B', descripcion: 'Ceramica', tipoDocumento: 'FACTURA', activa: true, porDefecto: false });
+  // Una serie con la de siempre (la S) y sin la C de servicios, para que la S sea la unica que admite descuento.
+  await crearSerie(ES, { codigo: 'S', descripcion: 'Estandar', tipoDocumento: 'FACTURA', activa: true, porDefecto: false });
+  await prisma.invoiceSeries.updateMany({ where: { companyId: ES, codigo: 'C' }, data: { activa: false } });
   await guardarAjustesFacturacion(ES, 'u-test', { ieepnrRepercute: true });
 });
 
@@ -103,7 +105,7 @@ describe('NZ004_26 con la plantilla A', () => {
       lineas: lineasNz({ ieepnrImporte: 999 } as never),
     });
     cifrasMuestra(f);
-    const b = await alta({ borrador: true, serie: 'B', plantillaId: 'A', lineas: lineasNz({ packs: null, kgPlastico: null, textoAdicional: null }) });
+    const b = await alta({ borrador: true, serie: 'S', plantillaId: 'A', lineas: lineasNz({ packs: null, kgPlastico: null, textoAdicional: null }) });
     expect(b.plantillaId).toBe('default');
   });
 
@@ -163,12 +165,12 @@ describe('NZ004_26 con la plantilla A', () => {
 
   it('un borrador de la A que pasa a una serie sin envases con kg: 400 PLANTILLA_SIN_ENVASES', async () => {
     const b = await alta({ borrador: true });
-    await expect(incomeInvoicesService.actualizarBorrador(ES, b.id, { serie: 'B' })).rejects.toMatchObject({
+    await expect(incomeInvoicesService.actualizarBorrador(ES, b.id, { serie: 'S' })).rejects.toMatchObject({
       statusCode: 400,
       details: { codigo: 'PLANTILLA_SIN_ENVASES', campo: 'lineas.0.packs' },
     });
     // Sin envases, si pasa (y vuelve al IVA por linea de la estandar).
-    const sinEnvases = await incomeInvoicesService.actualizarBorrador(ES, b.id, { serie: 'B', lineas: lineasNz({ packs: null, kgPlastico: null, textoAdicional: null }) });
+    const sinEnvases = await incomeInvoicesService.actualizarBorrador(ES, b.id, { serie: 'S', lineas: lineasNz({ packs: null, kgPlastico: null, textoAdicional: null }) });
     const porLinea = calcularLineasDoc(LINEAS_NZ004.map((l) => ({ descripcion: l.descripcion, cantidad: l.cantidad, precioUnitario: l.precioUnitario, tipoIva: 21 }))).totales.ivaTotal;
     expect([sinEnvases.plantillaId, sinEnvases.ivaTotal, sinEnvases.resumenEnvases]).toEqual(['default', porLinea, null]);
     // Y de vuelta a la A, con IVA por tipo.
@@ -197,19 +199,19 @@ describe('descuentos de antes cuando la serie A pasa a la plantilla A', () => {
     expect([emitida.serie, emitida.plantillaId, emitida.baseTotal, emitida.totalFactura]).toEqual(['A', 'default', 90, 108.9]);
   });
 
-  it('pasar a factura una proforma estandar con descuento: a la serie B (sin la A), no a la A', async () => {
+  it('pasar a factura una proforma estandar con descuento: a la serie S (sin la A), no a la A', async () => {
     const p = await alta({ proforma: true, lineas: [{ descripcion: 'Azulejo', cantidad: 3, precioUnitario: 10, descuentoPorcentaje: 5, tipoIva: 21 }] });
     expect(p.plantillaId).toBe('default');
     const f = await incomeInvoicesService.pasarProformaAFactura(ES, p.id);
-    expect([f.serie, f.plantillaId, f.estadoDocumento, f.baseTotal]).toEqual(['B', 'default', 'BORRADOR', 28.5]);
+    expect([f.serie, f.plantillaId, f.estadoDocumento, f.baseTotal]).toEqual(['S', 'default', 'BORRADOR', 28.5]);
   });
 
-  it('duplicar una factura con descuento de la serie A, que ahora usa la A: el borrador va a la B', async () => {
+  it('duplicar una factura con descuento de la serie A, que ahora usa la A: el borrador va a la S', async () => {
     await actualizarSerie(ES, serieA, { plantilla: 'default' });
     const f = await alta({ lineas: [{ descripcion: 'Antigua', cantidad: 1, precioUnitario: 100, descuentoPorcentaje: 10, tipoIva: 21 }] });
     await actualizarSerie(ES, serieA, { plantilla: null });
     const copia = await incomeInvoicesService.duplicar(ES, f.id);
-    expect([copia.serie, copia.plantillaId, copia.estadoDocumento, copia.baseTotal]).toEqual(['B', 'default', 'BORRADOR', 90]);
+    expect([copia.serie, copia.plantillaId, copia.estadoDocumento, copia.baseTotal]).toEqual(['S', 'default', 'BORRADOR', 90]);
   });
 });
 
@@ -234,10 +236,10 @@ describe('errores 400 nuevos', () => {
   };
 
   it('PLANTILLA_SIN_ENVASES en una serie con la plantilla de siempre', async () => {
-    await rechaza({ serie: 'B' }, { codigo: 'PLANTILLA_SIN_ENVASES', campo: 'lineas.0.packs' });
-    await rechaza({ serie: 'B', lineas: lineasNz({ packs: null }) }, { codigo: 'PLANTILLA_SIN_ENVASES', campo: 'lineas.0.kgPlastico' });
-    await rechaza({ serie: 'B', lineas: lineasNz({ packs: null, kgPlastico: null }) }, { codigo: 'PLANTILLA_SIN_ENVASES', campo: 'lineas.0.textoAdicional' });
-    await rechaza({ serie: 'B', pesoBrutoKg: 10, lineas: lineasNz({ packs: null, kgPlastico: null, textoAdicional: null }) }, { codigo: 'PLANTILLA_SIN_ENVASES', campo: 'pesoBrutoKg' });
+    await rechaza({ serie: 'S' }, { codigo: 'PLANTILLA_SIN_ENVASES', campo: 'lineas.0.packs' });
+    await rechaza({ serie: 'S', lineas: lineasNz({ packs: null }) }, { codigo: 'PLANTILLA_SIN_ENVASES', campo: 'lineas.0.kgPlastico' });
+    await rechaza({ serie: 'S', lineas: lineasNz({ packs: null, kgPlastico: null }) }, { codigo: 'PLANTILLA_SIN_ENVASES', campo: 'lineas.0.textoAdicional' });
+    await rechaza({ serie: 'S', pesoBrutoKg: 10, lineas: lineasNz({ packs: null, kgPlastico: null, textoAdicional: null }) }, { codigo: 'PLANTILLA_SIN_ENVASES', campo: 'pesoBrutoKg' });
   });
 
   it('DESCUENTO_NO_ADMITIDO en la A', async () => {
@@ -274,7 +276,7 @@ describe('errores 400 nuevos', () => {
         companyId: ES,
         customer: { nuevo: { nombreFiscal: 'NO SE CREA SL', nifCif: 'B99999999' } },
         fechaEmision: '2026-03-04',
-        serie: 'B',
+        serie: 'S',
         borrador: true,
         lineas: lineasNz(),
       }),
@@ -316,9 +318,9 @@ describe('empresa espanola que no repercute el IEEPNR (no vende envases)', () =>
 });
 
 describe('las otras plantillas no cambian', () => {
-  it('serie B (la de siempre): importes por linea, identicos al calculo de siempre, y plantillaId default', async () => {
+  it('serie S (la de siempre): importes por linea, identicos al calculo de siempre, y plantillaId default', async () => {
     const lineas = lineasNz({ packs: null, kgPlastico: null, textoAdicional: null });
-    const f = await alta({ serie: 'B', lineas });
+    const f = await alta({ serie: 'S', lineas });
     const deSiempre = calcularLineasDoc(lineas.map((l) => ({ descripcion: l.descripcion, cantidad: l.cantidad, precioUnitario: l.precioUnitario, tipoIva: 21 })));
     expect([f.baseTotal, f.ivaTotal, f.totalFactura]).toEqual([deSiempre.totales.baseTotal, deSiempre.totales.ivaTotal, deSiempre.totales.totalFactura]);
     expect(f.baseTotal).toBe(TOTALES_NZ004.articulos);
@@ -344,7 +346,7 @@ describe('las otras plantillas no cambian', () => {
 });
 
 describe('PDF de la factura', () => {
-  it('la A sale con su diseno y sus datos; la de la serie B, con el de siempre', async () => {
+  it('la A sale con su diseno y sus datos; la de la serie S, con el de siempre', async () => {
     await prisma.bankAccount.create({ data: { companyId: ES, iban: 'ES9121000418450200051332', bic: 'CAIXESBBXXX', bancoNombre: 'Banco de pruebas', subcuentaCodigo: '572000' } });
     await prisma.legalConfig.update({ where: { companyId: ES }, data: { datosRegistrales: 'T 1, F 2, H CS 3', registroMercantilProvincia: 'Castellón' } });
     const a = await alta({ pesoBrutoKg: 100 });
@@ -356,7 +358,7 @@ describe('PDF de la factura', () => {
     const textos = (await textosDePdf((await generarPdfFactura(ES, a.id)).contenido)).map((t) => t.texto);
     expect(textos).toEqual(expect.arrayContaining(['KG.Plast', 'PESO BRUTO(kg)', '100', '8.654,68 €', 'SWIFT BANK: CAIXESBBXXX - BANCO DE PRUEBAS']));
     expect(textos).toContain('Inscrita en el Registro Mercantil de Castellón, T 1, F 2, H CS 3, con CIF: B12345674');
-    const b = await alta({ serie: 'B', lineas: lineasNz({ packs: null, kgPlastico: null, textoAdicional: null }) });
+    const b = await alta({ serie: 'S', lineas: lineasNz({ packs: null, kgPlastico: null, textoAdicional: null }) });
     expect((await datosPdfFactura(ES, b.id)).datos.plantilla).toBe('default');
     expect((await textosDePdf((await generarPdfFactura(ES, b.id)).contenido)).some((t) => t.texto === 'KG.Plast')).toBe(false);
   });
