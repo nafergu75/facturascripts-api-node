@@ -193,7 +193,7 @@ describe('clientes', () => {
     expect(cambio.status).toBe(200);
     expect(cambio.body.data.web).toBe('https://www.cambiacliente.es');
 
-    const mala = await request(app(E)).put(`/clientes/${id}`).send({ web: '192.168.1.1', telefono: '960000000' });
+    const mala = await request(app(E)).put(`/clientes/${id}`).send({ web: 'empresa..es', telefono: '960000000' });
     expect(mala.status).toBe(400);
     expect(mala.body.message).toBe(NO_VALIDA);
     expect(mala.body.details).toEqual({ campo: 'web' });

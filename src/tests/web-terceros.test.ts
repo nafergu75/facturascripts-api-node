@@ -82,25 +82,51 @@ describe('normalizarWeb', () => {
     expect(motivo('data:text/html,hola')).toBe(texto);
   });
 
-  it('IP, dominios mal formados, usuario y caracteres raros: no', () => {
+  it('dominios mal formados, usuario y caracteres raros: no, y sin repetir «La web» dos veces', () => {
     const texto = 'La web no es válida. Escríbela como www.empresa.com o https://empresa.com.';
-    expect(motivo('192.168.1.10')).toBe(texto);
     expect(motivo('https://')).toBe(texto);
     expect(motivo('empresa..com')).toBe(texto);
     expect(motivo('-empresa.com')).toBe(texto);
     expect(motivo('empresa.c0m')).toBe(texto);
     expect(motivo('empresa_sl.com')).toBe(texto);
-    expect(motivo('https://[::1]/')).toBe(texto);
-    expect(motivo('https://user:clave@empresa.com')).toMatch(/^La web no puede llevar usuario ni contraseña/);
-    expect(motivo('empresa.com/"><script>')).toMatch(/^La web lleva caracteres que no puede tener/);
+    expect(motivo('https://user:clave@empresa.com')).toBe('La web no puede llevar usuario ni contraseña. Escríbela como www.empresa.com o https://empresa.com.');
+    expect(motivo('empresa.com/"><script>')).toBe(
+      'La web lleva caracteres que no puede tener (comillas, < >, llaves...). Escríbela como www.empresa.com o https://empresa.com.',
+    );
     expect(motivo(12345)).toBe(texto);
     expect(motivo({ web: 'empresa.com' })).toBe(texto);
   });
 
-  it(`como mucho ${LARGO_MAXIMO_WEB} caracteres, contando el https://`, () => {
+  it('una IP (también escrita como número o en IPv6): su propio motivo', () => {
+    const texto = 'Una dirección IP no vale como web: escribe el nombre de la página, por ejemplo www.empresa.com.';
+    expect(motivo('192.168.1.10')).toBe(texto);
+    expect(motivo('http://192.168.1.10:8080/panel')).toBe(texto);
+    expect(motivo('3232235786')).toBe(texto);
+    expect(motivo('https://[::1]/')).toBe(texto);
+  });
+
+  it('el https:// mal escrito («https//», «https:/», «http:www»): dice cómo se escribe', () => {
+    const texto = 'El principio de la web está mal escrito: tiene que ser https:// (con los dos puntos y las dos barras), o escríbela sin nada delante: www.empresa.com.';
+    for (const w of ['https//www.empresa.com', 'HTTPS//www.empresa.com', 'https:/www.empresa.com', 'http:www.empresa.com', 'http/empresa.com']) expect(motivo(w)).toBe(texto);
+    // Un dominio que empieza por «http» no es eso.
+    expect(ok('http.es')).toBe('https://http.es');
+    expect(ok('https-tienda.es')).toBe('https://https-tienda.es');
+  });
+
+  it('quita los invisibles que se pegan desde una página o un documento', () => {
+    const invisibles = [0x200b, 0x200c, 0x200d, 0x2060, 0xad, 0xfeff, 0x200e, 0x202c].map((c) => String.fromCharCode(c));
+    for (const i of invisibles) {
+      expect(ok(`${i}www.empresa.com`)).toBe('https://www.empresa.com');
+      expect(ok(`www.emp${i}resa.com${i}`)).toBe('https://www.empresa.com');
+    }
+    expect(ok(invisibles.join(''))).toBeNull();
+  });
+
+  it(`como mucho ${LARGO_MAXIMO_WEB} caracteres, contando el https:// que se le pone`, () => {
     const ruta = 'a'.repeat(LARGO_MAXIMO_WEB - 'https://empresa.es/'.length);
     expect(ok(`empresa.es/${ruta}`)).toHaveLength(LARGO_MAXIMO_WEB);
-    expect(motivo(`empresa.es/${ruta}a`)).toBe(`La web es demasiado larga (${LARGO_MAXIMO_WEB} caracteres como mucho).`);
+    expect(motivo(`empresa.es/${ruta}a`)).toBe(`La web es demasiado larga: con el https:// delante, ${LARGO_MAXIMO_WEB} caracteres como mucho.`);
+    expect(motivo(`http://empresa.es/${ruta}ab`)).toBe(`La web es demasiado larga: con el http:// delante, ${LARGO_MAXIMO_WEB} caracteres como mucho.`);
   });
 });
 
