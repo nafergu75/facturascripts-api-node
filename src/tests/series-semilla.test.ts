@@ -1,14 +1,24 @@
 // Series que se crean solas (seriesSemilla.service), sin BD: una tabla
-// InvoiceSeries en memoria con el unico (empresa, codigo) y el upsert de Prisma.
+// InvoiceSeries en memoria con el unico (empresa, codigo) y el upsert de Prisma,
+// y unas facturas (para las series historicas del lector).
 // La prueba contra MySQL real esta en series-ceramica.db.test.ts.
 jest.mock('../config/database', () => {
   type Fila = { companyId: string; codigo: string; descripcion: string; tipoDocumento: string; activa: boolean; porDefecto: boolean; plantilla: string | null };
+  type Factura = { companyId: string; serie: string; origen: string | null };
   const filas: Fila[] = [];
+  const facturas: Factura[] = [];
   const clave = (w: { companyId_codigo: { companyId: string; codigo: string } }) => (f: Fila) =>
     f.companyId === w.companyId_codigo.companyId && f.codigo === w.companyId_codigo.codigo;
   return {
     prisma: {
       __filas: filas,
+      __facturas: facturas,
+      incomeInvoice: {
+        // Con readerDocument en el filtro, solo las de la app (tieneFacturasDeLaApp); sin el, todas.
+        count: jest.fn(async ({ where }: { where: { companyId: string; serie: string; readerDocument?: unknown } }) =>
+          facturas.filter((f) => f.companyId === where.companyId && f.serie === where.serie && (!where.readerDocument || f.origen !== 'lector')).length,
+        ),
+      },
       invoiceSeries: {
         findMany: jest.fn(async ({ where }: { where: { companyId: string } }) => filas.filter((f) => f.companyId === where.companyId).map((f) => ({ ...f }))),
         findUnique: jest.fn(async ({ where }: { where: { companyId_codigo: { companyId: string; codigo: string } } }) => {
@@ -31,11 +41,16 @@ jest.mock('../config/database', () => {
   };
 });
 
+import { Prisma } from '@prisma/client';
 import { prisma } from '../config/database';
 import { estadoSerieCeramica, prepararSerieCeramica, sembrarSeries, SERIE_B } from '../services/seriesSemilla.service';
 
 type Fila = { companyId: string; codigo: string; descripcion: string; tipoDocumento: string; activa: boolean; porDefecto: boolean; plantilla: string | null };
-const bd = prisma as unknown as { __filas: Fila[]; invoiceSeries: { upsert: jest.Mock } };
+const bd = prisma as unknown as {
+  __filas: Fila[];
+  __facturas: Array<{ companyId: string; serie: string; origen: string | null }>;
+  invoiceSeries: { upsert: jest.Mock; findMany: jest.Mock };
+};
 const filas = bd.__filas;
 const deEmpresa = (companyId: string) => filas.filter((f) => f.companyId === companyId);
 const codigos = (companyId: string) => deEmpresa(companyId).map((f) => f.codigo);
@@ -99,6 +114,21 @@ describe('semilla de series', () => {
     expect(await estadoSerieCeramica('e-bdes')).toEqual(r);
   });
 
+  it('la B histórica del lector (desactivada, con facturas de otro programa) no se activa: aviso para crear otra serie, no para activarla', async () => {
+    alta('e-bhist', 'A', 'FACTURA', { porDefecto: true });
+    alta('e-bhist', 'B', 'FACTURA', { activa: false, descripcion: 'Serie B (facturas de otro programa)' });
+    bd.__facturas.push({ companyId: 'e-bhist', serie: 'B', origen: 'lector' });
+    const r = await prepararSerieCeramica('e-bhist');
+    expect(r).toMatchObject({ codigo: 'B', estado: 'historica' });
+    expect(r.aviso).toMatch(/facturas de otro programa.*No la actives.*crea en Configuración > Series una serie de facturas con otro código/);
+    expect(r.aviso).not.toMatch(/actívala/);
+    expect(serie('e-bhist', 'B')).toMatchObject({ activa: false });
+    expect(await estadoSerieCeramica('e-bhist')).toEqual(r);
+    // Si la app ya emitió alguna en la B, no es histórica: es una serie de la empresa desactivada.
+    bd.__facturas.push({ companyId: 'e-bhist', serie: 'B', origen: null });
+    expect(await estadoSerieCeramica('e-bhist')).toMatchObject({ estado: 'desactivada' });
+  });
+
   it('el código B de otro tipo no se toca: aviso para crear otra serie de facturas con la plantilla B', async () => {
     alta('e-botro', 'B', 'PROFORMA');
     const r = await prepararSerieCeramica('e-botro');
@@ -132,5 +162,38 @@ describe('semilla de series', () => {
     await Promise.all([prepararSerieCeramica('e-carrera'), prepararSerieCeramica('e-carrera'), sembrarSeries('e-carrera', si)]);
     expect(codigos('e-carrera').filter((c) => c === 'B')).toHaveLength(1);
     expect(codigos('e-carrera').filter((c) => c === 'A')).toHaveLength(1);
+  });
+
+  it('carrera como en MySQL (el upsert lee y después inserta): si otra petición ya las creó, P2002 y se usa la suya', async () => {
+    // La otra petición ya ha creado todas las series; esta leyó la lista antes (vacía) y su upsert choca con el único.
+    alta('e-mysql', 'A', 'FACTURA', { porDefecto: true });
+    alta('e-mysql', 'R', 'RECTIFICATIVA', { porDefecto: true });
+    alta('e-mysql', 'P', 'PROFORMA', { porDefecto: true });
+    alta('e-mysql', 'C', 'FACTURA');
+    alta('e-mysql', 'B', 'FACTURA', { descripcion: SERIE_B.descripcion });
+    bd.invoiceSeries.findMany.mockResolvedValueOnce([]);
+    const atomico = bd.invoiceSeries.upsert.getMockImplementation()!;
+    bd.invoiceSeries.upsert.mockImplementation(async ({ where }: { where: { companyId_codigo: { companyId: string; codigo: string } } }) => {
+      if (filas.some((f) => f.companyId === where.companyId_codigo.companyId && f.codigo === where.companyId_codigo.codigo)) {
+        throw new Prisma.PrismaClientKnownRequestError('Unique constraint failed on the constraint: InvoiceSeries_companyId_codigo_key', {
+          code: 'P2002',
+          clientVersion: 'test',
+        });
+      }
+      throw new Error('no debería crear nada');
+    });
+    try {
+      const r = await prepararSerieCeramica('e-mysql');
+      // La B la creó la otra a la vez: las dos lo dicen.
+      expect(r).toEqual({ codigo: 'B', estado: 'creada', aviso: null });
+      expect(codigos('e-mysql')).toEqual(['A', 'R', 'P', 'C', 'B']);
+    } finally {
+      bd.invoiceSeries.upsert.mockImplementation(atomico);
+    }
+  });
+
+  it('cualquier otro error al crear una serie no se esconde', async () => {
+    bd.invoiceSeries.upsert.mockRejectedValueOnce(new Error('timeout'));
+    await expect(sembrarSeries('e-error', no)).rejects.toThrow('timeout');
   });
 });
