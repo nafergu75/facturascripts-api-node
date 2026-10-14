@@ -144,6 +144,33 @@ export function leerCarmen(fuente: NodeJS.ProcessEnv = process.env): { carmen: C
 
 const carmen = leerCarmen();
 
+// ---------------- VERI*FACTU ----------------
+//
+// Doble candado para no enviar NUNCA nada a la AEAT de verdad (www1/www10)
+// desde un entorno de pruebas o una vista previa (spec verifactu, 6.1 y 6.6):
+// la URL de produccion solo se usa con VERIFACTU_PRODUCCION=si (exacto, sin
+// espacios ni mayusculas) Y NODE_ENV=production. Va fuera de envSchema: un
+// valor raro no tumba la API, solo deja el candado cerrado y avisa en el log.
+// En la fase F2 esta variable no se pone en Vercel.
+
+export interface ConfigVerifactu {
+  /** true: se puede enviar a la AEAT de verdad (produccion). */
+  produccion: boolean;
+}
+
+export function leerVerifactu(fuente: NodeJS.ProcessEnv = process.env): ConfigVerifactu {
+  const v = fuente.VERIFACTU_PRODUCCION;
+  if (v === undefined || v === '') return { produccion: false };
+  if (v !== 'si') {
+    // eslint-disable-next-line no-console
+    console.error('VERIFACTU_PRODUCCION solo admite "si": queda apagado (no se envía nada a la AEAT de verdad).');
+    return { produccion: false };
+  }
+  return { produccion: fuente.NODE_ENV === 'production' };
+}
+
+const verifactu = leerVerifactu();
+
 /**
  * Una clave de Anthropic real empieza por "sk-ant-" y tiene longitud considerable.
  * El placeholder del .env.example ("sk-ant-xxxx...") no es válido: lo tratamos
@@ -171,6 +198,7 @@ export const config = {
   anthropicApiKey: normalizarAnthropicKey(env.ANTHROPIC_API_KEY),
   carmen: carmen.carmen,
   cronSecret: carmen.cronSecret,
+  verifactu,
   corsOrigins: (env.CORS_ORIGIN ?? 'http://localhost:5173,http://localhost:4173,http://localhost:5174,http://localhost:4174,http://localhost:3000')
     .split(',')
     .map((o) => o.trim())

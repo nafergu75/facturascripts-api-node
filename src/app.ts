@@ -83,6 +83,8 @@ export function createApp(): Express {
       carmen: { llmActivo: config.carmen.llmActivo && !!config.anthropicApiKey, topeAgotado: topeMensualAgotadoEnCache() },
       // Lector de facturas: si Azure esta configurado y que lector se usa (sin valores).
       ocr: estadoOcr(),
+      // VERI*FACTU: si el doble candado deja enviar a la AEAT de verdad (sin valores).
+      verifactu: { produccion: config.verifactu.produccion },
     });
   });
 
