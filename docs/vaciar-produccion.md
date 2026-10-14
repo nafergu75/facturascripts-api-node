@@ -14,7 +14,10 @@ El script lo lanzas tú desde Git Bash, igual que `aplicar-esquema-prod.sh`. Lee
 
 ## Antes de empezar
 
-- Usa una carpeta del backend que tenga a la vez la versión publicada (la del último esquema que aplicaste) y este script. Si el código de la carpeta no es de esa versión, o la base no tiene ese esquema, el script se para sin tocar nada.
+- **Desde qué carpeta.** Tiene que tener a la vez la versión publicada y este script. El 14-10-2026 es `backend-ocrz`, en la rama `vaciar-produccion`: el código que está en producción (`a6ace96`) más este script. Si después se publica otra versión, pide antes que se actualice esta rama.
+  - Para comprobarlo, en Git Bash: `cd "/c/Users/NACHO PC/Desktop/conta-app/backend-ocrz"` y después `git branch --show-current`. Tiene que decir `vaciar-produccion`.
+  - `bash scripts/vaciar-produccion.sh --ayuda` también te dice la carpeta y la rama.
+  - Si la base no tiene exactamente el esquema del código de la carpeta (le falta o le sobra una tabla o una columna), el script se para sin tocar nada.
 - Cierra la app en el navegador y no la uses mientras dura. Si algo cambia mientras se hace la copia, el script se para sin borrar.
 - Ten a mano la clave de Vercel Blob (más abajo explico dónde está). Sin ella se borra la base, pero los ficheros se quedan en Vercel Blob.
 - Comprueba que tienes sitio en el disco para la copia: ocupa más o menos lo mismo que los datos y los ficheros.
@@ -33,11 +36,11 @@ Los nombres de los menús de TiDB Cloud pueden cambiar. Si no encuentras el apar
 ## Paso 2. Simulación (no borra nada)
 
 ```bash
-cd "/c/Users/NACHO PC/Desktop/conta-app/<carpeta del backend>"
+cd "/c/Users/NACHO PC/Desktop/conta-app/backend-ocrz"
 ENV_PROD=../backend/.env.vercel-prod.local bash scripts/vaciar-produccion.sh
 ```
 
-`ENV_PROD` es el mismo fichero que usas con `aplicar-esquema-prod.sh`. La ruta es relativa a la carpeta del backend.
+`ENV_PROD` es el mismo fichero que usas con `aplicar-esquema-prod.sh`. La ruta es relativa a la carpeta desde la que lo lanzas.
 
 Si no encuentra la clave de Vercel Blob, te la pide. Pégala con clic derecho > Paste o con Mayúsculas+Insert (Ctrl+V no pega en Git Bash). No se ve al pegarla. Si pulsas Intro sin pegar nada, sigue sin los ficheros.
 
@@ -63,7 +66,7 @@ Por orden:
 
 1. Repite la simulación.
 2. Te enseña los administradores globales. Pulsa Intro para conservarlos todos, o escribe los números de los que se quedan (por ejemplo `1`).
-3. Te dice dónde va a dejar la copia: `Documentos/conta-copia-AAAAMMDD-HHMM`.
+3. Te dice dónde va a dejar la copia: `C:\Users\NACHO PC\Documents\conta-copia-AAAAMMDD-HHMM`. Ojo: no es la carpeta «Documentos» que sale en el Explorador, que en este equipo está dentro de OneDrive. Así la copia no se sube a la nube. Para abrirla, pega esa ruta en la barra del Explorador.
 4. Te pide que escribas **`BORRAR TODO`**, en mayúsculas. Cualquier otra cosa cancela sin tocar nada.
 5. **Copia local completa**: todas las filas de todas las tablas y todos los ficheros de la app. La comprueba al terminar. Si falla, no borra nada.
 6. Comprueba que nada ha cambiado desde la copia. Si algo ha cambiado, no borra.
@@ -90,17 +93,29 @@ Para comprobarlo a mano: entra en la app con tu usuario. Tiene que salir Adminis
 ## Si algo sale mal
 
 - **Si el script se para antes de borrar**: no ha cambiado nada. Lee el mensaje, arregla lo que diga y vuelve a lanzarlo.
-- **Si el borrado se corta a medias** (por ejemplo, se va la conexión): vuelve a lanzar `--borrar`. Sigue con lo que queda y antes copia lo que quede en otra carpeta. Si después quieres volver atrás, la copia buena es la primera, la de antes de empezar.
+- **Si el borrado se corta a medias** (por ejemplo, se va la conexión): vuelve a lanzar `--borrar`. Sigue con lo que queda y antes copia lo que quede en otra carpeta. Si después quieres volver atrás, la copia buena es la primera, la de antes de empezar (la más antigua de las `conta-copia-...`). La marca `VACIADO_PRODUCCION` que queda en la auditoría apunta a la última copia, la del segundo intento: no te fíes de ella para esto.
 - **Si la comprobación final no cuadra**: no hagas nada más en la app. Lanza `--comprobar` otra vez y mira qué tabla falla.
 - **Para volver atrás**, tienes dos copias:
-  1. **La de TiDB Cloud** (paso 1). Es la más segura: se restaura desde el apartado Backup de TiDB Cloud. Ojo: si restauras «en el mismo clúster», se pierde todo lo que hayas hecho después de esa copia.
-  2. **La local** (`Documentos/conta-copia-...`). Solo se puede meter sobre la base vaciada, antes de dar de alta ninguna empresa:
+  1. **La local** (`C:\Users\NACHO PC\Documents\conta-copia-...`). Es la única que trae la base **y** los ficheros. Solo se puede meter sobre la base vaciada, antes de dar de alta ninguna empresa:
 
      ```bash
      ENV_PROD=../backend/.env.vercel-prod.local bash scripts/vaciar-produccion.sh --restaurar "/c/Users/NACHO PC/Documents/conta-copia-AAAAMMDD-HHMM"
      ```
 
-     Te pide que escribas `RESTAURAR COPIA`. Vuelve a meter todas las filas y vuelve a subir los ficheros a Vercel Blob (con la clave), en la misma dirección que tenían.
+     Te pide que escribas `RESTAURAR COPIA`. Antes de meter nada comprueba la copia entera (tablas, columnas y ficheros). Después vuelve a meter todas las filas y sube los ficheros a Vercel Blob (con la clave), en la misma dirección que tenían.
+  2. **La de TiDB Cloud** (paso 1). Es la red de seguridad si la local falla. Se restaura desde el apartado Backup de TiDB Cloud. Ojo: si restauras «en el mismo clúster», se pierde todo lo que hayas hecho después de esa copia.
+     - **Esa copia solo tiene la base, no los ficheros**: cuando la restaures, los ficheros ya se habrán borrado de Vercel Blob y las facturas, lecturas y PDF apuntarán a ficheros que no existen. Súbelos desde la copia local, sin tocar la base:
+
+       ```bash
+       ENV_PROD=../backend/.env.vercel-prod.local bash scripts/vaciar-produccion.sh --restaurar-ficheros "/c/Users/NACHO PC/Documents/conta-copia-AAAAMMDD-HHMM"
+       ```
+
+       Te pide que escribas `SUBIR FICHEROS`. Los sube con la misma dirección que tenían y no toca los que ya estén, así que se puede repetir.
+- **Si la restauración local se corta a medias** (se va la conexión, pulsas Ctrl+C...): la base se queda con una parte de la copia, y `--restaurar` ya no deja repetirla porque la base no está vacía. El script te dice qué hacer:
+  1. Vacía lo que se ha llegado a meter con `--borrar` (escribe `BORRAR TODO`). Antes hará otra copia de lo que haya; esa no te hace falta.
+  2. Repite `--restaurar` con **la misma copia** de antes. La copia no cambia al restaurarla.
+
+  Si se corta al subir los ficheros (las filas ya están todas), basta con `--restaurar-ficheros` con la misma copia.
 
 ## La clave de Vercel Blob
 
@@ -150,11 +165,15 @@ Los **logos** de las empresas no están en Vercel Blob: van dentro de la base (`
 
 ## Cómo está hecho (para quien lo revise)
 
-- **Seguridad de la conexión.** El script se para si la base no tiene exactamente el esquema de esta versión: le falta una tabla o una columna, o tiene una tabla que esta versión no conoce. Antes, en esta copia del código tienen que estar las `MARCAS` de `aplicar-esquema-prod.sh` (se leen de ese fichero). No se exige la tabla `_prisma_migrations`: producción se creó con `prisma db push` y no la tiene, así que el script se pararía siempre.
+- **Seguridad de la conexión.** Hay dos comprobaciones distintas:
+  - **El código.** En la carpeta tienen que estar las `MARCAS` de `aplicar-esquema-prod.sh` (se leen de ese fichero y se buscan en su `prisma/schema.prisma`). Esto solo dice que el código de la carpeta es de esa versión; no mira la base.
+  - **La base.** Se compara en los dos sentidos con el esquema de ese código: se para si le falta una tabla o una columna, o si tiene una tabla o una columna que esta versión no conoce. Una columna de más se perdería en la copia (que solo guarda las del modelo), por eso también para.
+  - No se exige la tabla `_prisma_migrations`: producción se creó con `prisma db push` y no la tiene, así que el script se pararía siempre.
+  - La restauración hace la misma comprobación de la base y, además, mira que las columnas de cada tabla de la copia son las de esta versión, antes de meter nada.
 - **Orden y lotes.** Se borra cada tabla después de todas las que la apuntan con una clave ajena, así ni `RESTRICT` frena ni `CASCADE` o `SET NULL` tienen trabajo. Los padres e hijas de la misma tabla (plan de cuentas, familias de productos, categorías de tesorería) se sueltan antes. Cada `DELETE ... LIMIT 500` (50 en tablas con binarios) es su propia transacción, muy por debajo del límite de TiDB. No hace falta ir empresa por empresa: se borra todo y los lotes ya acotan cada transacción.
-- **VERI*FACTU.** Hoy la app no envía nada a la AEAT. `VerifactuConfig` solo guarda la exclusión, ningún código la pasa a `ACTIVO` y no hay tabla de registros. Aun así, si alguna empresa tiene VERI*FACTU activo o el entorno de producción de la AEAT, o si una versión futura trae una tabla de registros con filas, el script se para y avisa en vez de borrar.
+- **VERI*FACTU.** Hoy la app no envía nada a la AEAT. `VerifactuConfig` solo guarda la exclusión, ningún código la pasa a `ACTIVO` y no hay tabla de registros. Aun así, el script se para y avisa en vez de borrar si alguna empresa tiene VERI*FACTU activo o el entorno de producción de la AEAT, o si una versión futura trae registros de la AEAT de verdad: filas con `entorno = 'PRODUCCION'` en una tabla de VERI*FACTU, o filas en una tabla que parezca de registros (huella, estado de envío o CSV) y no tenga columna `entorno`. Lo del entorno de pruebas de la AEAT no tiene efecto fiscal y se borra como lo demás.
 - **Copia local.** Una sentencia `INSERT` por línea, con los valores leídos como texto (los binarios en hexadecimal), en `tablas/`, más los ficheros en `ficheros/` y un `manifiesto.json`. Las tablas que se conservan entran con `INSERT IGNORE` al restaurar.
 - **Ficheros.** Solo se borran los de las carpetas de primer nivel que usa la app (`PREFIJOS_APP` en `almacen.ts`). Un test avisa si aparece código nuevo que guarde ficheros.
 - **Nunca se escribe la URL de la base.** Los mensajes de error pasan por un filtro que tapa la URL, el usuario, la contraseña, el servidor y la clave de Vercel Blob.
-- **Prueba de acceso.** Arranca la API de esta copia en un puerto local, contra la misma base, y hace `POST /auth/login` y `GET /auth/me`. Firma los tokens con una clave de usar y tirar. Deja una fila `LOGIN` en la auditoría, como un acceso normal.
+- **Prueba de acceso.** Arranca la API de esta copia en un puerto local, contra la misma base, y hace `POST /auth/login` y `GET /auth/me`. Firma los tokens con una clave de usar y tirar. Deja una fila `LOGIN` en la auditoría, como un acceso normal. Lo que escribe la API mientras tanto no sale por pantalla, porque su registro de errores puede llevar el servidor y el usuario de la base. Si falla, solo dice la causa: contraseña incorrecta (401) o fallo de la base (500), que no es culpa de la contraseña.
 - **Pruebas.** `src/tests/vaciado-produccion.test.ts` (sin base) y `src/tests/vaciado-produccion.db.test.ts`, que lanza el script de verdad contra una base local `conta_vaciar*`. Esta última se salta con cualquier otra base, porque borra la base entera.
