@@ -11,6 +11,7 @@ import { redondear2 } from '../../utils/money';
 import { AVISO_NO_FACTURA, sugerirCuentaConRetencion, type GastoExtraido, type TipoDocumentoGasto } from '../gastos-extractor.service';
 import type { InvoiceExtraction } from '../invoice-extractor.service';
 import type { LecturaNormalizada, ResultadoValidacion } from './tipos';
+import { tipoRetencionLeido } from './correcciones-venta';
 import { direccionParaFicha } from './direccion';
 
 const sumar = (xs: Array<number | null | undefined>) => redondear2(xs.reduce<number>((s, x) => s + (x ?? 0), 0));
@@ -145,7 +146,8 @@ export function aInvoiceExtraction(
     };
   });
   const ret = l.retencion?.importe.valor ?? 0;
-  const withholdings = ret ? [{ type: 'IRPF', rate: l.retencion?.tipo.valor ?? 0, amount: redondear2(ret) }] : [];
+  // Sin el porcentaje leido, el que sale del importe sobre las bases: con 0, la retencion se perdia al registrar.
+  const withholdings = ret ? [{ type: 'IRPF', rate: tipoRetencionLeido(l), amount: redondear2(ret) }] : [];
   const subtotal = sumar(bases.map((b) => b.base_amount));
   const tax_total = sumar(bases.map((b) => b.tax_amount));
   const recargo = sumar(l.desglose.map((t) => t.cuotaRecargo?.valor));
