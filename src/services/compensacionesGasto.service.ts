@@ -24,7 +24,7 @@ import { hoyEspana } from '../utils/fechas';
 import { conReintento } from '../utils/reintento';
 import { fechaContableGasto } from '../domain/factura-gasto.model';
 import { esFechaReal } from '../schemas/factura-gasto.schemas';
-import { comprobarFechaAbierta } from './periodos.service';
+import { comprobarFechaAbierta, fechaAbierta } from './periodos.service';
 import { aplicadoPorFactura, recalcularEstadoPagoGasto } from './cobrosPagos.service';
 import { cuentaProveedorDeFactura } from './rectificativasGasto.service';
 import { registrarAuditoria } from './auditoria.service';
@@ -203,12 +203,8 @@ async function anularEnTx(
   if (c.journalEntryId) {
     const a = await tx.journalEntry.findFirst({ where: { id: c.journalEntryId, companyId }, include: { lineas: true } });
     if (a && a.estado !== 'REVERSED') {
-      let abierto = true;
-      try {
-        await comprobarFechaAbierta(companyId, a.fecha.toISOString().slice(0, 10), undefined, tx);
-      } catch {
-        abierto = false;
-      }
+      // Un fallo de la base de datos no es «periodo cerrado»: se relanza y la transaccion se deshace.
+      const abierto = await fechaAbierta(companyId, a.fecha.toISOString().slice(0, 10), tx);
       if (abierto) await tx.journalEntry.update({ where: { id: a.id }, data: { estado: 'REVERSED' } });
       else {
         await comprobarFechaAbierta(companyId, fecha, 'anular la aplicación del abono', tx);
