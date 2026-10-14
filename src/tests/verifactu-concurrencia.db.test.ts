@@ -12,6 +12,7 @@
 import { describe, it, expect, beforeAll, jest } from '@jest/globals';
 import { randomBytes } from 'crypto';
 import { prisma } from '../config/database';
+import { marcarEmpresaPruebas } from './ayuda-empresa-pruebas';
 import { incomeInvoicesService, type CrearFacturaIngresoDTO } from '../services/income-invoices.service';
 import { listarSeries } from '../services/series.service';
 import * as cadenaMod from '../services/verifactu/cadena';
@@ -42,6 +43,7 @@ async function empresa(): Promise<string> {
   await listarSeries(id);
   await prisma.invoiceSeries.create({ data: { companyId: id, codigo: 'B', descripcion: 'Serie B', tipoDocumento: 'FACTURA', activa: true } });
   await prisma.verifactuConfig.create({ data: { companyId: id, estado: 'PRUEBAS', entorno: 'PRUEBAS' } });
+  await marcarEmpresaPruebas(prisma, id);
   clientes[id] = (await prisma.customer.create({ data: { companyId: id, nombreFiscal: 'Cliente SL', nifCif: 'B12345674', pais: 'ES' } })).id;
   return id;
 }

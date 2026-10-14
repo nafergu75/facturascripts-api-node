@@ -9,6 +9,7 @@
 import { describe, it, expect, beforeAll, afterAll } from '@jest/globals';
 import { randomBytes } from 'crypto';
 import { prisma } from '../config/database';
+import { marcarEmpresaPruebas } from './ayuda-empresa-pruebas';
 import { incomeInvoicesService } from '../services/income-invoices.service';
 import { crearSerie, listarSeries } from '../services/series.service';
 import { legalConfigService } from '../services/legalConfig.service';
@@ -58,6 +59,7 @@ beforeAll(async () => {
   await prisma.legalConfig.create({ data: { companyId: CON_VF, tipoSociedad: 'SL', denominacion: 'Con Verifactu SL', nif: 'B44444444' } });
   await prisma.legalConfig.create({ data: { companyId: SIN_FACTURAS, tipoSociedad: 'SL', denominacion: 'Recién Llegada SL', nif: cifSl() } });
   await prisma.verifactuConfig.create({ data: { companyId: CON_VF, estado: 'PRUEBAS', entorno: 'PRUEBAS' } });
+  await marcarEmpresaPruebas(prisma, CON_VF);
 });
 
 afterAll(async () => {

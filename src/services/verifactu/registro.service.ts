@@ -52,6 +52,34 @@ export interface DatosEntornoRegistro {
   /** Tipo de operacion efectivo de la factura. */
   tipoOperacion: string | null;
   estadoDocumento: string;
+  /** Empresa de pruebas de VERI*FACTU (Company.pruebasVerifactuDe informado). */
+  empresaPruebas: boolean;
+}
+
+/** details.codigo del 409 cuando el entorno no casa con el tipo de empresa. */
+export const CODIGO_ENTORNO_NO_PERMITIDO = 'VERIFACTU_ENTORNO_NO_PERMITIDO';
+
+/**
+ * Invariante de la fase F2 (spec verifactu, 12.1): el entorno de PRUEBAS solo
+ * existe en las empresas de pruebas, y el de PRODUCCION solo en las reales.
+ * Asi nunca se registra una factura real en el entorno de pruebas (ni lleva un
+ * QR de prewww2), y una empresa de pruebas nunca envia a la AEAT de verdad.
+ * Si no casa, 409 y no se emite. En produccion no puede pasar: ninguna ruta pone
+ * PRUEBAS a una empresa real.
+ */
+export function exigirEntornoPermitido(entorno: EntornoVerifactu | null, empresaPruebas: boolean): void {
+  if (entorno === 'PRUEBAS' && !empresaPruebas) {
+    throw conflict(
+      'Esta empresa tiene VERI*FACTU en pruebas, pero no es una empresa de pruebas: sus facturas son reales y no se pueden registrar en el entorno de pruebas de la AEAT. No se ha emitido. Habla con el administrador.',
+      { codigo: CODIGO_ENTORNO_NO_PERMITIDO, code: CODIGO_ENTORNO_NO_PERMITIDO },
+    );
+  }
+  if (entorno === 'PRODUCCION' && empresaPruebas) {
+    throw conflict(
+      'Esta es una empresa de pruebas de VERI*FACTU: solo puede registrar facturas en el entorno de pruebas de la AEAT. No se ha emitido. Habla con el administrador.',
+      { codigo: CODIGO_ENTORNO_NO_PERMITIDO, code: CODIGO_ENTORNO_NO_PERMITIDO },
+    );
+  }
 }
 
 const ENTORNOS: readonly EntornoVerifactu[] = ['PRUEBAS', 'PRODUCCION'];
@@ -63,8 +91,15 @@ const ENTORNOS: readonly EntornoVerifactu[] = ['PRUEBAS', 'PRODUCCION'];
  *  - estado PRUEBAS: siempre en el entorno de PRUEBAS (desde activaDesde si la hay);
  *  - estado ACTIVO y en vigor (verifactuActivo): en su entorno;
  *  - sin configuracion o DESACTIVADO: no.
+ * Si el entorno no casa con el tipo de empresa (exigirEntornoPermitido), 409.
  */
 export function entornoDeRegistro(d: DatosEntornoRegistro, ahora: Date): EntornoVerifactu | null {
+  const entorno = entornoSegunConfig(d, ahora);
+  exigirEntornoPermitido(entorno, d.empresaPruebas);
+  return entorno;
+}
+
+function entornoSegunConfig(d: DatosEntornoRegistro, ahora: Date): EntornoVerifactu | null {
   if (!d.espanola) return null;
   if (exclusionDe({ sii: d.sii, config: d.config })) return null;
   if (!d.origen || !ORIGENES_CON_REGISTRO.includes(d.origen)) return null;
@@ -102,6 +137,7 @@ export async function planRegistro(companyId: string, ahora: Date = new Date()):
     where: { companyId },
     select: { estado: true, entorno: true, activaDesde: true, motivoExclusion: true },
   });
+  const empresa = config ? await prisma.company.findUnique({ where: { id: companyId }, select: { pruebasVerifactuDe: true } }) : null;
   const datos: DatosEntornoRegistro = {
     espanola: perfilDesdeConfig(legal).espanola,
     sii: ajustes?.sii === true,
@@ -109,6 +145,7 @@ export async function planRegistro(companyId: string, ahora: Date = new Date()):
     origen: 'pantalla',
     tipoOperacion: null,
     estadoDocumento: 'FINAL',
+    empresaPruebas: !!empresa?.pruebasVerifactuDe,
   };
   const ahoraMismo = entornoDeRegistro(datos, ahora);
   const enSeguida = entornoDeRegistro(datos, new Date(ahora.getTime() + MARGEN_ACTIVACION_MS));
@@ -221,6 +258,8 @@ export async function generarRegistroAlta(tx: TransaccionBD, o: OpcionesRegistro
   if (!f) throw internalError('La factura emitida no está en la base de datos.', { codigo: 'VERIFACTU_FACTURA_NO_ENCONTRADA' });
   const legal = await tx.legalConfig.findUnique({ where: { companyId } });
   const ajustes = await tx.ajustesFiscales.findUnique({ where: { companyId }, select: { sii: true, criterioCaja: true } });
+  // Empresa de pruebas: solo con ella vale el entorno de PRUEBAS (exigirEntornoPermitido). Antes de bloquear la cadena.
+  const empresa = await tx.company.findUnique({ where: { id: companyId }, select: { pruebasVerifactuDe: true } });
 
   const inst = o.instantanea ?? leerInstantanea(f.instantaneaEmision);
   const clienteFiscal: ClienteFiscal = inst
@@ -235,6 +274,7 @@ export async function generarRegistroAlta(tx: TransaccionBD, o: OpcionesRegistro
       origen: f.origen,
       tipoOperacion,
       estadoDocumento: f.estadoDocumento,
+      empresaPruebas: !!empresa?.pruebasVerifactuDe,
     },
     decision,
   );

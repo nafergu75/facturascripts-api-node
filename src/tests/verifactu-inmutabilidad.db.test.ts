@@ -10,6 +10,7 @@
 import { describe, it, expect, beforeAll } from '@jest/globals';
 import { randomBytes } from 'crypto';
 import { prisma } from '../config/database';
+import { marcarEmpresaPruebas } from './ayuda-empresa-pruebas';
 import { incomeInvoicesService, type CrearFacturaIngresoDTO } from '../services/income-invoices.service';
 import { listarSeries } from '../services/series.service';
 import { hoyEspana } from '../utils/fechas';
@@ -42,6 +43,7 @@ beforeAll(async () => {
   await prisma.legalConfig.create({ data: { companyId: E, tipoSociedad: 'SL', denominacion: 'Inmutable SL', nif: cifSl() } });
   await listarSeries(E);
   await prisma.verifactuConfig.create({ data: { companyId: E, estado: 'PRUEBAS', entorno: 'PRUEBAS' } });
+  await marcarEmpresaPruebas(prisma, E);
   cliente = (await prisma.customer.create({ data: { companyId: E, nombreFiscal: 'Cliente SL', nifCif: 'B12345674', pais: 'ES' } })).id;
   const f = await incomeInvoicesService.crearIngreso({ companyId: E, customer: { id: cliente }, fechaEmision: HOY, lineas: [linea(1000)] });
   facturaId = f.id;

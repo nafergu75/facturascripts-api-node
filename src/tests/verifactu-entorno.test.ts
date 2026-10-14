@@ -9,7 +9,8 @@ import { leerInstantanea } from '../services/verifactu/instantanea';
 
 const AHORA = new Date('2027-01-04T10:00:00Z');
 const PRUEBAS = { estado: 'PRUEBAS', entorno: 'PRUEBAS', activaDesde: null, motivoExclusion: null };
-const base: DatosEntornoRegistro = { espanola: true, sii: false, config: PRUEBAS, origen: 'pantalla', tipoOperacion: 'NACIONAL', estadoDocumento: 'FINAL' };
+// Empresa de pruebas: desde la fase F2 es la unica que puede estar en PRUEBAS.
+const base: DatosEntornoRegistro = { espanola: true, sii: false, config: PRUEBAS, origen: 'pantalla', tipoOperacion: 'NACIONAL', estadoDocumento: 'FINAL', empresaPruebas: true };
 const e = (cambios: Partial<DatosEntornoRegistro>) => entornoDeRegistro({ ...base, ...cambios }, AHORA);
 
 describe('entornoDeRegistro', () => {
@@ -22,11 +23,25 @@ describe('entornoDeRegistro', () => {
 
   it('ACTIVO: en su entorno, solo desde activaDesde', () => {
     const activo = { estado: 'ACTIVO', entorno: 'PRODUCCION', activaDesde: new Date('2026-12-31T23:00:00Z'), motivoExclusion: null };
-    expect(e({ config: activo })).toBe('PRODUCCION');
+    expect(e({ config: activo, empresaPruebas: false })).toBe('PRODUCCION');
     expect(e({ config: { ...activo, entorno: 'PRUEBAS' } })).toBe('PRUEBAS');
-    expect(e({ config: { ...activo, activaDesde: new Date('2027-02-01T00:00:00Z') } })).toBeNull();
-    expect(e({ config: { ...activo, activaDesde: null } })).toBeNull();
-    expect(e({ config: { ...activo, entorno: 'OTRO' } })).toBeNull();
+    expect(e({ config: { ...activo, activaDesde: new Date('2027-02-01T00:00:00Z') }, empresaPruebas: false })).toBeNull();
+    expect(e({ config: { ...activo, activaDesde: null }, empresaPruebas: false })).toBeNull();
+    expect(e({ config: { ...activo, entorno: 'OTRO' }, empresaPruebas: false })).toBeNull();
+  });
+
+  it('PRUEBAS solo en una empresa de pruebas, y PRODUCCION solo en una real: si no, 409 y no se emite', () => {
+    const activo = { estado: 'ACTIVO', entorno: 'PRODUCCION', activaDesde: new Date('2026-12-31T23:00:00Z'), motivoExclusion: null };
+    const codigo = { statusCode: 409, details: expect.objectContaining({ codigo: 'VERIFACTU_ENTORNO_NO_PERMITIDO' }) };
+    // Empresa real en PRUEBAS (o ACTIVO en el entorno de pruebas): nunca registros de pruebas sobre facturas reales.
+    expect(() => e({ empresaPruebas: false })).toThrow(expect.objectContaining(codigo));
+    expect(() => e({ config: { ...activo, entorno: 'PRUEBAS' }, empresaPruebas: false })).toThrow(expect.objectContaining(codigo));
+    // Empresa de pruebas activa en PRODUCCION: nunca envia a la AEAT de verdad.
+    expect(() => e({ config: activo, empresaPruebas: true })).toThrow(expect.objectContaining(codigo));
+    // Sin registro no hay nada que comprobar (DESACTIVADO, lector, extranjera...).
+    expect(e({ config: { ...PRUEBAS, estado: 'DESACTIVADO' }, empresaPruebas: false })).toBeNull();
+    expect(e({ origen: 'lector', empresaPruebas: false })).toBeNull();
+    expect(e({ espanola: false, empresaPruebas: false })).toBeNull();
   });
 
   it('sin configuración o DESACTIVADO: no', () => {

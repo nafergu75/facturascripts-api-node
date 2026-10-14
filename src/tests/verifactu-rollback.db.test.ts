@@ -8,6 +8,7 @@
 import { describe, it, expect, beforeAll, afterEach } from '@jest/globals';
 import { randomBytes } from 'crypto';
 import { prisma } from '../config/database';
+import { marcarEmpresaPruebas } from './ayuda-empresa-pruebas';
 import { incomeInvoicesService, type CrearFacturaIngresoDTO } from '../services/income-invoices.service';
 import { listarSeries } from '../services/series.service';
 import * as cadenaMod from '../services/verifactu/cadena';
@@ -52,6 +53,7 @@ beforeAll(async () => {
     });
     await listarSeries(id);
     await prisma.verifactuConfig.create({ data: { companyId: id, estado: 'PRUEBAS', entorno: 'PRUEBAS' } });
+    await marcarEmpresaPruebas(prisma, id);
     clientes[id] = {
       conNif: (await prisma.customer.create({ data: { companyId: id, nombreFiscal: 'Cliente SL', nifCif: 'B12345674', pais: 'ES' } })).id,
       sinNif: (await prisma.customer.create({ data: { companyId: id, nombreFiscal: 'Sin NIF', nifCif: '', pais: 'ES' } })).id,

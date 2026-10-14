@@ -15,6 +15,7 @@ import { promises as fsp } from 'fs';
 import * as path from 'path';
 import { Prisma, PrismaClient } from '@prisma/client';
 import { prisma } from '../config/database';
+import { marcarEmpresaPruebas } from './ayuda-empresa-pruebas';
 import { hashPassword } from '../utils/password';
 import { crearEmpresa, crearUsuario } from '../services/admin.service';
 import { incomeInvoicesService, type CrearFacturaIngresoDTO } from '../services/income-invoices.service';
@@ -227,6 +228,8 @@ export async function crearDatosVaciado(almacen: string): Promise<DatosVaciado> 
   // borra con SQL). Bitacora: lo de una empresa y lo de un usuario que se borra
   // se va; lo de la plataforma sin usuario o del administrador se queda.
   await prisma.verifactuConfig.upsert({ where: { companyId: '1' }, update: { estado: 'PRUEBAS', entorno: 'PRUEBAS' }, create: { companyId: '1', estado: 'PRUEBAS', entorno: 'PRUEBAS' } });
+  // Desde la fase F2, PRUEBAS solo en una empresa de pruebas (si no, la emision da 409).
+  await marcarEmpresaPruebas(prisma, '1');
   const clienteVf = await prisma.customer.create({ data: { companyId: '1', nombreFiscal: 'Cliente VERI*FACTU SL', nifCif: 'B12345674', pais: 'ES' } });
   await incomeInvoicesService.crearIngreso({ companyId: '1', customer: { id: clienteVf.id }, fechaEmision: '2026-09-15', lineas: [linea(250)] } as CrearFacturaIngresoDTO);
   await prisma.verifactuBitacora.create({ data: { companyId: '1', tipo: 'REGISTRO_GENERADO', usuarioId: admin.id, detalle: { prueba: true } } });

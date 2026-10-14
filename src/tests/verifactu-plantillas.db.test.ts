@@ -20,6 +20,7 @@
  */
 import { describe, it, expect, beforeAll } from '@jest/globals';
 import { prisma } from '../config/database';
+import { marcarEmpresaPruebas } from './ayuda-empresa-pruebas';
 import { incomeInvoicesService, type CrearFacturaIngresoDTO, type CrearLineaIngresoDTO } from '../services/income-invoices.service';
 import { guardarAjustesFacturacion } from '../services/ajustesFacturacion.service';
 import { crearSerie, listarSeries } from '../services/series.service';
@@ -121,6 +122,7 @@ beforeAll(async () => {
   // Repercute el IEEPNR (la serie A usa sola la A), vende ceramica (la B usa sola la B) y los palets van a la 704.
   await guardarAjustesFacturacion(E, 'u-test', { ieepnrRepercute: true, vendeCeramica: true, cuentaPalets: '704' });
   await prisma.verifactuConfig.create({ data: { companyId: E, estado: 'PRUEBAS', entorno: 'PRUEBAS' } });
+  await marcarEmpresaPruebas(prisma, E);
 });
 
 describe('plantilla A (NZ004_26): el IEEPNR dentro de la base del desglose', () => {
