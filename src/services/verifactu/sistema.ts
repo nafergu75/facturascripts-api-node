@@ -10,17 +10,21 @@
  *   configuracion y la cadena de una empresa (una restauracion, el «TODO A
  *   CERO») y se vuelve a empezar, el nuevo PrimerRegistro lleva otro numero y
  *   la AEAT no lo da por repetido (Validaciones 4.3.1).
- * - IndicadorMultiplesOT: «S» si el usuario del SaaS tiene mas de una
- *   facturacion, en cualquier estado (misma FAQ, n.º 4). La app no separa
- *   usuarios de la plataforma: se toma «S» si hay mas de una empresa.
+ * - IndicadorMultiplesOT: lo calcula el sistema segun los obligados que
+ *   contiene en ese momento, en cualquier estado (DsRegistroVeriFactu.xlsx
+ *   v1.0, hoja 5); en un SaaS, por usuario del SaaS (FAQ de desarrolladores
+ *   v1.3, n.º 4): «S» si ese usuario tiene mas de una facturacion. Hoy toda la
+ *   plataforma es de un solo usuario, asi que company.count() > 1 equivale (las
+ *   empresas de pruebas de VERI*FACTU tambien cuentan). Si la plataforma pasa a
+ *   tener varios clientes, hay que contarlo por cliente.
  * - VERSION_SIF es propia de VERI*FACTU: sube con cada cambio que afecte a los
  *   registros y pasa a 1.0.0 con la declaracion responsable (fase F5).
- * - El productor es la entidad desarrolladora (decision del usuario del
- *   11-10-2026: IFBIOSOLUCIONES, S.A., NIF A10952364); el nombre exacto esta
- *   pendiente de confirmar (pregunta 2 de la spec). Nombre y NIF son constantes
- *   de aqui, juntas: el Id. del sistema va ligado al NIF del productor (FAQ n.º
- *   4). NO se lee AEAT_NIF_EMPRESA_DESARROLLO (la de los modelos de la AEAT):
- *   cambiar esa variable cambiaria la identidad del sistema a mitad de cadena.
+ * - El productor es la entidad desarrolladora: IFBIOSOLUCIONES, S.A., NIF
+ *   A10952364, version 0.1.0 (CONFIRMADO por el usuario el 14-10-2026). Nombre
+ *   y NIF son constantes de aqui, juntas: el Id. del sistema va ligado al NIF
+ *   del productor (FAQ n.º 4). NO se lee AEAT_NIF_EMPRESA_DESARROLLO (la de los
+ *   modelos de la AEAT): cambiar esa variable cambiaria la identidad del
+ *   sistema a mitad de cadena.
  */
 import type { SistemaInformatico } from './tipos';
 
