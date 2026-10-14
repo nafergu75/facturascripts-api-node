@@ -12,7 +12,7 @@ import { normalizarNif } from '../../utils/nif';
 import { numeroCompletoLeido } from '../income-invoices.service';
 import { separarNumero } from '../ingresos-extractor.service';
 import { perfilEmpresa } from '../perfilEmpresa.service';
-import { comprobarFechaAbierta } from '../periodos.service';
+import { fechaAbierta } from '../periodos.service';
 import { datosEmpresaValidacion } from './datosEmpresa';
 import type { EleccionOrigenTercero } from './origen-tercero';
 import { clientePorNif } from './terceros-lector';
@@ -96,14 +96,8 @@ export async function contextoValidacion(
     empresaEspanola: perfil.espanola,
     monedaCuenta: perfil.monedaCuenta,
     hoy: hoyEspana(),
-    periodoAbierto: async (fecha) => {
-      try {
-        await comprobarFechaAbierta(companyId, fecha);
-        return true;
-      } catch {
-        return false;
-      }
-    },
+    // Un fallo de la base de datos no es «periodo cerrado» (no se pide cambiar la fecha sin motivo): se relanza.
+    periodoAbierto: (fecha) => fechaAbierta(companyId, fecha),
     duplicado: { factura, archivo },
     origenTercero: opciones.origenTercero ?? null,
     paisTerceroFicha,
