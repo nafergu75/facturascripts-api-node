@@ -251,7 +251,7 @@ describe('cifras exactas con BD', () => {
     expect(r.texto).toBe(
       'En el 3T de 2026 has facturado 2.500,00 € en 2 facturas; en el mismo periodo de 2025, 1.000,00 € (+150,0 %). ' +
         'Has gastado 250,00 € en 1 factura; en el mismo periodo de 2025 no hay facturas. ' +
-        'Cuenta las facturas emitidas y recibidas con fecha en el periodo, sin borradores ni proformas; importes sin IVA.',
+        'Las ventas cuentan por la fecha de la operación (si la factura no la lleva, por la de la factura) y una rectificativa por sustitución, solo por lo que cambia respecto a la original. Los gastos, por la fecha de la factura. Sin borradores ni proformas; importes sin IVA.',
     );
     expect(r.tabla?.filas.map((f) => f.celdas)).toEqual([
       ['Ventas (base imponible)', 2500, 1000],

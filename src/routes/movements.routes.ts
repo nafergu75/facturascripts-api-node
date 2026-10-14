@@ -15,9 +15,11 @@ router.get('/', authorize('contabilidad:read', 'tesoreria:read'), movementsContr
 // ⚠️ IMPORTANT: Specific routes MUST come BEFORE dynamic routes like /:id
 // Otherwise Express will treat /stats/summary as /:id where id='stats/summary'
 
-// Panel del resumen (panel.service): sale de las FACTURAS y las NOMINAS, por la
-// fecha de la factura, no de la tabla Movement. Todas admiten ?anio (por defecto
-// el año en curso) y ?trimestre=1-4 o ?mes=1-12.
+// Panel del resumen (panel.service): sale de las FACTURAS y las NOMINAS, no de la
+// tabla Movement. Las ventas van por su devengo (la fecha de la operacion si la
+// tiene) y una S por su diferencia con la original; los gastos, por la fecha de
+// la factura. Todas admiten ?anio (por defecto el año en curso) y ?trimestre=1-4
+// o ?mes=1-12.
 
 // GET /companies/:companyId/movements/stats/summary
 router.get('/stats/summary', authorize('contabilidad:read', 'tesoreria:read'), movementsController.getSummary);

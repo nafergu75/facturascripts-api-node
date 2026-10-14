@@ -167,7 +167,7 @@ export const deudaConProveedores: Ejecutor = async (ctx, h) => {
 
 // ---------------- INT-09/10: facturado y gastado en un periodo ----------------
 
-const CRITERIO_FACTURADO = 'Cuenta las facturas emitidas y recibidas con fecha en el periodo, sin borradores ni proformas; importes sin IVA.';
+const CRITERIO_FACTURADO = 'Las ventas cuentan por la fecha de la operación (si la factura no la lleva, por la de la factura) y una rectificativa por sustitución, solo por lo que cambia respecto a la original. Los gastos, por la fecha de la factura. Sin borradores ni proformas; importes sin IVA.';
 
 function fraseComparada(verbo: string, actual: ResumenFiscalPeriodo['ventas'], anterior: ResumenFiscalPeriodo['ventas'], anioAnterior: number): string {
   const v = variacion(actual.base, anterior.base);

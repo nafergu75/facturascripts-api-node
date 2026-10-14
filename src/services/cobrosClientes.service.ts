@@ -106,21 +106,31 @@ function sumarEn(mapa: Map<string, number>, id: string, centimos: number): void 
   mapa.set(id, (mapa.get(id) ?? 0) + centimos);
 }
 
+/** Cómo está de cobro una venta con total positivo, en céntimos, con las reglas de la cartera. */
+export interface CobroDeVenta {
+  /** La ha sustituido una rectificativa por sustitución (S): ya no se cobra esta, sino la sustituta. */
+  sustituida: boolean;
+  /** Cobrado hasta hoy, más lo que se cobró a la factura que sustituye (si es una S). */
+  cobrado: number;
+  /** Lo que le restan sus rectificativas en negativo (0 o negativo). */
+  abono: number;
+  /** Total más abono: lo que queda de la factura después de sus abonos. */
+  neto: number;
+  /** Lo que queda por cobrar a hoy (0 si no queda nada). */
+  pendiente: number;
+}
+
 /**
- * Calcula el resumen a partir de las facturas emitidas y lo cobrado por factura
- * (cobros activos). Puro: sin BD ni reloj.
- *
- * `cobradoPorId` son todos los cobros activos y `opciones.cobradoHastaHoy` los
- * que tienen fecha hasta hoy (por defecto, todos). Lo pendiente se calcula con
- * los de hasta hoy; el resto solo sirve para no tomar por "cobrada a mano" una
- * factura cuyo cobro tiene fecha futura.
+ * Lo cobrado y lo pendiente de cada venta con total positivo (las rectificativas
+ * en negativo no salen: ya restan de sus originales). Es el cálculo de la
+ * cartera de cobros (resumirCobrosClientes), para que el panel diga lo mismo.
+ * Puro: sin BD ni reloj. `hastaHoy`: los cobros con fecha hasta hoy (opciones.cobradoHastaHoy de resumirCobrosClientes).
  */
-export function resumirCobrosClientes(
+export function cobrosDeVentas(
   facturas: FacturaVentaCobro[],
   cobradoPorId: Map<string, number>,
-  opciones: { anio: number; hoy: string; cobradoEnElAnio: number; cobradoHastaHoy?: Map<string, number>; maxProximas?: number },
-): ResumenCobrosClientes {
-  const hastaHoy = opciones.cobradoHastaHoy ?? cobradoPorId;
+  hastaHoy: Map<string, number> = cobradoPorId,
+): Map<string, CobroDeVenta> {
   /** Pendiente propio en céntimos (sin contar rectificativas), con la regla de cobrosPagos. */
   const pendientePropio = (f: FacturaVentaCobro) =>
     aCentimos(calcularPendiente('INGRESO', f.totalFactura, f.estado, cobradoPorId.get(f.id) ?? 0, hastaHoy.get(f.id) ?? 0));
@@ -178,18 +188,52 @@ export function resumirCobrosClientes(
     } else if (f.facturaOriginalId) sumarEn(abonos, vigente(f.facturaOriginalId), abono);
   }
 
+  const out = new Map<string, CobroDeVenta>();
+  for (const f of facturas) {
+    if (sustituta.has(f.id)) {
+      out.set(f.id, { sustituida: true, cobrado: 0, abono: 0, neto: 0, pendiente: 0 });
+      continue;
+    }
+    const total = aCentimos(f.totalFactura);
+    // Fuera: rectificativas en negativo (ya aplicadas) y facturas a cero.
+    if (total <= 0) continue;
+    const traspaso = traspasado.get(f.id) ?? 0;
+    const abono = abonos.get(f.id) ?? 0;
+    out.set(f.id, {
+      sustituida: false,
+      cobrado: aCentimos(hastaHoy.get(f.id) ?? 0) + traspaso,
+      abono,
+      neto: total + abono,
+      pendiente: Math.max(0, pendientePropio(f) - traspaso + abono),
+    });
+  }
+  return out;
+}
+
+/**
+ * Calcula el resumen a partir de las facturas emitidas y lo cobrado por factura
+ * (cobros activos). Puro: sin BD ni reloj.
+ *
+ * `cobradoPorId` son todos los cobros activos y `opciones.cobradoHastaHoy` los
+ * que tienen fecha hasta hoy (por defecto, todos). Lo pendiente se calcula con
+ * los de hasta hoy; el resto solo sirve para no tomar por "cobrada a mano" una
+ * factura cuyo cobro tiene fecha futura.
+ */
+export function resumirCobrosClientes(
+  facturas: FacturaVentaCobro[],
+  cobradoPorId: Map<string, number>,
+  opciones: { anio: number; hoy: string; cobradoEnElAnio: number; cobradoHastaHoy?: Map<string, number>; maxProximas?: number },
+): ResumenCobrosClientes {
+  const cobros = cobrosDeVentas(facturas, cobradoPorId, opciones.cobradoHastaHoy ?? cobradoPorId);
   const prefijoAnio = `${opciones.anio}-`;
   const pendientes: FacturaPorCobrar[] = [];
   const cobradas = { numero: 0, centimos: 0 };
 
   for (const f of facturas) {
-    const total = aCentimos(f.totalFactura);
+    const c = cobros.get(f.id);
     // Fuera: rectificativas en negativo (ya aplicadas), facturas a cero y facturas sustituidas.
-    if (total <= 0 || sustituta.has(f.id)) continue;
-    const traspaso = traspasado.get(f.id) ?? 0;
-    const abono = abonos.get(f.id) ?? 0;
-    const pendiente = Math.max(0, pendientePropio(f) - traspaso + abono);
-    const neto = total + abono;
+    if (!c || c.sustituida) continue;
+    const { abono, neto, pendiente } = c;
 
     if (pendiente > 0) {
       pendientes.push({
@@ -199,8 +243,8 @@ export function resumirCobrosClientes(
         ...(f.customerId ? { customerId: f.customerId } : {}),
         fechaEmision: f.fechaEmision,
         fechaVencimiento: f.fechaVencimiento,
-        total: aEuros(total),
-        cobrado: aEuros(aCentimos(hastaHoy.get(f.id) ?? 0) + traspaso),
+        total: aEuros(aCentimos(f.totalFactura)),
+        cobrado: aEuros(c.cobrado),
         abonado: abono === 0 ? 0 : aEuros(-abono),
         pendiente: aEuros(pendiente),
         vencida: f.fechaVencimiento < opciones.hoy,
@@ -322,4 +366,18 @@ export async function facturasPorCobrar(companyId: string, hoy: string = hoyEspa
     maxProximas: Number.POSITIVE_INFINITY,
   });
   return { hoy, facturas: r.proximas, pendientes: r.pendientes, vencidas: r.vencidas };
+}
+
+/**
+ * Cómo está de cobro cada venta emitida de la empresa a fecha de `hoy`, con las
+ * mismas reglas que la cartera (rectificativas, sustituciones, cobros con fecha
+ * futura y cobradas a mano). Solo lectura. La usa el panel («Últimas facturas»).
+ */
+export async function cobrosDeVentasEmitidas(companyId: string, hoy: string = hoyEspana()): Promise<Map<string, CobroDeVenta>> {
+  const [facturas, cobrado, cobradoHastaHoy] = await Promise.all([
+    facturasEmitidas(companyId),
+    cobradoPorFactura(companyId, 'INGRESO'),
+    cobradoPorFactura(companyId, 'INGRESO', hoy),
+  ]);
+  return cobrosDeVentas(facturas, cobrado, cobradoHastaHoy);
 }

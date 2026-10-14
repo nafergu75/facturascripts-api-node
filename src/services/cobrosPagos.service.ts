@@ -2,7 +2,7 @@ import { prisma, type TransaccionBD as Tx } from '../config/database';
 import { badRequest, conflict, notFound } from '../utils/http-errors';
 import { partidaDeFactura } from './arranque/partidas.service';
 import { aCentimos } from '../utils/money';
-import { hoyEspana } from '../utils/fechas';
+import { fechaTexto, hoyEspana } from '../utils/fechas';
 import { comprobarFechaAbierta, exigirFechaContabilizable } from './periodos.service';
 import {
   calcularCobroDivisa,
@@ -170,6 +170,10 @@ const TXT_DEVOLUCION_CLIENTE = { cobro: 'devolución', Cobro: 'Devolución al cl
 const textosAbono = (tipo: TipoDocumento) => (tipo === 'GASTO' ? TXT_DEVOLUCION : TXT_DEVOLUCION_CLIENTE);
 /** «el cobro», «el pago» o «la devolución», para meterlo en una frase. */
 const conArticulo = (t: { cobro: string }) => (t.cobro === 'devolución' ? `la ${t.cobro}` : `el ${t.cobro}`);
+/** «del cobro», «del pago» o «de la devolución». */
+const delArticulo = (t: { cobro: string }) => (t.cobro === 'devolución' ? `de la ${t.cobro}` : `del ${t.cobro}`);
+/** «El cobro ya está anulado.» o «La devolución ya está anulada.» */
+const yaAnulado = (t: { cobro: string }) => (t.cobro === 'devolución' ? `La ${t.cobro} ya está anulada.` : `El ${t.cobro} ya está anulado.`);
 
 interface FacturaBase {
   id: string;
@@ -703,13 +707,13 @@ export async function registrarCobroFactura(
   // Factura de 2026 que la gestoria trajo pendiente: se cobra (o se paga) contra su partida, no dos veces.
   const enlazada = await partidaDeFactura(companyId, tipo, invoiceId);
   if (enlazada) {
-    throw conflict(`Esta factura está entre las pendientes de 2026 que trajo la gestoría (${enlazada.numeroDocumento}): el ${t.cobro} se apunta desde allí.`, { codigo: 'FACTURA_CON_PARTIDA_2026', partidaId: enlazada.id });
+    throw conflict(`Esta factura está entre las pendientes de 2026 que trajo la gestoría (${enlazada.numeroDocumento}): ${conArticulo(t)} se apunta desde allí.`, { codigo: 'FACTURA_CON_PARTIDA_2026', partidaId: enlazada.id });
   }
   // Venta sustituida por una rectificativa por sustitucion: lo que se debe es la sustituta.
   const sustAntes = tipo === 'INGRESO' && !esAbono ? await sustitucionVenta(prisma, companyId, invoiceId) : SIN_SUSTITUCION;
   if (sustAntes.sustituidaPor) {
     const otra = sustAntes.sustituidaPor.numeroCompleto ?? 'rectificativa que la sustituye';
-    throw conflict(`La factura ${f.numeroCompleto ?? ''} está sustituida por la ${otra}: el ${t.cobro} se apunta en la ${otra}.`, {
+    throw conflict(`La factura ${f.numeroCompleto ?? ''} está sustituida por la ${otra}: ${conArticulo(t)} se apunta en la ${otra}.`, {
       codigo: 'FACTURA_SUSTITUIDA',
       facturaId: sustAntes.sustituidaPor.id,
     });
@@ -719,7 +723,7 @@ export async function registrarCobroFactura(
     throw badRequest(`La factura tiene importe cero o negativo (rectificativa): no admite ${t.cobro}s desde aquí.`);
   }
   const fecha = validarFecha(datos.fecha);
-  if (fecha < f.fechaEmision) throw badRequest(`La fecha del ${t.cobro} no puede ser anterior a la de la factura (${f.fechaEmision}).`);
+  if (fecha < f.fechaEmision) throw badRequest(`La fecha ${delArticulo(t)} no puede ser anterior a la de la factura (${fechaTexto(f.fechaEmision)}).`);
   for (const [campo, valor] of [
     ['importe', datos.importe],
     ['importe', datos.importeDoc],
@@ -889,7 +893,7 @@ export async function anularCobroFactura(
   const pago = await prisma.invoicePayment.findFirst({ where: { id: cobroId, companyId, invoiceType: tipo, invoiceId } });
   const t = pago && pago.importe < 0 ? textosAbono(tipo) : TXT[tipo];
   if (!pago) throw notFound(`${t.Cobro} no encontrado.`);
-  if (pago.estado !== 'ACTIVO') throw badRequest(`El ${t.cobro} ya está anulado.`);
+  if (pago.estado !== 'ACTIVO') throw badRequest(yaAnulado(t));
   const f = await cargarFactura(prisma, companyId, tipo, invoiceId);
 
   let periodoAbierto = true;
@@ -912,7 +916,7 @@ export async function anularCobroFactura(
         where: { id: pago.id, estado: 'ACTIVO' },
         data: { estado: 'ANULADO', anuladoEn: new Date() },
       });
-      if (r.count !== 1) throw badRequest(`El ${t.cobro} ya está anulado.`);
+      if (r.count !== 1) throw badRequest(yaAnulado(t));
       if (original && original.estado !== 'REVERSED') {
         if (periodoAbierto) {
           await tx.journalEntry.update({ where: { id: original.id }, data: { estado: 'REVERSED' } });
