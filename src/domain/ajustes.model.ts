@@ -13,6 +13,9 @@ export const IRPF_PERMITIDOS = [0, 1, 2, 7, 15, 19] as const;
 export const DIAS_VENCIMIENTO_MAX = 365;
 export const TEXTO_PIE_MAX = 500;
 
+/** Tipo del IEEPNR (EUR por kg): mayor que 0, como mucho 10 y con 4 decimales. */
+export const IEEPNR_POR_KG_MAX = 10;
+
 export interface AjustesFacturacion {
   formaPago: FormaPago;
   diasVencimiento: number;
@@ -21,6 +24,12 @@ export interface AjustesFacturacion {
   cuentaBancariaId: string | null;
   mostrarIban: boolean;
   textoPie: string | null;
+  /** La empresa repercute el IEEPNR en sus facturas (plantilla A). Siempre false fuera de Espana. */
+  ieepnrRepercute: boolean;
+  /** Tipo del IEEPNR en EUR por kg (Ley 7/2022: 0,45). */
+  ieepnrPorKg: number;
+  /** Cuenta del IEEPNR si la empresa fuera contribuyente; null = la de ingresos de cada linea. */
+  ieepnrCuenta: string | null;
 }
 
 export const AJUSTES_FACTURACION_POR_DEFECTO: Readonly<AjustesFacturacion> = Object.freeze({
@@ -30,6 +39,9 @@ export const AJUSTES_FACTURACION_POR_DEFECTO: Readonly<AjustesFacturacion> = Obj
   cuentaBancariaId: null,
   mostrarIban: true,
   textoPie: null,
+  ieepnrRepercute: false,
+  ieepnrPorKg: 0.45,
+  ieepnrCuenta: null,
 });
 
 export const PERIODICIDADES_IVA = ['TRIMESTRAL', 'MENSUAL'] as const;

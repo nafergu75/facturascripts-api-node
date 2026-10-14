@@ -8,8 +8,10 @@
  *  - Al emitir se copian el IBAN y el pie: el PDF de una factura emitida no
  *    cambia aunque después se cambien los ajustes; el de un borrador sí.
  *  - Empresa en USD: el IRPF se guarda a 0 y solo valen cuentas en USD.
+ *  - IEEPNR: valores por defecto, rangos, cuenta del grupo 47 o 7 activa en el
+ *    plan, y en una empresa extranjera no se repercute nunca.
  */
-import { describe, it, expect, beforeAll } from '@jest/globals';
+import { describe, it, expect, beforeAll, afterAll } from '@jest/globals';
 import express from 'express';
 import request from 'supertest';
 import { prisma } from '../config/database';
@@ -143,6 +145,70 @@ describe('PUT /ajustes-facturacion', () => {
     expect(Number((await prisma.ajustesFacturacion.findUnique({ where: { companyId: US } }))!.irpfDefecto)).toBe(0);
     const eur = await guardar({ cuentaBancariaId: cuentaEurEnUs }, US);
     expect([eur.status, eur.body.details]).toEqual([400, { campo: 'cuentaBancariaId' }]);
+  });
+});
+
+describe('IEEPNR (plantilla A)', () => {
+  beforeAll(async () => {
+    const cuenta = (codigo: string, activo = true) =>
+      prisma.chartOfAccounts.create({ data: { companyId: ES, codigo, nombre: `Cuenta ${codigo}`, grupo: Number(codigo[0]), nivel: 4, naturaleza: 'PASIVO', tipoUso: 'BALANCE', activo } });
+    await cuenta('4758');
+    await cuenta('7059');
+    await cuenta('4759', false);
+  });
+
+  it('por defecto: no se repercute, 0,45 € por kg y sin cuenta propia', async () => {
+    const res = await leer(OTRA);
+    expect(res.body.data).toMatchObject({ ieepnrRepercute: false, ieepnrPorKg: 0.45, ieepnrCuenta: null, guardado: false });
+  });
+
+  it('guarda si se repercute, el tipo por kg y la cuenta', async () => {
+    const res = await guardar({ ieepnrRepercute: true, ieepnrPorKg: 0.4567, ieepnrCuenta: '4758' });
+    expect(res.status).toBe(200);
+    expect(res.body.data).toMatchObject({ ieepnrRepercute: true, ieepnrPorKg: 0.4567, ieepnrCuenta: '4758' });
+    expect((await guardar({ ieepnrPorKg: 10, ieepnrCuenta: '7059' })).body.data).toMatchObject({ ieepnrPorKg: 10, ieepnrCuenta: '7059', ieepnrRepercute: true });
+    // null (o vacía) quita la cuenta: el IEEPNR vuelve a la cuenta de ingresos de su línea.
+    expect((await guardar({ ieepnrPorKg: 0.45, ieepnrCuenta: null })).body.data).toMatchObject({ ieepnrPorKg: 0.45, ieepnrCuenta: null });
+    // Lo demás no se toca.
+    expect((await leer()).body.data).toMatchObject({ formaPago: 'GIRO', diasVencimiento: 45 });
+  });
+
+  it('rangos y cuentas no válidos: 400 con su campo y nada guardado', async () => {
+    const casos: Array<[object, string]> = [
+      [{ ieepnrPorKg: 0 }, 'ieepnrPorKg'],
+      [{ ieepnrPorKg: -0.45 }, 'ieepnrPorKg'],
+      [{ ieepnrPorKg: 10.0001 }, 'ieepnrPorKg'],
+      [{ ieepnrPorKg: 0.45678 }, 'ieepnrPorKg'],
+      [{ ieepnrPorKg: '0,45' }, 'ieepnrPorKg'],
+      [{ ieepnrRepercute: 'si' }, 'ieepnrRepercute'],
+      [{ ieepnrCuenta: 'abc' }, 'ieepnrCuenta'],
+      [{ ieepnrCuenta: '475-8' }, 'ieepnrCuenta'],
+      // De otro grupo: ni 47 ni 7.
+      [{ ieepnrCuenta: '6000' }, 'ieepnrCuenta'],
+      [{ ieepnrCuenta: '4000' }, 'ieepnrCuenta'],
+      // No existe en el plan.
+      [{ ieepnrCuenta: '4757123' }, 'ieepnrCuenta'],
+      // Desactivada.
+      [{ ieepnrCuenta: '4759' }, 'ieepnrCuenta'],
+      // La plantilla va por series, no aquí.
+      [{ plantilla: 'A' }, 'plantilla'],
+    ];
+    for (const [body, campo] of casos) {
+      const res = await guardar(body);
+      expect([JSON.stringify(body), res.status, res.body.details]).toEqual([JSON.stringify(body), 400, { campo }]);
+    }
+    expect((await leer()).body.data).toMatchObject({ ieepnrRepercute: true, ieepnrPorKg: 0.45, ieepnrCuenta: null });
+  });
+
+  it('empresa extranjera: ieepnrRepercute se guarda siempre como false', async () => {
+    const res = await guardar({ ieepnrRepercute: true }, US);
+    expect(res.status).toBe(200);
+    expect(res.body.data.ieepnrRepercute).toBe(false);
+    expect((await prisma.ajustesFacturacion.findUnique({ where: { companyId: US } }))!.ieepnrRepercute).toBe(false);
+  });
+
+  afterAll(async () => {
+    await guardar({ ieepnrRepercute: false, ieepnrPorKg: 0.45, ieepnrCuenta: null });
   });
 });
 

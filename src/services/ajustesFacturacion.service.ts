@@ -9,8 +9,13 @@
  *  - al crear una factura de venta sin forma de pago o sin vencimiento;
  *  - al emitirla: se copian en la factura el IBAN y el texto al pie, para que
  *    el PDF de una factura ya emitida no cambie si después se cambian aquí;
- *  - en el PDF de los borradores, las proformas y las facturas anteriores a la copia.
- * No cambian ningún asiento ni ningún modelo.
+ *  - en el PDF de los borradores, las proformas y las facturas anteriores a la copia;
+ *  - el IEEPNR (plantilla A): si la empresa lo repercute y a qué tipo por kg. El
+ *    tipo queda guardado en cada factura (IncomeInvoice.ieepnrPorKg): cambiarlo
+ *    aquí no cambia las emitidas.
+ * Lo único que cambia un asiento es ieepnrCuenta: con ella, el IEEPNR de las
+ * ventas que se contabilicen después va a esa cuenta en vez de a la de ingresos
+ * de su línea. Ningún modelo cambia.
  */
 import { z } from 'zod';
 import { prisma, type ClienteBD, type TransaccionBD } from '../config/database';
@@ -20,9 +25,11 @@ import {
   DIAS_VENCIMIENTO_MAX,
   FORMAS_PAGO,
   FormaPago,
+  IEEPNR_POR_KG_MAX,
   IRPF_PERMITIDOS,
   TEXTO_PIE_MAX,
 } from '../domain/ajustes.model';
+import { PGC_BASE } from '../domain/pgc-model';
 import { badRequest } from '../utils/http-errors';
 import { errorDeValidacion } from '../utils/zod-errores';
 import { perfilEmpresa } from './perfilEmpresa.service';
@@ -62,6 +69,9 @@ export async function leerAjustesFacturacion(companyId: string, db: Db = prisma)
     cuentaBancariaId: fila.cuentaBancariaId,
     mostrarIban: fila.mostrarIban,
     textoPie: fila.textoPie,
+    ieepnrRepercute: fila.ieepnrRepercute ?? false,
+    ieepnrPorKg: fila.ieepnrPorKg === null || fila.ieepnrPorKg === undefined ? AJUSTES_FACTURACION_POR_DEFECTO.ieepnrPorKg : Number(fila.ieepnrPorKg),
+    ieepnrCuenta: fila.ieepnrCuenta ?? null,
     guardado: true,
     actualizadoEn: fila.updatedAt.toISOString(),
     actualizadoPor: fila.updatedBy,
@@ -84,6 +94,8 @@ export async function obtenerAjustesFacturacion(companyId: string): Promise<Ajus
   return {
     ...ajustes,
     irpfDefecto: perfil.espanola ? ajustes.irpfDefecto : 0,
+    // El IEEPNR es un impuesto español: fuera de España, nunca.
+    ieepnrRepercute: perfil.espanola ? ajustes.ieepnrRepercute : false,
     empresaEspanola: perfil.espanola,
     monedaCuenta: perfil.monedaCuenta,
     // Fuera de España solo se ofrecen las cuentas en la moneda de la empresa.
@@ -99,6 +111,13 @@ const esquema = z
     cuentaBancariaId: z.string().trim().min(1).nullable(),
     mostrarIban: z.boolean(),
     textoPie: z.string().max(TEXTO_PIE_MAX).nullable(),
+    ieepnrRepercute: z.boolean(),
+    ieepnrPorKg: z
+      .number()
+      .gt(0)
+      .max(IEEPNR_POR_KG_MAX)
+      .refine((v) => Math.abs(Math.round(v * 10000) - v * 10000) < 1e-6),
+    ieepnrCuenta: z.string().trim().regex(/^\d{2,15}$/).nullable(),
   })
   .partial()
   .strict();
@@ -110,7 +129,27 @@ const MENSAJES: Record<string, string> = {
   cuentaBancariaId: 'Elige una cuenta bancaria de la lista o deja la automática.',
   mostrarIban: 'Indica si se muestra el IBAN en la factura (sí o no).',
   textoPie: `El texto al pie admite como máximo ${TEXTO_PIE_MAX} caracteres.`,
+  ieepnrRepercute: 'Indica si repercutes el IEEPNR en tus facturas (sí o no).',
+  ieepnrPorKg: `El IEEPNR por kg es un importe en euros mayor que 0 y de ${IEEPNR_POR_KG_MAX} como mucho, con 4 decimales como máximo (por ejemplo, 0,45).`,
+  ieepnrCuenta: 'La cuenta del IEEPNR se escribe solo con números (por ejemplo, 4758) o se deja vacía.',
 };
+
+/** Cuentas del plan base (PGC) que se copian al plan de la empresa al contabilizar. */
+const CUENTAS_BASE = new Set(PGC_BASE.map((n) => n.code));
+
+/**
+ * Cuenta del IEEPNR (solo si la empresa fuera contribuyente): del grupo 47
+ * (Hacienda) o del 7 (ingresos), y que exista y esté activa en el plan de la
+ * empresa (o en el plan base, que se copia al contabilizar). Solo lee: va fuera
+ * de cualquier transacción. Devuelve el texto del error o null.
+ */
+async function problemaCuentaIeepnr(companyId: string, cuenta: string): Promise<string | null> {
+  if (!/^(47|7)/.test(cuenta)) return `La cuenta ${cuenta} no sirve para el IEEPNR: tiene que empezar por 47 (Hacienda) o por 7 (ingresos).`;
+  const fila = await prisma.chartOfAccounts.findFirst({ where: { companyId, codigo: cuenta }, select: { activo: true } });
+  if (fila && !fila.activo) return `La cuenta ${cuenta} está desactivada en tu plan contable.`;
+  if (!fila && !CUENTAS_BASE.has(cuenta)) return `La cuenta ${cuenta} no existe en tu plan contable. Créala antes en Contabilidad > Plan contable.`;
+  return null;
+}
 
 /** PUT: valida, aplica las reglas de la empresa y guarda (upsert). Solo cambia lo que llega. */
 export async function guardarAjustesFacturacion(companyId: string, userId: string, entrada: unknown): Promise<AjustesFacturacionResp> {
@@ -126,9 +165,20 @@ export async function guardarAjustesFacturacion(companyId: string, userId: strin
     cuentaBancariaId: cambios.cuentaBancariaId !== undefined ? cambios.cuentaBancariaId : actual.cuentaBancariaId,
     mostrarIban: cambios.mostrarIban ?? actual.mostrarIban,
     textoPie: cambios.textoPie !== undefined ? cambios.textoPie?.trim() || null : actual.textoPie,
+    ieepnrRepercute: cambios.ieepnrRepercute ?? actual.ieepnrRepercute,
+    ieepnrPorKg: cambios.ieepnrPorKg ?? actual.ieepnrPorKg,
+    ieepnrCuenta: cambios.ieepnrCuenta !== undefined ? cambios.ieepnrCuenta || null : actual.ieepnrCuenta,
   };
-  // Fuera de España no hay IRPF: se guarda siempre 0.
-  if (!perfil.espanola) nuevo.irpfDefecto = 0;
+  // Fuera de España no hay IRPF ni IEEPNR: se guardan siempre 0 y no.
+  if (!perfil.espanola) {
+    nuevo.irpfDefecto = 0;
+    nuevo.ieepnrRepercute = false;
+  }
+
+  if (cambios.ieepnrCuenta) {
+    const problema = await problemaCuentaIeepnr(companyId, cambios.ieepnrCuenta);
+    if (problema) throw badRequest(problema, { campo: 'ieepnrCuenta' });
+  }
 
   if (cambios.cuentaBancariaId) {
     const cuenta = await prisma.bankAccount.findFirst({
