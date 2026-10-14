@@ -3,7 +3,7 @@ import { badRequest, conflict, notFound } from '../utils/http-errors';
 import { partidaDeFactura } from './arranque/partidas.service';
 import { aCentimos } from '../utils/money';
 import { fechaTexto, hoyEspana } from '../utils/fechas';
-import { comprobarFechaAbierta, exigirFechaContabilizable } from './periodos.service';
+import { comprobarFechaAbierta, exigirFechaContabilizable, fechaAbierta } from './periodos.service';
 import {
   calcularCobroDivisa,
   comprobarTipoManual,
@@ -959,12 +959,8 @@ async function anularCobroEnBD(
   if (pago.estado !== 'ACTIVO') throw badRequest(yaAnulado(t));
   const f = await cargarFactura(prisma, companyId, tipo, invoiceId);
 
-  let periodoAbierto = true;
-  try {
-    await comprobarFechaAbierta(companyId, pago.fecha);
-  } catch {
-    periodoAbierto = false;
-  }
+  // Un fallo de la base de datos aqui no es «mes cerrado»: se relanza (503) y no se anula nada.
+  const periodoAbierto = await fechaAbierta(companyId, pago.fecha);
   const fechaAnulacion = periodoAbierto ? pago.fecha : validarFecha(opciones.fecha);
   if (!periodoAbierto) await comprobarFechaAbierta(companyId, fechaAnulacion);
 
