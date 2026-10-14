@@ -1987,7 +1987,7 @@
         "tags": [
           "Series"
         ],
-        "summary": "Series de numeracion",
+        "summary": "Series de numeracion, con la plantilla que usa cada una (plantilla) y la elegida (plantillaElegida)",
         "security": [
           {
             "bearerAuth": []
@@ -2051,7 +2051,8 @@
                   "codigo": "B2026",
                   "descripcion": "",
                   "tipoDocumento": "FACTURA",
-                  "porDefecto": true
+                  "porDefecto": true,
+                  "plantilla": "A"
                 }
               }
             }
@@ -2059,12 +2060,40 @@
         }
       }
     },
+    "/companies/{companyId}/series/plantillas": {
+      "get": {
+        "tags": [
+          "Series"
+        ],
+        "summary": "Catalogo de plantillas de factura de venta (default, A, B, C); la A no esta disponible en una empresa extranjera",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "parameters": [
+          {
+            "name": "companyId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
     "/companies/{companyId}/series/{id}": {
       "put": {
         "tags": [
           "Series"
         ],
-        "summary": "Actualizar serie",
+        "summary": "Actualizar serie (plantilla: un id del catalogo o null = automatica)",
         "security": [
           {
             "bearerAuth": []
@@ -2092,7 +2121,22 @@
               "type": "string"
             }
           }
-        ]
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "example": {
+                  "descripcion": "Bebidas",
+                  "activa": true,
+                  "porDefecto": true,
+                  "plantilla": "A"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/companies/{companyId}/facturas/lector/upload": {
