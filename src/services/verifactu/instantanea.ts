@@ -89,6 +89,14 @@ export async function instantaneaDeEmision(tx: TransaccionBD, companyId: string,
   };
 }
 
+/**
+ * F2 o R5 emitida con registro de VERI*FACTU (verifactuEstado solo lo tiene una
+ * factura con registro): su PDF sale sin NIF ni domicilio del cliente, y la
+ * ficha lo dice.
+ */
+export const clienteSinIdentificar = (f: { estadoDocumento: string; tipoFactura: string; verifactuEstado?: string | null }): boolean =>
+  f.estadoDocumento === 'FINAL' && ['F2', 'R5'].includes(f.tipoFactura) && f.verifactuEstado != null;
+
 /** Para guardarla en la columna Json. */
 export const instantaneaComoJson = (i: Instantanea): Prisma.InputJsonValue => i as unknown as Prisma.InputJsonValue;
 

@@ -373,6 +373,10 @@ describe('PDF de una simplificada registrada', () => {
     expect((await datos(E, r.id)).clienteSinIdentificar).toBe(true);
     expect((await datos(E, f1.id)).clienteSinIdentificar).toBe(false);
     expect((await datos(DESACT, sinRegistro.id)).clienteSinIdentificar).toBe(false);
+    // La ficha lo dice igual que el PDF.
+    expect((await incomeInvoicesService.obtenerPorId(E, t.id)).clienteEmision).toMatchObject({ nombreFiscal: 'Cliente Nacional SL', sinIdentificar: true });
+    expect((await incomeInvoicesService.obtenerPorId(E, f1.id)).clienteEmision).toMatchObject({ nifCif: 'B12345674', sinIdentificar: false });
+    expect((await incomeInvoicesService.obtenerPorId(DESACT, sinRegistro.id)).clienteEmision?.sinIdentificar).toBe(false);
     // Se dibuja sin la linea del NIF ni el domicilio.
     const pdf = await renderizarFactura(await datos(E, t.id));
     expect(pdf.subarray(0, 5).toString()).toBe('%PDF-');
@@ -393,5 +397,13 @@ describe('PDF de una factura emitida: los datos de la emisión (instantánea)', 
     const borrador = (await datosPdfFactura(empresa, b.id)).datos;
     expect(borrador.cliente).toMatchObject({ nombreFiscal: 'Cliente Nuevo SL', direccion: 'Calle Nueva 2' });
     expect(borrador.emisor).toMatchObject({ denominacion: 'Empresa Renombrada SL', telefono: '960000000' });
+    // La ficha de la emitida enseña el cliente de la factura; la del borrador no lleva copia (usa la ficha de ahora).
+    expect((await incomeInvoicesService.obtenerPorId(empresa, f.id)).clienteEmision).toEqual({
+      nombreFiscal: 'Cliente Antiguo SL',
+      nifCif: pdf.cliente.nifCif,
+      pais: 'ES',
+      sinIdentificar: false,
+    });
+    expect((await incomeInvoicesService.obtenerPorId(empresa, b.id)).clienteEmision).toBeUndefined();
   });
 });

@@ -63,7 +63,7 @@ import { MOTIVOS_VENTA } from '../domain/rectificativa-venta.model';
 import { recalcularEstadoPartidas } from './arranque/partidas.service';
 import { ahoraRedSeguridad, exigirPuedeEmitirFinal } from './verifactu/redSeguridad';
 import { generarRegistroAlta, planRegistro } from './verifactu/registro.service';
-import { instantaneaComoJson, instantaneaDeEmision } from './verifactu/instantanea';
+import { clienteSinIdentificar, instantaneaComoJson, instantaneaDeEmision, leerInstantanea } from './verifactu/instantanea';
 import { leerDescripcionOperacion, problemaDestinatario } from './verifactu/alta';
 import {
   aFavorDeAbonos,
@@ -395,6 +395,12 @@ export interface IncomeInvoiceResp {
   ibanCobro?: string | null;
   /** Solo en la ficha de una emitida: cuenta bancaria activa que se propone al cobrarla (null si no hay ninguna). */
   cuentaBancariaCobroId?: string | null;
+  /**
+   * Solo en la ficha de una emitida con instantanea: el cliente tal como salio
+   * en la factura (el PDF y el registro de VERI*FACTU lo toman de ahi, no de su
+   * ficha de ahora). sinIdentificar: F2 o R5 registrada, que sale sin NIF ni domicilio.
+   */
+  clienteEmision?: { nombreFiscal: string; nifCif: string | null; pais: string | null; sinIdentificar: boolean };
   esRecurrente: boolean;
   createdAt: Date;
   updatedAt: Date;
@@ -3136,6 +3142,11 @@ export const incomeInvoicesService = {
       ]);
       resp.ibanCobro = f.ibanCobro ?? null;
       resp.cuentaBancariaCobroId = cuentaCobro;
+      const inst = leerInstantanea(f.instantaneaEmision);
+      if (inst) {
+        const { nombreFiscal, nifCif, pais } = inst.cliente;
+        resp.clienteEmision = { nombreFiscal, nifCif, pais, sinIdentificar: clienteSinIdentificar(f) };
+      }
       resp.rectificadaPor = rects;
       // Anulada entera: lo que queda por rectificar (la original o su sustituta, mas sus abonos) es cero.
       resp.anuladaPorCompleto = !f.esRectificativa && aCentimos(Number(f.totalFactura)) !== 0 && aCentimos(restante.get(f.id)?.total ?? 1) === 0;

@@ -9,7 +9,7 @@ import { desgloseIvaPorTipo } from './accounting-engine.service';
 import { perfilDesdeConfig } from './perfilEmpresa.service';
 import { cuentaParaFactura, leerAjustesFacturacion } from './ajustesFacturacion.service';
 import { enlacesDeVentas } from './rectificativasVenta.service';
-import { leerInstantanea } from './verifactu/instantanea';
+import { clienteSinIdentificar, leerInstantanea } from './verifactu/instantanea';
 import { diferenciaSustitucion, type LineaImportes } from '../domain/rectificativa-venta.model';
 import { importesDoc, nombreMoneda, textoTipo } from '../domain/divisas';
 import { dibujoDe, normalizarPlantillaId } from '../domain/plantillasFactura';
@@ -1468,7 +1468,7 @@ export async function datosPdfFactura(companyId: string, id: string): Promise<{ 
       pais: c.pais,
     },
     // F2 o R5 con registro de VERI*FACTU (verifactuEstado solo lo tiene una factura con registro): sin NIF ni domicilio del cliente.
-    clienteSinIdentificar: factura.estadoDocumento === 'FINAL' && ['F2', 'R5'].includes(factura.tipoFactura) && factura.verifactuEstado != null,
+    clienteSinIdentificar: clienteSinIdentificar(factura),
     // Sin denominacion en los datos de la sociedad, al menos el nombre con el que esta dada de alta.
     emisor: inst
       ? {
