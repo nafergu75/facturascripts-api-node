@@ -20,7 +20,7 @@ import { comprobarCadena } from '../services/verifactu/cadena';
 import type { RegistroContenido } from '../services/verifactu/tipos';
 import { fechaAeat, instanteDeHuso } from '../services/verifactu/formato';
 import { hoyEspana } from '../utils/fechas';
-import { datosPdfFactura } from '../services/facturaPdf.service';
+import { datosPdfFactura, renderizarFactura } from '../services/facturaPdf.service';
 import { planRegistro } from '../services/verifactu/registro.service';
 
 const get = (axios as unknown as { get: jest.Mock }).get;
@@ -342,6 +342,29 @@ describe('cliente sin NIF en una factura completa', () => {
 
   it('la cadena entera sigue bien', async () => {
     expect(comprobarCadena(await cadenaDe(E))).toEqual([]);
+  });
+});
+
+describe('PDF de una simplificada registrada', () => {
+  it('F2 y R5 con registro: solo el nombre del cliente (el registro va sin destinatario); sin registro o en F1, como siempre', async () => {
+    const t = await emitir({ tipoFactura: 'F2', lineas: [linea(40)] });
+    const r = await incomeInvoicesService.crearIngreso({
+      companyId: E,
+      customer: {},
+      fechaEmision: HOY,
+      lineas: [linea(-10)],
+      rectificativa: { ticket: true, forma: 'I', motivo: 'DEVOLUCION', explicacion: 'Devolución', originales: [{ id: t.id }] },
+    } as unknown as CrearFacturaIngresoDTO);
+    const f1 = await emitir();
+    const sinRegistro = await emitir({ tipoFactura: 'F2', lineas: [linea(40)] }, DESACT, clientes[DESACT].es);
+    const datos = async (empresa: string, id: string) => (await datosPdfFactura(empresa, id)).datos;
+    expect((await datos(E, t.id)).clienteSinIdentificar).toBe(true);
+    expect((await datos(E, r.id)).clienteSinIdentificar).toBe(true);
+    expect((await datos(E, f1.id)).clienteSinIdentificar).toBe(false);
+    expect((await datos(DESACT, sinRegistro.id)).clienteSinIdentificar).toBe(false);
+    // Se dibuja sin la linea del NIF ni el domicilio.
+    const pdf = await renderizarFactura(await datos(E, t.id));
+    expect(pdf.subarray(0, 5).toString()).toBe('%PDF-');
   });
 });
 
