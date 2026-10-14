@@ -22,6 +22,7 @@ import { esSubcuentaGenerica } from './terceros/numeracion';
 import { conReintento } from '../utils/reintento';
 import { aFavorDeAbonos } from './rectificativasVenta.service';
 import { asegurarSubcuentaBancoEnPlan, exigirSubcuentaDeBanco, nombreSubcuentaBanco } from './subcuentaBanco.service';
+import { errorFalloBD, type QueHacerFalloBD } from '../utils/errores-bd';
 
 /**
  * Cobros de facturas de venta y pagos de facturas de gasto, con su asiento.
@@ -174,6 +175,29 @@ const conArticulo = (t: { cobro: string }) => (t.cobro === 'devolución' ? `la $
 const delArticulo = (t: { cobro: string }) => (t.cobro === 'devolución' ? `de la ${t.cobro}` : `del ${t.cobro}`);
 /** «El cobro ya está anulado.» o «La devolución ya está anulada.» */
 const yaAnulado = (t: { cobro: string }) => (t.cobro === 'devolución' ? `La ${t.cobro} ya está anulada.` : `El ${t.cobro} ya está anulado.`);
+
+/**
+ * Por donde va un registro o una anulacion, para el texto de un fallo de la
+ * base de datos: que se apunta (cobro, pago o devolucion) y si ya quedo grabado.
+ */
+interface FaseCobro {
+  t: { cobro: string };
+  grabado: boolean;
+}
+
+/**
+ * Que se le dice a la persona si la base de datos falla al registrar o anular:
+ * antes de grabar, que no se ha hecho y que lo repita; despues (al leer el
+ * resumen), que si esta hecho y que recargue la factura antes de repetirlo.
+ */
+function queHacerFalloCobro(fase: FaseCobro, hecho: 'registrado' | 'anulado'): QueHacerFalloBD {
+  const art = conArticulo(fase.t);
+  const sujeto = art.charAt(0).toUpperCase() + art.slice(1);
+  const participio = fase.t.cobro === 'devolución' ? hecho.replace(/o$/, 'a') : hecho;
+  return fase.grabado
+    ? { resultado: `${sujeto} sí está ${participio}: recarga la factura para verlo antes de repetirlo` }
+    : { resultado: `${sujeto} no se ha ${hecho}`, repetir: 'vuelve a intentarlo dentro de un momento' };
+}
 
 interface FacturaBase {
   id: string;
@@ -693,6 +717,9 @@ async function tipoDelCobro(
 /**
  * Registra un cobro (venta) o pago (gasto) y su asiento. Sin importe, se cobra
  * todo lo pendiente.
+ *
+ * Si falla la base de datos (tiempo agotado, sin conexion...), un 503 con la
+ * causa en castellano y que hacer (errores-bd), nunca un 500 generico.
  */
 export async function registrarCobroFactura(
   companyId: string,
@@ -700,12 +727,28 @@ export async function registrarCobroFactura(
   invoiceId: string,
   datos: DatosCobro,
 ): Promise<{ cobro: CobroResp; resumen: ResumenCobros }> {
+  const fase: FaseCobro = { t: TXT[tipo], grabado: false };
+  try {
+    return await registrarCobroEnBD(companyId, tipo, invoiceId, datos, fase);
+  } catch (e) {
+    throw errorFalloBD(e, queHacerFalloCobro(fase, 'registrado'), `registrar ${conArticulo(fase.t)} de la factura ${invoiceId}`) ?? e;
+  }
+}
+
+async function registrarCobroEnBD(
+  companyId: string,
+  tipo: TipoDocumento,
+  invoiceId: string,
+  datos: DatosCobro,
+  fase: FaseCobro,
+): Promise<{ cobro: CobroResp; resumen: ResumenCobros }> {
   const f = await cargarFactura(prisma, companyId, tipo, invoiceId);
   // Abono (total < 0): lo que se registra es la devolucion (recibida del
   // proveedor en gastos; al cliente en ventas, hasta lo que queda a su favor).
   const esAbono = aCentimos(f.totalFactura) < 0;
   const devolucionCliente = esAbono && tipo === 'INGRESO';
   const t = esAbono ? textosAbono(tipo) : TXT[tipo];
+  fase.t = t;
   // Factura de 2026 que la gestoria trajo pendiente: se cobra (o se paga) contra su partida, no dos veces.
   const enlazada = await partidaDeFactura(companyId, tipo, invoiceId);
   if (enlazada) {
@@ -873,6 +916,7 @@ export async function registrarCobroFactura(
       return pago.id;
     }),
   );
+  fase.grabado = true;
 
   const resumen = await listarCobros(companyId, tipo, invoiceId);
   return { cobro: resumen.cobros.find((c) => c.id === id)!, resumen };
@@ -892,8 +936,25 @@ export async function anularCobroFactura(
   cobroId: string,
   opciones: { fecha?: string } = {},
 ): Promise<{ resumen: ResumenCobros; contraasiento: boolean }> {
+  const fase: FaseCobro = { t: TXT[tipo], grabado: false };
+  try {
+    return await anularCobroEnBD(companyId, tipo, invoiceId, cobroId, opciones, fase);
+  } catch (e) {
+    throw errorFalloBD(e, queHacerFalloCobro(fase, 'anulado'), `anular ${conArticulo(fase.t)} ${cobroId} de la factura ${invoiceId}`) ?? e;
+  }
+}
+
+async function anularCobroEnBD(
+  companyId: string,
+  tipo: TipoDocumento,
+  invoiceId: string,
+  cobroId: string,
+  opciones: { fecha?: string },
+  fase: FaseCobro,
+): Promise<{ resumen: ResumenCobros; contraasiento: boolean }> {
   const pago = await prisma.invoicePayment.findFirst({ where: { id: cobroId, companyId, invoiceType: tipo, invoiceId } });
   const t = pago && pago.importe < 0 ? textosAbono(tipo) : TXT[tipo];
+  fase.t = t;
   if (!pago) throw notFound(`${t.Cobro} no encontrado.`);
   if (pago.estado !== 'ACTIVO') throw badRequest(yaAnulado(t));
   const f = await cargarFactura(prisma, companyId, tipo, invoiceId);
@@ -938,6 +999,7 @@ export async function anularCobroFactura(
       await actualizarEstadoFactura(tx, f, tipo);
     }),
   );
+  fase.grabado = true;
 
   return { resumen: await listarCobros(companyId, tipo, invoiceId), contraasiento: !periodoAbierto };
 }
