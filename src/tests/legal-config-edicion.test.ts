@@ -10,7 +10,11 @@ jest.mock('../config/database', () => {
   const upsert = jest.fn(async ({ create }: { create: Record<string, unknown> }) => ({ id: 'LC1', ...create }));
   const tx = {
     $queryRaw: jest.fn(async () => [] as Array<{ companyId: string }>),
-    company: { findFirst: jest.fn(async () => null as { name: string; isActive: boolean } | null) },
+    company: {
+      findFirst: jest.fn(async () => null as { name: string; isActive: boolean } | null),
+      // Pareja de empresas de pruebas de VERI*FACTU (comprobarNifLibre): por defecto, ninguna.
+      findMany: jest.fn(async () => [] as Array<{ id: string; pruebasVerifactuDe: string | null }>),
+    },
     legalConfig: { upsert },
     bankAccount: { updateMany: jest.fn(async () => ({ count: 0 })) },
   };
@@ -27,6 +31,8 @@ jest.mock('../config/database', () => {
       liquidacionSS: { findFirst: jest.fn(async () => null) },
       // VERI*FACTU (P10): sin configuracion, el NIF se puede corregir.
       verifactuConfig: { findUnique: jest.fn(async () => null) },
+      // Empresas de pruebas de VERI*FACTU (F2): por defecto, la empresa no es de pruebas ni tiene una.
+      company: { findUnique: jest.fn(async () => null) },
       $transaction: jest.fn(async (fn: (t: typeof tx) => unknown) => fn(tx)),
       __tx: tx,
     },

@@ -257,15 +257,36 @@ export function comprobarNifSegunForma(tipoSociedad: string, nif: ResultadoNif, 
  * datos legales que hayan quedado de una empresa que ya no existe no cuentan.
  *
  * `excluirCompanyId`: al editar los datos de una empresa, ella misma no cuenta.
+ *
+ * Empresas de pruebas de VERI*FACTU (Company.pruebasVerifactuDe): usan el NIF
+ * de su empresa real. Solo esa pareja puede repetir NIF: al editar una de las
+ * dos no cuenta la otra, y al crear la de pruebas (`opciones.pruebasDe`, el id
+ * de la real) no cuenta la real. Cualquier otra empresa con el NIF sigue dando 409.
  */
-export async function comprobarNifLibre(tx: TransaccionBD, nif: string, excluirCompanyId?: string): Promise<void> {
+export async function comprobarNifLibre(
+  tx: TransaccionBD,
+  nif: string,
+  excluirCompanyId?: string,
+  opciones: { pruebasDe?: string } = {},
+): Promise<void> {
   const clave = nif.toUpperCase().replace(/[\s.-]/g, '');
   const filas = await tx.$queryRaw<Array<{ companyId: string }>>`
     SELECT companyId FROM LegalConfig
     WHERE UPPER(REPLACE(REPLACE(REPLACE(nif, ' ', ''), '-', ''), '.', '')) IN (${clave}, ${`ES${clave}`})
     FOR UPDATE`;
-  const otras = filas.map((f) => f.companyId).filter((id) => id !== excluirCompanyId);
+  const ignorar = new Set([excluirCompanyId, opciones.pruebasDe].filter((x): x is string => !!x));
+  let otras = filas.map((f) => f.companyId).filter((id) => !ignorar.has(id));
   if (!otras.length) return;
+  if (excluirCompanyId) {
+    // La pareja de la empresa que se guarda: su empresa de pruebas, o su real si ella es la de pruebas.
+    const pareja = await tx.company.findMany({
+      where: { OR: [{ pruebasVerifactuDe: excluirCompanyId }, { id: excluirCompanyId }] },
+      select: { id: true, pruebasVerifactuDe: true },
+    });
+    for (const c of pareja) ignorar.add(c.id === excluirCompanyId ? (c.pruebasVerifactuDe ?? c.id) : c.id);
+    otras = otras.filter((id) => !ignorar.has(id));
+    if (!otras.length) return;
+  }
   const otra = await tx.company.findFirst({
     where: { id: { in: otras } },
     select: { name: true, isActive: true },
@@ -439,6 +460,25 @@ export const legalConfigService = {
     // al NIF de la empresa, que no puede cambiar. La denominacion si: solo afecta
     // a las facturas nuevas. (En F1 tambien se mirara si ya hay registros.)
     const cambiaNifGuardado = cambiaNif && !!normalizarNif(antes.nif);
+    // Empresas de pruebas de VERI*FACTU: la de pruebas usa el NIF de su real, asi
+    // que ni una ni otra pueden cambiarlo (la cadena de pruebas va con ese NIF).
+    if (cambiaNif) {
+      const yo = await prisma.company.findUnique({ where: { id: companyId }, select: { pruebasVerifactuDe: true } });
+      if (yo?.pruebasVerifactuDe) {
+        throw conflict('Esta es una empresa de pruebas de VERI*FACTU y usa el NIF de su empresa real: no se puede cambiar.', {
+          campo: 'nif',
+          codigo: 'VERIFACTU_EMPRESA_PRUEBAS_NIF',
+          code: 'VERIFACTU_EMPRESA_PRUEBAS_NIF',
+        });
+      }
+      const pruebas = await prisma.company.findUnique({ where: { pruebasVerifactuDe: companyId }, select: { name: true } });
+      if (pruebas) {
+        throw conflict(
+          `Esta empresa tiene una empresa de pruebas de VERI*FACTU («${pruebas.name}») con su mismo NIF, así que el NIF no se puede cambiar. Si está mal, habla con el administrador.`,
+          { campo: 'nif', codigo: 'VERIFACTU_TIENE_EMPRESA_PRUEBAS', code: 'VERIFACTU_TIENE_EMPRESA_PRUEBAS' },
+        );
+      }
+    }
     if (cambiaNifGuardado) {
       const vf = await prisma.verifactuConfig.findUnique({ where: { companyId }, select: { estado: true } });
       if (vf && vf.estado !== 'DESACTIVADO') {
