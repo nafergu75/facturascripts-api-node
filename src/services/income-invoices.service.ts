@@ -667,7 +667,10 @@ function validarLineas(lineas: CrearLineaIngresoDTO[] | undefined): LineaEntrada
   lineas.forEach((l, i) => {
     const n = i + 1;
     if (!l || !String(l.descripcion ?? '').trim()) throw badRequest(`Línea ${n}: falta la descripción.`);
-    if (!Number.isFinite(Number(l.cantidad)) || Number(l.cantidad) === 0) {
+    // Plantilla A: una linea de 0 uds con kg corrige solo los kg (y su IEEPNR); si
+    // vale (solo en una rectificativa por diferencias) lo decide aplicarEnvases.
+    const soloKg = Number(l.cantidad) === 0 && !!numeroDelCuerpo(l.kgPlastico);
+    if (!Number.isFinite(Number(l.cantidad)) || (Number(l.cantidad) === 0 && !soloKg)) {
       throw badRequest(`Línea ${n}: la cantidad debe ser un número distinto de cero.`);
     }
     if (!Number.isFinite(Number(l.precioUnitario))) throw badRequest(`Línea ${n}: el precio no es un número.`);
@@ -777,6 +780,11 @@ export interface OpcionesEnvases {
   moneda: string;
   /** Rectificativa: redondeo simetrico del IEEPNR. */
   simetrico: boolean;
+  /**
+   * Rectificativa por diferencias: admite lineas de 0 uds con kg, que corrigen
+   * solo los kg de plastico y su IEEPNR (sin packs). En el resto, 400 UDS_CERO.
+   */
+  soloKg?: boolean;
   /** false: el IEEPNR de las lineas ya esta calculado (lineas guardadas) y no se toca; solo se comprueba. */
   recalcular?: boolean;
 }
@@ -788,6 +796,8 @@ export interface OpcionesEnvases {
  *  - con envases (A): sin descuento (400 DESCUENTO_NO_ADMITIDO), kg y packs con
  *    el signo de la cantidad (400 SIGNO_ENVASES) y el IEEPNR = kg x tipo si la
  *    empresa lo repercute (0 si no); con IEEPNR, solo en euros (400 IEEPNR_SOLO_EUROS).
+ *    Una linea de 0 uds con kg (de cualquier signo) solo en una rectificativa
+ *    por diferencias (`soloKg`; si no, 400 UDS_CERO) y sin packs (400 PACKS_SIN_UDS).
  * Devuelve las lineas con su ieepnrImporte y el tipo aplicado (null sin IEEPNR).
  */
 export function aplicarEnvases(lineas: LineaEntrada[], o: OpcionesEnvases): { lineas: LineaEntrada[]; ieepnrPorKg: number | null } {
@@ -807,8 +817,23 @@ export function aplicarEnvases(lineas: LineaEntrada[], o: OpcionesEnvases): { li
         campo: `lineas.${i}.descuentoPorcentaje`,
       });
     }
+    if (l.cantidad === 0) {
+      // Solo corrige los kg de plastico (y su IEEPNR): validarLineas ya exige kg.
+      if (!o.soloKg) {
+        throw badRequest(
+          `Línea ${i + 1}: las uds no pueden ser 0. Una línea sin uds solo vale en una rectificativa por diferencias que corrige únicamente los kg de plástico.`,
+          { codigo: 'UDS_CERO', campo: `lineas.${i}.cantidad` },
+        );
+      }
+      if (Number(l.packs ?? 0) !== 0) {
+        throw badRequest(`Línea ${i + 1}: una línea que solo corrige los kg de plástico va sin packs (deja los packs vacíos).`, {
+          codigo: 'PACKS_SIN_UDS',
+          campo: `lineas.${i}.packs`,
+        });
+      }
+    }
     const signo = Math.sign(l.cantidad);
-    for (const campo of ['kgPlastico', 'packs'] as const) {
+    for (const campo of l.cantidad === 0 ? [] : (['kgPlastico', 'packs'] as const)) {
       const v = Number(l[campo] ?? 0);
       if (v !== 0 && Math.sign(v) !== signo) {
         throw badRequest(
@@ -1745,6 +1770,7 @@ async function prepararAlta(
     tipo: deOriginal?.tipo ?? ajustes.ieepnrPorKg,
     moneda,
     simetrico: esRectificativa,
+    soloKg: esRectificativa && bloque?.forma !== 'S',
   });
   lineas = envases.lineas;
   // Cliente y serie despues de las fechas: una factura rechazada no deja nada creado.
@@ -2233,6 +2259,7 @@ export const incomeInvoicesService = {
       tipo: deOriginal?.tipo ?? (dto.lineas ? ajustes.ieepnrPorKg : (actual.ieepnrPorKg ?? ajustes.ieepnrPorKg)),
       moneda,
       simetrico: actual.esRectificativa,
+      soloKg: actual.esRectificativa && actual.tipoRectificativa !== 'S',
       recalcular: !!dto.lineas,
     });
     lineas = envases.lineas;

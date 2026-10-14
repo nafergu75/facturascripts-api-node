@@ -4,6 +4,8 @@
  *  - La total espejo de NZ004_26 deja a cero base, IVA, total, IEEPNR y kg
  *    (con el bloque nuevo y por /credit-note).
  *  - Por diferencias con una linea de -kg: IEEPNR simetrico.
+ *  - Por diferencias, una linea de 0 uds con kg corrige solo los kg y su
+ *    IEEPNR (sin packs); en una factura o por sustitucion, 400 UDS_CERO.
  *  - Por sustitucion: la diferencia lleva el IEEPNR.
  *  - El tipo del IEEPNR es el de la original aunque los ajustes hayan cambiado.
  *  - La plantilla se hereda de la original aunque la serie R sea estandar.
@@ -109,6 +111,32 @@ describe('por diferencias', () => {
     const r = await rect({ originales: [{ id: o.id }] }, { lineas: [{ descripcion: 'Devolución', cantidad: -1, precioUnitario: 0.162, kgPlastico: -0.1, tipoIva: 21 }] });
     expect(r.lineas[0]).toMatchObject({ kgPlastico: -0.1, ieepnrImporte: -0.05, baseLine: -0.21 });
     expect([r.baseTotal, r.ivaTotal]).toEqual([-0.21, -0.04]);
+  });
+
+  it('solo los kg: una linea de 0 uds con kg corrige el IEEPNR sin tocar las uds, a la baja y al alza', async () => {
+    const o = await emitir();
+    const baja = await rect({ originales: [{ id: o.id }] }, { lineas: [{ descripcion: 'Corrección de kg', cantidad: 0, precioUnitario: 0.162, kgPlastico: -10, tipoIva: 21 }] });
+    // -10 kg × 0,45 = -4,50; IVA por tipo -4,50 × 21 % = -0,945 -> -0,95.
+    expect(baja.lineas[0]).toMatchObject({ cantidad: 0, kgPlastico: -10, ieepnrImporte: -4.5, baseLine: -4.5, packs: null });
+    expect([baja.baseTotal, baja.ivaTotal, baja.totalFactura]).toEqual([-4.5, -0.95, -5.45]);
+    expect(baja.resumenEnvases).toEqual({ kgPlastico: -10, packs: 0, uds: 0, ieepnr: -4.5 });
+    // Al alza (faltaban kg): un error, no una devolucion.
+    const sube = await rect(
+      { originales: [{ id: o.id }], motivo: 'ERROR', explicacion: 'Faltaban kg de plástico' },
+      { lineas: [{ descripcion: 'Faltaban kg', cantidad: 0, precioUnitario: 0, kgPlastico: 10, tipoIva: 21 }] },
+    );
+    expect([sube.baseTotal, sube.ivaTotal, sube.lineas[0].ieepnrImporte]).toEqual([4.5, 0.95, 4.5]);
+  });
+
+  it('0 uds: con packs, 400 PACKS_SIN_UDS; sin kg, la cantidad; en una factura o por sustitucion, 400 UDS_CERO', async () => {
+    const o = await emitir();
+    const linea = { descripcion: 'Corrección de kg', cantidad: 0, precioUnitario: 0, kgPlastico: -10, tipoIva: 21 };
+    expect((await error(rect({ originales: [{ id: o.id }] }, { lineas: [{ ...linea, packs: -1 }] }))).details).toMatchObject({ codigo: 'PACKS_SIN_UDS', campo: 'lineas.0.packs' });
+    expect((await error(rect({ originales: [{ id: o.id }] }, { lineas: [{ ...linea, kgPlastico: 0 }] }))).message).toMatch(/distinto de cero/);
+    expect((await error(emitir({ lineas: [{ ...linea, kgPlastico: 10 }] }))).details).toMatchObject({ codigo: 'UDS_CERO', campo: 'lineas.0.cantidad' });
+    const corregidas = [...lineasNz(), linea];
+    const e = await error(rect({ forma: 'S', motivo: 'ERROR', explicacion: 'Kg mal', originales: [{ id: o.id }] }, { lineas: corregidas }));
+    expect(e.details).toMatchObject({ codigo: 'UDS_CERO', campo: 'lineas.7.cantidad' });
   });
 
   it('usa el tipo de la original aunque los ajustes hayan cambiado', async () => {
