@@ -76,18 +76,22 @@ export interface EstadoBase {
   faltanTablas: string[];
   faltanColumnas: string[];
   sobranTablas: string[];
+  /** Columnas que la base tiene en las tablas del modelo y esta version no conoce. */
+  sobranColumnas: string[];
   /** Existe _prisma_migrations (en produccion no: se creo con db push). */
   conMigraciones: boolean;
 }
 
 /**
- * Comprueba que la base tiene el esquema de esta version: todas las tablas y
- * columnas del modelo, y ninguna tabla que esta version no conozca (salvo
- * _prisma_migrations). Si falta algo, la base es de otra version (o es otra
- * base): el script se para. Nombres sin distinguir mayusculas (MariaDB en
- * Windows los guarda en minusculas).
+ * Comprueba que la base tiene el esquema de esta version, en los dos sentidos:
+ * todas las tablas y columnas del modelo, y ninguna tabla (salvo
+ * _prisma_migrations) ni columna que esta version no conozca. Si algo no
+ * cuadra, la base es de otra version (o es otra base) y el script se para: la
+ * copia y la restauracion solo saben de las columnas del modelo, asi que una
+ * columna de mas se perderia en la copia. Nombres sin distinguir mayusculas
+ * (MariaDB en Windows los guarda en minusculas).
  */
-export async function comprobarEsquema(db: PrismaClient, tablas: readonly Pick<Tabla, 'nombre' | 'columnas'>[]): Promise<EstadoBase> {
+export async function comprobarEsquema(db: Pick<PrismaClient, '$queryRawUnsafe'>, tablas: readonly Pick<Tabla, 'nombre' | 'columnas'>[]): Promise<EstadoBase> {
   const [info] = await db.$queryRawUnsafe<Array<{ base: string | null; version: string }>>('SELECT DATABASE() AS base, VERSION() AS version');
   const filasTablas = await db.$queryRawUnsafe<Array<{ t: string }>>(
     "SELECT TABLE_NAME AS t FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_TYPE = 'BASE TABLE'",
@@ -101,10 +105,17 @@ export async function comprobarEsquema(db: PrismaClient, tablas: readonly Pick<T
 
   const faltanTablas = tablas.filter((t) => !enBase.has(t.nombre.toLowerCase())).map((t) => t.nombre);
   const faltanColumnas: string[] = [];
+  const columnasDelModelo = new Set<string>();
   for (const t of tablas) {
+    for (const c of t.columnas) columnasDelModelo.add(`${t.nombre.toLowerCase()}.${c.nombre.toLowerCase()}`);
     if (!enBase.has(t.nombre.toLowerCase())) continue;
     for (const c of t.columnas) if (!columnasEnBase.has(`${t.nombre.toLowerCase()}.${c.nombre.toLowerCase()}`)) faltanColumnas.push(`${t.nombre}.${c.nombre}`);
   }
+  const nombreDelModelo = new Map(tablas.map((t) => [t.nombre.toLowerCase(), t.nombre]));
+  const sobranColumnas = filasColumnas
+    .filter((f) => nombreDelModelo.has(String(f.t).toLowerCase()) && !columnasDelModelo.has(`${String(f.t).toLowerCase()}.${String(f.c).toLowerCase()}`))
+    .map((f) => `${nombreDelModelo.get(String(f.t).toLowerCase())}.${String(f.c)}`)
+    .sort();
   const sobranTablas = filasTablas
     .map((f) => String(f.t))
     .filter((n) => !delModelo.has(n.toLowerCase()) && n.toLowerCase() !== '_prisma_migrations')
@@ -117,14 +128,29 @@ export async function comprobarEsquema(db: PrismaClient, tablas: readonly Pick<T
     faltanTablas,
     faltanColumnas,
     sobranTablas,
+    sobranColumnas,
     conMigraciones: enBase.has('_prisma_migrations'),
   };
 }
 
-export const esquemaCorrecto = (e: EstadoBase): boolean => !e.faltanTablas.length && !e.faltanColumnas.length && !e.sobranTablas.length;
+export const esquemaCorrecto = (e: EstadoBase): boolean =>
+  !e.faltanTablas.length && !e.faltanColumnas.length && !e.sobranTablas.length && !e.sobranColumnas.length;
+
+/** Por que la base no tiene el esquema de esta version (una linea por motivo). */
+export function motivosEsquema(e: EstadoBase): string[] {
+  const lista = (xs: string[]) => `${xs.slice(0, 15).join(', ')}${xs.length > 15 ? `… (${xs.length} en total)` : ''}`;
+  const m: string[] = [];
+  if (e.faltanTablas.length) m.push(`A la base le faltan tablas de esta versión: ${lista(e.faltanTablas)}.`);
+  if (e.faltanColumnas.length) m.push(`A la base le faltan columnas de esta versión: ${lista(e.faltanColumnas)}.`);
+  if (e.sobranTablas.length) m.push(`La base tiene tablas que esta versión no conoce: ${lista(e.sobranTablas)}.`);
+  if (e.sobranColumnas.length) {
+    m.push(`La base tiene columnas que esta versión no conoce: ${lista(e.sobranColumnas)}. La copia no las guardaría y sus datos se perderían.`);
+  }
+  return m;
+}
 
 /** Filas de una tabla (todas o las que cumplen la condicion). */
-export async function contar(db: PrismaClient, tabla: string, condicion?: { sql: string; params: unknown[] }): Promise<number> {
+export async function contar(db: Pick<PrismaClient, '$queryRawUnsafe'>, tabla: string, condicion?: { sql: string; params: unknown[] }): Promise<number> {
   const where = condicion ? ` WHERE ${condicion.sql}` : '';
   const [f] = await db.$queryRawUnsafe<Array<{ n: unknown }>>(`SELECT COUNT(*) AS n FROM ${id(tabla)}${where}`, ...(condicion?.params ?? []));
   return num(f?.n);
