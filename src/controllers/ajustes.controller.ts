@@ -62,7 +62,8 @@ export const ajustesController = {
       action: 'UPDATE_AJUSTES_FACTURACION',
       resourceType: 'AJUSTES_FACTURACION',
       resourceId: req.companyId,
-      meta: { campos: Object.keys(req.body ?? {}) },
+      // Si al marcar «Vendo cerámica» se creó la serie B, queda dicho.
+      meta: { campos: Object.keys(req.body ?? {}), ...(ajustes.serieCeramica?.estado === 'creada' ? { serieCreada: ajustes.serieCeramica.codigo } : {}) },
     });
     sendOk(res, ajustes);
   }),

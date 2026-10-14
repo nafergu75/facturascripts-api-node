@@ -22,7 +22,11 @@
  * que va a una cuenta 47.
  *
  * vendeCeramica (plantilla B): si la empresa vende ceramica, la serie B usa sola
- * la plantilla B (series.service, contextoPlantillas); si no, la estandar.
+ * la plantilla B (series.service, contextoPlantillas); si no, la estandar. Al
+ * guardar con la casilla marcada (empresa española) se crea la serie B si no
+ * existe (seriesSemilla.service); si ya existe y no puede usar la B
+ * (desactivada, de otro tipo o con otra plantilla elegida) no se toca y
+ * serieCeramica.aviso dice qué hacer. Desmarcarla no borra ni desactiva nada.
  * cuentaPalets (plantilla B): la cuenta de ingresos (70x) que se pone en la
  * línea del cargo de palets de madera que no lleve otra, al guardar la factura;
  * queda en la línea, así que cambiarla aquí no cambia las ya guardadas. Si deja
@@ -48,6 +52,8 @@ import { badRequest } from '../utils/http-errors';
 import { errorDeValidacion } from '../utils/zod-errores';
 import { perfilEmpresa } from './perfilEmpresa.service';
 import { problemaCuentasLinea } from './cuentasLinea.service';
+import { estadoSerieCeramica, prepararSerieCeramica, type SerieCeramica } from './seriesSemilla.service';
+import { logger } from '../config/logger';
 
 type Db = ClienteBD | TransaccionBD;
 
@@ -71,6 +77,12 @@ export interface AjustesFacturacionResp extends AjustesFacturacion {
   imagenesPlantillaB: { marca: boolean; sello: boolean };
   /** Plantilla B: por qué la cuenta del cargo de palets ya no vale (desactivada o fuera del plan); null si vale o no hay. */
   cuentaPaletsProblema: string | null;
+  /**
+   * Plantilla B: cómo está la serie B si la empresa vende cerámica (null si no
+   * la vende). En la respuesta del PUT, 'creada' si se acaba de crear; con
+   * `aviso` si hay que hacer algo en Configuración > Series.
+   */
+  serieCeramica: SerieCeramica | null;
   actualizadoEn: string | null;
   actualizadoPor: string | null;
 }
@@ -126,9 +138,12 @@ export async function obtenerAjustesFacturacion(companyId: string): Promise<Ajus
   ]);
   // La del cargo de palets se valida al guardarla, pero despues se puede desactivar en el plan.
   const problemaPalets = ajustes.cuentaPalets ? await problemaCuentasLinea(companyId, 'venta', [ajustes.cuentaPalets]) : null;
+  // La serie B, solo si vende ceramica (y en Espana). Leer no crea nada: sin ella, 'pendiente'.
+  const serieCeramica = perfil.espanola && ajustes.vendeCeramica ? await estadoSerieCeramica(companyId) : null;
   return {
     imagenesPlantillaB: imagenes,
     cuentaPaletsProblema: problemaPalets?.mensaje ?? null,
+    serieCeramica,
     ...ajustes,
     irpfDefecto: perfil.espanola ? ajustes.irpfDefecto : 0,
     // El IEEPNR es un impuesto español: fuera de España, nunca.
@@ -245,7 +260,28 @@ export async function guardarAjustesFacturacion(companyId: string, userId: strin
 
   const datos = { ...nuevo, updatedBy: userId };
   await prisma.ajustesFacturacion.upsert({ where: { companyId }, create: { companyId, ...datos }, update: datos });
-  return obtenerAjustesFacturacion(companyId);
+  // Vende ceramica: la serie B, si no existe, se crea ahora (despues de las de siempre).
+  const serieCeramica = nuevo.vendeCeramica ? await serieCeramicaAlGuardar(companyId) : null;
+  const resp = await obtenerAjustesFacturacion(companyId);
+  return serieCeramica ? { ...resp, serieCeramica } : resp;
+}
+
+/**
+ * Crea la serie B al guardar con «Vendo cerámica» marcada. Los ajustes ya
+ * están guardados: si la serie no se puede crear ahora, no se pierden; se avisa
+ * y la B se crea sola la próxima vez que se abran las series.
+ */
+async function serieCeramicaAlGuardar(companyId: string): Promise<SerieCeramica> {
+  try {
+    return await prepararSerieCeramica(companyId);
+  } catch (err) {
+    logger.warn('[ajustes-facturacion] No se pudo crear la serie B', { companyId, error: err instanceof Error ? err.message : String(err) });
+    return {
+      codigo: 'B',
+      estado: 'pendiente',
+      aviso: 'Los ajustes se han guardado, pero la serie B no se ha podido crear ahora. Se creará sola la próxima vez que abras Configuración > Series.',
+    };
+  }
 }
 
 // ---------- Uso en las facturas ----------
