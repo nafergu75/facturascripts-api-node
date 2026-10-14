@@ -2,18 +2,23 @@
  * Vaciado de produccion, sin base de datos: que cada tabla del esquema tenga
  * su destino, el orden de borrado frente a las claves ajenas, las condiciones
  * de los borrados parciales, el SQL de la copia, que no se escriba la URL de la
- * base y que las MARCAS y las carpetas del almacen sigan al dia.
+ * base (tampoco en la prueba de acceso), que las MARCAS y las carpetas del
+ * almacen sigan al dia, el esquema en los dos sentidos, la parada de
+ * VERI*FACTU y la restauracion cortada o solo de ficheros.
  * El recorrido completo contra una base esta en vaciado-produccion.db.test.ts.
  */
 import { describe, it, expect, jest } from '@jest/globals';
-import { readFileSync, readdirSync, statSync } from 'fs';
+import { createHash } from 'crypto';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'fs';
+import * as os from 'os';
 import * as path from 'path';
-import { Prisma } from '@prisma/client';
+import { Prisma, type PrismaClient } from '@prisma/client';
 import { clasificarTablas, condicionBorrado, ordenDeBorrado, ordenDeRestauracion, REGLAS, MARCAS_AUDITORIA } from '../services/vaciadoProduccion/tablas';
-import { cadenaSql, literalSql } from '../services/vaciadoProduccion/copia';
-import { ocultador, urlDelScript } from '../services/vaciadoProduccion/bd';
-import { almacenBlob, empresaDeClave, esDeLaApp, PREFIJOS_APP, rutaLocalDe } from '../services/vaciadoProduccion/almacen';
-import { estaDentro, main, repoQueLaContiene } from '../services/vaciadoProduccion/cli';
+import { cadenaSql, literalSql, restaurarFicheros, RestauracionCortada } from '../services/vaciadoProduccion/copia';
+import { comprobarEsquema, esquemaCorrecto, motivosEsquema, ocultador, urlDelScript } from '../services/vaciadoProduccion/bd';
+import { almacenBlob, almacenDisco, empresaDeClave, esDeLaApp, PREFIJOS_APP, rutaLocalDe, sinAlmacen } from '../services/vaciadoProduccion/almacen';
+import { capturarSalida, causaFalloBase, estaDentro, main, repoQueLaContiene, textoRestauracionCortada } from '../services/vaciadoProduccion/cli';
+import { comprobarVerifactu, informeSimulacion } from '../services/vaciadoProduccion/vaciado';
 
 const RAIZ = path.resolve(__dirname, '..', '..');
 const modelos = Prisma.dmmf.datamodel.models;
@@ -246,5 +251,208 @@ describe('Vercel Blob (simulado)', () => {
     const ref = await a.subir(objetos[0].clave, Buffer.from('abc'), 'application/pdf');
     expect(ref).toBe(objetos[0].ref);
     expect(blob.put).toHaveBeenCalledWith(objetos[0].clave, expect.any(Buffer), expect.objectContaining({ access: 'private', addRandomSuffix: false, allowOverwrite: true }));
+  });
+});
+
+/** Base simulada: responde a las consultas de information_schema y a los COUNT. */
+function baseFalsa(tablas: Record<string, string[]>, cuentas: (sql: string) => number = () => 0) {
+  return {
+    $queryRawUnsafe: jest.fn(async (sql: string) => {
+      if (sql.includes('DATABASE() AS base')) return [{ base: 'conta', version: '8.0.11-TiDB-v7.5.0' }];
+      if (sql.includes('information_schema.TABLES')) return Object.keys(tablas).map((t) => ({ t }));
+      if (sql.includes('information_schema.COLUMNS')) return Object.entries(tablas).flatMap(([t, cs]) => cs.map((c) => ({ t, c })));
+      return [{ n: BigInt(cuentas(sql)) }];
+    }),
+  } as unknown as Pick<PrismaClient, '$queryRawUnsafe'>;
+}
+
+describe('esquema de la base en los dos sentidos', () => {
+  const modelo = [
+    { nombre: 'Customer', columnas: [{ nombre: 'id', tipo: 'String' }, { nombre: 'nombre', tipo: 'String' }] },
+    { nombre: 'Company', columnas: [{ nombre: 'id', tipo: 'String' }] },
+  ];
+
+  it('igual que el modelo: correcto (sin _prisma_migrations, como en producción)', async () => {
+    const e = await comprobarEsquema(baseFalsa({ customer: ['id', 'nombre'], company: ['id'] }), modelo);
+    expect(esquemaCorrecto(e)).toBe(true);
+    expect(e.conMigraciones).toBe(false);
+  });
+
+  it('una columna que solo está en la base (otra versión publicada) para el script', async () => {
+    const e = await comprobarEsquema(baseFalsa({ Customer: ['id', 'nombre', 'notaProd'], Company: ['id'], _prisma_migrations: ['id'] }), modelo);
+    expect(e.sobranColumnas).toEqual(['Customer.notaProd']);
+    expect(e.sobranTablas).toEqual([]);
+    expect(esquemaCorrecto(e)).toBe(false);
+    expect(motivosEsquema(e).join('\n')).toContain('La base tiene columnas que esta versión no conoce: Customer.notaProd.');
+  });
+
+  it('las columnas de una tabla que no es del modelo no cuentan aparte (ya para la tabla)', async () => {
+    const e = await comprobarEsquema(baseFalsa({ Customer: ['id', 'nombre'], Company: ['id'], clientes: ['id', 'x'] }), modelo);
+    expect(e.sobranTablas).toEqual(['clientes']);
+    expect(e.sobranColumnas).toEqual([]);
+  });
+});
+
+describe('simulación tras un borrado cortado', () => {
+  it('las filas de varias empresas que ya no existen se suman por tabla (sin nombres repetidos)', () => {
+    const tabla = (nombre: string, porEmpresa: Array<[string, number]>) => ({
+      tabla: { nombre, destino: 'VACIAR' as const, motivo: '', columnas: [], clave: ['id'], columnaEmpresa: 'companyId', relaciones: [], autoReferencias: [], empresaPor: null },
+      total: porEmpresa.reduce((a, [, n]) => a + n, 0),
+      porEmpresa: new Map<string | null, number>(porEmpresa),
+      aBorrar: porEmpresa.reduce((a, [, n]) => a + n, 0),
+      aConservar: 0,
+    });
+    const estado = { base: 'conta', version: 'TiDB', esTidb: true, tablasEnBase: 2, faltanTablas: [], faltanColumnas: [], sobranTablas: [], sobranColumnas: [], conMigraciones: false };
+    const lineas = informeSimulacion(
+      {
+        estado,
+        paradas: [],
+        avisos: [],
+        usuarios: [],
+        conservados: [],
+        empresas: [],
+        filas: [tabla('Customer', [['ya-no-1', 2], ['ya-no-2', 1]]), tabla('Supplier', [['ya-no-1', 1], ['ya-no-2', 1]])],
+        objetos: null,
+        referencias: null,
+        ajustesPlataforma: [],
+      },
+      sinAlmacen('sin clave'),
+    ).join('\n');
+    expect(lineas).toContain('Filas sin empresa, o de empresas que ya no existen: 5');
+    expect(lineas).toMatch(/Customer 3 · Supplier 2/);
+  });
+});
+
+describe('VERI*FACTU: solo para lo de la AEAT de verdad', () => {
+  const tablasF1 = [
+    { nombre: 'VerifactuConfig', columnas: [{ nombre: 'estado', tipo: 'String' }, { nombre: 'entorno', tipo: 'String' }] },
+    { nombre: 'VerifactuRegistro', columnas: [{ nombre: 'entorno', tipo: 'String' }, { nombre: 'huella', tipo: 'String' }] },
+    { nombre: 'VerifactuCertificado', columnas: [{ nombre: 'companyId', tipo: 'String' }] },
+    { nombre: 'VerifactuBitacora', columnas: [{ nombre: 'tipo', tipo: 'String' }] },
+    { nombre: 'RegistroFacturacionSinEntorno', columnas: [{ nombre: 'estadoEnvio', tipo: 'String' }] },
+  ];
+
+  it('registros, certificados y bitácora del entorno de PRUEBAS no paran', async () => {
+    const db = baseFalsa({}, (sql) => (sql.includes("'PRODUCCION'") || sql.includes('RegistroFacturacionSinEntorno') ? 0 : 7));
+    expect(await comprobarVerifactu(db, tablasF1)).toEqual([]);
+  });
+
+  it('registros de PRODUCCIÓN, una empresa activa o una tabla de registros sin entorno con filas: para', async () => {
+    const db = baseFalsa({}, (sql) => {
+      if (sql.includes('VerifactuConfig')) return 1;
+      if (sql.includes('VerifactuRegistro')) return sql.includes("'PRODUCCION'") ? 2 : 9;
+      if (sql.includes('RegistroFacturacionSinEntorno')) return 3;
+      return 5;
+    });
+    const paradas = await comprobarVerifactu(db, tablasF1);
+    expect(paradas).toHaveLength(3);
+    expect(paradas[0]).toContain('VERI*FACTU activo');
+    expect(paradas[1]).toContain('VerifactuRegistro tiene 2 registros');
+    expect(paradas[2]).toContain('RegistroFacturacionSinEntorno tiene 3 registros');
+  });
+});
+
+describe('prueba de acceso: la salida de la app no se ve', () => {
+  it('lo que escribe la app mientras corre se guarda y no sale por pantalla', () => {
+    const escrito: string[] = [];
+    const original = process.stdout.write;
+    const originalErr = process.stderr.write;
+    process.stdout.write = ((t: string) => escrito.push(String(t)) > 0) as typeof process.stdout.write;
+    process.stderr.write = ((t: string) => escrito.push(String(t)) > 0) as typeof process.stderr.write;
+    try {
+      const c = capturarSalida();
+      process.stdout.write("Can't reach database server at gateway99.eu-central-1.prod.invalid:4000\n");
+      process.stderr.write('credentials for usr4AbCd are not valid\n');
+      const capturado = c.soltar();
+      expect(capturado).toContain('gateway99');
+      expect(capturado).toContain('usr4AbCd');
+      process.stdout.write('después\n');
+    } finally {
+      process.stdout.write = original;
+      process.stderr.write = originalErr;
+    }
+    expect(escrito.join('')).toBe('después\n');
+  });
+
+  it('la causa se dice sin servidor ni usuario', () => {
+    const causas = [
+      causaFalloBase("Can't reach database server at gateway99.eu-central-1.prod.invalid:4000"),
+      causaFalloBase('Authentication failed against database server at localhost, the provided database credentials for usr4AbCd are not valid'),
+      causaFalloBase('Timed out fetching a new connection from the connection pool (P2024)'),
+      causaFalloBase('Invalid prisma.user.findUnique() invocation: P2010 raw query failed at gateway99'),
+    ];
+    expect(causas[0]).toContain('No se ha podido conectar');
+    expect(causas[1]).toContain('ha rechazado el usuario o la contraseña de conexión');
+    expect(causas[2]).toContain('ha tardado demasiado');
+    expect(causas[3]).toContain('código P2010');
+    expect(causas.join('\n')).not.toMatch(/gateway99|usr4AbCd|localhost|Cl4ve/);
+  });
+});
+
+describe('restauración cortada y ficheros solos', () => {
+  it('cortada en las filas: vaciar con --borrar y repetir --restaurar con la misma copia', () => {
+    const tapar = ocultador('mysql://usr4AbCd:Cl4ve@gateway99.invalid:4000/conta');
+    const filas = textoRestauracionCortada(new RestauracionCortada('Lost connection to gateway99.invalid:4000', 'filas', 'Customer'), 'C:\\copias\\conta-copia-20261014-1200', tapar).join('\n');
+    expect(filas).toContain('LA RESTAURACIÓN SE HA CORTADO A MEDIAS, en la tabla Customer');
+    expect(filas).toContain('scripts/vaciar-produccion.sh --borrar');
+    expect(filas).toMatch(/--restaurar ".*conta-copia-20261014-1200"/);
+    expect(filas).not.toContain('gateway99');
+    const ficheros = textoRestauracionCortada(new RestauracionCortada('red', 'ficheros', 'lecturas/a.pdf'), 'C:\\copias\\x', tapar).join('\n');
+    expect(ficheros).toContain('--restaurar-ficheros');
+    expect(ficheros).not.toContain('--borrar');
+  });
+
+  it('--restaurar-ficheros sube solo los que faltan, sin tocar la base, y no sube nada si la copia está mal', async () => {
+    const tmp = mkdtempSync(path.join(os.tmpdir(), 'vaciado-ficheros-'));
+    try {
+      const carpeta = path.join(tmp, 'copia');
+      const almacen = path.join(tmp, 'storage');
+      const ficheros = [
+        { clave: 'lecturas/e1/a.pdf', contenido: 'pdf-a' },
+        { clave: 'archivo/e1/b.pdf', contenido: 'pdf-b' },
+      ];
+      for (const f of ficheros) {
+        mkdirSync(path.dirname(path.join(carpeta, 'ficheros', f.clave)), { recursive: true });
+        writeFileSync(path.join(carpeta, 'ficheros', f.clave), f.contenido);
+      }
+      const manifiesto = {
+        formato: 1,
+        creada: '2026-10-14T10:00:00.000Z',
+        base: { nombre: 'conta', version: 'x' },
+        codigo: null,
+        almacen: 'disco',
+        admins: [],
+        tablas: [],
+        ficheros: ficheros.map((f) => ({
+          clave: f.clave,
+          ref: `storage/${f.clave}`,
+          tamano: f.contenido.length,
+          tipo: null,
+          local: `ficheros/${f.clave}`,
+          sha256: createHash('sha256').update(f.contenido).digest('hex'),
+        })),
+      };
+      writeFileSync(path.join(carpeta, 'manifiesto.json'), JSON.stringify(manifiesto));
+      // Uno ya esta en el almacen (con otro contenido): no se toca.
+      mkdirSync(path.join(almacen, 'lecturas', 'e1'), { recursive: true });
+      writeFileSync(path.join(almacen, 'lecturas', 'e1', 'a.pdf'), 'el-de-ahora');
+
+      const r = await restaurarFicheros({ almacen: almacenDisco(almacen), carpeta });
+      expect([r.total, r.subidos, r.yaEstaban, r.avisos]).toEqual([2, 1, 1, []]);
+      expect(readFileSync(path.join(almacen, 'archivo', 'e1', 'b.pdf'), 'utf8')).toBe('pdf-b');
+      expect(readFileSync(path.join(almacen, 'lecturas', 'e1', 'a.pdf'), 'utf8')).toBe('el-de-ahora');
+      // Otra vez: nada que subir.
+      expect((await restaurarFicheros({ almacen: almacenDisco(almacen), carpeta })).subidos).toBe(0);
+
+      // Un fichero de la copia cambiado: error antes de subir nada.
+      rmSync(path.join(almacen, 'archivo'), { recursive: true });
+      writeFileSync(path.join(carpeta, 'ficheros', 'lecturas', 'e1', 'a.pdf'), 'pdf-X');
+      await expect(restaurarFicheros({ almacen: almacenDisco(almacen), carpeta })).rejects.toThrow('no coincide con el original');
+      expect(existsSync(path.join(almacen, 'archivo'))).toBe(false);
+      // Sin clave de Blob: no sube nada.
+      await expect(restaurarFicheros({ almacen: sinAlmacen('sin clave'), carpeta })).rejects.toThrow('hace falta la clave de Vercel Blob');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
   });
 });
