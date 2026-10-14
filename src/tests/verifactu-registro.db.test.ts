@@ -238,7 +238,8 @@ describe('tipos de operación', () => {
     const f = await emitir({ tipoOperacion: 'INTRACOMUNITARIA', lineas: [linea(500, 0)] }, E, clientes[E].fr);
     const c = contenido(await unico(f.id));
     expect(c.desglose).toEqual([{ impuesto: '01', claveRegimen: '01', operacionExenta: 'E5', baseImponible: '500.00' }]);
-    expect(c.destinatarios).toEqual([{ nombre: 'Client France SARL', idOtro: { codigoPais: 'FR', idType: '02', id: 'FR12345678901' } }]);
+    // Con NIF-IVA (IDType 02) no va CodigoPais (Validaciones 3.1.3.13; error 1122).
+    expect(c.destinatarios).toEqual([{ nombre: 'Client France SARL', idOtro: { idType: '02', id: 'FR12345678901' } }]);
   });
 
   it('exportación: 02/E2 con IDOtro 04', async () => {

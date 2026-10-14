@@ -109,10 +109,12 @@ describe('tabla de reglas', () => {
 
   it('Verifactu: E5 con IDType 02, E2 con clave 02, S2 con 0/0', () => {
     expect(desgloseVerifactu('INTRACOMUNITARIA', { cliente: FR })).toMatchObject({ operacionExenta: 'E5', claveRegimen: '01' });
-    expect(destinatarioVerifactu(FR)).toEqual({ idOtro: { codigoPais: 'FR', idType: '02', id: 'FR12345678901' } });
+    expect(destinatarioVerifactu(FR)).toEqual({ idOtro: { idType: '02', id: 'FR12345678901' } });
     expect(desgloseVerifactu('EXPORTACION', { cliente: US })).toMatchObject({ operacionExenta: 'E2', claveRegimen: '02' });
     expect(destinatarioVerifactu(US)).toEqual({ idOtro: { codigoPais: 'US', idType: '04', id: '123456789' } });
     expect(destinatarioVerifactu(ES)).toEqual({ nif: 'B12345678' });
+    // Grecia (EL) e Irlanda del Norte (XI): el prefijo no es su codigo ISO; con 02 no va CodigoPais (error 1122).
+    expect(destinatarioVerifactu({ pais: 'GR', nifCif: 'EL123456789' })).toEqual({ idOtro: { idType: '02', id: 'EL123456789' } });
     expect(desgloseVerifactu('EXENTA', { cliente: ES, causaExencion: 'E4' })).toMatchObject({ operacionExenta: 'E4' });
   });
 
@@ -304,7 +306,7 @@ describe('Irlanda del Norte (NIF-IVA XI)', () => {
     expect(r.errores).toEqual([]);
     expect(REGLA_OPERACION.INTRACOMUNITARIA.casilla303({ cliente: XI })).toBe('59');
     expect(REGLA_OPERACION.INTRACOMUNITARIA.clave349({ cliente: XI })).toBe('E');
-    expect(destinatarioVerifactu(XI)).toEqual({ idOtro: { codigoPais: 'GB', idType: '02', id: 'XI123456789' } });
+    expect(destinatarioVerifactu(XI)).toEqual({ idOtro: { idType: '02', id: 'XI123456789' } });
   });
   it('los servicios a XI son de pais tercero: [120], sin 349', () => {
     expect(REGLA_OPERACION.SERVICIOS_EXTRANJERO.casilla303({ cliente: XI })).toBe('120');

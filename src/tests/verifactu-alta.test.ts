@@ -99,7 +99,8 @@ describe('construirAlta: un caso por tipo de operación', () => {
   it('INTRACOMUNITARIA: E5 con la clave 01 y el cliente en IDOtro 02', () => {
     const a = ok({ tipoOperacion: 'INTRACOMUNITARIA', cliente: FR, lineas: [l(500, 0, 0)] });
     expect(a.cuerpo.desglose).toEqual([{ impuesto: '01', claveRegimen: '01', operacionExenta: 'E5', baseImponible: '500.00' }]);
-    expect(a.cuerpo.destinatarios).toEqual([{ nombre: FR.nombre, idOtro: { codigoPais: 'FR', idType: '02', id: 'FR12345678901' } }]);
+    expect(a.cuerpo.destinatarios).toEqual([{ nombre: FR.nombre, idOtro: { idType: '02', id: 'FR12345678901' } }]);
+    expect(Object.keys((a.cuerpo.destinatarios?.[0] as { idOtro: object }).idOtro)).toEqual(['idType', 'id']);
     expect(a.importeTotal).toBe('500.00');
     expect(a.cuotaTotal).toBe('0.00');
   });

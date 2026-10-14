@@ -173,7 +173,9 @@ function destinatarioDe(cliente: ClienteFiscal & { nombre: string }): Destinatar
   const nombre = recortar(String(cliente.nombre ?? '').trim(), MAX_NOMBRE);
   const d = destinatarioVerifactu(cliente);
   if ('nif' in d) return { nombre, nif: normalizarNif(cliente.nifCif) };
-  return { nombre, idOtro: { codigoPais: d.idOtro.codigoPais, idType: d.idOtro.idType, id: d.idOtro.id } };
+  // Con IDType 02 (NIF-IVA) sin CodigoPais: ver destinatarioVerifactu.
+  const { codigoPais, idType, id } = d.idOtro;
+  return { nombre, idOtro: codigoPais ? { codigoPais, idType, id } : { idType, id } };
 }
 
 /** Calificacion y exencion de la app (VerifactuOperacion) con los tipos del registro. */

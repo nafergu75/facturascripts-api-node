@@ -481,15 +481,25 @@ export const REGLA_OPERACION: Readonly<Record<TipoOperacionVenta, ReglaOperacion
 /** Tipos que exigen cliente no residente (ni IRPF). */
 const TIPOS_NO_RESIDENTE: readonly TipoOperacionVenta[] = ['INTRACOMUNITARIA', 'EXPORTACION', 'SERVICIOS_EXTRANJERO'];
 
-/** Destinatario para Verifactu: NIF espanol, o IDOtro con su tipo de documento. */
+/**
+ * Destinatario para Verifactu: NIF espanol, o IDOtro con su tipo de documento.
+ *  - 02 = NIF-IVA (cliente UE con NIF-IVA, o XI de Irlanda del Norte), SIN
+ *    CodigoPais: con 02 no es exigible (Validaciones v1.2.2, 3.1.3.13) y, si va,
+ *    tiene que coincidir con el prefijo del numero (error 1122), que en Grecia
+ *    es EL y en Irlanda del Norte XI, dos codigos que no estan en la lista de
+ *    paises del XSD (CountryType2). Asi lo da tambien la FAQ de desarrolladores
+ *    v1.3, n.º 24, caso «Cuarta».
+ *  - 04 = documento oficial del pais de residencia, con su pais (obligatorio:
+ *    error 1111).
+ */
 export function destinatarioVerifactu(
   c: ClienteFiscal,
-): { nif: string } | { idOtro: { codigoPais: string; idType: '02' | '04'; id: string } } {
+): { nif: string } | { idOtro: { codigoPais?: string; idType: '02' | '04'; id: string } } {
   const pais = paisDelCliente(c);
   const nif = limpiarNif(c.nifCif);
   if (pais === 'ES') return { nif };
-  // 02 = NIF-IVA (cliente UE con NIF-IVA, o XI de Irlanda del Norte); 04 = documento oficial del pais de residencia.
-  return { idOtro: { codigoPais: pais, idType: tieneNifIvaUe(c) || tieneNifIvaXi(c) ? '02' : '04', id: nif } };
+  if (tieneNifIvaUe(c) || tieneNifIvaXi(c)) return { idOtro: { idType: '02', id: nif } };
+  return { idOtro: { codigoPais: pais, idType: '04', id: nif } };
 }
 
 /** Desglose de Verifactu de la factura (null si no aplica). */
