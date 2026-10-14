@@ -134,9 +134,14 @@ describe('panel sin las compras de inmovilizado', () => {
     expect(prov.some((p) => p.id === maquinas)).toBe(false);
   });
 
-  it('GET /stats/ultimas-facturas: las sigue listando todas', async () => {
-    const ultimas = (await get('/stats/ultimas-facturas?anio=2026')) as Array<{ facturaId: string }>;
+  it('GET /stats/ultimas-facturas: las sigue listando todas; las que son solo inmovilizado, con la categoría «Inmovilizado»', async () => {
+    const ultimas = (await get('/stats/ultimas-facturas?anio=2026')) as Array<{ facturaId: string; category: string }>;
     expect(ultimas.map((u) => u.facturaId).sort()).toEqual([ids.mixta, ids.maquina, ids.abono, ids.sinLineas].sort());
+    const categoria = (id: string) => ultimas.find((u) => u.facturaId === id)?.category;
+    expect(categoria(ids.maquina)).toBe('Inmovilizado');
+    expect(categoria(ids.abono)).toBe('Inmovilizado');
+    expect(categoria(ids.mixta)).toBe('Suministros y otros servicios');
+    expect(categoria(ids.sinLineas)).toBe('Suministros y otros servicios');
   });
 
   it('Carmen (INT-09) da lo gastado sin las compras de inmovilizado, como el panel', async () => {
