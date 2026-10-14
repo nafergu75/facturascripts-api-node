@@ -14,6 +14,7 @@ import { badRequest, notFound } from '../utils/http-errors';
 import { leerFilasArchivo, normalizar } from './extractoBancario.service';
 import { leerImporte } from './extractoBancario.service';
 import { limpiarTextoAdicional, TEXTO_ADICIONAL_LINEAS_MAX, TEXTO_ADICIONAL_MAX } from '../domain/plantillasFactura';
+import { esUnidadPrecio, FORMATO_MAX } from '../domain/ceramica';
 
 type ProductRow = {
   id: string;
@@ -34,6 +35,11 @@ type ProductRow = {
   kgPlasticoUnidad: number | null;
   llevaIeepnr: boolean;
   textoFactura: string | null;
+  formato: string | null;
+  metros2PorCaja: number | null;
+  piezasPorCaja: number | null;
+  unidadPrecio: string | null;
+  pesoKgPorUnidad: number | null;
 };
 
 /** Product (Prisma) -> respuesta del recurso productos. */
@@ -62,6 +68,12 @@ function aProducto(p: ProductRow): Record<string, unknown> {
     kgPlasticoUnidad: p.kgPlasticoUnidad === null || p.kgPlasticoUnidad === undefined ? null : Number(p.kgPlasticoUnidad),
     llevaIeepnr: p.llevaIeepnr ?? false,
     textoFactura: p.textoFactura ?? null,
+    // Plantilla B (ceramica): formato, m2 y piezas por caja, unidad del precio y peso por esa unidad.
+    formato: p.formato ?? null,
+    metros2PorCaja: p.metros2PorCaja === null || p.metros2PorCaja === undefined ? null : Number(p.metros2PorCaja),
+    piezasPorCaja: p.piezasPorCaja ?? null,
+    unidadPrecio: p.unidadPrecio ?? null,
+    pesoKgPorUnidad: p.pesoKgPorUnidad === null || p.pesoKgPorUnidad === undefined ? null : Number(p.pesoKgPorUnidad),
   };
 }
 
@@ -124,6 +136,71 @@ function datosEnvaseProducto(data: Record<string, unknown>): Record<string, unkn
   return out;
 }
 
+/** m2 por caja: de 0 a 1.000, con 4 decimales como mucho (1,68). */
+export const METROS2_POR_CAJA_MAX = 1000;
+/** Piezas por caja: entero de 1 a 100.000. */
+export const PIEZAS_POR_CAJA_MAX = 100_000;
+/** Kg por unidad del precio: de 0 a 100.000, con 4 decimales como mucho. */
+export const PESO_POR_UNIDAD_MAX = 100_000;
+
+/**
+ * Datos de ceramica del articulo (plantilla B): formato, m2 y piezas por caja
+ * (para proponer m2 y piezas desde las cajas), la unidad del precio por defecto
+ * (M2, PIEZA o UNIDAD) y los kg por esa unidad (para proponer el peso de la
+ * linea). Con 400 y el nombre del campo si no valen.
+ */
+function datosCeramicaProducto(data: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  const vacio = (v: unknown) => v === null || v === '';
+  if (data.formato !== undefined) {
+    if (vacio(data.formato)) out.formato = null;
+    else {
+      const t = String(data.formato).trim();
+      if (typeof data.formato !== 'string' || t.length > FORMATO_MAX) throw badRequest(`El formato admite ${FORMATO_MAX} caracteres como mucho (por ejemplo, 23,3x120).`, { campo: 'formato' });
+      out.formato = t || null;
+    }
+  }
+  if (data.metros2PorCaja !== undefined) {
+    if (vacio(data.metros2PorCaja)) out.metros2PorCaja = null;
+    else {
+      const n = numeroDecimal(data.metros2PorCaja);
+      if (n === null || n <= 0 || n > METROS2_POR_CAJA_MAX || !conDecimales(n, 4)) {
+        throw badRequest('Los m² por caja son un número mayor que 0 y de 1.000 como mucho, con 4 decimales como máximo (por ejemplo, 1,68).', { campo: 'metros2PorCaja' });
+      }
+      out.metros2PorCaja = n;
+    }
+  }
+  if (data.piezasPorCaja !== undefined) {
+    if (vacio(data.piezasPorCaja)) out.piezasPorCaja = null;
+    else {
+      const n = numeroDecimal(data.piezasPorCaja);
+      if (n === null || !Number.isInteger(n) || n < 1 || n > PIEZAS_POR_CAJA_MAX) {
+        throw badRequest('Las piezas por caja son un número entero entre 1 y 100.000.', { campo: 'piezasPorCaja' });
+      }
+      out.piezasPorCaja = n;
+    }
+  }
+  if (data.unidadPrecio !== undefined) {
+    if (vacio(data.unidadPrecio)) out.unidadPrecio = null;
+    else {
+      const u = String(data.unidadPrecio).trim().toUpperCase();
+      if (!esUnidadPrecio(u)) throw badRequest('El precio va por m², por pieza o por unidad (M2, PIEZA o UNIDAD).', { campo: 'unidadPrecio' });
+      out.unidadPrecio = u;
+    }
+  }
+  if (data.pesoKgPorUnidad !== undefined) {
+    if (vacio(data.pesoKgPorUnidad)) out.pesoKgPorUnidad = null;
+    else {
+      const n = numeroDecimal(data.pesoKgPorUnidad);
+      if (n === null || n < 0 || n > PESO_POR_UNIDAD_MAX || !conDecimales(n, 4)) {
+        throw badRequest('El peso por unidad son los kg de cada m², pieza o unidad: un número de 0 a 100.000, con 4 decimales como mucho.', { campo: 'pesoKgPorUnidad' });
+      }
+      out.pesoKgPorUnidad = n;
+    }
+  }
+  return out;
+}
+
 const TIPOS = ['PRODUCTO', 'SERVICIO'];
 const UNIDADES = ['ud', 'h', 'kg', 'g', 'l', 'm', 'm2', 'm3', 'día', 'mes', 'km', 'servicio'];
 
@@ -173,7 +250,7 @@ async function datosProducto(companyId: string, data: Record<string, unknown>, p
   }
   if (data.cuentaVentas !== undefined) out.cuentaVentas = cuenta(data.cuentaVentas);
   if (data.notas !== undefined) out.notas = data.notas ? String(data.notas).slice(0, 2000) : null;
-  Object.assign(out, datosEnvaseProducto(data));
+  Object.assign(out, datosEnvaseProducto(data), datosCeramicaProducto(data));
   if (data.familiaId !== undefined) {
     if (!data.familiaId) out.familiaId = null;
     else {
