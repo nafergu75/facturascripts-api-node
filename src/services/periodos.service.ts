@@ -1,6 +1,6 @@
 import { Prisma } from '@prisma/client';
 import { prisma, type ClienteBD, type TransaccionBD } from '../config/database';
-import { badRequest, conflict } from '../utils/http-errors';
+import { badRequest, conflict, HttpError } from '../utils/http-errors';
 import { EstadoPeriodo, PeriodoContable } from '../domain/periodos.model';
 import { FILTRO_ASIENTOS_CIERRE } from '../domain/asientosCierre';
 import {
@@ -295,6 +295,28 @@ export async function comprobarFechaAbierta(companyId: string, fecha: string, ac
       });
     }
     throw badRequest(`El ejercicio ${ejercicio} está cerrado: no se pueden añadir asientos con esa fecha.`);
+  }
+}
+
+/**
+ * true si se puede apuntar en esa fecha; false si no (mes cerrado o bloqueado,
+ * ejercicio cerrado, año llevado por la gestoria): los motivos de
+ * comprobarFechaAbierta, que son HttpError.
+ *
+ * Un fallo de la base de datos (sin conexion, tiempo agotado...) NO es «periodo
+ * no abierto»: se relanza. Si no, un corte pasajero cambiaria el resultado
+ * contable: al anular, contraasiento con otra fecha en vez de dejar el asiento
+ * en REVERSED, o pedir una fecha sin motivo.
+ *
+ * `db`: dentro de una transaccion, su `tx`.
+ */
+export async function fechaAbierta(companyId: string, fecha: string, db: Db = prisma): Promise<boolean> {
+  try {
+    await comprobarFechaAbierta(companyId, fecha, undefined, db);
+    return true;
+  } catch (e) {
+    if (e instanceof HttpError) return false;
+    throw e;
   }
 }
 
