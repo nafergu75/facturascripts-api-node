@@ -36,7 +36,7 @@
 import { degrees, rgb, type PDFFont, type PDFImage, type PDFPage, type RGB } from 'pdf-lib';
 import { crearDocumentoPdfA, guardarPdfA } from '../utils/pdf-a';
 import { paisDelCliente } from '../domain/tipo-operacion.model';
-import { resumenCeramica } from '../domain/ceramica';
+import { esUnidadPrecio, resumenCeramica } from '../domain/ceramica';
 import { aCentimos } from '../utils/money';
 import { textoRegistroA } from './facturaPdfPlantillaA';
 import {
@@ -275,7 +275,7 @@ export async function renderizarFacturaPlantillaB(f: DatosFacturaPdf): Promise<B
   // Lineas de la tabla y cargos de palets (en el pie).
   const tabla = f.lineas.filter((l) => !l.cargoPalets);
   const cargos = f.lineas.filter((l) => l.cargoPalets);
-  const resumen = resumenCeramica(f.lineas.map((l) => ({ ...l, unidadPrecio: null, baseLine: l.baseLine })));
+  const resumen = resumenCeramica(f.lineas.map((l) => ({ ...l, unidadPrecio: esUnidadPrecio(l.unidadPrecio) ? l.unidadPrecio : null, baseLine: l.baseLine })));
   const fuenteDesc = negrita;
   const bloques: FilaB[][] = tabla.map((l) => {
     const concepto = variosTipos && conIva ? `${l.descripcion} (IVA ${F.pct(l.tipoIva)})` : l.descripcion;

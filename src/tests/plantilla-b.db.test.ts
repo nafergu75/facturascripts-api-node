@@ -175,6 +175,23 @@ describe('NZ013_2026 con la plantilla B', () => {
     ]);
     cifrasMuestra(f);
   });
+
+  it('las lineas cobradas por unidad (sacos, transporte) llevan sus unidades en las piezas de la linea, pero no suman en el total de piezas', async () => {
+    const f = await alta({
+      borrador: true,
+      lineas: [
+        { descripcion: 'AZULEJO', cantidad: 5.04, precioUnitario: 12.25, tipoIva: 21, cajas: 3, metros2: 5.04, piezas: 18, unidadPrecio: 'M2' },
+        { descripcion: 'CEMENTO COLA', cantidad: 12, precioUnitario: 8, tipoIva: 21, unidadPrecio: 'UNIDAD' },
+        { descripcion: 'TRANSPORTE', cantidad: 1, precioUnitario: 40, tipoIva: 21 },
+      ],
+    });
+    expect(f.lineas.map((l) => [l.unidadPrecio, l.piezas])).toEqual([
+      ['M2', 18],
+      ['UNIDAD', 12],
+      ['UNIDAD', 1],
+    ]);
+    expect(f.resumenCeramica).toMatchObject({ cajas: 3, metros2: 5.04, piezas: 18 });
+  });
 });
 
 describe('PDF', () => {

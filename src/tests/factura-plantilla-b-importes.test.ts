@@ -74,4 +74,15 @@ describe('plantilla B: importes de NZ013_2026', () => {
     expect(negarMedidas({ palets: 0, cajas: 3, metros2: 5.04, piezas: null })).toEqual({ palets: 0, cajas: -3, metros2: -5.04, piezas: null });
     expect(Object.is(negarMedidas({ palets: 0 }).palets, -0)).toBe(false);
   });
+
+  it('las piezas de las lineas cobradas por unidad son sus unidades: no suman en el total de piezas (18 de azulejo, no 31)', () => {
+    const resumen = resumenCeramica([
+      { cantidad: 5.04, cajas: 3, metros2: 5.04, piezas: 18, unidadPrecio: 'M2' },
+      { cantidad: 12, piezas: 12, unidadPrecio: 'UNIDAD' },
+      { cantidad: 1, piezas: 1, unidadPrecio: 'UNIDAD' },
+      { cantidad: 4, piezas: 4, unidadPrecio: 'PIEZA' },
+      { cantidad: 1, unidadPrecio: 'UNIDAD', cargoPalets: true, baseLine: 9 },
+    ]);
+    expect(resumen).toEqual({ palets: 0, cajas: 3, metros2: 5.04, piezas: 22, pesoKg: 0, cargoPalets: { cantidad: 1, importe: 9 } });
+  });
 });

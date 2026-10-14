@@ -6,7 +6,8 @@
  * unidad de su precio: el importe es la cantidad de esa unidad por el precio
  * (5,04 m2 × 12,25 = 61,74; 20 piezas × 26,50 = 530,00). `cantidad` es esa
  * cantidad: los m2 (M2), las piezas (PIEZA) o las unidades (UNIDAD, que en el
- * PDF salen en la columna de piezas).
+ * PDF salen en la columna de piezas de su linea, pero no suman en el total de
+ * piezas del pie: 12 sacos de cemento o 1 transporte no son piezas).
  *
  * El cargo de palets de madera («PALETS DE MADERA TRATADA», 1 × 9,00) es una
  * linea mas, marcada con cargoPalets, con su cuenta de ingresos y su IVA: suma
@@ -89,7 +90,7 @@ export function negarMedidas(l: DatosCeramicaLinea): DatosCeramicaLinea {
 
 /** Totales del pie de la plantilla B. */
 export interface ResumenCeramica {
-  /** Suma de las lineas de la tabla (sin el cargo de palets). */
+  /** Suma de las lineas de la tabla (sin el cargo de palets; las piezas, sin las de las lineas cobradas por unidad). */
   palets: number;
   cajas: number;
   metros2: number;
@@ -106,6 +107,8 @@ const centimos = (v: number | null | undefined) => Math.round(Number((Number(v ?
 /**
  * Totales del pie: palets, cajas, m2, piezas y peso de las lineas de la tabla
  * (en enteros: m2, piezas y peso en milesimas), y el cargo de palets aparte.
+ * Las piezas de una linea cobrada por unidad (UNIDAD) son sus unidades, no
+ * piezas: no suman en el total de piezas.
  */
 export function resumenCeramica(lineas: Array<DatosCeramicaLinea & { cantidad: number; baseLine?: number | null }>): ResumenCeramica {
   let palets = 0;
@@ -124,7 +127,7 @@ export function resumenCeramica(lineas: Array<DatosCeramicaLinea & { cantidad: n
     palets += Number(l.palets ?? 0);
     cajas += Number(l.cajas ?? 0);
     m2 += milesimas(l.metros2);
-    piezas += milesimas(l.piezas);
+    if (l.unidadPrecio !== 'UNIDAD') piezas += milesimas(l.piezas);
     peso += milesimas(l.pesoKg);
   }
   return {

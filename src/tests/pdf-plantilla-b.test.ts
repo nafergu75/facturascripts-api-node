@@ -173,6 +173,14 @@ describe('PDF de la plantilla B con NZ013_2026', () => {
     expect(cerca(valor('TOTAL FACTURA:').derecha, COLUMNAS_B.pie)).toBe(true);
   });
 
+  it('una linea cobrada por unidad lleva sus unidades en la columna de piezas, pero no suman en el total de piezas', async () => {
+    const [azulejo, , cargo] = datosNz().lineas;
+    const sacos = { descripcion: 'CEMENTO COLA', cantidad: 12, precioUnitario: 8, descuentoPorcentaje: 0, tipoIva: 21, ivaImporte: 20.16, baseLine: 96, tipoRetencion: 0, unidadPrecio: 'UNIDAD', piezas: 12 };
+    const ts = await textos(datosNz({ lineas: [azulejo, sacos, cargo] }));
+    expect(fila(ts, buscar(ts, 'CEMENTO COLA')!).find((t) => cerca(t.derecha, COLUMNAS_B.piezas))?.texto).toBe('12');
+    expect(fila(ts, buscar(ts, 'PESO NETO (kg)')!).map((t) => t.texto)).toEqual(['0', '3', '5,04', '18', 'PESO NETO (kg)', '353']);
+  });
+
   it('obra, observaciones (la primera linea en negrita) y sin pesos ni cargo si no los hay', async () => {
     const ts = await textos(datosNz({ obra: 'REFORMA VIVIENDA C/ FALSA 1', pesoNetoKg: null, pesoBrutoKg: null, lineas: datosNz().lineas.slice(0, 2), baseTotal: 591.74, ivaTotal: 124.27, totalFactura: 716.01 }));
     const obra = buscar(ts, 'REFORMA VIVIENDA C/ FALSA 1')!;
