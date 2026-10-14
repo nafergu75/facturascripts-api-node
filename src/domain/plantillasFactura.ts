@@ -197,9 +197,10 @@ export function plantillaEfectivaSerie(serie: { codigo: string; plantilla?: stri
  *    IEEPNR» (Configuracion > Facturacion) esta sin marcar;
  *  - 'sinCeramica': la estandar en la serie B, porque la casilla «Vendo
  *    ceramica y materiales de construccion» esta sin marcar;
- *  - 'soloEspana': la estandar porque la que tocaba (la A o la B, elegida o
- *    automatica) solo vale en empresas espanolas;
- *  - 'estandar': la estandar en el resto de series sin plantilla elegida.
+ *  - 'soloEspana': la estandar porque la elegida en la serie (la A o la B)
+ *    solo vale en empresas espanolas;
+ *  - 'estandar': la estandar en el resto de series sin plantilla elegida (en
+ *    una empresa extranjera, tambien la A y la B: ahi nunca tuvieron otra).
  */
 export type MotivoPlantilla = 'elegida' | 'ieepnr' | 'ceramica' | 'serieC' | 'sinIeepnr' | 'sinCeramica' | 'soloEspana' | 'estandar';
 
@@ -207,8 +208,8 @@ export type MotivoPlantilla = 'elegida' | 'ieepnr' | 'ceramica' | 'serieC' | 'si
 export function motivoPlantillaSerie(serie: { codigo: string; plantilla?: string | null }, ctx: ContextoPlantillas): MotivoPlantilla {
   if (serie.plantilla) return plantillaDisponible(normalizarPlantillaId(serie.plantilla), ctx.espanola) ? 'elegida' : 'soloEspana';
   const c = String(serie.codigo ?? '').trim().toUpperCase();
-  if (c === 'A') return !ctx.espanola ? 'soloEspana' : ctx.repercuteIeepnr ? 'ieepnr' : 'sinIeepnr';
-  if (c === 'B') return !ctx.espanola ? 'soloEspana' : ctx.vendeCeramica === true ? 'ceramica' : 'sinCeramica';
+  if (c === 'A') return !ctx.espanola ? 'estandar' : ctx.repercuteIeepnr ? 'ieepnr' : 'sinIeepnr';
+  if (c === 'B') return !ctx.espanola ? 'estandar' : ctx.vendeCeramica === true ? 'ceramica' : 'sinCeramica';
   if (c === 'C') return 'serieC';
   return 'estandar';
 }
