@@ -317,6 +317,9 @@ model IncomeInvoice {
   pesoBrutoKg       Decimal? @db.Decimal(14, 3)
   /// Tipo del IEEPNR aplicado (EUR por kg); null = sin IEEPNR.
   ieepnrPorKg       Decimal? @db.Decimal(8, 4)
+  /// Cuenta del IEEPNR congelada al emitir (la de los ajustes o la de la
+  /// original); null = la de ingresos de cada linea. La usa el asiento.
+  ieepnrCuenta      String?  @db.VarChar(15)
   createdAt           DateTime              @default(now())
   updatedAt           DateTime              @updatedAt
   lineas              IncomeInvoiceLine[]

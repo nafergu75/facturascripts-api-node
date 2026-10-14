@@ -89,6 +89,7 @@ MARCAS=(
   'ieepnrCuenta'
   'Plantilla del PDF de la serie'
   'Packs de la linea'
+  'Cuenta del IEEPNR congelada al emitir'
 )
 for marca in "${MARCAS[@]}"; do
   grep -q "$marca" prisma/schema.prisma || {
