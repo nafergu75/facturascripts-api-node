@@ -272,6 +272,16 @@ describe('aInvoiceExtraction', () => {
     expect(e.amounts.withholdings).toEqual([{ type: 'IRPF', rate: 15, amount: 150 }]);
     expect(() => comprobarTotales(lineasDesdeExtraccion(e, null), e)).not.toThrow();
   });
+
+  it('con la retención leída sin porcentaje, el que sale del importe sobre la base: la línea la lleva y cuadra', () => {
+    const l = leer('resultado-irpf');
+    l.retencion = { tipo: { valor: null, confianza: null, fuente: 'claude' }, importe: { valor: 150, confianza: null, fuente: 'claude' } };
+    const e = aInvoiceExtraction(l, [], { confianza: 0.9, nombreArchivo: null, mime: null });
+    expect(e.amounts.withholdings).toEqual([{ type: 'IRPF', rate: 15, amount: 150 }]);
+    const lineas = lineasDesdeExtraccion(e, null);
+    expect(lineas.every((x) => x.tipoRetencion === 15)).toBe(true);
+    expect(() => comprobarTotales(lineas, e)).not.toThrow();
+  });
 });
 
 describe('respaldo con Claude con vision', () => {

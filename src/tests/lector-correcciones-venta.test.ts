@@ -12,6 +12,7 @@ import {
   leerCorrecciones,
   qrInterpretadoDe,
   textoCorregidos,
+  tipoRetencionLeido,
   type CorreccionesVenta,
 } from '../services/lectura/correcciones-venta';
 import { lecturaVacia, type LecturaNormalizada } from '../services/lectura/tipos';
@@ -194,6 +195,33 @@ describe('aplicarCorrecciones', () => {
     expect(corregida.desglose[0]).toMatchObject({ tipoRecargo: null, cuotaRecargo: null });
     expect(validacionesSincronas(corregida, ctx).some((v) => v.codigo === 'RECARGO_NO_SOPORTADO' || v.codigo === 'CUADRE')).toBe(false);
     expect(cambiosCorregidos(conRecargo, c)[0]).toMatchObject({ campo: 'lineas', leido: [{ tipoIva: 21, base: 200, cuota: 42, recargo: 10.4 }] });
+  });
+
+  it('retención leída sin porcentaje: el que sale del importe sobre la base, con las líneas o solo el total corregidos', () => {
+    // 1.000 € al 21 % con 150 € de retención y sin el porcentaje (la IA no lo ve): 1.060 € a cobrar.
+    const sinTipo = leida();
+    sinTipo.desglose = [{ tipoIva: 21, base: { valor: 1000, confianza: 0.9, fuente: 'claude' }, cuota: { valor: 210, confianza: 0.9, fuente: 'claude' }, tipoRecargo: null, cuotaRecargo: null }];
+    sinTipo.retencion = { tipo: { valor: null, confianza: null, fuente: 'claude' }, importe: { valor: 150, confianza: null, fuente: 'claude' } };
+    sinTipo.totales.retencion = { valor: 150, confianza: null, fuente: 'claude' };
+    sinTipo.totales.totalAPagar = { valor: 1060, confianza: 0.9, fuente: 'claude' };
+    expect(tipoRetencionLeido(sinTipo)).toBe(15);
+    const ctx = { lector: 'VENTA' as const, nifEmpresa: 'B12345674', empresaEspanola: true, monedaCuenta: 'EUR', hoy: '2026-10-14', periodoAbierto: async () => true, duplicado: { factura: null, archivo: null } };
+
+    const partida = aplicarCorrecciones(sinTipo, { lineas: [{ descripcion: 'Diseño', base: 600, tipoIva: 21 }, { descripcion: 'Impresión', base: 400, tipoIva: 21 }], total: 1060 });
+    expect(partida.retencion?.tipo).toMatchObject({ valor: 15, fuente: 'calculado' });
+    expect(partida.retencion?.importe.valor).toBe(150);
+    expect(validacionesSincronas(partida, ctx).some((v) => v.codigo === 'CUADRE')).toBe(false);
+
+    const soloTotal = aplicarCorrecciones(sinTipo, { total: 1060 });
+    expect(soloTotal.retencion?.importe.valor).toBe(150);
+    expect(validacionesSincronas(soloTotal, ctx).some((v) => v.codigo === 'CUADRE')).toBe(false);
+
+    // Lo escrito manda; sin retención leída, 0; y un importe que no da un porcentaje entero se redondea (y no cuadrará).
+    expect(aplicarCorrecciones(sinTipo, { tipoRetencion: 7, total: 1140 }).retencion?.tipo).toMatchObject({ valor: 7, fuente: 'manual' });
+    expect(tipoRetencionLeido(leida())).toBe(0);
+    const raro = structuredClone(sinTipo);
+    raro.retencion!.importe.valor = 46.7;
+    expect(tipoRetencionLeido(raro)).toBe(5);
   });
 
   it('el QR se coteja otra vez: un número corregido que lo contradice es un error', () => {
