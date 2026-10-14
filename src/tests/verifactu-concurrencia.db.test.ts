@@ -9,12 +9,14 @@
  *
  * Necesita MySQL.
  */
-import { describe, it, expect, beforeAll } from '@jest/globals';
+import { describe, it, expect, beforeAll, jest } from '@jest/globals';
 import { randomBytes } from 'crypto';
 import { prisma } from '../config/database';
 import { incomeInvoicesService, type CrearFacturaIngresoDTO } from '../services/income-invoices.service';
 import { listarSeries } from '../services/series.service';
+import * as cadenaMod from '../services/verifactu/cadena';
 import { comprobarCadena } from '../services/verifactu/cadena';
+import { instanteDeHuso } from '../services/verifactu/formato';
 import { hoyEspana } from '../utils/fechas';
 
 const SUFIJO = `${Date.now()}${randomBytes(3).toString('hex')}`;
@@ -55,6 +57,7 @@ let C = '';
 let D = '';
 let F = '';
 let G = '';
+let H = '';
 beforeAll(async () => {
   A = await empresa();
   B = await empresa();
@@ -62,6 +65,7 @@ beforeAll(async () => {
   D = await empresa();
   F = await empresa();
   G = await empresa();
+  H = await empresa();
 });
 
 const finalizar = (companyId: string, id: string) => incomeInvoicesService.finalizar(companyId, id, { fechaEmision: HOY });
@@ -149,6 +153,22 @@ describe('emisiones a la vez en la misma empresa', () => {
     expect(comprobarCadena(rs)).toEqual([]);
     const series = await prisma.invoiceSeries.findMany({ where: { companyId: G }, select: { codigo: true, ultimoNumero: true } });
     expect(Object.fromEntries(series.map((x) => [x.codigo, x.ultimoNumero]))).toMatchObject({ A: 9, B: 6, R: 3 });
+  });
+
+  it('la fecha y hora del registro se toma después de conseguir la cadena, no antes de esperarla', async () => {
+    await emitir(H);
+    // La espera a la cadena (otra emision la tiene) se simula con un retraso de 2,5 s al bloquearla.
+    const real = cadenaMod.bloquearCadena;
+    const espia = jest.spyOn(cadenaMod, 'bloquearCadena').mockImplementationOnce(async (...args: Parameters<typeof real>) => {
+      await new Promise((r) => setTimeout(r, 2500));
+      return real(...args);
+    });
+    const antes = Date.now();
+    const f = await emitir(H);
+    espia.mockRestore();
+    const r = (await cadena(H)).find((x) => x.incomeInvoiceId === f.id)!;
+    // FechaHoraHusoGenRegistro va en segundos: el instante es el de despues de la espera.
+    expect(instanteDeHuso(r.fechaHoraHuso).getTime()).toBeGreaterThanOrEqual(antes + 2500 - 1000);
   });
 
   (UNA_CONEXION ? it.skip : it)('20 emisiones a la vez en dos series: registros 1..20 sin huecos y la cadena bien', async () => {

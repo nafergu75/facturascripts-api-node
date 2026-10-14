@@ -21,6 +21,7 @@ import type { RegistroContenido } from '../services/verifactu/tipos';
 import { fechaAeat, instanteDeHuso } from '../services/verifactu/formato';
 import { hoyEspana } from '../utils/fechas';
 import { datosPdfFactura } from '../services/facturaPdf.service';
+import { planRegistro } from '../services/verifactu/registro.service';
 
 const get = (axios as unknown as { get: jest.Mock }).get;
 const CABECERA = 'KEY,FREQ,CURRENCY,CURRENCY_DENOM,EXR_TYPE,EXR_SUFFIX,TIME_PERIOD,OBS_VALUE,OBS_STATUS';
@@ -286,6 +287,23 @@ describe('lo que no genera registro', () => {
     // Al emitir el borrador que salio de la proforma, si.
     const emitida = await incomeInvoicesService.finalizar(E, desdeProforma.id, { fechaEmision: HOY });
     expect((await unico(emitida.id)).numeroEnCadena).toBe(antes + 1);
+  });
+});
+
+describe('activación programada que está al caer', () => {
+  it('planRegistro deja creada la cadena si la activación cae en los dos minutos siguientes; si falta más, no', async () => {
+    const pronto = `vfreg-pronto-${SUFIJO}`;
+    const tarde = `vfreg-tarde-${SUFIJO}`;
+    for (const [id, ms] of [[pronto, 60_000], [tarde, 10 * 60_000]] as const) {
+      await prisma.company.create({ data: { id, name: `Empresa ${id}`, fsBaseUrl: 'http://localhost:8080', fsApiKeyEnc: 'k' } });
+      await prisma.legalConfig.create({ data: { companyId: id, tipoSociedad: 'SL', denominacion: 'Activación SL', nif: cifSl() } });
+      await prisma.verifactuConfig.create({ data: { companyId: id, estado: 'ACTIVO', entorno: 'PRUEBAS', activaDesde: new Date(Date.now() + ms) } });
+    }
+    // La emision que coincide con la activacion encuentra su cadena (sin 409 VERIFACTU_CONFIG_CAMBIADA).
+    expect(await planRegistro(pronto)).toEqual({ entorno: 'PRUEBAS' });
+    expect(await prisma.verifactuCadena.count({ where: { companyId: pronto, entorno: 'PRUEBAS' } })).toBe(1);
+    expect(await planRegistro(tarde)).toBeNull();
+    expect(await prisma.verifactuCadena.count({ where: { companyId: tarde } })).toBe(0);
   });
 });
 

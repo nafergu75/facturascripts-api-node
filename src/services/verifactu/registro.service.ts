@@ -78,10 +78,22 @@ export function entornoDeRegistro(d: DatosEntornoRegistro, ahora: Date): Entorno
 }
 
 /**
+ * Margen con el que planRegistro prepara una activacion programada que esta al
+ * caer: entre el plan y el registro pasan la comprobacion, la espera a la serie
+ * y a la cadena (maxWait de 10 s) y la propia transaccion.
+ */
+export const MARGEN_ACTIVACION_MS = 2 * 60_000;
+
+/**
  * Antes de la transaccion de emision (con el cliente global): si la emision de
  * la app llevara registro, en que entorno, y deja creada la fila de la cadena.
  * null: no hay registro. Dentro de la transaccion se vuelve a decidir con la
  * factura (generarRegistroAlta), que es lo que manda.
+ *
+ * Si la activacion programada (activaDesde) cae dentro de MARGEN_ACTIVACION_MS,
+ * deja creada tambien la fila de ese entorno y responde como si ya estuviera
+ * activa: asi la emision que coincide con la activacion (la primera factura del
+ * 1-1-2027) encuentra su cadena y no da 409 VERIFACTU_CONFIG_CAMBIADA.
  */
 export async function planRegistro(companyId: string, ahora: Date = new Date()): Promise<{ entorno: EntornoVerifactu } | null> {
   const legal = await prisma.legalConfig.findUnique({ where: { companyId }, select: { pais: true, monedaCuenta: true } });
@@ -90,13 +102,20 @@ export async function planRegistro(companyId: string, ahora: Date = new Date()):
     where: { companyId },
     select: { estado: true, entorno: true, activaDesde: true, motivoExclusion: true },
   });
-  const entorno = entornoDeRegistro(
-    { espanola: perfilDesdeConfig(legal).espanola, sii: ajustes?.sii === true, config, origen: 'pantalla', tipoOperacion: null, estadoDocumento: 'FINAL' },
-    ahora,
-  );
-  if (!entorno) return null;
-  await cadena.asegurarCadena(prisma, companyId, entorno);
-  return { entorno };
+  const datos: DatosEntornoRegistro = {
+    espanola: perfilDesdeConfig(legal).espanola,
+    sii: ajustes?.sii === true,
+    config,
+    origen: 'pantalla',
+    tipoOperacion: null,
+    estadoDocumento: 'FINAL',
+  };
+  const ahoraMismo = entornoDeRegistro(datos, ahora);
+  const enSeguida = entornoDeRegistro(datos, new Date(ahora.getTime() + MARGEN_ACTIVACION_MS));
+  if (ahoraMismo) await cadena.asegurarCadena(prisma, companyId, ahoraMismo);
+  if (enSeguida && enSeguida !== ahoraMismo) await cadena.asegurarCadena(prisma, companyId, enSeguida);
+  const entorno = ahoraMismo ?? enSeguida;
+  return entorno ? { entorno } : null;
 }
 
 const recortar = (t: string, n: number) => Array.from(t).slice(0, n).join('');
@@ -164,7 +183,11 @@ export interface OpcionesRegistroAlta {
   facturaId: string;
   /** La instantanea de la emision (la misma que se guarda en la factura). */
   instantanea: Instantanea | null;
-  /** Instante del registro (FechaHoraHusoGenRegistro). Reloj real; los tests lo pueden fijar. */
+  /**
+   * Reloj fijo para los tests. Sin el, la decision de si hay registro se toma
+   * al empezar y el instante del registro (FechaHoraHusoGenRegistro y el «hoy»
+   * de validarAlta), despues de conseguir la cadena.
+   */
   ahora?: Date;
   usuarioId?: string | null;
 }
@@ -178,7 +201,8 @@ export interface OpcionesRegistroAlta {
  * ni numero gastado, ni registro, ni cabeza de la cadena movida.
  */
 export async function generarRegistroAlta(tx: TransaccionBD, o: OpcionesRegistroAlta) {
-  const ahora = o.ahora ?? new Date();
+  // Si hay registro y en que entorno se decide antes de bloquear (la fila de la cadena es por entorno).
+  const decision = o.ahora ?? new Date();
   const { companyId, facturaId } = o;
   // Sin VERI*FACTU en pruebas ni activo (lo normal hasta activarlo), una sola consulta.
   const config = await tx.verifactuConfig.findUnique({ where: { companyId } });
@@ -205,7 +229,7 @@ export async function generarRegistroAlta(tx: TransaccionBD, o: OpcionesRegistro
       tipoOperacion,
       estadoDocumento: f.estadoDocumento,
     },
-    ahora,
+    decision,
   );
   if (!entorno || !config) return null;
   if (!f.numeroCompleto) throw internalError('La factura emitida no tiene número.', { codigo: 'VERIFACTU_SIN_NUMERO' });
@@ -230,6 +254,9 @@ export async function generarRegistroAlta(tx: TransaccionBD, o: OpcionesRegistro
       code: 'VERIFACTU_CONFIG_CAMBIADA',
     });
   }
+  // Instante del registro: con la cadena ya bloqueada (spec 3.2, paso 6). La espera a
+  // la serie y a la cadena puede ser de segundos y cruzar la medianoche.
+  const ahora = o.ahora ?? new Date();
 
   const alta = construirAlta({
     facturaId: f.id,
