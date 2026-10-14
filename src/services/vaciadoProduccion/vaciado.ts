@@ -552,7 +552,7 @@ export async function comprobar(ctx: Contexto, manifiesto?: Manifiesto | null): 
   const series = tablas.some((t) => t.nombre === 'InvoiceSeries') ? await contar(db, 'InvoiceSeries') : 0;
   if (!series) {
     lineas.push(
-      'Series de facturación: no queda ninguna. Cada empresa nueva crea las suyas (A, R y P) al primer uso, empezando',
+      'Series de facturación: no queda ninguna. Cada empresa nueva crea las suyas (A, C, R y P) al primer uso, empezando',
       'en 0, así que su primera factura será la A-1, la primera rectificativa la R-1 y la primera proforma la P-1.',
     );
   }
