@@ -11,14 +11,16 @@
  * Que asientos salen: los aprobados (POSTED) y los borradores (DRAFT y
  * PENDING_REVIEW), estos marcados. Los anulados (REVERSED) y los retirados al
  * traer la contabilidad de la gestoria (SUSTITUIDO) no salen, igual que en el
- * mayor y el diario. Salen todos los tipos de asiento, tambien la apertura, la
- * regularizacion y el cierre: es la lista de cada cargo y abono.
+ * mayor y el diario. La regularizacion y el cierre del ejercicio (tambien los
+ * del diario de la gestoria) no salen salvo que se pidan (incluirCierre), como
+ * en el diario: dejan las cuentas a cero el 31-12 y, con ellos, la diferencia
+ * de una cuenta o de un cliente ya no seria su saldo.
  */
 import { Prisma } from '@prisma/client';
 import { prisma } from '../config/database';
 import { badRequest } from '../utils/http-errors';
 import { validarEjercicio } from '../utils/anios';
-import { tipoAsiento } from './contabilidadDatos.service';
+import { tipoAsiento, type TipoAsiento } from './contabilidadDatos.service';
 import { fechaES, num, textoPeriodo, type FilaInforme, type TablaInforme } from './informesContables.documentos';
 import { datosEmpresa, terceroParaMayor, type TerceroDelMayor } from './informesContables.service';
 
@@ -56,6 +58,8 @@ export interface FiltroApuntes {
   /** Importe del apunte (Debe o Haber, sin signo). */
   importeMin?: number;
   importeMax?: number;
+  /** Con la regularizacion y el cierre del ejercicio (por defecto no salen, como en el diario). */
+  incluirCierre: boolean;
 }
 
 const MESES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
@@ -137,7 +141,10 @@ function tipoFicha(v: unknown): 'cliente' | 'proveedor' {
   throw badRequest('Indica si es un cliente o un proveedor (tipoTercero=cliente o proveedor).', { campo: 'tipoTercero' });
 }
 
-/** Filtro de la consulta (?ejercicio=&trimestre=&mes=&desde=&hasta=&cuenta=&tercero=&tipoTercero=&texto=&estado=&importeMin=&importeMax=). */
+/** 1, true o si (como el incluirCierre del diario). */
+const si = (v: unknown) => ['1', 'true', 'si', 'sí'].includes(texto(v).toLowerCase());
+
+/** Filtro de la consulta (?ejercicio=&trimestre=&mes=&desde=&hasta=&cuenta=&tercero=&tipoTercero=&texto=&estado=&importeMin=&importeMax=&incluirCierre=1). */
 export async function filtroApuntesDeConsulta(companyId: string, q: Record<string, unknown>): Promise<FiltroApuntes> {
   const periodo = periodoApuntes(q);
   const cuenta = texto(q.cuenta).replace(/\D/g, '') || undefined;
@@ -151,7 +158,7 @@ export async function filtroApuntesDeConsulta(companyId: string, q: Record<strin
   if (importeMin !== undefined && importeMax !== undefined && importeMin > importeMax) {
     throw badRequest('El importe mínimo es mayor que el máximo.', { campo: 'importeMin' });
   }
-  return { periodo, cuenta, tercero, texto: t, estado: estadoDeConsulta(q.estado), importeMin, importeMax };
+  return { periodo, cuenta, tercero, texto: t, estado: estadoDeConsulta(q.estado), importeMin, importeMax, incluirCierre: si(q.incluirCierre) };
 }
 
 // ---------------------------------------------------------------------------
@@ -192,7 +199,29 @@ function condicionTercero(companyId: string, t: TerceroDelMayor): Prisma.Sql {
   return Prisma.sql`(l.accountCode IN (${Prisma.join(t.subcuentas)}) OR ${general})`;
 }
 
-function condiciones(companyId: string, f: FiltroApuntes): Prisma.Sql {
+/**
+ * Tipo del asiento en SQL, igual que tipoAsiento(): por su origen o, en los
+ * creados antes de guardarlo (el cierre iba como AJUSTE_MANUAL), por el
+ * principio de su concepto. En TiDB las comparaciones distinguen mayusculas
+ * (utf8mb4_bin): de ahi UPPER y LOWER.
+ */
+const ORIGEN = Prisma.sql`UPPER(COALESCE(e.origen, ''))`;
+const CONCEPTO = Prisma.sql`LOWER(TRIM(e.descripcion))`;
+const TIPO_SQL = Prisma.sql`(CASE
+  WHEN ${ORIGEN} LIKE 'HISTORICO%' THEN (CASE ${ORIGEN}
+    WHEN 'HISTORICO_APERTURA' THEN 'APERTURA' WHEN 'HISTORICO_REGULARIZACION' THEN 'REGULARIZACION' WHEN 'HISTORICO_CIERRE' THEN 'CIERRE' ELSE 'NORMAL' END)
+  WHEN ${ORIGEN} IN ('APERTURA', 'APERTURA_AJUSTE') OR ${CONCEPTO} LIKE 'apertura ejercicio%' THEN 'APERTURA'
+  WHEN ${ORIGEN} = 'REGULARIZACION' OR ${CONCEPTO} LIKE 'regularizacion ejercicio%' OR ${CONCEPTO} LIKE 'regularización ejercicio%' THEN 'REGULARIZACION'
+  WHEN ${ORIGEN} IN ('CIERRE', 'CIERRE_AUTOMATICO') OR ${CONCEPTO} LIKE 'cierre ejercicio%' OR ${CONCEPTO} LIKE 'cierre contable%' THEN 'CIERRE'
+  ELSE 'NORMAL' END)`;
+/** Apunte de la regularizacion o del cierre del ejercicio. */
+const ES_CIERRE = Prisma.sql`(${TIPO_SQL} IN ('REGULARIZACION', 'CIERRE'))`;
+
+/**
+ * Condiciones del filtro. Con `todosLosTipos` no quita la regularizacion ni el
+ * cierre aunque no se pidan (los totales los cuentan aparte).
+ */
+function condiciones(companyId: string, f: FiltroApuntes, opts: { todosLosTipos?: boolean } = {}): Prisma.Sql {
   const partes: Prisma.Sql[] = [
     Prisma.sql`e.companyId = ${companyId}`,
     Prisma.sql`l.companyId = ${companyId}`,
@@ -200,6 +229,7 @@ function condiciones(companyId: string, f: FiltroApuntes): Prisma.Sql {
     Prisma.sql`e.fecha < ${diaSiguiente(f.periodo.hasta)}`,
     Prisma.sql`e.estado IN (${Prisma.join(ESTADOS[f.estado])})`,
   ];
+  if (!f.incluirCierre && !opts.todosLosTipos) partes.push(Prisma.sql`NOT ${ES_CIERRE}`);
   if (f.cuenta) partes.push(Prisma.sql`l.accountCode LIKE ${`${f.cuenta}%`}`);
   if (f.tercero) partes.push(condicionTercero(companyId, f.tercero));
   if (f.texto) {
@@ -213,19 +243,23 @@ function condiciones(companyId: string, f: FiltroApuntes): Prisma.Sql {
 }
 
 /**
- * Orden del diario: fecha; en el mismo dia, los cobros y pagos detras del resto
- * (ordenarAsientos); despues el numero de asiento; y dentro del asiento, los
- * cargos antes que los abonos, en el orden en que se grabaron.
+ * Orden del diario: fecha; en el mismo dia, la apertura primero, despues los
+ * asientos normales, los cobros y pagos, la regularizacion y por ultimo el
+ * cierre (el turno de ordenarAsientos); despues el numero de asiento; y dentro
+ * del asiento, como el diario, de mas Debe a menos y en el orden en que se
+ * grabaron.
  *
  * Los textos se ordenan por sus primeros caracteres (CAST AS CHAR(n)): con la
  * columna entera (VARCHAR(191) utf8mb4) cada clave de ordenacion ocupa varios
  * KB y, con 300.000 apuntes, una pagina del final tardaba 16-30 s en MariaDB;
- * asi, unos 2 s. Los ids (cuid) caben enteros.
+ * asi, unos 2 s. Los ids (cuid) caben enteros. El numero se ordena como texto
+ * (el diario lo compara por sus cifras: FAC-9 antes que FAC-10).
  */
 const ORDEN = Prisma.sql`ORDER BY e.fecha ASC,
-  CASE WHEN e.origen IN ('TESORERIA', 'NOMINA_PAGO') THEN 1 ELSE 0 END ASC,
+  CASE ${TIPO_SQL} WHEN 'APERTURA' THEN 0 WHEN 'REGULARIZACION' THEN 3 WHEN 'CIERRE' THEN 4
+    ELSE (CASE WHEN e.origen IN ('TESORERIA', 'NOMINA_PAGO') THEN 2 ELSE 1 END) END ASC,
   CAST(e.numeroAsiento AS CHAR(40)) ASC, CAST(e.id AS CHAR(32)) ASC,
-  CASE WHEN l.debe <> 0 THEN 0 ELSE 1 END ASC, l.createdAt ASC, CAST(l.id AS CHAR(32)) ASC`;
+  l.debe DESC, l.createdAt ASC, CAST(l.id AS CHAR(32)) ASC`;
 
 interface FilaSql {
   id: string;
@@ -271,18 +305,36 @@ export interface TotalesApuntes {
   diferencia: number;
   /** De ellos, apuntes de asientos en borrador. */
   enBorrador: number;
+  /**
+   * Apuntes de la regularizacion y el cierre que cumplen el resto del filtro:
+   * los que salen si se piden y, si no, los que se han quitado (la pantalla
+   * avisa de que existen).
+   */
+  deCierre: number;
 }
 
 async function totalesSql(companyId: string, f: FiltroApuntes): Promise<TotalesApuntes> {
-  const [r] = await prisma.$queryRaw<Array<{ n: unknown; debe: unknown; haber: unknown; borradores: unknown }>>`
-    SELECT COUNT(*) AS n, COALESCE(SUM(l.debe), 0) AS debe, COALESCE(SUM(l.haber), 0) AS haber,
-           COALESCE(SUM(CASE WHEN e.estado = 'POSTED' THEN 0 ELSE 1 END), 0) AS borradores
+  // Una sola pasada: los que salen y, aparte, los de la regularizacion y el cierre.
+  const sale = f.incluirCierre ? Prisma.sql`1 = 1` : Prisma.sql`NOT ${ES_CIERRE}`;
+  const [r] = await prisma.$queryRaw<Array<{ n: unknown; debe: unknown; haber: unknown; borradores: unknown; deCierre: unknown }>>`
+    SELECT COALESCE(SUM(CASE WHEN ${sale} THEN 1 ELSE 0 END), 0) AS n,
+           COALESCE(SUM(CASE WHEN ${sale} THEN l.debe ELSE 0 END), 0) AS debe,
+           COALESCE(SUM(CASE WHEN ${sale} THEN l.haber ELSE 0 END), 0) AS haber,
+           COALESCE(SUM(CASE WHEN ${sale} AND e.estado <> 'POSTED' THEN 1 ELSE 0 END), 0) AS borradores,
+           COALESCE(SUM(CASE WHEN ${ES_CIERRE} THEN 1 ELSE 0 END), 0) AS deCierre
     FROM JournalEntryLine l
     JOIN JournalEntry e ON e.id = l.entryId
-    WHERE ${condiciones(companyId, f)}`;
+    WHERE ${condiciones(companyId, f, { todosLosTipos: true })}`;
   const debe = round2(aNumero(r?.debe));
   const haber = round2(aNumero(r?.haber));
-  return { apuntes: aNumero(r?.n), debe, haber, diferencia: round2(debe - haber), enBorrador: aNumero(r?.borradores) };
+  return {
+    apuntes: aNumero(r?.n),
+    debe,
+    haber,
+    diferencia: round2(debe - haber),
+    enBorrador: aNumero(r?.borradores),
+    deCierre: aNumero(r?.deCierre),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -329,6 +381,8 @@ export interface Apunte {
   asiento: string;
   /** APROBADO (POSTED) o BORRADOR (DRAFT o PENDING_REVIEW). */
   estado: 'APROBADO' | 'BORRADOR';
+  /** NORMAL, APERTURA, REGULARIZACION o CIERRE (estos dos solo salen con incluirCierre, y se marcan). */
+  tipoAsiento: TipoAsiento;
   /** Enlace al asiento en el Motor contable. */
   enlaceAsiento: string;
   cuenta: string;
@@ -453,14 +507,25 @@ async function completar(companyId: string, filas: FilaSql[]): Promise<Apunte[]>
       const modelo = (f.invoiceId ?? '').startsWith('115') ? '115' : '111';
       return { tipo: 'RETENCIONES', texto: `Modelo ${modelo}`, enlace: `/dashboard/fiscal/modelo-${modelo}` };
     }
+    // Pago del 111 desde Nominas (invoiceId «2026-1T»): se paga y se anula alli.
+    if (f.invoiceType === 'MODELO_111' || f.invoiceType === 'MODELO_111_ANULADO') {
+      const [ejercicio, periodo] = (f.invoiceId ?? '').split('-');
+      const cual = ejercicio && periodo ? ` ${periodo}/${ejercicio}` : '';
+      const anulado = f.invoiceType === 'MODELO_111_ANULADO' ? ' (anulado)' : '';
+      return { tipo: 'RETENCIONES', texto: `Pago del modelo 111${cual}${anulado}`, enlace: '/dashboard/nominas' };
+    }
     const origen = (f.origen ?? '').toUpperCase();
+    const tipo = tipoAsiento(f.origen, f.descripcion);
+    // Diario de un año llevado por la gestoria: su origen es la carga, no el cierre de la app.
+    if (origen.startsWith('HISTORICO')) {
+      const nombre = { APERTURA: 'Apertura', REGULARIZACION: 'Regularización', CIERRE: 'Cierre', NORMAL: '' }[tipo];
+      return { tipo: tipo === 'NORMAL' ? 'GESTORIA' : tipo, texto: nombre ? `${nombre} (diario de la gestoría)` : 'Diario de la gestoría', enlace: null };
+    }
     if (origen === 'AMORTIZACION') return { tipo: 'AMORTIZACION', texto: 'Amortización', enlace: '/dashboard/contabilidad/inmovilizado' };
     if (origen === 'IMPORTACION') return { tipo: 'IMPORTACION', texto: 'Importación', enlace: '/dashboard/contabilidad/puesta-en-marcha' };
-    const tipo = tipoAsiento(f.origen, f.descripcion);
     if (tipo === 'APERTURA') return { tipo: 'APERTURA', texto: 'Apertura del ejercicio', enlace: null };
     if (tipo === 'REGULARIZACION') return { tipo: 'REGULARIZACION', texto: 'Regularización', enlace: '/dashboard/contabilidad/cierre-ejercicio' };
     if (tipo === 'CIERRE') return { tipo: 'CIERRE', texto: 'Cierre del ejercicio', enlace: '/dashboard/contabilidad/cierre-ejercicio' };
-    if (origen.startsWith('HISTORICO')) return { tipo: 'GESTORIA', texto: 'Diario de la gestoría', enlace: null };
     if (origen === 'AJUSTE_MANUAL' || origen === 'MANUAL') return { tipo: 'MANUAL', texto: 'Asiento manual', enlace: null };
     return null;
   };
@@ -471,6 +536,7 @@ async function completar(companyId: string, filas: FilaSql[]): Promise<Apunte[]>
     asientoId: f.asientoId,
     asiento: f.numeroAsiento,
     estado: f.estado === 'POSTED' ? 'APROBADO' : 'BORRADOR',
+    tipoAsiento: tipoAsiento(f.origen, f.descripcion),
     enlaceAsiento: `/dashboard/motor-contable/${f.asientoId}`,
     cuenta: f.cuenta,
     nombreCuenta: nombreCuenta(f),
@@ -524,6 +590,7 @@ export async function listarApuntes(companyId: string, f: FiltroApuntes, opcione
       estado: f.estado,
       importeMin: f.importeMin ?? null,
       importeMax: f.importeMax ?? null,
+      incluirCierre: f.incluirCierre,
     },
     pagina,
     porPagina,
@@ -540,10 +607,12 @@ export async function listarApuntes(companyId: string, f: FiltroApuntes, opcione
 
 /**
  * Apuntes que caben en una descarga; con mas, se pide acotar el filtro. El PDF
- * tiene un tope menor: el exportador comun tarda unos 2 ms por fila (20.000
- * apuntes, unos 36 s y 450 paginas); el Excel, 20.000 en menos de medio segundo.
+ * tiene un tope menor: el exportador comun tarda unos 3,5 ms por fila fuera de
+ * Jest (1.000 filas en 3,8 s y 5.000 en 17,6 s, medido el 14-10-2026), y en
+ * Vercel, con una CPU mas lenta, mas. Con 2.000, unos 7 s en local. El Excel,
+ * 20.000 en menos de medio segundo.
  */
-export const MAX_DESCARGA = { pdf: 5000, xlsx: 20000 } as const;
+export const MAX_DESCARGA = { pdf: 2000, xlsx: 20000 } as const;
 export type FormatoDescarga = keyof typeof MAX_DESCARGA;
 
 /** 12345 -> «12.345» (Intl en es-ES no agrupa los de 4 cifras en todas las versiones de Node). */
@@ -573,7 +642,23 @@ export function textoFiltro(f: FiltroApuntes, simbolo = '€'): string[] {
   else if (f.importeMin !== undefined) partes.push(`importe desde ${num(f.importeMin)}\u00a0${simbolo}`);
   else if (f.importeMax !== undefined) partes.push(`importe hasta ${num(f.importeMax)}\u00a0${simbolo}`);
   if (NOMBRE_ESTADO[f.estado]) partes.push(NOMBRE_ESTADO[f.estado]);
+  if (f.incluirCierre) partes.push('con la regularización y el cierre');
   return partes;
+}
+
+/** Que asientos salen, segun el estado pedido (para las notas del informe). */
+const QUE_ASIENTOS: Record<EstadoApuntes, string> = {
+  todos: 'Apuntes de los asientos aprobados y de los que están en borrador',
+  aprobados: 'Apuntes de los asientos aprobados',
+  borradores: 'Apuntes de los asientos que están en borrador',
+};
+
+/** «Regularización: …» o «Cierre: …» delante del concepto, como en el diario (si el concepto no lo dice ya). */
+const NOMBRE_TIPO: Partial<Record<TipoAsiento, string>> = { REGULARIZACION: 'Regularización', CIERRE: 'Cierre' };
+function conceptoConTipo(a: Apunte): string {
+  const nombre = NOMBRE_TIPO[a.tipoAsiento];
+  if (!nombre || a.concepto.toLowerCase().startsWith(nombre.toLowerCase().slice(0, 6))) return a.concepto;
+  return `${nombre}: ${a.concepto}`;
 }
 
 async function simboloCuenta(companyId: string): Promise<string> {
@@ -590,7 +675,7 @@ export async function informeApuntes(companyId: string, f: FiltroApuntes, format
   const simbolo = await simboloCuenta(companyId);
 
   const filas: FilaInforme[] = apuntes.map((a) => ({
-    celdas: [a.fecha, a.estado === 'BORRADOR' ? `${a.asiento} (borrador)` : a.asiento, a.cuenta, a.nombreCuenta, a.concepto, a.debe, a.haber],
+    celdas: [a.fecha, a.estado === 'BORRADOR' ? `${a.asiento} (borrador)` : a.asiento, a.cuenta, a.nombreCuenta, conceptoConTipo(a), a.debe, a.haber],
   }));
   filas.push({
     celdas: [null, null, null, null, `Total (${miles(apuntes.length)} ${apuntes.length === 1 ? 'apunte' : 'apuntes'})`, totales.debe, totales.haber],
@@ -606,11 +691,14 @@ export async function informeApuntes(companyId: string, f: FiltroApuntes, format
   const d = totales.diferencia;
   const notas = [
     `Diferencia (Debe − Haber): ${num(Math.abs(d))}\u00a0${simbolo}${d > 0 ? ' de saldo deudor' : d < 0 ? ' de saldo acreedor' : ''}.`,
-    'Apuntes de los asientos aprobados y de los que están en borrador, por fecha de asiento. Los asientos anulados no salen.',
+    `${QUE_ASIENTOS[f.estado]}, por fecha de asiento. Los asientos anulados no salen.`,
+    f.incluirCierre
+      ? `Incluye la regularización y el cierre del ejercicio${totales.deCierre ? ` (${miles(totales.deCierre)} ${totales.deCierre === 1 ? 'apunte' : 'apuntes'})` : ''}, con su nombre delante del concepto: dejan las cuentas a cero, así que la diferencia ya no es el saldo.`
+      : `Sin los asientos de regularización ni de cierre del ejercicio${totales.deCierre ? ` (${miles(totales.deCierre)} ${totales.deCierre === 1 ? 'apunte' : 'apuntes'} con este filtro)` : ''}, como en el libro diario.`,
     ...(totales.enBorrador
       ? [`${totales.enBorrador === 1 ? 'Un apunte es' : `${totales.enBorrador} apuntes son`} de asientos en borrador, marcados con «(borrador)»: todavía no cuentan en el mayor ni en los informes hasta aprobarlos en el Motor contable.`]
       : []),
-    ...(f.tercero ? [`De ${f.tercero.nombre} salen los apuntes de su cuenta${f.tercero.subcuentas.length ? ` (${f.tercero.subcuentas.join(' y ')})` : ''}: sus facturas y lo cobrado o pagado.`] : []),
+    ...(f.tercero ? [`De ${f.tercero.nombre} salen los apuntes de su cuenta${f.tercero.subcuentas.length ? ` (${f.tercero.subcuentas.join(' y ')})` : ''}: sus facturas y lo cobrado o pagado. Las líneas de ventas, compras o IVA de sus facturas no salen.`] : []),
     ...(!apuntes.length ? ['No hay apuntes con este filtro.'] : []),
   ];
 
