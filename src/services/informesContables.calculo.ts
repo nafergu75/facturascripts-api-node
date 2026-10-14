@@ -74,15 +74,19 @@ export function aAsientoInforme(a: AsientoPrisma): AsientoInforme {
 
 /** Cobros y pagos: en el mismo dia van detras del resto de asientos. */
 const ORIGENES_COBRO_PAGO = new Set(['TESORERIA', 'NOMINA_PAGO']);
-const turnoEnElDia = (a: { origen?: string | null }) => (ORIGENES_COBRO_PAGO.has(a.origen ?? '') ? 1 : 0);
+/** Turno en el dia: la apertura, los demas asientos, los cobros y pagos, la regularizacion y el cierre. */
+const turnoEnElDia = (a: { origen?: string | null; tipo?: TipoAsiento }) =>
+  a.tipo === 'APERTURA' ? 0 : a.tipo === 'REGULARIZACION' ? 3 : a.tipo === 'CIERRE' ? 4 : ORIGENES_COBRO_PAGO.has(a.origen ?? '') ? 2 : 1;
 
 /**
  * Orden del diario y del mayor: fecha; en el mismo dia, los cobros y pagos
  * detras de los demas asientos, y despues el numero de asiento. Asi, una venta
  * cobrada el mismo dia sale antes que su cobro (por el numero, «COBRO-00012»
  * iria antes que «FAC-ING-A-10» y el saldo acumulado pasaria por un negativo).
+ * La apertura va la primera de su dia, y la regularizacion antes que el cierre
+ * (por el numero, «CIERRE-…» iria antes que «REGUL-…»).
  */
-export function ordenarAsientos<T extends { fecha: string; numero: string; origen?: string | null }>(asientos: T[]): T[] {
+export function ordenarAsientos<T extends { fecha: string; numero: string; origen?: string | null; tipo?: TipoAsiento }>(asientos: T[]): T[] {
   return [...asientos].sort((a, b) =>
     a.fecha !== b.fecha
       ? a.fecha.localeCompare(b.fecha)
