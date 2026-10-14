@@ -1,2 +1,5 @@
 # Los scripts de bash deben tener LF: con CRLF, bash falla al ejecutarlos en Windows.
 *.sh text eol=lf
+# Esquemas de la AEAT (VERI*FACTU): se guardan byte a byte, con sus CRLF, para
+# que su SHA-256 siga siendo el del original (ver src/services/verifactu/xsd/README.md).
+src/services/verifactu/xsd/** -text
