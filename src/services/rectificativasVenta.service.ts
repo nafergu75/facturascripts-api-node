@@ -537,8 +537,17 @@ export interface TotalesRectificativa {
 }
 
 /** Lineas de una factura guardada, como las lee diferenciaSustitucion (moneda de cuenta). */
-export const lineasImportesDe = (f: { lineas: Array<{ tipoIva: number; accountCode: string | null; baseLine: number; ivaImporte: number; retencionImporte: number }> }): LineaImportes[] =>
-  f.lineas.map((l) => ({ tipoIva: l.tipoIva, cuenta: l.accountCode ?? null, baseLine: Number(l.baseLine), ivaImporte: Number(l.ivaImporte), retencionImporte: Number(l.retencionImporte) }));
+export const lineasImportesDe = (f: {
+  lineas: Array<{ tipoIva: number; accountCode: string | null; baseLine: number; ivaImporte: number; retencionImporte: number; ieepnrImporte?: number | null }>;
+}): LineaImportes[] =>
+  f.lineas.map((l) => ({
+    tipoIva: l.tipoIva,
+    cuenta: l.accountCode ?? null,
+    baseLine: Number(l.baseLine),
+    ivaImporte: Number(l.ivaImporte),
+    retencionImporte: Number(l.retencionImporte),
+    ieepnrImporte: Number(l.ieepnrImporte ?? 0),
+  }));
 
 const MESES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
 /** Periodo del 303 de una fecha: el mes si la empresa declara cada mes; si no, el trimestre. */

@@ -14,7 +14,9 @@ import { errorFalloBD, type QueHacerFalloBD } from '../utils/errores-bd';
 import { registrarAuditoria } from '../services/auditoria.service';
 import { accountingEngineService, desgloseIvaPorTipo } from '../services/accounting-engine.service';
 import { prisma, type ClienteBD, type TransaccionBD } from '../config/database';
-import { basePorCuenta, nombresDeCuentas } from '../services/cuentasLinea.service';
+import { nombresDeCuentas } from '../services/cuentasLinea.service';
+import { repartoIngresos } from '../domain/ieepnr';
+import { leerAjustesFacturacion } from '../services/ajustesFacturacion.service';
 import { aCentimos, cuadraEnCentimos } from '../utils/money';
 import { asegurarPlanContableEmpresa } from '../services/chart-of-accounts.service';
 import { comprobarFechaAbierta, exigirFechaContabilizable, periodoNoAbierto } from '../services/periodos.service';
@@ -136,16 +138,26 @@ async function problemaCuentaTercero(
 
 /**
  * Base de la venta por cuenta de ingresos (la de cada linea; sin ella, la 700),
- * con el nombre del plan. undefined si ninguna linea lleva cuenta: el asiento
- * de siempre, todo a la 700 «Ventas». Solo lee: va antes de la transaccion.
+ * con el nombre del plan. baseLine ya lleva el IEEPNR de la plantilla A: sin
+ * `cuentaIeepnr` va a la cuenta de su linea, como una venta mas; con ella (la
+ * empresa fuera contribuyente), a esa cuenta, y la linea por el resto
+ * (domain/ieepnr, repartoIngresos). undefined si ninguna linea lleva cuenta ni
+ * hay IEEPNR que separar: el asiento de siempre, todo a la 700 «Ventas». Solo
+ * lee: va antes de la transaccion.
  */
 async function ingresosPorCuenta(
   db: ClienteBD | TransaccionBD,
   companyId: string,
-  lineas: Array<{ accountCode: string | null; baseLine: number }>,
+  lineas: Array<{ accountCode: string | null; baseLine: number; ieepnrImporte?: number | null }>,
+  cuentaIeepnr: string | null,
 ): Promise<Array<{ cuenta: string; nombre: string; base: number }> | undefined> {
-  if (!lineas.some((l) => l.accountCode)) return undefined;
-  const reparto = basePorCuenta(lineas.map((l) => ({ cuenta: l.accountCode, base: Number(l.baseLine) })), '700');
+  const separaIeepnr = !!cuentaIeepnr && lineas.some((l) => aCentimos(Number(l.ieepnrImporte ?? 0)) !== 0);
+  if (!lineas.some((l) => l.accountCode) && !separaIeepnr) return undefined;
+  const reparto = repartoIngresos(
+    lineas.map((l) => ({ cuenta: l.accountCode, baseLine: Number(l.baseLine), ieepnrImporte: l.ieepnrImporte ?? null })),
+    cuentaIeepnr,
+    '700',
+  );
   const nombres = await nombresDeCuentas(db, companyId, reparto.map((r) => r.cuenta));
   return reparto.map((r) => ({ ...r, nombre: nombres.get(r.cuenta) ?? 'Ventas' }));
 }
@@ -162,7 +174,11 @@ interface ContabilidadRectificativa {
 
 async function contabilidadRectificativa(
   companyId: string,
-  factura: Parameters<typeof enlacesDeVentas>[1][number] & { lineas: Array<{ tipoIva: number; accountCode: string | null; baseLine: number; ivaImporte: number; retencionImporte: number }> },
+  factura: Parameters<typeof enlacesDeVentas>[1][number] & {
+    lineas: Array<{ tipoIva: number; accountCode: string | null; baseLine: number; ivaImporte: number; retencionImporte: number; ieepnrImporte?: number | null }>;
+  },
+  // Cuenta del IEEPNR de los ajustes (null: el IEEPNR va a la cuenta de su linea).
+  cuentaIeepnr: string | null = null,
 ): Promise<ContabilidadRectificativa | null> {
   if (!factura.esRectificativa) return null;
   const r = (await enlacesDeVentas(prisma, [factura])).get(factura.id);
@@ -180,7 +196,7 @@ async function contabilidadRectificativa(
   const originalId = r.forma === 'S' ? r.originales.find((o) => o.id)?.id : null;
   if (originalId) {
     const original = await prisma.incomeInvoice.findFirst({ where: { id: originalId, companyId }, include: { lineas: true } });
-    if (original) sustitucion = diferenciaSustitucion(lineasImportesDe(factura), lineasImportesDe(original));
+    if (original) sustitucion = diferenciaSustitucion(lineasImportesDe(factura), lineasImportesDe(original), cuentaIeepnr);
   }
   return { nota, libro, sustitucion };
 }
@@ -263,8 +279,10 @@ export class AccountingEngineController {
       }
       // Ni en un mes bloqueado ni en un ejercicio cerrado (tambien desde el hook AUTO).
       await comprobarFechaAbierta(companyId, factura.fechaEmision, 'contabilizar la factura');
+      // Cuenta del IEEPNR (plantilla A), leida antes de la transaccion: null = la de cada linea.
+      const { ieepnrCuenta } = await leerAjustesFacturacion(companyId);
       // Rectificativa: lo que rectifica y, por sustitucion, solo la diferencia con la original.
-      const rect = await contabilidadRectificativa(companyId, factura);
+      const rect = await contabilidadRectificativa(companyId, factura, ieepnrCuenta);
       const dif = rect?.sustitucion ?? null;
 
       // Transacción atómica: subcuenta del cliente (430N, asignada y en el plan
@@ -275,7 +293,9 @@ export class AccountingEngineController {
       // transaccion es un viaje de red y la transaccion tiene un tiempo maximo.
       // Dentro solo se escribe. Si otro proceso da de alta la misma subcuenta
       // entretanto, salta el indice unico y se repite todo, lecturas incluidas.
-      const ingresoPorCuenta = dif ? await ingresosDeDiferencia(prisma, companyId, dif.porCuenta) : await ingresosPorCuenta(prisma, companyId, factura.lineas);
+      const ingresoPorCuenta = dif
+        ? await ingresosDeDiferencia(prisma, companyId, dif.porCuenta)
+        : await ingresosPorCuenta(prisma, companyId, factura.lineas, ieepnrCuenta);
       const result = await conReintentoSubcuenta(async () => {
         const preparada = await prepararSubcuentaCliente(companyId, factura.customer);
         return prisma.$transaction(async (tx) => {

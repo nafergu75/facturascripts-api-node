@@ -193,6 +193,8 @@ export interface LineaImportes {
   baseLine: number;
   ivaImporte: number;
   retencionImporte: number;
+  /** Plantilla A: IEEPNR de la linea (va dentro de baseLine). */
+  ieepnrImporte?: number | null;
 }
 
 export interface DiferenciaSustitucion {
@@ -213,8 +215,11 @@ const euros = (c: number) => (c === 0 ? 0 : c / 100);
  * ingresos (asiento). Se resta linea a linea al centimo, sin recalcular el IVA
  * de la diferencia: el IVA por lineas no es lineal (dos lineas de 0,07 € al 21 %
  * dan 0,01 + 0,01; una de 0,14 €, 0,03).
+ *
+ * Con `cuentaIeepnr` (la empresa fuera contribuyente del IEEPNR), el IEEPNR de
+ * cada linea va a esa cuenta y la linea a la suya por el resto de su base.
  */
-export function diferenciaSustitucion(corregida: LineaImportes[], original: LineaImportes[]): DiferenciaSustitucion {
+export function diferenciaSustitucion(corregida: LineaImportes[], original: LineaImportes[], cuentaIeepnr: string | null = null): DiferenciaSustitucion {
   const porTipo = new Map<number, { base: number; cuota: number }>();
   const porCuenta = new Map<string, number>();
   let retencion = 0;
@@ -225,7 +230,9 @@ export function diferenciaSustitucion(corregida: LineaImportes[], original: Line
       t.cuota += signo * aCentimos(l.ivaImporte);
       porTipo.set(l.tipoIva, t);
       const cuenta = l.cuenta || CUENTA_GENERICA;
-      porCuenta.set(cuenta, (porCuenta.get(cuenta) ?? 0) + signo * aCentimos(l.baseLine));
+      const ieepnr = cuentaIeepnr ? aCentimos(Number(l.ieepnrImporte ?? 0)) : 0;
+      porCuenta.set(cuenta, (porCuenta.get(cuenta) ?? 0) + signo * (aCentimos(l.baseLine) - ieepnr));
+      if (ieepnr !== 0) porCuenta.set(cuentaIeepnr!, (porCuenta.get(cuentaIeepnr!) ?? 0) + signo * ieepnr);
       retencion += signo * aCentimos(l.retencionImporte);
     }
   };
