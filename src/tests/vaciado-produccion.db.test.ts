@@ -229,7 +229,8 @@ d('vaciado de producción (base local de usar y tirar)', () => {
     u.username = 'usr4AbCd';
     u.password = 'ClaveFalsa99';
     const rechazo = acceso(u.toString(), datos.adminEmail, datos.adminClave);
-    expect(rechazo.salida).toContain('la API ha fallado al consultar la base de datos (respuesta 500)');
+    // 503 desde el arreglo de la conexion unica (fallo de la base); antes, 500.
+    expect(rechazo.salida).toMatch(/la API ha fallado al consultar la base de datos \(respuesta 50[03]\)/);
     expect(rechazo.salida).toContain('ha rechazado el usuario o la contraseña de conexión');
     expect(rechazo.salida).toContain('No es un problema de tu contraseña');
     expect(rechazo.codigo).toBe(1);
