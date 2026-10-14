@@ -1,5 +1,5 @@
 import { Prisma } from '@prisma/client';
-import { prisma } from '../config/database';
+import { prisma, type ClienteBD, type TransaccionBD } from '../config/database';
 import { badRequest, conflict } from '../utils/http-errors';
 import { EstadoPeriodo, PeriodoContable } from '../domain/periodos.model';
 import { FILTRO_ASIENTOS_CIERRE } from '../domain/asientosCierre';
@@ -17,6 +17,14 @@ import {
  * en memoria para no bloquear el resto de la API.
  */
 const memoria = new Map<string, PeriodoContable>();
+
+/**
+ * Cliente con el que se consulta: el compartido o el de la transaccion en
+ * curso. Las comprobaciones que se hacen dentro de una transaccion tienen que
+ * ir con su `tx`: en produccion el pool tiene una sola conexion y la tiene la
+ * transaccion (ver config/guardaTransaccion).
+ */
+type Db = ClienteBD | TransaccionBD;
 const key = (companyId: string, ejercicio: number, mes: number): string => `${companyId}:${ejercicio}:${mes}`;
 
 type PeriodoDb = { id: string; companyId: string; ejercicio: number; mes: number; estado: string; fechaApertura: string | null; fechaCierre: string | null };
@@ -102,12 +110,24 @@ export async function cambiarEstadoPeriodo(
   return p;
 }
 
-/** Estado del periodo correspondiente a una fecha (yyyy-mm-dd). */
-export async function estadoPeriodoEnFecha(companyId: string, fecha: string): Promise<EstadoPeriodo | null> {
+/**
+ * Estado del periodo correspondiente a una fecha (yyyy-mm-dd). Con la BD, lee
+ * solo la fila de ese mes y no crea nada (puede ir dentro de una transaccion,
+ * con su `db`): un mes sin fila esta abierto, que es como lo crearia
+ * listarPeriodos.
+ */
+export async function estadoPeriodoEnFecha(companyId: string, fecha: string, db: Db = prisma): Promise<EstadoPeriodo | null> {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(fecha);
   if (!m) return null;
-  const periodos = await listarPeriodos(companyId, Number(m[1]));
-  return periodos.find((p) => p.mes === Number(m[2]))?.estado ?? null;
+  const ejercicio = Number(m[1]);
+  const mes = Number(m[2]);
+  if (typeof (db as { periodo?: { findUnique?: unknown } }).periodo?.findUnique === 'function') {
+    if (mes < 1 || mes > 12) return null;
+    const p = await db.periodo.findUnique({ where: { companyId_ejercicio_mes: { companyId, ejercicio, mes } }, select: { estado: true } });
+    return (p?.estado as EstadoPeriodo | undefined) ?? 'abierto';
+  }
+  const periodos = await listarPeriodos(companyId, ejercicio);
+  return periodos.find((p) => p.mes === mes)?.estado ?? null;
 }
 
 const ddmmaaaa = (f: string) => `${f.slice(8, 10)}/${f.slice(5, 7)}/${f.slice(0, 4)}`;
@@ -139,9 +159,9 @@ const anioDe = (fecha: string | Date): number | null => {
  * true si la contabilidad de ese año la llevo la gestoria fuera de la app
  * (FiscalYear.llevanza = EXTERNA): en la app es solo de lectura.
  */
-export async function llevanzaExterna(companyId: string, ejercicio: number): Promise<boolean> {
-  if (typeof (prisma as { fiscalYear?: { findFirst?: unknown } }).fiscalYear?.findFirst !== 'function') return false;
-  const fy = await prisma.fiscalYear.findFirst({ where: { companyId, label: String(ejercicio) }, select: { llevanza: true } });
+export async function llevanzaExterna(companyId: string, ejercicio: number, db: Db = prisma): Promise<boolean> {
+  if (typeof (db as { fiscalYear?: { findFirst?: unknown } }).fiscalYear?.findFirst !== 'function') return false;
+  const fy = await db.fiscalYear.findFirst({ where: { companyId, label: String(ejercicio) }, select: { llevanza: true } });
   return fy?.llevanza === 'EXTERNA';
 }
 
@@ -155,9 +175,9 @@ export const textoLlevanzaExterna = (anio: number) =>
  * pasar por aqui. Va tambien en los sitios que crean asientos sin llamar a
  * comprobarFechaAbierta (red de seguridad).
  */
-export async function exigirFechaContabilizable(companyId: string, fecha: string | Date): Promise<void> {
+export async function exigirFechaContabilizable(companyId: string, fecha: string | Date, db: Db = prisma): Promise<void> {
   const anio = anioDe(fecha);
-  if (anio === null || !(await llevanzaExterna(companyId, anio))) return;
+  if (anio === null || !(await llevanzaExterna(companyId, anio, db))) return;
   throw conflict(textoLlevanzaExterna(anio), { motivo: 'llevanza_externa', enlace: ENLACE_ARRANQUE });
 }
 
@@ -180,9 +200,9 @@ export interface PeriodoNoAbierto {
  * null si la fecha cae en un mes abierto de un ejercicio abierto. Si no, por
  * que (mes bloqueado o cerrado, ejercicio cerrado) y que hacer.
  */
-export async function periodoNoAbierto(companyId: string, fecha: string): Promise<PeriodoNoAbierto | null> {
+export async function periodoNoAbierto(companyId: string, fecha: string, db: Db = prisma): Promise<PeriodoNoAbierto | null> {
   const anio = anioDe(fecha);
-  if (anio !== null && (await llevanzaExterna(companyId, anio))) {
+  if (anio !== null && (await llevanzaExterna(companyId, anio, db))) {
     return {
       motivo: 'llevanza_externa',
       situacion: `${anio} lo lleva tu gestoría`,
@@ -190,7 +210,7 @@ export async function periodoNoAbierto(companyId: string, fecha: string): Promis
       enlace: ENLACE_ARRANQUE,
     };
   }
-  const estado = await estadoPeriodoEnFecha(companyId, fecha);
+  const estado = await estadoPeriodoEnFecha(companyId, fecha, db);
   const mes = `${fecha.slice(5, 7)}/${fecha.slice(0, 4)}`;
   const ejercicio = Number(fecha.slice(0, 4));
   const deshacerCierre =
@@ -207,13 +227,13 @@ export async function periodoNoAbierto(companyId: string, fecha: string): Promis
   if (estado === 'cerrado') {
     return { motivo: 'periodo_cerrado', situacion: `el mes ${mes} está cerrado`, queHacer: deshacerCierre, enlace: enlaceCierre(ejercicio) };
   }
-  const estadoEj = await estadoCierreAnio(companyId, ejercicio);
+  const estadoEj = await estadoCierreAnio(companyId, ejercicio, db);
   if (estadoEj === 'ABIERTO') return null;
   const sinAsientos = estadoEj === 'CERRADO_SIN_ASIENTOS';
   return {
     motivo: 'ejercicio_cerrado',
     situacion: `el ejercicio ${ejercicio} está cerrado`,
-    queHacer: sinAsientos ? await textoReabrir(companyId, ejercicio) : deshacerCierre,
+    queHacer: sinAsientos ? await textoReabrir(companyId, ejercicio, db) : deshacerCierre,
     enlace: sinAsientos ? ENLACE_CONFIG_EJERCICIOS : enlaceCierre(ejercicio),
   };
 }
@@ -226,14 +246,17 @@ export async function periodoNoAbierto(companyId: string, fecha: string): Promis
  * o contabiliza una factura; sin ella, el mensaje general de los asientos.
  * Vive aqui (y no en cobrosPagos) para que el motor contable y las facturas la
  * usen sin importarse en circulo; cobrosPagos la reexporta.
+ *
+ * `db`: dentro de una transaccion, su `tx` (con el cliente global se quedaria
+ * esperando conexion: ver config/guardaTransaccion).
  */
-export async function comprobarFechaAbierta(companyId: string, fecha: string, accion?: string): Promise<void> {
+export async function comprobarFechaAbierta(companyId: string, fecha: string, accion?: string, db: Db = prisma): Promise<void> {
   // Antes que el mes: un año llevado por la gestoria es de solo lectura aunque sus meses esten abiertos.
-  await exigirFechaContabilizable(companyId, fecha);
+  await exigirFechaContabilizable(companyId, fecha, db);
   if (accion && esFacturaRecibida(accion)) {
     // Contabilizar una factura anterior: ya cuenta en ese periodo, asi que no
     // se puede modificar ni anular mientras siga asi (no se manda a hacerlo).
-    const p = await periodoNoAbierto(companyId, fecha);
+    const p = await periodoNoAbierto(companyId, fecha, db);
     if (!p) return;
     // Un ejercicio cerrado sin asientos se reabre (textoReabrir): ahi no hace falta el aviso de la fecha.
     const sinAsientos = p.motivo === 'ejercicio_cerrado' && p.enlace === ENLACE_CONFIG_EJERCICIOS;
@@ -243,7 +266,7 @@ export async function comprobarFechaAbierta(companyId: string, fecha: string, ac
       enlace: p.enlace,
     });
   }
-  const estado = await estadoPeriodoEnFecha(companyId, fecha);
+  const estado = await estadoPeriodoEnFecha(companyId, fecha, db);
   const mes = `${fecha.slice(5, 7)}/${fecha.slice(0, 4)}`;
   if (estado === 'cerrado' || estado === 'bloqueado') {
     if (accion) {
@@ -258,12 +281,12 @@ export async function comprobarFechaAbierta(companyId: string, fecha: string, ac
     throw badRequest(`El periodo de ${mes} está ${estado}: no se pueden añadir asientos con esa fecha.`);
   }
   const ejercicio = Number(fecha.slice(0, 4));
-  const estadoEj = await estadoCierreAnio(companyId, ejercicio);
+  const estadoEj = await estadoCierreAnio(companyId, ejercicio, db);
   if (estadoEj !== 'ABIERTO') {
     if (accion) {
       const queHacer =
         estadoEj === 'CERRADO_SIN_ASIENTOS'
-          ? await textoReabrir(companyId, ejercicio)
+          ? await textoReabrir(companyId, ejercicio, db)
           : 'Usa otra fecha o, si de verdad tiene que ir en ese año, deshaz antes el cierre en Contabilidad > Cierre y traspaso de saldos.';
       throw badRequest(`No se puede ${accion} con fecha ${ddmmaaaa(fecha)}: el ejercicio ${ejercicio} está cerrado. ${queHacer}`, {
         ...campoFecha(accion),
@@ -276,8 +299,8 @@ export async function comprobarFechaAbierta(companyId: string, fecha: string, ac
 }
 
 /** Que hacer con un ejercicio cerrado sin asientos de cierre (Configuracion, no Cierre y traspaso). */
-async function textoReabrir(companyId: string, ejercicio: number): Promise<string> {
-  const { motivo } = await reaperturaDelAnio(companyId, ejercicio);
+async function textoReabrir(companyId: string, ejercicio: number, db: Db = prisma): Promise<string> {
+  const { motivo } = await reaperturaDelAnio(companyId, ejercicio, db);
   return motivo
     ? `Se marcó como cerrado sin hacer la regularización ni el cierre. ${motivo}`
     : 'Se marcó como cerrado sin hacer la regularización ni el cierre: el administrador de la empresa puede reabrirlo en Configuración > Ejercicios y periodos.';
@@ -288,14 +311,14 @@ async function textoReabrir(companyId: string, ejercicio: number): Promise<strin
  * o cierre (domain/asientosCierre, tambien los de cierres anteriores);
  * CERRADO_SIN_ASIENTOS si esta marcado como cerrado sin ellos; si no, ABIERTO.
  */
-export async function estadoCierreAnio(companyId: string, ejercicio: number): Promise<EstadoEfectivoEjercicio> {
+export async function estadoCierreAnio(companyId: string, ejercicio: number, db: Db = prisma): Promise<EstadoEfectivoEjercicio> {
   // Sin alguna de esas tablas (tests con prisma simulado) se mira solo la que hay.
   const hay = (t: unknown) => typeof (t as { findFirst?: unknown } | undefined)?.findFirst === 'function';
-  const p = prisma as unknown as { fiscalYear?: unknown; journalEntry?: unknown };
+  const p = db as unknown as { fiscalYear?: unknown; journalEntry?: unknown };
   const [fy, cierre] = await Promise.all([
-    hay(p.fiscalYear) ? prisma.fiscalYear.findFirst({ where: { companyId, label: String(ejercicio) }, select: { estado: true } }) : null,
+    hay(p.fiscalYear) ? db.fiscalYear.findFirst({ where: { companyId, label: String(ejercicio) }, select: { estado: true } }) : null,
     hay(p.journalEntry)
-      ? prisma.journalEntry.findFirst({
+      ? db.journalEntry.findFirst({
           where: {
             companyId,
             estado: 'POSTED',
@@ -313,8 +336,8 @@ export async function estadoCierreAnio(companyId: string, ejercicio: number): Pr
  * ¿Esta cerrado el ejercicio? Si tiene asientos de regularizacion o cierre, o
  * si esta marcado como cerrado (CLOSED), aunque no los tenga.
  */
-export async function ejercicioCerrado(companyId: string, ejercicio: number): Promise<boolean> {
-  return (await estadoCierreAnio(companyId, ejercicio)) !== 'ABIERTO';
+export async function ejercicioCerrado(companyId: string, ejercicio: number, db: Db = prisma): Promise<boolean> {
+  return (await estadoCierreAnio(companyId, ejercicio, db)) !== 'ABIERTO';
 }
 
 /** Modelos que se miran al desbloquear un mes: si estan presentados, hay que confirmar. */
