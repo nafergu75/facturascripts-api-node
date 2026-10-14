@@ -53,12 +53,26 @@ let A = '';
 let B = '';
 let C = '';
 let D = '';
+let F = '';
+let G = '';
 beforeAll(async () => {
   A = await empresa();
   B = await empresa();
   C = await empresa();
   D = await empresa();
+  F = await empresa();
+  G = await empresa();
 });
+
+const finalizar = (companyId: string, id: string) => incomeInvoicesService.finalizar(companyId, id, { fechaEmision: HOY });
+const rectificar = (companyId: string, originalId: string) =>
+  incomeInvoicesService.crearIngreso({
+    companyId,
+    customer: {},
+    fechaEmision: HOY,
+    lineas: [linea(-10)],
+    rectificativa: { ticket: false, forma: 'I', motivo: 'DEVOLUCION', explicacion: 'Devolución', originales: [{ id: originalId }] },
+  } as unknown as CrearFacturaIngresoDTO);
 
 describe('emisiones a la vez en la misma empresa', () => {
   it('dos emisiones directas en la misma serie: números n y n+1, registros 1 y 2 y la cadena bien', async () => {
@@ -102,6 +116,39 @@ describe('emisiones a la vez en la misma empresa', () => {
     expect(rs).toHaveLength(1);
     expect(rs[0].incomeInvoiceId).toBe(b.id);
     expect((await prisma.invoiceSeries.findUniqueOrThrow({ where: { companyId_codigo: { companyId: C, codigo: 'A' } } })).ultimoNumero).toBe(1);
+  });
+
+  it('dos borradores de las series A y B finalizados a la vez, cinco veces: sin interbloqueo y la cadena bien', async () => {
+    // La inmutabilidad filtra por la columna de la propia factura (verifactuEstado),
+    // sin subconsulta a VerifactuRegistro: antes, en MariaDB/MySQL, ese filtro
+    // dejaba un bloqueo en VerifactuRegistro antes de bloquear la cadena (1213).
+    for (let ronda = 1; ronda <= 5; ronda++) {
+      const a = await emitir(F, { borrador: true, serie: 'A' });
+      const b = await emitir(F, { borrador: true, serie: 'B' });
+      const resultados = await Promise.allSettled([finalizar(F, a.id), finalizar(F, b.id)]);
+      expect(resultados.map((r) => (r.status === 'rejected' ? String((r.reason as Error).message) : 'ok'))).toEqual(['ok', 'ok']);
+    }
+    const rs = await cadena(F);
+    expect(rs.map((r) => r.numeroEnCadena)).toEqual(Array.from({ length: 10 }, (_, i) => i + 1));
+    expect(comprobarCadena(rs)).toEqual([]);
+  });
+
+  (UNA_CONEXION ? it.skip : it)('crear, finalizar y rectificativas mezclados a la vez: todas se emiten y la cadena bien', async () => {
+    const borradores = [];
+    for (let i = 0; i < 6; i++) borradores.push(await emitir(G, { borrador: true, serie: i % 2 ? 'B' : 'A' }));
+    const originales = [];
+    for (let i = 0; i < 3; i++) originales.push(await emitir(G, { lineas: [linea(1000)] }));
+    const resultados = await Promise.allSettled([
+      ...borradores.map((b) => finalizar(G, b.id)),
+      ...Array.from({ length: 6 }, (_, i) => emitir(G, { serie: i % 2 ? 'B' : 'A' })),
+      ...originales.map((o) => rectificar(G, o.id)),
+    ]);
+    expect(resultados.filter((r) => r.status === 'rejected').map((r) => String((r as PromiseRejectedResult).reason?.message))).toEqual([]);
+    const rs = await cadena(G);
+    expect(rs.map((r) => r.numeroEnCadena)).toEqual(Array.from({ length: 18 }, (_, i) => i + 1));
+    expect(comprobarCadena(rs)).toEqual([]);
+    const series = await prisma.invoiceSeries.findMany({ where: { companyId: G }, select: { codigo: true, ultimoNumero: true } });
+    expect(Object.fromEntries(series.map((x) => [x.codigo, x.ultimoNumero]))).toMatchObject({ A: 9, B: 6, R: 3 });
   });
 
   (UNA_CONEXION ? it.skip : it)('20 emisiones a la vez en dos series: registros 1..20 sin huecos y la cadena bien', async () => {

@@ -13,12 +13,24 @@ import { conflict } from '../utils/http-errors';
  *  - VerifactuCadena y VerifactuBitacora: nunca se borran.
  *  - IncomeInvoice CON registro: solo se cambian el estado de cobro, el estado
  *    de VERI*FACTU (sin ponerlo a null), la anulacion, paisClienteLegacy y
- *    updatedAt. Cualquier otro cambio lleva al where «sin registros»: en un
+ *    updatedAt. Cualquier otro cambio lleva al where «sin registro»: en un
  *    update da 409 FACTURA_REGISTRADA; en un updateMany esa factura se queda
  *    fuera, sin error. Una factura FINAL sin registro (lector, anterior a la
  *    activacion) sigue como hasta ahora.
+ *
+ * «Sin registro» es `verifactuEstado: null`, una columna de la propia factura:
+ * generarRegistroAlta la pone a PENDIENTE en la misma transaccion que crea el
+ * registro y esta extension no deja volver a ponerla a null. NO se filtra con
+ * la relacion (`verifactuRegistros: { none: {} }`): Prisma la traduce a un
+ * `id NOT IN (SELECT incomeInvoiceId FROM VerifactuRegistro ...)` que en
+ * MariaDB/MySQL (REPEATABLE READ) deja un bloqueo compartido en el indice de
+ * VerifactuRegistro ANTES de bloquear la cadena; otra emision que ya tiene la
+ * cadena espera para insertar su registro y salta el interbloqueo 1213 (dos
+ * finalizar a la vez en series distintas). Ademas recorria los registros de
+ * todas las empresas en cada update.
  *  - IncomeInvoiceLine e IncomeInvoiceRectificada de una factura con registro:
- *    no se cambian ni se borran (mismo filtro).
+ *    no se cambian ni se borran (mismo filtro, sobre su factura: la subconsulta
+ *    solo lee la fila de la factura por su clave).
  *  - Borrar una factura con registro lo impide la FK Restrict de
  *    VerifactuRegistro.incomeInvoiceId (tambien con SQL a mano).
  *
@@ -89,7 +101,8 @@ function conCondicion<W extends Record<string, unknown> | undefined>(where: W, c
   return { ...w, AND: [...and, condicion] } as unknown as W;
 }
 
-const SIN_REGISTRO = { verifactuRegistros: { none: {} } };
+/** Factura sin registro de VERI*FACTU (ver arriba: columna propia, no la relacion). */
+const SIN_REGISTRO = { verifactuEstado: null };
 const FACTURA_SIN_REGISTRO = { invoice: SIN_REGISTRO };
 const RECTIFICATIVA_SIN_REGISTRO = { rectificativa: SIN_REGISTRO };
 
