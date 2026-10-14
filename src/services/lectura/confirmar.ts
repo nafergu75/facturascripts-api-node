@@ -206,7 +206,7 @@ export interface CorreccionComprobada {
   ignoradas: string[];
   /** La lectura se rellena a mano («Rellenarla a mano»): no habia nada leido. */
   manual: boolean;
-  /** Lo leido antes de corregir, para el AuditLog (null si se rellena a mano). */
+  /** Lo leido antes de corregir, para el AuditLog. Rellenada a mano: lo leido antes de vaciarla, o null si la lectura habia fallado. */
   leida: LecturaNormalizada | null;
   lecturaId: string;
   confianza: number | null;
@@ -286,7 +286,8 @@ export async function comprobarCorreccionVenta(
     validaciones: val.validaciones.filter((v) => !ignorar.has(v.codigo)),
     ignoradas: val.validaciones.filter((v) => ignorar.has(v.codigo)).map((v) => v.mensaje),
     manual,
-    leida: manual ? null : guardada,
+    // Rellenada a mano sobre una lectura que si termino: lo que se leyo entonces (si no, se perderia con la purga de 90 dias).
+    leida: manual ? ((fila.resultado as { leidaAntes?: LecturaNormalizada } | null)?.leidaAntes ?? null) : guardada,
     lecturaId: fila.id,
     confianza: fila.confianza,
   };
