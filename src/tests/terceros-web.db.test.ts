@@ -117,6 +117,35 @@ describe('proveedores', () => {
     expect((await prisma.supplier.findUniqueOrThrow({ where: { id } })).web).toBeNull();
   });
 
+  it('una web larga (hasta 255) se cambia sin error y su historial guarda el valor recortado con «…»', async () => {
+    const alta = await request(app(E)).post('/proveedores').send({ nombreFiscal: 'Web Larga SL', nifCif: cif('5101016'), web: 'weblarga.es' });
+    const id = alta.body.data.id as string;
+    // 255 con el https:// delante: no cabe tal cual en el historial (VARCHAR(191)).
+    const larga = `https://weblarga.es/${'catalogo-'.repeat(27)}`.slice(0, 255);
+    expect(larga).toHaveLength(255);
+
+    const cambio = await request(app(E)).patch(`/proveedores/${id}`).send({ web: larga, telefono: '960000002' });
+    expect(cambio.status).toBe(200);
+    expect(cambio.body.data.web).toBe(larga);
+    expect((await prisma.supplier.findUniqueOrThrow({ where: { id } })).web).toBe(larga);
+
+    // Los dos cambios quedan en el historial; el de la web, recortado y en JSON válido.
+    const web = await prisma.supplierAudit.findFirstOrThrow({ where: { supplierId: id, tipoAccion: 'update', campo: 'web' } });
+    expect(web.valorAnterior).toBe(JSON.stringify('https://weblarga.es'));
+    expect(web.valorNuevo!.length).toBeLessThanOrEqual(191);
+    const recortado = JSON.parse(web.valorNuevo!) as string;
+    expect(recortado.endsWith('…')).toBe(true);
+    expect(larga.startsWith(recortado.slice(0, -1))).toBe(true);
+    expect(await prisma.supplierAudit.count({ where: { supplierId: id, tipoAccion: 'update', campo: 'telefono' } })).toBe(1);
+
+    // Y al revés: de la larga a otra, el valor anterior también se recorta.
+    const vuelta = await request(app(E)).patch(`/proveedores/${id}`).send({ web: 'weblarga.es' });
+    expect(vuelta.status).toBe(200);
+    const ultimo = await prisma.supplierAudit.findFirstOrThrow({ where: { supplierId: id, campo: 'web' }, orderBy: { createdAt: 'desc' } });
+    expect(JSON.parse(ultimo.valorAnterior!)).toMatch(/^https:\/\/weblarga\.es\/catalogo-.*…$/);
+    expect(ultimo.valorNuevo).toBe(JSON.stringify('https://weblarga.es'));
+  });
+
   it('la exportación del proveedor (CSV y JSON) lleva la web', async () => {
     const alta = await request(app(E)).post('/proveedores').send({ nombreFiscal: 'Exporta Web SL', nifCif: cif('5101014'), web: 'www.exportaweb.es' });
     const csv = await request(app(E)).get(`/proveedores/${alta.body.data.id}/export`).query({ formato: 'csv' });

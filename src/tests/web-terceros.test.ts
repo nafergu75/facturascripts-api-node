@@ -19,6 +19,7 @@ import { LARGO_MAXIMO_WEB, normalizarWeb } from '../utils/web';
 import { campoDeTitulo, detectarCabecera } from '../services/arranque/campos';
 import { extraerHoja } from '../services/arranque/extractores';
 import { controlCif } from '../utils/nif';
+import { LARGO_VALOR_HISTORIAL, valorParaHistorial } from '../services/suppliers/supplierAudit.service';
 
 const ok = (v: unknown) => {
   const r = normalizarWeb(v);
@@ -100,6 +101,35 @@ describe('normalizarWeb', () => {
     const ruta = 'a'.repeat(LARGO_MAXIMO_WEB - 'https://empresa.es/'.length);
     expect(ok(`empresa.es/${ruta}`)).toHaveLength(LARGO_MAXIMO_WEB);
     expect(motivo(`empresa.es/${ruta}a`)).toBe(`La web es demasiado larga (${LARGO_MAXIMO_WEB} caracteres como mucho).`);
+  });
+});
+
+describe('historial del proveedor: valores que no caben en VARCHAR(191)', () => {
+  it('lo corto va tal cual en JSON; sin valor, null', () => {
+    expect(valorParaHistorial('https://empresa.es')).toBe('"https://empresa.es"');
+    expect(valorParaHistorial(true)).toBe('true');
+    expect(valorParaHistorial(null)).toBeNull();
+    expect(valorParaHistorial(undefined)).toBeNull();
+  });
+
+  it('lo largo se recorta con «…», cabe en la columna y sigue siendo JSON', () => {
+    const web = `https://empresa.es/${'a'.repeat(236)}`;
+    expect(web).toHaveLength(LARGO_MAXIMO_WEB);
+    const v = valorParaHistorial(web)!;
+    expect(v).toHaveLength(LARGO_VALOR_HISTORIAL);
+    const leido = JSON.parse(v) as string;
+    expect(leido.endsWith('…')).toBe(true);
+    expect(web.startsWith(leido.slice(0, -1))).toBe(true);
+  });
+
+  it('con comillas o barras (que ocupan el doble en JSON) y con emojis, también cabe', () => {
+    for (const texto of ['"'.repeat(200), '\\'.repeat(300), '😀'.repeat(150), `Nombre «${'ñ'.repeat(195)}»`]) {
+      const v = valorParaHistorial(texto)!;
+      expect(v.length).toBeLessThanOrEqual(LARGO_VALOR_HISTORIAL);
+      const leido = JSON.parse(v) as string;
+      expect(leido.endsWith('…')).toBe(true);
+      expect(texto.startsWith(leido.slice(0, -1))).toBe(true);
+    }
   });
 });
 
