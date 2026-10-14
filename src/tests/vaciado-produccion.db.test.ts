@@ -2,9 +2,11 @@
  * Vaciado de produccion de punta a punta, con el script de verdad
  * (scripts/vaciar-produccion.sh) contra una base LOCAL de usar y tirar:
  * simulacion, cancelar sin la frase, copia + borrado + comprobacion + acceso,
- * restaurar la copia, volver a vaciar y empezar de cero con la API (la primera
- * factura sale A-1), la parada por VERI*FACTU y la parada con una base sin las
- * marcas de esta version.
+ * la prueba de acceso con la base caida (sin ensenar la conexion), una
+ * restauracion cortada a medias y como se sale, restaurar la copia, volver a
+ * vaciar y empezar de cero con la API (la primera factura sale A-1), subir solo
+ * los ficheros, la parada por VERI*FACTU, la parada con una base de otra
+ * version (tambien si solo le sobra una columna) y con la de otra aplicacion.
  *
  * El vaciado BORRA LA BASE ENTERA: este test solo corre si DATABASE_URL apunta
  * a una base cuyo nombre empieza por «conta_vaciar» (por ejemplo
@@ -99,6 +101,17 @@ async function limpiarBase(): Promise<void> {
     });
   }
   await db.$executeRawUnsafe('SET FOREIGN_KEY_CHECKS = 1');
+}
+
+/** La orden acceso en su propio proceso, como la lanza el .sh tras el borrado. */
+function acceso(url: string, email: string, clave: string): { codigo: number | null; salida: string } {
+  const r = spawnSync(process.execPath, [require.resolve('ts-node/dist/bin.js'), '--transpile-only', 'scripts/vaciar-produccion.ts', 'acceso'], {
+    cwd: RAIZ,
+    encoding: 'utf8',
+    timeout: 5 * MINUTOS,
+    env: { ...process.env, DATABASE_URL: url, VACIADO_EMAIL: email, VACIADO_CLAVE: clave, PRISMA_HIDE_UPDATE_MESSAGE: '1' },
+  });
+  return { codigo: r.status, salida: `${r.stdout ?? ''}${r.stderr ?? ''}` };
 }
 
 function ejecutar(args: string[], url: string): void {
@@ -211,6 +224,65 @@ d('vaciado de producción (base local de usar y tirar)', () => {
     expect(codigo).toBe(0);
   }, 10 * MINUTOS);
 
+  it('prueba de acceso: si la base falla no enseña servidor ni usuario, y distingue la contraseña mala', () => {
+    const u = new URL(URL_BD);
+    u.username = 'usr4AbCd';
+    u.password = 'ClaveFalsa99';
+    const rechazo = acceso(u.toString(), datos.adminEmail, datos.adminClave);
+    expect(rechazo.salida).toContain('la API ha fallado al consultar la base de datos (respuesta 500)');
+    expect(rechazo.salida).toContain('ha rechazado el usuario o la contraseña de conexión');
+    expect(rechazo.salida).toContain('No es un problema de tu contraseña');
+    expect(rechazo.codigo).toBe(1);
+
+    const caida = acceso('mysql://usr4AbCd:ClaveFalsa99@gateway99.eu-central-1.prod.invalid:4000/conta', datos.adminEmail, datos.adminClave);
+    expect(caida.salida).toContain('No se ha podido conectar con el servidor de la base de datos');
+    expect(caida.codigo).toBe(1);
+    for (const s of [rechazo.salida, caida.salida]) {
+      expect(s).not.toMatch(/usr4AbCd|ClaveFalsa99|gateway99|127\.0\.0\.1|localhost|mysql:\/\/|Unhandled error|prisma/i);
+    }
+
+    const mala = acceso(URL_BD, datos.adminEmail, 'no-es-la-clave');
+    expect(mala.salida).toContain('el correo o la contraseña no son correctos');
+    expect(mala.salida).not.toContain('No es un problema de tu contraseña');
+    expect(mala.codigo).toBe(4);
+  }, 10 * MINUTOS);
+
+  it('una restauración cortada a medias dice cómo salir: --borrar y repetir --restaurar con la misma copia', async () => {
+    // Copia estropeada: la misma fila de Customer dos veces (clave repetida a mitad de la restauracion).
+    const rota = path.join(trabajo, 'copia-rota');
+    await fsp.cp(carpetaCopia, rota, { recursive: true });
+    const manifiesto = JSON.parse(await fsp.readFile(path.join(rota, 'manifiesto.json'), 'utf8')) as { tablas: Array<{ tabla: string; fichero: string; bytes: number }> };
+    const customer = manifiesto.tablas.find((t) => t.tabla === 'Customer')!;
+    const fichero = path.join(rota, customer.fichero);
+    await fsp.appendFile(fichero, `${(await fsp.readFile(fichero, 'utf8')).split('\n')[0]}\n`);
+    customer.bytes = (await fsp.stat(fichero)).size;
+    await fsp.writeFile(path.join(rota, 'manifiesto.json'), JSON.stringify(manifiesto));
+
+    const cortada = lanzar(['--restaurar', barras(rota)], 'RESTAURAR COPIA\n');
+    expect(cortada.codigo).toBe(1);
+    expect(cortada.salida).toContain('LA RESTAURACIÓN SE HA CORTADO A MEDIAS, en la tabla Customer');
+    expect(cortada.salida).toContain('bash scripts/vaciar-produccion.sh --borrar');
+    expect(cortada.salida).toContain(`--restaurar "${barras(path.resolve(rota))}"`);
+    expect(cortada.salida).toContain("Duplicate entry '"); // el motivo, en una línea
+    expect(cortada.salida).not.toContain('Invalid `prisma');
+    // A medias: lo de antes del corte ya esta (las primeras filas de Customer tambien).
+    expect(await db.supplier.count()).toBeGreaterThan(0);
+    expect(await db.customer.count()).toBeGreaterThan(0);
+
+    const otraVez = lanzar(['--restaurar', barras(carpetaCopia)], 'RESTAURAR COPIA\n');
+    expect(otraVez.codigo).toBe(1);
+    expect(otraVez.salida).toContain('La base no está vacía');
+    expect(otraVez.salida).toContain('vacía la base con --borrar y repite --restaurar con esta misma copia');
+
+    // La salida: vaciar lo que se ha metido (la restauracion buena es la prueba siguiente).
+    const vaciado = lanzar(['--borrar'], '\nBORRAR TODO\n\n');
+    expect(vaciado.salida).toContain('VACIADO TERMINADO: la base ha quedado a cero.');
+    expect(vaciado.codigo).toBe(0);
+    const despues = await contarTodas(db, tablas);
+    for (const t of tablas) if (destino.get(t.nombre) === 'VACIAR') expect([t.nombre, despues.get(t.nombre)]).toEqual([t.nombre, 0]);
+    expect(await listarAlmacen()).toEqual([datos.ficheroAjeno]);
+  }, 20 * MINUTOS);
+
   it('restaurar la copia lo deja todo como estaba (filas y ficheros)', async () => {
     const cancelado = lanzar(['--restaurar', barras(carpetaCopia)], 'no\n');
     expect(cancelado.codigo).toBe(1);
@@ -287,6 +359,26 @@ d('vaciado de producción (base local de usar y tirar)', () => {
     expect(await contarTodas(db, tablas)).toEqual(antesRestaurar);
   }, 10 * MINUTOS);
 
+  it('--restaurar-ficheros sube los ficheros de la copia sin tocar la base (tras restaurar desde TiDB Cloud)', async () => {
+    const filasAntes = await contarTodas(db, tablas);
+    expect(await listarAlmacen()).toEqual([datos.ficheroAjeno]);
+    const cancelado = lanzar(['--restaurar-ficheros', barras(carpetaCopia)], 'no\n');
+    expect(cancelado.codigo).toBe(1);
+    expect(cancelado.salida).toContain('Cancelado. No se ha subido nada.');
+    expect(await listarAlmacen()).toEqual([datos.ficheroAjeno]);
+
+    const { codigo, salida } = lanzar(['--restaurar-ficheros', barras(carpetaCopia)], 'SUBIR FICHEROS\n');
+    expect(salida).toContain('La base de datos no se toca.');
+    expect(salida).toContain(`FICHEROS RESTAURADOS: ${datos.ficheros.length} subidos`);
+    expect(codigo).toBe(0);
+    expect(await listarAlmacen()).toEqual(ficherosAntes);
+
+    const repetido = lanzar(['--restaurar-ficheros', barras(carpetaCopia)], 'SUBIR FICHEROS\n');
+    expect(repetido.salida).toContain(`0 subidos y ${datos.ficheros.length} ya estaban`);
+    expect(repetido.codigo).toBe(0);
+    expect(await contarTodas(db, tablas)).toEqual(filasAntes);
+  }, 10 * MINUTOS);
+
   it('se para (sin borrar) si una empresa tiene VERI*FACTU activo', async () => {
     const empresa = (await db.company.findFirstOrThrow({ select: { id: true } })).id;
     await db.verifactuConfig.create({ data: { companyId: empresa, estado: 'ACTIVO', entorno: 'PRODUCCION' } });
@@ -315,6 +407,20 @@ d('vaciado de producción (base local de usar y tirar)', () => {
     const envB = barras(path.join(trabajo, '.env.prod-sin-marcas'));
     writeFileSync(envB, `DATABASE_URL=${urlB}\n`);
     try {
+      // Como una version publicada que solo anade una columna: la copia la perderia, asi que se para.
+      await dbB.$executeRawUnsafe('ALTER TABLE `Customer` ADD COLUMN `notaProd` VARCHAR(50) NOT NULL');
+      const soloColumna = lanzar([], '', { ENV_PROD: envB });
+      expect(soloColumna.codigo).toBe(3);
+      expect(soloColumna.salida).toContain('La base tiene columnas que esta versión no conoce: Customer.notaProd.');
+      expect(soloColumna.salida).not.toContain('ERROR');
+      const restaurar = lanzar(['--restaurar', barras(carpetaCopia)], 'RESTAURAR COPIA\n', { ENV_PROD: envB });
+      expect(restaurar.codigo).toBe(3);
+      expect(restaurar.salida).toContain('No se ha restaurado nada.');
+      const comprobarB = lanzar(['--comprobar'], '\n', { ENV_PROD: envB });
+      expect(comprobarB.codigo).toBe(3);
+      expect(comprobarB.salida).toContain('No se ha comprobado nada.');
+      expect(comprobarB.salida).not.toContain('ERROR');
+
       // Como una base de antes de la ultima version: sin la tabla de rectificadas ni la causa, y con una tabla que esta version no conoce.
       await dbB.$executeRawUnsafe('DROP TABLE `IncomeInvoiceRectificada`');
       await dbB.$executeRawUnsafe('ALTER TABLE `IncomeInvoice` DROP COLUMN `causaRectificacion`');
@@ -335,6 +441,37 @@ d('vaciado de producción (base local de usar y tirar)', () => {
     } finally {
       await dbB.$executeRawUnsafe(`DROP DATABASE IF EXISTS ${id(nombreB)}`).catch(() => undefined);
       await dbB.$disconnect();
+    }
+  }, 15 * MINUTOS);
+
+  it('con la base de otra aplicación se para y lo explica, sin errores técnicos ni tocar nada', async () => {
+    const nombreC = `${NOMBRE_BD}_otra`;
+    const u = new URL(URL_BD);
+    u.pathname = `/${nombreC}`;
+    await db.$executeRawUnsafe(`CREATE DATABASE IF NOT EXISTS ${id(nombreC)}`);
+    const dbC = crearCliente(u.toString());
+    const envC = barras(path.join(trabajo, '.env.prod-otra'));
+    writeFileSync(envC, `DATABASE_URL=${u.toString()}\n`);
+    try {
+      await dbC.$executeRawUnsafe('CREATE TABLE `clientes` (id INT PRIMARY KEY, nombre VARCHAR(50))');
+      await dbC.$executeRawUnsafe("INSERT INTO `clientes` VALUES (1, 'No se toca')");
+
+      const sim = lanzar([], '', { ENV_PROD: envC });
+      expect(sim.codigo).toBe(3);
+      expect(sim.salida).toContain('NO SE PUEDE SEGUIR');
+      expect(sim.salida).toContain('La base tiene tablas que esta versión no conoce: clientes.');
+      expect(sim.salida).toContain('No se ha borrado nada.');
+      const borrar = lanzar(['--borrar'], '\nBORRAR TODO\n', { ENV_PROD: envC });
+      expect(borrar.codigo).toBe(3);
+      expect(borrar.salida).not.toContain('Para borrar de verdad escribe BORRAR TODO');
+      const comprobarC = lanzar(['--comprobar'], '\n', { ENV_PROD: envC });
+      expect(comprobarC.codigo).toBe(3);
+      for (const s of [sim.salida, borrar.salida, comprobarC.salida]) expect(s).not.toContain('ERROR');
+      const [f] = await dbC.$queryRawUnsafe<Array<{ n: unknown }>>('SELECT COUNT(*) AS n FROM `clientes`');
+      expect(Number(f.n)).toBe(1);
+    } finally {
+      await dbC.$executeRawUnsafe(`DROP DATABASE IF EXISTS ${id(nombreC)}`).catch(() => undefined);
+      await dbC.$disconnect();
     }
   }, 15 * MINUTOS);
 });
