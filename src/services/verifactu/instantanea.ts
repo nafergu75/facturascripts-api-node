@@ -102,29 +102,16 @@ export function leerInstantanea(json: unknown): Instantanea | null {
   const e = j.emisor as Record<string, unknown> | null;
   const c = j.cliente as Record<string, unknown> | null;
   if (!e || typeof e !== 'object' || !c || typeof c !== 'object') return null;
-  // Los dos ultimos llegaron con las plantillas A y B: en una instantanea anterior faltan y quedan en null.
-  const camposEmisor = [
-    'denominacion',
-    'nif',
-    'domicilioSocial',
-    'codigoPostal',
-    'municipio',
-    'provincia',
-    'pais',
-    'telefono',
-    'email',
-    'web',
-    'inscripcion',
-    'datosRegistrales',
-    'registroMercantilProvincia',
-  ];
+  const camposEmisor = ['denominacion', 'nif', 'domicilioSocial', 'codigoPostal', 'municipio', 'provincia', 'pais', 'telefono', 'email', 'web', 'inscripcion'];
+  // Llegaron con las plantillas A y B: una instantanea anterior no los tiene y se devuelve sin ellos.
+  const opcionalesEmisor = ['datosRegistrales', 'registroMercantilProvincia'].filter((k) => k in e);
   const camposCliente = ['nifCif', 'direccion', 'cp', 'municipio', 'provincia', 'pais'];
-  if (!camposEmisor.every((k) => esTextoONull(e[k]))) return null;
+  if (![...camposEmisor, ...opcionalesEmisor].every((k) => esTextoONull(e[k]))) return null;
   if (typeof c.nombreFiscal !== 'string' || !camposCliente.every((k) => esTextoONull(c[k]))) return null;
   const t = (o: Record<string, unknown>, k: string) => (typeof o[k] === 'string' ? (o[k] as string) : null);
   return {
     v: 1,
-    emisor: Object.fromEntries(camposEmisor.map((k) => [k, t(e, k)])) as unknown as EmisorInstantanea,
+    emisor: Object.fromEntries([...camposEmisor, ...opcionalesEmisor].map((k) => [k, t(e, k)])) as unknown as EmisorInstantanea,
     cliente: { nombreFiscal: c.nombreFiscal, ...(Object.fromEntries(camposCliente.map((k) => [k, t(c, k)])) as Omit<ClienteInstantanea, 'nombreFiscal'>) },
   };
 }

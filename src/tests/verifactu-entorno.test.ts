@@ -116,4 +116,10 @@ describe('leerInstantanea', () => {
     expect(leerInstantanea({ ...buena, emisor: null })).toBeNull();
     expect(leerInstantanea([buena])).toBeNull();
   });
+
+  it('con los datos registrales de las plantillas A y B (opcionales): se devuelven; con otra forma, null', () => {
+    const conRegistro = { ...buena, emisor: { ...buena.emisor, datosRegistrales: 'T 1, F 2, H CS 3', registroMercantilProvincia: null } };
+    expect(leerInstantanea(conRegistro)).toEqual(conRegistro);
+    expect(leerInstantanea({ ...buena, emisor: { ...buena.emisor, datosRegistrales: 5 } })).toBeNull();
+  });
 });
