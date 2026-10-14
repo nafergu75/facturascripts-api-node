@@ -39,6 +39,7 @@ import {
   type MotivoVenta,
 } from '../domain/rectificativa-venta.model';
 import { codigoSerieTickets, obtenerSeriePorDefecto } from './series.service';
+import { normalizarPlantillaId } from '../domain/plantillasFactura';
 import { numeroComparable, pendientePorPartida } from './arranque/partidas.service';
 
 type Db = TransaccionBD | typeof prisma;
@@ -316,6 +317,13 @@ export async function prepararRectificativaVenta(b: BloqueVenta, ctx: ContextoPl
     }
     if (tipos.size > 1) {
       throw badRequest('Las facturas que rectificas tienen distinto tipo de operación (por ejemplo, una nacional y otra intracomunitaria): haz una rectificativa para cada tipo.', {
+        codigo: 'ORIGINALES_INCOMPATIBLES',
+        campo: 'rectificativa.originales',
+      });
+    }
+    // Plantilla A: una rectificativa lleva la plantilla y el IEEPNR por kg de su original.
+    if (new Set(originalesApp.map((f) => normalizarPlantillaId(f.plantillaId))).size > 1 || new Set(originalesApp.map((f) => String(f.ieepnrPorKg ?? ''))).size > 1) {
+      throw badRequest('Las facturas que rectificas tienen distinta plantilla o distinto IEEPNR por kg: haz una rectificativa para cada una.', {
         codigo: 'ORIGINALES_INCOMPATIBLES',
         campo: 'rectificativa.originales',
       });
@@ -1384,6 +1392,9 @@ export async function datosParaRectificarVenta(companyId: string, id: string) {
       tipoOperacion: f.tipoOperacion ?? null,
       causaExencion: f.causaExencion ?? null,
       referenciaLegal: f.referenciaLegal ?? null,
+      // Plantilla A: la rectificativa sale con la plantilla y el IEEPNR por kg de la original.
+      plantillaId: normalizarPlantillaId(f.plantillaId),
+      ieepnrPorKg: f.ieepnrPorKg === null || f.ieepnrPorKg === undefined ? null : Number(f.ieepnrPorKg),
       baseTotal: Number(f.baseTotal),
       ivaTotal: Number(f.ivaTotal),
       retencionTotal: Number(f.retencionTotal),
@@ -1401,6 +1412,11 @@ export async function datosParaRectificarVenta(companyId: string, id: string) {
       cuenta: l.accountCode ?? null,
       baseLine: doc(l.baseLineDoc, Number(l.baseLine)),
       ivaImporte: doc(l.ivaImporteDoc, Number(l.ivaImporte)),
+      // Plantilla A: packs, kg, IEEPNR (dentro de baseLine) y texto adicional.
+      packs: l.packs ?? null,
+      kgPlastico: l.kgPlastico === null || l.kgPlastico === undefined ? null : Number(l.kgPlastico),
+      ieepnrImporte: Number(l.ieepnrImporte ?? 0),
+      textoAdicional: l.textoAdicional ?? null,
     })),
     cuentaPorTipoIva: cuentaPorTipoIva(vigente.lineas.map((l) => ({ tipoIva: l.tipoIva, cuenta: l.accountCode ?? null, baseLine: Number(l.baseLine) }))),
     /** La rectificativa por sustitucion que la reemplazo (de ella salen `lineas` y `cuentaPorTipoIva`), o null. */
