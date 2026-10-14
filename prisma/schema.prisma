@@ -59,7 +59,6 @@ model Company {
   movements   Movement[]       @relation("movements")
   verifactuConfig VerifactuConfig?
   verifactuCadenas     VerifactuCadena[]
-  verifactuRegistros   VerifactuRegistro[]
   verifactuLotes       VerifactuLote[]
   verifactuCertificado VerifactuCertificado?
   verifactuBitacora    VerifactuBitacora[]
@@ -2021,6 +2020,16 @@ model VerifactuCadena {
 
 /// VERI*FACTU: registros de alta y de anulacion (spec 2.3). Inmutables salvo los campos de envio
 /// (config/inmutabilidadVerifactu.ts). Los campos de la huella guardan el TEXTO EXACTO enviado.
+///
+/// Sin clave ajena a Company ni al registro anterior, a proposito. En TiDB (produccion, modo
+/// pesimista) comprobar una clave ajena al insertar bloquea la fila padre como un SELECT ... FOR
+/// UPDATE (documentacion de TiDB, «Foreign key constraints», Locking). Con ellas, cada registro
+/// bloquearia la empresa y el registro anterior DESPUES de la cadena: una emision directa (que
+/// bloquea la empresa al crear la factura, antes de la cadena) y un borrador finalizado (que la
+/// bloquearia despues) se interbloquearian, y el envio de F3 (registros y luego la cadena) tambien.
+/// No se puede borrar una empresa con registros igualmente: su VerifactuCadena tiene clave ajena
+/// Restrict, y cada registro la tiene con su factura. registroAnteriorId sigue siendo unico (la
+/// cadena no se bifurca) y comprobarCadena (services/verifactu/cadena.ts) verifica los enlaces.
 model VerifactuRegistro {
   id                 String             @id @default(cuid())
   companyId          String
@@ -2068,10 +2077,7 @@ model VerifactuRegistro {
   createdAt          DateTime           @default(now())
   enviadoEn          DateTime?
   respondidoEn       DateTime?
-  company            Company            @relation(fields: [companyId], references: [id], onDelete: Restrict)
   factura            IncomeInvoice      @relation(fields: [incomeInvoiceId], references: [id], onDelete: Restrict)
-  registroAnterior   VerifactuRegistro? @relation("EncadenamientoVerifactu", fields: [registroAnteriorId], references: [id], onDelete: Restrict, onUpdate: Restrict)
-  registroSiguiente  VerifactuRegistro? @relation("EncadenamientoVerifactu")
   lote               VerifactuLote?     @relation(fields: [loteId], references: [id], onDelete: Restrict)
 
   @@unique([companyId, entorno, numeroEnCadena])

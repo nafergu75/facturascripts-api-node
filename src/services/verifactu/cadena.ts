@@ -14,6 +14,15 @@
  *
  * avanzarCadena vive en este modulo (y se llama a traves de el) para que un
  * test pueda simular un fallo despues de crear el registro.
+ *
+ * Bloqueos en TiDB (produccion): comprobar una clave ajena al insertar bloquea
+ * la fila padre en exclusiva. Por eso VerifactuRegistro no tiene clave ajena a
+ * Company ni al registro anterior (ver schema.prisma): con la cadena ya
+ * bloqueada, el registro nuevo no bloquea la empresa ni otros registros.
+ * Para F3 y F4: dentro de una transaccion que ya tiene la cadena, nada de
+ * inserts con clave ajena a Company (bitacora, lotes...); y el trabajador de
+ * envio bloquea primero la cadena (donde esta el control de envio) y despues
+ * los registros, en el mismo orden que una emision.
  */
 import type { ClienteBD, TransaccionBD } from '../../config/database';
 import { cadenaAlta, cadenaAnulacion, huella as calcularHuella } from './huella';

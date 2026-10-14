@@ -109,6 +109,11 @@ describe('factura con registro', () => {
     expect(await prisma.incomeInvoice.count({ where: { id: facturaId } })).toBe(1);
   });
 
+  it('borrar la empresa con registros: lo impide la clave ajena de su cadena (el registro no la tiene, a propósito)', async () => {
+    await expect(prisma.company.delete({ where: { id: E } })).rejects.toMatchObject({ code: expect.stringMatching(/^P20(03|14)$/) });
+    expect(await prisma.verifactuRegistro.count({ where: { companyId: E } })).toBeGreaterThan(0);
+  });
+
   it('cambiar o borrar sus líneas: rechazado', async () => {
     const [l] = await prisma.incomeInvoiceLine.findMany({ where: { invoiceId: facturaId } });
     await expect(prisma.incomeInvoiceLine.update({ where: { id: l.id }, data: { baseLine: 1 } })).rejects.toMatchObject(registrada);
