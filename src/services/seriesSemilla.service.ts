@@ -16,15 +16,19 @@
  *    (desactivada, de otro tipo o con otra plantilla), no se toca: se avisa.
  *    Desmarcar la casilla no borra ni desactiva nada.
  *
- * Todo con upsert por (empresa, código): dos peticiones a la vez no chocan con
- * el único. La B y la C van siempre después de la A: en una empresa nueva la
- * semilla solo crea la A si no hay ninguna serie de facturas, y así la A sigue
- * siendo la predeterminada aunque lo primero que se haga sea marcar la casilla.
- * Cada serie lleva su propia numeración desde 1: la B no cambia la de la A.
+ * Todo por (empresa, código) con upsert. En MySQL, el upsert de Prisma lee y
+ * después inserta, así que dos peticiones a la vez pueden chocar con el único
+ * (P2002): entonces se lee la fila que creó la otra (crearSiFalta). La B y la
+ * C van siempre después de la A: en una empresa nueva la semilla solo crea la
+ * A si no hay ninguna serie de facturas, y así la A sigue siendo la
+ * predeterminada aunque lo primero que se haga sea marcar la casilla. Cada
+ * serie lleva su propia numeración desde 1: la B no cambia la de la A.
  */
+import type { InvoiceSeries, Prisma } from '@prisma/client';
 import { prisma } from '../config/database';
 import type { TipoDocumentoSerie } from '../domain/series.model';
 import { normalizarPlantillaId } from '../domain/plantillasFactura';
+import { esClaveRepetida } from '../utils/reintento';
 
 /**
  * Series que toda empresa necesita: la general de facturas, la de rectificativas
@@ -49,6 +53,23 @@ const SERIE_C = { codigo: 'C', descripcion: 'Prestaciones de servicios', tipoDoc
 export const SERIE_B = { codigo: 'B', descripcion: 'Cerámica y materiales de construcción', tipoDocumento: 'FACTURA' } as const;
 
 /**
+ * La serie (empresa, código): la que ya hay o, si no hay ninguna, la de
+ * `create`. Si otra petición la crea a la vez (en MySQL el upsert de Prisma
+ * lee y después inserta: P2002), se devuelve la que creó la otra.
+ */
+async function crearSiFalta(companyId: string, codigo: string, create: Prisma.InvoiceSeriesUncheckedCreateInput): Promise<InvoiceSeries> {
+  const where = { companyId_codigo: { companyId, codigo } };
+  try {
+    return await prisma.invoiceSeries.upsert({ where, create, update: {} });
+  } catch (err) {
+    if (!esClaveRepetida(err)) throw err;
+    const ya = await prisma.invoiceSeries.findUnique({ where });
+    if (!ya) throw err;
+    return ya;
+  }
+}
+
+/**
  * Crea las series que le falten a la empresa (idempotente). `conSerieB` solo
  * se consulta si ninguna serie usa el código B: dice si la empresa es española
  * y vende cerámica. Devuelve si se ha creado la B en esta llamada (o a la vez
@@ -62,34 +83,17 @@ export async function sembrarSeries(companyId: string, conSerieB: () => Promise<
   const sinSerieB = !existentes.some((s) => s.codigo === SERIE_B.codigo);
   for (const { alternativo, ...semilla } of SEMILLAS) {
     if (tipos.has(semilla.tipoDocumento)) continue;
-    // upsert: dos peticiones a la vez no deben chocar con el unico (empresa, codigo).
-    const s = await prisma.invoiceSeries.upsert({
-      where: { companyId_codigo: { companyId, codigo: semilla.codigo } },
-      create: { companyId, ...semilla, activa: true, porDefecto: true },
-      update: {},
-    });
+    const s = await crearSiFalta(companyId, semilla.codigo, { companyId, ...semilla, activa: true, porDefecto: true });
     if (s.tipoDocumento !== semilla.tipoDocumento && alternativo) {
-      await prisma.invoiceSeries.upsert({
-        where: { companyId_codigo: { companyId, codigo: alternativo } },
-        create: { companyId, ...semilla, codigo: alternativo, activa: true, porDefecto: true },
-        update: {},
-      });
+      await crearSiFalta(companyId, alternativo, { companyId, ...semilla, codigo: alternativo, activa: true, porDefecto: true });
     }
   }
   if (sinSerieC) {
-    await prisma.invoiceSeries.upsert({
-      where: { companyId_codigo: { companyId, codigo: SERIE_C.codigo } },
-      create: { companyId, ...SERIE_C, activa: true, porDefecto: false },
-      update: {},
-    });
+    await crearSiFalta(companyId, SERIE_C.codigo, { companyId, ...SERIE_C, activa: true, porDefecto: false });
   }
   if (sinSerieB && (await conSerieB())) {
     // Sin plantilla elegida: usa la B automatica mientras la casilla siga marcada.
-    const b = await prisma.invoiceSeries.upsert({
-      where: { companyId_codigo: { companyId, codigo: SERIE_B.codigo } },
-      create: { companyId, ...SERIE_B, activa: true, porDefecto: false },
-      update: {},
-    });
+    const b = await crearSiFalta(companyId, SERIE_B.codigo, { companyId, ...SERIE_B, activa: true, porDefecto: false });
     return { serieBCreada: b.tipoDocumento === SERIE_B.tipoDocumento && b.activa && !b.plantilla };
   }
   return { serieBCreada: false };
