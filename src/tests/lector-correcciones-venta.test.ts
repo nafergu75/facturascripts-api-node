@@ -112,6 +112,10 @@ describe('leerCorrecciones: forma y campo de cada 400', () => {
 
   it('retención y total: el total es obligatorio con líneas o retención (FALTA_TOTAL)', () => {
     expect(error400(() => leerCorrecciones({ tipoRetencion: 60, total: 1 }, ES))).toMatchObject({ codigo: 'CORRECCION_NO_VALIDA', campo: 'correcciones.tipoRetencion' });
+    // Sin decimales: la línea de la factura guarda el porcentaje en entero (un 7,5 % quedaría en 7).
+    expect(error400(() => leerCorrecciones({ tipoRetencion: 7.5, total: 1 }, ES))).toMatchObject({ codigo: 'CORRECCION_NO_VALIDA', campo: 'correcciones.tipoRetencion' });
+    expect(error400(() => leerCorrecciones({ tipoRetencion: '15', total: 1 }, ES))).toMatchObject({ campo: 'correcciones.tipoRetencion' });
+    expect(leerCorrecciones({ tipoRetencion: 19, total: 1 }, ES)?.tipoRetencion).toBe(19);
     expect(error400(() => leerCorrecciones({ total: 1.001 }, ES))).toMatchObject({ campo: 'correcciones.total' });
     expect(error400(() => leerCorrecciones({ tipoRetencion: 15 }, ES))).toMatchObject({ codigo: 'FALTA_TOTAL', campo: 'correcciones.total' });
     expect(error400(() => leerCorrecciones({ lineas: [{ descripcion: 'x', base: 1, tipoIva: 21 }] }, ES))).toMatchObject({ codigo: 'FALTA_TOTAL', campo: 'correcciones.total' });
