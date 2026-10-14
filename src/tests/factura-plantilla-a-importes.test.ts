@@ -1,7 +1,7 @@
 // Plantilla A: importes de NZ004_26 con el IEEPNR dentro de la base y el IVA
 // calculado por tipo (sobre la suma de bases), que es como lo hace la muestra.
 // Linea a linea saldria 1 centimo menos de IVA.
-import { calcularImportesFactura, calcularLineasDoc, lineasEspejo, type LineaEntrada } from '../domain/importesFactura';
+import { calcularImportesFactura, calcularLineasDoc, cuotaDeBase, lineasEspejo, type LineaEntrada } from '../domain/importesFactura';
 import { calcularIeepnr, resumenEnvases } from '../domain/ieepnr';
 import { LINEAS_NZ004, TOTALES_NZ004 } from './muestra-nz004';
 
@@ -88,6 +88,22 @@ describe('plantilla A: importes de NZ004_26', () => {
     expect(porTipo.lineas.map((l) => l.importes.ivaImporte)).toEqual([0.02, 0.01, 0, 0.01, 2.2]);
     expect(porTipo.totales.ivaTotal).toBe(2.24);
     expect(porTipo.totales.totalFactura).toBe(12.48);
+  });
+
+  it('la cuota por tipo se calcula en enteros: 1.430,50 × 21 % = 300,405 da 300,41 (en coma flotante salia 300,40)', () => {
+    const r = calcularLineasDoc(
+      [
+        { descripcion: 'a', cantidad: 1, precioUnitario: 1250, tipoIva: 21 },
+        { descripcion: 'b', cantidad: 1, precioUnitario: 180.5, tipoIva: 21 },
+      ],
+      { cuotaPorTipo: true },
+    );
+    expect([r.totales.ivaTotal, r.totales.totalFactura]).toEqual([300.41, 1730.91]);
+    expect(cuotaDeBase(1430.5, 21)).toBe(300.41);
+    expect(cuotaDeBase(-1430.5, 21, true)).toBe(-300.41);
+    expect(cuotaDeBase(-1430.5, 21)).toBe(-300.4);
+    expect(cuotaDeBase(7152.63, 21)).toBe(1502.05);
+    expect(cuotaDeBase(100, 5.5)).toBe(5.5);
   });
 
   it('sin IEEPNR ni cuotaPorTipo, la linea es la de siempre (sin claves nuevas)', () => {

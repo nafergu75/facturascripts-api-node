@@ -119,6 +119,18 @@ export interface OpcionesCalculo {
   cuotaPorTipo?: boolean;
 }
 
+/**
+ * Cuota de IVA de una base (cuotaPorTipo) en enteros: centimos de la base por
+ * el tipo en centesimas, redondeado al centimo con la mitad hacia arriba (con
+ * `simetrico`, el negativo como su valor absoluto). En coma flotante,
+ * 1.430,50 × 21 / 100 da 300,40499... y se perdia el centimo (300,405 es 300,41).
+ */
+export function cuotaDeBase(base: number, tipo: number, simetrico = false): number {
+  const producto = cent(base) * Math.round(tipo * 100); // centimos × centesimas de tipo = millonesimas de euro
+  const r = simetrico && producto < 0 ? -Math.floor((-producto + 5000) / 10000) : Math.floor((producto + 5000) / 10000);
+  return sinCeroNegativo(r / 100);
+}
+
 /** Los datos de envase de una linea que vienen definidos (sin claves undefined). */
 function datosEnvase(l: DatosEnvaseLinea): DatosEnvaseLinea {
   const out: DatosEnvaseLinea = {};
@@ -180,7 +192,7 @@ export function calcularLineasDoc(lineas: LineaEntrada[], { simetrico = false, c
     const conCalculo = out.map((l, i) => ({ l, i })).filter(({ i }) => !(lineas[i].cuotaFija !== undefined && out[i].tipoIva !== 0));
     for (const [t, idx] of agrupar(conCalculo, (x) => x.l.tipoIva)) {
       const grupo = idx.map((k) => conCalculo[k].l);
-      const objetivo = r2((sumar(grupo.map((l) => l.importes.baseLine)) * t) / 100);
+      const objetivo = cuotaDeBase(sumar(grupo.map((l) => l.importes.baseLine)), t, simetrico);
       const cuotas = repartirCentimos(objetivo, grupo.map((l) => (l.importes.baseLine * t) / 100));
       grupo.forEach((l, k) => (l.importes.ivaImporte = cuotas[k]));
     }
