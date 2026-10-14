@@ -38,7 +38,7 @@ import {
 } from '../domain/nominas.model';
 import { crearAsientoConApuntes } from './asientos.service';
 import { comprobarFechaAbierta } from './cobrosPagos.service';
-import { estadoPeriodoEnFecha } from './periodos.service';
+import { estadoPeriodoEnFecha, fechaAbierta } from './periodos.service';
 import { nombreCompleto } from './empleados.service';
 import {
   conceptoAsientoNomina,
@@ -940,13 +940,9 @@ export interface ResultadoAnulacion {
   contraasientos: Array<{ nominaId: string; asientoId: string; numero: string }>;
 }
 
+/** Un fallo de la base de datos no es «periodo cerrado»: se relanza (fechaAbierta) y no se anula nada. */
 async function periodoAbiertoEn(companyId: string, fecha: string): Promise<boolean> {
-  try {
-    await comprobarFechaAbierta(companyId, fecha);
-    return true;
-  } catch {
-    return false;
-  }
+  return fechaAbierta(companyId, fecha);
 }
 
 /**

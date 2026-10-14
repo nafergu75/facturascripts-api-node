@@ -3,6 +3,7 @@ import { logger } from './logger';
 import { importesComoNumero } from './decimales';
 import { reintentoConexion } from './reintentoConexion';
 import { inmutabilidadVerifactu } from './inmutabilidadVerifactu';
+import { clienteGlobalEnTransaccion, dentroDeTransaccion, enCallbackDeTransaccion } from './guardaTransaccion';
 
 /**
  * Tiempo de las transacciones interactivas (prisma.$transaction(async (tx) => ...)).
@@ -19,11 +20,32 @@ import { inmutabilidadVerifactu } from './inmutabilidadVerifactu';
 export const OPCIONES_TRANSACCION = { maxWait: 10_000, timeout: 30_000 } as const;
 
 /**
- * Cliente Prisma con las extensiones de la app: reintento de conexion, importes
- * como number e inmutabilidad de VERI*FACTU (registros y facturas registradas).
+ * Cliente Prisma con las extensiones de la app (reintento de conexion, importes
+ * como number e inmutabilidad de VERI*FACTU: registros y facturas registradas)
+ * y la guarda de las transacciones.
  */
 export function crearClienteBD(transactionOptions: { maxWait: number; timeout: number } = OPCIONES_TRANSACCION) {
-  return new PrismaClient({ transactionOptions }).$extends(reintentoConexion).$extends(importesComoNumero).$extends(inmutabilidadVerifactu);
+  return marcarTransacciones(
+    new PrismaClient({ transactionOptions }).$extends(reintentoConexion).$extends(importesComoNumero).$extends(inmutabilidadVerifactu),
+  );
+}
+
+/**
+ * El callback de cada transaccion interactiva corre marcado (config/guardaTransaccion):
+ * asi se ve si dentro se consulta con el cliente global en vez de con `tx`, o
+ * se abre otra transaccion. Con una sola conexion en el pool (produccion), las
+ * dos cosas esperan una conexion que no llega hasta que la transaccion caduca.
+ */
+function marcarTransacciones<C extends { $transaction: unknown }>(cliente: C): C {
+  const original = (cliente.$transaction as (arg: unknown, opciones?: unknown) => Promise<unknown>).bind(cliente);
+  const conMarca = (arg: unknown, opciones?: unknown) => {
+    if (dentroDeTransaccion()) clienteGlobalEnTransaccion('$transaction');
+    if (typeof arg !== 'function') return original(arg, opciones);
+    const callback = arg as (tx: unknown) => Promise<unknown>;
+    return original((tx: unknown) => enCallbackDeTransaccion(() => callback(tx)), opciones);
+  };
+  (cliente as { $transaction: unknown }).$transaction = conMarca;
+  return cliente;
 }
 
 /**

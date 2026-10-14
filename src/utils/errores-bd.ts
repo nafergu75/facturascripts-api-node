@@ -53,6 +53,16 @@ export const QUE_HACER_GASTO_YA_REGISTRADO: QueHacerFalloBD = {
   resultado: 'La factura sí está registrada: búscala en Compras antes de volver a registrarla',
 };
 
+/**
+ * Cualquier otra peticion que falla por la base de datos (middleware de
+ * errores): no se sabe si algo llego a grabarse, asi que se pide comprobarlo
+ * antes de repetir.
+ */
+export const QUE_HACER_GENERICO: QueHacerFalloBD = {
+  resultado: 'No se ha podido terminar la operación',
+  repetir: 'comprueba si se ha guardado y, si no, vuelve a intentarlo dentro de un momento',
+};
+
 /** Lo que se le dice a quien registro la factura cuando su asiento automatico no se ha podido crear. */
 export const TEXTO_FACTURA_REGISTRADA = 'La factura sí está registrada.';
 

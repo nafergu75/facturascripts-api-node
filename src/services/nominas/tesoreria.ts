@@ -30,6 +30,7 @@ import { hoyEspana } from '../../utils/fechas';
 import type { CuentasNominas } from '../../domain/nominas.model';
 import { crearAsientoConApuntes } from '../asientos.service';
 import { comprobarFechaAbierta } from '../cobrosPagos.service';
+import { fechaAbierta } from '../periodos.service';
 import { calcularModelo111, esEmpresaEspanolaFiscal, MENSAJE_SIN_MODELOS } from '../impuestosCalculo.service';
 import { obtenerReglas } from '../reglasContables.service';
 import { nombreCompleto } from '../empleados.service';
@@ -147,13 +148,9 @@ export async function desconciliarMovimiento(tx: TransaccionBD, companyId: strin
 // Anular un asiento de pago
 // ---------------------------------------------------------------------------
 
+/** Un fallo de la base de datos no es «periodo cerrado»: se relanza (fechaAbierta) y no se anula nada. */
 export async function periodoAbiertoEn(companyId: string, fecha: string): Promise<boolean> {
-  try {
-    await comprobarFechaAbierta(companyId, fecha);
-    return true;
-  } catch {
-    return false;
-  }
+  return fechaAbierta(companyId, fecha);
 }
 
 /**

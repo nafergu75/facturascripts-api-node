@@ -63,6 +63,22 @@ const QUE_HACER_APROBAR: QueHacerFalloBD = {
   repetir: 'vuelve a aprobarlo dentro de un momento',
 };
 
+/** Que hacer si la base de datos falla al cambiar la cuenta o el importe de una linea de un borrador. */
+const QUE_HACER_AJUSTAR_LINEA: QueHacerFalloBD = {
+  resultado: 'La línea no se ha cambiado',
+  repetir: 'vuelve a intentarlo dentro de un momento',
+};
+
+/** Que hacer si la base de datos falla al abrir un asiento o la lista de asientos (solo lectura). */
+const QUE_HACER_VER_ASIENTO: QueHacerFalloBD = {
+  resultado: 'No se ha podido cargar el asiento',
+  repetir: 'vuelve a intentarlo dentro de un momento',
+};
+const QUE_HACER_LISTAR_ASIENTOS: QueHacerFalloBD = {
+  resultado: 'No se han podido cargar los asientos',
+  repetir: 'vuelve a intentarlo dentro de un momento',
+};
+
 /** Mismo cliente o proveedor. */
 const mismaFicha = (a: { tipo: string; id: string } | null | undefined, b: { tipo: string; id: string } | null | undefined) =>
   !!a && !!b && a.tipo === b.tipo && a.id === b.id;
@@ -766,7 +782,11 @@ export class AccountingEngineController {
       if (err instanceof Error && 'statusCode' in err) {
         throw err;
       }
-      throw badRequest(`Error obteniendo asiento: ${err instanceof Error ? err.message : ''}`);
+      // Un fallo de la base de datos, con la causa en castellano (503), no con el texto de Prisma.
+      throw (
+        errorFalloBD(err, QUE_HACER_VER_ASIENTO, `abrir el asiento ${journalEntryId}`) ??
+        badRequest(`Error obteniendo asiento: ${err instanceof Error ? err.message : ''}`)
+      );
     }
   }
 
@@ -806,13 +826,17 @@ export class AccountingEngineController {
         }
       }
 
-      return prisma.journalEntry.findMany({
+      // Con await: si no, un fallo de la consulta no pasaba por este catch.
+      return await prisma.journalEntry.findMany({
         where,
         include: { lineas: true },
         orderBy: { fecha: 'desc' },
       });
     } catch (err) {
-      throw badRequest(`Error listando asientos: ${err instanceof Error ? err.message : ''}`);
+      throw (
+        errorFalloBD(err, QUE_HACER_LISTAR_ASIENTOS, 'listar los asientos') ??
+        badRequest(`Error listando asientos: ${err instanceof Error ? err.message : ''}`)
+      );
     }
   }
 
@@ -920,7 +944,10 @@ export class AccountingEngineController {
       if (err instanceof Error && 'statusCode' in err) {
         throw err;
       }
-      throw badRequest(`Error ajustando línea: ${err instanceof Error ? err.message : ''}`);
+      throw (
+        errorFalloBD(err, QUE_HACER_AJUSTAR_LINEA, `ajustar la línea ${lineId} del asiento ${journalEntryId}`) ??
+        badRequest(`Error ajustando línea: ${err instanceof Error ? err.message : ''}`)
+      );
     }
   }
 }

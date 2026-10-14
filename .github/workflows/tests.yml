@@ -12,9 +12,29 @@ on:
   workflow_dispatch:
 
 jobs:
+  # La suite se ejecuta dos veces, en paralelo y cada una con su MySQL:
+  #  - con el pool normal (varias conexiones). Solo asi dos transacciones de un
+  #    mismo test van de verdad a la vez y se prueban los bloqueos (FOR UPDATE)
+  #    y el reintento ante el indice unico. Con una conexion la segunda espera a
+  #    que acabe la primera y esos tests pasan sin probar nada;
+  #  - con UNA conexion, como en produccion (Vercel + TiDB con
+  #    connection_limit=1). Una consulta con el cliente global dentro de una
+  #    transaccion se queda esperando conexion y la transaccion caduca: el
+  #    14-10-2026 «Registrar cobro» dio un 500 a los 30 s por eso. Con varias
+  #    conexiones no se ve (la guarda de config/guardaTransaccion lo caza
+  #    igualmente; esto lo comprueba como en produccion).
   tests:
+    name: Tests (${{ matrix.pool }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - pool: varias conexiones
+            parametros: ''
+          - pool: una conexion, como en produccion
+            parametros: '?connection_limit=1&pool_timeout=10'
 
     services:
       mysql:
@@ -32,7 +52,7 @@ jobs:
 
     env:
       # Base de pruebas del propio job: no es ningun secreto.
-      DATABASE_URL: mysql://root:pruebas@127.0.0.1:3306/conta_test
+      DATABASE_URL: mysql://root:pruebas@127.0.0.1:3306/conta_test${{ matrix.parametros }}
       NODE_ENV: test
 
     steps:

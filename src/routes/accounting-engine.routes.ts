@@ -17,9 +17,25 @@ import { authMiddleware } from '../middleware/auth.middleware';
 import { validate } from '../middleware/validation.middleware';
 import { contabilizarQuerySchema } from '../schemas/accounting-engine.schemas';
 import { HttpError } from '../utils/http-errors';
+import { errorFalloBD, QUE_HACER_GENERICO } from '../utils/errores-bd';
 
 // mergeParams: hereda :companyId del router padre (/companies/:companyId/accounting).
 export const accountingEngineRoutes = Router({ mergeParams: true });
+
+/**
+ * Respuesta de error de estas rutas ({ error, details }): un HttpError, con su
+ * codigo y sus details; un fallo de la base de datos que nadie haya traducido,
+ * con el 503 claro (utils/errores-bd), nunca un 400 con el texto de Prisma; el
+ * resto, 400 como siempre.
+ */
+function responderError(req: Request, res: Response, err: unknown): void {
+  const e = err instanceof HttpError ? err : errorFalloBD(err, QUE_HACER_GENERICO, `atender ${req.method} ${req.originalUrl.split('?')[0]}`) ?? err;
+  const statusCode = e instanceof HttpError ? e.statusCode : 400;
+  const message = e instanceof Error ? e.message : String(e);
+  // Los details (p. ej. { motivo: 'periodo_bloqueado', enlace } o { codigo: 'FALLO_BD' }) dicen a la pantalla que hacer.
+  const details = e instanceof HttpError && e.details !== undefined ? { details: e.details } : {};
+  res.status(statusCode).json({ error: message, ...details });
+}
 
 /**
  * POST /api/companies/:companyId/accounting/contabilizar/:invoiceId
@@ -58,12 +74,7 @@ accountingEngineRoutes.post(
 
       res.json(resultado);
     } catch (err) {
-      const statusCode =
-        err instanceof HttpError ? err.statusCode : 400;
-      const message = err instanceof Error ? err.message : String(err);
-      // Los details (p. ej. { motivo: 'periodo_bloqueado', enlace }) dicen a la pantalla adonde llevar.
-      const details = err instanceof HttpError && err.details !== undefined ? { details: err.details } : {};
-      res.status(statusCode).json({ error: message, ...details });
+      responderError(req, res, err);
     }
   }
 );
@@ -102,10 +113,7 @@ accountingEngineRoutes.get(
 
       res.json(asientos);
     } catch (err) {
-      const statusCode =
-        err instanceof HttpError ? err.statusCode : 400;
-      const message = err instanceof Error ? err.message : String(err);
-      res.status(statusCode).json({ error: message });
+      responderError(req, res, err);
     }
   }
 );
@@ -138,10 +146,7 @@ accountingEngineRoutes.get(
       );
       res.json(detalle);
     } catch (err) {
-      const statusCode =
-        err instanceof HttpError ? err.statusCode : 400;
-      const message = err instanceof Error ? err.message : String(err);
-      res.status(statusCode).json({ error: message });
+      responderError(req, res, err);
     }
   }
 );
@@ -181,12 +186,7 @@ accountingEngineRoutes.post(
 
       res.json(resultado);
     } catch (err) {
-      const statusCode =
-        err instanceof HttpError ? err.statusCode : 400;
-      const message = err instanceof Error ? err.message : String(err);
-      // Los details (p. ej. { campo: 'fechaRegistro', facturaId }) le dicen a la pantalla que abrir.
-      const details = err instanceof HttpError && err.details !== undefined ? { details: err.details } : {};
-      res.status(statusCode).json({ error: message, ...details });
+      responderError(req, res, err);
     }
   }
 );
@@ -222,10 +222,7 @@ accountingEngineRoutes.post(
 
       res.json(resultado);
     } catch (err) {
-      const statusCode =
-        err instanceof HttpError ? err.statusCode : 400;
-      const message = err instanceof Error ? err.message : String(err);
-      res.status(statusCode).json({ error: message });
+      responderError(req, res, err);
     }
   }
 );
@@ -267,10 +264,7 @@ accountingEngineRoutes.patch(
 
       res.json(resultado);
     } catch (err) {
-      const statusCode =
-        err instanceof HttpError ? err.statusCode : 400;
-      const message = err instanceof Error ? err.message : String(err);
-      res.status(statusCode).json({ error: message });
+      responderError(req, res, err);
     }
   }
 );

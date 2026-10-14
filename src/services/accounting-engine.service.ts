@@ -278,7 +278,7 @@ export async function contabilizarFacturaIngreso(
   const descripcion = `Factura de ingreso #${invoiceData.numeroFactura} - ${invoiceData.clienteNombre}`.slice(0, 190 - nota.length) + nota;
 
   // Un año llevado por la gestoria es de solo lectura (red de seguridad de comprobarFechaAbierta).
-  if (!invoiceData.fechaComprobada) await exigirFechaContabilizable(companyId, invoiceData.fechaEmision);
+  if (!invoiceData.fechaComprobada) await exigirFechaContabilizable(companyId, invoiceData.fechaEmision, db);
 
   // Las lineas se preparan antes y se escriben con el asiento en una sola
   // operacion (antes, una sentencia por linea: en TiDB cada una es un viaje de
@@ -496,7 +496,7 @@ export async function contabilizarFacturaGasto(
     : `${clase} #${invoiceData.numeroFactura} - ${invoiceData.proveedorNombre}${deQue}`.slice(0, 190);
 
   // Un año llevado por la gestoria es de solo lectura (red de seguridad de comprobarFechaAbierta).
-  if (!invoiceData.fechaComprobada) await exigirFechaContabilizable(companyId, invoiceData.fechaEmision);
+  if (!invoiceData.fechaComprobada) await exigirFechaContabilizable(companyId, invoiceData.fechaEmision, db);
 
   // Las lineas se preparan y se escriben con el asiento de una vez (antes, una
   // sentencia por linea dentro de la transaccion). Si no cuadra, nada.

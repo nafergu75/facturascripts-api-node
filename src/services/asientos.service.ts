@@ -419,7 +419,8 @@ export async function crearAsientoConApuntes(
   }
 
   // Un año llevado por la gestoria es de solo lectura (red de seguridad de comprobarFechaAbierta).
-  await exigirFechaContabilizable(companyId, params.fecha);
+  // Dentro de una transaccion, con su tx (con una sola conexion, el global se queda esperando).
+  await exigirFechaContabilizable(companyId, params.fecha, params.tx);
 
   if (params.tx) {
     const tx = params.tx;

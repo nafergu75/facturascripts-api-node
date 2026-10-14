@@ -24,7 +24,7 @@ import { hoyEspana } from '../../utils/fechas';
 import { conReintento } from '../../utils/reintento';
 import { registrarAuditoria } from '../auditoria.service';
 import { asegurarPlanContableEmpresa } from '../chart-of-accounts.service';
-import { comprobarFechaAbierta, exigirFechaContabilizable } from '../periodos.service';
+import { comprobarFechaAbierta, exigirFechaContabilizable, fechaAbierta } from '../periodos.service';
 import { exigirSubcuentaDeBanco } from '../subcuentaBanco.service';
 
 const r2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100;
@@ -575,7 +575,7 @@ async function asientoTesoreria(
   const debe = r2(p.apuntes.reduce((s, a) => s + a.debe, 0));
   const haber = r2(p.apuntes.reduce((s, a) => s + a.haber, 0));
   if (aCentimos(debe) !== aCentimos(haber)) throw badRequest(`El asiento no cuadra: Debe ${debe} y Haber ${haber}.`);
-  await exigirFechaContabilizable(companyId, p.fecha);
+  await exigirFechaContabilizable(companyId, p.fecha, tx);
   return tx.journalEntry.create({
     data: {
       companyId,
@@ -724,12 +724,8 @@ export async function anularLiquidacion(
   const t = TXT[f.tipo as TipoPartida];
   if (pago.estado !== 'ACTIVO') throw conflict(`El ${t.cobro} ya está anulado.`);
 
-  let abierto = true;
-  try {
-    await comprobarFechaAbierta(companyId, pago.fecha);
-  } catch {
-    abierto = false;
-  }
+  // Un fallo de la base de datos no es «mes cerrado»: se relanza y no se anula nada.
+  const abierto = await fechaAbierta(companyId, pago.fecha);
   const fechaRaw = typeof opciones.fecha === 'string' && opciones.fecha ? opciones.fecha.slice(0, 10) : hoyEspana();
   if (!abierto && !FECHA_RE.test(fechaRaw)) throw badRequest('La fecha no es válida (AAAA-MM-DD).', { campo: 'fecha' });
   const fechaAnulacion = abierto ? pago.fecha : fechaRaw;

@@ -1,5 +1,5 @@
 import { Prisma } from '@prisma/client';
-import { prisma } from '../config/database';
+import { prisma, type ClienteBD, type TransaccionBD } from '../config/database';
 import { badRequest, conflict, notFound } from '../utils/http-errors';
 import { anioEspana } from '../utils/fechas';
 import { FILTRO_ASIENTOS_CIERRE } from '../domain/asientosCierre';
@@ -103,10 +103,10 @@ interface DatosCierres {
   primerAsiento: Date | null;
 }
 
-async function datosCierres(companyId: string): Promise<DatosCierres> {
+async function datosCierres(companyId: string, db: ClienteBD | TransaccionBD = prisma): Promise<DatosCierres> {
   const [asientos, primero] = await Promise.all([
-    prisma.journalEntry.findMany({ where: { companyId, estado: 'POSTED', ...FILTRO_ASIENTOS_CIERRE }, select: { fecha: true } }),
-    prisma.journalEntry.findFirst({
+    db.journalEntry.findMany({ where: { companyId, estado: 'POSTED', ...FILTRO_ASIENTOS_CIERRE }, select: { fecha: true } }),
+    db.journalEntry.findFirst({
       where: { companyId, estado: 'POSTED', NOT: FILTRO_ASIENTOS_CIERRE },
       orderBy: { fecha: 'asc' },
       select: { fecha: true },
@@ -162,11 +162,18 @@ export function mensajeCerradoSinAsientos(anio: string | number, motivo: string 
   return `${base} El administrador de la empresa puede reabrirlo en Configuración > Ejercicios y periodos y después cerrarlo en Cierre y traspaso de saldos.`;
 }
 
-/** ¿Se puede reabrir el ejercicio de ese año? (para los mensajes de periodos y del cierre). */
-export async function reaperturaDelAnio(companyId: string, ejercicio: number): Promise<{ puedeReabrir: boolean; motivo: string | null }> {
-  const fy = await prisma.fiscalYear.findFirst({ where: { companyId, label: String(ejercicio) } });
+/**
+ * ¿Se puede reabrir el ejercicio de ese año? (para los mensajes de periodos y
+ * del cierre). `db`: el `tx` si se pregunta dentro de una transaccion.
+ */
+export async function reaperturaDelAnio(
+  companyId: string,
+  ejercicio: number,
+  db: ClienteBD | TransaccionBD = prisma,
+): Promise<{ puedeReabrir: boolean; motivo: string | null }> {
+  const fy = await db.fiscalYear.findFirst({ where: { companyId, label: String(ejercicio) } });
   if (!fy) return { puedeReabrir: false, motivo: null };
-  const no = motivoNoReabrir(fy, await datosCierres(companyId));
+  const no = motivoNoReabrir(fy, await datosCierres(companyId, db));
   return { puedeReabrir: !no, motivo: no?.mensaje ?? null };
 }
 

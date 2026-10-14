@@ -1660,7 +1660,7 @@ export async function anularGasto(
     } else if (asiento && conContraasiento) {
       const original = await tx.journalEntry.findUniqueOrThrow({ where: { id: asiento.id }, include: { lineas: true } });
       const nfp = f.numeroFacturaProveedor ?? f.numeroCompleto;
-      await exigirFechaContabilizable(companyId, fechaAnulacion);
+      await exigirFechaContabilizable(companyId, fechaAnulacion, tx);
       const c = await tx.journalEntry.create({
         data: {
           companyId,
