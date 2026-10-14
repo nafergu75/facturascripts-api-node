@@ -58,6 +58,11 @@ model Company {
   reglas      ReglasContables?
   movements   Movement[]       @relation("movements")
   verifactuConfig VerifactuConfig?
+  verifactuCadenas     VerifactuCadena[]
+  verifactuRegistros   VerifactuRegistro[]
+  verifactuLotes       VerifactuLote[]
+  verifactuCertificado VerifactuCertificado?
+  verifactuBitacora    VerifactuBitacora[]
 }
 
 /// Reglas contables configurables por empresa (ReglasContablesEmpresa serializada como JSON).
@@ -313,9 +318,20 @@ model IncomeInvoice {
   /// Lo pone el servidor en todos los caminos de alta, nunca el cuerpo. null:
   /// factura anterior a esta columna (se trata como anterior a la activacion).
   origen              String?               @db.VarChar(10)
+  /// VERI*FACTU (spec 7.4): anulacion de una factura emitida por error. Sigue FINAL y el numero no se libera.
+  anuladaEn            DateTime?
+  anuladaPor           String?
+  motivoAnulacion      String?             @db.Text
+  /// DescripcionOperacion del registro de alta (obligatoria en la AEAT, max. 500). null: se compone al emitir.
+  descripcionOperacion String?             @db.VarChar(500)
+  /// Copia, al emitir desde la app, del emisor (LegalConfig) y del cliente (Customer) que salen en el PDF (spec 5.3).
+  instantaneaEmision   Json?
+  /// Estado del ultimo registro VERI*FACTU (PENDIENTE, ACEPTADO...). null: la factura no tiene registro.
+  verifactuEstado      String?             @db.VarChar(24)
   createdAt           DateTime              @default(now())
   updatedAt           DateTime              @updatedAt
   lineas              IncomeInvoiceLine[]
+  verifactuRegistros  VerifactuRegistro[]
   customer            Customer              @relation(fields: [customerId], references: [id], onDelete: Restrict)
   readerDocument      IncomeReaderDocument?
   /// Que rectifica esta rectificativa: facturas de la app, de fuera o un periodo.
@@ -1957,9 +1973,171 @@ model VerifactuConfig {
   activadaEn      DateTime?
   /// SII | FORAL | null. Si esta informado, VERI*FACTU no aplica y la red de seguridad no bloquea.
   motivoExclusion String?   @db.VarChar(10)
+  /// Congelados al activar o con el primer registro: la cadena es por NIF y no cambia (spec 9.3).
+  nifObligado         String?   @db.VarChar(9)
+  nombreObligado      String?   @db.VarChar(120)
+  /// SistemaInformatico/NumeroInstalacion: 'CONTA-' + companyId. No se repite nunca (FAQ desarrolladores n.º 4).
+  numeroInstalacion   String?   @db.VarChar(100)
+  /// CERT_EMPRESA | CERT_PLATAFORMA. null = CERT_EMPRESA.
+  modoCertificado     String?   @db.VarChar(16)
+  representanteNif    String?   @db.VarChar(9)
+  representanteNombre String?   @db.VarChar(120)
+  /// Renuncia para el año siguiente (Orden HAC/1177/2024, art. 17): 31-12-AAAA.
+  fechaFinVerifactu   String?   @db.VarChar(10)
+  pruebasSuperadasEn  DateTime?
+  pruebasSuperadasPor String?
+  declaracionVersion  String?   @db.VarChar(20)
   updatedAt       DateTime  @updatedAt
   updatedBy       String?
   company         Company   @relation(fields: [companyId], references: [id], onDelete: Restrict)
+}
+
+/// VERI*FACTU: cabeza de la cadena por empresa y entorno (spec 2.2). Es la fila que se bloquea
+/// (SELECT ... FOR UPDATE) al generar cada registro, siempre despues de la serie.
+model VerifactuCadena {
+  id                    String    @id @default(cuid())
+  companyId             String
+  /// PRUEBAS | PRODUCCION
+  entorno               String    @db.VarChar(12)
+  numRegistros          Int       @default(0)
+  ultimoRegistroId      String?   @unique
+  ultimaHuella          String?   @db.Char(64)
+  ultimoIdEmisor        String?   @db.VarChar(9)
+  ultimoNumSerie        String?   @db.VarChar(60)
+  /// dd-mm-aaaa
+  ultimaFechaExpedicion String?   @db.VarChar(10)
+  /// Texto exacto de FechaHoraHusoGenRegistro del ultimo registro.
+  ultimaFechaHoraHuso   String?   @db.VarChar(25)
+  // Control de flujo y envio (fase F3)
+  tiempoEsperaSeg       Int       @default(60)
+  proximoEnvioDesde     DateTime?
+  enviandoHasta         DateTime?
+  ultimoEnvioEn         DateTime?
+  incidenciaDesde       DateTime?
+  company               Company   @relation(fields: [companyId], references: [id], onDelete: Restrict)
+
+  @@unique([companyId, entorno])
+}
+
+/// VERI*FACTU: registros de alta y de anulacion (spec 2.3). Inmutables salvo los campos de envio
+/// (config/inmutabilidadVerifactu.ts). Los campos de la huella guardan el TEXTO EXACTO enviado.
+model VerifactuRegistro {
+  id                 String             @id @default(cuid())
+  companyId          String
+  /// PRUEBAS | PRODUCCION
+  entorno            String             @db.VarChar(12)
+  incomeInvoiceId    String
+  /// 1, 2, 3... por empresa y entorno
+  numeroEnCadena     Int
+  /// La cadena no se bifurca: cada registro tiene como mucho un siguiente.
+  registroAnteriorId String?            @unique
+  /// ALTA | ANULACION
+  tipo               String             @db.VarChar(10)
+  subsanacion        Boolean            @default(false)
+  /// alta: null | N | S | X; anulacion: null | N | S
+  rechazoPrevio      String?            @db.VarChar(1)
+  sinRegistroPrevio  Boolean            @default(false)
+  idEmisor           String             @db.VarChar(9)
+  numSerie           String             @db.VarChar(60)
+  /// dd-mm-aaaa
+  fechaExpedicion    String             @db.VarChar(10)
+  /// Solo alta
+  tipoFactura        String?            @db.VarChar(2)
+  cuotaTotal         String?            @db.VarChar(20)
+  importeTotal       String?            @db.VarChar(20)
+  fechaHoraHuso      String             @db.VarChar(25)
+  /// null en el primer registro (PrimerRegistro=S)
+  huellaAnterior     String?            @db.Char(64)
+  huella             String             @db.Char(64)
+  /// Resto del registro congelado (RegistroContenido, services/verifactu/tipos.ts).
+  contenido          Json
+  /// XML del RegistroAlta/RegistroAnulacion (fase F2). null en los generados antes.
+  xml                String?            @db.MediumText
+  // Envio (fase F3)
+  estadoEnvio        String             @default("PENDIENTE") @db.VarChar(24)
+  intentos           Int                @default(0)
+  proximoIntento     DateTime           @default(now())
+  bloqueadoHasta     DateTime?
+  loteId             String?
+  csv                String?            @db.VarChar(16)
+  codigoError        String?            @db.VarChar(10)
+  descripcionError   String?            @db.Text
+  /// Registro que corrige a este (subsanacion o anulacion posterior, fase F4).
+  corregidoPorId     String?
+  generadoPor        String?
+  createdAt          DateTime           @default(now())
+  enviadoEn          DateTime?
+  respondidoEn       DateTime?
+  company            Company            @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  factura            IncomeInvoice      @relation(fields: [incomeInvoiceId], references: [id], onDelete: Restrict)
+  registroAnterior   VerifactuRegistro? @relation("EncadenamientoVerifactu", fields: [registroAnteriorId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  registroSiguiente  VerifactuRegistro? @relation("EncadenamientoVerifactu")
+  lote               VerifactuLote?     @relation(fields: [loteId], references: [id], onDelete: Restrict)
+
+  @@unique([companyId, entorno, numeroEnCadena])
+  @@index([companyId, entorno, estadoEnvio, proximoIntento])
+  @@index([incomeInvoiceId])
+  @@index([loteId])
+}
+
+/// VERI*FACTU: cada envio a la AEAT (spec 2.4, fase F3). El CSV se guarda al recibirlo.
+model VerifactuLote {
+  id                    String              @id @default(cuid())
+  companyId             String
+  entorno               String              @db.VarChar(12)
+  numRegistros          Int
+  /// Cabecera/RemisionVoluntaria/Incidencia=S
+  incidencia            Boolean             @default(false)
+  peticionXml           String              @db.MediumText
+  respuestaXml          String?             @db.MediumText
+  httpStatus            Int?
+  faultCode             String?             @db.VarChar(64)
+  faultString           String?             @db.Text
+  /// Correcto | ParcialmenteCorrecto | Incorrecto
+  estadoEnvio           String?             @db.VarChar(24)
+  csv                   String?             @db.VarChar(16)
+  tiempoEsperaSeg       Int?
+  timestampPresentacion String?             @db.VarChar(40)
+  iniciadoEn            DateTime            @default(now())
+  terminadoEn           DateTime?
+  company               Company             @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  registros             VerifactuRegistro[]
+
+  @@index([companyId, iniciadoEn])
+}
+
+/// VERI*FACTU: certificado cifrado de la empresa (spec 2.5, fase F2). Nunca sale el PFX ni la contraseña.
+model VerifactuCertificado {
+  id           String   @id @default(cuid())
+  companyId    String   @unique
+  /// "v1:" + encrypt(base64(pfx))
+  pfxEnc       String   @db.MediumText
+  /// "v1:" + encrypt(contraseña)
+  passEnc      String   @db.Text
+  titular      String
+  nifTitular   String   @db.VarChar(20)
+  emisor       String
+  numeroSerie  String
+  validoDesde  DateTime
+  caducaEn     DateTime
+  huellaSha256 String   @db.Char(64)
+  subidoPor    String
+  subidoEn     DateTime @default(now())
+  company      Company  @relation(fields: [companyId], references: [id], onDelete: Restrict)
+}
+
+/// VERI*FACTU: auditoria interna (spec 2.6). No es el registro de eventos de la Orden (art. 3: no aplica a VERI*FACTU).
+model VerifactuBitacora {
+  id        String   @id @default(cuid())
+  companyId String?
+  /// ACTIVACION | DESACTIVACION | CERT_SUBIDO | CERT_BORRADO | LOTE_BLOQUEADO | INCIDENCIA_INICIO | INCIDENCIA_FIN | CADENA_ROTA | BLOQUEO_EMISION | RED_SEGURIDAD_CAMBIADA | DECLARACION_ACEPTADA
+  tipo      String   @db.VarChar(32)
+  usuarioId String?
+  detalle   Json
+  createdAt DateTime @default(now())
+  company   Company? @relation(fields: [companyId], references: [id], onDelete: Restrict)
+
+  @@index([companyId, createdAt])
 }
 
 /// Ajustes de toda la plataforma (no de una empresa), por clave (spec verifactu, 2.7).
