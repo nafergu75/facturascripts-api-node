@@ -5,6 +5,8 @@
  * cobros y pagos, un borrador marcado, un asiento anulado que no sale, los
  * filtros, los totales, el nombre de cada cuenta, el documento de origen, la
  * descarga en PDF y Excel, el permiso y el aislamiento entre dos empresas.
+ * La regularizacion y el cierre no salen salvo que se pidan: con ellos la
+ * diferencia de una cuenta o de un cliente ya no seria su saldo del mayor.
  *
  * Necesita MySQL.
  */
@@ -15,7 +17,8 @@ import request from 'supertest';
 import { prisma } from '../config/database';
 import { errorMiddleware } from '../middleware/error.middleware';
 import { informesContablesRoutes } from '../routes/informesContables.routes';
-import { filtroApuntesDeConsulta, informeApuntes, listarApuntes, periodoApuntes, type Apunte } from '../services/apuntesContables.service';
+import { filtroApuntesDeConsulta, informeApuntes, listarApuntes, MAX_DESCARGA, periodoApuntes, type Apunte } from '../services/apuntesContables.service';
+import { informeDiario, informeMayor } from '../services/informesContables.service';
 
 const SUF = `${Date.now()}${randomBytes(3).toString('hex')}`;
 const E = `apuntes-${SUF}`;
@@ -213,7 +216,7 @@ describe('listado de apuntes', () => {
     ]);
     expect(r.apuntes.some((a) => [ids.anulado, ids.sustituido, ids.anterior].includes(a.asientoId))).toBe(false);
     // Todo cuadra: Debe = Haber.
-    expect(r.totales).toEqual({ apuntes: 21, debe: 1690, haber: 1690, diferencia: 0, enBorrador: 5 });
+    expect(r.totales).toEqual({ apuntes: 21, debe: 1690, haber: 1690, diferencia: 0, enBorrador: 5, deCierre: 0 });
     expect(r.movimientosAntiguos).toBe(1);
   });
 
@@ -262,7 +265,7 @@ describe('listado de apuntes', () => {
     expect(aprobados.totales).toMatchObject({ apuntes: 16, enBorrador: 0, diferencia: 0 });
     const borradores = await lista({ estado: 'borradores' });
     expect(borradores.apuntes.map((a) => a.asientoId)).toEqual([ids.borrador, ids.borrador, ids.borrador, ids.revisar, ids.revisar]);
-    expect(borradores.totales).toEqual({ apuntes: 5, debe: 272, haber: 272, diferencia: 0, enBorrador: 5 });
+    expect(borradores.totales).toEqual({ apuntes: 5, debe: 272, haber: 272, diferencia: 0, enBorrador: 5, deCierre: 0 });
   });
 
   it('cuenta o prefijo: 43 trae las 43… con su diferencia; 572 el banco', async () => {
@@ -274,7 +277,7 @@ describe('listado de apuntes', () => {
       'FAC-ING-A-4 430 50/0',
       'FAC-ING-A-4 4300002 5/0',
     ]);
-    expect(clientes.totales).toEqual({ apuntes: 5, debe: 418, haber: 121, diferencia: 297, enBorrador: 1 });
+    expect(clientes.totales).toEqual({ apuntes: 5, debe: 418, haber: 121, diferencia: 297, enBorrador: 1, deCierre: 0 });
     const banco = await lista({ cuenta: '572' });
     expect(banco.totales).toMatchObject({ apuntes: 2, debe: 121, haber: 60.5, diferencia: 60.5 });
     // Solo con cifras: «572 Banco» vale 572.
@@ -334,7 +337,7 @@ describe('listado de apuntes', () => {
   it('sin apuntes: lista vacía y totales a cero', async () => {
     const r = await listarApuntes(E, await filtroApuntesDeConsulta(E, { ejercicio: '2027' }));
     expect(r.apuntes).toEqual([]);
-    expect(r.totales).toEqual({ apuntes: 0, debe: 0, haber: 0, diferencia: 0, enBorrador: 0 });
+    expect(r.totales).toEqual({ apuntes: 0, debe: 0, haber: 0, diferencia: 0, enBorrador: 0, deCierre: 0 });
     expect(r.paginas).toBe(1);
   });
 });
@@ -367,6 +370,12 @@ describe('descarga en PDF y Excel', () => {
     expect(r.tabla.notas?.some((n) => n.startsWith('Un apunte es de asientos en borrador'))).toBe(true);
     const t = await informeApuntes(E, await filtro({ trimestre: '1', tercero: barPepe, tipoTercero: 'cliente', estado: 'aprobados' }));
     expect(t.tabla.periodo).toBe('1.er trimestre de 2026 (del 01/01/2026 al 31/03/2026) · cliente Bar Pepe SL (B71000011) · solo asientos aprobados');
+    // Las notas dicen lo que se ha pedido: solo aprobados, solo borradores o los dos; y sin la regularización ni el cierre.
+    expect(t.tabla.notas).toContain('Apuntes de los asientos aprobados, por fecha de asiento. Los asientos anulados no salen.');
+    expect(t.tabla.notas).toContain('Sin los asientos de regularización ni de cierre del ejercicio, como en el libro diario.');
+    expect(r.tabla.notas).toContain('Apuntes de los asientos aprobados y de los que están en borrador, por fecha de asiento. Los asientos anulados no salen.');
+    const b = await informeApuntes(E, await filtro({ estado: 'borradores' }));
+    expect(b.tabla.notas).toContain('Apuntes de los asientos que están en borrador, por fecha de asiento. Los asientos anulados no salen.');
   });
 
   it('por la API: PDF y Excel con contabilidad:read; JSON paginado; errores claros', async () => {
@@ -433,19 +442,198 @@ describe('descarga en PDF y Excel', () => {
     });
     await prisma.journalEntryLine.createMany({
       data: [
-        ...Array.from({ length: 5000 }, () => ({ entryId: a.id, companyId: G, accountCode: '4300001', accountName: 'Clientes', debe: 1, haber: 0 })),
-        { entryId: a.id, companyId: G, accountCode: '5720001', accountName: 'Bancos', debe: 0, haber: 5000 },
+        ...Array.from({ length: 2000 }, () => ({ entryId: a.id, companyId: G, accountCode: '4300001', accountName: 'Clientes', debe: 1, haber: 0 })),
+        { entryId: a.id, companyId: G, accountCode: '5720001', accountName: 'Bancos', debe: 0, haber: 2000 },
       ],
     });
+    // El PDF admite 2.000: el exportador tarda unos 3,5 ms por fila y en Vercel más.
+    expect(MAX_DESCARGA.pdf).toBe(2000);
     await expect(informeApuntes(G, await filtro({}, G), 'pdf')).rejects.toMatchObject({
       statusCode: 400,
-      message: 'Hay 5.001 apuntes con este filtro y el PDF admite 5.000 como mucho. Acota el periodo (un trimestre o un mes) o añade un filtro, o descarga el Excel, que admite hasta 20.000.',
-      details: { codigo: 'DEMASIADOS_APUNTES', apuntes: 5001, maximo: 5000 },
+      message: 'Hay 2.001 apuntes con este filtro y el PDF admite 2.000 como mucho. Acota el periodo (un trimestre o un mes) o añade un filtro, o descarga el Excel, que admite hasta 20.000.',
+      details: { codigo: 'DEMASIADOS_APUNTES', apuntes: 2001, maximo: 2000 },
     });
     const excel = await informeApuntes(G, await filtro({}, G), 'xlsx');
-    expect(excel.apuntes).toBe(5001);
-    expect(excel.tabla.filas.at(-1)?.celdas).toEqual([null, null, null, null, 'Total (5.001 apuntes)', 5000, 5000]);
+    expect(excel.apuntes).toBe(2001);
+    expect(excel.tabla.filas.at(-1)?.celdas).toEqual([null, null, null, null, 'Total (2.001 apuntes)', 2000, 2000]);
     // Acotado a la cuenta del banco, el PDF sí sale.
     expect((await informeApuntes(G, await filtro({ cuenta: '572' }, G), 'pdf')).apuntes).toBe(1);
+  });
+});
+
+describe('regularización y cierre', () => {
+  // Empresa aparte: un año cerrado (2026) y un año de la gestoría (2025).
+  const H = `apuntes-cierre-${SUF}`;
+  let cliente = '';
+  const anio = (ejercicio: string, q: Record<string, unknown> = {}) => filtroApuntesDeConsulta(H, { ejercicio, ...q });
+  const listaH = async (ejercicio: string, q: Record<string, unknown> = {}) => listarApuntes(H, await anio(ejercicio, q), { porPagina: 200 });
+
+  beforeAll(async () => {
+    await prisma.company.create({ data: { id: H, name: 'Cierre SL', fsBaseUrl: 'http://localhost:8080', fsApiKeyEnc: 'k' } });
+    await prisma.legalConfig.create({ data: { companyId: H, denominacion: 'Cierre SL', nif: 'B71000003' } });
+    cliente = (await prisma.customer.create({ data: { companyId: H, nombreFiscal: 'Cliente Cierre SL', nifCif: 'B71000015', subcuenta430: '4300001' } })).id;
+    const fv = await venta(H, 'hFv', cliente, 'A-1', '2026-03-10', 242);
+    await asiento(H, 'hVenta', {
+      fecha: '2026-03-10', numero: 'FAC-ING-A-1', concepto: 'Factura A-1', origen: 'FACTURA_INGRESO', invoiceId: fv, invoiceType: 'INGRESO',
+      lineas: [['4300001', 'Clientes', 242, 0], ['700', 'Ventas', 0, 200], ['477', 'IVA repercutido', 0, 42]],
+    });
+    await asiento(H, 'hCobro', {
+      fecha: '2026-06-10', numero: 'COBRO-00001', concepto: 'Cobro parcial factura A-1', origen: 'TESORERIA', invoiceId: fv, invoiceType: 'INGRESO',
+      lineas: [['572', 'Bancos', 100, 0], ['4300001', 'Clientes', 0, 100]],
+    });
+    // Pago del 111 desde Nóminas.
+    await asiento(H, 'hPago111', {
+      fecha: '2026-07-20', numero: 'PAGO-00001', concepto: 'Pago modelo 111 2T/2026', origen: 'TESORERIA', invoiceId: '2026-2T', invoiceType: 'MODELO_111',
+      lineas: [['4751', 'HP acreedora por retenciones', 15, 0], ['572', 'Bancos', 0, 15]],
+    });
+    await asiento(H, 'hGasto', {
+      fecha: '2026-09-01', numero: 'AS-0001', concepto: 'Comisión bancaria', origen: 'AJUSTE_MANUAL',
+      lineas: [['629', 'Otros servicios', 50, 0], ['572', 'Bancos', 0, 50]],
+    });
+    // El 31-12, el cierre se graba antes y su número va antes por orden alfabético; la regularización tiene que salir primero.
+    await asiento(H, 'hCierre', {
+      fecha: '2026-12-31', numero: 'CIERRE-2026', concepto: 'Cierre ejercicio 2026', origen: 'CIERRE',
+      lineas: [['477', 'IVA repercutido', 42, 0], ['129', 'Resultado', 150, 0], ['4300001', 'Clientes', 0, 142], ['572', 'Bancos', 0, 35], ['4751', 'HP acreedora', 0, 15]],
+    });
+    await asiento(H, 'hRegul', {
+      fecha: '2026-12-31', numero: 'REGUL-2026', concepto: 'Regularización ejercicio 2026', origen: 'REGULARIZACION',
+      lineas: [['700', 'Ventas', 200, 0], ['629', 'Otros servicios', 0, 50], ['129', 'Resultado', 0, 150]],
+    });
+    // 2025, de la gestoría: apertura, un asiento suyo, su regularización y un cierre antiguo (reconocido por el concepto).
+    await asiento(H, 'hAsiento2025', {
+      fecha: '2025-01-01', numero: 'AAA-0001', concepto: 'Gasto del primer día', origen: 'AJUSTE_MANUAL',
+      lineas: [['629', 'Otros servicios', 5, 0], ['572', 'Bancos', 0, 5]],
+    });
+    await asiento(H, 'hApertura2025', {
+      fecha: '2025-01-01', numero: 'H-0001', concepto: 'Asiento de apertura', origen: 'HISTORICO_APERTURA',
+      lineas: [['572', 'Bancos', 10, 0], ['100', 'Capital social', 0, 10]],
+    });
+    await asiento(H, 'hHistorico2025', {
+      fecha: '2025-06-01', numero: 'H-0010', concepto: 'Comisión', origen: 'HISTORICO',
+      lineas: [['629', 'Otros servicios', 1, 0], ['572', 'Bancos', 0, 1]],
+    });
+    await asiento(H, 'hCierre2025', {
+      fecha: '2025-12-31', numero: 'AS-0099', concepto: 'Cierre ejercicio 2025', origen: 'AJUSTE_MANUAL',
+      lineas: [['100', 'Capital social', 10, 0], ['572', 'Bancos', 0, 4], ['129', 'Resultado', 0, 6]],
+    });
+    await asiento(H, 'hRegul2025', {
+      fecha: '2025-12-31', numero: 'H-0098', concepto: 'Asiento de regularización', origen: 'HISTORICO_REGULARIZACION',
+      lineas: [['129', 'Resultado', 6, 0], ['629', 'Otros servicios', 0, 6]],
+    });
+  });
+
+  it('por defecto no salen: la diferencia de una cuenta, de un cliente o de la 700 es lo que mueve en el mayor', async () => {
+    const r = await listaH('2026');
+    expect(r.apuntes.map(clave)).toEqual([
+      'FAC-ING-A-1 4300001 242/0',
+      'FAC-ING-A-1 700 0/200',
+      'FAC-ING-A-1 477 0/42',
+      'COBRO-00001 572 100/0',
+      'COBRO-00001 4300001 0/100',
+      'PAGO-00001 4751 15/0',
+      'PAGO-00001 572 0/15',
+      'AS-0001 629 50/0',
+      'AS-0001 572 0/50',
+    ]);
+    expect(r.totales).toEqual({ apuntes: 9, debe: 407, haber: 407, diferencia: 0, enBorrador: 0, deCierre: 8 });
+    expect(r.filtro.incluirCierre).toBe(false);
+
+    const periodo = { desde: '2026-01-01', hasta: '2026-12-31', ejercicio: 2026 };
+    // Lo que se mueve en el año según el mayor (Debe − Haber; el saldo inicial de 2025 aparte).
+    const saldoMayor = async (cuenta: string) => {
+      const c = (await informeMayor(H, periodo, { cuenta })).cuentas[0];
+      return Math.round((c.totalDebe - c.totalHaber) * 100) / 100;
+    };
+    const banco = await listaH('2026', { cuenta: '572', estado: 'aprobados' });
+    expect(banco.totales).toMatchObject({ debe: 100, haber: 65, diferencia: 35, deCierre: 1 });
+    expect(banco.totales.diferencia).toBe(await saldoMayor('572'));
+    const ventas = await listaH('2026', { cuenta: '700' });
+    expect(ventas.totales.diferencia).toBe(-200);
+    expect(ventas.totales.diferencia).toBe(await saldoMayor('700'));
+    const delCliente = await listaH('2026', { tercero: cliente, tipoTercero: 'cliente' });
+    expect(delCliente.totales).toMatchObject({ debe: 242, haber: 100, diferencia: 142, deCierre: 1 });
+    expect(delCliente.totales.diferencia).toBe(await saldoMayor('4300001'));
+    // El 4.º trimestre y diciembre, también sin ellos.
+    expect((await listaH('2026', { trimestre: '4' })).totales).toMatchObject({ apuntes: 0, deCierre: 8 });
+    expect((await listaH('2026', { mes: '12' })).apuntes).toEqual([]);
+  });
+
+  it('con incluirCierre salen marcados, la regularización antes que el cierre, igual que en el diario', async () => {
+    const r = await listaH('2026', { incluirCierre: '1' });
+    expect(r.apuntes.slice(-8).map(clave)).toEqual([
+      'REGUL-2026 700 200/0',
+      'REGUL-2026 629 0/50',
+      'REGUL-2026 129 0/150',
+      'CIERRE-2026 129 150/0',
+      'CIERRE-2026 477 42/0',
+      'CIERRE-2026 4300001 0/142',
+      'CIERRE-2026 572 0/35',
+      'CIERRE-2026 4751 0/15',
+    ]);
+    expect(r.totales).toMatchObject({ apuntes: 17, debe: 799, haber: 799, deCierre: 8 });
+    expect(r.filtro.incluirCierre).toBe(true);
+    expect(r.apuntes.find((a) => a.asiento === 'REGUL-2026')).toMatchObject({
+      tipoAsiento: 'REGULARIZACION',
+      documento: { tipo: 'REGULARIZACION', texto: 'Regularización', enlace: '/dashboard/contabilidad/cierre-ejercicio' },
+    });
+    expect(r.apuntes.find((a) => a.asiento === 'CIERRE-2026')?.tipoAsiento).toBe('CIERRE');
+    expect(r.apuntes.find((a) => a.asiento === 'AS-0001')?.tipoAsiento).toBe('NORMAL');
+    // Con el cierre, la cuenta queda a cero.
+    expect((await listaH('2026', { cuenta: '572', incluirCierre: 'true' })).totales).toMatchObject({ diferencia: 0, deCierre: 1 });
+    // El diario completo lleva el mismo orden el 31-12.
+    const diario = await informeDiario(H, { desde: '2026-01-01', hasta: '2026-12-31', ejercicio: 2026 }, true);
+    expect(diario.asientos.slice(-2).map((a) => a.numero)).toEqual(['REGUL-2026', 'CIERRE-2026']);
+  });
+
+  it('diario de la gestoría: la apertura la primera del día; la regularización y el cierre antiguos se reconocen y no enlazan al cierre de la app', async () => {
+    const sin = await listaH('2025');
+    expect(sin.apuntes.map((a) => a.asiento)).toEqual(['H-0001', 'H-0001', 'AAA-0001', 'AAA-0001', 'H-0010', 'H-0010']);
+    expect(sin.totales).toMatchObject({ apuntes: 6, deCierre: 5 });
+    expect(sin.apuntes[0]).toMatchObject({ tipoAsiento: 'APERTURA', documento: { tipo: 'APERTURA', texto: 'Apertura (diario de la gestoría)', enlace: null } });
+    expect(sin.apuntes.find((a) => a.asiento === 'H-0010')?.documento).toEqual({ tipo: 'GESTORIA', texto: 'Diario de la gestoría', enlace: null });
+
+    const con = await listaH('2025', { incluirCierre: 'si' });
+    expect([...new Set(con.apuntes.map((a) => a.asiento))]).toEqual(['H-0001', 'AAA-0001', 'H-0010', 'H-0098', 'AS-0099']);
+    expect(con.apuntes.find((a) => a.asiento === 'H-0098')).toMatchObject({
+      tipoAsiento: 'REGULARIZACION',
+      documento: { tipo: 'REGULARIZACION', texto: 'Regularización (diario de la gestoría)', enlace: null },
+    });
+    // Un cierre antiguo, grabado como asiento manual: se reconoce por el concepto, como en el diario.
+    expect(con.apuntes.find((a) => a.asiento === 'AS-0099')).toMatchObject({ tipoAsiento: 'CIERRE', documento: { tipo: 'CIERRE' } });
+  });
+
+  it('el pago del modelo 111 desde Nóminas enlaza a Nóminas', async () => {
+    const r = await listaH('2026', { cuenta: '4751' });
+    expect(r.apuntes[0].documento).toEqual({ tipo: 'RETENCIONES', texto: 'Pago del modelo 111 2T/2026', enlace: '/dashboard/nominas' });
+  });
+
+  it('PDF y Excel: sin ellos lo dicen las notas; con ellos, el nombre delante del concepto', async () => {
+    const sin = await informeApuntes(H, await anio('2026'));
+    expect(sin.tabla.notas).toContain('Sin los asientos de regularización ni de cierre del ejercicio (8 apuntes con este filtro), como en el libro diario.');
+    expect(sin.tabla.periodo).toBe('Ejercicio 2026');
+    const con = await informeApuntes(H, await anio('2026', { incluirCierre: '1' }));
+    expect(con.tabla.periodo).toBe('Ejercicio 2026 · con la regularización y el cierre');
+    expect(con.tabla.notas?.some((n) => n.startsWith('Incluye la regularización y el cierre del ejercicio (8 apuntes)'))).toBe(true);
+    // El concepto ya dice «Regularización…»: no se repite. El cierre antiguo de 2025 tampoco.
+    expect(con.tabla.filas.find((f) => f.celdas[1] === 'REGUL-2026')?.celdas[4]).toBe('Regularización ejercicio 2026');
+    const h2025 = await informeApuntes(H, await anio('2025', { incluirCierre: '1' }));
+    expect(h2025.tabla.filas.find((f) => f.celdas[1] === 'H-0098')?.celdas[4]).toBe('Regularización: Asiento de regularización');
+    expect(h2025.tabla.filas.find((f) => f.celdas[1] === 'AS-0099')?.celdas[4]).toBe('Cierre ejercicio 2025');
+  });
+
+  it('por la API: incluirCierre=1', async () => {
+    const a = express();
+    a.use((req, _res, next) => {
+      req.user = { userId: 'u', email: 'u@test.local', roles: ['x'], companies: [H], rolesPorEmpresa: { [H]: ['x'] }, permisosPorEmpresa: { [H]: ['contabilidad:read'] } } as never;
+      req.companyId = H;
+      next();
+    });
+    a.use('/informes', informesContablesRoutes);
+    a.use(errorMiddleware);
+    const sin = await request(a).get('/informes/apuntes?ejercicio=2026');
+    expect(sin.body.data.totales).toMatchObject({ apuntes: 9, deCierre: 8 });
+    const con = await request(a).get('/informes/apuntes?ejercicio=2026&incluirCierre=1');
+    expect(con.body.data.totales).toMatchObject({ apuntes: 17, deCierre: 8 });
+    expect(con.body.data.filtro.incluirCierre).toBe(true);
   });
 });
