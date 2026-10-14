@@ -147,6 +147,16 @@ d('vaciado de producción (base local de usar y tirar)', () => {
     expect(ficherosAntes).toContain(datos.ficheroAjeno);
   });
 
+  it('VERI*FACTU: hay una factura registrada y la app no deja borrar su registro ni su cadena (el script lo hace con SQL)', async () => {
+    const { prisma: deLaApp } = await import('../config/database');
+    const registro = await db.verifactuRegistro.findFirstOrThrow({ where: { companyId: '1', entorno: 'PRUEBAS' } });
+    const factura = await db.incomeInvoice.findUniqueOrThrow({ where: { id: registro.incomeInvoiceId }, select: { verifactuEstado: true } });
+    expect(factura.verifactuEstado).toBe('PENDIENTE');
+    await expect(deLaApp.verifactuRegistro.deleteMany({})).rejects.toMatchObject({ statusCode: 409 });
+    await expect(deLaApp.verifactuCadena.deleteMany({})).rejects.toMatchObject({ statusCode: 409 });
+    await expect(deLaApp.incomeInvoice.delete({ where: { id: registro.incomeInvoiceId } })).rejects.toBeTruthy();
+  });
+
   it('simulación: enseña usuarios, empresas, tablas y ficheros, y no toca nada', async () => {
     const { codigo, salida } = lanzar([], '');
     expect(codigo).toBe(0);
@@ -162,6 +172,9 @@ d('vaciado de producción (base local de usar y tirar)', () => {
     expect(salida).toContain('lecturas/');
     expect(salida).toContain('Fuera de las carpetas de la app (no se tocan): 1');
     expect(salida).toContain('declaraciones marcadas como presentadas');
+    expect(salida).toContain('Logos de marca y sellos de la plantilla B: 1');
+    expect(salida).toContain('VerifactuBitacora · se borran: 2 · se quedan: 2');
+    expect(salida).toMatch(/VerifactuRegistro \.+ \d+/);
     expect(salida).toContain('SIMULACIÓN: no se ha borrado nada.');
     expect(await contarTodas(db, tablas)).toEqual(antes);
     expect(await listarAlmacen()).toEqual(ficherosAntes);
@@ -211,6 +224,13 @@ d('vaciado de producción (base local de usar y tirar)', () => {
     const auditoria = await db.auditLog.findMany({ select: { action: true, companyId: true, userId: true }, orderBy: { timestamp: 'asc' } });
     expect(auditoria.every((a) => a.companyId === null && a.userId === datos.adminId)).toBe(true);
     expect(auditoria.map((a) => a.action).sort()).toEqual(['LOGIN', 'RED_SEGURIDAD_CAMBIADA', 'VACIADO_PRODUCCION']);
+    // VERI*FACTU: registros (borrados con SQL), cadena e imagenes a cero; de la bitacora, solo lo de la plataforma.
+    expect([despues.get('VerifactuRegistro'), despues.get('VerifactuCadena'), despues.get('ImagenFactura')]).toEqual([0, 0, 0]);
+    const bitacora = await db.verifactuBitacora.findMany({ select: { companyId: true, usuarioId: true, tipo: true }, orderBy: { tipo: 'asc' } });
+    expect(bitacora).toEqual([
+      { companyId: null, usuarioId: datos.adminId, tipo: 'RED_SEGURIDAD' },
+      { companyId: null, usuarioId: null, tipo: 'SISTEMA' },
+    ]);
 
     // Los ficheros: solo queda el que no es de la app.
     expect(await listarAlmacen()).toEqual([datos.ficheroAjeno]);

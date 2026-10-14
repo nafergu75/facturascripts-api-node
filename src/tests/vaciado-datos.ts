@@ -1,7 +1,9 @@
 /**
  * Datos de prueba para el vaciado de produccion: varias empresas con ventas,
  * rectificativas, cobros, gastos y pagos, nominas, lecturas con su fichero,
- * carga de 2026, usuarios que no son administradores, Carmen, AuditLog... y
+ * carga de 2026, usuarios que no son administradores, Carmen, AuditLog,
+ * VERI*FACTU en pruebas (una factura emitida con su registro encadenado, que
+ * la app no deja borrar, y la bitacora), las imagenes de la plantilla B... y
  * al final una fila en cada tabla que siga vacia, para que ninguna tabla del
  * esquema se quede sin probar.
  *
@@ -219,6 +221,20 @@ export async function crearDatosVaciado(almacen: string): Promise<DatosVaciado> 
   await prisma.auditLog.create({ data: { userId: admin.id, companyId: null, action: 'USUARIO_CREADO', resourceType: 'USUARIO', resourceId: contable.id } });
   await prisma.tipoCambioBce.create({ data: { moneda: 'USD', fecha: '2026-10-13', unidadesPorEur: new Prisma.Decimal('1.149') } });
   await prisma.chartOfAccounts.create({ data: { companyId: null, codigo: '700', nombre: 'Ventas de mercaderías (plan base)', grupo: 7, nivel: 3, naturaleza: 'INGRESO', tipoUso: 'PYG' } });
+
+  // VERI*FACTU en PRUEBAS en la empresa 1: la factura emitida lleva su registro
+  // encadenado y la cabeza de su cadena (inalterables para la app: el script los
+  // borra con SQL). Bitacora: lo de una empresa y lo de un usuario que se borra
+  // se va; lo de la plataforma sin usuario o del administrador se queda.
+  await prisma.verifactuConfig.upsert({ where: { companyId: '1' }, update: { estado: 'PRUEBAS', entorno: 'PRUEBAS' }, create: { companyId: '1', estado: 'PRUEBAS', entorno: 'PRUEBAS' } });
+  const clienteVf = await prisma.customer.create({ data: { companyId: '1', nombreFiscal: 'Cliente VERI*FACTU SL', nifCif: 'B12345674', pais: 'ES' } });
+  await incomeInvoicesService.crearIngreso({ companyId: '1', customer: { id: clienteVf.id }, fechaEmision: '2026-09-15', lineas: [linea(250)] } as CrearFacturaIngresoDTO);
+  await prisma.verifactuBitacora.create({ data: { companyId: '1', tipo: 'REGISTRO_GENERADO', usuarioId: admin.id, detalle: { prueba: true } } });
+  await prisma.verifactuBitacora.create({ data: { companyId: null, tipo: 'RED_SEGURIDAD', usuarioId: admin.id, detalle: { activa: true } } });
+  await prisma.verifactuBitacora.create({ data: { companyId: null, tipo: 'SISTEMA', usuarioId: null, detalle: {} } });
+  await prisma.verifactuBitacora.create({ data: { companyId: null, tipo: 'PRUEBA_USUARIO', usuarioId: contable.id, detalle: {} } });
+  // Logo de la marca de la plantilla B (dentro de la base, como el logo de la empresa).
+  await prisma.imagenFactura.create({ data: { companyId: otra.id, tipo: 'MARCA', datos: Buffer.from('marca-png'), mime: 'image/png' } });
 
   // Ficheros sin empresa en la ruta y uno que no es de la app.
   const json = 'facturas/ingresos/2026-09/A-1.json';
