@@ -269,13 +269,16 @@ export async function guardarAjustesFacturacion(companyId: string, userId: strin
 /**
  * Crea la serie B al guardar con «Vendo cerámica» marcada. Los ajustes ya
  * están guardados: si la serie no se puede crear ahora, no se pierden; se avisa
- * y la B se crea sola la próxima vez que se abran las series.
+ * y la B se crea sola la próxima vez que se abran las series. Antes de avisar
+ * se vuelve a mirar: otra petición pudo crearla a la vez.
  */
 async function serieCeramicaAlGuardar(companyId: string): Promise<SerieCeramica> {
   try {
     return await prepararSerieCeramica(companyId);
   } catch (err) {
     logger.warn('[ajustes-facturacion] No se pudo crear la serie B', { companyId, error: err instanceof Error ? err.message : String(err) });
+    const ahora = await estadoSerieCeramica(companyId).catch(() => null);
+    if (ahora && ahora.estado !== 'pendiente') return ahora;
     return {
       codigo: 'B',
       estado: 'pendiente',
