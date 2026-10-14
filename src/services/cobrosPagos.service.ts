@@ -527,7 +527,9 @@ async function crearAsiento(
   const debe = round2(p.apuntes.reduce((s, a) => s + a.debe, 0));
   const haber = round2(p.apuntes.reduce((s, a) => s + a.haber, 0));
   if (aCentimos(debe) !== aCentimos(haber)) throw badRequest(`El asiento no cuadra: Debe ${debe} y Haber ${haber}.`);
-  await exigirFechaContabilizable(companyId, p.fecha);
+  // Con tx: dentro de la transaccion, el cliente global se quedaba esperando
+  // conexion (en produccion hay una sola) y el cobro daba 500 a los 30 s.
+  await exigirFechaContabilizable(companyId, p.fecha, tx);
   return tx.journalEntry.create({
     data: {
       companyId,
