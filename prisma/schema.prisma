@@ -213,7 +213,7 @@ model Customer {
   cp              String?
   email           String?
   telefono        String?
-  /// Web del cliente, ya normalizada (con https:// delante): en la ficha sale como enlace.
+  /// Web del cliente, ya normalizada (con http:// o https:// delante; si no lo lleva, https://): en la ficha sale como enlace.
   web             String?         @db.VarChar(255)
   activo          Boolean         @default(true)
   /// Moneda en la que se le suele facturar (ISO 4217). Solo la propone el
@@ -790,7 +790,7 @@ model Supplier {
   cp           String?
   email        String?
   telefono     String?
-  /// Web del proveedor, ya normalizada (con https:// delante): en la ficha sale como enlace.
+  /// Web del proveedor, ya normalizada (con http:// o https:// delante; si no lo lleva, https://): en la ficha sale como enlace.
   web          String?               @db.VarChar(255)
   activo       Boolean               @default(true)
   /// Subcuentas propias con el MISMO correlativo: 400N (compras) y 410N
