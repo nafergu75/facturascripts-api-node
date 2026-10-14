@@ -835,8 +835,8 @@ const paisFicha = (nif: string, ficha?: DatosFicha) => paisDelCliente({ pais: fi
 /** Datos de contacto de la ficha nueva (los que traiga el fichero). */
 function datosContacto(ficha?: DatosFicha) {
   if (!ficha) return {};
-  const { direccion, cp, municipio, provincia, email, telefono } = ficha;
-  return Object.fromEntries(Object.entries({ direccion, cp, municipio, provincia, email, telefono }).filter(([, v]) => v));
+  const { direccion, cp, municipio, provincia, email, telefono, web } = ficha;
+  return Object.fromEntries(Object.entries({ direccion, cp, municipio, provincia, email, telefono, web }).filter(([, v]) => v));
 }
 
 /**
