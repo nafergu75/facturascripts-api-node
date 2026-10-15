@@ -28,6 +28,9 @@ export type ActuaComo = (typeof ACTUA_COMO)[number];
 
 const DIA_MS = 86_400_000;
 
+/** «Probar conexión»: una prueba por minuto y empresa, como mucho (la usa conexion.service). */
+export const ESPERA_ENTRE_PRUEBAS_MS = 60_000;
+
 export const contextoPfx = (companyId: string) => `verifactu:${companyId}:pfx`;
 export const contextoPass = (companyId: string) => `verifactu:${companyId}:pass`;
 
@@ -75,6 +78,8 @@ export interface MetadatosCertificado {
   diasParaCaducar: number;
   aviso: AvisoCaducidad;
   ultimaPrueba: null | { en: string; entorno: 'PRUEBAS' | 'PRODUCCION'; ok: boolean; tipo: string; mensaje: string };
+  /** Hasta cuando no se puede volver a probar la conexion (ISO), o null si ya se puede. */
+  proximaPruebaDesde: string | null;
 }
 
 /** Columnas del certificado que se pueden leer (sin pfxEnc ni passEnc). */
@@ -133,6 +138,10 @@ function aPublicos(f: FilaMetadatos, ahora: Date, nifEmpresa: string, emailSubid
     ultimaPrueba:
       f.pruebaConexionFecha && f.pruebaConexionOk !== null
         ? { en: f.pruebaConexionFecha.toISOString(), entorno, ok: f.pruebaConexionOk, tipo: f.pruebaConexionTipo ?? '', mensaje: f.pruebaConexionMensaje ?? '' }
+        : null,
+    proximaPruebaDesde:
+      f.pruebaConexionFecha && f.pruebaConexionFecha.getTime() + ESPERA_ENTRE_PRUEBAS_MS > ahora.getTime()
+        ? new Date(f.pruebaConexionFecha.getTime() + ESPERA_ENTRE_PRUEBAS_MS).toISOString()
         : null,
   };
 }
@@ -218,7 +227,8 @@ export async function subirCertificado(
         ...datos,
         subidoPor: userId,
         subidoEn: ahora,
-        pruebaConexionFecha: null,
+        // El resultado de la prueba era del certificado anterior y se borra; su fecha se
+        // queda: sustituir el certificado no da otra prueba antes de que pase el minuto.
         pruebaConexionEntorno: null,
         pruebaConexionOk: null,
         pruebaConexionTipo: null,

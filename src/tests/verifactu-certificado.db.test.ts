@@ -137,13 +137,14 @@ describe('certificado de VERI*FACTU (BD real)', () => {
     expect(sin.status).toBe(400);
     expect(sin.body.details).toMatchObject({ campo: 'actuaComo', codigo: 'VERIFACTU_CERT_ACTUA_COMO', titular: 'GESTORIA SL', nifEmpresa: NIF_E });
     expect(sin.body.details.nifTitular).toMatch(/^B/);
-    // La prueba de conexion anterior se borra al sustituir.
+    // El resultado de la prueba de conexion anterior se borra al sustituir; su fecha (el minuto de espera) se queda.
     await prisma.verifactuCertificado.update({ where: { companyId: E }, data: { pruebaConexionFecha: new Date(), pruebaConexionOk: true, pruebaConexionTipo: 'CORRECTO', pruebaConexionMensaje: 'ok', pruebaConexionEntorno: 'PRUEBAS' } });
     const con = await subir(tAdmin, pfxAjeno, { contrasena: CLAVE, actuaComo: 'APODERADO' });
     expect(con.status).toBe(200);
     expect(con.body.data).toMatchObject({ sustituido: true, certificado: { titular: 'GESTORIA SL', actuaComo: 'APODERADO', nifCoincide: false, ultimaPrueba: null } });
     const fila = await prisma.verifactuCertificado.findUniqueOrThrow({ where: { companyId: E } });
-    expect(fila.pruebaConexionFecha).toBeNull();
+    expect(fila).toMatchObject({ pruebaConexionOk: null, pruebaConexionTipo: null, pruebaConexionMensaje: null, pruebaConexionEntorno: null });
+    expect(fila.pruebaConexionFecha).not.toBeNull();
     const audit = await prisma.auditLog.findFirstOrThrow({ where: { companyId: E, action: 'VERIFACTU_CERTIFICADO_SUSTITUIDO' } });
     const bitacora = await prisma.verifactuBitacora.findMany({ where: { companyId: E, tipo: 'CERT_SUBIDO' }, orderBy: { createdAt: 'asc' } });
     expect(bitacora).toHaveLength(2);

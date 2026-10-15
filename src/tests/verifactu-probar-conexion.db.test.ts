@@ -3,7 +3,9 @@
  * conexion.service) sobre BD real, contra un servidor HTTPS LOCAL que hace de
  * AEAT (nunca prewww1 ni www1), con certificados generados aqui:
  *  - el resultado se guarda en el certificado, con bitacora y AuditLog;
- *  - una prueba por minuto y empresa (429 con los segundos que faltan);
+ *  - una prueba por minuto y empresa (429 con los segundos que faltan), tambien
+ *    con dos peticiones a la vez y al sustituir o borrar y volver a subir el certificado;
+ *  - las notas del certificado de sello y del apoderado;
  *  - siempre al entorno de pruebas, aunque la configuracion diga PRODUCCION
  *    o el cuerpo pida otro;
  *  - sin certificado 404, empresa extranjera 409, certificado caducado sin llamar;
@@ -20,8 +22,8 @@ import { authService } from '../services/auth.service';
 import { hashPassword } from '../utils/password';
 import { controlCif } from '../utils/nif';
 import { fijarDestinoParaTests } from '../services/verifactu/cliente-aeat';
-import { subirCertificado } from '../services/verifactu/certificado.service';
-import { probarConexion } from '../services/verifactu/conexion.service';
+import { borrarCertificado, metadatosCertificado, subirCertificado } from '../services/verifactu/certificado.service';
+import { conNotaDelCertificado, NOTAS_CONEXION, probarConexion } from '../services/verifactu/conexion.service';
 import { crearCa, crearCertificado, pkcs12, sujetoRepresentante, type CertificadoPrueba } from './ayuda-certificados';
 
 jest.setTimeout(120_000);
@@ -33,6 +35,7 @@ const cif = () => {
 };
 const E = `vfcon-${SUFIJO}`;
 const E2 = `vfcon-dos-${SUFIJO}`;
+const E3 = `vfcon-tres-${SUFIJO}`;
 const SIN = `vfcon-sin-${SUFIJO}`;
 const US = `vfcon-us-${SUFIJO}`;
 const CLAVE = 'clave-de-prueba';
@@ -45,6 +48,7 @@ let peticiones: string[] = [];
 let alResponder: () => Promise<void> = async () => undefined;
 let adminId = '';
 let tAdmin = '';
+let pfxE3: Buffer;
 
 beforeAll(async () => {
   ca = crearCa();
@@ -65,16 +69,18 @@ beforeAll(async () => {
   const admin = await prisma.user.create({ data: { email: `vfcon-admin-${SUFIJO}@test.local`, passwordHash: hashPassword(randomBytes(18).toString('base64url')) }, select: { id: true, email: true } });
   adminId = admin.id;
   tAdmin = authService.generateToken({ userId: admin.id, email: admin.email, roles: [], companies: [] });
-  for (const id of [E, E2, SIN, US]) {
+  for (const id of [E, E2, E3, SIN, US]) {
     const nif = cif();
     await prisma.company.create({ data: { id, name: `Empresa ${id}`, fsBaseUrl: '', fsApiKeyEnc: '' } });
     await prisma.legalConfig.create({
       data: id === US ? { companyId: id, tipoSociedad: 'LLC', pais: 'US', monedaCuenta: 'USD', denominacion: 'Foreign LLC', nif: '12-3456789' } : { companyId: id, tipoSociedad: 'SA', denominacion: `EMPRESA ${id}`, nif },
     });
     await prisma.membership.create({ data: { userId: admin.id, companyId: id, role: 'admin' } });
-    if (id === E || id === E2) {
+    if (id === E || id === E2 || id === E3) {
       const cert = crearCertificado({ sujeto: sujetoRepresentante(nif, `EMPRESA ${id}`), firmante: ca });
-      await subirCertificado(id, admin.id, { pfx: pkcs12({ cert, contrasena: CLAVE }), contrasena: CLAVE });
+      const pfx = pkcs12({ cert, contrasena: CLAVE });
+      if (id === E3) pfxE3 = pfx;
+      await subirCertificado(id, admin.id, { pfx, contrasena: CLAVE });
     }
   }
   // La configuracion dice PRODUCCION: la prueba tiene que ir igualmente al entorno de pruebas.
@@ -126,19 +132,21 @@ describe('probar la conexion con la AEAT (BD real, servidor local)', () => {
     expect(us.body.details).toMatchObject({ codigo: 'VERIFACTU_NO_APLICA' });
   });
 
-  it('si el certificado se sustituye mientras se prueba, el resultado no se guarda en el nuevo', async () => {
+  it('si el certificado se sustituye mientras se prueba, el resultado no se guarda en el nuevo (el minuto, si)', async () => {
     peticiones = [];
     alResponder = async () => {
       await prisma.verifactuCertificado.update({ where: { companyId: E2 }, data: { huellaSha256: 'F'.repeat(64) } });
     };
+    const ahora = new Date();
     try {
-      const r = await probarConexion(E2, adminId, new Date());
+      const r = await probarConexion(E2, adminId, ahora);
       expect(r.ok).toBe(true);
     } finally {
       alResponder = async () => undefined;
     }
-    const fila = await prisma.verifactuCertificado.findUniqueOrThrow({ where: { companyId: E2 }, select: { pruebaConexionFecha: true } });
-    expect(fila.pruebaConexionFecha).toBeNull();
+    const fila = await prisma.verifactuCertificado.findUniqueOrThrow({ where: { companyId: E2 }, select: { pruebaConexionFecha: true, pruebaConexionOk: true } });
+    expect(fila.pruebaConexionOk).toBeNull();
+    expect(fila.pruebaConexionFecha?.getTime()).toBe(ahora.getTime());
     // El rastro si queda, con la huella del certificado que se probo.
     const b = await prisma.verifactuBitacora.findFirstOrThrow({ where: { companyId: E2, tipo: 'CONEXION_PROBADA' } });
     expect((b.detalle as { huellaCertificado: string }).huellaCertificado).not.toBe('F'.repeat(64));
@@ -147,9 +155,50 @@ describe('probar la conexion con la AEAT (BD real, servidor local)', () => {
   it('certificado caducado: CERTIFICADO_CADUCADO sin llamar a la AEAT', async () => {
     peticiones = [];
     await prisma.verifactuCertificado.update({ where: { companyId: E2 }, data: { caducaEn: new Date('2026-01-31T12:00:00Z'), pruebaConexionFecha: null } });
-    const r = await probarConexion(E2, adminId, new Date());
+    // Pasado el minuto de la prueba anterior (que tambien queda en la bitacora).
+    const r = await probarConexion(E2, adminId, new Date(Date.now() + 61_000));
     expect(r).toMatchObject({ ok: false, tipo: 'CERTIFICADO_CADUCADO', entorno: 'PRUEBAS' });
     expect(r.mensaje).toContain('31-01-2026');
     expect(peticiones).toHaveLength(0);
+  });
+
+  it('dos pruebas a la vez: una sola consulta a la AEAT; la otra, 429', async () => {
+    peticiones = [];
+    const [a, b] = await Promise.allSettled([probarConexion(E3, adminId, new Date()), probarConexion(E3, adminId, new Date())]);
+    expect([a.status, b.status].sort()).toEqual(['fulfilled', 'rejected']);
+    const rechazo = [a, b].find((x): x is PromiseRejectedResult => x.status === 'rejected')!;
+    expect(rechazo.reason).toMatchObject({ statusCode: 429, details: { codigo: 'VERIFACTU_PRUEBA_RECIENTE' } });
+    expect(peticiones).toHaveLength(1);
+  });
+
+  it('sustituir por el mismo fichero, o borrarlo y volver a subirlo, no da otra prueba antes del minuto', async () => {
+    peticiones = [];
+    await subirCertificado(E3, adminId, { pfx: pfxE3, contrasena: CLAVE });
+    const m = await metadatosCertificado(E3);
+    // El resultado era del certificado anterior; el minuto sigue contando.
+    expect(m?.ultimaPrueba).toBeNull();
+    expect(new Date(m!.proximaPruebaDesde!).getTime()).toBeGreaterThan(Date.now());
+    await expect(probarConexion(E3, adminId, new Date())).rejects.toMatchObject({ statusCode: 429 });
+    await borrarCertificado(E3, adminId);
+    await subirCertificado(E3, adminId, { pfx: pfxE3, contrasena: CLAVE });
+    await expect(probarConexion(E3, adminId, new Date())).rejects.toMatchObject({ statusCode: 429, details: { codigo: 'VERIFACTU_PRUEBA_RECIENTE' } });
+    expect(peticiones).toHaveLength(0);
+    // Pasado el minuto, si.
+    const r = await probarConexion(E3, adminId, new Date(Date.now() + 61_000));
+    expect(r.ok).toBe(true);
+    expect(peticiones).toHaveLength(1);
+    expect((await metadatosCertificado(E3, new Date(Date.now() + 200_000)))?.proximaPruebaDesde).toBeNull();
+  });
+
+  it('notas: certificado de sello que falla (va a otra direccion) y apoderado que pasa (el envio se comprueba aparte)', () => {
+    const fallo = { ok: false, tipo: 'CERTIFICADO_RECHAZADO' as const, mensaje: 'La AEAT no acepta este certificado.' };
+    const bien = { ok: true, tipo: 'CORRECTO' as const, mensaje: 'Conexión correcta.' };
+    expect(conNotaDelCertificado(fallo, { tipoCertificado: 'SELLO', actuaComo: 'OBLIGADO' }).mensaje).toBe(`${fallo.mensaje} ${NOTAS_CONEXION.sello}`);
+    expect(conNotaDelCertificado(bien, { tipoCertificado: 'SELLO', actuaComo: 'OBLIGADO' }).mensaje).toBe(bien.mensaje);
+    expect(conNotaDelCertificado({ ...fallo, tipo: 'CERTIFICADO_CADUCADO' }, { tipoCertificado: 'SELLO', actuaComo: 'OBLIGADO' }).mensaje).toBe(fallo.mensaje);
+    expect(conNotaDelCertificado(bien, { tipoCertificado: 'REPRESENTANTE_PJ', actuaComo: 'APODERADO' }).mensaje).toContain(NOTAS_CONEXION.representacion);
+    expect(conNotaDelCertificado(bien, { tipoCertificado: 'PERSONA_FISICA', actuaComo: 'COLABORADOR' }).mensaje).toContain(NOTAS_CONEXION.representacion);
+    expect(conNotaDelCertificado(bien, { tipoCertificado: 'REPRESENTANTE_PJ', actuaComo: 'OBLIGADO' })).toEqual(bien);
+    expect(conNotaDelCertificado(fallo, { tipoCertificado: 'REPRESENTANTE_PJ', actuaComo: 'APODERADO' })).toEqual(fallo);
   });
 });
