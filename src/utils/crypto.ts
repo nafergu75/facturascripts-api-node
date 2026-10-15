@@ -56,13 +56,22 @@ export function cifrarV1(plano: string, contexto: string): string {
   return `${PREFIJO_V1}${[iv.toString('hex'), cipher.getAuthTag().toString('hex'), enc.toString('hex')].join(':')}`;
 }
 
-/** Descifra lo de cifrarV1 con el mismo contexto. Error si falta el prefijo, el contexto no casa o el dato se ha tocado. */
+/** IV de 12 bytes, etiqueta de 16 y datos en hexadecimal: lo que escribe cifrarV1, y nada mas. */
+const FORMATO_V1 = /^([0-9a-f]{24}):([0-9a-f]{32}):((?:[0-9a-f]{2})*)$/;
+
+/**
+ * Descifra lo de cifrarV1 con el mismo contexto. Error si falta el prefijo, el
+ * contexto no casa o el dato se ha tocado. El IV y la etiqueta tienen que medir
+ * lo que mide cifrarV1: Node aceptaria una etiqueta GCM recortada (4 bytes), que
+ * se adivina mucho antes.
+ */
 export function descifrarV1(texto: string, contexto: string): string {
   exigirFueraDeTransaccion();
   if (typeof texto !== 'string' || !texto.startsWith(PREFIJO_V1)) throw new Error('Cifrado v1: falta el prefijo de versión.');
-  const [ivHex, tagHex, dataHex] = texto.slice(PREFIJO_V1.length).split(':');
-  if (!ivHex || !tagHex || dataHex === undefined) throw new Error('Cifrado v1: formato no válido.');
-  const decipher = createDecipheriv('aes-256-gcm', KEY, Buffer.from(ivHex, 'hex'));
+  const m = FORMATO_V1.exec(texto.slice(PREFIJO_V1.length));
+  if (!m) throw new Error('Cifrado v1: formato no válido.');
+  const [, ivHex, tagHex, dataHex] = m;
+  const decipher = createDecipheriv('aes-256-gcm', KEY, Buffer.from(ivHex, 'hex'), { authTagLength: 16 });
   decipher.setAAD(Buffer.from(contexto, 'utf8'));
   decipher.setAuthTag(Buffer.from(tagHex, 'hex'));
   return Buffer.concat([decipher.update(Buffer.from(dataHex, 'hex')), decipher.final()]).toString('utf8');

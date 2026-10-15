@@ -33,6 +33,19 @@ describe('cifrarV1 / descifrarV1', () => {
     expect(() => cifrarV1('x', '')).toThrow();
   });
 
+  it('etiqueta GCM recortada, IV de otro largo o hexadecimal raro: error de formato (sin intentar descifrar)', () => {
+    const c = cifrarV1('secreto', ctx);
+    const [, iv, tag, datos] = c.split(':');
+    // Con una etiqueta de 4 bytes (sus primeros 8 hex), Node lo daria por bueno.
+    expect(() => descifrarV1(`v1:${iv}:${tag.slice(0, 8)}:${datos}`, ctx)).toThrow(/formato/);
+    expect(() => descifrarV1(`v1:${iv}00000000:${tag}:${datos}`, ctx)).toThrow(/formato/);
+    expect(() => descifrarV1(`v1:${iv}:${tag}:${datos}0`, ctx)).toThrow(/formato/);
+    expect(() => descifrarV1(`v1:${iv.toUpperCase()}:${tag}:${datos}`, ctx)).toThrow(/formato/);
+    expect(() => descifrarV1(`v1:${iv}:${tag}:${datos}:extra`, ctx)).toThrow(/formato/);
+    // Y vacio sigue valiendo (un secreto vacio cifrado).
+    expect(descifrarV1(cifrarV1('', ctx), ctx)).toBe('');
+  });
+
   it('nunca dentro de una transaccion', () => {
     const c = cifrarV1('secreto', ctx);
     expect(() => enCallbackDeTransaccion(() => descifrarV1(c, ctx))).toThrow(/transacción/);
