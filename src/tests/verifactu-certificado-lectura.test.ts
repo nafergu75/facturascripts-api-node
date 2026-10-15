@@ -4,7 +4,7 @@
  */
 import { createHash, X509Certificate } from 'crypto';
 import forge from 'node-forge';
-import { leerCertificado, maxIteraciones, metadatosDeX509, type CodigoCertificado } from '../services/verifactu/certificado';
+import { leerCertificado, maxIteraciones, metadatosDeX509, sinEscapesDn, type CodigoCertificado } from '../services/verifactu/certificado';
 import { conIteracionesMac, crearCa, crearCertificado, pkcs12, pkcs12Rc2, sujetoPersona, sujetoRepresentante, sujetoSello, type CertificadoPrueba } from './ayuda-certificados';
 
 jest.setTimeout(120_000);
@@ -109,5 +109,22 @@ describe('leerCertificado', () => {
     const x = new X509Certificate(rep.certPem);
     expect(x.subject).toMatch(/organizationIdentifier=VATES-A10952364|2\.5\.4\.97=VATES-A10952364/);
     expect(metadatosDeX509(x)).toMatchObject({ nifTitular: 'A10952364', nifRepresentante: '12345678Z' });
+  });
+
+  it('el titular y el emisor salen sin los escapes con los que Node escribe la coma y los demás especiales', () => {
+    const conComa = crearCertificado({ sujeto: sujetoRepresentante('A10952364', 'IFBIOSOLUCIONES, S.A.'), firmante: crearCa('AC FNMT; "USUARIOS" + REPRESENTACION') });
+    const x = new X509Certificate(conComa.certPem);
+    expect(x.subject).toContain('IFBIOSOLUCIONES\\, S.A.');
+    expect(metadatosDeX509(x)).toMatchObject({ titular: 'IFBIOSOLUCIONES, S.A.', emisor: 'AC FNMT; "USUARIOS" + REPRESENTACION', nifTitular: 'A10952364' });
+    const { metadatos } = leerCertificado(pkcs12({ cert: conComa, contrasena: CLAVE }), CLAVE);
+    expect(metadatos.titular).toBe('IFBIOSOLUCIONES, S.A.');
+  });
+
+  it('sinEscapesDn quita los escapes de RFC 2253 (carácter y hexadecimal)', () => {
+    expect(sinEscapesDn('IFBIOSOLUCIONES\\, S.A.')).toBe('IFBIOSOLUCIONES, S.A.');
+    expect(sinEscapesDn('A\\+B \\"C\\" \\<D\\> E\\; F\\\\G')).toBe('A+B "C" <D> E; F\\G');
+    expect(sinEscapesDn('\\ espacio al principio y al final\\ ')).toBe(' espacio al principio y al final ');
+    expect(sinEscapesDn('control\\0Afin')).toBe('control\nfin');
+    expect(sinEscapesDn('NEWZELAND CENTER, S.L. sin escapes')).toBe('NEWZELAND CENTER, S.L. sin escapes');
   });
 });

@@ -161,13 +161,27 @@ export function maxIteraciones(raiz: Nodo): bigint {
 
 // ---------- Datos del certificado (crypto.X509Certificate) ----------
 
-/** «C=ES\nO=EMPRESA SA\n...» -> pares (clave, valor), partiendo cada linea por el primer «=». */
+/**
+ * Quita los escapes de RFC 2253 con los que Node escribe subject e issuer:
+ * «IFBIOSOLUCIONES\, S.A.» -> «IFBIOSOLUCIONES, S.A.». Escapa con «\» los
+ * caracteres especiales (, + " \ < > ; # y el espacio del principio o del final)
+ * y con «\XX» (hexadecimal) los de control. Ninguno de los especiales es una
+ * cifra hexadecimal, así que no hay ambigüedad.
+ */
+export function sinEscapesDn(v: string): string {
+  return v.replace(/\\([0-9A-Fa-f]{2})|\\([\s\S])/g, (_m, hex: string | undefined, c: string | undefined) =>
+    hex ? String.fromCharCode(parseInt(hex, 16)) : (c ?? ''),
+  );
+}
+
+/** «C=ES\nO=EMPRESA\, SA\n...» -> pares (clave, valor), partiendo cada linea por el primer «=» y sin los escapes. */
 function campos(dn: string): Array<[string, string]> {
   return String(dn ?? '')
     .split('\n')
     .map((l) => {
       const i = l.indexOf('=');
-      return i > 0 ? ([l.slice(0, i).trim(), l.slice(i + 1).trim()] as [string, string]) : null;
+      // Primero los escapes y despues el recorte: un espacio final escapado («\ ») no se pierde a medias.
+      return i > 0 ? ([l.slice(0, i).trim(), sinEscapesDn(l.slice(i + 1)).trim()] as [string, string]) : null;
     })
     .filter((x): x is [string, string] => !!x);
 }
