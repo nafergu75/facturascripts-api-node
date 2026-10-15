@@ -5,8 +5,10 @@
  *
  *  - Nunca dentro de una transaccion (ni red ni descifrado dentro).
  *  - Doble candado: la URL de la AEAT de verdad (www1/www10) solo con
- *    config.verifactu.produccion (VERIFACTU_PRODUCCION=si y NODE_ENV=production).
- *    Sin el, urlServicio('PRODUCCION') lanza: nunca devuelve una URL de www.
+ *    config.verifactu.produccion (VERIFACTU_PRODUCCION=si, NODE_ENV=production
+ *    y VERCEL_ENV=production). Sin el, urlServicio('PRODUCCION') lanza (nunca
+ *    devuelve una URL de www) y enviarSoap tampoco envia a ellas: solo envia a
+ *    las URL del WSDL, aunque alguien le pase otra.
  *  - El servidor se comprueba siempre: nunca se apaga la comprobacion de TLS.
  *  - Los SOAP Fault llegan con HTTP 500: se devuelven como respuesta para
  *    clasificarlos (respuestas.ts), no como error.
@@ -39,13 +41,15 @@ export function fijarDestinoParaTests(d: { url: string; ca?: string | Buffer } |
   destinoTests = d;
 }
 
+function errorProduccionBloqueada(): Error {
+  const e = new Error('VERI*FACTU: el envío a la AEAT de verdad está bloqueado en este despliegue (VERIFACTU_PRODUCCION).');
+  (e as Error & { code?: string }).code = 'VERIFACTU_PRODUCCION_BLOQUEADA';
+  return e;
+}
+
 /** URL del servicio del entorno. PRODUCCION solo con el doble candado abierto. */
 export function urlServicio(entorno: EntornoVerifactu, o: { sello: boolean }, cfg: { produccion: boolean } = config.verifactu): string {
-  if (entorno === 'PRODUCCION' && !cfg.produccion) {
-    const e = new Error('VERI*FACTU: el envío a la AEAT de verdad está bloqueado en este despliegue (VERIFACTU_PRODUCCION).');
-    (e as Error & { code?: string }).code = 'VERIFACTU_PRODUCCION_BLOQUEADA';
-    throw e;
-  }
+  if (entorno === 'PRODUCCION' && !cfg.produccion) throw errorProduccionBloqueada();
   const u = URL_SERVICIO[entorno];
   if (!u) throw new Error(`VERI*FACTU: entorno desconocido (${entorno}).`);
   return o.sello ? u.sello : u.normal;
@@ -59,11 +63,30 @@ export interface RespuestaSoap {
 }
 
 /**
+ * Segunda barrera del candado, en el propio envio: solo las URL del WSDL, y las
+ * de la AEAT de verdad solo con el candado abierto. Asi no basta con que un
+ * camino nuevo se salte urlServicio para llegar a www1/www10.
+ */
+export function exigirUrlPermitida(url: string, cfg: { produccion: boolean } = config.verifactu): void {
+  if ((Object.values(URL_SERVICIO.PRUEBAS) as string[]).includes(url)) return;
+  if ((Object.values(URL_SERVICIO.PRODUCCION) as string[]).includes(url)) {
+    if (cfg.produccion) return;
+    throw errorProduccionBloqueada();
+  }
+  throw new Error('VERI*FACTU: solo se envía a las direcciones de la AEAT del WSDL.');
+}
+
+/**
  * Envia un sobre SOAP con el certificado de cliente. Devuelve la respuesta HTTP
  * (sea cual sea su codigo) o lanza el error de red tal cual, para clasificarlo.
+ * La URL pedida pasa por exigirUrlPermitida antes de nada (tambien en los tests).
  */
-export async function enviarSoap(o: { url: string; pfx: Buffer; passphrase: string; sobre: string; timeoutMs: number; ca?: string | Buffer }): Promise<RespuestaSoap> {
+export async function enviarSoap(
+  o: { url: string; pfx: Buffer; passphrase: string; sobre: string; timeoutMs: number; ca?: string | Buffer },
+  cfg: { produccion: boolean } = config.verifactu,
+): Promise<RespuestaSoap> {
   if (dentroDeTransaccion()) throw new Error('VERI*FACTU: no se llama a la AEAT dentro de una transacción.');
+  exigirUrlPermitida(o.url, cfg);
   const url = destinoTests?.url ?? o.url;
   const ca = destinoTests?.ca ?? o.ca;
   const agente = new https.Agent({ pfx: o.pfx, passphrase: o.passphrase, keepAlive: false, minVersion: 'TLSv1.2', ...(ca ? { ca } : {}) });

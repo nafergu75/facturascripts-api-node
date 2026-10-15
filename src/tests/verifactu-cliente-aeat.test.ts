@@ -5,7 +5,7 @@
  */
 import https from 'https';
 import type { AddressInfo } from 'net';
-import { enviarSoap, fijarDestinoParaTests, urlServicio, URL_SERVICIO } from '../services/verifactu/cliente-aeat';
+import { enviarSoap, exigirUrlPermitida, fijarDestinoParaTests, urlServicio, URL_SERVICIO } from '../services/verifactu/cliente-aeat';
 import { clasificar } from '../services/verifactu/respuestas';
 import { cuerpoConsulta, sobreSoap } from '../services/verifactu/xml';
 import { crearCa, crearCertificado, pkcs12, sujetoRepresentante, type CertificadoPrueba } from './ayuda-certificados';
@@ -162,6 +162,24 @@ describe('doble candado y destino de los tests', () => {
     expect(urlServicio('PRUEBAS', { sello: false }, { produccion: false })).toBe('https://prewww1.aeat.es/wlpl/TIKE-CONT/ws/SistemaFacturacion/VerifactuSOAP');
     // En los tests el candado esta cerrado.
     expect(() => urlServicio('PRODUCCION', { sello: false })).toThrow();
+  });
+
+  it('enviarSoap tampoco envia a www1/www10 con el candado cerrado, ni a una URL que no es del WSDL (antes de conectar)', async () => {
+    const vistas = cabecerasVistas.length;
+    const enviar = (u: string, produccion: boolean) => enviarSoap({ url: u, pfx: cliente, passphrase: CLAVE, sobre, timeoutMs: 1000 }, { produccion });
+    await expect(enviar(URL_SERVICIO.PRODUCCION.normal, false)).rejects.toMatchObject({ code: 'VERIFACTU_PRODUCCION_BLOQUEADA' });
+    await expect(enviar(URL_SERVICIO.PRODUCCION.sello, false)).rejects.toMatchObject({ code: 'VERIFACTU_PRODUCCION_BLOQUEADA' });
+    // Con el candado por defecto (cerrado en los tests), igual.
+    await expect(enviarSoap({ url: URL_SERVICIO.PRODUCCION.normal, pfx: cliente, passphrase: CLAVE, sobre, timeoutMs: 1000 })).rejects.toMatchObject({
+      code: 'VERIFACTU_PRODUCCION_BLOQUEADA',
+    });
+    await expect(enviar('https://www1.agenciatributaria.gob.es/otra/ruta', true)).rejects.toThrow(/WSDL/);
+    await expect(enviar(url, false)).rejects.toThrow(/WSDL/);
+    // Nada ha llegado al servidor local (que es a donde iria todo en los tests).
+    expect(cabecerasVistas.length).toBe(vistas);
+    expect(() => exigirUrlPermitida(URL_SERVICIO.PRUEBAS.normal, { produccion: false })).not.toThrow();
+    expect(() => exigirUrlPermitida(URL_SERVICIO.PRUEBAS.sello, { produccion: false })).not.toThrow();
+    expect(() => exigirUrlPermitida(URL_SERVICIO.PRODUCCION.normal, { produccion: true })).not.toThrow();
   });
 
   it('fijarDestinoParaTests solo funciona con NODE_ENV=test', () => {
