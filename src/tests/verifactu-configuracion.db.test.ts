@@ -102,6 +102,18 @@ describe('Configuracion > VERI*FACTU (BD real)', () => {
     expect((await estadoRedEmpresa(PRU)).empresaPruebas).toBe(true);
   });
 
+  it('la empresa de pruebas no recibe el aviso de «no podrás emitir» de diciembre: ella sigue emitiendo', async () => {
+    const diciembre = new Date('2026-12-15T10:00:00Z');
+    const pru = await estadoRedEmpresa(PRU, diciembre);
+    expect(pru).toMatchObject({ empresaPruebas: true, aviso: null, bloquea: false });
+    const real = await estadoRedEmpresa(E, diciembre);
+    expect(real.empresaPruebas).toBe(false);
+    // La real, si la red esta activa (otro test puede haberla apagado), si lo recibe.
+    if (real.redActiva) expect(real.aviso).toMatch(/no podrás emitir facturas desde aquí sin VERI\*FACTU/);
+    // Y en enero la de pruebas sigue sin bloqueo ni aviso.
+    expect(await estadoRedEmpresa(PRU, new Date('2027-01-10T10:00:00Z'))).toMatchObject({ aviso: null, bloquea: false });
+  });
+
   it('empresa de pruebas: dice de que empresa es; empresa extranjera: aplica false', async () => {
     const pru = await configuracionVerifactu(PRU);
     expect(pru).toMatchObject({ empresaPruebas: { de: { id: E, nombre: `Empresa ${E}` } }, estado: 'PRUEBAS', entorno: 'PRUEBAS', certificado: null });

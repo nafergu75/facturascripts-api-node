@@ -298,7 +298,9 @@ export async function estadoRedEmpresa(companyId: string, ahora: Date = ahoraRed
   const activo = verifactuActivo(d.config, ahora) && d.config?.entorno === 'PRODUCCION' && d.certificadoVigente;
   const aplica = d.espanola && !exclusion;
   const hoy = hoyEspana(ahora);
-  const avisar = aplica && d.redActiva && !activo && r.ok && hoy >= INICIO_AVISOS && hoy < inicio;
+  // La empresa de pruebas en PRUEBAS sigue emitiendo despues del 1-1-2027 (evaluarRedSeguridad): no se le avisa de lo contrario.
+  const pruebasQueEmite = d.empresaPruebas === true && d.config?.estado === 'PRUEBAS';
+  const avisar = aplica && d.redActiva && !activo && !pruebasQueEmite && r.ok && hoy >= INICIO_AVISOS && hoy < inicio;
   return {
     aplica,
     exclusion,
