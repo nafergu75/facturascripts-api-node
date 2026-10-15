@@ -20,8 +20,9 @@
  *    hace el de Node (nativo), no el de forge, que es 30 veces mas lento;
  *  - OpenSSL (tls.createSecureContext) va DESPUES de forge: solo abre lo que
  *    forge ya ha abierto dentro del presupuesto.
- * El millon por parte no se baja: Firefox (NSS) exporta los .p12 con cientos
- * de miles de iteraciones, y Windows y OpenSSL con unas 2.000.
+ * El millon por parte no se baja: Firefox (NSS) exporta los .p12 con cuentas
+ * altas (en su registro de errores se habla de hasta un millón; sin comprobar
+ * con un fichero real), y Windows y OpenSSL con unas 2.000.
  *
  * La clave privada y la contraseña nunca salen de aqui: solo los metadatos.
  */
