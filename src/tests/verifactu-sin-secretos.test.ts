@@ -1,7 +1,8 @@
 /**
  * Guardas estaticas de la fase F2 de VERI*FACTU sobre el codigo:
  *  - el PFX y la contraseña cifrados (pfxEnc, passEnc) solo los toca
- *    certificado.service.ts (y el esquema);
+ *    certificado.service.ts (y el esquema); la copia local del vaciado los
+ *    nombra solo para dejarlos vacios;
  *  - nadie apaga la comprobacion del servidor TLS (rejectUnauthorized);
  *  - el cliente de la AEAT solo lo usa la prueba de conexion, que no abre
  *    transacciones de emision;
@@ -23,9 +24,14 @@ function ficheros(dir: string): string[] {
 const codigo = ficheros(SRC).map((p) => ({ ruta: relative(SRC, p).split('\\').join('/'), texto: readFileSync(p, 'utf8') }));
 
 describe('VERI*FACTU F2: sin secretos ni atajos en el codigo', () => {
-  it('pfxEnc y passEnc solo en certificado.service.ts', () => {
+  it('pfxEnc y passEnc solo en certificado.service.ts (y en la copia del vaciado, solo para dejarlos fuera)', () => {
     const con = codigo.filter((f) => /\bpfxEnc\b|\bpassEnc\b/.test(f.texto)).map((f) => f.ruta);
-    expect(con).toEqual(['services/verifactu/certificado.service.ts']);
+    expect(con).toEqual(['services/vaciadoProduccion/copia.ts', 'services/verifactu/certificado.service.ts']);
+    // En copia.ts solo salen en la lista de columnas que la copia local deja vacias.
+    const copia = codigo.find((f) => f.ruta === 'services/vaciadoProduccion/copia.ts')!.texto;
+    const lineas = copia.split('\n').filter((l) => /\bpfxEnc\b|\bpassEnc\b/.test(l));
+    expect(lineas).toHaveLength(1);
+    expect(lineas[0]).toMatch(/^export const COLUMNAS_SIN_COPIA\b.*\{ VerifactuCertificado: \['pfxEnc', 'passEnc'\] \};\s*$/);
   });
 
   it('ningun rejectUnauthorized en src', () => {
