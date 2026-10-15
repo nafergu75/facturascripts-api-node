@@ -4,8 +4,8 @@
  */
 import { createHash, X509Certificate } from 'crypto';
 import forge from 'node-forge';
-import { leerCertificado, maxIteraciones, metadatosDeX509, sinEscapesDn, type CodigoCertificado } from '../services/verifactu/certificado';
-import { conIteracionesMac, crearCa, crearCertificado, pkcs12, pkcs12Rc2, sujetoPersona, sujetoRepresentante, sujetoSello, type CertificadoPrueba } from './ayuda-certificados';
+import { leerCertificado, maxIteraciones, metadatosDeX509, resumenIteraciones, sinEscapesDn, type CodigoCertificado } from '../services/verifactu/certificado';
+import { conIteracionesMac, crearCa, crearCertificado, pkcs12, pkcs12AMedida, pkcs12Rc2, sujetoPersona, sujetoRepresentante, sujetoSello, type CertificadoPrueba } from './ayuda-certificados';
 
 jest.setTimeout(120_000);
 
@@ -89,6 +89,48 @@ describe('leerCertificado', () => {
     expect(Date.now() - t0).toBeLessThan(2000);
     // Las de PBKDF2 de la clave tambien cuentan.
     expect(maxIteraciones(forge.asn1.fromDer(pkcs12({ cert: rep, contrasena: CLAVE, iteraciones: 3000 }).toString('binary')))).toBe(3000n);
+  });
+
+  it('lo que va escondido dentro de una parte cifrada tambien cuenta, y antes de calcularlo', () => {
+    // La misma forma con 2.048 iteraciones se lee bien (forge abre la parte cifrada y OpenSSL tambien).
+    expect(leerCertificado(pkcs12AMedida({ cert: rep, contrasena: CLAVE, claves: [{ escondida: true }] }), CLAVE).metadatos.nifTitular).toBe('A10952364');
+    const t0 = Date.now();
+    falla(() => leerCertificado(pkcs12AMedida({ cert: rep, contrasena: CLAVE, claves: [{ escondida: true, iteracionesFalsas: 50_000_000 }] }), CLAVE), 'VERIFACTU_CERT_ITERACIONES');
+    expect(Date.now() - t0).toBeLessThan(2000);
+    // Muchas partes escondidas: MAC, contenedor y 6 claves son 8 derivaciones (el tope es 6).
+    const muchas = pkcs12AMedida({ cert: rep, contrasena: CLAVE, claves: Array.from({ length: 6 }, () => ({ escondida: true })) });
+    expect(resumenIteraciones(forge.asn1.fromDer(muchas.toString('binary'))).partes).toBe(2);
+    falla(() => leerCertificado(muchas, CLAVE), 'VERIFACTU_CERT_ITERACIONES');
+  });
+
+  it('a la vista: como mucho 4 partes cifradas y 3.000.000 de iteraciones entre todas', () => {
+    falla(() => leerCertificado(pkcs12AMedida({ cert: rep, contrasena: CLAVE, claves: Array.from({ length: 4 }, () => ({})) }), CLAVE), 'VERIFACTU_CERT_ITERACIONES');
+    const tres = pkcs12AMedida({ cert: rep, contrasena: CLAVE, claves: Array.from({ length: 3 }, () => ({ iteracionesFalsas: 1_000_000 })) });
+    expect(resumenIteraciones(forge.asn1.fromDer(tres.toString('binary')))).toEqual({ max: 1_000_000n, suma: 3_002_048n, partes: 4 });
+    falla(() => leerCertificado(tres, CLAVE), 'VERIFACTU_CERT_ITERACIONES');
+  });
+
+  it('con 1.000.000 de iteraciones (como exporta Firefox) se lee, y el PBKDF2 lo hace Node, no forge', () => {
+    // La clave con 1.000.000 (el MAC, con 2.048: el de PKCS#12 lo sigue haciendo forge, unos 2 s por millon).
+    const pfx = pkcs12AMedida({ cert: rep, contrasena: CLAVE, claves: [{ iteraciones: 1_000_000 }] });
+    // Se mira a mano (no con jest.spyOn): forge solo usa el nativo si pbkdf2Sync declara sus 5 parametros.
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const nodeCrypto = require('crypto') as { pbkdf2Sync: (p: unknown, s: unknown, n: number, l: number, d: string) => Buffer };
+    const original = nodeCrypto.pbkdf2Sync;
+    const llamadas: Array<[number, number, string]> = [];
+    nodeCrypto.pbkdf2Sync = function (p, s, n, l, d) {
+      llamadas.push([n, l, d]);
+      return original(p, s, n, l, d);
+    };
+    try {
+      const t0 = Date.now();
+      expect(leerCertificado(pfx, CLAVE).metadatos.nifTitular).toBe('A10952364');
+      // Con el PBKDF2 de forge serian decenas de segundos dentro de Jest.
+      expect(Date.now() - t0).toBeLessThan(5000);
+      expect(llamadas).toContainEqual([1_000_000, 32, 'sha256']);
+    } finally {
+      nodeCrypto.pbkdf2Sync = original;
+    }
   });
 
   it('sin clave privada', () => {

@@ -104,10 +104,7 @@ export function pkcs12(o: {
 }): Buffer {
   const certs = [...(o.cert ? [o.cert.cert] : []), ...(o.cadena ?? []).map((c) => c.cert)];
   const clave = o.sinClave || !o.cert ? null : forge.pki.privateKeyFromPem(o.cert.clavePem);
-  // PBES2 (AES) con la contraseña en UTF-8, como OpenSSL y Windows (forge usaria el byte bajo de cada caracter).
-  const p5 = forge.pkcs5 as unknown as { pbkdf2: (...a: unknown[]) => unknown };
-  const original = p5.pbkdf2;
-  p5.pbkdf2 = (c: unknown, ...resto: unknown[]) => original(typeof c === 'string' ? forge.util.encodeUtf8(c) : c, ...resto);
+  const restaurar = pbkdf2Nativo();
   try {
     const asn1 = forge.pkcs12.toPkcs12Asn1(clave, certs, o.contrasena, {
       algorithm: o.algoritmo ?? 'aes256',
@@ -117,7 +114,83 @@ export function pkcs12(o: {
     });
     return Buffer.from(forge.asn1.toDer(asn1).getBytes(), 'binary');
   } finally {
+    restaurar();
+  }
+}
+
+/**
+ * Mientras se arma un PKCS#12 de prueba: PBES2 (AES) con la contraseña en
+ * UTF-8, como OpenSSL y Windows (forge usaria el byte bajo de cada caracter),
+ * y con el PBKDF2 nativo de Node (el de forge tarda segundos con un millon de
+ * iteraciones). Devuelve la funcion que lo deja como estaba.
+ */
+function pbkdf2Nativo(): () => void {
+  const p5 = forge.pkcs5 as unknown as { pbkdf2: (...a: unknown[]) => unknown };
+  const original = p5.pbkdf2;
+  p5.pbkdf2 = (c: unknown, s: unknown, n: unknown, largo: unknown, md: unknown, ...resto: unknown[]) => {
+    const nombre = md && typeof md === 'object' ? (md as { algorithm?: string }).algorithm : md;
+    return original(typeof c === 'string' ? forge.util.encodeUtf8(c) : c, s, n, largo, nombre, ...resto);
+  };
+  return () => {
     p5.pbkdf2 = original;
+  };
+}
+
+/**
+ * PKCS#12 armado a mano para probar los topes de trabajo: el certificado en
+ * claro y cada clave en su pkcs8ShroudedKeyBag (PBES2 AES-256), a la vista o
+ * ESCONDIDA dentro de una parte cifrada (EncryptedData, PBES2 con 2.048
+ * iteraciones), que solo se ve al descifrarla. `iteracionesFalsas` cambia
+ * despues el numero de iteraciones de esa clave sin recalcular nada (el tope
+ * tiene que saltar antes de usarlo). MAC SHA-1 con 2.048 iteraciones.
+ */
+export function pkcs12AMedida(o: {
+  cert: CertificadoPrueba;
+  contrasena: string;
+  claves: Array<{ iteraciones?: number; iteracionesFalsas?: number; escondida?: boolean }>;
+}): Buffer {
+  const { asn1, pki, pkcs12: p12, util, md, hmac, random } = forge;
+  const U = asn1.Class.UNIVERSAL;
+  const CTX = asn1.Class.CONTEXT_SPECIFIC;
+  const seq = (v: forge.asn1.Asn1[]) => asn1.create(U, asn1.Type.SEQUENCE, true, v);
+  const oid = (x: string) => asn1.create(U, asn1.Type.OID, false, asn1.oidToDer(x).getBytes());
+  const oct = (b: string) => asn1.create(U, asn1.Type.OCTETSTRING, false, b);
+  const int = (n: number) => asn1.create(U, asn1.Type.INTEGER, false, asn1.integerToDer(n).getBytes());
+  const exp0 = (v: forge.asn1.Asn1[]) => asn1.create(CTX, 0, true, v);
+  const hijos = (n: forge.asn1.Asn1) => n.value as forge.asn1.Asn1[];
+  const restaurar = pbkdf2Nativo();
+  try {
+    const certBag = seq([oid(pki.oids.certBag), exp0([seq([oid(pki.oids.x509Certificate), exp0([oct(asn1.toDer(pki.certificateToAsn1(o.cert.cert)).getBytes())])])])]);
+    const infoClave = pki.wrapRsaPrivateKey(pki.privateKeyToAsn1(pki.privateKeyFromPem(o.cert.clavePem) as forge.pki.rsa.PrivateKey));
+    const bolsa = (c: (typeof o.claves)[number]) => {
+      const cifrada = pki.encryptPrivateKeyInfo(infoClave, o.contrasena, { algorithm: 'aes256', count: c.iteraciones ?? 2048, prfAlgorithm: 'sha256' } as never);
+      if (c.iteracionesFalsas) {
+        // EncryptedPrivateKeyInfo > AlgorithmIdentifier(PBES2) > parametros > PBKDF2 > parametros > iteraciones.
+        hijos(hijos(hijos(hijos(hijos(cifrada)[0])[1])[0])[1])[1] = int(c.iteracionesFalsas);
+      }
+      return seq([oid(pki.oids.pkcs8ShroudedKeyBag), exp0([cifrada])]);
+    };
+    const aLaVista = o.claves.filter((c) => !c.escondida).map(bolsa);
+    const escondidas = o.claves.filter((c) => c.escondida).map(bolsa);
+    const partes: forge.asn1.Asn1[] = [seq([oid(pki.oids.data), exp0([oct(asn1.toDer(seq([certBag, ...aLaVista])).getBytes())])])];
+    if (escondidas.length) {
+      // encryptPrivateKeyInfo cifra el DER de lo que se le pase: aqui, la SafeContents con las claves escondidas.
+      const cifrado = pki.encryptPrivateKeyInfo(seq(escondidas), o.contrasena, { algorithm: 'aes256', count: 2048, prfAlgorithm: 'sha256' } as never);
+      const [algoritmo, datos] = hijos(cifrado);
+      const contenido = seq([oid(pki.oids.data), algoritmo, asn1.create(CTX, 0, false, datos.value as string)]);
+      partes.push(seq([oid(pki.oids.encryptedData), exp0([seq([int(0), contenido])])]));
+    }
+    const seguro = asn1.toDer(seq(partes)).getBytes();
+    const salMac = random.getBytesSync(8);
+    const claveMac = p12.generateKey(o.contrasena, util.createBuffer(salMac), 3, 2048, 20);
+    const mac = hmac.create();
+    mac.start(md.sha1.create(), claveMac);
+    mac.update(seguro);
+    const macData = seq([seq([seq([oid(pki.oids.sha1), asn1.create(U, asn1.Type.NULL, false, '')]), oct(mac.getMac().getBytes())]), oct(salMac), int(2048)]);
+    const pfx = seq([int(3), seq([oid(pki.oids.data), exp0([oct(seguro)])]), macData]);
+    return Buffer.from(asn1.toDer(pfx).getBytes(), 'binary');
+  } finally {
+    restaurar();
   }
 }
 

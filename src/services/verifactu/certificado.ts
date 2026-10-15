@@ -5,13 +5,23 @@
  * Seguridad (aviso GHSA-86w9-cpqp-85rv de node-forge sobre la verificacion de
  * firmas RSA): node-forge se usa SOLO para abrir el PKCS#12 y sacar sus partes
  * (la comprobacion de su MAC es HMAC, no RSA). Nunca se verifica una firma con
- * forge. La contraseña se comprueba con tls.createSecureContext de Node, y los
- * datos del certificado (titular, NIF, emisor, serie, validez y huella) salen de
- * crypto.X509Certificate a partir del DER.
+ * forge. La contraseña la comprueba el MAC al abrirlo y otra vez
+ * tls.createSecureContext de Node, y los datos del certificado (titular, NIF,
+ * emisor, serie, validez y huella) salen de crypto.X509Certificate a partir del DER.
  *
- * Antes de descifrar nada hay un tope: fichero de 64 KB, contraseña de 128
- * caracteres y 1.000.000 de iteraciones (un PKCS#12 con millones de
- * iteraciones dejaria la funcion colgada).
+ * Tope de trabajo (un PKCS#12 hecho a mano con muchas iteraciones dejaria el
+ * hilo colgado, y con el a los demas usuarios de la instancia):
+ *  - antes de descifrar nada: fichero de 64 KB, contraseña de 128 caracteres
+ *    y, en lo que se ve sin descifrar, 1.000.000 de iteraciones por parte, 4
+ *    partes protegidas con contraseña y 3.000.000 de iteraciones en total;
+ *  - al abrirlo con forge, que descifra tambien lo que va escondido dentro de
+ *    otra parte cifrada: cada derivacion de clave se cuenta ANTES de hacerla
+ *    (como mucho 6, y un presupuesto de iteraciones por tipo). El PBKDF2 lo
+ *    hace el de Node (nativo), no el de forge, que es 30 veces mas lento;
+ *  - OpenSSL (tls.createSecureContext) va DESPUES de forge: solo abre lo que
+ *    forge ya ha abierto dentro del presupuesto.
+ * El millon por parte no se baja: Firefox (NSS) exporta los .p12 con cientos
+ * de miles de iteraciones, y Windows y OpenSSL con unas 2.000.
  *
  * La clave privada y la contraseña nunca salen de aqui: solo los metadatos.
  */
@@ -22,7 +32,18 @@ import { HttpError } from '../../utils/http-errors';
 
 export const CERT_MAX_BYTES = 64 * 1024;
 export const CONTRASENA_MAX = 128;
+/** Iteraciones de una parte (MAC, contenedor cifrado o clave cifrada). */
 export const ITERACIONES_MAX = 1_000_000;
+/** Partes protegidas con contraseña que se ven sin descifrar (MAC, certificados y clave: 3 en un .p12 normal). */
+export const PARTES_CIFRADAS_MAX = 4;
+/** Suma de las iteraciones que se ven sin descifrar. */
+export const ITERACIONES_TOTAL_MAX = 3_000_000;
+/** Derivaciones de clave al abrirlo (un PBE de PKCS#12 hace dos: clave e IV). */
+export const DERIVACIONES_MAX = 6;
+/** Suma de iteraciones de PBKDF2 (nativo: unos 0,25 s por millon). */
+export const PRESUPUESTO_PBKDF2 = 3_000_000;
+/** Suma de iteraciones del derivador de PKCS#12 (MAC y 3DES; en JavaScript: unos 2 s por millon). */
+export const PRESUPUESTO_PKCS12 = 1_000_000;
 /** Profundidad maxima al entrar en los OCTET STRING que llevan DER dentro. */
 const PROFUNDIDAD_MAX = 8;
 const NODOS_MAX = 20_000;
@@ -117,16 +138,32 @@ function oidDe(n: Nodo | undefined): string | null {
   }
 }
 
+export interface ResumenIteraciones {
+  /** La mayor cuenta de iteraciones. */
+  max: bigint;
+  /** La suma de todas. */
+  suma: bigint;
+  /** Cuantas partes protegidas con contraseña (MAC incluido). */
+  partes: number;
+}
+
 /**
- * La mayor cuenta de iteraciones del PKCS#12: la del MAC (MacData) y las de
- * PBKDF2 y los PBE de cada parte cifrada. Entra en los OCTET STRING que llevan
- * DER dentro (hasta PROFUNDIDAD_MAX niveles y NODOS_MAX nodos).
+ * Las iteraciones que se ven en el PKCS#12 sin descifrar nada: la del MAC
+ * (MacData) y las de PBKDF2 y los PBE de cada parte cifrada. Entra en los
+ * OCTET STRING que llevan DER dentro (hasta PROFUNDIDAD_MAX niveles y
+ * NODOS_MAX nodos). Lo que va dentro de una parte cifrada no se ve: eso lo
+ * cuenta abrirPkcs12 antes de cada derivacion.
  */
-export function maxIteraciones(raiz: Nodo): bigint {
+export function resumenIteraciones(raiz: Nodo): ResumenIteraciones {
   let max = 0n;
+  let suma = 0n;
+  let partes = 0;
   let nodos = 0;
   const anotar = (v: bigint | null) => {
-    if (v !== null && v > max) max = v;
+    if (v === null) return;
+    partes++;
+    suma += v;
+    if (v > max) max = v;
   };
   // MacData: tercer elemento del PFX, con las iteraciones en su tercer elemento.
   const macData = hijos(raiz)[2];
@@ -156,8 +193,15 @@ export function maxIteraciones(raiz: Nodo): bigint {
     }
   };
   recorrer(raiz, 0);
-  return max;
+  return { max, suma, partes };
 }
+
+/** La mayor cuenta de iteraciones que se ve sin descifrar. */
+export function maxIteraciones(raiz: Nodo): bigint {
+  return resumenIteraciones(raiz).max;
+}
+
+const errorIteraciones = () => new ErrorCertificado('VERIFACTU_CERT_ITERACIONES', MENSAJES_CERTIFICADO.iteraciones);
 
 // ---------- Datos del certificado (crypto.X509Certificate) ----------
 
@@ -228,23 +272,60 @@ export function metadatosDeX509(x: X509Certificate): MetadatosLeidos {
 
 // ---------- Lectura ----------
 
+/** Resumenes que el PBKDF2 nativo de Node acepta por su nombre (el de forge.md.*.algorithm). */
+const RESUMENES_NATIVOS = new Set(['sha1', 'sha256', 'sha384', 'sha512']);
+
+type Funcion = (...a: unknown[]) => unknown;
+
 /**
- * forge.pkcs12.pkcs12FromAsn1 con la contraseña bien codificada en cada parte:
- * el MAC y los PBE de PKCS#12 (3DES) usan la contraseña como BMPString, que
- * forge ya hace bien; pero en PBES2 (AES, lo que exportan hoy Windows y
- * OpenSSL) la clave sale de PBKDF2 con la contraseña en UTF-8, y forge usaria
- * el byte bajo de cada caracter: con una «ñ» no abriria un certificado bueno.
- * Mientras dura la llamada (sincrona), su PBKDF2 recibe la contraseña en UTF-8
- * (igual que antes si es ASCII).
+ * forge.pkcs12.pkcs12FromAsn1 con un presupuesto de trabajo y la contraseña
+ * bien codificada en cada parte. Mientras dura la llamada (sincrona), las tres
+ * derivaciones de clave de forge pasan por aqui:
+ *  - cada una se cuenta ANTES de hacerla, tambien las de las partes que van
+ *    escondidas dentro de otra cifrada (que el recorrido previo no ve): mas
+ *    de ITERACIONES_MAX en una, mas de DERIVACIONES_MAX o mas del presupuesto
+ *    de su tipo -> VERIFACTU_CERT_ITERACIONES, sin calcular nada;
+ *  - PBKDF2 (PBES2, el AES que exportan hoy Windows, OpenSSL y Firefox) se
+ *    hace con el de Node, y con la contraseña en UTF-8 como OpenSSL y Windows
+ *    (forge usaria el byte bajo de cada caracter: con una «ñ» no abriria un
+ *    certificado bueno);
+ *  - el MAC y los PBE de PKCS#12 (3DES) usan la contraseña como BMPString,
+ *    que forge ya hace bien.
  */
 export function abrirPkcs12(asn1: forge.asn1.Asn1, contrasena: string): forge.pkcs12.Pkcs12Pfx {
-  const p5 = forge.pkcs5 as unknown as { pbkdf2: (...a: unknown[]) => unknown };
-  const original = p5.pbkdf2;
-  p5.pbkdf2 = (clave: unknown, ...resto: unknown[]) => original(typeof clave === 'string' ? forge.util.encodeUtf8(clave) : clave, ...resto);
+  const p5 = forge.pkcs5 as unknown as { pbkdf2: Funcion };
+  const p12 = forge.pkcs12 as unknown as { generateKey: Funcion };
+  const pbe = (forge.pki as unknown as { pbe: { generatePkcs12Key: Funcion } }).pbe;
+  const originales = { pbkdf2: p5.pbkdf2, generateKey: p12.generateKey, generatePkcs12Key: pbe.generatePkcs12Key };
+  const gasto = { derivaciones: 0, pbkdf2: 0, pkcs12: 0 };
+  const gastar = (tipo: 'pbkdf2' | 'pkcs12', iteraciones: unknown) => {
+    const n = Number(iteraciones);
+    gasto.derivaciones++;
+    if (!Number.isSafeInteger(n) || n < 1 || n > ITERACIONES_MAX) throw errorIteraciones();
+    gasto[tipo] += n;
+    if (gasto.derivaciones > DERIVACIONES_MAX || gasto.pbkdf2 > PRESUPUESTO_PBKDF2 || gasto.pkcs12 > PRESUPUESTO_PKCS12) throw errorIteraciones();
+  };
+  p5.pbkdf2 = (clave: unknown, sal: unknown, iteraciones: unknown, largo: unknown, md: unknown, ...resto: unknown[]) => {
+    gastar('pbkdf2', iteraciones);
+    // Con el nombre del resumen (no su objeto), forge llama al PBKDF2 nativo de Node.
+    const algoritmo = md && typeof md === 'object' ? (md as { algorithm?: unknown }).algorithm : undefined;
+    const resumen = typeof algoritmo === 'string' && RESUMENES_NATIVOS.has(algoritmo) ? algoritmo : md;
+    return originales.pbkdf2(typeof clave === 'string' ? forge.util.encodeUtf8(clave) : clave, sal, iteraciones, largo, resumen, ...resto);
+  };
+  const contado =
+    (original: Funcion): Funcion =>
+    (clave, sal, id, iteraciones, ...resto) => {
+      gastar('pkcs12', iteraciones);
+      return original(clave, sal, id, iteraciones, ...resto);
+    };
+  p12.generateKey = contado(originales.generateKey);
+  pbe.generatePkcs12Key = contado(originales.generatePkcs12Key);
   try {
     return forge.pkcs12.pkcs12FromAsn1(asn1, false, contrasena);
   } finally {
-    p5.pbkdf2 = original;
+    p5.pbkdf2 = originales.pbkdf2;
+    p12.generateKey = originales.generateKey;
+    pbe.generatePkcs12Key = originales.generatePkcs12Key;
   }
 }
 
@@ -271,10 +352,28 @@ export function leerCertificado(pfx: Buffer, contrasena: string, ahora: Date = n
     throw new ErrorCertificado('VERIFACTU_CERT_FICHERO', MENSAJES_CERTIFICADO.fichero);
   }
 
-  // 3. Tope de iteraciones, antes de descifrar nada.
-  if (maxIteraciones(asn1) > BigInt(ITERACIONES_MAX)) throw new ErrorCertificado('VERIFACTU_CERT_ITERACIONES', MENSAJES_CERTIFICADO.iteraciones);
+  // 3. Tope de lo que se ve, antes de descifrar nada.
+  const visto = resumenIteraciones(asn1);
+  if (visto.max > BigInt(ITERACIONES_MAX) || visto.partes > PARTES_CIFRADAS_MAX || visto.suma > BigInt(ITERACIONES_TOTAL_MAX)) throw errorIteraciones();
 
-  // 4. La contraseña, con Node (OpenSSL).
+  // 4. Las bolsas del PKCS#12, con forge (solo para abrirlo) y con su presupuesto: comprueba
+  //    la contraseña (MAC) y abre tambien las partes escondidas sin pasar del tope.
+  let p12: forge.pkcs12.Pkcs12Pfx;
+  try {
+    p12 = abrirPkcs12(asn1, contrasena);
+  } catch (e) {
+    if (e instanceof ErrorCertificado) throw e;
+    const msg = String((e as Error)?.message ?? '').toLowerCase();
+    if (msg.includes('mac could not be verified') || msg.includes('wrong password') || msg.includes('failed to decrypt')) {
+      throw new ErrorCertificado('VERIFACTU_CERT_CONTRASENA', MENSAJES_CERTIFICADO.contrasena);
+    }
+    // RC4, RC2 de 128 bits, 3DES de dos claves...: PBE antiguos de PKCS#12.
+    if (msg.includes('pkcs #12 pbe data block. unsupported oid')) throw new ErrorCertificado('VERIFACTU_CERT_CIFRADO_ANTIGUO', MENSAJES_CERTIFICADO.cifradoAntiguo);
+    throw new ErrorCertificado('VERIFACTU_CERT_FICHERO', MENSAJES_CERTIFICADO.fichero);
+  }
+
+  // 5. Con Node (OpenSSL), DESPUES de forge: lo que abre ya cabe en el presupuesto. Rechaza el
+  //    cifrado antiguo (RC2-40, que forge si abre) y comprueba la clave.
   try {
     createSecureContext({ pfx, passphrase: contrasena });
   } catch (e) {
@@ -285,16 +384,6 @@ export function leerCertificado(pfx: Buffer, contrasena: string, ahora: Date = n
     if (err.code === 'ERR_CRYPTO_UNSUPPORTED_OPERATION' || msg.includes('unsupported')) {
       throw new ErrorCertificado('VERIFACTU_CERT_CIFRADO_ANTIGUO', MENSAJES_CERTIFICADO.cifradoAntiguo);
     }
-    throw new ErrorCertificado('VERIFACTU_CERT_FICHERO', MENSAJES_CERTIFICADO.fichero);
-  }
-
-  // 5. Las bolsas del PKCS#12, con forge (solo para abrirlo).
-  let p12: forge.pkcs12.Pkcs12Pfx;
-  try {
-    p12 = abrirPkcs12(asn1, contrasena);
-  } catch (e) {
-    const msg = String((e as Error)?.message ?? '').toLowerCase();
-    if (msg.includes('mac could not be verified') || msg.includes('wrong password')) throw new ErrorCertificado('VERIFACTU_CERT_CONTRASENA', MENSAJES_CERTIFICADO.contrasena);
     throw new ErrorCertificado('VERIFACTU_CERT_FICHERO', MENSAJES_CERTIFICADO.fichero);
   }
 
