@@ -557,6 +557,19 @@ export async function listarUsuarios(): Promise<UsuarioAdmin[]> {
 }
 
 /**
+ * Las empresas de pruebas de VERI*FACTU llevan el NIF, la denominacion y el
+ * domicilio de la real, y siguen emitiendo despues del 1-1-2027 (sus facturas
+ * van al entorno de pruebas de la AEAT). Para que nadie las use como si fueran
+ * la real, solo pueden tener acceso los administradores globales.
+ */
+export const CODIGO_EMPRESA_PRUEBAS_SOLO_ADMIN = 'VERIFACTU_EMPRESA_PRUEBAS_SOLO_ADMIN';
+const errorEmpresaPruebasSoloAdmin = () =>
+  conflict('Las empresas de pruebas de VERI*FACTU son solo para los administradores globales: llevan el NIF y los datos de la empresa real.', {
+    codigo: CODIGO_EMPRESA_PRUEBAS_SOLO_ADMIN,
+    code: CODIGO_EMPRESA_PRUEBAS_SOLO_ADMIN,
+  });
+
+/**
  * Crea un usuario con su contrasena inicial (hasheada con scrypt, utils/password)
  * y, si se indica, le da acceso a una empresa con un rol (por defecto, solo
  * lectura) y, si se quiere, permisos a medida (`areas`).
@@ -601,9 +614,11 @@ export async function crearUsuario(
   if (await prisma.user.findUnique({ where: { email }, select: { id: true } })) {
     throw conflict(`Ya existe un usuario con el email ${email}.`);
   }
-  if (companyId && !(await prisma.company.findUnique({ where: { id: companyId }, select: { id: true } }))) {
+  const empresaElegida = companyId ? await prisma.company.findUnique({ where: { id: companyId }, select: { id: true, pruebasVerifactuDe: true } }) : null;
+  if (companyId && !empresaElegida) {
     throw notFound('La empresa elegida no existe.');
   }
+  if (empresaElegida?.pruebasVerifactuDe && !esAdminGlobal) throw errorEmpresaPruebasSoloAdmin();
 
   try {
     const u = await prisma.$transaction(async (tx) => {
@@ -658,11 +673,12 @@ export async function asignarRol(
   const areas = leerAreas(areasPedidas);
   const personalizados = canonizarParaGuardar(rol, areas);
   const [usuario, empresa] = await Promise.all([
-    prisma.user.findUnique({ where: { id: userId }, select: { id: true } }),
-    prisma.company.findUnique({ where: { id: companyId }, select: { id: true } }),
+    prisma.user.findUnique({ where: { id: userId }, select: { id: true, isGlobalAdmin: true } }),
+    prisma.company.findUnique({ where: { id: companyId }, select: { id: true, pruebasVerifactuDe: true } }),
   ]);
   if (!usuario) throw notFound('Usuario no encontrado.');
   if (!empresa) throw notFound('Empresa no encontrada.');
+  if (empresa.pruebasVerifactuDe && !usuario.isGlobalAdmin) throw errorEmpresaPruebasSoloAdmin();
 
   const nuevo = { role: rol, permisosPersonalizados: personalizados };
   return prisma.$transaction(async (tx) => {
@@ -827,6 +843,18 @@ export async function actualizarUsuario(
         admins.map((a) => a.id),
         userId,
       );
+    }
+    if (objetivo.isGlobalAdmin && esAdminGlobal === false) {
+      const enPruebas = await tx.membership.findFirst({
+        where: { userId, company: { pruebasVerifactuDe: { not: null } } },
+        select: { company: { select: { name: true } } },
+      });
+      if (enPruebas) {
+        throw conflict(
+          `Antes de quitarle el modo administrador, quítale el acceso a «${enPruebas.company.name}»: las empresas de pruebas de VERI*FACTU son solo para los administradores globales.`,
+          { codigo: CODIGO_EMPRESA_PRUEBAS_SOLO_ADMIN, code: CODIGO_EMPRESA_PRUEBAS_SOLO_ADMIN },
+        );
+      }
     }
 
     const data: {

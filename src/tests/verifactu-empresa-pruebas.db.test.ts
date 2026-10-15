@@ -20,6 +20,7 @@ import { hoyEspana } from '../utils/fechas';
 import { legalConfigService } from '../services/legalConfig.service';
 import { incomeInvoicesService, type CrearFacturaIngresoDTO } from '../services/income-invoices.service';
 import { seriesEmpresaPruebas } from '../services/verifactu/empresaPruebas.service';
+import { actualizarUsuario, asignarRol, CODIGO_EMPRESA_PRUEBAS_SOLO_ADMIN, crearUsuario } from '../services/admin.service';
 import { archivarFacturaVenta } from '../services/archivoFacturas.service';
 import { datosPdfFactura, pdfParaDescargar } from '../services/facturaPdf.service';
 import { MARCA_PRUEBAS, TITULO_QR } from '../services/verifactu/qrPdf';
@@ -244,5 +245,32 @@ describeBd('empresas de pruebas de VERI*FACTU (BD real)', () => {
     } finally {
       await prisma.$executeRaw`UPDATE VerifactuRegistro SET entorno = 'PRUEBAS' WHERE incomeInvoiceId = ${f.id}`;
     }
+  });
+
+  it('solo los administradores globales tienen acceso a la empresa de pruebas (lleva el NIF y los datos de la real)', async () => {
+    const normal = await prisma.user.create({
+      data: { email: `vfpru-normal-${SUFIJO}@test.local`, passwordHash: hashPassword(randomBytes(18).toString('base64url')) },
+      select: { id: true },
+    });
+    await expect(asignarRol(normal.id, pruebasId, 'ventas')).rejects.toMatchObject({ statusCode: 409, details: { codigo: CODIGO_EMPRESA_PRUEBAS_SOLO_ADMIN } });
+    // Por la API de /admin, igual.
+    const api = await request(app).put(`/admin/usuarios/${normal.id}/empresas/${pruebasId}`).set('Authorization', `Bearer ${tAdmin}`).send({ rol: 'ventas' });
+    expect(api.status).toBe(409);
+    // Un usuario nuevo con acceso a la empresa de pruebas tampoco (ni se crea).
+    const email = `vfpru-nuevo-${SUFIJO}@test.local`;
+    await expect(crearUsuario({ email, password: undefined, companyId: pruebasId, rol: 'ventas' }, { generarSiFalta: true })).rejects.toMatchObject({ statusCode: 409 });
+    expect(await prisma.user.count({ where: { email } })).toBe(0);
+    expect(await prisma.membership.count({ where: { companyId: pruebasId, userId: normal.id } })).toBe(0);
+    // En la empresa real, como siempre.
+    expect((await asignarRol(normal.id, REAL, 'ventas')).rol).toBe('ventas');
+
+    // Un administrador global si; y no se le puede quitar el modo administrador mientras tenga ese acceso.
+    const otro = await prisma.user.create({
+      data: { email: `vfpru-admin2-${SUFIJO}@test.local`, passwordHash: hashPassword(randomBytes(18).toString('base64url')), isGlobalAdmin: true },
+      select: { id: true },
+    });
+    await asignarRol(otro.id, pruebasId, 'admin');
+    await expect(actualizarUsuario(admin.id, otro.id, { esAdminGlobal: false })).rejects.toMatchObject({ statusCode: 409, details: { codigo: CODIGO_EMPRESA_PRUEBAS_SOLO_ADMIN } });
+    expect((await prisma.user.findUniqueOrThrow({ where: { id: otro.id } })).isGlobalAdmin).toBe(true);
   });
 });
