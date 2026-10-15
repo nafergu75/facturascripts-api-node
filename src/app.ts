@@ -83,8 +83,8 @@ export function createApp(): Express {
       carmen: { llmActivo: config.carmen.llmActivo && !!config.anthropicApiKey, topeAgotado: topeMensualAgotadoEnCache() },
       // Lector de facturas: si Azure esta configurado y que lector se usa (sin valores).
       ocr: estadoOcr(),
-      // VERI*FACTU: si el doble candado deja enviar a la AEAT de verdad (sin valores).
-      verifactu: { produccion: config.verifactu.produccion },
+      // VERI*FACTU: si el candado deja enviar a la AEAT de verdad y el entorno de Vercel que ve (production, preview o null).
+      verifactu: { produccion: config.verifactu.produccion, vercelEnv: process.env.VERCEL_ENV ?? null },
     });
   });
 

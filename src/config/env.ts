@@ -149,9 +149,13 @@ const carmen = leerCarmen();
 // Doble candado para no enviar NUNCA nada a la AEAT de verdad (www1/www10)
 // desde un entorno de pruebas o una vista previa (spec verifactu, 6.1 y 6.6):
 // la URL de produccion solo se usa con VERIFACTU_PRODUCCION=si (exacto, sin
-// espacios ni mayusculas) Y NODE_ENV=production. Va fuera de envSchema: un
-// valor raro no tumba la API, solo deja el candado cerrado y avisa en el log.
-// En la fase F2 esta variable no se pone en Vercel.
+// espacios ni mayusculas), NODE_ENV=production Y VERCEL_ENV=production. En
+// Vercel las vistas previas (Preview) tambien corren con NODE_ENV=production:
+// la tercera condicion es la que las deja fuera aunque la variable se haya
+// puesto para todos los entornos. Fuera de Vercel (sin VERCEL_ENV) queda
+// cerrado. Va fuera de envSchema: un valor raro no tumba la API, solo deja el
+// candado cerrado y avisa en el log. En la fase F2 esta variable no se pone en
+// Vercel. /health enseña si esta abierto y el VERCEL_ENV que ve el servidor.
 
 export interface ConfigVerifactu {
   /** true: se puede enviar a la AEAT de verdad (produccion). */
@@ -166,7 +170,13 @@ export function leerVerifactu(fuente: NodeJS.ProcessEnv = process.env): ConfigVe
     console.error('VERIFACTU_PRODUCCION solo admite "si": queda apagado (no se envía nada a la AEAT de verdad).');
     return { produccion: false };
   }
-  return { produccion: fuente.NODE_ENV === 'production' };
+  if (fuente.NODE_ENV !== 'production') return { produccion: false };
+  if (fuente.VERCEL_ENV !== 'production') {
+    // eslint-disable-next-line no-console
+    console.error(`VERIFACTU_PRODUCCION=si fuera del despliegue de produccion de Vercel (VERCEL_ENV=${fuente.VERCEL_ENV ?? 'sin definir'}): queda apagado.`);
+    return { produccion: false };
+  }
+  return { produccion: true };
 }
 
 const verifactu = leerVerifactu();
