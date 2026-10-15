@@ -1,7 +1,8 @@
 /**
  * «Probar conexión» con la AEAT (spec verifactu, 10.3; plan F2, 7.4): una
- * consulta ConsultaFactuSistemaFacturacion del mes en curso con el certificado
- * de la empresa. No genera registros ni cambia la configuracion.
+ * consulta ConsultaFactuSistemaFacturacion del mes en curso, de un numero de
+ * factura que no existe (NUM_SERIE_PRUEBA_CONEXION), con el certificado de la
+ * empresa. No genera registros ni cambia la configuracion.
  *
  *  - En la fase F2 va SIEMPRE al entorno de pruebas (prewww1), sea cual sea la
  *    configuracion: la prueba contra la AEAT de verdad llega con la activacion.
@@ -20,7 +21,7 @@ import { certificadoParaConexion, exigirObligado } from './certificado.service';
 import { fechaCorta } from './certificado';
 import { enviarSoap, urlServicio } from './cliente-aeat';
 import { clasificar, MENSAJES_CONEXION, type ResultadoClasificado } from './respuestas';
-import { cuerpoConsulta, sobreSoap } from './xml';
+import { cuerpoConsulta, NUM_SERIE_PRUEBA_CONEXION, sobreSoap } from './xml';
 import type { EntornoVerifactu } from './cadena';
 
 /** Tiempo maximo de la consulta. */
@@ -68,7 +69,9 @@ export async function probarConexion(companyId: string, userId: string, ahora: D
     const config = await prisma.verifactuConfig.findUnique({ where: { companyId }, select: { nifObligado: true, nombreObligado: true } });
     const obligado = { nombre: recortar(config?.nombreObligado ?? obligadoLegal.denominacion, 120), nif: config?.nifObligado ?? obligadoLegal.nif };
     const [anio, mes] = hoyEspana(ahora).split('-');
-    const sobre = sobreSoap(cuerpoConsulta({ obligado, ejercicio: anio, periodo: mes }));
+    // Solo una factura que no existe: la respuesta es siempre corta (SinDatos), sin rozar
+    // los 5 MB ni los 10 s aunque la empresa tenga miles de facturas en el mes.
+    const sobre = sobreSoap(cuerpoConsulta({ obligado, ejercicio: anio, periodo: mes, numSerie: NUM_SERIE_PRUEBA_CONEXION }));
     const inicio = Date.now();
     try {
       const r = await enviarSoap({ url: urlServicio(entorno, { sello: false }), pfx: c.pfx, passphrase: c.passphrase, sobre, timeoutMs: opciones.timeoutMs ?? TIMEOUT_PRUEBA_MS });

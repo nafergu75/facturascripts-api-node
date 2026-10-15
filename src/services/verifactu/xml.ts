@@ -282,14 +282,27 @@ export function cuerpoRegFactu(d: {
 }
 
 /**
- * Consulta ConsultaFactuSistemaFacturacion de un periodo (ejercicio «AAAA» y
- * periodo «MM»). Solo lee: no genera registros (la usa «Probar conexión»).
+ * Numero de factura que la app nunca usa (las series son letras y cifras
+ * cortas): «Probar conexión» consulta solo esa factura, asi la AEAT contesta
+ * siempre poco (SinDatos), tenga la empresa las facturas que tenga en el mes.
+ * Lo que se prueba es el certificado, no los datos.
  */
-export function cuerpoConsulta(d: { obligado: ObligadoXml; ejercicio: string; periodo: string }): string {
+export const NUM_SERIE_PRUEBA_CONEXION = 'PRUEBA-CONEXION-CONTA-API';
+
+/**
+ * Consulta ConsultaFactuSistemaFacturacion de un periodo (ejercicio «AAAA» y
+ * periodo «MM») y, si se pide, de un solo numero de factura (NumSerieFactura,
+ * como mucho 60 caracteres). Solo lee: no genera registros (la usa «Probar conexión»).
+ */
+export function cuerpoConsulta(d: { obligado: ObligadoXml; ejercicio: string; periodo: string; numSerie?: string }): string {
   if (!/^\d{4}$/.test(d.ejercicio)) throw new Error(`VERI*FACTU: ejercicio no válido: ${d.ejercicio}`);
   if (!/^(0[1-9]|1[0-2])$/.test(d.periodo)) throw new Error(`VERI*FACTU: periodo no válido: ${d.periodo}`);
+  if (d.numSerie !== undefined && !/^[\x21-\x7E](?:[\x20-\x7E]{0,58}[\x21-\x7E])?$/.test(d.numSerie)) {
+    throw new Error(`VERI*FACTU: número de factura no válido para la consulta: ${d.numSerie}`);
+  }
   const cabecera = el('con', 'Cabecera', sf('IDVersion', '1.0') + obligadoXml(d.obligado));
-  const filtro = el('con', 'FiltroConsulta', el('con', 'PeriodoImputacion', sf('Ejercicio', d.ejercicio) + sf('Periodo', d.periodo)));
+  const periodo = el('con', 'PeriodoImputacion', sf('Ejercicio', d.ejercicio) + sf('Periodo', d.periodo));
+  const filtro = el('con', 'FiltroConsulta', periodo + (d.numSerie !== undefined ? el('con', 'NumSerieFactura', textoXml(d.numSerie)) : ''));
   return `<con:ConsultaFactuSistemaFacturacion xmlns:con="${NS_CON}" xmlns:sf="${NS_SF}">${cabecera}${filtro}</con:ConsultaFactuSistemaFacturacion>`;
 }
 

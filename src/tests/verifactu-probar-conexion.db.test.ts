@@ -95,6 +95,8 @@ describe('probar la conexion con la AEAT (BD real, servidor local)', () => {
     expect(r.body.data.resultado.mensaje).toContain('entorno de pruebas');
     expect(peticiones).toHaveLength(1);
     expect(peticiones[0]).toContain('<con:ConsultaFactuSistemaFacturacion');
+    // Solo una factura que no existe: la AEAT contesta siempre poco.
+    expect(peticiones[0]).toContain('<con:NumSerieFactura>PRUEBA-CONEXION-CONTA-API</con:NumSerieFactura>');
     const fila = await prisma.verifactuCertificado.findUniqueOrThrow({ where: { companyId: E }, select: { pruebaConexionOk: true, pruebaConexionTipo: true, pruebaConexionEntorno: true, pruebaConexionFecha: true } });
     expect(fila).toMatchObject({ pruebaConexionOk: true, pruebaConexionTipo: 'CORRECTO', pruebaConexionEntorno: 'PRUEBAS' });
     expect(await prisma.verifactuBitacora.count({ where: { companyId: E, tipo: 'CONEXION_PROBADA' } })).toBe(1);

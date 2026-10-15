@@ -10,6 +10,7 @@ import {
   campoHuella,
   cuerpoConsulta,
   cuerpoRegFactu,
+  NUM_SERIE_PRUEBA_CONEXION,
   sobreSoap,
   textoXml,
   xmlDeRegistro,
@@ -300,6 +301,15 @@ describe('envio, consulta y sobre', () => {
     await esperarValido(x, 'ConsultaLR.xsd');
     expect(() => cuerpoConsulta({ obligado, ejercicio: '26', periodo: '10' })).toThrow();
     expect(() => cuerpoConsulta({ obligado, ejercicio: '2026', periodo: '13' })).toThrow();
+  });
+
+  it('la consulta de «Probar conexión», con un numero de factura que no existe, tambien es valida', async () => {
+    const x = cuerpoConsulta({ obligado, ejercicio: '2026', periodo: '10', numSerie: NUM_SERIE_PRUEBA_CONEXION });
+    expect(x).toContain(`</con:PeriodoImputacion><con:NumSerieFactura>${NUM_SERIE_PRUEBA_CONEXION}</con:NumSerieFactura></con:FiltroConsulta>`);
+    await esperarValido(x, 'ConsultaLR.xsd');
+    expect(() => cuerpoConsulta({ obligado, ejercicio: '2026', periodo: '10', numSerie: '' })).toThrow();
+    expect(() => cuerpoConsulta({ obligado, ejercicio: '2026', periodo: '10', numSerie: 'x'.repeat(61) })).toThrow();
+    expect(() => cuerpoConsulta({ obligado, ejercicio: '2026', periodo: '10', numSerie: ' A-1' })).toThrow();
   });
 });
 
