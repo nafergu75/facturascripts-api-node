@@ -1442,6 +1442,8 @@ export async function pdfParaDescargar(companyId: string, id: string): Promise<{
  * Ultima barrera de la invariante de la fase F2: un registro de PRUEBAS en una
  * empresa que no es de pruebas no pone un QR de prewww2 en una factura real;
  * sale sin QR, con la marca «PRUEBAS – SIN VALIDEZ», y se deja un error en el log.
+ * Y al reves: un registro de PRODUCCION en una empresa de pruebas sale sin QR
+ * (con la marca de la empresa de pruebas), tambien con su error en el log.
  */
 async function verifactuDelPdf(
   companyId: string,
@@ -1460,6 +1462,11 @@ async function verifactuDelPdf(
   if (r.entorno === 'PRUEBAS' && !empresaPruebas) {
     logger.error(`[verifactu] La factura ${factura.id} tiene un registro de PRUEBAS y su empresa no es de pruebas: el PDF sale sin QR y con la marca de pruebas.`);
     return { ...salida, marcaPruebas: true };
+  }
+  if (r.entorno === 'PRODUCCION' && empresaPruebas) {
+    // Al reves tampoco: una empresa de pruebas no pone el QR de la AEAT de verdad (su marca de pruebas sale igual).
+    logger.error(`[verifactu] La factura ${factura.id} tiene un registro de PRODUCCION y su empresa es de pruebas: el PDF sale sin QR.`);
+    return salida;
   }
   try {
     return { ...salida, verifactu: { url: urlCotejo({ ...r, importeTotal: r.importeTotal }), entorno: r.entorno } };

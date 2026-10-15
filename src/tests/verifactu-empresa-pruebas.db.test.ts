@@ -233,4 +233,16 @@ describeBd('empresas de pruebas de VERI*FACTU (BD real)', () => {
       await prisma.company.update({ where: { id: pruebasId }, data: { pruebasVerifactuDe: REAL } });
     }
   });
+
+  it('un registro de PRODUCCION en una empresa de pruebas (no deberia pasar): el PDF sale sin QR, con la marca de la empresa de pruebas', async () => {
+    // Se fuerza con SQL a mano: la app no deja generarlo asi (409 VERIFACTU_ENTORNO_NO_PERMITIDO) ni cambiarlo (inmutabilidad).
+    const f = await prisma.incomeInvoice.findFirstOrThrow({ where: { companyId: pruebasId, estadoDocumento: 'FINAL', verifactuEstado: { not: null } } });
+    await prisma.$executeRaw`UPDATE VerifactuRegistro SET entorno = 'PRODUCCION' WHERE incomeInvoiceId = ${f.id}`;
+    try {
+      const datos = (await datosPdfFactura(pruebasId, f.id)).datos;
+      expect(datos).toMatchObject({ verifactu: null, empresaPruebas: true });
+    } finally {
+      await prisma.$executeRaw`UPDATE VerifactuRegistro SET entorno = 'PRUEBAS' WHERE incomeInvoiceId = ${f.id}`;
+    }
+  });
 });
