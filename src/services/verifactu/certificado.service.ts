@@ -19,7 +19,7 @@ import { prisma } from '../../config/database';
 import { conflict, HttpError, notFound } from '../../utils/http-errors';
 import { cifrarV1, descifrarV1 } from '../../utils/crypto';
 import { normalizarNif } from '../../utils/nif';
-import { formatearHusoMadrid } from '../../utils/fechas';
+import { formatearHusoMadrid, hoyEspana } from '../../utils/fechas';
 import { perfilDesdeConfig } from '../perfilEmpresa.service';
 import { fechaCorta, leerCertificado, type MetadatosLeidos, type TipoCertificado } from './certificado';
 
@@ -38,25 +38,33 @@ const conCodigo = (codigo: string, extra: Record<string, unknown> = {}) => ({ co
 
 export type AvisoCaducidad = null | 'CADUCA_30' | 'CADUCA_7' | 'CADUCADO';
 
-/** Aviso de caducidad del certificado: a 30 dias, a 7 o ya caducado. */
+/** Dias naturales de `desde` a `hasta` (AAAA-MM-DD). */
+const diasEntre = (desde: string, hasta: string) => Math.round((Date.parse(`${hasta}T00:00:00Z`) - Date.parse(`${desde}T00:00:00Z`)) / DIA_MS);
+
+/**
+ * Aviso de caducidad del certificado: a 30 dias, a 7 o ya caducado. Los dias
+ * son naturales y en hora de Madrid (de hoy al dia en que caduca), para que
+ * «hoy» y «mañana» casen con la fecha que se enseña al lado. Caducado, en
+ * cuanto pasa el instante exacto.
+ */
 export function avisoCaducidad(caducaEn: Date, ahora: Date): { dias: number; aviso: AvisoCaducidad } {
-  const ms = caducaEn.getTime() - ahora.getTime();
-  const dias = Math.floor(ms / DIA_MS);
-  const aviso: AvisoCaducidad = ms <= 0 ? 'CADUCADO' : ms <= 7 * DIA_MS ? 'CADUCA_7' : ms <= 30 * DIA_MS ? 'CADUCA_30' : null;
+  const dias = diasEntre(hoyEspana(ahora), hoyEspana(caducaEn));
+  const aviso: AvisoCaducidad = caducaEn.getTime() <= ahora.getTime() ? 'CADUCADO' : dias <= 7 ? 'CADUCA_7' : dias <= 30 ? 'CADUCA_30' : null;
   return { dias, aviso };
 }
 
-/** Texto del aviso de caducidad para las pantallas (Ventas, panel y Configuracion > VERI*FACTU). */
+/**
+ * Texto del aviso de caducidad para Ventas y el panel: solo lo que pasa y
+ * cuando. Lo que hay que hacer lo añade cada pantalla segun quien la ve (el
+ * administrador lo sustituye; los demas avisan al administrador).
+ */
 export function textoAvisoCaducidad(caducaEn: Date, ahora: Date): { nivel: 'aviso' | 'urgente' | 'caducado'; texto: string } | null {
   const { dias, aviso } = avisoCaducidad(caducaEn, ahora);
   if (!aviso) return null;
   const fecha = fechaCorta(caducaEn);
-  if (aviso === 'CADUCADO') return { nivel: 'caducado', texto: `El certificado de VERI*FACTU caducó el ${fecha}. Sube uno nuevo en Configuración > VERI*FACTU.` };
+  if (aviso === 'CADUCADO') return { nivel: 'caducado', texto: `El certificado de VERI*FACTU caducó el ${fecha}.` };
   const cuando = dias <= 0 ? 'hoy' : dias === 1 ? 'mañana' : `en ${dias} días`;
-  return {
-    nivel: aviso === 'CADUCA_7' ? 'urgente' : 'aviso',
-    texto: `El certificado de VERI*FACTU caduca ${cuando} (${fecha}). Renuévalo y súbelo en Configuración > VERI*FACTU.`,
-  };
+  return { nivel: aviso === 'CADUCA_7' ? 'urgente' : 'aviso', texto: `El certificado de VERI*FACTU caduca ${cuando} (${fecha}).` };
 }
 
 /** Lo que la pantalla puede ver del certificado (nunca el PFX ni la contraseña). */

@@ -15,6 +15,7 @@ import { configuracionVerifactu, posibleForal } from '../services/verifactu/conf
 import { estadoRedEmpresa } from '../services/verifactu/redSeguridad';
 import { subirCertificado } from '../services/verifactu/certificado.service';
 import { marcarEmpresaPruebas } from './ayuda-empresa-pruebas';
+import { hoyEspana, sumarDiasISO } from '../utils/fechas';
 import { crearCa, crearCertificado, pkcs12, sujetoRepresentante } from './ayuda-certificados';
 
 jest.setTimeout(120_000);
@@ -79,7 +80,8 @@ describe('Configuracion > VERI*FACTU (BD real)', () => {
   });
 
   it('avisos de caducidad a 30 dias, a 7 y caducado (reloj fijado), tambien en Ventas', async () => {
-    const a = (dias: number) => new Date(caducaEn.getTime() - dias * DIA);
+    // `dias` dias naturales antes del dia en que caduca (hora de Madrid), a mediodia.
+    const a = (dias: number) => new Date(`${sumarDiasISO(hoyEspana(caducaEn), -dias)}T10:00:00Z`);
     expect((await configuracionVerifactu(E, a(40))).certificado?.aviso).toBeNull();
     expect((await configuracionVerifactu(E, a(29))).certificado).toMatchObject({ aviso: 'CADUCA_30', diasParaCaducar: 29 });
     expect((await configuracionVerifactu(E, a(6))).certificado?.aviso).toBe('CADUCA_7');
