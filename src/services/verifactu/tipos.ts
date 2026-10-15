@@ -117,8 +117,9 @@ export interface RegistroContenidoAnulacion {
   tipoHuella: '01';
   /** IncomeInvoice.id (RefExterna, como mucho 60). */
   refExterna?: string;
-  /** L16: E expedidor, D destinatario, T tercero. La app no lo informa (lo genera el expedidor). */
-  generadoPor?: 'E' | 'D' | 'T';
+  // Sin GeneradoPor: la app anula sus propias facturas. Si algun dia hiciera
+  // falta, va siempre con la agrupacion Generador (Validaciones v1.2.2, 3.1.4,
+  // puntos 2 y 3), y con «E» el Generador lleva un NIF distinto del obligado.
   encadenamiento: Encadenamiento;
   sistemaInformatico: SistemaInformatico;
 }

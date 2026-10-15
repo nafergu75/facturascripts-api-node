@@ -253,9 +253,12 @@ describe('XML del registro de anulacion', () => {
     expect(a.Huella).toBe(H63);
   });
 
-  it('con SinRegistroPrevio, RechazoPrevio y GeneradoPor sigue siendo valida', async () => {
-    const x = xmlRegistroAnulacion({ ...col, sinRegistroPrevio: true, rechazoPrevio: 'S' }, { ...c, generadoPor: 'E' });
-    expect(x).toMatch(/<sf:RefExterna>[^<]+<\/sf:RefExterna><sf:SinRegistroPrevio>S<\/sf:SinRegistroPrevio><sf:RechazoPrevio>S<\/sf:RechazoPrevio><sf:GeneradoPor>E<\/sf:GeneradoPor>/);
+  it('con SinRegistroPrevio y RechazoPrevio sigue siendo valida, y nunca lleva GeneradoPor ni Generador', async () => {
+    const x = xmlRegistroAnulacion({ ...col, sinRegistroPrevio: true, rechazoPrevio: 'S' }, c);
+    expect(x).toMatch(/<sf:RefExterna>[^<]+<\/sf:RefExterna><sf:SinRegistroPrevio>S<\/sf:SinRegistroPrevio><sf:RechazoPrevio>S<\/sf:RechazoPrevio><sf:Encadenamiento>/);
+    // Validaciones v1.2.2 (3.1.4): GeneradoPor exige la agrupacion Generador. La app anula sus propias facturas.
+    expect(x).not.toContain('GeneradoPor');
+    expect(x).not.toContain('Generador');
     await esperarValido(x, 'SuministroInformacion.xsd');
   });
 });

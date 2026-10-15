@@ -233,7 +233,6 @@ export function xmlRegistroAnulacion(r: ColumnasAnulacion, c: RegistroContenidoA
   if (c.refExterna) partes.push(sf('RefExterna', textoXml(c.refExterna)));
   if (r.sinRegistroPrevio) partes.push(sf('SinRegistroPrevio', 'S'));
   if (r.rechazoPrevio) partes.push(sf('RechazoPrevio', textoXml(r.rechazoPrevio)));
-  if (c.generadoPor) partes.push(sf('GeneradoPor', textoXml(c.generadoPor)));
   partes.push(encadenamientoXml(c.encadenamiento));
   partes.push(sistemaXml(c.sistemaInformatico));
   partes.push(sf('FechaHoraHusoGenRegistro', campoHuella(r.fechaHoraHuso, 'FechaHoraHusoGenRegistro')));
