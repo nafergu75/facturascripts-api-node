@@ -3,7 +3,8 @@
  *
  * La copia es una carpeta FUERA del repositorio con:
  *  - tablas/NNN-<Tabla>.sql: TODAS las filas de TODAS las tablas del esquema
- *    (tambien las que se conservan), como sentencias INSERT, una por linea;
+ *    (tambien las que se conservan), como sentencias INSERT, una por linea,
+ *    salvo el certificado de VERI*FACTU y su contraseña (COLUMNAS_SIN_COPIA);
  *  - ficheros/...: los ficheros del almacen que son de la app;
  *  - manifiesto.json: filas por tabla, ficheros, administradores y orden de
  *    restauracion;
@@ -90,8 +91,20 @@ export function literalSql(valor: unknown, binario: boolean): string {
 }
 
 /** Expresion del SELECT que devuelve la columna como texto. */
-const columnaComoTexto = (c: { nombre: string; tipo: string }): string =>
-  c.tipo === 'Bytes' ? `HEX(${id(c.nombre)}) AS ${id(c.nombre)}` : `CAST(${id(c.nombre)} AS CHAR) AS ${id(c.nombre)}`;
+/**
+ * Columnas que la copia local NO guarda: van vacias (''). Son el certificado
+ * de VERI*FACTU de cada empresa y su contraseña. Estan cifrados, pero la
+ * ENCRYPTION_KEY de produccion esta en el mismo ordenador que la copia
+ * (backend/.env.vercel-prod.local): juntos equivaldrian al certificado con su
+ * contraseña. Tras restaurar, la ficha del certificado sigue ahi, pero hay que
+ * volver a subirlo (la app dice «vuelve a subirlo» al usarlo).
+ */
+export const COLUMNAS_SIN_COPIA: Readonly<Record<string, readonly string[]>> = { VerifactuCertificado: ['pfxEnc', 'passEnc'] };
+
+const columnaComoTexto = (tabla: string, c: { nombre: string; tipo: string }): string => {
+  if (COLUMNAS_SIN_COPIA[tabla]?.includes(c.nombre)) return `'' AS ${id(c.nombre)}`;
+  return c.tipo === 'Bytes' ? `HEX(${id(c.nombre)}) AS ${id(c.nombre)}` : `CAST(${id(c.nombre)} AS CHAR) AS ${id(c.nombre)}`;
+};
 
 /** Ficheros de la copia: nombre de cada tabla con su posicion en el orden de restauracion. */
 const ficheroTabla = (i: number, tabla: string) => `tablas/${String(i + 1).padStart(3, '0')}-${tabla}.sql`;
@@ -186,7 +199,7 @@ async function copiarTabla(db: PrismaClient, t: Tabla, destino: string): Promise
     const clave = t.clave.length ? t.clave : columnas.map((c) => c.nombre);
     const claves = clave.map((c, i) => `${id(c)} AS ${id(`__k${i}`)}`);
     const orden = clave.map((c) => id(c)).join(', ');
-    const select = `SELECT ${columnas.map(columnaComoTexto).join(', ')}, ${claves.join(', ')} FROM ${id(t.nombre)}`;
+    const select = `SELECT ${columnas.map((c) => columnaComoTexto(t.nombre, c)).join(', ')}, ${claves.join(', ')} FROM ${id(t.nombre)}`;
 
     let ultima: unknown[] | null = null;
     let linea = '';
@@ -235,6 +248,7 @@ function leeme(m: Manifiesto): string {
     '  manifiesto.json  el índice de todo lo anterior',
     '',
     'Contiene datos personales y fiscales: guárdala en un sitio seguro y no la compartas.',
+    'No lleva los certificados de VERI*FACTU ni sus contraseñas: si la restauras, vuelve a subirlos en Configuración > VERI*FACTU.',
     '',
     `Para restaurarla (solo sobre la base ya vaciada), desde Git Bash, en la carpeta del backend con la que se hizo (${path.resolve('.')}):`,
     '  ENV_PROD=../backend/.env.vercel-prod.local bash scripts/vaciar-produccion.sh --restaurar "<esta carpeta>"',

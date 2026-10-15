@@ -26,7 +26,7 @@ import { crearCliente, contarTodas } from '../services/vaciadoProduccion/bd';
 import { clasificarTablas, id } from '../services/vaciadoProduccion/tablas';
 import { main } from '../services/vaciadoProduccion/cli';
 import { leerManifiesto } from '../services/vaciadoProduccion/copia';
-import { crearDatosVaciado, type DatosVaciado } from './vaciado-datos';
+import { crearDatosVaciado, SECRETO_PASS_PRUEBA, SECRETO_PFX_PRUEBA, type DatosVaciado } from './vaciado-datos';
 import { hoyEspana } from '../utils/fechas';
 
 const URL_BD = process.env.DATABASE_URL ?? '';
@@ -209,6 +209,13 @@ d('vaciado de producción (base local de usar y tirar)', () => {
     for (const t of m.tablas) expect([t.tabla, t.filas]).toEqual([t.tabla, antes.get(t.tabla)]);
     expect(m.ficheros.map((f) => f.clave).sort()).toEqual([...datos.ficheros].sort());
     expect(m.admins.map((a) => a.email)).toEqual([datos.adminEmail]);
+    // El certificado de VERI*FACTU va en la copia sin el PFX ni la contraseña (la clave para descifrarlos esta en el mismo ordenador).
+    const tCert = m.tablas.find((t) => t.tabla === 'VerifactuCertificado')!;
+    const sqlCert = await fsp.readFile(path.join(carpetaCopia, tCert.fichero), 'utf8');
+    expect(sqlCert).toContain('IFBIOSOLUCIONES SA');
+    expect(sqlCert).not.toContain(SECRETO_PFX_PRUEBA);
+    expect(sqlCert).not.toContain(SECRETO_PASS_PRUEBA);
+    expect(await fsp.readFile(path.join(carpetaCopia, 'LEEME.txt'), 'utf8')).toContain('No lleva los certificados de VERI*FACTU');
 
     // La base: lo de las empresas a cero; lo comun, como estaba.
     const despues = await contarTodas(db, tablas);
@@ -320,6 +327,10 @@ d('vaciado de producción (base local de usar y tirar)', () => {
     expect(await listarAlmacen()).toEqual(ficherosAntes);
     const logo = await db.legalConfig.findUnique({ where: { companyId: '1' }, select: { logo: true } });
     expect(Buffer.from(logo!.logo!).toString()).toBe('logo-png');
+    // El certificado vuelve sin el PFX ni la contraseña: hay que subirlo otra vez, y la restauracion lo dice.
+    const cert = await db.verifactuCertificado.findUniqueOrThrow({ where: { companyId: '1' }, select: { titular: true, pfxEnc: true, passEnc: true } });
+    expect(cert).toEqual({ titular: 'IFBIOSOLUCIONES SA', pfxEnc: '', passEnc: '' });
+    expect(salida).toContain('Los certificados de VERI*FACTU no iban en la copia: vuelve a subirlos');
   }, 20 * MINUTOS);
 
   it('vaciar otra vez y empezar de cero con la API: empresa nueva con el mismo NIF, A-1, R-1, P-1 y A-2', async () => {

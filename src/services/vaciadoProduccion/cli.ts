@@ -324,6 +324,8 @@ async function ordenRestaurar(ctx: Contexto, o: Opciones, escribir: Escribir, oc
     return SALIDA.NO_CUADRA;
   }
   escribir('', `RESTAURADA: ${plural([...r.filas.values()].reduce((a, n) => a + n, 0), 'fila', 'filas')} y ${plural(r.ficheros, 'fichero', 'ficheros')}.`);
+  // La copia no lleva el certificado ni su contraseña (copia.ts, COLUMNAS_SIN_COPIA).
+  if (r.filas.get('VerifactuCertificado')) escribir('Los certificados de VERI*FACTU no iban en la copia: vuelve a subirlos en Configuración > VERI*FACTU.');
   return SALIDA.BIEN;
 }
 

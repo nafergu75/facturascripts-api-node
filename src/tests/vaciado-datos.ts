@@ -28,6 +28,10 @@ import { asegurarPlanContableEmpresa } from '../services/chart-of-accounts.servi
 import { letraNif } from '../utils/nif';
 import { ordenDeRestauracion, clasificarTablas } from '../services/vaciadoProduccion/tablas';
 
+/** Lo que hace de PFX y contraseña cifrados del certificado de VERI*FACTU (no van en la copia local). */
+export const SECRETO_PFX_PRUEBA = 'v1:pfx-cifrado-de-prueba-que-no-va-en-la-copia';
+export const SECRETO_PASS_PRUEBA = 'v1:contrasena-cifrada-de-prueba-que-no-va-en-la-copia';
+
 export interface DatosVaciado {
   adminId: string;
   adminEmail: string;
@@ -238,6 +242,22 @@ export async function crearDatosVaciado(almacen: string): Promise<DatosVaciado> 
   await prisma.verifactuBitacora.create({ data: { companyId: null, tipo: 'PRUEBA_USUARIO', usuarioId: contable.id, detalle: {} } });
   // Logo de la marca de la plantilla B (dentro de la base, como el logo de la empresa).
   await prisma.imagenFactura.create({ data: { companyId: otra.id, tipo: 'MARCA', datos: Buffer.from('marca-png'), mime: 'image/png' } });
+  // Certificado de VERI*FACTU con unos «secretos» reconocibles: la copia local no los tiene que llevar.
+  await prisma.verifactuCertificado.create({
+    data: {
+      companyId: '1',
+      pfxEnc: SECRETO_PFX_PRUEBA,
+      passEnc: SECRETO_PASS_PRUEBA,
+      titular: 'IFBIOSOLUCIONES SA',
+      nifTitular: 'A10952364',
+      emisor: 'AC DE PRUEBAS',
+      numeroSerie: '4A1B2C',
+      validoDesde: new Date('2026-01-01T00:00:00Z'),
+      caducaEn: new Date('2027-12-31T00:00:00Z'),
+      huellaSha256: 'A'.repeat(64),
+      subidoPor: admin.id,
+    },
+  });
 
   // Ficheros sin empresa en la ruta y uno que no es de la app.
   const json = 'facturas/ingresos/2026-09/A-1.json';
