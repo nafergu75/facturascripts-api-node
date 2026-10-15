@@ -3,7 +3,7 @@
  * clasificacion del resultado de «Probar conexión», con respuestas y errores
  * sinteticos (los codigos y mensajes que da Node).
  */
-import { clasificar, estadoRegistro, leerFault, leerRespuestaConsulta, limpiarTextoAeat, MAX_MENSAJE, type RespuestaHttp } from '../services/verifactu/respuestas';
+import { clasificar, estadoRegistro, leerFault, leerRespuestaConsulta, limpiarTextoAeat, MAX_MENSAJE, MENSAJES_CONEXION, type RespuestaHttp } from '../services/verifactu/respuestas';
 
 const NS = 'https://www2.agenciatributaria.gob.es/static_files/common/internet/dep/aplicaciones/es/aeat/tike/cont/ws/';
 const sobre = (cuerpo: string, prefijo = 'env') =>
@@ -190,5 +190,12 @@ describe('clasificar el resultado de «Probar conexión»', () => {
   it('el mensaje nunca pasa de 1000 caracteres', () => {
     const r = clasificar(http(500, fault('Client', `Codigo[4104].${'x'.repeat(5000)}`)), 'PRUEBAS');
     expect(Array.from(r.mensaje).length).toBeLessThanOrEqual(MAX_MENSAJE);
+  });
+
+  it('ningun mensaje manda «avisar al administrador»: quien prueba la conexion ya lo es', () => {
+    const textos = Object.values(MENSAJES_CONEXION).map((m) => (typeof m === 'function' ? (m as (...a: unknown[]) => string)(4102, 'texto', 'PRUEBAS') : m));
+    for (const m of textos) expect(m).not.toMatch(/administrador/i);
+    expect(MENSAJES_CONEXION.servidorNoFiable).toContain('avisa al soporte de Conta API');
+    expect(MENSAJES_CONEXION.xml(4102)).toContain('no de tu certificado');
   });
 });

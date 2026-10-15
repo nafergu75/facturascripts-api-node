@@ -199,19 +199,19 @@ export const MENSAJES_CONEXION = {
     'La AEAT ha cortado la conexión al recibir el certificado. Lo más probable es que no lo acepte. Si el certificado está bien, puede ser la red: prueba más tarde.',
   certificadoRechazado: 'La AEAT no acepta este certificado. Tiene que ser un certificado cualificado (por ejemplo, de la FNMT) y estar vigente.',
   servidorNoFiable:
-    'No se ha podido comprobar que el servidor es de la AEAT. Es un fallo de configuración de la app, no de tu certificado: avisa al administrador.',
+    'No se ha podido comprobar que el servidor es de la AEAT. Es un fallo de configuración de la app, no de tu certificado: avisa al soporte de Conta API.',
   sinPermiso: (n: number) =>
     `El titular del certificado no tiene permiso en la AEAT para esta empresa (código ${n}). Si actúa como apoderado, el apoderamiento tiene que estar dado de alta en la sede.`,
   datosObligado: (n: number, aeat: string) =>
     `La AEAT no reconoce el NIF o la razón social de la empresa (código ${n}). Revisa los datos de la empresa.${aeat ? ` La AEAT dice: «${aeat}»` : ''}`,
   representante: (n: number, aeat: string) => `La AEAT rechaza los datos del representante (código ${n}).${aeat ? ` La AEAT dice: «${aeat}»` : ''}`,
   errorAeat: 'La AEAT ha tenido un problema al atender la consulta. Prueba más tarde.',
-  xml: (n: number) => `La AEAT rechaza el formato de la consulta (código ${n}). Es un fallo de la app: avisa al administrador.`,
+  xml: (n: number) => `La AEAT rechaza el formato de la consulta (código ${n}). Es un fallo de la app, no de tu certificado: avisa al soporte de Conta API.`,
   servicio: (n: number) => `El servicio de la AEAT no está disponible para esta conexión (código ${n}).`,
   faultDesconocido: (n: number | null, aeat: string) =>
     `La AEAT ha rechazado la consulta${n ? ` (código ${n})` : ''}.${aeat ? ` La AEAT dice: «${aeat}»` : ''}`,
   inesperada: (status?: number) =>
-    `La AEAT ha contestado algo que no se esperaba${status ? ` (HTTP ${status})` : ''}. Prueba más tarde; si se repite, avisa al administrador.`,
+    `La AEAT ha contestado algo que no se esperaba${status ? ` (HTTP ${status})` : ''}. Prueba más tarde; si se repite, avisa al soporte de Conta API.`,
 };
 
 const r = (ok: boolean, tipo: TipoResultadoConexion, mensaje: string, extra: { codigoAeat?: number | null; httpStatus?: number } = {}): ResultadoClasificado => ({
