@@ -162,6 +162,19 @@ describe('leerCertificado', () => {
     expect(metadatos.titular).toBe('IFBIOSOLUCIONES, S.A.');
   });
 
+  it('un NIF, titular o emisor mas largos de lo que caben en la base: fichero no valido (400), no un 500 al guardar', () => {
+    const nifLargo = crearCertificado({ sujeto: sujetoRepresentante(`A${'1'.repeat(25)}`, 'EMPRESA SA'), firmante: ca });
+    falla(() => metadatosDeX509(new X509Certificate(nifLargo.certPem)), 'VERIFACTU_CERT_FICHERO');
+    falla(() => leerCertificado(pkcs12({ cert: nifLargo, contrasena: CLAVE }), CLAVE), 'VERIFACTU_CERT_FICHERO');
+    const titularLargo = crearCertificado({ sujeto: sujetoRepresentante('A10952364', 'E'.repeat(192)), firmante: ca });
+    falla(() => metadatosDeX509(new X509Certificate(titularLargo.certPem)), 'VERIFACTU_CERT_FICHERO');
+    const emisorLargo = crearCertificado({ sujeto: sujetoRepresentante('A10952364', 'EMPRESA SA'), firmante: crearCa('C'.repeat(192)) });
+    falla(() => metadatosDeX509(new X509Certificate(emisorLargo.certPem)), 'VERIFACTU_CERT_FICHERO');
+    // En el limite, si.
+    const justo = crearCertificado({ sujeto: sujetoRepresentante('A10952364', 'E'.repeat(191)), firmante: ca });
+    expect(metadatosDeX509(new X509Certificate(justo.certPem)).titular).toHaveLength(191);
+  });
+
   it('sinEscapesDn quita los escapes de RFC 2253 (carácter y hexadecimal)', () => {
     expect(sinEscapesDn('IFBIOSOLUCIONES\\, S.A.')).toBe('IFBIOSOLUCIONES, S.A.');
     expect(sinEscapesDn('A\\+B \\"C\\" \\<D\\> E\\; F\\\\G')).toBe('A+B "C" <D> E; F\\G');

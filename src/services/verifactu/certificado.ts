@@ -244,8 +244,27 @@ const nifDePersona = (v: string | null) => {
   return /^[0-9XYZKLM][0-9]{7}[A-Z]$/i.test(v) ? v.toUpperCase() : null;
 };
 
-/** Los datos que se guardan y se enseñan del certificado del titular. */
+/** Largos maximos de las columnas de VerifactuCertificado (NIF VarChar(20); titular, emisor y serie VARCHAR(191)). */
+export const LARGO_NIF_MAX = 20;
+export const LARGO_TEXTO_MAX = 191;
+const largo = (s: string) => Array.from(s).length;
+
+/**
+ * Los datos que se guardan y se enseñan del certificado del titular. Un
+ * certificado con un NIF, titular, emisor o serie mas largos de lo que caben
+ * (solo uno hecho a mano) es un fichero no valido: 400, no un 500 al guardarlo.
+ */
 export function metadatosDeX509(x: X509Certificate): MetadatosLeidos {
+  const m = leerMetadatosDeX509(x);
+  const nifs = [m.nifTitular, m.nifRepresentante ?? ''];
+  const textos = [m.titular, m.emisor, m.numeroSerie];
+  if (nifs.some((v) => largo(v) > LARGO_NIF_MAX) || textos.some((v) => largo(v) > LARGO_TEXTO_MAX)) {
+    throw new ErrorCertificado('VERIFACTU_CERT_FICHERO', MENSAJES_CERTIFICADO.fichero);
+  }
+  return m;
+}
+
+function leerMetadatosDeX509(x: X509Certificate): MetadatosLeidos {
   const sujeto = campos(x.subject);
   const emisor = campos(x.issuer);
   const nifOrg = nifDeOrganizacion(campo(sujeto, 'organizationIdentifier', '2.5.4.97'));
