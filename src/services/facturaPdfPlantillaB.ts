@@ -532,7 +532,9 @@ export async function renderizarFacturaPlantillaB(f: DatosFacturaPdf): Promise<B
   if (f.obra?.trim()) {
     const xObra = 49.3 + negrita.widthOfTextAtSize('OBRA:', 16.2) + 8;
     const o = f.obra.trim();
-    texto(p, o, xObra, 168.6, { tam: tamQueCabe(o, negrita, 11, X_DER_IN - xObra - 4), fuente: negrita });
+    // Con QR, la obra no pasa de la letra de «QR tributario:» y su leyenda (documento del QR, apdo. 3:
+    // igual o mayor que la del resto de datos). Sin QR, como siempre.
+    texto(p, o, xObra, 168.6, { tam: tamQueCabe(o, negrita, conQr ? Math.min(11, TAM_QR_B) : 11, X_DER_IN - xObra - 4), fuente: negrita });
   }
   // Lo que sigue va ya con su posicion real (la franja del QR solo baja la cabecera).
   desplaza = 0;

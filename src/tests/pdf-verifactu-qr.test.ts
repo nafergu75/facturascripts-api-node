@@ -220,6 +220,16 @@ describe.each(PLANTILLAS)('QR de VERI*FACTU en la plantilla $nombre', ({ datos, 
   });
 });
 
+describe('plantilla B: letra de la obra', () => {
+  it('con QR no pasa de la de «QR tributario:» y su leyenda; sin QR, la de siempre (11 pt)', async () => {
+    const obra = 'REFORMA LOCAL CALLE MAYOR';
+    const conQr = await textosDePdf(await renderizarFactura(plantillaB({ obra, verifactu: { url: URL_PRO, entorno: 'PRODUCCION' } })));
+    expect(conQr.find((t) => t.texto === obra)?.tam).toBe(TAM_QR_B);
+    const sinQr = await textosDePdf(await renderizarFactura(plantillaB({ obra })));
+    expect(sinQr.find((t) => t.texto === obra)?.tam).toBe(11);
+  });
+});
+
 describe('QR solo en la primera pagina', () => {
   it('una factura de varias paginas lleva un solo QR, en la primera (en los tres dibujos)', async () => {
     const muchas = (d: DatosFacturaPdf) => ({ ...d, lineas: Array.from({ length: 12 }, () => d.lineas).flat(), verifactu: { url: URL_PRO, entorno: 'PRODUCCION' as const } });
