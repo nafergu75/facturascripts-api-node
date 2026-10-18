@@ -305,7 +305,7 @@ export async function renderizarFacturaPlantillaB(f: DatosFacturaPdf): Promise<B
   const tituloDoc = esBorrador ? `Borrador de ${titulo.toLowerCase()}` : `${titulo} ${f.numeroCompleto ?? ''}`.trim();
 
   const { doc, normal, negrita, ancho, alto } = await crearDocumentoPdfA(tituloDoc);
-  /** Lo que baja la cabecera de la primera pagina para dejar sitio a la franja del QR (solo mientras se dibuja). */
+  /** Lo que baja una parte de la cabecera de la primera pagina con el QR (solo mientras se dibuja esa parte). */
   let desplaza = 0;
   const Y = (top: number) => alto - top - desplaza;
 
@@ -707,7 +707,7 @@ export async function renderizarFacturaPlantillaB(f: DatosFacturaPdf): Promise<B
     // igual o mayor que la del resto de datos). Sin QR, como siempre.
     texto(p, o, xObra, 168.6, { tam: tamQueCabe(o, negrita, conQr ? Math.min(11, TAM_QR_B) : 11, X_DER_IN - xObra - 4), fuente: negrita });
   }
-  // Lo que sigue va ya con su posicion real (la franja del QR solo baja la cabecera).
+  // Lo que sigue va ya con su posicion real (el desplazamiento solo vale para la cabecera).
   desplaza = 0;
   let cuerpo = cabeceraColumnas(171.1 + dB);
   let y = cuerpo;
