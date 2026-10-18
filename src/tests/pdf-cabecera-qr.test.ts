@@ -9,7 +9,10 @@
  *    la B, con las de NZ013_26;
  *  - sin QR, el dibujo es EXACTAMENTE el de origin/main (huella del contenido);
  *  - un cliente de fuera con el nombre y la direccion largos se parte dentro de
- *    su recuadro sin solaparse con nada; los logos no se deforman.
+ *    su recuadro sin solaparse con nada; los logos no se deforman;
+ *  - textos largos con el QR: el email de la A en dos lineas, el numero de la B
+ *    dentro de su recuadro y el nombre de la empresa de las paginas siguientes
+ *    sin llegar al titulo.
  */
 import { createHash } from 'crypto';
 import { describe, it, expect, beforeAll } from '@jest/globals';
@@ -77,10 +80,10 @@ function sinSolapes(ts: TextoPdf[]) {
   expect(choques).toEqual([]);
 }
 
-/** Las lineas en que sale partido `completo` (de arriba abajo); comprueba que juntas lo dicen entero. */
-const partidoEn = (ts: TextoPdf[], completo: string) => {
+/** Las lineas en que sale partido `completo` (de arriba abajo); comprueba que juntas (con `union` entre ellas) lo dicen entero. */
+const partidoEn = (ts: TextoPdf[], completo: string, union = ' ') => {
   const ls = ts.filter((t) => t.texto.length > 3 && completo.includes(t.texto)).sort((a, z) => z.y - a.y);
-  expect(ls.map((t) => t.texto).join(' ')).toBe(completo);
+  expect(ls.map((t) => t.texto).join(union)).toBe(completo);
   return ls;
 };
 
@@ -103,6 +106,10 @@ describe('sin QR, las plantillas A y B se dibujan igual que en origin/main', () 
   // Huellas (sha256 del contenido normalizado de las paginas) sacadas con el codigo de origin/main
   // (497194b) el 15-10-2026 y el 18-10-2026, con estos mismos datos. Si cambian, el PDF sin QR ya no
   // es el de main. La factura del lector, aunque tenga registro, sale con el dibujo de siempre.
+  // Si main cambia A o B a proposito: saca una copia de main (git archive <commit> | tar -x -C <carpeta>),
+  // pinta estos casos con su renderizarFactura y pon aqui el sha256 de contenidoNormalizado de cada uno
+  // (el fallo de Jest ya da la huella nueva). Para ver que ha cambiado, compara los dos
+  // contenidoNormalizado: es texto, con cada operador y su posicion.
   const conRegistro = { verifactu: { url: URL_PRO, entorno: 'PRODUCCION' as const } };
   const borradorConRegistro = { ...conRegistro, estadoDocumento: 'BORRADOR', numeroCompleto: null };
   const logoAlto = { bytes: pngLiso(100, 200, [20, 120, 160]), mime: 'image/png' };
@@ -182,16 +189,16 @@ describe('plantilla A con QR: todo en la cabecera', () => {
     const b = bloqueA();
     expect(b.cajaBloque.x).toBeGreaterThan(EMPRESA_A.der);
     expect(b.cajaBloque.x + b.cajaBloque.ancho).toBeLessThan(CLIENTE_QR_A.izq);
-    // QR de 35 mm con su zona en blanco (al menos 2 mm; aqui, mas de 5).
+    // QR de 35 mm con sus 6 mm de zona en blanco (D4 del plan), como en la B.
     expect(b.cajaQr.ancho).toBeCloseTo((35 * 72) / 25.4, 5);
-    expect(b.cajaQr.x - b.cajaBlanca.x).toBeGreaterThan((5 * 72) / 25.4);
+    expect(b.cajaQr.x - b.cajaBlanca.x).toBeCloseTo((6 * 72) / 25.4, 5);
     const logo = logosPdfQr().logo;
     for (const d of [plantillaAPdfQr({ ...conPro, logo }), plantillaAPdfQr(conPro), plantillaAPdfQr({ ...conPru, logo }), plantillaAPdfQr({ ...conPro, ...rectificativaPdfQr, logo })]) {
       await nadaPisaElQr(await renderizarFactura(d), b);
     }
   });
 
-  it('el logo va encima del recuadro de la empresa, centrado y sin deformar; el email se queda en su columna', async () => {
+  it('el logo va encima del recuadro de la empresa, centrado y sin deformar; el email largo se parte detras de la @ en su columna, a su letra', async () => {
     const email = 'administracion.facturacion.clientes@empresa-de-prueba-ficticia.example';
     const datos = plantillaAPdfQr({ ...conPro, logo: { bytes: pngLiso(300, 110, [26, 77, 153]), mime: 'image/png' }, emisor: { ...comunPdfQr.emisor, email } });
     const pdf = await renderizarFactura(datos);
@@ -202,8 +209,16 @@ describe('plantilla A con QR: todo en la cabecera', () => {
     expect(im.x + im.ancho / 2).toBeCloseTo((EMPRESA_A.izq + EMPRESA_A.der) / 2, 3);
     const ts = (await textosDePdf(pdf)).filter((t) => t.pagina === 1);
     expect(unico(ts, 'EMPRESA DE PRUEBA S.L.').y).toBeLessThan(im.y);
-    const e = unico(ts, email);
-    expect(e.derecha).toBeLessThan(bloqueA().cajaBloque.x);
+    // A su letra (8,8) no cabe en una linea: en dos, la primera acaba en la @.
+    const ls = partidoEn(ts, email, '');
+    expect(ls.map((t) => t.texto)).toEqual(['administracion.facturacion.clientes@', 'empresa-de-prueba-ficticia.example']);
+    for (const t of ls) {
+      expect(t.tam).toBeCloseTo(8.8, 5);
+      expect(t.derecha).toBeLessThan(bloqueA().cajaBloque.x);
+    }
+    // Uno corto, en una linea.
+    const corto = (await textosDePdf(await renderizarFactura(plantillaAPdfQr({ ...conPro, emisor: { ...comunPdfQr.emisor, email: 'facturas@empresa.example' } })))).filter((t) => t.pagina === 1);
+    expect(unico(corto, 'facturas@empresa.example').tam).toBeCloseTo(8.8, 5);
     await nadaPisaElQr(pdf, bloqueA());
   });
 
@@ -235,9 +250,13 @@ describe('plantilla A con QR: todo en la cabecera', () => {
         expect(t.derecha + 0.2 * t.tam).toBeLessThan(236.5);
       }
     }
-    const email = partidoEn(ts, emisorLargo.email);
+    const email = partidoEn(ts, emisorLargo.email, '');
+    expect(email).toHaveLength(2);
     for (const t of email) expect(t.derecha).toBeLessThan(bloqueA().cajaBloque.x);
-    sinSolapes(ts.filter((t) => t.y > unico(ts, 'Nº FACTURA:').y && !esMarca(t)));
+    const cabecera = ts.filter((t) => t.y > unico(ts, 'Nº FACTURA:').y && !esMarca(t));
+    sinSolapes(cabecera);
+    // Nada por debajo de la letra minima de la A (5 pt).
+    for (const t of cabecera) expect(t.tam).toBeGreaterThanOrEqual(5 - 1e-6);
     await nadaPisaElQr(pdf, bloqueA());
   });
 
@@ -255,7 +274,26 @@ describe('plantilla A con QR: todo en la cabecera', () => {
     expect(Math.max(...(await textosDePdf(pdf)).map((t) => t.pagina))).toBe(1);
     for (const cifra of ['7.152,63 €', '1.502,05 €', '8.654,68 €']) expect(ts.some((t) => t.texto === cifra)).toBe(true);
   });
+
+  it('varias paginas con la empresa larga: en las siguientes, el nombre de la empresa no llega al titulo', async () => {
+    const d = plantillaAPdfQr({ ...conPro, emisor: emisorLargo, logo: logosPdfQr().logo });
+    const ts = await textosDePdf(await renderizarFactura({ ...d, lineas: Array.from({ length: 9 }, () => d.lineas).flat() }));
+    expect(Math.max(...ts.map((t) => t.pagina))).toBeGreaterThan(1);
+    sinChoqueEnCabeceraBreve(ts, 'FACTURA A-1 (continuación)');
+  });
 });
+
+/** En cada pagina siguiente, el nombre de la empresa (partido o no) acaba antes de que empiece el titulo breve. */
+function sinChoqueEnCabeceraBreve(ts: TextoPdf[], titulo: string) {
+  const titulos = ts.filter((t) => t.texto === titulo);
+  expect(titulos.length).toBeGreaterThan(0);
+  for (const tt of titulos) {
+    const pagina = ts.filter((t) => t.pagina === tt.pagina && t !== tt && t.y > tt.y - 15);
+    const nombre = partidoEn(pagina, emisorLargo.denominacion);
+    for (const t of nombre) expect(t.derecha).toBeLessThan(tt.x);
+    sinSolapes(pagina.concat(tt));
+  }
+}
 
 describe('plantilla B con QR: todo en la cabecera', () => {
   it('NZ013_26 con sus cifras; CLIENTE arriba a la derecha; empresa y FACTURA:/FECHA: a la izquierda; OBRA debajo', async () => {
@@ -302,13 +340,46 @@ describe('plantilla B con QR: todo en la cabecera', () => {
     expect(logo.alto).toBeCloseTo(marca.alto, 5);
     expect(logo.y).toBeCloseTo(marca.y, 5);
     expect(marca.x).toBeGreaterThan(logo.x + logo.ancho);
+    // Los dos juntos, centrados sobre el recuadro de la empresa (que va de LOGOS_QR_B.izq a LOGOS_QR_B.der).
+    const centro = (LOGOS_QR_B.izq + LOGOS_QR_B.der) / 2;
+    expect((logo.x + marca.x + marca.ancho) / 2).toBeCloseTo(centro, 3);
     const ts = (await textosDePdf(pdf)).filter((t) => t.pagina === 1);
     expect(unico(ts, 'EMPRESA DE PRUEBA S.L.').y).toBeLessThan(logo.y);
 
     const solo = await figurasDePdf(await renderizarFactura(plantillaBPdfQr({ ...conPro, logo: logosPdfQr().logo })));
     expect(solo.imagenes).toHaveLength(1);
-    expect(solo.imagenes[0].ancho / solo.imagenes[0].alto).toBeCloseTo(300 / 110, 3);
-    expect(solo.imagenes[0].alto).toBeGreaterThan(logo.alto);
+    const [s] = solo.imagenes;
+    expect(s.ancho / s.alto).toBeCloseTo(300 / 110, 3);
+    expect(s.alto).toBeGreaterThan(logo.alto);
+    expect(s.x + s.ancho / 2).toBeCloseTo(centro, 3);
+    expect(s.x).toBeGreaterThanOrEqual(LOGOS_QR_B.izq - TOL);
+    expect(s.x + s.ancho).toBeLessThanOrEqual(LOGOS_QR_B.der + TOL);
+  });
+
+  it('un numero de factura de 60 caracteres (el maximo de la AEAT) no sale de su recuadro ni llega al QR, y no baja de la letra minima', async () => {
+    const numero = 'SERIE-DE-PRUEBA-MUY-LARGA-2026-00000000000000000000000000001';
+    expect(numero).toHaveLength(60);
+    const pdf = await renderizarFactura(plantillaBPdfQr({ ...conPro, ...logosPdfQr(), numeroCompleto: numero }));
+    const ts = (await textosDePdf(pdf)).filter((t) => t.pagina === 1);
+    const ls = partidoEn(ts, numero, '');
+    expect(ls.length).toBeGreaterThan(1);
+    const fecha = unico(ts, 'FECHA:');
+    for (const t of ls) {
+      // Dentro del recuadro de FACTURA: (de 47,4 a 143,0) y encima de FECHA:.
+      expect(t.x).toBeGreaterThan(47.4);
+      expect(t.derecha).toBeLessThan(143.0);
+      expect(t.tam).toBeGreaterThanOrEqual(4.5 - 1e-6);
+      expect(t.y - 0.25 * t.tam).toBeGreaterThan(fecha.y + 0.75 * fecha.tam);
+    }
+    sinSolapes(ts.filter((t) => t.y > unico(ts, 'OBRA:').y && !esMarca(t)));
+    await nadaPisaElQr(pdf, bloqueB());
+  });
+
+  it('varias paginas con la empresa larga: en las siguientes, el nombre de la empresa no llega al titulo', async () => {
+    const d = plantillaBPdfQr({ ...conPro, emisor: emisorLargo, ...logosPdfQr() });
+    const ts = await textosDePdf(await renderizarFactura({ ...d, lineas: Array.from({ length: 16 }, () => d.lineas).flat() }));
+    expect(Math.max(...ts.map((t) => t.pagina))).toBeGreaterThan(1);
+    sinChoqueEnCabeceraBreve(ts, 'Factura B-13 (continuación)');
   });
 
   it('cliente de fuera con el nombre y la direccion largos y empresa sin logos: todo dentro de su recuadro, sin solaparse con nada', async () => {
