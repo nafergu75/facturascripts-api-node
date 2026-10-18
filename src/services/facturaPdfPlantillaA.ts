@@ -7,6 +7,10 @@
  * resumen con el peso bruto y los totales de envases, Subtotal, I.V.A. y Total
  * en recuadro, DATOS BANCARIOS y OBSERVACIONES, y la inscripcion registral.
  *
+ * Con el QR de VERI*FACTU todo va en la cabecera (ver HUECO_QR_A): logo y
+ * empresa a la izquierda, QR en el centro y CLIENTE a la derecha. Sin QR, la
+ * disposicion de siempre.
+ *
  * Puro: dibuja un DatosFacturaPdf (lo carga facturaPdf.service) sin tocar la BD.
  *
  * Medidas en puntos desde ARRIBA (como las da PyMuPDF sobre la muestra); `Y()`
@@ -35,6 +39,7 @@ import {
   nifDe,
   nombrePais,
   partir,
+  partirAchicando,
   textoRectificacionPdf,
   llevaMarcaPruebas,
   llevaQrVerifactu,
@@ -70,6 +75,8 @@ const T_TABLA = 8.8;
 const T_ETQ = 10.4;
 const T_NOMBRE = 12.2;
 const T_TITULO = 19.2;
+/** Letra mas pequeña a la que se achica un texto que no cabe. */
+const T_MIN = 5;
 const FILA = 10.8;
 /** De lo alto de una fila de la tabla a su linea base. */
 const BASE_FILA = 8.0;
@@ -86,14 +93,30 @@ const SUELO_COLA = 825;
 const SUELO_PAGINADO = 820;
 const Y_PAGINA = 830;
 /**
- * QR de VERI*FACTU: en el hueco de arriba entre el recuadro de la empresa y el
- * logo, con su borde de arriba a 15 pt del papel. La letra de sus textos es la
- * mayor de los datos (el nombre de la empresa y el del cliente, 12,2 pt). Lo
- * que va desde el recuadro del numero baja lo que haga falta.
+ * Cabecera con el QR de VERI*FACTU (solo si la factura lo lleva; sin QR, la de
+ * siempre), toda arriba y en tres columnas:
+ *  - izquierda: el logo (si lo hay) y debajo el recuadro de la empresa, igual
+ *    que siempre; al pie de la columna, «FACTURA»;
+ *  - centro: el bloque del QR, en el hueco entre los dos recuadros, con su
+ *    borde de arriba a 15 pt del papel;
+ *  - derecha, donde sin QR va el logo: el recuadro del CLIENTE, del ancho del
+ *    de la empresa (el de ancho completo de debajo no sale).
+ * Debajo, el recuadro del numero y la fecha y lo demas, que sube al sitio del
+ * CLIENTE de siempre. La letra de los textos del QR es la mayor de los datos
+ * (el nombre de la empresa y el del cliente, 12,2 pt).
  */
-export const HUECO_QR_A = { izq: 238.2, der: 398.8, arriba: 15 } as const;
+export const HUECO_QR_A = { izq: 238.2, der: X_DER - (238.2 - X_IZQ), arriba: 15 } as const;
 export const TAM_QR_A = T_NOMBRE;
-/** Donde empieza hoy el recuadro del numero (puntos desde arriba). */
+/** Bordes de fuera del recuadro del CLIENTE de la cabecera con QR. */
+export const CLIENTE_QR_A = { izq: HUECO_QR_A.der, der: X_DER, arriba: 15.8 } as const;
+/**
+ * Bordes de fuera del recuadro de la empresa (sin logo, de 15,8 a 91,3; con
+ * logo, baja lo que mide el logo; con una fila partida, crece).
+ */
+export const EMPRESA_A = { izq: X_IZQ, der: 238.2, arriba: 15.8, alto: 91.3 - 15.8 } as const;
+/** Logo: como mucho 170 x 74 pt, sin agrandarlo ni deformarlo. */
+const LOGO_A = { ancho: 170, alto: 74 } as const;
+/** Donde empieza sin QR el recuadro del numero (puntos desde arriba). */
 const TOP_NUMERO = 133.8;
 
 /** NIF de una persona fisica (DNI, NIE o K, L, M): «NIF»; el de una sociedad, «CIF», como en la muestra. */
@@ -185,10 +208,10 @@ export async function renderizarFacturaPlantillaA(f: DatosFacturaPdf): Promise<B
     const xx = o.alinear === 'der' ? x - w : o.alinear === 'centro' ? x - w / 2 : x;
     pg.drawText(s, { x: xx, y: Y(base), size: tam, font: fuente, color: o.color ?? NEGRO, ...(o.cursiva ? { ySkew: degrees(12) } : {}) });
   };
-  /** Tamaño con el que `s` cabe en `ancho` (como mucho `tam`). */
+  /** Tamaño con el que `s` cabe en `ancho` (como mucho `tam`; nunca menos de T_MIN). */
   const tamQueCabe = (s: string, fuente: PDFFont, tam: number, anchoMax: number) => {
     let t = tam;
-    while (t > 5 && fuente.widthOfTextAtSize(s, t) > anchoMax) t -= 0.2;
+    while (t > T_MIN && fuente.widthOfTextAtSize(s, t) > anchoMax) t -= 0.2;
     return t;
   };
   /** Rectangulo relleno de `top` a `bottom` (puntos desde arriba). */
@@ -219,6 +242,32 @@ export async function renderizarFacturaPlantillaA(f: DatosFacturaPdf): Promise<B
   const tiposIva = [...new Set(f.lineas.map((l) => l.tipoIva))].sort((a, b) => b - a);
   const variosTipos = tiposIva.length > 1;
   const conIva = f.conIva !== false;
+
+  /**
+   * Lineas del CLIENTE (texto y letra) partidas a `anchoMax`: el nombre, el
+   * numero fiscal con la etiqueta de su pais, la direccion, el CP con el
+   * municipio, la provincia y, si es de fuera, el pais.
+   */
+  const lineasCliente = (anchoMax: number): Array<[string, number]> => {
+    const nifCliente = nifDe(c.nifCif, paisCliente);
+    const etqNif = paisCliente === 'ES' ? etiquetaNifEspanol(nifCliente) : etiquetaNifCliente(c, 'es');
+    const datos: Array<[string, number]> = [];
+    for (const l of partir(c.nombreFiscal, negrita, T_NOMBRE, anchoMax)) datos.push([l, T_NOMBRE]);
+    // Simplificada (F2 o R5) registrada en VERI*FACTU: solo el nombre del cliente, como la plantilla de siempre.
+    const sinIdentificar = f.clienteSinIdentificar === true;
+    if (nifCliente && !sinIdentificar) datos.push([`${etqNif}: ${nifCliente}`, T_ETQ]);
+    const resto = sinIdentificar
+      ? []
+      : paisCliente === 'ES'
+        ? [
+            c.direccion?.trim(),
+            [c.cp?.trim(), c.municipio?.trim()].filter(Boolean).join('   '),
+            c.provincia?.trim() && c.provincia.trim().toUpperCase() !== c.municipio?.trim().toUpperCase() ? c.provincia.trim() : null,
+          ]
+        : [c.direccion?.trim(), lineaPoblacion(c.cp, c.municipio, c.provincia, paisCliente), c.pais ? nombrePais(c.pais, 'es').toUpperCase() : null];
+    for (const r of resto.filter((s): s is string => !!s)) for (const l of partir(r, negrita, T_ETQ, anchoMax)) datos.push([l, T_ETQ]);
+    return datos;
+  };
 
   // Bloques de la tabla: la fila del articulo (el concepto partido), el texto
   // adicional y la fila «KG Plástico» (si la linea lleva kg o IEEPNR).
@@ -328,15 +377,16 @@ export async function renderizarFacturaPlantillaA(f: DatosFacturaPdf): Promise<B
     return pg;
   };
   let p = nuevaPagina();
+  const conQr = llevaQrVerifactu(f);
 
-  // ---------- Recuadro de la empresa (centrado y en cursiva) ----------
-  {
-    const cx = (X_IZQ_IN + 236.5) / 2;
-    const anchoCaja = 236.5 - X_IZQ_IN - 6;
-    vertical(p, X_IZQ, 15.8, 91.3);
-    vertical(p, 236.5, 17.5, 91.3);
-    raya(p, X_IZQ_IN, 238.2, 15.8);
-    raya(p, X_IZQ_IN, 238.2, 89.6);
+  const anchoCajaEmpresa = 236.5 - X_IZQ_IN - 6;
+  /**
+   * Lineas del recuadro de la empresa (texto, letra, fuente y linea base en la
+   * muestra) y lo que crece el recuadro. Cada fila se achica hasta que cabe;
+   * con `partirLargas` (la cabecera con QR, que lo tiene al lado), la que ni
+   * asi cabe se parte en lineas y lo de debajo baja.
+   */
+  const filasEmpresa = (partirLargas: boolean) => {
     const filas: Array<[string, number, PDFFont, number]> = [
       [nombreEmpresa, T_NOMBRE, negrita, 28.5],
       [nifEmpresa ? `${etiquetaNifEspanol(nifEmpresa)}. ${nifEmpresa}` : '', T_ETQ, negrita, 43.8],
@@ -344,49 +394,140 @@ export async function renderizarFacturaPlantillaA(f: DatosFacturaPdf): Promise<B
       [lineaPoblacion(e?.codigoPostal, e?.municipio, e?.provincia, e?.pais), T_ETQ, normal, 71.5],
       [nombrePais(e?.pais || 'ES', 'es').toUpperCase(), T_NOMBRE, normal, 85.7],
     ];
-    for (const [s, tam, fuente, base] of filas) texto(p, s, cx, base, { tam: tamQueCabe(s, fuente, tam, anchoCaja), fuente, alinear: 'centro', cursiva: true });
-  }
-  // Logo (si lo hay), arriba a la derecha, donde la muestra no tiene nada.
-  if (f.logo?.bytes?.length) {
+    const lineas: Array<[string, number, PDFFont, number]> = [];
+    let crece = 0;
+    for (const [s, tam, fuente, base] of filas) {
+      const t = tamQueCabe(s, fuente, tam, anchoCajaEmpresa);
+      if (!partirLargas || fuente.widthOfTextAtSize(s, t) <= anchoCajaEmpresa) {
+        lineas.push([s, t, fuente, base + crece]);
+        continue;
+      }
+      // Lo alto de la primera linea, donde lo tendria la fila en una sola.
+      const partido = partirAchicando(s, fuente, tam, T_MIN, anchoCajaEmpresa);
+      const paso = partido.tam * 1.15;
+      const sube = 0.7 * (tam - partido.tam);
+      partido.lineas.forEach((l, i) => lineas.push([l, partido.tam, fuente, base + crece - sube + i * paso]));
+      crece += Math.max(0, (partido.lineas.length - 1) * paso - sube);
+    }
+    return { lineas, crece };
+  };
+  /** Recuadro de la empresa (centrado y en cursiva), `d` puntos mas abajo que en la muestra. */
+  const recuadroEmpresa = (d: number, { lineas, crece }: ReturnType<typeof filasEmpresa>) => {
+    const cx = (X_IZQ_IN + 236.5) / 2;
+    vertical(p, X_IZQ, 15.8 + d, 91.3 + d + crece);
+    vertical(p, 236.5, 17.5 + d, 91.3 + d + crece);
+    raya(p, X_IZQ_IN, 238.2, 15.8 + d);
+    raya(p, X_IZQ_IN, 238.2, 89.6 + d + crece);
+    for (const [s, tam, fuente, base] of lineas) texto(p, s, cx, base + d, { tam, fuente, alinear: 'centro', cursiva: true });
+  };
+  /** El logo (o null si no hay o esta dañado). */
+  const incrustarLogo = async () => {
+    if (!f.logo?.bytes?.length) return null;
     try {
-      const img = f.logo.mime === 'image/png' ? await doc.embedPng(f.logo.bytes) : await doc.embedJpg(f.logo.bytes);
-      const escala = Math.min(170 / img.width, 74 / img.height, 1);
-      p.drawImage(img, { x: X_DER - img.width * escala, y: Y(16 + img.height * escala), width: img.width * escala, height: img.height * escala });
+      return f.logo.mime === 'image/png' ? await doc.embedPng(f.logo.bytes) : await doc.embedJpg(f.logo.bytes);
     } catch {
       // Imagen dañada: sin logo.
+      return null;
     }
-  }
-  // Email, azul y subrayado.
-  if (e?.email?.trim()) {
+  };
+  /**
+   * Email, azul y subrayado, `d` puntos mas abajo que en la muestra. Con
+   * `anchoMax`, achicado si no cabe y, si ni asi, partido. Devuelve lo que
+   * ocupa de mas (las lineas que pasan de una).
+   */
+  const emailEmpresa = (d: number, anchoMax?: number): number => {
+    if (!e?.email?.trim()) return 0;
     const email = e.email.trim();
-    texto(p, email, X_TEXTO, 100.2, { color: AZUL });
-    caja(p, X_TEXTO, 101.0, X_TEXTO + normal.widthOfTextAtSize(email, T_TABLA), 101.6, AZUL);
-  }
+    const { lineas, tam } = anchoMax === undefined ? { lineas: [email], tam: T_TABLA } : partirAchicando(email, normal, T_TABLA, T_MIN, anchoMax, 1);
+    const paso = tam * 1.3;
+    lineas.forEach((l, i) => {
+      texto(p, l, X_TEXTO, 100.2 + d + i * paso, { color: AZUL, tam });
+      caja(p, X_TEXTO, 101.0 + d + i * paso, X_TEXTO + normal.widthOfTextAtSize(l, tam), 101.6 + d + i * paso, AZUL);
+    });
+    return (lineas.length - 1) * paso;
+  };
 
-  // ---------- QR de VERI*FACTU (solo en la primera pagina) ----------
-  // dy: lo que baja todo lo que va desde el recuadro del numero para dejar sitio al bloque.
+  // dy: lo que baja todo lo que va desde «FACTURA» y el recuadro del numero (solo con el QR).
   let dy = 0;
-  let xBloqueQr = X_DER;
-  if (llevaQrVerifactu(f)) {
-    const anchoHueco = HUECO_QR_A.der - HUECO_QR_A.izq;
+  /** Hasta donde puede llegar «FACTURA» (un titulo largo se achica). */
+  let xTopeTitulo = X_DER - 8;
+  if (!conQr) {
+    recuadroEmpresa(0, filasEmpresa(false));
+    // Logo (si lo hay), arriba a la derecha, donde la muestra no tiene nada.
+    const img = await incrustarLogo();
+    if (img) {
+      const escala = Math.min(LOGO_A.ancho / img.width, LOGO_A.alto / img.height, 1);
+      p.drawImage(img, { x: X_DER - img.width * escala, y: Y(16 + img.height * escala), width: img.width * escala, height: img.height * escala });
+    }
+    emailEmpresa(0);
+  } else {
+    // ---------- Cabecera con el QR de VERI*FACTU (solo en la primera pagina) ----------
+    // Centro: el bloque del QR.
     const bloque = dibujarBloqueQr(p, {
       xCentro: (HUECO_QR_A.izq + HUECO_QR_A.der) / 2,
       yArriba: Y(HUECO_QR_A.arriba),
       url: f.verifactu!.url,
       tam: TAM_QR_A,
-      anchoMax: Math.min(ANCHO_BLOQUE_QR, anchoHueco - 4),
+      anchoMax: Math.min(ANCHO_BLOQUE_QR, HUECO_QR_A.der - HUECO_QR_A.izq - 4),
       normal,
       negrita,
     });
-    xBloqueQr = bloque.cajaBloque.x;
-    dy = Math.max(0, alto - bloque.cajaBloque.y + 4 - TOP_NUMERO);
+    const fondoQr = alto - bloque.cajaBloque.y;
+    const topLeyenda = alto - (bloque.cajaLeyenda.y + bloque.cajaLeyenda.alto);
+
+    // Izquierda: el logo y debajo el recuadro de la empresa (que baja lo que mide el logo). El logo no
+    // pasa del alto con el que el recuadro acaba antes que el QR: asi la leyenda no queda pegada al borde.
+    // Una fila que ni achicada cabe se parte (no puede llegar al QR) y el recuadro crece.
+    const empresa = filasEmpresa(true);
+    const altoEmpresa = EMPRESA_A.alto + empresa.crece;
+    const img = await incrustarLogo();
+    let dEmpresa = 0;
+    if (img) {
+      const altoMax = Math.max(30, Math.min(LOGO_A.alto, topLeyenda - 2 - altoEmpresa - 6 - 16));
+      const escala = Math.min(LOGO_A.ancho / img.width, altoMax / img.height, 1);
+      const w = img.width * escala;
+      const h = img.height * escala;
+      p.drawImage(img, { x: (EMPRESA_A.izq + EMPRESA_A.der) / 2 - w / 2, y: Y(16 + h), width: w, height: h });
+      dEmpresa = 16 + h + 6 - EMPRESA_A.arriba;
+    }
+    recuadroEmpresa(dEmpresa, empresa);
+    // El email, dentro de la columna (sin llegar al QR).
+    const masEmail = emailEmpresa(dEmpresa + empresa.crece, EMPRESA_A.der - 6 - X_TEXTO);
+    const fondoEmpresa = EMPRESA_A.arriba + altoEmpresa + dEmpresa;
+
+    // Derecha: el recuadro del CLIENTE, con la etiqueta en su franja verde y los datos debajo.
+    const T = CLIENTE_QR_A.arriba;
+    const xi = CLIENTE_QR_A.izq;
+    const xDatos = xi + GRUESO + 3;
+    const anchoDatos = X_DER_IN - xDatos - 4;
+    const franja = T + 17.6;
+    let base = franja + GRUESO + 13.4;
+    const datos = lineasCliente(anchoDatos);
+    datos.forEach(([s, tam], i) => {
+      if (i > 0) base += 13.2;
+      texto(p, s, xDatos, base, { tam: tamQueCabe(s, negrita, tam, anchoDatos), fuente: negrita });
+    });
+    // Llega hasta el fondo del recuadro de la empresa o, si los datos son mas, hasta donde acaben.
+    const fondoCliente = Math.max(fondoEmpresa, base + 9.5);
+    caja(p, xi + 1.3, T + 0.8, X_DER - 0.7, franja + 0.8, VERDE);
+    raya(p, xi + GRUESO, X_DER, T);
+    raya(p, xi + GRUESO, X_DER, franja);
+    raya(p, xi + GRUESO, X_DER, fondoCliente - GRUESO);
+    vertical(p, xi, T, fondoCliente);
+    vertical(p, X_DER_IN, T + GRUESO, fondoCliente);
+    texto(p, 'CLIENTE:', xi + GRUESO + 1.1, T + 13.2, { tam: T_ETQ, fuente: negrita });
+
+    // El recuadro del numero va debajo de las tres columnas; «FACTURA», justo encima, al pie de la izquierda.
+    const topNumero = Math.max(fondoQr + 4, fondoCliente + 6.5, TOP_NUMERO + dEmpresa + empresa.crece + masEmail);
+    dy = topNumero - TOP_NUMERO;
+    xTopeTitulo = EMPRESA_A.der - 6;
   }
 
   // ---------- FACTURA y recuadro del numero y la fecha ----------
-  // Un titulo largo (rectificativa, simplificada) se achica para no llegar al QR.
-  texto(p, titulo, 43.8, 124.5, { tam: tamQueCabe(titulo, negrita, T_TITULO, xBloqueQr - 8 - 43.8), fuente: negrita });
-  if (esProforma) texto(p, AVISO_PROFORMA, X_DER_IN, 124.5, { tam: 8.5, color: GRIS, alinear: 'der' });
-  if (esBorrador) texto(p, 'Borrador: sin número ni validez fiscal', X_DER_IN, 124.5, { tam: 8.5, color: GRIS, alinear: 'der' });
+  // Un titulo largo (rectificativa, simplificada) se achica para caber (con el QR, en la columna de la empresa).
+  texto(p, titulo, 43.8, 124.5 + dy, { tam: tamQueCabe(titulo, negrita, T_TITULO, xTopeTitulo - 43.8), fuente: negrita });
+  if (esProforma) texto(p, AVISO_PROFORMA, X_DER_IN, 124.5 + dy, { tam: 8.5, color: GRIS, alinear: 'der' });
+  if (esBorrador) texto(p, 'Borrador: sin número ni validez fiscal', X_DER_IN, 124.5 + dy, { tam: 8.5, color: GRIS, alinear: 'der' });
   caja(p, 41.0, 134.6 + dy, 135.4, 166.8 + dy, VERDE);
   raya(p, X_IZQ_IN, X_DER, 133.8 + dy);
   raya(p, X_IZQ_IN, X_DER, 165.8 + dy);
@@ -399,40 +540,28 @@ export async function renderizarFacturaPlantillaA(f: DatosFacturaPdf): Promise<B
   const fechaTxt = `${F.fecha(f.fechaEmision)}${f.fechaOperacion && f.fechaOperacion !== f.fechaEmision ? `   (fecha de la operación: ${F.fecha(f.fechaOperacion)})` : ''}`;
   texto(p, fechaTxt, 137.2, 162.7 + dy, { tam: T_ETQ });
 
-  // ---------- CLIENTE ----------
-  const X_CLIENTE = 199.6;
-  const anchoCliente = X_DER_IN - X_CLIENTE - 4;
-  const nifCliente = nifDe(c.nifCif, paisCliente);
-  const etqNif = paisCliente === 'ES' ? etiquetaNifEspanol(nifCliente) : etiquetaNifCliente(c, 'es');
-  const datosCliente: Array<[string, number]> = [];
-  for (const l of partir(c.nombreFiscal, negrita, T_NOMBRE, anchoCliente)) datosCliente.push([l, T_NOMBRE]);
-  // Simplificada (F2 o R5) registrada en VERI*FACTU: solo el nombre del cliente, como la plantilla de siempre.
-  const sinIdentificar = f.clienteSinIdentificar === true;
-  if (nifCliente && !sinIdentificar) datosCliente.push([`${etqNif}: ${nifCliente}`, T_ETQ]);
-  const resto = sinIdentificar
-    ? []
-    : paisCliente === 'ES'
-      ? [
-          c.direccion?.trim(),
-          [c.cp?.trim(), c.municipio?.trim()].filter(Boolean).join('   '),
-          c.provincia?.trim() && c.provincia.trim().toUpperCase() !== c.municipio?.trim().toUpperCase() ? c.provincia.trim() : null,
-        ]
-      : [c.direccion?.trim(), lineaPoblacion(c.cp, c.municipio, c.provincia, paisCliente), c.pais ? nombrePais(c.pais, 'es').toUpperCase() : null];
-  for (const r of resto.filter((s): s is string => !!s)) for (const l of partir(r, negrita, T_ETQ, anchoCliente)) datosCliente.push([l, T_ETQ]);
-  let base = 193.6 + dy;
-  datosCliente.forEach(([s, tam], i) => {
-    if (i > 0) base += 13.2;
-    texto(p, s, X_CLIENTE, base, { tam, fuente: negrita });
-  });
-  const fondoCliente = Math.max(264.4 + dy, base + 18);
-  caja(p, 41.0, 174.8 + dy, 135.4, fondoCliente - 0.8, VERDE);
-  raya(p, X_IZQ_IN, X_DER, 174.0 + dy);
-  raya(p, X_IZQ_IN, X_DER, fondoCliente - GRUESO);
-  vertical(p, X_IZQ, 174.0 + dy, fondoCliente);
-  vertical(p, 134.4, 175.7 + dy, fondoCliente);
-  vertical(p, X_DER_IN, 175.7 + dy, fondoCliente);
-  texto(p, 'CLIENTE:', 42.5, 193.6 + dy, { tam: T_ETQ, fuente: negrita });
-  let y = fondoCliente + 9.7;
+  // ---------- CLIENTE: con el QR ya esta en la cabecera; sin el, el recuadro de ancho completo ----------
+  let y: number;
+  if (conQr) {
+    // Lo de debajo sube al sitio del recuadro de ancho completo.
+    y = 174.0 + dy;
+  } else {
+    const X_CLIENTE = 199.6;
+    let base = 193.6;
+    lineasCliente(X_DER_IN - X_CLIENTE - 4).forEach(([s, tam], i) => {
+      if (i > 0) base += 13.2;
+      texto(p, s, X_CLIENTE, base, { tam, fuente: negrita });
+    });
+    const fondoCliente = Math.max(264.4, base + 18);
+    caja(p, 41.0, 174.8, 135.4, fondoCliente - 0.8, VERDE);
+    raya(p, X_IZQ_IN, X_DER, 174.0);
+    raya(p, X_IZQ_IN, X_DER, fondoCliente - GRUESO);
+    vertical(p, X_IZQ, 174.0, fondoCliente);
+    vertical(p, 134.4, 175.7, fondoCliente);
+    vertical(p, X_DER_IN, 175.7, fondoCliente);
+    texto(p, 'CLIENTE:', 42.5, 193.6, { tam: T_ETQ, fuente: negrita });
+    y = fondoCliente + 9.7;
+  }
 
   // ---------- Rectificativa: que corrige, como y por que (bajo el CLIENTE) ----------
   if (f.esRectificativa) {
