@@ -626,6 +626,19 @@ export function partir(texto: string, fuente: PDFFont, tam: number, ancho: numbe
 }
 
 /**
+ * `texto` partido a `ancho` con la mayor letra (de `tam` a `tamMin`, de 0,2 en
+ * 0,2) con la que sale en `maxLineas` lineas como mucho. Si ni con `tamMin`
+ * cabe en esas, las lineas que salgan con `tamMin` (nunca se pierde texto).
+ */
+export function partirAchicando(texto: string, fuente: PDFFont, tam: number, tamMin: number, ancho: number, maxLineas = 2): { lineas: string[]; tam: number } {
+  for (let t = tam; t >= tamMin - 1e-9; t -= 0.2) {
+    const lineas = partir(texto, fuente, t, ancho);
+    if (lineas.length <= maxLineas) return { lineas, tam: t };
+  }
+  return { lineas: partir(texto, fuente, tamMin, ancho), tam: tamMin };
+}
+
+/**
  * Codigo postal y poblacion. En Espana y en la UE, el codigo delante
  * ('46006 València (Valencia)', '75009 Paris'); en el resto, la ciudad delante
  * ('Miami, FL 33131', 'Central, Hong Kong').
