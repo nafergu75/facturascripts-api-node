@@ -119,3 +119,83 @@ export function lineasDePdf(textos: TextoPdf[]): TextoPdf[][] {
     .sort((a, b) => a[0].pagina - b[0].pagina || b[0].y - a[0].y)
     .map((l) => l.sort((a, b) => a.x - b.x));
 }
+
+/**
+ * El contenido de las paginas tal cual lo escribe pdf-lib, con los nombres de
+ * las fuentes y de las imagenes cambiados por F0, F1... y X0, X1... en el orden
+ * en que salen (pdf-lib les pone un sufijo al azar). Dos PDF con el mismo
+ * contenido normalizado se dibujan igual: sirve para comprobar que algo no ha
+ * cambiado.
+ */
+export async function contenidoNormalizado(pdf: Uint8Array): Promise<string> {
+  const doc = await PDFDocument.load(pdf);
+  const nombres = new Map<string, string>();
+  const nombre = (n: string, pre: string) => {
+    if (!nombres.has(n)) nombres.set(n, `${pre}${nombres.size}`);
+    return nombres.get(n)!;
+  };
+  return doc
+    .getPages()
+    .map((p, i) => {
+      const c = p.node.Contents();
+      const flujos = c instanceof PDFArray ? c.asArray().map((r) => doc.context.lookup(r)) : [c];
+      const t = flujos
+        .filter((s): s is PDFRawStream => s instanceof PDFRawStream)
+        .map((s) => Buffer.from(decodePDFRawStream(s).decode()).toString('latin1'))
+        .join('\n');
+      return `--- pagina ${i + 1}\n` + t.replace(/\/([^\s/]+)(\s+[\d.]+\s+Tf)/g, (_, n, r) => `/${nombre(n, 'F')}${r}`).replace(/\/([^\s/]+)(\s+Do)/g, (_, n, r) => `/${nombre(n, 'X')}${r}`);
+    })
+    .join('\n');
+}
+
+export interface RectanguloPdf {
+  pagina: number;
+  /** Esquina de abajo a la izquierda, ancho y alto, en puntos (origen abajo). */
+  x: number;
+  y: number;
+  ancho: number;
+  alto: number;
+  /** Color de relleno (r, g, b de 0 a 1). */
+  color: [number, number, number];
+}
+
+export interface ImagenPdf {
+  pagina: number;
+  x: number;
+  y: number;
+  ancho: number;
+  alto: number;
+}
+
+/** Los rectangulos rellenos (drawRectangle de pdf-lib) y las imagenes (drawImage) de cada pagina. */
+export async function figurasDePdf(pdf: Uint8Array): Promise<{ rectangulos: RectanguloPdf[]; imagenes: ImagenPdf[] }> {
+  const contenido = await contenidoNormalizado(pdf);
+  const rectangulos: RectanguloPdf[] = [];
+  const imagenes: ImagenPdf[] = [];
+  const N = String.raw`(-?[\d.]+(?:e-?\d+)?)`;
+  const reCm = new RegExp(`^1 0 0 1 ${N} ${N} cm$`);
+  const reColor = new RegExp(`^${N} ${N} ${N} rg$`);
+  const reEscala = new RegExp(`^${N} 0 0 ${N} 0 0 cm$`);
+  let pagina = 0;
+  let bloque: string[] | null = null;
+  for (const linea of contenido.split('\n')) {
+    if (linea.startsWith('--- pagina ')) pagina = Number(linea.slice(11));
+    else if (linea === 'q') bloque = [];
+    else if (linea === 'Q' && bloque) {
+      const cm = bloque.map((l) => reCm.exec(l)).find(Boolean);
+      const color = bloque.map((l) => reColor.exec(l)).find(Boolean);
+      const i = bloque.indexOf('0 0 m');
+      if (cm && i >= 0 && bloque[i + 4] === 'h' && bloque[i + 5] === 'f') {
+        const [, alto] = bloque[i + 1].split(' ');
+        const [ancho] = bloque[i + 2].split(' ');
+        rectangulos.push({ pagina, x: Number(cm[1]), y: Number(cm[2]), ancho: Number(ancho), alto: Number(alto), color: color ? [Number(color[1]), Number(color[2]), Number(color[3])] : [0, 0, 0] });
+      } else if (cm && bloque.some((l) => / Do$/.test(l))) {
+        // drawImage: mover, girar, escalar (al ancho y alto) e inclinar, por ese orden.
+        const escala = reEscala.exec(bloque.filter((l) => l.endsWith(' cm'))[2] ?? '');
+        if (escala) imagenes.push({ pagina, x: Number(cm[1]), y: Number(cm[2]), ancho: Number(escala[1]), alto: Number(escala[2]) });
+      }
+      bloque = null;
+    } else if (bloque) bloque.push(linea);
+  }
+  return { rectangulos, imagenes };
+}
