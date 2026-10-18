@@ -13,13 +13,12 @@ import { describe, it, expect, beforeAll } from '@jest/globals';
 import type { PDFFont } from 'pdf-lib';
 import { renderizarFactura, TAM_QR_ESTANDAR, type DatosFacturaPdf } from '../services/facturaPdf.service';
 import { HUECO_QR_A, TAM_QR_A } from '../services/facturaPdfPlantillaA';
-import { FRANJA_QR_B, TAM_QR_B } from '../services/facturaPdfPlantillaB';
+import { HUECO_QR_B, TAM_QR_B } from '../services/facturaPdfPlantillaB';
 import { ANCHO_BLOQUE_QR, calcularBloqueQr, LEYENDA_QR, MARCA_PRUEBAS, TITULO_QR, type CajasBloqueQr } from '../services/verifactu/qrPdf';
 import { urlCotejo } from '../services/verifactu/qr';
 import { crearDocumentoPdfA } from '../utils/pdf-a';
 import { textosDePdf, type TextoPdf } from './texto-pdf';
-import { LINEAS_NZ004, TOTALES_NZ004 } from './muestra-nz004';
-import { LINEAS_NZ013, TOTALES_NZ013 } from './muestra-nz013';
+import { estandarPdfQr as estandar, lineaSimplePdfQr as lineaSimple, plantillaAPdfQr as plantillaA, plantillaBPdfQr as plantillaB } from './datos-pdf-qr';
 
 jest.setTimeout(120_000);
 
@@ -27,107 +26,6 @@ const ANCHO = 595.28;
 const ALTO = 841.89;
 const URL_PRO = urlCotejo({ entorno: 'PRODUCCION', idEmisor: 'B12345674', numSerie: 'A-1', fechaExpedicion: '04-03-2026', importeTotal: '121.00' });
 const URL_PRU = urlCotejo({ entorno: 'PRUEBAS', idEmisor: 'B12345674', numSerie: 'PRU261015-1', fechaExpedicion: '04-03-2026', importeTotal: '121.00' });
-
-const comun = {
-  id: 'f1',
-  estadoDocumento: 'FINAL',
-  formaPago: 'TRANSFERENCIA',
-  tipoRectificativa: null,
-  motivoRectificacion: null,
-  esRectificativa: false,
-  fechaEmision: '2026-03-04',
-  fechaVencimiento: '2026-04-03',
-  retencionTotal: 0,
-  observaciones: null,
-  original: null,
-  cuenta: { iban: 'ES9121000418450200051332', bic: 'CAIXESBBXXX', bancoNombre: 'Banco de pruebas' },
-  moneda: 'EUR',
-  monedaCuenta: 'EUR',
-  tipoCambio: 1,
-  fuenteTipoCambio: 'PAR',
-  conIva: true,
-  cliente: { nombreFiscal: 'CLIENTE FICTICIO SL', nifCif: 'B00000000', direccion: 'CALLE FALSA, 1', cp: '46000', municipio: 'VALENCIA', provincia: 'VALENCIA', pais: 'ES' },
-  emisor: {
-    denominacion: 'EMPRESA DE PRUEBA S.L.',
-    nif: 'B12345674',
-    domicilioSocial: 'CALLE INVENTADA, 2',
-    codigoPostal: '12200',
-    municipio: 'ONDA',
-    provincia: 'CASTELLON',
-    pais: 'ES',
-    datosRegistrales: 'T 1, L 2, F 3, S 8, H CS 4, I/A 1',
-    registroMercantilProvincia: 'Castellón',
-  },
-} as const;
-
-const lineaSimple = (i: number) => ({ descripcion: `Servicio de consultoría ${i}`, cantidad: 1, precioUnitario: 100, descuentoPorcentaje: 0, tipoIva: 21, ivaImporte: 21, baseLine: 100, tipoRetencion: 0 });
-
-const estandar = (extra: Partial<DatosFacturaPdf> = {}): DatosFacturaPdf => ({
-  ...comun,
-  numeroCompleto: 'A-1',
-  tipoFactura: 'F1',
-  baseTotal: 100,
-  ivaTotal: 21,
-  totalFactura: 121,
-  plantilla: null,
-  lineas: [lineaSimple(1)],
-  ...extra,
-});
-
-const IVA_A = [114.25, 216.16, 15.05, 50.8, 21.42, 207.8, 876.57];
-const plantillaA = (extra: Partial<DatosFacturaPdf> = {}): DatosFacturaPdf => ({
-  ...comun,
-  numeroCompleto: 'A-1',
-  tipoFactura: 'F1',
-  baseTotal: TOTALES_NZ004.base,
-  ivaTotal: TOTALES_NZ004.iva,
-  totalFactura: TOTALES_NZ004.total,
-  plantilla: 'A',
-  pesoBrutoKg: TOTALES_NZ004.pesoBrutoKg,
-  lineas: LINEAS_NZ004.map((l, i) => ({
-    descripcion: l.descripcion,
-    textoAdicional: l.textoAdicional,
-    packs: l.packs,
-    cantidad: l.cantidad,
-    kgPlastico: l.kgPlastico,
-    precioUnitario: l.precioUnitario,
-    descuentoPorcentaje: 0,
-    tipoIva: 21,
-    ivaImporte: IVA_A[i],
-    baseLine: Math.round((l.totalArticulo + l.ieepnr) * 100) / 100,
-    ieepnrImporte: l.ieepnr,
-    tipoRetencion: 0,
-  })),
-  ...extra,
-});
-
-const IVA_B = [12.97, 111.3, 1.89];
-const plantillaB = (extra: Partial<DatosFacturaPdf> = {}): DatosFacturaPdf => ({
-  ...comun,
-  numeroCompleto: 'B-13',
-  tipoFactura: 'F1',
-  baseTotal: TOTALES_NZ013.base,
-  ivaTotal: TOTALES_NZ013.iva,
-  totalFactura: TOTALES_NZ013.total,
-  observaciones: TOTALES_NZ013.observaciones,
-  plantilla: 'B',
-  pesoNetoKg: TOTALES_NZ013.pesoNetoKg,
-  pesoBrutoKg: TOTALES_NZ013.pesoBrutoKg,
-  lineas: LINEAS_NZ013.map((l, i) => ({
-    descripcion: l.descripcion,
-    textoAdicional: l.textoAdicional,
-    cantidad: l.cantidad,
-    precioUnitario: l.precioUnitario,
-    descuentoPorcentaje: 0,
-    tipoIva: 21,
-    ivaImporte: IVA_B[i],
-    baseLine: l.importe,
-    tipoRetencion: 0,
-    unidadPrecio: l.unidadPrecio,
-    ...(l.cargoPalets ? { cargoPalets: true } : { palets: l.palets, cajas: l.cajas, metros2: l.metros2, piezas: l.piezas, formato: l.formato, calidad: l.calidad }),
-  })),
-  ...extra,
-});
 
 let fuentes: { normal: PDFFont; negrita: PDFFont };
 beforeAll(async () => {
@@ -151,7 +49,19 @@ const PLANTILLAS: Array<{ nombre: string; datos: (e?: Partial<DatosFacturaPdf>) 
         anchoMax: Math.min(ANCHO_BLOQUE_QR, HUECO_QR_A.der - HUECO_QR_A.izq - 4),
       }),
   },
-  { nombre: 'B', datos: plantillaB, tam: TAM_QR_B, bloque: () => calcularBloqueQr({ ...fuentes, xCentro: ANCHO / 2, yArriba: ALTO - FRANJA_QR_B.arriba, tam: TAM_QR_B }) },
+  {
+    nombre: 'B',
+    datos: plantillaB,
+    tam: TAM_QR_B,
+    bloque: () =>
+      calcularBloqueQr({
+        ...fuentes,
+        xCentro: (HUECO_QR_B.izq + HUECO_QR_B.der) / 2,
+        yArriba: ALTO - HUECO_QR_B.arriba,
+        tam: TAM_QR_B,
+        anchoMax: Math.min(ANCHO_BLOQUE_QR, HUECO_QR_B.der - HUECO_QR_B.izq - 4),
+      }),
+  },
 ];
 
 const esMarca = (t: TextoPdf) => t.texto === MARCA_PRUEBAS || t.texto === 'BORRADOR';
