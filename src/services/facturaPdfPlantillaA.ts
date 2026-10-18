@@ -98,14 +98,15 @@ const Y_PAGINA = 830;
  *  - izquierda: el logo (si lo hay) y debajo el recuadro de la empresa, igual
  *    que siempre; al pie de la columna, «FACTURA»;
  *  - centro: el bloque del QR, en el hueco entre los dos recuadros, con su
- *    borde de arriba a 15 pt del papel;
- *  - derecha, donde sin QR va el logo: el recuadro del CLIENTE, del ancho del
- *    de la empresa (el de ancho completo de debajo no sale).
+ *    borde de arriba a 15 pt del papel; el hueco es el justo para el bloque
+ *    con sus 6 mm de blanco y 2 pt a cada lado;
+ *  - derecha, donde sin QR va el logo: el recuadro del CLIENTE, unos 5 pt mas
+ *    estrecho que el de la empresa (el de ancho completo de debajo no sale).
  * Debajo, el recuadro del numero y la fecha y lo demas, que sube al sitio del
  * CLIENTE de siempre. La letra de los textos del QR es la mayor de los datos
  * (el nombre de la empresa y el del cliente, 12,2 pt).
  */
-export const HUECO_QR_A = { izq: 238.2, der: X_DER - (238.2 - X_IZQ), arriba: 15 } as const;
+export const HUECO_QR_A = { izq: 238.2, der: 238.2 + ANCHO_BLOQUE_QR + 4, arriba: 15 } as const;
 export const TAM_QR_A = T_NOMBRE;
 /** Bordes de fuera del recuadro del CLIENTE de la cabecera con QR. */
 export const CLIENTE_QR_A = { izq: HUECO_QR_A.der, der: X_DER, arriba: 15.8 } as const;
@@ -397,7 +398,8 @@ export async function renderizarFacturaPlantillaA(f: DatosFacturaPdf): Promise<B
     const lineas: Array<[string, number, PDFFont, number]> = [];
     let crece = 0;
     for (const [s, tam, fuente, base] of filas) {
-      const t = tamQueCabe(s, fuente, tam, anchoCajaEmpresa);
+      // tamQueCabe puede acabar en 4,8 (resta de 0,2 en 0,2): con el QR, nunca por debajo de T_MIN.
+      const t = partirLargas ? Math.max(T_MIN, tamQueCabe(s, fuente, tam, anchoCajaEmpresa)) : tamQueCabe(s, fuente, tam, anchoCajaEmpresa);
       if (!partirLargas || fuente.widthOfTextAtSize(s, t) <= anchoCajaEmpresa) {
         lineas.push([s, t, fuente, base + crece]);
         continue;
@@ -431,14 +433,28 @@ export async function renderizarFacturaPlantillaA(f: DatosFacturaPdf): Promise<B
     }
   };
   /**
+   * El email en `anchoMax`: en una linea a su letra o, si asi no cabe, en dos
+   * (partido detras de la @ si se puede) a la mayor letra con la que caben.
+   */
+  const lineasEmail = (email: string, anchoMax: number): { lineas: string[]; tam: number } => {
+    if (normal.widthOfTextAtSize(email, T_TABLA) <= anchoMax) return { lineas: [email], tam: T_TABLA };
+    const arroba = email.indexOf('@');
+    if (arroba > 0) {
+      const dos = [email.slice(0, arroba + 1), email.slice(arroba + 1)];
+      const tam = Math.max(T_MIN, Math.min(...dos.map((l) => tamQueCabe(l, normal, T_TABLA, anchoMax))));
+      if (dos.every((l) => normal.widthOfTextAtSize(l, tam) <= anchoMax)) return { lineas: dos, tam };
+    }
+    return partirAchicando(email, normal, T_TABLA, T_MIN, anchoMax, 2);
+  };
+  /**
    * Email, azul y subrayado, `d` puntos mas abajo que en la muestra. Con
-   * `anchoMax`, achicado si no cabe y, si ni asi, partido. Devuelve lo que
-   * ocupa de mas (las lineas que pasan de una).
+   * `anchoMax`, partido si no cabe (ver lineasEmail). Devuelve lo que ocupa de
+   * mas (las lineas que pasan de una).
    */
   const emailEmpresa = (d: number, anchoMax?: number): number => {
     if (!e?.email?.trim()) return 0;
     const email = e.email.trim();
-    const { lineas, tam } = anchoMax === undefined ? { lineas: [email], tam: T_TABLA } : partirAchicando(email, normal, T_TABLA, T_MIN, anchoMax, 1);
+    const { lineas, tam } = anchoMax === undefined ? { lineas: [email], tam: T_TABLA } : lineasEmail(email, anchoMax);
     const paso = tam * 1.3;
     lineas.forEach((l, i) => {
       texto(p, l, X_TEXTO, 100.2 + d + i * paso, { color: AZUL, tam });
@@ -607,8 +623,13 @@ export async function renderizarFacturaPlantillaA(f: DatosFacturaPdf): Promise<B
   /** Pagina siguiente con la cabecera breve; devuelve donde empieza lo demas. */
   const cabeceraBreve = () => {
     p = nuevaPagina();
-    texto(p, nombreEmpresa, X_IZQ_IN, 32, { tam: T_ETQ, fuente: negrita });
-    texto(p, `${esBorrador ? 'Borrador de factura' : `${titulo} ${f.numeroCompleto ?? ''}`.trim()} (continuación)`, X_DER, 32, { alinear: 'der' });
+    const tituloBreve = `${esBorrador ? 'Borrador de factura' : `${titulo} ${f.numeroCompleto ?? ''}`.trim()} (continuación)`;
+    // Con el QR, el nombre de la empresa no llega al titulo: se achica y, si ni asi cabe, se parte. Sin QR, como siempre.
+    const nombre = conQr
+      ? partirAchicando(nombreEmpresa, negrita, T_ETQ, T_MIN, X_DER - normal.widthOfTextAtSize(tituloBreve, T_TABLA) - 8 - X_IZQ_IN, 1)
+      : { lineas: [nombreEmpresa], tam: T_ETQ };
+    nombre.lineas.forEach((l, i) => texto(p, l, X_IZQ_IN, 32 + i * nombre.tam * 1.15, { tam: nombre.tam, fuente: negrita }));
+    texto(p, tituloBreve, X_DER, 32, { alinear: 'der' });
     texto(p, `CLIENTE: ${c.nombreFiscal}`, X_IZQ_IN, 45, { tam: T_TABLA });
     return 56;
   };
